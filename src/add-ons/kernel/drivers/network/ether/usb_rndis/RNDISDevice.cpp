@@ -182,6 +182,10 @@ RNDISDevice::Open()
 		return B_ERROR;
 	}
 
+	// A failed open may leave a notification count from a previous command.
+	while (acquire_sem_etc(fNotifyControlSem, 1, B_RELATIVE_TIMEOUT, 0) == B_OK) {
+	}
+
 	if (gUSBModule->queue_interrupt(fNotifyEndpoint, fNotifyBuffer,
 		fNotifyBufferLength, _NotifyCallback, this) != B_OK) {
 		TRACE_ALWAYS("failed to setup notification interrupt\n");
@@ -190,30 +194,38 @@ RNDISDevice::Open()
 
 	status_t status = _RNDISInitialize();
 	if (status != B_OK) {
-		TRACE_ALWAYS("failed to initialize RNDIS device\n");
-		return status;
+		TRACE_ALWAYS("failed to initialize RNDIS device: %s\n", strerror(status));
+		goto failed;
 	}
 
 	status = _ReadMACAddress(fDevice, fMACAddress);
 	if (status != B_OK) {
 		TRACE_ALWAYS("failed to read mac address\n");
-		return status;
+		goto failed;
 	}
 
 	// TODO these are non-fatal but make sure we have sane defaults for them
 	status = _ReadMaxSegmentSize(fDevice);
 	if (status != B_OK) {
 		TRACE_ALWAYS("failed to read fragment size\n");
+		// A timed-out or interrupted request may still have a pending reply.
+		// Do not mistake that reply for the next command's response.
+		if (status == B_TIMED_OUT || status == B_INTERRUPTED)
+			goto failed;
 	}
 
 	status = _ReadMediaState(fDevice);
 	if (status != B_OK) {
+		if (status == B_TIMED_OUT || status == B_INTERRUPTED)
+			goto failed;
 		fMediaConnectState = MEDIA_STATE_CONNECTED;
 		TRACE_ALWAYS("failed to read media state\n");
 	}
 
 	status = _ReadLinkSpeed(fDevice);
 	if (status != B_OK) {
+		if (status == B_TIMED_OUT || status == B_INTERRUPTED)
+			goto failed;
 		fDownstreamSpeed = 1000 * 100; // 10Mbps
 		TRACE_ALWAYS("failed to read link speed\n");
 	}
@@ -223,8 +235,13 @@ RNDISDevice::Open()
 	TRACE("Initialization result: %s\n", strerror(status));
 
 	// the device should now be ready
-	if (status == B_OK)
-		fOpen = true;
+	if (status != B_OK)
+		goto failed;
+	fOpen = true;
+	return B_OK;
+
+failed:
+	gUSBModule->cancel_queued_transfers(fNotifyEndpoint);
 	return status;
 }
 
@@ -550,6 +567,19 @@ RNDISDevice::_ReadResponse(void* data, size_t length)
 
 
 status_t
+RNDISDevice::_WaitForControlResponse()
+{
+	// A missing interrupt must not leave the network server stuck in open()
+	// while the driver lock also prevents device removal from completing.
+	status_t status = acquire_sem_etc(fNotifyControlSem, 1,
+		B_CAN_INTERRUPT | B_RELATIVE_TIMEOUT, 5000000);
+	if (status != B_OK)
+		TRACE_ALWAYS("control response wait failed: %s\n", strerror(status));
+	return status;
+}
+
+
+status_t
 RNDISDevice::_RNDISInitialize()
 {
 	uint32 request[] = {
@@ -562,8 +592,12 @@ RNDISDevice::_RNDISInitialize()
 
 	status_t result = _SendCommand(request, sizeof(request));
 	TRACE("Send init command results in %s\n", strerror(result));
+	if (result != B_OK)
+		return result;
 
-	acquire_sem(fNotifyControlSem);
+	result = _WaitForControlResponse();
+	if (result != B_OK)
+		return result;
 
 	TRACE("Received notification after init command\n");
 
@@ -755,7 +789,9 @@ RNDISDevice::_GetOID(uint32 oid, void* buffer, size_t length)
 	if (result != B_OK)
 		return result;
 
-	acquire_sem(fNotifyControlSem);
+	result = _WaitForControlResponse();
+	if (result != B_OK)
+		return result;
 
 	uint8 response[length + 24] = {0};
 	result = _ReadResponse(response, length + 24);
@@ -849,7 +885,9 @@ RNDISDevice::_EnableBroadcast(usb_device device)
 		return result;
 	}
 
-	acquire_sem(fNotifyControlSem);
+	result = _WaitForControlResponse();
+	if (result != B_OK)
+		return result;
 
 	uint32 response[4];
 	result = _ReadResponse(response, 4 * sizeof(uint32));

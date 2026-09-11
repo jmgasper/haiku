@@ -38,6 +38,7 @@ static	void				_NotifyCallback(void *cookie, int32 status,
 
 		status_t			_SendCommand(const void*, size_t);
 		status_t			_ReadResponse(void*, size_t);
+		status_t			_WaitForControlResponse();
 
 		status_t			_RNDISInitialize();
 		status_t			_GetOID(uint32 oid, void* buffer, size_t length);
