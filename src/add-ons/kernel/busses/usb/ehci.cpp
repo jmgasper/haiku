@@ -16,6 +16,7 @@
 #include <KernelExport.h>
 
 #include "ehci.h"
+#include "PhysicalMemoryAllocator.h"
 
 
 #define CALLED(x...)	TRACE_MODULE("CALLED %s\n", __PRETTY_FUNCTION__)
@@ -24,7 +25,9 @@
 
 
 device_manager_info* gDeviceManager;
-static usb_for_controller_interface* gUSB;
+usb_for_controller_interface* gUSB;
+extern driver_module_info gEHCIFDTDriver;
+extern usb_bus_interface gEHCIFDTBus;
 
 
 #define EHCI_PCI_DEVICE_MODULE_NAME "busses/usb/ehci/pci/driver_v1"
@@ -256,6 +259,8 @@ static driver_module_info sEHCIDevice = {
 module_info* modules[] = {
 	(module_info* )&sEHCIDevice,
 	(module_info* )&gEHCIPCIDeviceModule,
+	(module_info* )&gEHCIFDTDriver,
+	(module_info* )&gEHCIFDTBus,
 	NULL
 };
 
@@ -315,7 +320,7 @@ print_queue(ehci_qh *queueHead)
 
 
 EHCI::EHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stack *stack,
-	device_node* node)
+	device_node* node, const ehci_platform_info* platform)
 	:	BusManager(stack, node),
 		fCapabilityRegisters(NULL),
 		fOperationalRegisters(NULL),
@@ -324,6 +329,7 @@ EHCI::EHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 		fPci(pci),
 		fDevice(device),
 		fStack(stack),
+		fDMAAllocator(NULL),
 		fEnabledInterrupts(0),
 		fThreshold(0),
 		fPeriodicFrameListArea(-1),
@@ -354,8 +360,9 @@ EHCI::EHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 		fPortResetChange(0),
 		fPortSuspendChange(0),
 		fInterruptPollThread(-1),
-		fIRQ(0),
-		fUseMSI(false)
+		fIRQ(platform != NULL ? platform->interrupt : 0),
+		fUseMSI(false),
+		fInterruptInstalled(false)
 {
 	// Create a lock for the isochronous transfer list
 	mutex_init(&fIsochronousLock, "EHCI isochronous lock");
@@ -370,7 +377,7 @@ EHCI::EHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 
 	// ATI/AMD SB600/SB700 periodic list cache workaround
 	// Logic kindly borrowed from NetBSD PR 40056
-	if (fPCIInfo->vendor_id == AMD_SBX00_VENDOR) {
+	if (fPCIInfo != NULL && fPCIInfo->vendor_id == AMD_SBX00_VENDOR) {
 		bool applyWorkaround = false;
 
 		if (fPCIInfo->device_id == AMD_SB600_EHCI_CONTROLLER) {
@@ -417,23 +424,39 @@ EHCI::EHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 		}
 	}
 
-	// enable busmaster and memory mapped access
-	uint16 command = fPci->read_pci_config(fDevice, PCI_command, 2);
-	command &= ~PCI_command_io;
-	command |= PCI_command_master | PCI_command_memory;
+	phys_addr_t registerBase;
+	size_t registerSize;
+	if (fPCIInfo != NULL) {
+		// Enable busmaster and memory mapped access on PCI controllers.
+		uint16 command = fPci->read_pci_config(fDevice, PCI_command, 2);
+		command &= ~PCI_command_io;
+		command |= PCI_command_master | PCI_command_memory;
+		fPci->write_pci_config(fDevice, PCI_command, 2, command);
+		registerBase = fPCIInfo->u.h0.base_registers[0];
+		registerSize = fPCIInfo->u.h0.base_register_sizes[0];
+	} else if (platform != NULL) {
+		registerBase = platform->register_base;
+		registerSize = platform->register_size;
+		if (!platform->dma_coherent) {
+			fDMAAllocator = new(std::nothrow) PhysicalMemoryAllocator(
+				"EHCI noncoherent DMA", 32, B_PAGE_SIZE * 32, 64, true);
+			if (fDMAAllocator == NULL || fDMAAllocator->InitCheck() != B_OK) {
+				TRACE_ERROR("could not allocate noncoherent DMA pool\n");
+				return;
+			}
+		}
+	} else
+		return;
 
-	fPci->write_pci_config(fDevice, PCI_command, 2, command);
-
-	// map the registers
-	uint32 offset = fPCIInfo->u.h0.base_registers[0] & (B_PAGE_SIZE - 1);
-	phys_addr_t physicalAddress = fPCIInfo->u.h0.base_registers[0] - offset;
-	size_t mapSize = (fPCIInfo->u.h0.base_register_sizes[0] + offset
-		+ B_PAGE_SIZE - 1) & ~(B_PAGE_SIZE - 1);
-
-	TRACE("map physical memory 0x%08" B_PRIx32 " (base: 0x%08" B_PRIxPHYSADDR
-		"; offset: %" B_PRIx32 "); size: %" B_PRIu32 "\n",
-		fPCIInfo->u.h0.base_registers[0], physicalAddress, offset,
-		fPCIInfo->u.h0.base_register_sizes[0]);
+	if (registerSize < 0x100 || registerSize > SIZE_MAX - 2 * B_PAGE_SIZE
+		|| registerBase > UINT64_MAX - registerSize)
+		return;
+	uint32 offset = registerBase & (B_PAGE_SIZE - 1);
+	phys_addr_t physicalAddress = registerBase - offset;
+	size_t mapSize = (registerSize + offset + B_PAGE_SIZE - 1)
+		& ~(B_PAGE_SIZE - 1);
+	TRACE_ALWAYS("registers %#" B_PRIxPHYSADDR ", size %#" B_PRIxSIZE "\n",
+		registerBase, registerSize);
 
 	fRegisterArea = map_physical_memory("EHCI memory mapped registers",
 		physicalAddress, mapSize, B_ANY_KERNEL_BLOCK_ADDRESS,
@@ -445,7 +468,13 @@ EHCI::EHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 	}
 
 	fCapabilityRegisters += offset;
-	fOperationalRegisters = fCapabilityRegisters + ReadCapReg8(EHCI_CAPLENGTH);
+	uint8 capabilityLength = ReadCapReg32(EHCI_CAPLENGTH) & 0xff;
+	if (capabilityLength < 0x10 || (capabilityLength & 3) != 0
+		|| capabilityLength + EHCI_PORTSC + 15 * sizeof(uint32) > registerSize) {
+		TRACE_ERROR("invalid capability register length %u\n", capabilityLength);
+		return;
+	}
+	fOperationalRegisters = fCapabilityRegisters + capabilityLength;
 	TRACE("mapped capability registers: 0x%p\n", fCapabilityRegisters);
 	TRACE("mapped operational registers: 0x%p\n", fOperationalRegisters);
 
@@ -464,7 +493,7 @@ EHCI::EHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 
 	uint32 extendedCapPointer = ReadCapReg32(EHCI_HCCPARAMS) >> EHCI_ECP_SHIFT;
 	extendedCapPointer &= EHCI_ECP_MASK;
-	if (extendedCapPointer > 0) {
+	if (fPci != NULL && extendedCapPointer > 0) {
 		TRACE("extended capabilities register at %" B_PRIu32 "\n",
 			extendedCapPointer);
 
@@ -570,40 +599,45 @@ EHCI::EHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 			"ehci interrupt poll thread", B_NORMAL_PRIORITY, (void *)this);
 		resume_thread(fInterruptPollThread);
 	} else {
-		// Find the right interrupt vector, using MSIs if available.
-		fIRQ = fPCIInfo->u.h0.interrupt_line;
-		if (fIRQ == 0xFF)
-			fIRQ = 0;
-
-		if (fPci->get_msi_count(fDevice) >= 1) {
-			uint32 msiVector = 0;
-			if (fPci->configure_msi(fDevice, 1, &msiVector) == B_OK
-				&& fPci->enable_msi(fDevice) == B_OK) {
-				TRACE_ALWAYS("using message signaled interrupts\n");
-				fIRQ = msiVector;
-				fUseMSI = true;
+		if (fPCIInfo != NULL) {
+			// Find the right interrupt vector, using MSIs if available.
+			fIRQ = fPCIInfo->u.h0.interrupt_line;
+			if (fIRQ == 0xFF)
+				fIRQ = 0;
+			if (fPci->get_msi_count(fDevice) >= 1) {
+				uint32 msiVector = 0;
+				if (fPci->configure_msi(fDevice, 1, &msiVector) == B_OK
+					&& fPci->enable_msi(fDevice) == B_OK) {
+					TRACE_ALWAYS("using message signaled interrupts\n");
+					fIRQ = msiVector;
+					fUseMSI = true;
+				}
 			}
 		}
-
 		if (fIRQ == 0) {
-			TRACE_MODULE_ERROR("device PCI:%d:%d:%d was assigned an invalid IRQ\n",
-				fPCIInfo->bus, fPCIInfo->device, fPCIInfo->function);
+			TRACE_MODULE_ERROR("controller has no valid IRQ\n");
 			return;
 		}
 
 		// install the interrupt handler and enable interrupts
-		install_io_interrupt_handler(fIRQ, InterruptHandler,
+		status_t status = install_io_interrupt_handler(fIRQ, InterruptHandler,
 			(void *)this, 0);
+		if (status != B_OK) {
+			TRACE_ERROR("could not install IRQ %" B_PRIu32 ": %" B_PRId32 "\n",
+				fIRQ, status);
+			return;
+		}
+		fInterruptInstalled = true;
+		TRACE_ALWAYS("using IRQ %" B_PRIu32 "\n", fIRQ);
 	}
 
-	// ensure that interrupts are en-/disabled on the PCI device
-	command = fPci->read_pci_config(fDevice, PCI_command, 2);
-	if ((polling || fUseMSI) == ((command & PCI_command_int_disable) == 0)) {
+	if (fPci != NULL) {
+		// PCI INTx must be enabled unless polling or MSI supplies interrupts.
+		uint16 command = fPci->read_pci_config(fDevice, PCI_command, 2);
 		if (polling || fUseMSI)
-			command &= ~PCI_command_int_disable;
-		else
 			command |= PCI_command_int_disable;
-
+		else
+			command &= ~PCI_command_int_disable;
 		fPci->write_pci_config(fDevice, PCI_command, 2, command);
 	}
 
@@ -620,7 +654,7 @@ EHCI::EHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 		+ sitdListSize;
 
 	// allocate the periodic frame list
-	fPeriodicFrameListArea = fStack->AllocateArea((void **)&fPeriodicFrameList,
+	fPeriodicFrameListArea = AllocateArea((void **)&fPeriodicFrameList,
 		&physicalAddress, frameListSize, "USB EHCI Periodic Framelist");
 	if (fPeriodicFrameListArea < 0) {
 		TRACE_ERROR("unable to allocate periodic framelist\n");
@@ -775,8 +809,11 @@ EHCI::~EHCI()
 {
 	TRACE("tear down EHCI host controller driver\n");
 
-	WriteOpReg(EHCI_USBCMD, 0);
-	WriteOpReg(EHCI_CONFIGFLAG, 0);
+	if (fOperationalRegisters != NULL) {
+		WriteOpReg(EHCI_USBINTR, 0);
+		ControllerReset();
+		WriteOpReg(EHCI_CONFIGFLAG, 0);
+	}
 	CancelAllPendingTransfers();
 
 	int32 result = 0;
@@ -791,7 +828,7 @@ EHCI::~EHCI()
 
 	if (fInterruptPollThread >= 0)
 		wait_for_thread(fInterruptPollThread, &result);
-	else
+	else if (fInterruptInstalled)
 		remove_io_interrupt_handler(fIRQ, InterruptHandler, (void *)this);
 
 	LockIsochronous();
@@ -809,12 +846,43 @@ EHCI::~EHCI()
 	delete [] fSitdEntries;
 	delete_area(fPeriodicFrameListArea);
 	delete_area(fRegisterArea);
+	delete fDMAAllocator;
 
 	if (fUseMSI) {
 		fPci->disable_msi(fDevice);
 		fPci->unconfigure_msi(fDevice);
 	}
 
+}
+
+
+status_t
+EHCI::AllocateChunk(void** logicalAddress, phys_addr_t* physicalAddress, size_t size)
+{
+	if (fDMAAllocator != NULL)
+		return fDMAAllocator->Allocate(size, logicalAddress, physicalAddress);
+	return fStack->AllocateChunk(logicalAddress, physicalAddress, size);
+}
+
+
+status_t
+EHCI::FreeChunk(void* logicalAddress, phys_addr_t physicalAddress, size_t size)
+{
+	if (fDMAAllocator != NULL)
+		return fDMAAllocator->Deallocate(size, logicalAddress, physicalAddress);
+	return fStack->FreeChunk(logicalAddress, physicalAddress, size);
+}
+
+
+area_id
+EHCI::AllocateArea(void** logicalAddress, phys_addr_t* physicalAddress, size_t size,
+	const char* name)
+{
+	if (fDMAAllocator != NULL) {
+		return PhysicalMemoryAllocator::AllocateArea(name, size, logicalAddress,
+			physicalAddress, true);
+	}
+	return fStack->AllocateArea(logicalAddress, physicalAddress, size, name);
 }
 
 
@@ -946,7 +1014,9 @@ EHCI::LinkAsyncDebugQueueHead(ehci_qh *queueHead)
 	queueHead->prev_log = prevHead;
 	fAsyncQueueHead->prev_log = queueHead;
 	prevHead->next_log = queueHead;
+	memory_full_barrier();
 	prevHead->next_phy = queueHead->this_phy;
+	memory_full_barrier();
 }
 
 
@@ -967,7 +1037,9 @@ EHCI::LinkPeriodicDebugQueueHead(ehci_qh *queueHead, Pipe *pipe)
 	if (interruptQueue->next_log)
 		interruptQueue->next_log->prev_log = queueHead;
 	interruptQueue->next_log = queueHead;
+	memory_full_barrier();
 	interruptQueue->next_phy = queueHead->this_phy;
+	memory_full_barrier();
 }
 
 
@@ -980,7 +1052,8 @@ EHCI::CheckDebugTransfer(Transfer *transfer)
 	ehci_qtd *descriptor = transferData->queue_head->element_log;
 
 	while (descriptor) {
-		uint32 status = descriptor->token;
+		uint32 status = *(volatile uint32*)&descriptor->token;
+		memory_full_barrier();
 		if ((status & EHCI_QTD_STATUS_ACTIVE) != 0) {
 			// still in progress
 			break;
@@ -1236,7 +1309,7 @@ EHCI::SubmitIsochronous(Transfer *transfer)
 	size_t dataLength = transfer->DataLength();
 	void* bufferLog;
 	phys_addr_t bufferPhy;
-	if (fStack->AllocateChunk(&bufferLog, &bufferPhy, dataLength) != B_OK) {
+	if (AllocateChunk(&bufferLog, &bufferPhy, dataLength) != B_OK) {
 		TRACE_ERROR("unable to allocate itd buffer\n");
 		delete[] isoRequest;
 		return B_NO_MEMORY;
@@ -1880,7 +1953,8 @@ EHCI::FinishTransfers()
 			status_t callbackStatus = B_OK;
 
 			while (descriptor) {
-				uint32 status = descriptor->token;
+				uint32 status = *(volatile uint32*)&descriptor->token;
+				memory_full_barrier();
 				if (status & EHCI_QTD_STATUS_ACTIVE) {
 					// still in progress
 					TRACE("qtd (0x%08" B_PRIx32 ") still active\n",
@@ -2215,7 +2289,7 @@ EHCI::FinishIsochronousTransfers()
 
 					delete [] transfer->descriptors;
 					delete transfer->transfer;
-					fStack->FreeChunk(transfer->buffer_log,
+					FreeChunk(transfer->buffer_log,
 						(phys_addr_t)transfer->buffer_phy,
 						transfer->buffer_size);
 					delete transfer;
@@ -2243,7 +2317,7 @@ EHCI::CreateQueueHead()
 {
 	ehci_qh *result;
 	phys_addr_t physicalAddress;
-	if (fStack->AllocateChunk((void **)&result, &physicalAddress,
+	if (AllocateChunk((void **)&result, &physicalAddress,
 			sizeof(ehci_qh)) != B_OK) {
 		TRACE_ERROR("failed to allocate queue head\n");
 		return NULL;
@@ -2257,7 +2331,7 @@ EHCI::CreateQueueHead()
 	ehci_qtd *descriptor = CreateDescriptor(0, 0);
 	if (!descriptor) {
 		TRACE_ERROR("failed to allocate initial qtd for queue head\n");
-		fStack->FreeChunk(result, physicalAddress, sizeof(ehci_qh));
+		FreeChunk(result, physicalAddress, sizeof(ehci_qh));
 		return NULL;
 	}
 
@@ -2322,7 +2396,7 @@ EHCI::FreeQueueHead(ehci_qh *queueHead)
 
 	FreeDescriptorChain(queueHead->element_log);
 	FreeDescriptor(queueHead->stray_log);
-	fStack->FreeChunk(queueHead, (phys_addr_t)queueHead->this_phy,
+	FreeChunk(queueHead, (phys_addr_t)queueHead->this_phy,
 		sizeof(ehci_qh));
 }
 
@@ -2339,7 +2413,9 @@ EHCI::LinkQueueHead(ehci_qh *queueHead)
 	queueHead->prev_log = prevHead;
 	fAsyncQueueHead->prev_log = queueHead;
 	prevHead->next_log = queueHead;
+	memory_full_barrier();
 	prevHead->next_phy = queueHead->this_phy;
+	memory_full_barrier();
 
 	Unlock();
 	return B_OK;
@@ -2392,7 +2468,9 @@ EHCI::LinkInterruptQueueHead(ehci_qh *queueHead, Pipe *pipe)
 	if (interruptQueue->next_log)
 		interruptQueue->next_log->prev_log = queueHead;
 	interruptQueue->next_log = queueHead;
+	memory_full_barrier();
 	interruptQueue->next_phy = queueHead->this_phy;
+	memory_full_barrier();
 
 	Unlock();
 	return B_OK;
@@ -2644,7 +2722,7 @@ EHCI::CreateDescriptor(size_t bufferSize, uint8 pid)
 {
 	ehci_qtd *result;
 	phys_addr_t physicalAddress;
-	if (fStack->AllocateChunk((void **)&result, &physicalAddress,
+	if (AllocateChunk((void **)&result, &physicalAddress,
 			sizeof(ehci_qtd)) != B_OK) {
 		TRACE_ERROR("failed to allocate a qtd\n");
 		return NULL;
@@ -2670,10 +2748,10 @@ EHCI::CreateDescriptor(size_t bufferSize, uint8 pid)
 		return result;
 	}
 
-	if (fStack->AllocateChunk(&result->buffer_log, &physicalAddress,
+	if (AllocateChunk(&result->buffer_log, &physicalAddress,
 			bufferSize) != B_OK) {
 		TRACE_ERROR("unable to allocate qtd buffer\n");
-		fStack->FreeChunk(result, (phys_addr_t)result->this_phy,
+		FreeChunk(result, (phys_addr_t)result->this_phy,
 			sizeof(ehci_qtd));
 		return NULL;
 	}
@@ -2738,11 +2816,11 @@ EHCI::FreeDescriptor(ehci_qtd *descriptor)
 		return;
 
 	if (descriptor->buffer_log) {
-		fStack->FreeChunk(descriptor->buffer_log,
+		FreeChunk(descriptor->buffer_log,
 			(phys_addr_t)descriptor->buffer_phy[0], descriptor->buffer_size);
 	}
 
-	fStack->FreeChunk(descriptor, (phys_addr_t)descriptor->this_phy,
+	FreeChunk(descriptor, (phys_addr_t)descriptor->this_phy,
 		sizeof(ehci_qtd));
 }
 
@@ -2766,7 +2844,7 @@ EHCI::CreateItdDescriptor()
 {
 	ehci_itd *result;
 	phys_addr_t physicalAddress;
-	if (fStack->AllocateChunk((void **)&result, &physicalAddress,
+	if (AllocateChunk((void **)&result, &physicalAddress,
 			sizeof(ehci_itd)) != B_OK) {
 		TRACE_ERROR("failed to allocate a itd\n");
 		return NULL;
@@ -2785,7 +2863,7 @@ EHCI::CreateSitdDescriptor()
 {
 	ehci_sitd *result;
 	phys_addr_t physicalAddress;
-	if (fStack->AllocateChunk((void **)&result, &physicalAddress,
+	if (AllocateChunk((void **)&result, &physicalAddress,
 			sizeof(ehci_sitd)) != B_OK) {
 		TRACE_ERROR("failed to allocate a sitd\n");
 		return NULL;
@@ -2805,7 +2883,7 @@ EHCI::FreeDescriptor(ehci_itd *descriptor)
 	if (!descriptor)
 		return;
 
-	fStack->FreeChunk(descriptor, (phys_addr_t)descriptor->this_phy,
+	FreeChunk(descriptor, (phys_addr_t)descriptor->this_phy,
 		sizeof(ehci_itd));
 }
 
@@ -2816,7 +2894,7 @@ EHCI::FreeDescriptor(ehci_sitd *descriptor)
 	if (!descriptor)
 		return;
 
-	fStack->FreeChunk(descriptor, (phys_addr_t)descriptor->this_phy,
+	FreeChunk(descriptor, (phys_addr_t)descriptor->this_phy,
 		sizeof(ehci_sitd));
 }
 
@@ -2845,7 +2923,9 @@ EHCI::LinkITDescriptors(ehci_itd *itd, ehci_itd **_last)
 	itd->next = NULL;
 	itd->prev = last;
 	last->next = itd;
+	memory_full_barrier();
 	last->next_phy = itd->this_phy;
+	memory_full_barrier();
 	*_last = itd;
 }
 
@@ -2858,7 +2938,9 @@ EHCI::LinkSITDescriptors(ehci_sitd *sitd, ehci_sitd **_last)
 	sitd->next = NULL;
 	sitd->prev = last;
 	last->next = sitd;
+	memory_full_barrier();
 	last->next_phy = sitd->this_phy;
+	memory_full_barrier();
 	*_last = sitd;
 }
 
@@ -3146,14 +3228,18 @@ EHCI::UnlockIsochronous()
 inline void
 EHCI::WriteOpReg(uint32 reg, uint32 value)
 {
+	memory_full_barrier();
 	*(volatile uint32 *)(fOperationalRegisters + reg) = value;
+	memory_full_barrier();
 }
 
 
 inline uint32
 EHCI::ReadOpReg(uint32 reg)
 {
-	return *(volatile uint32 *)(fOperationalRegisters + reg);
+	uint32 value = *(volatile uint32 *)(fOperationalRegisters + reg);
+	memory_full_barrier();
+	return value;
 }
 
 

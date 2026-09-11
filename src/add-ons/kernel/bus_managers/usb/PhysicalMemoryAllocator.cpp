@@ -12,6 +12,7 @@
 #include <SupportDefs.h>
 #include <util/AutoLock.h>
 #include <util/kernel_cpp.h>
+#include <vm/vm.h>
 
 #include "PhysicalMemoryAllocator.h"
 
@@ -27,7 +28,7 @@
 
 
 PhysicalMemoryAllocator::PhysicalMemoryAllocator(const char *name,
-	size_t minSize, size_t maxSize, uint32 minCountPerBlock)
+	size_t minSize, size_t maxSize, uint32 minCountPerBlock, bool uncached)
 	:	fOverhead(0),
 		fStatus(B_NO_INIT),
 		fMemoryWaitersCount(0)
@@ -75,21 +76,12 @@ PhysicalMemoryAllocator::PhysicalMemoryAllocator(const char *name,
 	roundedSize += sizeof(fDebugUseMap) * 8 * fDebugChunkSize;
 	roundedSize = (roundedSize + B_PAGE_SIZE - 1) & ~(B_PAGE_SIZE - 1);
 
-	fArea = create_area(fName, &fLogicalBase, B_ANY_KERNEL_ADDRESS,
-		roundedSize, B_32_BIT_CONTIGUOUS,
-		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA);
+	fArea = AllocateArea(fName, roundedSize, &fLogicalBase, &fPhysicalBase,
+		uncached);
 	if (fArea < B_OK) {
 		TRACE_ERROR(("PMA: failed to create memory area\n"));
 		return;
 	}
-
-	physical_entry physicalEntry;
-	if (get_memory_map(fLogicalBase, roundedSize, &physicalEntry, 1) < B_OK) {
-		TRACE_ERROR(("PMA: failed to get memory map\n"));
-		return;
-	}
-
-	fPhysicalBase = physicalEntry.address;
 
 	fNoMemoryCondition.Init(this, "USB PMA");
 	fStatus = B_OK;
@@ -111,6 +103,57 @@ PhysicalMemoryAllocator::~PhysicalMemoryAllocator()
 
 	delete_area(fArea);
 	mutex_destroy(&fLock);
+}
+
+
+area_id
+PhysicalMemoryAllocator::AllocateArea(const char* name, size_t size,
+	void** logicalAddress, phys_addr_t* physicalAddress, bool uncached)
+{
+	if (size == 0 || size > SIZE_MAX - (B_PAGE_SIZE - 1))
+		return B_BAD_VALUE;
+#ifndef __aarch64__
+	if (uncached)
+		return B_NOT_SUPPORTED;
+#endif
+	void* address;
+	size = (size + B_PAGE_SIZE - 1) & ~(B_PAGE_SIZE - 1);
+	area_id area = create_area(name, &address, B_ANY_KERNEL_ADDRESS, size,
+		B_32_BIT_CONTIGUOUS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA);
+	if (area < B_OK)
+		return area;
+	physical_entry entry;
+	status_t status = get_memory_map(address, size, &entry, 1);
+	if (status == B_OK && (entry.size < size || entry.address > UINT32_MAX
+			|| size - 1 > UINT32_MAX - entry.address)) {
+		status = B_BAD_ADDRESS;
+	}
+#ifdef __aarch64__
+	if (status == B_OK && uncached) {
+		// create_area() zeroes RAM through a cached mapping. Remove those
+		// lines before changing the private DMA mapping to Normal Non-cacheable.
+		// The pool must only be accessed through this mapping until it is freed.
+		uint64 ctr;
+		asm volatile("mrs %0, ctr_el0" : "=r"(ctr));
+		const size_t lineSize = 4UL << ((ctr >> 16) & 15);
+		for (addr_t p = (addr_t)address; p < (addr_t)address + size; p += lineSize)
+			asm volatile("dc civac, %0" :: "r"(p) : "memory");
+		asm volatile("dsb sy" ::: "memory");
+		// On ARM64 B_UNCACHED_MEMORY is Device memory (no unaligned access).
+		// B_WRITE_COMBINING_MEMORY selects Normal Non-cacheable RAM instead.
+		status = vm_set_area_memory_type(area, entry.address,
+			B_WRITE_COMBINING_MEMORY);
+		memory_full_barrier();
+	}
+#endif
+	if (status != B_OK) {
+		delete_area(area);
+		return status;
+	}
+	memset(address, 0, size);
+	*logicalAddress = address;
+	*physicalAddress = entry.address;
+	return area;
 }
 
 

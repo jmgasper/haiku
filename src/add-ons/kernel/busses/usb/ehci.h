@@ -17,6 +17,14 @@ struct pci_device_module_info;
 struct pci_device;
 
 class EHCIRootHub;
+class PhysicalMemoryAllocator;
+
+struct ehci_platform_info {
+	phys_addr_t register_base;
+	size_t register_size;
+	uint32 interrupt;
+	bool dma_coherent;
+};
 
 
 typedef struct transfer_data {
@@ -52,7 +60,8 @@ typedef struct isochronous_transfer_data {
 class EHCI : public BusManager {
 public:
 									EHCI(pci_info *info, pci_device_module_info* pci,
-										pci_device* device, Stack *stack, device_node *node);
+										pci_device* device, Stack *stack, device_node *node,
+										const ehci_platform_info* platform = NULL);
 									~EHCI();
 
 		status_t					Start();
@@ -86,6 +95,14 @@ virtual	status_t					NotifyPipeChange(Pipe *pipe,
 virtual	const char *				TypeName() const { return "ehci"; }
 
 private:
+		status_t					AllocateChunk(void** logicalAddress,
+										phys_addr_t* physicalAddress, size_t size);
+		status_t					FreeChunk(void* logicalAddress,
+										phys_addr_t physicalAddress, size_t size);
+		area_id						AllocateArea(void** logicalAddress,
+										phys_addr_t* physicalAddress, size_t size,
+										const char* name);
+
 		// Controller resets
 		status_t					ControllerReset();
 		status_t					LightReset();
@@ -211,6 +228,7 @@ inline	uint32						ReadCapReg32(uint32 reg);
 		pci_device_module_info*		fPci;
 		pci_device*					fDevice;
 		Stack *						fStack;
+		PhysicalMemoryAllocator*	fDMAAllocator;
 		uint32						fEnabledInterrupts;
 		uint32						fThreshold;
 
@@ -262,6 +280,7 @@ inline	uint32						ReadCapReg32(uint32 reg);
 		thread_id					fInterruptPollThread;
 		uint32						fIRQ;
 		bool						fUseMSI;
+		bool						fInterruptInstalled;
 };
 
 
