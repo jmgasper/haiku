@@ -1,0 +1,9 @@
+{
+  "haiku_upstream": "https://github.com/haiku/haiku.git",
+  "haiku_base": "855b5d0e3126c86acc84d09f8e859272019bbbc2",
+  "haiku_revision_tag": "hrev60097",
+  "buildtools_url": "https://github.com/haiku/buildtools.git",
+  "buildtools_revision": "8375c2dbeaf109c520798cb234d57f0895463201",
+  "architecture": "arm64",
+  "image_target": "@minimum-mmc"
+}

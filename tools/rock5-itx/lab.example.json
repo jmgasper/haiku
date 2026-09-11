@@ -1,0 +1,10 @@
+{
+  "nanokvm_url": "http://192.168.1.8",
+  "ssh_config": "/mnt/HaikuWork/nanokvm/.ssh/config",
+  "nanokvm_ssh": "nanokvm",
+  "recovery_ssh": "rock5-roobi",
+  "recovery_image": "/data/storage-probe.img",
+  "gadget": "/sys/kernel/config/usb_gadget/g0",
+  "serial_device": null,
+  "serial_baud": 1500000
+}

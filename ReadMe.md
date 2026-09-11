@@ -1,3 +1,14 @@
+# ROCK 5 ITX development fork
+
+This branch contains jmgasper's experimental, AI-assisted Haiku ARM64 board
+project. Start with the [build and lab guide](docs/rock5-itx/README.md),
+[tested status](docs/rock5-itx/STATUS.md), and
+[hardware roadmap](docs/rock5-itx/ROADMAP.md). Native hardware support is work
+in progress. All local project storage belongs under `/mnt/HaikuWork`.
+
+Upstream Haiku does not accept AI-assisted contributions; this fork is an
+independent experiment. The upstream introduction follows.
+
 Haiku
 =======================
 **[Homepage](https://www.haiku-os.org/)
