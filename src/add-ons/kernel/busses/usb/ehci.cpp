@@ -686,7 +686,7 @@ EHCI::EHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 
 		// set dummy endpoint information
 		queueHead->endpoint_chars = EHCI_QH_CHARS_EPS_HIGH
-			| (3 << EHCI_QH_CHARS_RL_SHIFT) | (64 << EHCI_QH_CHARS_MPL_SHIFT)
+			| (64 << EHCI_QH_CHARS_MPL_SHIFT)
 			| EHCI_QH_CHARS_TOGGLE;
 		queueHead->endpoint_caps = (1 << EHCI_QH_CAPS_MULT_SHIFT)
 			| (0xff << EHCI_QH_CAPS_ISM_SHIFT);
@@ -1133,6 +1133,8 @@ EHCI::CleanupDebugTransfer(Transfer *transfer)
 {
 	transfer_data *transferData = (transfer_data *)transfer->CallbackCookie();
 	ehci_qh *queueHead = transferData->queue_head;
+	bool periodic = (queueHead->endpoint_caps & (EHCI_QH_CAPS_ISM_MASK
+		<< EHCI_QH_CAPS_ISM_SHIFT)) != 0;
 	ehci_qh *prevHead = queueHead->prev_log;
 	if (prevHead != NULL) {
 		prevHead->next_phy = queueHead->next_phy;
@@ -1143,13 +1145,15 @@ EHCI::CleanupDebugTransfer(Transfer *transfer)
 	if (nextHead != NULL)
 		nextHead->prev_log = queueHead->prev_log;
 
-	queueHead->next_phy = fAsyncQueueHead->this_phy;
+	if (!periodic)
+		queueHead->next_phy = fAsyncQueueHead->this_phy;
+	memory_full_barrier();
 	queueHead->prev_log = NULL;
 	queueHead->next_log = NULL;
 
-	// wait for async advance to ensure the controller does not access this
-	// queue head anymore.
-	spin(125);
+	// Periodic references may be prefetched across a frame boundary.
+	// TODO: use the async-advance handshake for asynchronous debug transfers.
+	spin(periodic ? 2000 : 125);
 
 	FreeQueueHead(queueHead);
 }
@@ -2154,29 +2158,54 @@ EHCI::CleanupThread(void *data)
 void
 EHCI::Cleanup()
 {
-	ehci_qh *lastFreeListHead = NULL;
-
 	while (!fStopThreads) {
 		if (acquire_sem(fCleanupSem) != B_OK)
 			continue;
 
+		if (!Lock())
+			continue;
 		ehci_qh *freeListHead = fFreeListHead;
-		if (freeListHead == lastFreeListHead)
+		fFreeListHead = NULL;
+		Unlock();
+		if (freeListHead == NULL)
 			continue;
 
-		// set the doorbell and wait for the host controller to notify us
-		WriteOpReg(EHCI_USBCMD, ReadOpReg(EHCI_USBCMD) | EHCI_USBCMD_INTONAAD);
-		if (acquire_sem(fAsyncAdvanceSem) != B_OK)
-			continue;
+		bool periodic = false;
+		bool asynchronous = false;
+		for (ehci_qh *head = freeListHead; head != NULL; head = head->next_log) {
+			if ((head->endpoint_caps & (EHCI_QH_CAPS_ISM_MASK
+					<< EHCI_QH_CAPS_ISM_SHIFT)) != 0)
+				periodic = true;
+			else
+				asynchronous = true;
+		}
+
+		if (asynchronous) {
+			// Async advance only retires references from the asynchronous list.
+			WriteOpReg(EHCI_USBCMD,
+				ReadOpReg(EHCI_USBCMD) | EHCI_USBCMD_INTONAAD);
+			status_t status;
+			do {
+				status = acquire_sem(fAsyncAdvanceSem);
+			} while (status == B_INTERRUPTED);
+			if (status != B_OK)
+				return;
+		}
+
+		if (periodic) {
+			// Allow prefetched periodic references to expire after unlinking.
+			// Two milliseconds cover a whole frame and its boundary uncertainty.
+			bigtime_t deadline = system_time() + 2000;
+			while (snooze_until(deadline, B_SYSTEM_TIMEBASE) == B_INTERRUPTED) {
+			}
+		}
 
 		ehci_qh *current = freeListHead;
-		while (current != lastFreeListHead) {
+		while (current != NULL) {
 			ehci_qh *next = current->next_log;
 			FreeQueueHead(current);
 			current = next;
 		}
-
-		lastFreeListHead = freeListHead;
 	}
 }
 
@@ -2369,8 +2398,13 @@ EHCI::InitQueueHead(ehci_qh *queueHead, Pipe *pipe)
 			return B_ERROR;
 	}
 
-	queueHead->endpoint_chars |= (3 << EHCI_QH_CHARS_RL_SHIFT)
-		| (pipe->MaxPacketSize() << EHCI_QH_CHARS_MPL_SHIFT)
+	// EHCI 4.9 requires RL = 0 for interrupt endpoints. The NAK counter
+	// reload mechanism belongs to the asynchronous schedule; enabling it on
+	// a periodic queue can stop polling after the counter reaches zero.
+	if ((pipe->Type() & USB_OBJECT_INTERRUPT_PIPE) == 0)
+		queueHead->endpoint_chars |= (3 << EHCI_QH_CHARS_RL_SHIFT);
+
+	queueHead->endpoint_chars |= (pipe->MaxPacketSize() << EHCI_QH_CHARS_MPL_SHIFT)
 		| (pipe->EndpointAddress() << EHCI_QH_CHARS_EPT_SHIFT)
 		| (pipe->DeviceAddress() << EHCI_QH_CHARS_DEV_SHIFT)
 		| EHCI_QH_CHARS_TOGGLE;
@@ -2427,8 +2461,16 @@ EHCI::LinkInterruptQueueHead(ehci_qh *queueHead, Pipe *pipe)
 {
 	uint8 interval = pipe->Interval();
 	if (pipe->Speed() == USB_SPEED_HIGHSPEED) {
-		// Allow interrupts to be scheduled on each possible micro frame.
-		queueHead->endpoint_caps |= (0xff << EHCI_QH_CAPS_ISM_SHIFT);
+		// High-speed bInterval is an exponent in microframes, while the tree
+		// uses an exponent in one-millisecond frames. Use the S-mask for the
+		// sub-frame intervals instead of issuing a burst of eight polls.
+		uint8 mask = 1;
+		if (interval < 4) {
+			mask = interval <= 1 ? 0xff : (interval == 2 ? 0x55 : 0x11);
+			interval = 1;
+		} else
+			interval -= 3;
+		queueHead->endpoint_caps |= (mask << EHCI_QH_CAPS_ISM_SHIFT);
 	} else {
 		// As we do not yet support FSTNs to correctly reference low/full
 		// speed interrupt transfers, we simply put them into the 1 or 8 interval
@@ -2493,7 +2535,12 @@ EHCI::UnlinkQueueHead(ehci_qh *queueHead, ehci_qh **freeListHead)
 	if (nextHead)
 		nextHead->prev_log = queueHead->prev_log;
 
-	queueHead->next_phy = fAsyncQueueHead->this_phy;
+	// A controller may still hold this head after its predecessor is updated.
+	// Keep periodic traversal in the periodic list until the head is retired.
+	if ((queueHead->endpoint_caps & (EHCI_QH_CAPS_ISM_MASK
+			<< EHCI_QH_CAPS_ISM_SHIFT)) == 0)
+		queueHead->next_phy = fAsyncQueueHead->this_phy;
+	memory_full_barrier();
 	queueHead->prev_log = NULL;
 
 	queueHead->next_log = *freeListHead;
