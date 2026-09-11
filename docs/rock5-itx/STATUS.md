@@ -9,7 +9,7 @@ firmware supports it.
 | Repository | `jmgasper/haiku`, `rock5-itx` branch; upstream base `855b5d0e3126c86acc84d09f8e859272019bbbc2` |
 | Build tools | Haiku GCC 13.3.0 cross-compiler and binutils built successfully; buildtools `8375c2dbeaf109c520798cb234d57f0895463201` |
 | ARM64 image and QEMU | Current clean 336 MiB `@minimum-mmc` image passes first login at both EL1 and EL2 with 4 virtual CPUs and 2 GiB RAM; a basic Tracker/Deskbar desktop was inspected during phase 0 |
-| NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; SSH and authenticated API tested |
+| NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; SSH and authenticated API tested; repeated loss of controller LAN access during guest downloads currently blocks native trials |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
 | Automated controls | Thirty-two control checks pass locally, including native interrupt decoding, EFI device-path matching, capture transport, baud transitions and shell/file failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
@@ -729,3 +729,48 @@ at its saved address, and its saved mDNS name did not resolve. The hardware
 checkpoint on `rock5-itx` remains available separately. Response-length and
 request-ID validation, retry behavior and sustained USB network testing remain
 open; the new timeout is not evidence of full RNDIS reliability.
+
+## Native RNDIS retest and recurring controller outage
+
+NanoKVM returned after a controller reboot at approximately 21:25 UTC on
+2026-09-11. Its boot ID was `e74dfc19-8368-4fda-9a20-eba86b42b8b1`.
+The expired web session was renewed, and recovery with active UART capture
+returned ROOBI boot ID `c1d0ee95-6fb6-408e-ad26-2ce2ea6a9bc7`.
+Evidence is in `artifacts/controller-recovery/20260911T212742Z-51072a`.
+
+The pre-recovery screenshot showed the old Haiku session in the kernel debugger
+with `last transaction (6) still open!`. Its stack ran from a syslog write through
+BFS to `cache_start_transaction()`. The capture gap prevents determining whether
+this happened during the original controller outage or the later controller
+restart. It does not establish the cause of the controller's LAN failure.
+
+The clean RNDIS candidate was then deployed as a fresh USB image in
+`artifacts/interactive/20260911T212914Z-78e307`, private image SHA-256
+`b4bd947372f2189b5cda5c7c5d807842e3d2b5c404a11ea639abdb15c2e8ef28`.
+All eight CPUs started and the adapter obtained `10.239.6.102`. NanoKVM's gadget
+MAC changed across its reboot, so each trial must use its observed DHCP address.
+Authenticated commands, the service-listener regression and negative control,
+the ten-second platform probe, and a locked 64 MiB/eight-worker memory check
+passed. This is the thirteenth native startup observed with the cache pre-clean
+change across the recorded development trials, not sustained qualification.
+
+The 8 MiB upload passed with the expected checksum in 19.35 seconds. During the
+following download, NanoKVM again stopped answering LAN SSH and ARP; UART capture
+and the independent controller-health SSH stream also disconnected. The router
+remained reachable. The 65,536-byte incoming file is retained but unaccepted.
+Live executable upload/execution, reboot persistence and normal power-off were
+not reached. The session is `recovery_failed`, not a full native gate pass.
+
+Controller samples in `artifacts/controller-health/20260911T212845Z-534dae`
+ended at 21:34:08 UTC. Across 64 samples, available memory stayed above
+50,912 KiB and the highest reported temperature was 44.095 degrees Celsius.
+The last sample had 60,736 KiB available. These five-second snapshots do not
+exclude a sudden failure between samples or identify its cause.
+
+Before another Haiku download trial, compare NanoKVM-to-workstation SSH traffic,
+ROOBI-to-NanoKVM USB traffic, and the combined relay separately while ROOBI runs
+from eMMC. A local comparison script is prepared but has only passed Python
+syntax/CLI checks; its hardware cases have not run. Sipeed documents an optional
+[controller watchdog](https://wiki.sipeed.com/hardware/en/kvm/NanoKVM/user_guide.html).
+Its installed behavior and recovery operation still need verification. The
+pending work is indexed locally by `state/controller-outage-next.json`.
