@@ -12,7 +12,7 @@ firmware supports it.
 | NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; SSH and authenticated API tested |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | Nine regression checks pass; a complete 636 MiB image was uploaded, SHA-256 verified on NanoKVM, attached, rebooted, observed and recovered automatically |
+| Automated controls | Eleven regression checks pass; a complete 636 MiB image was uploaded, SHA-256 verified on NanoKVM, attached, rebooted, observed and recovered automatically |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Vendor U-Boot 2017.09; no EFI handoff verified and no firmware replacement performed |
 | Native Haiku on ROCK | Not yet booted; firmware handoff and UART are the next gates |
@@ -33,6 +33,17 @@ The board booted ROOBI with the Haiku disk attached, and recovery reselected
 the known recovery image and returned a new ROOBI boot ID. One HDMI timeout
 during reboot was recorded without interrupting recovery. This validates the
 deployment/observation/recovery loop, not Haiku boot on the RK3588.
+
+An incremental-build defect left `BOOTAA64.EFI` empty after `fat_shell` tried
+to copy a Haiku `BEOS:TYPE` attribute onto FAT. The fork's MMC recipe now skips
+attributes for the EFI loader, and the build validates its actual ARM64 PE32+
+application header and partition bounds before recording success.
+
+A write-protected USB trial reached userspace but panicked while writing the
+BFS journal (`last transaction (2) still open`). QEMU's panic gate prevented
+hardware deployment. The lab therefore uses a fresh writable remote copy for
+each trial; the immutable local image remains unchanged. Evidence is in
+`/mnt/HaikuWork/artifacts/qemu/20260911T050414Z-910fad`.
 
 Inventory observed from this unit: RK3588, 16 GiB RAM, approximately 7.3 GiB
 onboard eMMC, 16 MiB SPI loader device, two `10ec:8125` rev 05 Ethernet devices,

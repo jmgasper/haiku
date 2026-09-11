@@ -143,7 +143,7 @@ def remote_image(value):
     return value
 
 
-def attach(config, image, readonly=True):
+def attach(config, image, readonly=False):
     remote_image(image)
     # Version 2.4.3 may retain CD-ROM flags when returning to disk mode.
     # Detach first, clear flags, then let the API select and persist the image.
@@ -228,7 +228,9 @@ def deploy(config, manifest_path):
     current = gadget(config)
     if current['file'].startswith('/dev/'):
         raise RuntimeError('Whole /data partition is exported. Unmount it on the ROCK and detach before writing /data.')
-    name = remote_image('/data/' + image.name)
+    # Guest filesystems can write to the USB disk. Give every deployment its
+    # own copy, retaining the immutable source image only on the workstation.
+    name = remote_image('/data/' + image.stem + '-' + timestamp() + '.img')
     # The server exposes exactly one immutable file, with no directory listing.
     route = '/' + secrets.token_hex(24)
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -429,7 +431,7 @@ def qemu(manifest_path, seconds, expect):
     shutil.copyfile(firmware, firmware_copy)
     command = ['qemu-system-aarch64', '-M', 'virt', '-cpu', 'max', '-m', '2048', '-smp', '4',
                '-bios', str(firmware_copy), '-device', 'qemu-xhci,id=usb',
-               '-drive', f'file={overlay},if=none,id=drv0,format=qcow2,readonly=on',
+               '-drive', f'file={overlay},if=none,id=drv0,format=qcow2',
                '-device', 'usb-storage,bus=usb.0,drive=drv0',
                '-device', 'usb-kbd,bus=usb.0', '-device', 'usb-tablet,bus=usb.0',
                '-device', 'ramfb', '-display', 'none', '-monitor', 'none', '-nic', 'none',
