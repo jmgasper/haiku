@@ -155,7 +155,7 @@ device access run here on the workstation. There is no unattended public
 self-hosted GitHub runner. Use these commands from an active development
 session; the scripts do not create an independent background coding service.
 
-## EFI firmware and recovery
+## Authenticated lab sessions
 
 The lab profile also installs `rock5_memory_probe` under
 `/boot/home/config/non-packaged/bin`. For example, `rock5_memory_probe 8192 8 2`
@@ -170,6 +170,63 @@ both `home/config/settings/rock5-lab/enable-shell` and a generated password hash
 The ordinary build contains neither credential nor opt-in file. The private
 listener binds to the RNDIS USB address, and the workstation reaches it through
 NanoKVM SSH forwarding. Keep the overlay, credentials and its image local.
+
+Create an overlay, validate it, and start a native session with:
+
+```sh
+python3 tools/rock5-itx/shell_image.py BASE_MANIFEST.json --rndis-only
+python3 tools/rock5-itx/qemu_shell.py PRIVATE_MANIFEST.json --memory --platform --services --transfer --power --normal \
+    --result /mnt/HaikuWork/state/shell-qemu.json
+/mnt/HaikuWork/nanokvm/.venv/bin/python tools/rock5-itx/session.py \
+    PRIVATE_MANIFEST.json /mnt/HaikuWork/state/shell-qemu.json --seconds 1800
+```
+
+Use the manifest path printed by each preceding step. `--rndis-only` blocks the
+competing ECM configuration on QEMU's `usb-net` device. The QEMU profile uses four
+CPUs, EHCI boot storage, xHCI input/network devices, and localhost forwarding on
+an isolated virtual network. `--power` tests a software reboot, fresh login and
+power-off; `--normal` exercises desktop shutdown. Omit `--normal` for the quick
+kernel shutdown path. `--el1` checks HVC instead of the default EL2/SMC path.
+The shell client currently uses Python 3.12's standard-library telnet support.
+`--platform` checks pinned CPU clocks, fork/exec and protected-page faults.
+`--services` forces reverse-ordered pipe descriptors and checks a negative
+control. `--transfer` verifies an 8 MiB binary round trip and rejects truncated
+input.
+
+`session.py` owns the hardware lock, captures UART/HDMI, verifies the deployment
+and consumes one JSON command per line. Run it with an interactive stdin. For
+example, using the target address actually reported by that boot:
+
+```json
+{"action":"shell","target":"10.239.6.146","commands":"/mnt/HaikuWork/tmp/check.sh"}
+{"action":"upload","target":"10.239.6.146","source":"/mnt/HaikuWork/build/probe","name":"probe","executable":true}
+{"action":"capture"}
+{"action":"finish"}
+```
+
+Command files run with `set -e`; exit status, partial output and connection errors
+are saved under the session's artifact directory. Uploads are limited to 16 MiB
+per file, use a temporary destination, and require matching SHA-256 before
+installation under `/boot/home/rock5-lab`. A packaged native transfer program
+streams binary data through NanoKVM SSH and its private USB network; the
+NanoKVM needs no additional file copy. The bootstrap Bash lacks `/dev/tcp`
+support. The slower terminal/base64 upload is available with
+`"transport":"terminal"`. Executing a program is a separate shell
+command. `finish`, EOF or the session deadline returns the board to ROOBI. Image
+deployment still uses the full USB image; individual test programs can now be
+built, transferred and run without rebooting.
+
+When no session owns the hardware lock, the same operations are available as
+`shell.py run TARGET COMMAND_FILE --output TRANSCRIPT` and
+`shell.py upload TARGET SOURCE --name NAME --output TRANSCRIPT [--executable]`.
+For a checked download, use `shell.py download TARGET NAME DESTINATION
+--output TRANSCRIPT`, or the session command
+`{"action":"download","target":"10.239.6.146","name":"probe","destination":"/mnt/HaikuWork/artifacts/probe-returned"}`.
+The destination must be new, and downloaded bytes must match the guest checksum.
+All file arguments must be beneath `/mnt/HaikuWork`. During an active session,
+use its JSON commands so target operations remain serialized.
+
+## EFI firmware and recovery
 
 Board-specific [EDK2 v1.1](https://github.com/edk2-porting/edk2-rk3588/releases/tag/v1.1)
 is installed in SPI. The native EFI diagnostic completed with a 1920x1080 GOP

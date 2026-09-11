@@ -1,3 +1,15 @@
 SubDir HAIKU_TOP tools rock5-itx ;
+UsePrivateSystemHeaders ;
 
 SimpleTest rock5_memory_probe : memory_probe.cpp ;
+SimpleTest rock5_platform_probe : platform_probe.cpp ;
+SimpleTest rock5_file_transfer : file_transfer.cpp : network ;
+
+UsePrivateHeaders app net shared storage ;
+UseHeaders [ FDirName $(HAIKU_TOP) src servers net ]
+	[ FDirName $(HAIKU_TOP) headers os add-ons network_settings ] : true ;
+SimpleTest rock5_services_probe : services_probe.cpp Services.cpp
+	: be network bnetapi [ TargetLibstdc++ ] shared ;
+SEARCH on [ FGristFiles Services.cpp ]
+	= [ FDirName $(HAIKU_TOP) src servers net ] ;
+LINKFLAGS on rock5_services_probe += -Wl,--wrap=pipe -Wl,--wrap=select ;

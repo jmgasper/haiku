@@ -1,6 +1,6 @@
 # Tested status
 
-Updated 2026-09-11. This page distinguishes lab readiness from native Haiku
+Updated 2026-09-12 (Australia/Hobart). This page distinguishes lab readiness from native Haiku
 support. No hardware row in the roadmap is accepted merely because Linux or
 firmware supports it.
 
@@ -12,7 +12,7 @@ firmware supports it.
 | NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; SSH and authenticated API tested |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | Twenty-four regression checks pass locally, including native interrupt decoding, EFI device-path matching, capture transport and baud transitions; build, QEMU and real NanoKVM deployment/recovery have been exercised |
+| Automated controls | Thirty-two control checks pass locally, including native interrupt decoding, EFI device-path matching, capture transport, baud transitions and shell/file failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
 | Native Haiku on ROCK | All eight CPUs start; platform EHCI mounts the NanoKVM boot volume; Tracker/Deskbar, NanoKVM keyboard and mouse, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; sustained acceptance remains open |
@@ -567,3 +567,122 @@ the two paths require separate tests. Out-of-band recovery returned ROOBI with
 boot ID `dccca9d2-ecae-4cb4-8bfb-dad7fffc6a2c` and no serial transport errors.
 The trial's `review.json`, `native-memory.txt`, `probe-upload.txt`,
 `software-reboot-command.txt` and `frame-090.jpg` preserve these results.
+
+## Firmware software reset and power-off
+
+Commit `9a23e4317c` replaces ARM64's shutdown stub with PSCI `SYSTEM_RESET` and
+`SYSTEM_OFF`. The EFI loader passes the SMC/HVC calling method discovered from
+the device tree or ACPI FADT to the kernel. Device-tree discovery accepts PSCI
+0.2 and 1.0 compatible lists and validates the method property. The kernel
+queries the firmware version before enabling these calls. This follows the
+standard interface also used by
+[EDK2's PSCI reset library](https://github.com/tianocore/edk2/blob/master/ArmPkg/Library/ArmPsciResetSystemLib/ArmPsciResetSystemLib.c);
+it adds no RK3588 register or clock programming.
+
+Four-CPU QEMU completed quick reboot, a fresh authenticated login and power-off
+at both EL2/SMC (`artifacts/qemu-shell/20260911T141410Z-d1a82d`) and EL1/HVC
+(`20260911T141639Z-d5aa80`). Normal desktop reboot also completed in
+`20260911T142204Z-cdbcf3`, followed by fresh login and quick power-off. An earlier
+normal-path attempt (`20260911T141909Z-0ef1e6`) never reached a login prompt and
+therefore did not test shutdown.
+
+Native trial `artifacts/interactive/20260911T141640Z-a9ec13` used private image
+`bf5752c86a8122d8d32fe9bcfad77729dc3e7364e49e4ee57dccea70d7453fe4`.
+The ROCK reported PSCI 1.1 via SMC. `shutdown -rq` issued a firmware reset,
+returned through the EFI loader to Haiku, restored DHCP and accepted a new
+authenticated shell. A 64 MiB, eight-worker, two-pass memory check then passed.
+This is an actual software reboot without a NanoKVM reset pulse between boots.
+
+Native `shutdown -q` reached `SYSTEM_OFF` without returning; serial output
+stopped and a requested HDMI capture timed out. The session consequently recorded
+an error for that capture. Reset alone did not bring the powered-off board back;
+the existing recovery power-button fallback returned ROOBI with boot ID
+`b207da33-2a4a-4abd-b0a4-b9e691751fb1`. NanoKVM remained reachable. These are
+observations of firmware power-off and recovery, not electrical power measurement
+or front-panel/suspend qualification. Native normal reboot passed in the later binary-transfer trial below; normal
+power-off remains untested on the ROCK.
+
+Repeated QEMU shell testing exposed an intermittent login failure, both on an
+initial boot and after software reboot. In `20260911T143736Z-6d3a56`, keyboard
+diagnostics showed DHCP, an active RNDIS interface and a TCP listener on the
+correct USB address, but remote login did not open. Thus a printed shell
+configuration marker is not sufficient acceptance. Investigation and repeated
+authenticated checks remain necessary before calling this lab path reliable.
+
+
+## Service listener and binary transfer checks
+
+The intermittent missing login prompt was reproduced natively in
+`artifacts/interactive/20260911T152843Z-e77e29`. A temporary server trace showed
+`select min=4 max=4 pipe=4`: `pipe()` had returned read descriptor 4 and write
+descriptor 3. The initial `select()` range was calculated from the write end,
+so it excluded the read end. The listener never received the update wakeup when
+the USB login socket was added. The authenticated attempt timed out, and
+recovery returned ROOBI boot ID `0a7a9217-800c-408f-9239-914dad9a74ec`.
+
+The server now derives its initial range from the read descriptor. Temporary
+traces have been removed. `rock5_services_probe` links the actual server listener
+and forces its read descriptor to 64 while the write descriptor remains lower.
+It waits for the empty listener to block, adds a loopback service, and requires
+an actual child process reply. Its `--legacy-range` negative control deliberately
+restores the old range and must fail to receive that reply.
+
+All combined QEMU checks passed in `artifacts/qemu-shell/20260911T154454Z-708873`,
+using private image SHA-256
+`f04c260283dd5ad01af2431caba3789aae9e3c6f5c636b55eee491368e2267ab`:
+incorrect-password rejection, authenticated commands, the service regression and
+negative control, locked memory checking with injected-corruption detection,
+CPU affinity and cross-core clock ordering, 32 fork/exec/COW checks, eight
+protected-page faults, an 8 MiB binary round trip, rejection of truncated input,
+and normal desktop reboot, fresh login and power-off through PSCI/SMC.
+The clock/fork/fault tests are short integrity probes, not sustained qualification.
+
+Large base64 uploads through an interactive terminal exceeded the five-minute
+limit even after fixing simultaneous send/receive. A subsequent 4 KiB test in
+`artifacts/interactive/20260911T151858Z-d617de` confirmed that bootstrap Bash
+also lacks `/dev/tcp`. The lab image now packages `rock5_file_transfer`, a bounded
+native binary stream client. Host tools relay files over NanoKVM SSH and its
+private USB network, check lengths and SHA-256, and retain partial results as
+unaccepted files on error. No extra NanoKVM file copy is needed. The reusable
+session client supports commands, uploads and downloads while keeping UART,
+HDMI and automatic recovery active. All 32 host control checks passed in
+`artifacts/control-checks-20260911-binary-files.log`.
+
+A separate QEMU run, `artifacts/qemu-shell/20260911T153111Z-027922`, had no DHCP
+address and zero USB network packets. That run did not reach shell configuration;
+it is a separate startup failure from the traced listener bug. RNDIS control
+waits and initialization remain under investigation. QEMU packet captures and
+private shell images contain authentication material and remain local.
+
+
+Native validation of that image is in
+`artifacts/interactive/20260911T154757Z-47e4ab`. The service regression and its
+negative control passed on the ROCK. All eight pinned workers sampled the
+clock without backwards readings or wrong-CPU observations; 32 fork/exec/COW
+checks and eight protected-page faults passed. A locked 8 GiB allocation passed
+two checks with eight workers in 2.97 seconds. This is a short integrity result.
+
+The native 8 MiB binary upload completed in 18.97 seconds and its first download
+in 16.18 seconds, including authentication and checksum verification. The
+returned file matched the source byte for byte, with SHA-256
+`13d3d2a1d7eee5c4ff92996af3a186741320b02dd95451eaff323772fb966d95`.
+Normal `shutdown -r` then reached PSCI reset, booted Haiku again without a
+NanoKVM reset pulse, and accepted fresh authenticated commands. The stored file's
+hash, another platform probe, and a 64 MiB memory check passed after reboot.
+
+During a subsequent download, the NanoKVM itself stopped answering SSH, HTTP,
+ping and ARP at `192.168.1.8`; the workstation's Ethernet link and router
+remained reachable. The controller outage's cause is unknown. The 425,984-byte
+partial download was not accepted, and queued executable-deployment and normal
+power-off tests were not run. Automatic recovery could not contact NanoKVM, so
+the session is explicitly `recovery_failed`; the last verified target state is
+Haiku running after normal reboot. Twelve native boots have now reached the
+startup probe with the cache pre-clean change; this is not a long-run stability
+acceptance. Controller access must be restored before another hardware trial.
+
+Shell and file SSH connections now request a five-second keepalive interval
+with three missed replies allowed; the workstation's inherited 300-second
+interval had delayed failure detection. Interactive sessions also return a
+nonzero process status when the trial or recovery fails. All 32 host checks
+passed after these changes in
+`artifacts/control-checks-20260911-final-shell.log`.
