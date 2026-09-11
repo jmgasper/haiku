@@ -246,6 +246,9 @@ reauthentication after a controller reset. Lost SSH heartbeats leave the timer
 armed; recovery waits for a new controller boot ID and API readiness, starts a
 fresh UART capture, then restores ROOBI. Failed trials remain failures even when
 recovery succeeds. No persistent controller startup service is installed.
+The watchdog recovered earlier outages, but a later relay failure left the
+controller unreachable beyond the recovery deadline. A physical controller
+power cycle remains necessary when that recovery route fails.
 
 ## EFI firmware and recovery
 

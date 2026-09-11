@@ -60,7 +60,7 @@ against Windows; evaluate actual ACPI and device-tree tables for Haiku.
 | PCIe host bridges | `src/add-ons/kernel/bus_managers/pci`; phase 2; RK3588 address windows, link training, INTx and MSI/MSI-X | Correct config space/BARs and DMA for each root port; cold and warm boots; no dependence on firmware boot services |
 | Both RTL8125 Ethernet ports | Existing `drivers/network/ether/rtl8125`; observed `10ec:8125` rev 05; PCIe and DMA | Each port obtains DHCP and works with static IPv4/IPv6; simultaneous sustained traffic, link changes and packet integrity; compare against a 2.5 GbE Linux peer; remote shell/file transfer reliable |
 | ASM1164 and four SATA ports | Existing AHCI stack; observed `1b21:1164`; PCIe and DMA | Test each port with identified scratch disks; filesystem/data hashes, flush durability, error recovery and simultaneous I/O; compare throughput to Linux |
-| M.2 M-key NVMe | Existing NVMe driver; PCIe; confirm lane/mux arrangement with SATA for actual revision | Install a known NVMe fixture; identify namespace, hash-checked I/O, flush/trim, error handling and repeated native boot; no NVMe is installed currently |
+| M.2 M-key NVMe | Existing NVMe driver; PCIe; confirm lane/mux arrangement with SATA for actual revision; owner installed a 256 GB Samsung 950 Pro, Linux inventory pending | Identify the installed namespace; hash-checked I/O, flush/trim, error handling and repeated native boot; preserve existing contents until a scratch area is agreed |
 
 ## 5 — Onboard and removable flash
 

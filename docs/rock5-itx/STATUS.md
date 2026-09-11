@@ -9,10 +9,10 @@ firmware supports it.
 | Repository | `jmgasper/haiku`, `rock5-itx` branch; upstream base `855b5d0e3126c86acc84d09f8e859272019bbbc2` |
 | Build tools | Haiku GCC 13.3.0 cross-compiler and binutils built successfully; buildtools `8375c2dbeaf109c520798cb234d57f0895463201` |
 | ARM64 image and QEMU | Current clean 336 MiB `@minimum-mmc` image passes first login at both EL1 and EL2 with 4 virtual CPUs and 2 GiB RAM; a basic Tracker/Deskbar desktop was inspected during phase 0 |
-| NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; hardware watchdog restored access after a native transfer outage; simultaneous USB/Ethernet relay remains unreliable, with staged downloads under validation |
+| NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; staged downloads passed before/after native reboot, but simultaneous USB/Ethernet relay still causes outages; the latest outage did not recover through the hardware watchdog |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | Thirty-five control checks pass locally, including native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
+| Automated controls | Thirty-six host checks pass locally, including RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
 | Native Haiku on ROCK | All eight CPUs start; platform EHCI mounts the NanoKVM boot volume; Tracker/Deskbar, NanoKVM keyboard and mouse, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; sustained acceptance remains open |
@@ -91,7 +91,9 @@ ASM1164 `1b21:1164` SATA controller, ES8316 audio and HYM8563 RTC. Linux's runni
 device tree also identifies RK806/RK8602/RK8603 power devices, FUSB302 Type-C
 control and PWM fan. Identification does not establish Haiku driver support.
 
-No NVMe/SATA disk or Wi-Fi/Bluetooth module has been identified as installed.
+The owner has now installed a 256 GB Samsung 950 Pro NVMe SSD for testing;
+its Linux inventory is pending controller recovery. No SATA disk or
+Wi-Fi/Bluetooth module has been identified as installed.
 Additional storage, network peers, audio loopback/receivers, displays and camera
 fixtures are needed for the corresponding acceptance tests. The owner confirmed
 PCB revision v1.12 on 2026-09-11.
@@ -870,3 +872,59 @@ An earlier paced attempt, `20260911T224132Z-15138a`, failed its ROOBI SSH
 prerequisite before transferring data and is retained separately. The paced
 transport has not yet passed native qualification; no controller driver fix
 is claimed.
+
+## RNDIS Ethernet frame bounds
+
+Source revision `3b9f2720e554f601ef81239643a7f2c5dba16f9e` corrects the size
+reported through `ETHER_GETFRAMESIZE`: RNDIS's
+[maximum-frame-size query](https://learn.microsoft.com/en-us/windows-hardware/drivers/network/oid-gen-maximum-frame-size)
+excludes the Ethernet header, while Haiku's interface expects that header to be
+included. The driver also validates each received message and destination
+capacity before copying, using byte-wise little-endian decoding for unaligned
+buffers. Invalid or incomplete messages discard the remaining batch without
+copying data. A missing or unusable maximum frame size now fails device open.
+
+All 36 host checks passed, including the actual packet extraction code under
+AddressSanitizer and UndefinedBehaviorSanitizer: full 1514-byte frames,
+insufficient destination capacity, truncated messages, length/offset limits,
+unaligned buffers and padded packet batches. Evidence is
+`artifacts/control-checks-rndis-framing.log`. The clean ARM64 build produced
+base image SHA-256
+`7434a37c28d8ec4644f44a06a9eed284ebefad4ddcf900aee457d3ce8d5e4cf5`.
+Its private lab image has SHA-256
+`6fcb9cbb51a2258bc029159403425490074686d3c2fa88782724e346c49ae23c`.
+The full QEMU suite passed in `artifacts/qemu-shell/20260911T230644Z-a4d84e`,
+including the 8 MiB round trip, normal reboot and normal shutdown.
+
+The first native trial, `artifacts/interactive/20260911T230930Z-43f108`,
+booted and reported MTU 1500 instead of the previous 1486. Its command script
+then failed with status 127 because the minimal image lacks `grep`; subsequent
+checks did not run. Automatic ROOBI recovery succeeded and the controller
+watchdog disarmed normally. The retry uses a shell built-in for the MTU check.
+The NanoKVM transfer outage remains a separate unresolved issue.
+
+The retry in `artifacts/interactive/20260911T231505Z-d3c156` passed the MTU,
+service, eight-CPU platform and 64 MiB memory checks. Normal shutdown reached
+PSCI SYSTEM_OFF, the USB link went down, and the remote power button started a
+fresh Haiku boot that passed authenticated checks. NanoKVM kept the same boot
+ID through that cycle. Its screenshot retained the previous desktop image;
+the screenshot alone does not demonstrate HDMI signal loss. Power evidence is
+recorded in the run's `normal-power-off.json`.
+
+An 8 MiB upload passed in 28.60 seconds. A staged download paced at 256 KiB/s
+passed in 54.03 seconds. After a short locked 8 GiB memory check and normal
+PSCI reboot, the persisted file checksum, MTU and platform/memory checks passed
+again. A second paced download passed in 53.79 seconds, and an unpaced staged
+download passed in 22.11 seconds. All returned files matched SHA-256
+`13d3d2a1d7eee5c4ff92996af3a186741320b02dd95451eaff323772fb966d95`.
+These are bounded successful tests, not sustained transfer qualification.
+
+The original simultaneous relay then reproduced the controller outage,
+leaving an unaccepted 1,638,400-byte partial file. The watchdog heartbeat ended,
+and this time NanoKVM did not return with a new boot ID within the 150-second
+recovery gate. ROOBI was also unreachable and no Rockchip USB recovery device
+was visible. The session ended `recovery_failed`; a physical NanoKVM power cycle
+was requested. Evidence is in
+`artifacts/controller-guarded-native/20260911T231505Z-09a084/controller-recovery.json`.
+The watchdog's earlier successes do not establish recovery from every outage,
+and the RNDIS bounds correction does not fix this relay failure.
