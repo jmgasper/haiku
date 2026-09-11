@@ -43,7 +43,7 @@ main(int argc, char *argv[])
 	bool loginShell = false;
 	const char* command = NULL;
 
-	char c;
+	int c;
 	while ((c = getopt(argc, argv, "c:l")) != -1) {
 		switch (c) {
 			case 'l':
@@ -128,4 +128,3 @@ main(int argc, char *argv[])
 
 	return 1;
 }
-
