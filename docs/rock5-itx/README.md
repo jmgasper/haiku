@@ -95,10 +95,16 @@ pass, and emulated PCI/USB is not RK3588 platform validation.
 
 `--el2` enables virtualization and GICv3 in QEMU, exercising the VHE handoff and
 EL2 physical timer used on the ROCK. The complete iteration uses this profile.
-Omit it to check the EL1 path separately. Current hardware boots reach Haiku's
-eight-CPU scheduler and device discovery, then stop because native access to
-the USB boot disk is not implemented. EFI boot-disk selection and ACPI handling
-are described in [STATUS.md](STATUS.md).
+Omit it to check the EL1 path separately. Current hardware boots start all eight
+CPUs, mount the NanoKVM disk through native platform EHCI, and display a basic
+Tracker/Deskbar desktop. HID interaction, USB networking and stress acceptance
+are tracked separately in [STATUS.md](STATUS.md).
+
+`--usb-controller ehci` puts QEMU's boot disk on a PCI EHCI controller to test
+the shared EHCI transfer code. The default remains xHCI. In this profile HID
+devices stay on a separate xHCI controller because QEMU's standalone EHCI has
+no low/full-speed companion. Native FDT attachment and noncoherent DMA still
+require a hardware trial.
 
 `cycle` owns the hardware lock, verifies local and remote image hashes, attaches
 the image in USB disk mode, resets the target, captures HDMI frames, and then

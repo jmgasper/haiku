@@ -12,10 +12,10 @@ firmware supports it.
 | NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; SSH and authenticated API tested |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | Twenty-three regression checks pass locally, including EFI device-path matching, capture transport and baud transitions; build, QEMU and real NanoKVM deployment/recovery have been exercised |
+| Automated controls | Twenty-four regression checks pass locally, including native interrupt decoding, EFI device-path matching, capture transport and baud transitions; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
-| Native Haiku on ROCK | Eight CPUs complete kernel startup and enter the scheduler; GICv3, timer setup and device discovery run; boot stops because no native storage driver exposes the USB boot disk; userspace is not yet verified |
+| Native Haiku on ROCK | All eight CPUs start; platform EHCI mounts the NanoKVM boot volume; native userspace and a basic framebuffer Tracker/Deskbar desktop have booted; HID interaction and stress acceptance remain open |
 | Board revision | Owner confirmed ROCK 5 ITX PCB v1.12; current public electrical schematic is v1.11, so exact revision electrical details remain to be checked before raw register work |
 | USB recovery | Workstation USB-C connection enumerates as `2207:350b`; remote loader and MaskROM entry, RAM loader download, eMMC/SPI selection and matching read-back hashes verified |
 | Serial | NanoKVM UART1 (`/dev/ttyS1`) captures readable DDR/SPL, U-Boot and Linux output at 1,500,000 baud, 8N1; longer input is corrupted and an interactive login has not passed |
@@ -343,3 +343,65 @@ Automatic recovery returned ROOBI boot ID
 The cycle saved 160,428 serial bytes with no transport errors and restored the
 configured EFI recovery image. Platform EHCI support for the NanoKVM USB disk
 is the next native boot dependency.
+
+## First native desktop through platform EHCI
+
+Image SHA-256
+`5fe52597f02f912f3a731f7f749efa80a0ec74e47c74e9cc562b45468ee30dfe`
+booted the native Haiku desktop in
+`artifacts/hardware/20260911T113955Z-3c80da`. Both device-tree EHCI controllers
+started: `fc800000` on IRQ 247 and `fc880000` on IRQ 250. The second controller
+enumerated `NanoKVM USB Mass Storage 0520`; Haiku mounted BFS and packagefs,
+ran the first-login script, initialized the framebuffer driver, and displayed
+Tracker and Deskbar. `frame-012.jpg` was inspected. All eight CPUs completed
+startup, and the trial contained no kernel panic.
+
+The FDT attachment reads register windows and interrupt numbers from the
+firmware device tree. It accepts enabled, little-endian generic EHCI devices
+with level-sensitive GIC SPIs and identity address mappings. Unsupported
+translations, IOMMUs, integrated transaction translators and PPI affinity
+partitions are not silently accepted. Kernel FDT decoding now understands
+four-cell GIC descriptions with a zero affinity cell and rejects malformed
+or out-of-range entries; the separate interrupt-map and extended-interrupt
+paths retain their earlier limitations.
+
+The shared EHCI implementation now separates PCI configuration from platform
+resources, uses ordering barriers when publishing queues and reading DMA
+completion, and guards cleanup after partial initialization. A private ARM64
+DMA pool provides Normal Non-cacheable RAM below 4 GiB, including bounce
+buffers. Cached allocation contents are cleaned and invalidated before the
+mapping changes, and the pool is accessed only through that mapping. This
+establishes boot I/O, not sustained integrity or high-memory acceptance.
+
+Only the standard EHCI register interface is used. The board remains on the
+previously recorded EDK2 firmware and mainline-DT profile; PHY, clock, reset-line
+and power-domain programming is still supplied by firmware. Native resource
+management and suspend/resume remain separate work. The implementation was
+checked against the [EHCI specification](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/ehci-specification-for-usb.pdf),
+the [generic EHCI binding](https://github.com/torvalds/linux/blob/v6.15/Documentation/devicetree/bindings/usb/generic-ehci.yaml),
+and the [GICv3 interrupt binding](https://github.com/torvalds/linux/blob/v6.15/Documentation/devicetree/bindings/interrupt-controller/arm%2Cgic-v3.yaml).
+
+The preceding trial, `artifacts/hardware/20260911T113345Z-4c1fb4`, still stopped
+at boot-volume discovery without attempting EHCI initialization. Generic FDT
+nodes did not search `busses/usb`; adding that driver-search path allowed the
+attachment to run. FDT nodes are registered in source order, so the attachment
+does not require the GIC's device-manager node to have been registered before
+the already-decodable interrupt specifier is used.
+
+The desktop image passed the four-CPU EL2 QEMU EHCI first-login gate in
+`artifacts/qemu/20260911T113829Z-c40999`. Earlier shared-driver checks passed
+both EHCI and xHCI first login in `artifacts/qemu/20260911T112954Z-152d78` and
+`artifacts/qemu/20260911T112954Z-667655`. Twenty-four host regression checks
+passed in `artifacts/control-checks-ehci-platform.log`. These are development
+builds, with their source patches in the image manifests; unstripped loader,
+kernel and EHCI symbols are saved under each image hash prefix.
+
+Automatic recovery returned ROOBI boot ID
+`ec4a0f60-1e30-4b41-8e98-50155a04d299`; capture saved 172,358 bytes with no
+transport errors. One USB control request stalled during HID initialization.
+The minimum image also reports missing optional screen-saver, game and media
+libraries, as it did in QEMU. Keyboard/mouse interaction, USB networking,
+sustained storage writes, SMP/memory stress and other peripheral acceptance
+remain untested by this desktop observation. NanoKVM's USB network endpoint is
+configured as `10.239.6.1/24`, and the image includes `usb_rndis`; loading that
+driver alone does not prove a working network connection.

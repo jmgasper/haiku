@@ -400,7 +400,7 @@ def qmp_command(stream, command, arguments=None):
             return response['return']
 
 
-def qemu(manifest_path, seconds, expect, el2=False):
+def qemu(manifest_path, seconds, expect, el2=False, usb_controller='xhci'):
     manifest, image = read_manifest(manifest_path)
     output = WORK / 'artifacts/qemu' / timestamp()
     output.mkdir(parents=True)
@@ -410,11 +410,18 @@ def qemu(manifest_path, seconds, expect, el2=False):
     firmware_copy = output / 'QEMU_EFI.fd'
     shutil.copyfile(firmware, firmware_copy)
     machine = 'virt,virtualization=on,gic-version=3' if el2 else 'virt'
+    controller = {'xhci': 'qemu-xhci', 'ehci': 'usb-ehci'}[usb_controller]
     command = ['qemu-system-aarch64', '-M', machine, '-cpu', 'max', '-m', '2048', '-smp', '4',
-               '-bios', str(firmware_copy), '-device', 'qemu-xhci,id=usb',
+               '-bios', str(firmware_copy), '-device', f'{controller},id=usb',
                '-drive', f'file={overlay},if=none,id=drv0,format=qcow2',
-               '-device', 'usb-storage,bus=usb.0,drive=drv0',
-               '-device', 'usb-kbd,bus=usb.0', '-device', 'usb-tablet,bus=usb.0',
+               '-device', 'usb-storage,bus=usb.0,drive=drv0']
+    # QEMU's standalone EHCI has no low/full-speed companion. Keep HID on
+    # xHCI while requiring the boot disk to go through the selected controller.
+    hid_bus = 'usb.0'
+    if usb_controller == 'ehci':
+        command += ['-device', 'qemu-xhci,id=hid']
+        hid_bus = 'hid.0'
+    command += ['-device', f'usb-kbd,bus={hid_bus}', '-device', f'usb-tablet,bus={hid_bus}',
                '-device', 'ramfb', '-display', 'none', '-monitor', 'none', '-nic', 'none',
                '-serial', f'file:{output}/serial.log',
                '-qmp', f'unix:{output}/qmp.sock,server=on,wait=off']
@@ -470,6 +477,8 @@ def main():
     p = sub.add_parser('qemu'); p.add_argument('manifest')
     p.add_argument('--seconds', type=int, default=90); p.add_argument('--expect')
     p.add_argument('--el2', action='store_true', help='Exercise EL2 handoff with GICv3')
+    p.add_argument('--usb-controller', choices=('xhci', 'ehci'), default='xhci',
+                   help='USB controller carrying the boot disk')
     p = sub.add_parser('deploy'); p.add_argument('manifest')
     p = sub.add_parser('cycle'); p.add_argument('manifest'); p.add_argument('--seconds', type=int, default=60)
     sub.add_parser('recover')
@@ -480,7 +489,7 @@ def main():
         with lock('build'):
             result = artifact(args.image)
     elif args.action == 'qemu':
-        result = qemu(args.manifest, args.seconds, args.expect, args.el2)
+        result = qemu(args.manifest, args.seconds, args.expect, args.el2, args.usb_controller)
     else:
         config = json.loads(CONFIG.read_text())
         nanokvm.BASE = config['nanokvm_url']
