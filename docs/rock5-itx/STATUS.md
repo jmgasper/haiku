@@ -8,7 +8,7 @@ firmware supports it.
 | --- | --- |
 | Repository | `jmgasper/haiku`, `rock5-itx` branch; upstream base `855b5d0e3126c86acc84d09f8e859272019bbbc2` |
 | Build tools | Haiku GCC 13.3.0 cross-compiler and binutils built successfully; buildtools `8375c2dbeaf109c520798cb234d57f0895463201` |
-| ARM64 image and QEMU | Current 336 MiB `@minimum-mmc` image built and booted to a visible Tracker/Deskbar desktop in QEMU ARM64, 4 virtual CPUs and 2 GiB RAM |
+| ARM64 image and QEMU | Current clean 336 MiB `@minimum-mmc` image passes first login at both EL1 and EL2 with 4 virtual CPUs and 2 GiB RAM; a basic Tracker/Deskbar desktop was inspected during phase 0 |
 | NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; SSH and authenticated API tested |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
@@ -293,8 +293,10 @@ SMP stress, IRQ/IPI routing or memory-integrity acceptance tests.
 The same run passed a newly added ACPI guard. DT-only EDK2 still publishes a
 small ACPI set containing BGRT, with no DSDT. ACPICA previously dereferenced an
 invalid DSDT index and faulted in `AcpiTbLoadNamespace`. The bus manager now
-checks for a DSDT before loading the namespace and falls back cleanly when it
-is absent. No native ACPI support is claimed for this firmware profile.
+checks for a DSDT before loading the namespace and declines ACPI initialization
+when it is absent. ACPICA cleanup still logs `Could not remove SCI handler`;
+the kernel continues to device discovery. No native ACPI support is claimed
+for this firmware profile.
 
 Boot now reaches `vfs_mount_boot_file_system` and stops with
 `did not find any boot partitions!`. The existing USB host drivers bind through
@@ -310,3 +312,34 @@ state. DWC3/xHCI and the other physical ports remain separate work.
 Recovery after this run returned ROOBI boot ID
 `4fab5591-2479-4103-82ce-29c89b69d815`; UART capture reported no transport errors.
 Native userspace and peripheral acceptance remain open.
+
+## Verified kernel checkpoint
+
+A clean build from `c9cf0293450521ca6fa13c8a251e5d3013c2afef`
+(`hrev60097+11`) repeated the eight-core native boot after temporary tracing
+was removed. The loaded-image disk preference kept the pending SError clear
+through handoff, the EL2 physical timer initialized on IRQ 26, and all eight
+CPUs completed startup. `main2` ran on CPU 4 and reached the expected
+`did not find any boot partitions!` panic. The HDMI debugger frame was inspected.
+This is a kernel bring-up checkpoint; it does not establish native userspace,
+SMP stress stability, or peripheral acceptance.
+
+| Checkpoint evidence | Location or result |
+| --- | --- |
+| Immutable image | `artifacts/images/haiku-arm64-6ffb18dd981474d2.img` |
+| SHA-256 | `6ffb18dd981474d224183ff6df5946c030f41985becfa69472d569c6f4e02063` |
+| Manifest and symbols | Same image basename with `.json`; unstripped loader and kernel in `artifacts/symbols/6ffb18dd981474d2/` |
+| Build log | `artifacts/build-20260911T110538Z.log` |
+| EL1 QEMU | `artifacts/qemu/20260911T110644Z-ce9634`; four CPUs, first login passed, no kernel panic |
+| EL2 QEMU | `artifacts/qemu/20260911T110644Z-b339fb`; four CPUs, first login passed, no kernel panic |
+| Native ROCK | `artifacts/hardware/20260911T110842Z-aa232c`; reviewed `result.json`, `trial-serial.log` and `frame-016.jpg` |
+| Local checks | 23 regression checks, Bash syntax and whitespace checks passed; `artifacts/control-checks-kernel-checkpoint.log` |
+| CI | [23 control regression checks passed for this source revision](https://github.com/jmgasper/haiku/actions/runs/34592601056) |
+
+All evidence paths above are under `/mnt/HaikuWork`. Documentation-only commits
+after this checkpoint do not change the image's recorded source revision.
+Automatic recovery returned ROOBI boot ID
+`db3777db-743f-4192-9b59-1c7c22d139bc`, different from the pre-trial boot ID.
+The cycle saved 160,428 serial bytes with no transport errors and restored the
+configured EFI recovery image. Platform EHCI support for the NanoKVM USB disk
+is the next native boot dependency.
