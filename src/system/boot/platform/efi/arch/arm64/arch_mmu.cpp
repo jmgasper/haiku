@@ -243,8 +243,11 @@ arch_mmu_post_efi_setup(size_t memory_map_size,
 		descriptor_size, descriptor_version);
 
 	// Switch EFI to virtual mode, using the kernel pmap.
-	kRuntimeServices->SetVirtualAddressMap(memory_map_size, descriptor_size,
+	efi_status status = kRuntimeServices->SetVirtualAddressMap(memory_map_size, descriptor_size,
 		descriptor_version, memory_map);
+	dprintf("SetVirtualAddressMap returned %#" B_PRIx64 "\n", (uint64)status);
+	if (status != EFI_SUCCESS)
+		panic("Unable to install EFI runtime memory map");
 
 	if (kTraceMemoryMap) {
 		dprintf("phys memory ranges:\n");

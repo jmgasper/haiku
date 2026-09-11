@@ -492,10 +492,21 @@ dtb_get_interrupt(const void* fdt, int node)
 	if (uint32* prop = (uint32*)fdt_getprop(fdt, node, "interrupts-extended", NULL)) {
 		return fdt32_to_cpu(*(prop + 1));
 	}
-	if (uint32* prop = (uint32*)fdt_getprop(fdt, node, "interrupts", NULL)) {
+	int length;
+	if (uint32* prop = (uint32*)fdt_getprop(fdt, node, "interrupts", &length)) {
+		if (interruptCells == 0 || interruptCells > (uint32)length / sizeof(uint32))
+			panic("invalid interrupts property length");
+
 		if ((interruptCells == 1) || (interruptCells == 2)) {
 			return fdt32_to_cpu(*prop);
-		} else if (interruptCells == 3) {
+		} else if (interruptCells == 3 || (interruptCells == 4
+			&& fdt_node_check_compatible(fdt, dtb_get_interrupt_parent(fdt, node),
+				"arm,gic-v3") == 0)) {
+			// GICv3 adds an optional PPI affinity phandle after the usual
+			// type, number and flags. Zero denotes an unpartitioned interrupt.
+			if (interruptCells == 4 && fdt32_to_cpu(prop[3]) != 0)
+				panic("GIC PPI affinity partitions are not supported");
+
 			uint32 interruptType = fdt32_to_cpu(prop[GIC_INTERRUPT_CELL_TYPE]);
 			uint32 interruptNumber = fdt32_to_cpu(prop[GIC_INTERRUPT_CELL_ID]);
 			if (interruptType == GIC_INTERRUPT_TYPE_SPI)

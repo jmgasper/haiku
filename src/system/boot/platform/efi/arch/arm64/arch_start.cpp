@@ -198,15 +198,19 @@ arch_start_kernel(addr_t kernelEntry)
 		}
 	}
 
+	// Use the native UART as soon as boot services are gone, so failures
+	// while installing the runtime map are visible on the serial console.
+	serial_init();
+	serial_enable();
+	dprintf("Exited EFI boot services; installing runtime memory map\n");
+
 	// Update EFI, generate final kernel physical memory map, etc.
 	arch_mmu_post_efi_setup(memoryMapSize, memoryMap,
 		descriptorSize, descriptorVersion);
-
-	// Re-init and activate serial in a horrific post-EFI landscape. Clowns roam the land freely.
-	serial_init();
-	serial_enable();
+	dprintf("EFI runtime memory map installed; preparing %u CPUs\n", gKernelArgs.num_cpus);
 
 	arm64_common_cpu_startup();
+	dprintf("Boot CPU MMU setup complete; starting secondary CPUs\n");
 
 	smp_boot_other_cpus(ttbr1, kernelEntry, (addr_t)&gKernelArgs);
 
