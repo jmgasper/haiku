@@ -1726,6 +1726,8 @@ device_node::_GetNextDriverPath(void*& cookie, KPath& _path)
 					if (get_attr_string(this, B_DEVICE_BUS, &bus, false) == B_OK) {
 						if (strcmp(bus, "virtio") == 0 || strcmp(bus, "hyperv") == 0)
 							_AddPath(*stack, "busses/scsi");
+						if (strcmp(bus, "fdt") == 0)
+							_AddPath(*stack, "busses/usb");
 					}
 					_AddPath(*stack, "drivers", sGenericContextPath);
 					_AddPath(*stack, "busses/i2c");

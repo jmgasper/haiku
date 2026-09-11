@@ -18,6 +18,8 @@
 #include <HashMap.h>
 #include <debug.h>
 
+#include "interrupt_specifier.h"
+
 extern "C" {
 #include <libfdt_env.h>
 #include <fdt.h>
@@ -504,6 +506,8 @@ fdt_device_get_interrupt(fdt_device* dev, uint32 index,
 	device_node** interruptController, uint64* interrupt)
 {
 	ASSERT(dev != NULL);
+	if (interruptController != NULL)
+		*interruptController = NULL;
 
 	uint32 fdtNode;
 	ASSERT(gDeviceManager->get_attr_uint32(
@@ -521,24 +525,10 @@ fdt_device_get_interrupt(fdt_device* dev, uint32 index,
 		if (prop == NULL)
 			return false;
 
-		if ((index + 1) * interruptCells * sizeof(uint32) > (uint32)propLen)
+		uint32 interruptNumber;
+		if (propLen < 0 || !fdt_decode_interrupt(prop, propLen, interruptCells,
+				index, interruptNumber)) {
 			return false;
-
-		uint32 offset = interruptCells * index;
-		uint32 interruptNumber = 0;
-
-		if ((interruptCells == 1) || (interruptCells == 2)) {
-			 interruptNumber = fdt32_to_cpu(*(prop + offset));
-		} else if (interruptCells == 3) {
-			uint32 interruptType = fdt32_to_cpu(prop[offset + GIC_INTERRUPT_CELL_TYPE]);
-			interruptNumber = fdt32_to_cpu(prop[offset + GIC_INTERRUPT_CELL_ID]);
-
-			if (interruptType == GIC_INTERRUPT_TYPE_SPI)
-				interruptNumber += GIC_INTERRUPT_BASE_SPI;
-			else if (interruptType == GIC_INTERRUPT_TYPE_PPI)
-				interruptNumber += GIC_INTERRUPT_BASE_PPI;
-		} else {
-			panic("unsupported interruptCells");
 		}
 
 		if (interrupt != NULL)
