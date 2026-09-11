@@ -2,3 +2,13 @@
 # Keep serial debugging enabled through the normal kernel defaults.
 HAIKU_IMAGE_SIZE = 300 ;
 HAIKU_MMC_NAME = haiku-arm64-mmc.image ;
+
+DeferredSubInclude HAIKU_TOP tools rock5-itx ;
+
+rule UserBuildConfigRulePreImage
+{
+	local bootscript = <rock5-lab>UserBootscript ;
+	SEARCH on $(bootscript) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
+	AddFilesToHaikuImage home config settings boot : $(bootscript) ;
+	AddFilesToHaikuImage home config non-packaged bin : rock5_memory_probe ;
+}

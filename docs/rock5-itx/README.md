@@ -97,8 +97,9 @@ pass, and emulated PCI/USB is not RK3588 platform validation.
 EL2 physical timer used on the ROCK. The complete iteration uses this profile.
 Omit it to check the EL1 path separately. Current hardware boots start all eight
 CPUs, mount the NanoKVM disk through native platform EHCI, and display a basic
-Tracker/Deskbar desktop. HID interaction, USB networking and stress acceptance
-are tracked separately in [STATUS.md](STATUS.md).
+Tracker/Deskbar desktop. NanoKVM keyboard and mouse input, USB RNDIS networking
+and authenticated remote commands also work. Stress acceptance and remaining
+hardware are tracked separately in [STATUS.md](STATUS.md).
 
 `--usb-controller ehci` puts QEMU's boot disk on a PCI EHCI controller to test
 the shared EHCI transfer code. The default remains xHCI. In this profile HID
@@ -155,6 +156,20 @@ self-hosted GitHub runner. Use these commands from an active development
 session; the scripts do not create an independent background coding service.
 
 ## EFI firmware and recovery
+
+The lab profile also installs `rock5_memory_probe` under
+`/boot/home/config/non-packaged/bin`. For example, `rock5_memory_probe 8192 8 2`
+checks a locked 8 GiB allocation with eight workers and two passes. It rejects
+allocations larger than 75% of currently free RAM. `--inject-error` as the fourth
+argument deliberately corrupts one word and must produce a failing exit status.
+This is a short integrity diagnostic, not a sustained qualification workload.
+
+`UserBootscript` reports CPU, RAM, USB and network inventory to `/dev/dprintf`.
+An authenticated lab shell requires a separate private image overlay containing
+both `home/config/settings/rock5-lab/enable-shell` and a generated password hash.
+The ordinary build contains neither credential nor opt-in file. The private
+listener binds to the RNDIS USB address, and the workstation reaches it through
+NanoKVM SSH forwarding. Keep the overlay, credentials and its image local.
 
 Board-specific [EDK2 v1.1](https://github.com/edk2-porting/edk2-rk3588/releases/tag/v1.1)
 is installed in SPI. The native EFI diagnostic completed with a 1920x1080 GOP

@@ -15,7 +15,7 @@ firmware supports it.
 | Automated controls | Twenty-four regression checks pass locally, including native interrupt decoding, EFI device-path matching, capture transport and baud transitions; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
-| Native Haiku on ROCK | All eight CPUs start; platform EHCI mounts the NanoKVM boot volume; native userspace and a basic framebuffer Tracker/Deskbar desktop have booted; HID interaction and stress acceptance remain open |
+| Native Haiku on ROCK | All eight CPUs start; platform EHCI mounts the NanoKVM boot volume; Tracker/Deskbar, NanoKVM keyboard and mouse, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; sustained acceptance remains open |
 | Board revision | Owner confirmed ROCK 5 ITX PCB v1.12; current public electrical schematic is v1.11, so exact revision electrical details remain to be checked before raw register work |
 | USB recovery | Workstation USB-C connection enumerates as `2207:350b`; remote loader and MaskROM entry, RAM loader download, eMMC/SPI selection and matching read-back hashes verified |
 | Serial | NanoKVM UART1 (`/dev/ttyS1`) captures readable DDR/SPL, U-Boot and Linux output at 1,500,000 baud, 8N1; longer input is corrupted and an interactive login has not passed |
@@ -503,8 +503,8 @@ unknown-instruction exception, not evidence of a trapped cache-maintenance
 instruction or a valid FAR memory address. Cleaning caches before disabling
 the firmware MMU/cache configuration then passed the two native boots above.
 Stale instruction contents are a hypothesis; these two successes do not yet
-establish a reliable fix. The temporary exception instrumentation remains
-in the development image.
+establish a reliable fix. Those development images contained temporary exception
+instrumentation, removed in the later checkpoint below.
 
 The login program stored `getopt()`'s integer return value in a `char`.
 This ARM64 toolchain defines `__CHAR_UNSIGNED__`, so the `-1` end marker became
@@ -514,4 +514,56 @@ an incorrect password was rejected, then the correct private credentials ran
 `uname`, `ifconfig` and a service-configuration check. The local image overlay
 contains a generated password hash and an explicit opt-in file; telnet binds
 only to the USB address. QEMU uses localhost forwarding and blocks the
-competing ECM configuration. Native shell access is still a separate check.
+competing ECM configuration. Native shell access subsequently passed below.
+
+## Native input, authenticated commands and high-memory check
+
+EHCI interrupt queue heads must use a zero NAK reload count (RL), as specified
+in section 4.9 of the
+[Intel EHCI specification](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/ehci-specification-for-usb.pdf).
+The shared initializer had set RL to three. Correcting it for interrupt queues
+and periodic anchors restored native HID polling. The preceding interval and
+queue-retirement changes alone had not restored input. The combined fix is
+commit `494b6180f6`.
+
+In `artifacts/interactive/20260911T133313Z-6b71f4`, Ctrl+Alt+Delete opened Team
+Monitor, an absolute mouse click opened Terminal, and a typed command emitted
+`ROCK_NATIVE_INPUT_OK` on UART. Relative mouse movement also visibly moved the
+cursor. The private image SHA-256 is
+`4e7a2eba33c78d6c241c5e355936f3895749e1af76fd92c453f66c5569e90dde`.
+An authenticated shell executed `uname`, `sysinfo`, `ifconfig`, `netstat`, process
+inventory and a driver checksum. The listener was bound to `10.239.6.146:23`,
+with NanoKVM at `10.239.6.1` as its peer. Workstation access used an SSH tunnel
+to NanoKVM, then telnet across the private USB link.
+
+The next trial, `artifacts/interactive/20260911T134405Z-19e940`, repeated the
+desktop, keyboard, absolute mouse and authenticated shell checks with all
+temporary exception vectors and USB traces removed. Its private image is
+`d0e576d822b76616da13c3b405ac475b6cdc3e11f92f236808828369c7764da1`.
+This was the fourth successful native boot with the pre-handoff cache clean
+(`186268d8cd`), and the first without diagnostic instrumentation. More boot
+coverage is required before calling the intermittent loader fault resolved.
+
+A 140,691-byte memory-test executable was uploaded directly to that running
+Haiku session, read back through `sha256sum`, and executed only after its hash
+matched the workstation binary:
+`d5a0e997f1250d61c7bba1954c95460dc465f623c379a148066afe1c28673d0b`.
+No new image or reboot was needed for this test. The 8 GiB allocation used
+`B_FULL_LOCK`, eight workers and two fill/verify passes, including reads of
+another worker's region. It passed with zero mismatches and recorded activity
+on all eight CPUs. Since the allocation was resident and exceeded 4 GiB, this
+exercises physical RAM above that boundary. This short run does not establish
+sustained CPU, thermal, DMA or general memory-management stability.
+
+The packaged checker and its injected-corruption negative control passed in
+four-CPU QEMU at `artifacts/qemu-shell/20260911T135151Z-7c2fee`. The 64 MiB check
+passed, and a deliberately corrupted word caused the expected failure and
+exit status 1. Source is [memory_probe.cpp](../../tools/rock5-itx/memory_probe.cpp).
+
+Normal native `shutdown -r` then stalled with the desktop showing “Asking other
+processes to quit.” No new loader banner appeared. ARM64's kernel reset function
+was still a stub, but this screen also permits an earlier userspace hang;
+the two paths require separate tests. Out-of-band recovery returned ROOBI with
+boot ID `dccca9d2-ecae-4cb4-8bfb-dad7fffc6a2c` and no serial transport errors.
+The trial's `review.json`, `native-memory.txt`, `probe-upload.txt`,
+`software-reboot-command.txt` and `frame-090.jpg` preserve these results.

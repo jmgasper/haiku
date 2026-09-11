@@ -1,0 +1,52 @@
+#!/bin/sh
+# Startup diagnostics for the dedicated ROCK 5 lab image.
+
+for file in "$HOME"/config/settings/boot/launch/*; do
+	[ -e "$file" ] && /bin/open "$file" &
+done
+
+(
+	sleep 10
+	echo ROCK5_PROBE_BEGIN
+	uname -a
+	timeout 15 sysinfo -cpu
+	timeout 15 sysinfo -mem
+	timeout 20 ifconfig
+	timeout 15 listusb
+	echo ROCK5_PROBE_END
+
+	# A private lab overlay supplies the opt-in file and a password hash.
+	# Bind only to the USB link (or the isolated QEMU test network).
+	if [ -f "$HOME/config/settings/rock5-lab/enable-shell" ] \
+		&& [ -s /boot/system/settings/etc/shadow ]; then
+		umask 077
+		for attempt in {1..30}; do
+			address=$(ifconfig /dev/net/usb_rndis/0 2>/dev/null |
+				while read -r family label rest; do
+					if [ "$family" = inet ] && [ "$label" = addr: ]; then
+						printf '%s\n' "${rest%%,*}"
+					fi
+				done)
+			case "$address" in
+				10.239.6.*|10.0.2.15)
+					settings=/boot/system/settings/network
+					mkdir -p "$settings"
+					cat > "$settings/services.rock5" <<EOF
+service telnet {
+	launch /boot/system/bin/telnetd
+	address inet {
+		address $address
+		port 23
+	}
+}
+EOF
+					if mv "$settings/services.rock5" "$settings/services"; then
+						echo "ROCK5_SHELL_CONFIGURED $address"
+					fi
+					break
+					;;
+			esac
+			sleep 1
+		done
+	fi
+) > /dev/dprintf 2>&1 &
