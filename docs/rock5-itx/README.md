@@ -80,7 +80,7 @@ Hardware results remain observations until their milestone evidence is reviewed.
 Individual stages are also available:
 
 ```sh
-python3 tools/rock5-itx/lab.py qemu /mnt/HaikuWork/artifacts/images/IMAGE.json --seconds 90
+python3 tools/rock5-itx/lab.py qemu /mnt/HaikuWork/artifacts/images/IMAGE.json --el2 --seconds 90
 python3 tools/rock5-itx/lab.py doctor
 python3 tools/rock5-itx/lab.py cycle /mnt/HaikuWork/artifacts/images/IMAGE.json --seconds 60
 python3 tools/rock5-itx/lab.py recover
@@ -92,6 +92,13 @@ result. `--expect REGEX` makes a missing serial marker fail the command; choose
 a marker that proves the milestone under test. Without a marker the result is
 `observed`, requiring review of the evidence. A loader banner is not a desktop
 pass, and emulated PCI/USB is not RK3588 platform validation.
+
+`--el2` enables virtualization and GICv3 in QEMU, exercising the VHE handoff and
+EL2 physical timer used on the ROCK. The complete iteration uses this profile.
+Omit it to check the EL1 path separately. Current hardware boots reach Haiku's
+eight-CPU scheduler and device discovery, then stop because native access to
+the USB boot disk is not implemented. EFI boot-disk selection and ACPI handling
+are described in [STATUS.md](STATUS.md).
 
 `cycle` owns the hardware lock, verifies local and remote image hashes, attaches
 the image in USB disk mode, resets the target, captures HDMI frames, and then
