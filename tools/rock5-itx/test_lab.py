@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import struct
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import lab
 
@@ -108,6 +108,63 @@ class LabTests(unittest.TestCase):
         recover.assert_called_once()
         self.assertEqual(result['captures'], [{'capture_error': 'no HDMI'}])
         self.assertEqual(result['status'], 'observed')
+
+    def test_serial_start_failure_prevents_deployment_and_reset(self):
+        with patch.object(lab.nanokvm, 'api'), patch.object(lab, 'boot_id', return_value='before'), \
+                patch.object(lab, 'remote_python'), \
+                patch.object(lab, 'start_serial', side_effect=RuntimeError('UART unavailable')), \
+                patch.object(lab, 'deploy') as deploy, patch.object(lab, 'recover') as recover:
+            result = lab.cycle(self.config, 'unused', 5)
+        deploy.assert_not_called()
+        recover.assert_not_called()
+        self.assertEqual(result['status'], 'error')
+
+    def test_serial_failure_preserves_failed_recovery_and_result_file(self):
+        serial = Mock()
+        serial.stop.side_effect = RuntimeError('SSH dropped')
+        with patch.object(lab.nanokvm, 'api'), patch.object(lab, 'boot_id', return_value='before'), \
+                patch.object(lab, 'remote_python'), patch.object(lab, 'start_serial', return_value=serial), \
+                patch.object(lab, 'deploy', side_effect=RuntimeError('trial failed')), \
+                patch.object(lab, 'recover', side_effect=RuntimeError('ROOBI missing')):
+            result = lab.cycle(self.config, 'unused', 5)
+        self.assertEqual(result['status'], 'recovery_failed')
+        self.assertEqual(result['serial_error'], 'SSH dropped')
+        self.assertEqual(json.loads((Path(result['evidence']) / 'result.json').read_text()), result)
+
+    def test_trial_and_recovery_use_their_configured_serial_speeds(self):
+        serial = Mock()
+        serial.stop.return_value = {'status': 'captured'}
+        config = dict(self.config, serial_baud=1500000, serial_trial_baud=115200)
+        with patch.object(lab.nanokvm, 'api'), patch.object(lab, 'boot_id', return_value='before'), \
+                patch.object(lab, 'remote_python'), patch.object(lab, 'start_serial', return_value=serial), \
+                patch.object(lab, 'deploy', return_value={}), \
+                patch.object(lab.time, 'monotonic', side_effect=[0, 6]), \
+                patch.object(lab, 'recover', return_value={'boot_id': 'after'}):
+            result = lab.cycle(config, 'unused', 5)
+        self.assertEqual([call.args[0] for call in serial.set_baud.call_args_list],
+                         [115200, 1500000])
+        self.assertEqual(result['status'], 'observed')
+
+    def test_baud_control_failure_does_not_prevent_recovery(self):
+        serial = Mock()
+        serial.set_baud.side_effect = RuntimeError('SSH dropped')
+        serial.stop.return_value = {'status': 'captured'}
+        config = dict(self.config, serial_trial_baud=115200)
+        with patch.object(lab.nanokvm, 'api'), patch.object(lab, 'boot_id', return_value='before'), \
+                patch.object(lab, 'remote_python'), patch.object(lab, 'start_serial', return_value=serial), \
+                patch.object(lab, 'deploy', return_value={}), \
+                patch.object(lab, 'recover', return_value={'boot_id': 'after'}) as recover:
+            result = lab.cycle(config, 'unused', 5)
+        recover.assert_called_once()
+        self.assertEqual(result['status'], 'error')
+        self.assertEqual(result['serial_error'], 'SSH dropped')
+
+    def test_recovery_waits_for_configured_efi_boot_duration(self):
+        with patch.object(lab, 'boot_id', return_value='before'), \
+                patch.object(lab, 'attach'), patch.object(lab.nanokvm, 'api'), \
+                patch.object(lab, 'wait_recovery', return_value='after') as wait:
+            lab.recover(dict(self.config, recovery_timeout=180))
+        self.assertEqual(wait.call_args.kwargs['seconds'], 180)
 
     def test_symlink_cannot_escape_project_drive(self):
         (self.work / 'escape').symlink_to('/etc')

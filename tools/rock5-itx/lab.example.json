@@ -3,8 +3,11 @@
   "ssh_config": "/mnt/HaikuWork/nanokvm/.ssh/config",
   "nanokvm_ssh": "nanokvm",
   "recovery_ssh": "rock5-roobi",
-  "recovery_image": "/data/storage-probe.img",
+  "recovery_image": "/data/roobi-efi-recovery.img",
+  "recovery_timeout": 180,
   "gadget": "/sys/kernel/config/usb_gadget/g0",
   "serial_device": null,
-  "serial_baud": 1500000
+  "serial_remote_device": "/dev/ttyS1",
+  "serial_baud": 1500000,
+  "serial_trial_baud": 1500000
 }

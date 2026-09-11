@@ -11,19 +11,17 @@ import os
 from pathlib import Path
 import re
 import secrets
-import select
 import shlex
 import shutil
 import socket
 import struct
 import subprocess
 import sys
-import termios
 import threading
 import time
-import tty
 
 import nanokvm
+import serial_capture
 
 WORK = Path('/mnt/HaikuWork')
 SOURCE = Path(__file__).resolve().parents[2]
@@ -299,64 +297,23 @@ def wait_recovery(config, previous, seconds=90):
 
 
 def start_serial(config, output):
-    """Capture a workstation USB UART when configured; verify wiring separately."""
-    device = config.get('serial_device')
-    if not device:
-        return lambda: None
-    device = Path(device).resolve()
-    if not str(device).startswith('/dev/tty'):
-        raise ValueError('serial_device must resolve to a /dev/tty device')
-    speed = getattr(termios, f'B{int(config.get("serial_baud", 1500000))}')
-    descriptor = os.open(device, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
-    try:
-        previous = termios.tcgetattr(descriptor)
-        tty.setraw(descriptor)
-        settings = termios.tcgetattr(descriptor)
-        settings[4] = settings[5] = speed
-        settings[2] |= termios.CLOCAL | termios.CREAD
-        termios.tcsetattr(descriptor, termios.TCSANOW, settings)
-    except BaseException:
-        os.close(descriptor)
-        raise
-    stopped = threading.Event()
-    errors = []
-    def capture():
-        try:
-            with local_path(output).open('wb') as stream:
-                while not stopped.is_set():
-                    if select.select([descriptor], [], [], 0.25)[0]:
-                        chunk = os.read(descriptor, 65536)
-                        if not chunk:
-                            raise RuntimeError('Serial device disconnected')
-                        stream.write(chunk)
-                        stream.flush()
-        except Exception as error:
-            errors.append(str(error))
-    thread = threading.Thread(target=capture, daemon=True)
-    thread.start()
-    def stop():
-        stopped.set()
-        thread.join(timeout=2)
-        try:
-            termios.tcsetattr(descriptor, termios.TCSANOW, previous)
-        except OSError:
-            pass
-        os.close(descriptor)
-        if errors:
-            save(Path(output).with_suffix('.error.json'), {'serial_errors': errors})
-    return stop
+    """Start raw capture and require readiness before mutating the target."""
+    if config.get('serial_remote_device'):
+        local_path(config['ssh_config'])
+    return serial_capture.start(config, local_path(output))
 
 
 def recover(config):
     previous = boot_id(config)
+    timeout = int(config.get('recovery_timeout', 90))
     attach(config, config['recovery_image'], readonly=False)
     nanokvm.api('/api/vm/gpio', {'type': 'reset', 'duration': 800})
-    value = wait_recovery(config, previous)
+    value = wait_recovery(config, previous, seconds=timeout)
     if not value:
         nanokvm.api('/api/vm/gpio', {'type': 'power', 'duration': 5000})
         time.sleep(5)
         nanokvm.api('/api/vm/gpio', {'type': 'power', 'duration': 800})
-        value = wait_recovery(config, previous)
+        value = wait_recovery(config, previous, seconds=timeout)
     if not value:
         raise RuntimeError('ROOBI did not return after reset and power cycle; inspect video/serial')
     return {'recovery': 'ROOBI', 'boot_id': value, 'previous_boot_id': previous}
@@ -373,17 +330,25 @@ def cycle(config, manifest_path, seconds):
     recovery = remote_image(config['recovery_image'])
     remote_python(config, f'from pathlib import Path\nassert Path({recovery!r}).is_file()')
     save(output / 'result.json', result)
-    serial_stop = lambda: None
+    serial = None
+    trial_started = False
     try:
-        serial_stop = start_serial(config, output / 'serial.log')
-        result['serial_configured'] = bool(config.get('serial_device'))
+        serial = start_serial(config, output / 'serial.log')
+        result['serial_configured'] = serial is not None
+        trial_started = True
         result['deployment'] = deploy(config, manifest_path)
+        if serial:
+            serial.check()
+            if config.get('serial_trial_baud'):
+                serial.set_baud(config['serial_trial_baud'])
         result['boot_id_before'] = boot_id(config)
         nanokvm.api('/api/vm/gpio', {'type': 'reset', 'duration': 800})
         deadline = time.monotonic() + seconds
         index = 0
         while time.monotonic() < deadline:
             time.sleep(min(5, max(0, deadline - time.monotonic())))
+            if serial:
+                serial.check()
             try:
                 result['captures'].append(nanokvm.screenshot(output / f'frame-{index:03}.jpg'))
             except Exception as error:
@@ -395,12 +360,27 @@ def cycle(config, manifest_path, seconds):
         result['status'] = 'error'
         result['error'] = str(error)
     finally:
-        try:
-            result['recovery'] = recover(config)
-        except Exception as error:
-            result['status'] = 'recovery_failed'
-            result['recovery_error'] = str(error)
-        serial_stop()
+        if trial_started:
+            if serial and config.get('serial_trial_baud'):
+                try:
+                    serial.set_baud(config.get('serial_baud', 1500000))
+                except Exception as error:
+                    result['serial_error'] = str(error)
+                    result['status'] = 'error'
+            try:
+                result['recovery'] = recover(config)
+            except Exception as error:
+                result['status'] = 'recovery_failed'
+                result['recovery_error'] = str(error)
+        else:
+            result['recovery'] = {'unchanged': True, 'reason': 'Trial did not start'}
+        if serial:
+            try:
+                result['serial'] = serial.stop()
+            except Exception as error:
+                result['serial_error'] = str(error)
+                if result['status'] != 'recovery_failed':
+                    result['status'] = 'error'
         result['evidence'] = str(output)
         save(output / 'result.json', result)
     return result
@@ -507,7 +487,7 @@ def main():
             result = {'free_gib': round(shutil.disk_usage(WORK).free / 2**30, 1),
                       'recovery_boot_id': boot_id(config), 'gadget': gadget(config),
                       'nanokvm': nanokvm.api('/api/vm/hardware'),
-                      'serial_configured': bool(config.get('serial_device'))}
+                      'serial_configured': bool(config.get('serial_device') or config.get('serial_remote_device'))}
         else:
             with lock('hardware'):
                 if args.action == 'deploy':
