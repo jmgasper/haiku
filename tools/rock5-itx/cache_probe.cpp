@@ -1,0 +1,117 @@
+/*
+ * Check instruction replacement and cache synchronization on each ARM64 CPU.
+ * Distributed under the terms of the MIT License.
+ */
+#include <OS.h>
+#include <image.h>
+#include <syscalls.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+
+#if defined(__aarch64__)
+static status_t
+PinCPU(uint32 cpu)
+{
+	uint32 mask[32] = {};
+	mask[cpu / 32] = 1U << (cpu % 32);
+	status_t status = _kern_set_thread_affinity(0, mask, sizeof(mask));
+	if (status != B_OK)
+		return status;
+	bigtime_t deadline = system_time() + 1000000;
+	while (_kern_get_cpu() != (int)cpu) {
+		if (system_time() >= deadline)
+			return B_TIMED_OUT;
+		snooze(50);
+	}
+	return B_OK;
+}
+#endif
+
+
+int
+main(int argc, char** argv)
+{
+#if !defined(__aarch64__)
+	fprintf(stderr, "This probe requires ARM64.\n");
+	return 77;
+#else
+	unsigned rounds = argc == 2 ? atoi(argv[1]) : 32;
+	if (argc > 2 || rounds < 1 || rounds > 256) {
+		fprintf(stderr, "Usage: %s [rounds (1..256)]\n", argv[0]);
+		return 2;
+	}
+	system_info info;
+	if (get_system_info(&info) != B_OK || info.cpu_count < 1 || info.cpu_count > 64)
+		return 1;
+	alarm(60);
+	const size_t mappingSize = 2 * B_PAGE_SIZE;
+	uint8* mapping = (uint8*)mmap(NULL, mappingSize, PROT_READ | PROT_WRITE | PROT_EXEC,
+		MAP_PRIVATE | MAP_ANON, -1, 0);
+	if (mapping == MAP_FAILED) {
+		perror("mmap executable memory");
+		return 1;
+	}
+
+	// Each eight-byte function crosses a 64-byte line boundary. The last
+	// function also crosses a page boundary; the synchronized range is unaligned.
+	const unsigned slots = B_PAGE_SIZE / 64;
+	uint8* code = mapping + 60;
+	const size_t codeLength = (slots - 1) * 64 + 8;
+	uint64 checked = 0;
+	uint64 mismatches = 0;
+	bool passed = true;
+	printf("ROCK5_CACHE_BEGIN cpus=%" B_PRIu32 " rounds=%u slots=%u\n",
+		info.cpu_count, rounds, slots);
+	fflush(stdout);
+	bigtime_t start = system_time();
+	for (unsigned round = 0; round < rounds && passed; round++) {
+		if (PinCPU(0) != B_OK) {
+			fprintf(stderr, "Cannot pin the code-writing CPU\n");
+			passed = false;
+			break;
+		}
+		for (unsigned slot = 0; slot < slots; slot++) {
+			uint32 value = (round * 257 + slot + 1) & 0xffff;
+			uint32 instructions[] = {0x52800000 | (value << 5), 0xd65f03c0};
+				// MOVZ W0, value; RET
+			memcpy(code + slot * 64, instructions, sizeof(instructions));
+		}
+		clear_caches(code, codeLength, B_INVALIDATE_ICACHE);
+		for (uint32 cpu = 0; cpu < info.cpu_count && passed; cpu++) {
+			if (PinCPU(cpu) != B_OK) {
+				fprintf(stderr, "Cannot pin executing CPU %" B_PRIu32 "\n", cpu);
+				passed = false;
+				break;
+			}
+			// The cache operations are broadcast, but each executing CPU must
+			// synchronize its own instruction pipeline before entering changed code.
+			asm volatile("isb" : : : "memory");
+			for (unsigned slot = 0; slot < slots; slot++) {
+				typedef uint32 (*Function)();
+				Function function = (Function)(code + slot * 64);
+				uint32 actual = function();
+				uint32 expected = (round * 257 + slot + 1) & 0xffff;
+				checked++;
+				if (actual != expected) {
+					fprintf(stderr, "CACHE_MISMATCH cpu=%" B_PRIu32 " round=%u slot=%u"
+						" actual=%" B_PRIu32 " expected=%" B_PRIu32 "\n",
+						cpu, round, slot, actual, expected);
+					mismatches++;
+					passed = false;
+					break;
+				}
+			}
+		}
+	}
+	munmap(mapping, mappingSize);
+	printf("ROCK5_CACHE_%s checked=%" B_PRIu64 " mismatches=%" B_PRIu64
+		" elapsed_us=%" B_PRIdBIGTIME "\n", passed ? "PASS" : "FAIL", checked,
+		mismatches, system_time() - start);
+	return passed ? 0 : 1;
+#endif
+}

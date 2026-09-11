@@ -105,7 +105,7 @@ def diagnose(output):
 
 
 def run(manifest_path, el1=False, memory=False, power=False, normal=False, platform=False,
-        transfer=False, services=False):
+        transfer=False, services=False, cache=False):
     manifest, image = lab.read_manifest(manifest_path)
     if not manifest.get('private_image'):
         raise ValueError('An authenticated private shell image is required')
@@ -194,6 +194,8 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
                         'then exit 1; else rock5_inject=$?; [ "$rock5_inject" -eq 1 ]; fi\n')
                 if platform:
                     commands += '/boot/home/config/non-packaged/bin/rock5_platform_probe 1\n'
+                if cache:
+                    commands += '/boot/home/config/non-packaged/bin/rock5_cache_probe 32\n'
                 if services:
                     helper = '/boot/home/config/non-packaged/bin/rock5_services_probe'
                     commands += (f'{helper}\nif {helper} --legacy-range; then exit 1; '
@@ -215,6 +217,12 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
                     if 'ROCK5_PLATFORM_PASS' not in text:
                         raise RuntimeError('Platform checks did not pass')
                     result['platform_probe'] = 'Pinned clocks, 32 fork/exec checks, eight recovered faults'
+                if cache:
+                    expected = 'ROCK5_CACHE_PASS checked=8192 mismatches=0 '
+                    if expected not in text:
+                        raise RuntimeError('Instruction replacement checks did not pass')
+                    result['cache_probe'] = {'cpus': 4, 'rounds': 32, 'checks': 8192,
+                                             'mismatches': 0}
                 if transfer:
                     result['file_transfer'] = check_transfers(client, output, credentials, fixture)
                 if services:
@@ -272,6 +280,7 @@ def main():
     parser.add_argument('--el1', action='store_true', help='Use EL1/HVC instead of EL2/SMC')
     parser.add_argument('--memory', action='store_true')
     parser.add_argument('--platform', action='store_true')
+    parser.add_argument('--cache', action='store_true', help='Check ARM64 instruction replacement on each CPU')
     parser.add_argument('--transfer', action='store_true', help='Check binary round trip and truncated input')
     parser.add_argument('--services', action='store_true', help='Check reverse pipe descriptors')
     parser.add_argument('--power', action='store_true', help='Reboot, log in again, then power off')
@@ -284,7 +293,7 @@ def main():
         raise RuntimeError(f'Required filesystem is not mounted: {lab.WORK}')
     os.umask(0o077)
     result = run(args.manifest, args.el1, args.memory, args.power, args.normal, args.platform,
-                 args.transfer, args.services)
+                 args.transfer, args.services, args.cache)
     if args.result:
         lab.save(args.result, result)
     print(json.dumps({key: result.get(key) for key in

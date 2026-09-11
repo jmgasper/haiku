@@ -3,6 +3,7 @@ UsePrivateSystemHeaders ;
 
 SimpleTest rock5_memory_probe : memory_probe.cpp ;
 SimpleTest rock5_platform_probe : platform_probe.cpp ;
+SimpleTest rock5_cache_probe : cache_probe.cpp ;
 SimpleTest rock5_file_transfer : file_transfer.cpp : network ;
 
 UsePrivateHeaders app net shared storage ;

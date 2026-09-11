@@ -7,6 +7,7 @@
 #include <KernelExport.h>
 
 #include <arch/cpu.h>
+#include <arch/arm64/cache_line_size.h>
 #include <boot/kernel_args.h>
 #include <commpage.h>
 #include <elf.h>
@@ -147,8 +148,8 @@ arch_cpu_sync_icache(void *address, size_t len)
 	uint64_t ctr_el0 = 0;
 	asm volatile ("mrs\t%0, ctr_el0":"=r" (ctr_el0));
 
-	uint64_t icache_line_size = 4 << (ctr_el0 << 0xF);
-	uint64_t dcache_line_size = 4 << ((ctr_el0 >> 16) & 0xF);
+	const uint64_t icache_line_size = arm64_instruction_cache_line_size(ctr_el0);
+	const uint64_t dcache_line_size = arm64_data_cache_line_size(ctr_el0);
 	uint64_t addr = (uint64_t)address;
 	uint64_t end = addr + len;
 
@@ -157,14 +158,14 @@ arch_cpu_sync_icache(void *address, size_t len)
 		asm volatile ("dc cvau, %0" : : "r"(address_dcache) : "memory");
 	}
 
-	asm("dsb ish");
+	asm volatile("dsb ish" : : : "memory");
 
 	for (uint64_t address_icache = ROUNDDOWN(addr, icache_line_size);
-         address_icache < end; address_icache += icache_line_size) {
+	     address_icache < end; address_icache += icache_line_size) {
 		asm volatile ("ic ivau, %0" : : "r"(address_icache) : "memory");
 	}
-	asm("dsb ish");
-	asm("isb");
+	asm volatile("dsb ish" : : : "memory");
+	asm volatile("isb" : : : "memory");
 }
 
 

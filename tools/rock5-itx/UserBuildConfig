@@ -11,6 +11,6 @@ rule UserBuildConfigRulePreImage
 	SEARCH on $(bootscript) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
 	AddFilesToHaikuImage home config settings boot : $(bootscript) ;
 	AddFilesToHaikuImage home config non-packaged bin
-		: rock5_memory_probe rock5_platform_probe rock5_file_transfer
+		: rock5_memory_probe rock5_platform_probe rock5_cache_probe rock5_file_transfer
 			rock5_services_probe ;
 }
