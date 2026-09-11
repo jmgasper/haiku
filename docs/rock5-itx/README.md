@@ -175,7 +175,7 @@ Create an overlay, validate it, and start a native session with:
 
 ```sh
 python3 tools/rock5-itx/shell_image.py BASE_MANIFEST.json --rndis-only
-python3 tools/rock5-itx/qemu_shell.py PRIVATE_MANIFEST.json --memory --platform --services --transfer --power --normal \
+python3 tools/rock5-itx/qemu_shell.py PRIVATE_MANIFEST.json --memory --platform --cache --services --transfer --power --normal \
     --result /mnt/HaikuWork/state/shell-qemu.json
 /mnt/HaikuWork/nanokvm/.venv/bin/python tools/rock5-itx/session.py \
     PRIVATE_MANIFEST.json /mnt/HaikuWork/state/shell-qemu.json --seconds 1800
@@ -189,6 +189,10 @@ power-off; `--normal` exercises desktop shutdown. Omit `--normal` for the quick
 kernel shutdown path. `--el1` checks HVC instead of the default EL2/SMC path.
 The shell client currently uses Python 3.12's standard-library telnet support.
 `--platform` checks pinned CPU clocks, fork/exec and protected-page faults.
+`--cache` replaces executable instructions across cache-line and page boundaries,
+calls Haiku's cache synchronization interface, and checks the result on each
+CPU. The installed `rock5_cache_probe 32` also runs this check on native ARM64;
+emulation does not establish physical cache coherence.
 `--services` forces reverse-ordered pipe descriptors and checks a negative
 control. `--transfer` verifies an 8 MiB binary round trip and rejects truncated
 input.

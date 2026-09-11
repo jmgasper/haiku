@@ -12,7 +12,7 @@ firmware supports it.
 | NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; staged downloads passed before/after native reboot, but simultaneous USB/Ethernet relay still causes outages; the latest outage did not recover through the hardware watchdog |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | Thirty-six host checks pass locally, including RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
+| Automated controls | Thirty-seven host checks pass locally, including ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
 | Native Haiku on ROCK | All eight CPUs start; platform EHCI mounts the NanoKVM boot volume; Tracker/Deskbar, NanoKVM keyboard and mouse, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; sustained acceptance remains open |
@@ -928,3 +928,40 @@ was requested. Evidence is in
 `artifacts/controller-guarded-native/20260911T231505Z-09a084/controller-recovery.json`.
 The watchdog's earlier successes do not establish recovery from every outage,
 and the RNDIS bounds correction does not fix this relay failure.
+
+## ARM64 instruction-cache synchronization
+
+Source revision `e10bf161c52aa09d566216f3ab1be2bbe3a1f844` corrects a shift
+expression in `arch_cpu_sync_icache()`. Instruction-cache line size must use
+the low four bits of `CTR_EL0`; the old expression shifted the register value
+instead of masking it, producing an invalid C++ shift count. The change uses
+small shared decoding helpers and adds compiler memory clobbers to the existing
+cache-maintenance barriers. The architectural sequence remains data clean,
+barrier, instruction invalidate, barrier and instruction synchronization, as
+described in [Arm's cache-maintenance explanation](https://developer.arm.com/community/arm-community-blogs/b/architectures-and-processors-blog/posts/caches-self-modifying-code-implementing-clear-cache).
+
+All 37 host checks passed in `artifacts/control-checks-arm64-cache.log`. The
+cache test compiles the actual decoding helpers with UndefinedBehaviorSanitizer
+and checks explicit register values with different instruction/data line sizes.
+Substituting the old expression into a temporary copy makes that same test fail
+with an excessive-shift diagnostic; evidence is in
+`artifacts/arm64-cache-regression/`. The source helpers remain corrected.
+
+The clean build has base-image SHA-256
+`54ca9b7cf76eed624e6d47e753c903ac002dae3558461d082c5b1dde4b42d01a`
+and private-image SHA-256
+`8c32202ee225e6aafc36238406b537ee847af8f01c5295be5f60691a49751327`.
+The full QEMU suite passed in `artifacts/qemu-shell/20260911T234507Z-90b6ce`,
+including 8,192 instruction-replacement checks across four CPUs, the memory,
+platform and service probes, the 8 MiB transfer and negative controls, normal
+reboot, fresh login and normal shutdown.
+
+The new `rock5_cache_probe` writes functions crossing 64-byte boundaries and
+one page boundary, calls `clear_caches()`, and verifies their changed return
+values after pinning the thread to each CPU. Each executing CPU performs its
+own instruction synchronization; code is never modified concurrently with its
+execution. See [Arm's discussion of cross-CPU instruction synchronization](https://developer.arm.com/community/arm-community-blogs/b/architectures-and-processors-blog/posts/caches-self-modifying-code-working-with-threads).
+QEMU does not prove physical cache coherence. Native validation remains pending:
+the owner reported power-cycling NanoKVM, but its saved LAN address remained
+unreachable and its saved mDNS name did not resolve at the subsequent check.
+No new controller boot ID or native test result has yet been observed.
