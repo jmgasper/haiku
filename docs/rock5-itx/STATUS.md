@@ -12,7 +12,7 @@ firmware supports it.
 | NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; SSH and authenticated API tested |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | Integrity, path isolation, locking and recovery-on-error regression checks pass; full image cycle validation in progress |
+| Automated controls | Nine regression checks pass; a complete 636 MiB image was uploaded, SHA-256 verified on NanoKVM, attached, rebooted, observed and recovered automatically |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Vendor U-Boot 2017.09; no EFI handoff verified and no firmware replacement performed |
 | Native Haiku on ROCK | Not yet booted; firmware handoff and UART are the next gates |
@@ -26,6 +26,13 @@ processing. The minimum image lacks some optional libraries: screen-saver and
 shortcut input filters and `desklink` report missing dependencies. These do
 not prevent this basic desktop boot; broader ARM64 package completeness remains
 part of phase 11. No GPU acceleration or networking was tested in QEMU.
+
+First full hardware cycle:
+`/mnt/HaikuWork/artifacts/hardware/20260911T045250Z-a193a5/result.json`.
+The board booted ROOBI with the Haiku disk attached, and recovery reselected
+the known recovery image and returned a new ROOBI boot ID. One HDMI timeout
+during reboot was recorded without interrupting recovery. This validates the
+deployment/observation/recovery loop, not Haiku boot on the RK3588.
 
 Inventory observed from this unit: RK3588, 16 GiB RAM, approximately 7.3 GiB
 onboard eMMC, 16 MiB SPI loader device, two `10ec:8125` rev 05 Ethernet devices,

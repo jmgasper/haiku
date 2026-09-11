@@ -141,7 +141,9 @@ actions BuildEfiSDImage1
 
 	# populate
 	echo "mkdir -p myfs/EFI/BOOT" | ${FATFS} $(1)
-	echo "cp :$(2[4-4]) myfs/EFI/BOOT/$(EFINAME)" | ${FATFS} $(1)
+	# FAT cannot store Haiku attributes. Copying BEOS:TYPE first can abort the
+	# copy and leave an empty EFI loader on incremental builds.
+	echo "cp --ignore-attributes :$(2[4-4]) myfs/EFI/BOOT/$(EFINAME)" | ${FATFS} $(1)
 
 	# copy misc files
 	for i in $(2[5-]) ; do

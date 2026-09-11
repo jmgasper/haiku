@@ -87,14 +87,15 @@ python3 tools/rock5-itx/lab.py recover
 ```
 
 Replace `IMAGE.json` with the emitted manifest filename. QEMU uses its own
-copy-on-write overlay, a saved firmware copy, serial log, screenshot and JSON
+copy-on-write overlay presented as a read-only USB disk, a saved firmware copy,
+serial log, screenshot and JSON
 result. `--expect REGEX` makes a missing serial marker fail the command; choose
 a marker that proves the milestone under test. Without a marker the result is
 `observed`, requiring review of the evidence. A loader banner is not a desktop
 pass, and emulated PCI/USB is not RK3588 platform validation.
 
 `cycle` owns the hardware lock, verifies local and remote image hashes, attaches
-the image in USB disk mode, resets the target, captures HDMI frames, and then
+the image in read-only USB disk mode, resets the target, captures HDMI frames, and then
 returns the board to ROOBI even if the trial or capture fails. A failed recovery
 returns a nonzero status and preserves the error. Initial trials start from
 reachable ROOBI. Its SSH boot ID establishes recovery; the NanoKVM power LED
@@ -103,7 +104,9 @@ API currently reports false even when the board is on.
 `deploy` performs upload and attachment without rebooting. It uploads through
 a temporary HTTP endpoint bound to the workstation's LAN address, serving
 exactly one artifact, then shuts the server down. An existing image is never
-overwritten. If NanoKVM is exporting the entire `/data` partition, first ensure
+overwritten. Read-only USB presentation keeps guest writes from changing the
+uploaded artifact; use separate scratch disks for persistence/driver tests.
+If NanoKVM is exporting the entire `/data` partition, first ensure
 it is unmounted on the ROCK and detach it before writing to the image library.
 Do not edit a selected image in place. Retain the recovery image and latest
 known-good image when clearing old uploads for space.

@@ -15,6 +15,7 @@ import select
 import shlex
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import termios
@@ -42,6 +43,46 @@ def digest(path):
         for chunk in iter(lambda: stream.read(1024 * 1024), b''):
             value.update(chunk)
     return value.hexdigest()
+
+
+def efi_metadata(data):
+    if len(data) < 64 or data[:2] != b'MZ':
+        raise RuntimeError('EFI loader is empty, truncated, or missing its DOS header')
+    offset = struct.unpack_from('<I', data, 0x3c)[0]
+    if offset + 94 > len(data) or data[offset:offset + 4] != b'PE\0\0':
+        raise RuntimeError('EFI loader has an invalid PE header')
+    machine = struct.unpack_from('<H', data, offset + 4)[0]
+    magic = struct.unpack_from('<H', data, offset + 24)[0]
+    subsystem = struct.unpack_from('<H', data, offset + 24 + 68)[0]
+    if (machine, magic, subsystem) != (0xaa64, 0x20b, 10):
+        raise RuntimeError('EFI loader is not an ARM64 PE32+ EFI application')
+    return {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest(), 'machine': 'ARM64'}
+
+
+def validate_image(image):
+    image = local_path(image)
+    with image.open('rb') as stream:
+        mbr = stream.read(512)
+    if len(mbr) != 512 or mbr[510:] != b'\x55\xaa':
+        raise RuntimeError('Missing MBR signature')
+    partitions = []
+    for index in range(4):
+        entry = mbr[446 + index * 16:462 + index * 16]
+        start, count = struct.unpack_from('<II', entry, 8)
+        if count:
+            if start == 0 or (start + count) * 512 > image.stat().st_size:
+                raise RuntimeError('Partition extends outside the image')
+            partitions.append({'type': entry[4], 'start_sector': start, 'sectors': count})
+    ordered = sorted(partitions, key=lambda p: p['start_sector'])
+    if any(a['start_sector'] + a['sectors'] > b['start_sector'] for a, b in zip(ordered, ordered[1:])):
+        raise RuntimeError('Overlapping image partitions')
+    esp = [p for p in partitions if p['type'] == 0xef]
+    if len(esp) != 1 or not any(p['type'] == 0xeb for p in partitions):
+        raise RuntimeError('Expected one EFI partition and a Haiku BFS partition')
+    mtype = shutil.which('mtype') or str(WORK / 'toolchains/host/usr/bin/mtype')
+    loader = subprocess.run([mtype, '-i', f'{image}@@{esp[0]["start_sector"] * 512}',
+                             '::/EFI/BOOT/BOOTAA64.EFI'], check=True, capture_output=True).stdout
+    return {'partitions': partitions, 'efi_loader': efi_metadata(loader)}
 
 
 def run(command, **kwargs):
@@ -102,7 +143,7 @@ def remote_image(value):
     return value
 
 
-def attach(config, image):
+def attach(config, image, readonly=True):
     remote_image(image)
     # Version 2.4.3 may retain CD-ROM flags when returning to disk mode.
     # Detach first, clear flags, then let the API select and persist the image.
@@ -112,12 +153,12 @@ if not p.is_file(): raise RuntimeError('Image is missing')
 l = Path({config['gadget']!r}) / 'functions/mass_storage.disk0/lun.0'
 (l / 'file').write_text('\\n')
 (l / 'cdrom').write_text('0\\n')
-(l / 'ro').write_text('0\\n')
+(l / 'ro').write_text({('1' if readonly else '0')!r} + '\\n')
 '''
     remote_python(config, code)
     nanokvm.api('/api/storage/image/mount', {'file': image, 'cdrom': False})
     actual = gadget(config)
-    if actual != {'file': image, 'ro': '0', 'cdrom': '0'}:
+    if actual != {'file': image, 'ro': '1' if readonly else '0', 'cdrom': '0'}:
         raise RuntimeError(f'Unexpected USB disk state: {actual}')
     return actual
 
@@ -155,6 +196,7 @@ def artifact(image):
         'buildtools_revision': record['inputs']['buildtools_revision'],
         'build_started_utc': record['started_utc'], 'build_finished_utc': record['finished_utc'],
         'haiku_revision': record['haiku_revision'],
+        'layout': record['layout'],
         'host': run(['uname', '-a']), 'gcc': run(['gcc', '--version']).splitlines()[0],
         'qemu': run(['qemu-system-aarch64', '--version']).splitlines()[0],
     }
@@ -305,7 +347,7 @@ def start_serial(config, output):
 
 def recover(config):
     previous = boot_id(config)
-    attach(config, config['recovery_image'])
+    attach(config, config['recovery_image'], readonly=False)
     nanokvm.api('/api/vm/gpio', {'type': 'reset', 'duration': 800})
     value = wait_recovery(config, previous)
     if not value:
@@ -387,7 +429,7 @@ def qemu(manifest_path, seconds, expect):
     shutil.copyfile(firmware, firmware_copy)
     command = ['qemu-system-aarch64', '-M', 'virt', '-cpu', 'max', '-m', '2048', '-smp', '4',
                '-bios', str(firmware_copy), '-device', 'qemu-xhci,id=usb',
-               '-drive', f'file={overlay},if=none,id=drv0,format=qcow2',
+               '-drive', f'file={overlay},if=none,id=drv0,format=qcow2,readonly=on',
                '-device', 'usb-storage,bus=usb.0,drive=drv0',
                '-device', 'usb-kbd,bus=usb.0', '-device', 'usb-tablet,bus=usb.0',
                '-device', 'ramfb', '-display', 'none', '-monitor', 'none', '-nic', 'none',

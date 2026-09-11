@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import sys
 
-from lab import WORK, SOURCE, digest, run, save, timestamp
+from lab import WORK, SOURCE, digest, run, save, timestamp, validate_image
 
 OUTPUT = WORK / 'build/arm64'
 
@@ -31,6 +31,7 @@ if __name__ == '__main__':
             raise RuntimeError('Sources changed during the build. Rebuild before packaging.')
         image = OUTPUT / 'haiku-arm64-mmc.image'
         record.update({'image': str(image), 'sha256': digest(image), 'finished_utc': timestamp(),
+                       'layout': validate_image(image),
                        'haiku_revision': (OUTPUT / 'build/haiku-revision').read_text().strip()})
         save(OUTPUT / 'build-record.json', record)
     else:

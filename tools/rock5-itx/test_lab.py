@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import struct
 import unittest
 from unittest.mock import patch
 
@@ -52,7 +53,7 @@ class LabTests(unittest.TestCase):
         build.mkdir(parents=True)
         (build / 'build-record.json').write_text(json.dumps({
             'sha256': lab.digest(image), 'target': '@minimum-mmc',
-            'started_utc': 'start', 'finished_utc': 'finish', 'haiku_revision': 'hrev1+1',
+            'started_utc': 'start', 'finished_utc': 'finish', 'haiku_revision': 'hrev1+1', 'layout': {},
             'inputs': {'source_status': '', 'source_revision': 'built-revision',
                        'source_dirty': False, 'buildtools_revision': 'built-tools'},
         }))
@@ -60,6 +61,21 @@ class LabTests(unittest.TestCase):
             result = lab.artifact(image)
         self.assertEqual(result['source_revision'], 'built-revision')
         self.assertEqual(result['buildtools_revision'], 'built-tools')
+
+    def test_zero_length_efi_loader_is_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, 'empty'):
+            lab.efi_metadata(b'')
+
+    def test_x86_efi_loader_is_rejected_for_arm64(self):
+        data = bytearray(256)
+        data[:2] = b'MZ'
+        struct.pack_into('<I', data, 0x3c, 64)
+        data[64:68] = b'PE\0\0'
+        struct.pack_into('<H', data, 68, 0x8664)
+        struct.pack_into('<H', data, 88, 0x20b)
+        struct.pack_into('<H', data, 156, 10)
+        with self.assertRaisesRegex(RuntimeError, 'ARM64'):
+            lab.efi_metadata(data)
 
     def test_failed_deployment_still_recovers_and_preserves_error(self):
         with patch.object(lab.nanokvm, 'api'), patch.object(lab, 'boot_id', return_value='before'), \
