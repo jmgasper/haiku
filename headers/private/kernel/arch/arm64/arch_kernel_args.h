@@ -19,6 +19,10 @@
 
 #define MAX_VIRTUAL_RANGES_TO_KEEP	32
 
+#define ARM64_PSCI_NONE	0
+#define ARM64_PSCI_SMC	1
+#define ARM64_PSCI_HVC	2
+
 typedef struct {
 	uint64	phys_pgdir;
 	uint64	vir_pgdir;
@@ -34,6 +38,8 @@ typedef struct {
 
 	uart_info	uart;
 	intc_info	interrupt_controller;
+	// PSCI 0.2 or newer, discovered from the device tree or ACPI FADT.
+	uint32		psci_conduit;
 
 } _PACKED arch_kernel_args;
 

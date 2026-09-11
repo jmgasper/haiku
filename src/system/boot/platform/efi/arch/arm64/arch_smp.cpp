@@ -263,23 +263,30 @@ arm64_handle_acpi_fadt(acpi_fadt_arm_boot_arch armBootFlags)
 		return;
 
 	sCpuEnableMethod = CpuEnableMethod::Psci;
-	if (armBootFlags.psci_use_hvc)
+	if (armBootFlags.psci_use_hvc) {
 		sPsciCallFn = arm64_psci_call_hvc;
-	else
+		gKernelArgs.arch_args.psci_conduit = ARM64_PSCI_HVC;
+	} else {
 		sPsciCallFn = arm64_psci_call_smc;
+		gKernelArgs.arch_args.psci_conduit = ARM64_PSCI_SMC;
+	}
 }
 
 
 void
 arm64_handle_fdt_psci_node(const void* fdt, int node)
 {
-	const char* method = (const char*)fdt_getprop(fdt, node,
-		"method", NULL);
+	int length;
+	const char* method = (const char*)fdt_getprop(fdt, node, "method", &length);
+	if (method == NULL || length != 4)
+		return;
 
-	if (strcmp(method, "smc") == 0) {
+	if (memcmp(method, "smc", 4) == 0) {
 		sPsciCallFn = arm64_psci_call_smc;
-	} else if (strcmp(method, "hvc") == 0) {
+		gKernelArgs.arch_args.psci_conduit = ARM64_PSCI_SMC;
+	} else if (memcmp(method, "hvc", 4) == 0) {
 		sPsciCallFn = arm64_psci_call_hvc;
+		gKernelArgs.arch_args.psci_conduit = ARM64_PSCI_HVC;
 	}
 }
 
