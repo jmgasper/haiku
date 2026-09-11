@@ -400,7 +400,7 @@ def qmp_command(stream, command, arguments=None):
             return response['return']
 
 
-def qemu(manifest_path, seconds, expect):
+def qemu(manifest_path, seconds, expect, el2=False):
     manifest, image = read_manifest(manifest_path)
     output = WORK / 'artifacts/qemu' / timestamp()
     output.mkdir(parents=True)
@@ -409,7 +409,8 @@ def qemu(manifest_path, seconds, expect):
     firmware = Path('/usr/share/qemu-efi-aarch64/QEMU_EFI.fd')
     firmware_copy = output / 'QEMU_EFI.fd'
     shutil.copyfile(firmware, firmware_copy)
-    command = ['qemu-system-aarch64', '-M', 'virt', '-cpu', 'max', '-m', '2048', '-smp', '4',
+    machine = 'virt,virtualization=on,gic-version=3' if el2 else 'virt'
+    command = ['qemu-system-aarch64', '-M', machine, '-cpu', 'max', '-m', '2048', '-smp', '4',
                '-bios', str(firmware_copy), '-device', 'qemu-xhci,id=usb',
                '-drive', f'file={overlay},if=none,id=drv0,format=qcow2',
                '-device', 'usb-storage,bus=usb.0,drive=drv0',
@@ -468,6 +469,7 @@ def main():
     p = sub.add_parser('artifact'); p.add_argument('image')
     p = sub.add_parser('qemu'); p.add_argument('manifest')
     p.add_argument('--seconds', type=int, default=90); p.add_argument('--expect')
+    p.add_argument('--el2', action='store_true', help='Exercise EL2 handoff with GICv3')
     p = sub.add_parser('deploy'); p.add_argument('manifest')
     p = sub.add_parser('cycle'); p.add_argument('manifest'); p.add_argument('--seconds', type=int, default=60)
     sub.add_parser('recover')
@@ -478,7 +480,7 @@ def main():
         with lock('build'):
             result = artifact(args.image)
     elif args.action == 'qemu':
-        result = qemu(args.manifest, args.seconds, args.expect)
+        result = qemu(args.manifest, args.seconds, args.expect, args.el2)
     else:
         config = json.loads(CONFIG.read_text())
         nanokvm.BASE = config['nanokvm_url']

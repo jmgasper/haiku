@@ -84,6 +84,7 @@ arm64_common_cpu_startup()
 void
 arch_start_kernel(addr_t kernelEntry)
 {
+	dprintf("Handoff entry: ISR_EL1=%#" B_PRIx64 "\n", READ_SPECIALREG(ISR_EL1));
 	// Prepare to exit EFI boot services.
 	// Read the memory map.
 	// First call is to determine the buffer size.
@@ -197,12 +198,13 @@ arch_start_kernel(addr_t kernelEntry)
 			panic("Unable to fetch system memory map.");
 		}
 	}
+	uint64 isrAfterExit = READ_SPECIALREG(ISR_EL1);
 
 	// Use the native UART as soon as boot services are gone, so failures
 	// while installing the runtime map are visible on the serial console.
 	serial_init();
 	serial_enable();
-	dprintf("Exited EFI boot services; installing runtime memory map\n");
+	dprintf("Exited EFI boot services: ISR_EL1=%#" B_PRIx64 "\n", isrAfterExit);
 
 	// Update EFI, generate final kernel physical memory map, etc.
 	arch_mmu_post_efi_setup(memoryMapSize, memoryMap,
@@ -210,13 +212,16 @@ arch_start_kernel(addr_t kernelEntry)
 	dprintf("EFI runtime memory map installed; preparing %u CPUs\n", gKernelArgs.num_cpus);
 
 	arm64_common_cpu_startup();
-	dprintf("Boot CPU MMU setup complete; starting secondary CPUs\n");
+	dprintf("Boot CPU MMU setup complete: ISR_EL1=%#" B_PRIx64 "\n",
+		READ_SPECIALREG(ISR_EL1));
 
 	smp_boot_other_cpus(ttbr1, kernelEntry, (addr_t)&gKernelArgs);
 
 	if (arch_mmu_read_access(kernelEntry)
 		&& arch_mmu_read_access(gKernelArgs.cpu_kstack[0].start)) {
 		// Enter the kernel!
+		dprintf("Entering kernel at %#" B_PRIxADDR " on CPU 0 (total %u)\n",
+			kernelEntry, gKernelArgs.num_cpus);
 		arch_enter_kernel(&gKernelArgs, kernelEntry,
 			gKernelArgs.cpu_kstack[0].start + gKernelArgs.cpu_kstack[0].size, 0);
 	} else {
