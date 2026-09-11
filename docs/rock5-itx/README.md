@@ -112,12 +112,24 @@ it is unmounted on the ROCK and detach it before writing to the image library.
 Do not edit a selected image in place. Retain the recovery image and latest
 known-good image when clearing old uploads for space.
 
+The ROCK's debug UART2 header is now connected to NanoKVM UART1 (`/dev/ttyS1`),
+with TX/RX crossed and a common ground. At 1,500,000 baud, 8N1 without flow
+control, boot output is readable, but longer input is corrupted; see
+[STATUS.md](STATUS.md). Local SSH capture checks and raw evidence live under
+`/mnt/HaikuWork/nanokvm/tools/test_uart.py` and `artifacts/serial/` respectively.
+`cycle` now uses this remote serial path by default, checks that capture is ready
+before deployment, and treats an SSH or UART disconnection as a failed trial.
+Raw bytes, worker diagnostics and capture metadata are saved with each run.
+An actual deploy/reset/recovery trial captured 30,556 bytes without transport errors.
+
 `state/lab.json` was initialized from [lab.example.json](../../tools/rock5-itx/lab.example.json).
-When the USB UART is connected to this workstation and verified, set
-`serial_device` to its stable `/dev/serial/by-id/...` path. `cycle` will then
-capture a raw `serial.log` from before deployment through recovery at the
-configured baud rate. This path is implemented but physical serial capture
-has not been validated without the cable.
+Set `serial_remote_device` to `/dev/ttyS1` for the NanoKVM connection. If the
+ordered USB UART is later connected to this workstation and verified, clear
+`serial_remote_device` and set `serial_device` to its stable
+`/dev/serial/by-id/...` path. Configure only one transport. Both paths capture
+a raw `serial.log` from before deployment through recovery and restore the
+previous terminal settings on normal shutdown. The workstation UART path is
+covered by PTY tests; the physical USB adapter has not yet been tested.
 
 SSH credentials, host keys and API cookies remain local. After an expired API
 session, run `python3 tools/rock5-itx/nanokvm.py login` to renew it; that command
@@ -129,17 +141,59 @@ device access run here on the workstation. There is no unattended public
 self-hosted GitHub runner. Use these commands from an active development
 session; the scripts do not create an independent background coding service.
 
-## Next hardware gate
+## EFI firmware and recovery
 
-The board currently boots vendor U-Boot into ROOBI. Establish an ARM64 EFI
-launch path and early serial capture before kernel bring-up. The
-[RK3588 EDK2 project](https://github.com/edk2-porting/edk2-rk3588) lists ROCK 5 ITX
-as supported, but this firmware has not been installed or tested on this unit.
-Its firmware peripheral support does not supply Haiku kernel drivers after
-`ExitBootServices`. Decide ACPI versus device-tree handoff from actual tables
-and Haiku support, and retain the bootable ROOBI recovery path.
+Board-specific [EDK2 v1.1](https://github.com/edk2-porting/edk2-rk3588/releases/tag/v1.1)
+is installed in SPI. The native EFI diagnostic completed with a 1920x1080 GOP
+framebuffer, a memory map including RAM above 4 GiB, and both device-tree and
+ACPI tables. Those firmware interfaces provide the starting point for Haiku;
+kernel drivers remain separate work after `ExitBootServices`.
+The current Haiku profile exposes only the mainline device tree
+(`ConfigTableMode=2`, `FdtCompatMode=2`), avoiding duplicate CPU enumeration
+through both firmware interfaces. The original diagnostic captured both tables.
 
-The original SPI dump and first 16 MiB of eMMC are local snapshots, not a full
-backup or validated restore image. Serial cable installation, a complete
-backup/restore drill and exact board revision identification are phase 1 work.
+ROOBI now boots through a small EFI launcher using its original Linux kernel,
+initrd and vendor DTB, with `acpi=off`. The selected recovery image is recorded
+in the local lab configuration. Recovery has returned over SSH through this
+EFI path. Use a 180-second recovery timeout for this configuration.
+
+NanoKVM requires its documented `/boot/BIOS` flag and a controller restart for
+EDK2 keyboard input. F4 entry into USB MaskROM has passed. Exiting MaskROM on
+this unit required the verified RAM downloader followed by `rkdeveloptool rd 0`;
+the normal reset and power-button sequence did not clear that state. See
+[RECOVERY.md](RECOVERY.md) before firmware recovery.
+
+Build the EFI diagnostic and recovery launcher with:
+
+```sh
+bash tools/rock5-itx/build-efi-tools.sh
+python3 tools/rock5-itx/efi_media.py efi-probe \
+    /mnt/HaikuWork/build/efi-tools/efi-probe.efi
+```
+
+`efi_media.py` creates a fresh 96 MiB FAT USB image and a deployment manifest,
+then verifies every payload by reading it back from FAT. Add sibling files with
+`--file DESTINATION=SOURCE`. The diagnostic saves `haiku-*` files on its volume
+and optionally starts `recovery.efi`. For ROOBI, use `roobi-efi.efi` as the entry
+and supply `roobi-kernel.efi`, `roobi-initrd.img`, `roobi.dtb`, and
+`roobi-options.txt`; preserve the exact kernel/root UUID/options in the local
+recovery manifest. The native table dumps and observed firmware settings are
+recorded in [STATUS.md](STATUS.md).
+
+Haiku normally requests 115,200 baud, but this EDK2 release cannot change its
+serial attributes. The fork now retains the working firmware interface and UART
+configuration when that request is rejected. Current ROCK trials therefore use
+1,500,000 baud for both `serial_trial_baud` and `serial_baud`. The optional trial
+override remains available for firmware that accepts a different rate. Capture
+acknowledges each transition and records its byte offset, restores terminal
+settings when it ends, and still recovers the target after failed baud control.
+
+The owner identified this board as PCB v1.12. A full 7,818,182,656-byte eMMC
+user-area backup, both 4 MiB eMMC boot areas and the 16 MiB SPI image now live
+under `artifacts/recovery/`. A separately preserved restoration copy passes
+offline filesystem checks. USB loader and MaskROM reads match the saved boot
+region and SPI hashes. A full USB write/read-back/ROOBI-boot restoration drill has passed; see
+[RECOVERY.md](RECOVERY.md) and `state/rock5-backup.json` for the procedure
+and evidence.
+Reliable serial command entry remains phase 1 work.
 Netboot remains optional; NanoKVM already removes physical USB image swapping.
