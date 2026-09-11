@@ -223,8 +223,29 @@ For a checked download, use `shell.py download TARGET NAME DESTINATION
 --output TRANSCRIPT`, or the session command
 `{"action":"download","target":"10.239.6.146","name":"probe","destination":"/mnt/HaikuWork/artifacts/probe-returned"}`.
 The destination must be new, and downloaded bytes must match the guest checksum.
+Downloads now finish receiving the file into a unique NanoKVM `/data` scratch
+file before copying it to the workstation over SSH. The two stages check the
+byte count and SHA-256; the final file must also match the guest's checksum.
+Successful copies remove the scratch file. Failures retain any scratch file and
+record its exact path in the transcript's `.staging.json` evidence. Downloads
+have the same 16 MiB limit as uploads. Staged reception now defaults to
+256 KiB/second with a small TCP receive window; `--rate-limit 0` (or
+`"rate_limit":0`) disables this experimental pacing. Unpaced staging also
+reproduced a native outage after reboot, so staging alone is not a reliable fix.
+The diagnostic `--transport relay` option
+(or `"transport":"relay"` in a session) retains the simultaneous USB/SSH path,
+which repeatedly made this NanoKVM unreachable during native Haiku downloads.
 All file arguments must be beneath `/mnt/HaikuWork`. During an active session,
 use its JSON commands so target operations remain serialized.
+
+For controller-outage testing on this NanoKVM, `guarded_session.py` accepts the
+same arguments and JSON commands as `session.py`. It arms the verified hardware
+watchdog only for that session and disarms it on normal exit. The web password
+is read from `NANOKVM_PASSWORD` or a prompt and kept in process memory for API
+reauthentication after a controller reset. Lost SSH heartbeats leave the timer
+armed; recovery waits for a new controller boot ID and API readiness, starts a
+fresh UART capture, then restores ROOBI. Failed trials remain failures even when
+recovery succeeds. No persistent controller startup service is installed.
 
 ## EFI firmware and recovery
 

@@ -1,9 +1,11 @@
 """Failure-path checks for the private lab command transport."""
 
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import shlex
 import socket
 import struct
 import subprocess
@@ -108,6 +110,72 @@ class ShellTests(unittest.TestCase):
                                self.work / 'download.txt')
             receiver.assert_not_called()
         self.assertEqual(destination.read_bytes(), b'previous result')
+
+    def staged_download_trial(self, corrupt=False, truncate=False):
+        """Run the real receiver and copy commands, replacing SSH with local peers."""
+        scratch = self.work / 'controller'
+        scratch.mkdir()
+        fixture = bytes(range(256)) * 513
+        digest = hashlib.sha256(fixture).hexdigest()
+        start_process = subprocess.Popen
+        copied = []
+
+        def peer(command, **kwargs):
+            remote = shlex.split(command[-1])
+            if remote[0] == 'python3':
+                code = remote[-1].replace('/data/haiku-download-', str(scratch / 'haiku-download-'))
+                code = code.replace("listener.bind(('10.239.6.1', 0))",
+                                    "listener.bind(('127.0.0.1', 0))")
+                code = code.replace("peer[0] != '10.239.6.146'", "peer[0] != '127.0.0.1'")
+                return start_process([sys.executable] + remote[1:-1] + [code], **kwargs)
+            self.assertEqual(remote[0], 'cat')
+            staged = scratch / Path(remote[1]).name
+            # USB reception must already be complete when Ethernet copying starts.
+            self.assertEqual(staged.read_bytes(), fixture)
+            copied.append(staged)
+            if corrupt:
+                with staged.open('r+b') as data:
+                    data.write(b'corruption')
+            return start_process(['cat', str(staged)], **kwargs)
+
+        def send(config, target, commands, output, timeout):
+            match = re.search(r'rock5_file_transfer send (\S+) (\d+) ([0-9a-f]+) ', commands)
+            self.assertIsNotNone(match)
+            with socket.create_connection(('127.0.0.1', int(match[2])), timeout=10) as connection:
+                connection.sendall(match[3].encode() + b'\n' + struct.pack('!Q', len(fixture)))
+                connection.sendall(fixture[:1024] if truncate else fixture)
+            Path(output).write_text('ROCK5_DOWNLOAD_SHA256 ' + digest + '\n')
+            return {'status': 'pass'}
+
+        destination = self.work / 'download.bin'
+        output = self.work / 'download.txt'
+        config = {'ssh_config': str(self.work / 'config'), 'nanokvm_ssh': 'unused'}
+        with patch.object(shell.subprocess, 'Popen', side_effect=peer), \
+                patch.object(shell, 'run_commands', side_effect=send):
+            if corrupt or truncate:
+                message = 'differs from the USB receipt' if corrupt else 'Staged USB receiver failed'
+                with self.assertRaisesRegex(RuntimeError, message):
+                    shell.download(config, '10.239.6.146', 'source.bin', destination, output)
+                self.assertFalse(destination.exists())
+                self.assertFalse(output.with_suffix('.download.json').exists())
+            else:
+                result = shell.download(config, '10.239.6.146', 'source.bin', destination, output)
+                self.assertEqual(result['transport'], 'staged')
+                self.assertEqual(destination.read_bytes(), fixture)
+                self.assertEqual(destination.stat().st_mode & 0o777, 0o600)
+        receipt = json.loads(output.with_suffix('.staging.json').read_text())
+        self.assertEqual(receipt['remote_file_removed'], not (corrupt or truncate))
+        self.assertEqual(len(copied), 0 if truncate else 1)
+        self.assertEqual(bool(list(scratch.iterdir())), corrupt or truncate)
+
+    def test_staged_download_finishes_usb_before_copying_and_removes_scratch(self):
+        self.staged_download_trial()
+
+    def test_staged_download_rejects_corruption_before_accepting_file(self):
+        self.staged_download_trial(corrupt=True)
+
+    def test_staged_download_rejects_truncated_usb_transfer(self):
+        self.staged_download_trial(truncate=True)
 
     def test_large_command_drains_replies_before_send_completes(self):
         # Force both TCP windows to fill: the peer replies before consuming the

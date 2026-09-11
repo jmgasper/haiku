@@ -9,10 +9,10 @@ firmware supports it.
 | Repository | `jmgasper/haiku`, `rock5-itx` branch; upstream base `855b5d0e3126c86acc84d09f8e859272019bbbc2` |
 | Build tools | Haiku GCC 13.3.0 cross-compiler and binutils built successfully; buildtools `8375c2dbeaf109c520798cb234d57f0895463201` |
 | ARM64 image and QEMU | Current clean 336 MiB `@minimum-mmc` image passes first login at both EL1 and EL2 with 4 virtual CPUs and 2 GiB RAM; a basic Tracker/Deskbar desktop was inspected during phase 0 |
-| NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; SSH and authenticated API tested; repeated loss of controller LAN access during guest downloads currently blocks native trials |
+| NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; hardware watchdog restored access after a native transfer outage; simultaneous USB/Ethernet relay remains unreliable, with staged downloads under validation |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | Thirty-two control checks pass locally, including native interrupt decoding, EFI device-path matching, capture transport, baud transitions and shell/file failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
+| Automated controls | Thirty-five control checks pass locally, including native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
 | Native Haiku on ROCK | All eight CPUs start; platform EHCI mounts the NanoKVM boot volume; Tracker/Deskbar, NanoKVM keyboard and mouse, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; sustained acceptance remains open |
@@ -786,3 +786,87 @@ and [heartbeat check](https://github.com/sipeed/NanoKVM/blob/3b2ba7c0c1214f44da9
 The installed `/dev/watchdog*` devices, driver identity, timeout and clean
 disarm behavior must be inspected on the controller before planning a hardware
 watchdog trial. No watchdog setting has been changed.
+
+## Controller watchdog and transfer isolation
+
+Subsequent inspection found an installed `soph_wdt` hardware driver exposing
+`/dev/watchdog0`, with `nowayout=N` and a device-tree reset connection. The
+installed module's start, timeout and stop disassembly matches the relevant
+paths in the pinned [vendor implementation](https://github.com/sipeed/LicheeRV-Nano-Build/blob/d4003f15b35d43ad4842f427050ab2bba0114fa5/osdrv/interdrv/v2/wdt/wdt.c).
+Module SHA-256 is
+`05d687320c7a7872281b230b0528ab42d15bd9065828ac3a1730a9584c4a4f2d`.
+A requested 30-second timeout reports 21 seconds through `GETTIMEOUT`, while
+`GETTIMELEFT` immediately after feeding reports 30. Tests use frequent
+acknowledged heartbeats and do not assume the reported timeout is exact.
+
+| Watchdog check | Evidence under `artifacts/controller-watchdog/` |
+| --- | --- |
+| Enable, feed, disable and remain alive for 35 seconds afterward | `20260911T215941Z-d9eb06` |
+| Deliberately stop feeding; NanoKVM returns with a new boot ID in 50.6 seconds, ROOBI's boot ID unchanged | `20260911T220112Z-91d9cb` |
+| Acknowledged host heartbeats keep it alive for 40 seconds, followed by clean disarm | `20260911T220318Z-c2d2f0` |
+| Stop host heartbeats; NanoKVM returns in 68.3 seconds without a software reboot command | `20260911T220551Z-c7462a` |
+
+The temporary guard is scoped to individual tests; no watchdog startup service
+was installed. It leaves the hardware timer armed if the SSH heartbeat fails.
+An alternate SSH route through ROOBI's LAN connection to NanoKVM's USB address
+was also verified while ROOBI ran from eMMC.
+
+Three 8 MiB Linux comparisons passed with matching checksums and unchanged
+controller/ROOBI boot IDs: NanoKVM-to-workstation SSH in 3.30 seconds,
+ROOBI-to-NanoKVM USB with local hashing in 4.50 seconds, and the combined relay
+in 5.04 seconds. Evidence is in `artifacts/controller-baseline/` directories
+`20260911T220423Z-67d337`, `20260911T220441Z-cc2f73`, and
+`20260911T220510Z-46eed5`. SSH compression was disabled.
+
+Native session `artifacts/interactive/20260911T220734Z-efae81` passed the
+service/platform/memory checks, a 141,227-byte executable upload followed by
+execution, the 8 MiB upload, and an 8 MiB USB-only download hashed on NanoKVM.
+The combined USB/SSH relay then reproduced the controller outage, leaving an
+unaccepted 1,507,328-byte partial file. Normal reboot and power-off were not run.
+The hardware watchdog restored NanoKVM with a new boot ID. Initial automatic
+ROOBI recovery failed because SSH became available before the web API; the
+local wrapper now waits for API readiness. Recovery subsequently passed with
+125,417 captured UART bytes in
+`artifacts/controller-recovery/20260911T221542Z-73a13b`.
+
+This narrows the failing workload, without identifying the underlying defect.
+No kernel panic message reached the NanoKVM kernel-log capture before its SSH
+stream ended, and the guard's failure diagnostic was absent after reboot.
+Available memory stayed above 53,792 KiB in 67 five-second samples; their maximum
+reported temperature was 42.347 degrees Celsius. These observations do not rule
+out a sudden failure between samples.
+
+The lab's default download transport now receives and flushes a unique NanoKVM
+scratch file before copying it to the workstation. It verifies the receipt's
+length and SHA-256, then the guest's before/after checksum, and removes the
+scratch file on success. The original relay remains an explicit diagnostic
+option. All 35 host checks pass, including real local receiver processes for
+successful, truncated and corrupted staged transfers. A staged 8 MiB ROOBI
+comparison passed in 13.95 seconds and removed its scratch file:
+`artifacts/controller-baseline/20260911T222015Z-8a64b1`.
+
+In native session `artifacts/interactive/20260911T222106Z-571446`, the service,
+platform and memory checks passed again. The 8 MiB upload took 18.24 seconds and
+the first staged download passed in 22.34 seconds, with its scratch file removed.
+A short locked 8 GiB memory test passed before normal PSCI reboot. The new boot
+accepted authenticated commands and verified the persisted file's checksum.
+The second staged download then caused another controller outage during its
+USB-receive stage, before copying to the workstation. Thus simultaneous bulk
+Ethernet traffic is not required, and staging alone does not solve the problem.
+Normal power-off was not reached.
+
+This time the watchdog and API-readiness wait completed recovery automatically:
+NanoKVM returned with a new boot ID, a fresh UART capture recorded 125,586 bytes,
+and ROOBI became reachable. Evidence is in
+`artifacts/controller-guarded-native/20260911T222106Z-5b6ccb/controller-recovery.json`.
+The native test remains an error despite successful recovery. The verified
+guard and wrapper are now available as `controller_watchdog.py` and
+`guarded_session.py` in the lab tools.
+
+Staged reception now also limits its TCP receive window and paces data at
+256 KiB/second. Its 35 host checks pass, and an 8 MiB Linux comparison passed
+in 45.41 seconds in `artifacts/controller-baseline/20260911T224323Z-05a9b3`.
+An earlier paced attempt, `20260911T224132Z-15138a`, failed its ROOBI SSH
+prerequisite before transferring data and is retained separately. The paced
+transport has not yet passed native qualification; no controller driver fix
+is claimed.

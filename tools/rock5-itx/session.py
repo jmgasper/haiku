@@ -174,7 +174,8 @@ with lab.lock('hardware'):
                 elif action == 'download':
                     transcript = output / ('download-' + lab.timestamp() + '.txt')
                     value = shell.download(config, shell.usb_address(command['target']),
-                        command['name'], command['destination'], transcript)
+                        command['name'], command['destination'], transcript,
+                        command.get('transport', 'staged'), command.get('rate_limit', 256 * 1024))
                     result['events'][-1]['result'] = value
                     emit(value)
                 elif action == 'gpio':
