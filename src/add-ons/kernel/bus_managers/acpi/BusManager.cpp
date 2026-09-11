@@ -224,6 +224,17 @@ acpi_std_ops(int32 op,...)
 					"AcpiInitializeTables failed"))
 				goto err_acpi;
 
+			// DT-based firmware can publish a partial ACPI table set (for
+			// example BGRT) without an AML namespace. ACPICA's table loader
+			// assumes a valid DSDT index, so reject that case before calling it.
+			{
+				char signature[] = ACPI_SIG_DSDT;
+				ACPI_TABLE_HEADER dsdt;
+				if (checkAndLogFailure(AcpiGetTableHeader(signature, 1, &dsdt),
+						"ACPI namespace unavailable: no DSDT"))
+					goto err_acpi;
+			}
+
 #if defined(__i386__) || defined(__x86_64__)
 			smbios_module_info* smbios;
 			if (get_module(SMBIOS_MODULE_NAME, (module_info**)&smbios) == B_OK) {
