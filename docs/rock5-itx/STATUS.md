@@ -448,3 +448,19 @@ interfaces, but no input transfer completed after direct writes to NanoKVM's
 keyboard and relative-mouse character devices. Recovery returned boot ID
 `53228bd4-6825-4c57-be8e-ba21e9231e48`; 175,805 serial bytes were captured with
 no transport errors. USB input and networking remain under investigation.
+
+RNDIS control setup now matches the legacy CDC ACM `02/02/ff` interface used by
+NanoKVM, allocates one notification endpoint packet, and sends a four-byte
+packet-filter payload including directed traffic. The earlier fixed eight-byte
+buffer rejected QEMU's 16-byte notification endpoint, and its malformed
+packet-filter length caused a control stall. The corrected driver obtained
+DHCP address `10.0.2.15/24` in
+`artifacts/qemu-rndis/20260911T125207Z-4dfbb9`, with two packets transmitted and
+received and no interface errors. This test used one EL2 CPU and xHCI for
+RNDIS. Its local fixture blocks `usb_ecm` through package settings because
+QEMU exposes both RNDIS and ECM configurations; otherwise ECM switches the
+configuration under RNDIS. The base image is
+`2ae8081dff330fa2464f25ab95c9152196adedf92e70246e4a0dedce0df4b788`, and the
+fixture's parent hash and exact settings are recorded in its manifest. Native
+DHCP, sustained networking, configuration arbitration and hotplug acceptance
+are separate checks.

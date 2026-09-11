@@ -128,6 +128,13 @@ init_driver()
 			.dev_protocol = B_USB_RNDIS_ETHERNET_PROTOCOL,
 			0, 0 /* no specific vendor or device */
 		},
+		/* Legacy CDC ACM encoding used by Linux USB gadgets, including NanoKVM. */
+		{
+			.dev_class = USB_COMMUNICATION_DEVICE_CLASS,
+			.dev_subclass = USB_CDC_COMMUNICATION_INTERFACE_ACM_SUBCLASS,
+			.dev_protocol = 0xff,
+			0, 0 /* no specific vendor or device */
+		},
 		/* Other somewhat less standard devices: */
 		{
 			.dev_class = USB_COMMUNICATION_DEVICE_CLASS,

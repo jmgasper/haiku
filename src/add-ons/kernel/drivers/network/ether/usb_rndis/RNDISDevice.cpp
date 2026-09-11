@@ -59,6 +59,7 @@ enum MediaConnectStatus
 };
 
 
+const uint32 NDIS_PACKET_TYPE_DIRECTED = 0x00000001;
 const uint32 NDIS_PACKET_TYPE_ALL_MULTICAST = 0x00000004;
 const uint32 NDIS_PACKET_TYPE_BROADCAST = 0x00000008;
 
@@ -79,6 +80,8 @@ RNDISDevice::RNDISDevice(usb_device device)
 		fNotifyWriteSem(-1),
 		fLockWriteSem(-1),
 		fNotifyControlSem(-1),
+		fNotifyBuffer(NULL),
+		fNotifyBufferLength(0),
 		fReadHeader(NULL),
 		fLinkStateChangeSem(-1),
 		fMediaConnectState(MEDIA_STATE_UNKNOWN),
@@ -141,6 +144,7 @@ RNDISDevice::~RNDISDevice()
 
 	if (!fRemoved)
 		gUSBModule->cancel_queued_transfers(fNotifyEndpoint);
+	free(fNotifyBuffer);
 }
 
 
@@ -178,8 +182,8 @@ RNDISDevice::Open()
 		return B_ERROR;
 	}
 
-	if (gUSBModule->queue_interrupt(fNotifyEndpoint, &fNotifyBuffer,
-		sizeof(fNotifyBuffer), _NotifyCallback, this) != B_OK) {
+	if (gUSBModule->queue_interrupt(fNotifyEndpoint, fNotifyBuffer,
+		fNotifyBufferLength, _NotifyCallback, this) != B_OK) {
 		TRACE_ALWAYS("failed to setup notification interrupt\n");
 		return B_ERROR;
 	}
@@ -608,9 +612,9 @@ descriptor_is_rndis(usb_interface_descriptor* descriptor)
 		&& descriptor->interface_protocol == B_USB_RNDIS_ETHERNET_PROTOCOL)
 		return true;
 
-	// Also check for RNDIS as implemented on some old (Android 4.x) Samsung phones:
+	// Legacy CDC ACM encoding used by Linux gadgets and older Android phones.
 	if (descriptor->interface_class == USB_COMMUNICATION_DEVICE_CLASS
-		&& descriptor->interface_subclass == B_USB_MISC_MULTIPLEXED_SUBCLASS
+		&& descriptor->interface_subclass == USB_CDC_COMMUNICATION_INTERFACE_ACM_SUBCLASS
 		&& descriptor->interface_protocol == 0xff)
 		return true;
 
@@ -698,12 +702,22 @@ RNDISDevice::_SetupDevice()
 		return B_ERROR;
 	}
 
-	fNotifyEndpoint = interface->endpoint[0].handle;
-	if (interface->endpoint[0].descr->max_packet_size > sizeof(fNotifyBuffer)) {
-		TRACE_ALWAYS("Notify buffer is too small, need at least %d bytes\n",
-			interface->endpoint[0].descr->max_packet_size);
-		return B_ERROR;
+	if (interface->endpoint_count == 0)
+		return B_BAD_DATA;
+	const usb_endpoint_descriptor* notify = interface->endpoint[0].descr;
+	if ((notify->attributes & USB_ENDPOINT_ATTR_MASK) != USB_ENDPOINT_ATTR_INTERRUPT
+		|| (notify->endpoint_address & USB_ENDPOINT_ADDR_DIR_IN) == 0
+		|| notify->max_packet_size < 8 || notify->max_packet_size > 1024) {
+		TRACE_ALWAYS("invalid notification endpoint\n");
+		return B_BAD_DATA;
 	}
+	fNotifyEndpoint = interface->endpoint[0].handle;
+	// Request one endpoint packet, so an eight-byte notification completes on
+	// both eight-byte gadget endpoints and endpoints with a larger packet size.
+	fNotifyBufferLength = notify->max_packet_size;
+	fNotifyBuffer = (uint8*)malloc(fNotifyBufferLength);
+	if (fNotifyBuffer == NULL)
+		return B_NO_MEMORY;
 
 	if (dataIndex >= config->interface_count) {
 		TRACE_ALWAYS("data interface index %d out of range %" B_PRIuSIZE "\n", dataIndex,
@@ -822,10 +836,11 @@ RNDISDevice::_EnableBroadcast(usb_device device)
 		0x00000001, // Request ID (FIXME generate this dynamically if we need multiple requests in
 					// flight, so we can match up the replies with the different requests)
 		OID_GEN_CURRENT_PACKET_FILTER,
-		0x14, // buffer length
+		sizeof(uint32), // buffer length
 		0x14, // buffer offset
 		0, // reserved
-		NDIS_PACKET_TYPE_ALL_MULTICAST | NDIS_PACKET_TYPE_BROADCAST
+		NDIS_PACKET_TYPE_DIRECTED | NDIS_PACKET_TYPE_ALL_MULTICAST
+			| NDIS_PACKET_TYPE_BROADCAST
 	};
 
 	status_t result = _SendCommand(request, sizeof(request));
@@ -920,6 +935,6 @@ RNDISDevice::_NotifyCallback(void *cookie, int32 status, void *_data,
 
 	// schedule next notification buffer
 	gUSBModule->queue_interrupt(device->fNotifyEndpoint, device->fNotifyBuffer,
-		sizeof(device->fNotifyBuffer), _NotifyCallback, device);
+		device->fNotifyBufferLength, _NotifyCallback, device);
 	atomic_add(&device->fInsideNotify, -1);
 }
