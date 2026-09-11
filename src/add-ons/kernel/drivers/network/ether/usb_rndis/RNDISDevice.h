@@ -81,7 +81,7 @@ static	void				_NotifyCallback(void *cookie, int32 status,
 		uint8*				fNotifyBuffer;
 		size_t				fNotifyBufferLength;
 		uint8				fReadBuffer[0x4000];
-		uint32*				fReadHeader;
+		uint8*				fReadHeader;
 
 		// connection data
 		sem_id				fLinkStateChangeSem;

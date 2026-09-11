@@ -4,13 +4,16 @@
 	Distributed under the terms of the MIT license.
 */
 
+#include <ByteOrder.h>
 #include <ether_driver.h>
+#include <ethernet.h>
 #include <net/if_media.h>
 #include <sys/sockio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "RNDISDevice.h"
+#include "RNDISPacket.h"
 #include "Driver.h"
 
 #include <drivers/usb/USB_misc.h>
@@ -182,6 +185,8 @@ RNDISDevice::Open()
 		return B_ERROR;
 	}
 
+	fReadHeader = NULL;
+
 	// A failed open may leave a notification count from a previous command.
 	while (acquire_sem_etc(fNotifyControlSem, 1, B_RELATIVE_TIMEOUT, 0) == B_OK) {
 	}
@@ -204,18 +209,16 @@ RNDISDevice::Open()
 		goto failed;
 	}
 
-	// TODO these are non-fatal but make sure we have sane defaults for them
 	status = _ReadMaxSegmentSize(fDevice);
 	if (status != B_OK) {
-		TRACE_ALWAYS("failed to read fragment size\n");
-		// A timed-out or interrupted request may still have a pending reply.
-		// Do not mistake that reply for the next command's response.
-		if (status == B_TIMED_OUT || status == B_INTERRUPTED)
-			goto failed;
+		TRACE_ALWAYS("failed to read a usable frame size\n");
+		goto failed;
 	}
 
 	status = _ReadMediaState(fDevice);
 	if (status != B_OK) {
+		// A timed-out or interrupted request may still have a pending reply.
+		// Do not mistake that reply for the next command's response.
 		if (status == B_TIMED_OUT || status == B_INTERRUPTED)
 			goto failed;
 		fMediaConnectState = MEDIA_STATE_CONNECTED;
@@ -275,9 +278,10 @@ RNDISDevice::Free()
 status_t
 RNDISDevice::Read(uint8 *buffer, size_t *numBytes)
 {
+	const size_t capacity = *numBytes;
+	*numBytes = 0;
 	if (fRemoved) {
 		TRACE("Reading, but device is removed\n");
-		*numBytes = 0;
 		return B_DEVICE_NOT_FOUND;
 	}
 
@@ -292,7 +296,6 @@ RNDISDevice::Read(uint8 *buffer, size_t *numBytes)
 		if (result != B_OK) {
 			TRACE_ALWAYS("failed to schedule read transfer: %s\n", strerror(result));
 			fReadHeader = NULL;
-			*numBytes = 0;
 			return result;
 		}
 
@@ -300,7 +303,6 @@ RNDISDevice::Read(uint8 *buffer, size_t *numBytes)
 		if (result < B_OK) {
 			TRACE_ALWAYS("error while waiting for frame: %s\n", strerror(result));
 			fReadHeader = NULL;
-			*numBytes = 0;
 			return result;
 		}
 
@@ -308,7 +310,6 @@ RNDISDevice::Read(uint8 *buffer, size_t *numBytes)
 			TRACE_ALWAYS("request was cancelled: %s\n", strerror(result));
 			// The transfer was canceled, so no data was actually received.
 			fReadHeader = NULL;
-			*numBytes = 0;
 			return fStatusRead;
 		}
 
@@ -324,59 +325,29 @@ RNDISDevice::Read(uint8 *buffer, size_t *numBytes)
 				TRACE_ALWAYS("failed to clear halt state on read\n");
 			}
 			fReadHeader = NULL;
-			*numBytes = 0;
 			return fStatusRead;
 		}
-		fReadHeader = (uint32*)fReadBuffer;
+		if (fActualLengthRead > sizeof(fReadBuffer))
+			return B_BAD_DATA;
+		fReadHeader = fReadBuffer;
 	} else {
 		TRACE("Returning buffered packet\n");
 	}
 
-	if (fReadHeader[0] != REMOTE_NDIS_PACKET_MSG) {
-		TRACE_ALWAYS("Received unexpected packet type %08" B_PRIx32 " on data link\n",
-			fReadHeader[0]);
-		*numBytes = 0;
+	const size_t remaining = fActualLengthRead - (fReadHeader - fReadBuffer);
+	size_t messageLength;
+	if (!rndis_extract_packet(fReadHeader, remaining, buffer, capacity,
+			messageLength, *numBytes)) {
+		TRACE_ALWAYS("Invalid RNDIS packet or insufficient receive capacity\n");
 		fReadHeader = NULL;
-		return B_BAD_VALUE;
+		return B_BAD_DATA;
 	}
-
-	if (fReadHeader[1] + ((uint8*)fReadHeader - fReadBuffer) > fActualLengthRead) {
-		TRACE_ALWAYS("Received frame at %ld length %08" B_PRIx32 " out of bounds of receive buffer"
-			"%08" B_PRIx32 "\n", (uint8*) fReadHeader - fReadBuffer, fReadHeader[1],
-			fActualLengthRead);
-	}
-
-	if (fReadHeader[2] + fReadHeader[3] > fReadHeader[1]) {
-		TRACE_ALWAYS("Received frame data goes past end of frame: %" B_PRIu32 " + %" B_PRIu32
-			" > %" B_PRIu32, fReadHeader[2], fReadHeader[3], fReadHeader[1]);
-	}
-
-	if (fReadHeader[4] != 0 || fReadHeader[5] != 0 || fReadHeader[6] != 0) {
-		TRACE_ALWAYS("Received frame has out of band data: off %08" B_PRIx32 " len %08" B_PRIx32
-			" count %08" B_PRIx32 "\n", fReadHeader[4], fReadHeader[5], fReadHeader[6]);
-	}
-
-	if (fReadHeader[7] != 0 || fReadHeader[8] != 0) {
-		TRACE_ALWAYS("Received frame has per-packet info: off %08" B_PRIx32 " len %08" B_PRIx32
-			"\n", fReadHeader[7], fReadHeader[8]);
-	}
-
-	if (fReadHeader[9] != 0) {
-		TRACE_ALWAYS("Received frame has non-0 reserved field %08" B_PRIx32 "\n", fReadHeader[9]);
-	}
-
-	*numBytes = fReadHeader[3];
-	int offset = fReadHeader[2] + 2 * sizeof(uint32);
-	memcpy(buffer, (uint8*)fReadHeader + offset, fReadHeader[3]);
-
-	TRACE("Received data packet len %08" B_PRIx32 " data [off %08" B_PRIx32 " len %08" B_PRIx32 "]\n",
-		fReadHeader[1], fReadHeader[2], fReadHeader[3]);
 
 	// Advance to next packet
-	fReadHeader = (uint32*)((uint8*)fReadHeader + fReadHeader[1]);
+	fReadHeader += messageLength;
 
 	// Are we past the end of the buffer? If so, prepare to receive another one on the next read
-	if ((uint32)((uint8*)fReadHeader - fReadBuffer) >= fActualLengthRead)
+	if (messageLength == remaining)
 		fReadHeader = NULL;
 
 	return B_OK;
@@ -827,12 +798,21 @@ RNDISDevice::_ReadMACAddress(usb_device device, uint8 *buffer)
 status_t
 RNDISDevice::_ReadMaxSegmentSize(usb_device device)
 {
-	status_t result = _GetOID(OID_GEN_MAXIMUM_FRAME_SIZE, &fMaxSegmentSize,
-		sizeof(fMaxSegmentSize));
+	uint32 maxPayloadSize;
+	status_t result = _GetOID(OID_GEN_MAXIMUM_FRAME_SIZE, &maxPayloadSize,
+		sizeof(maxPayloadSize));
 	if (result != B_OK)
 		return result;
 
-	TRACE_ALWAYS("max frame size: %" B_PRId32 "\n", fMaxSegmentSize);
+	// This OID excludes the Ethernet header, whereas ETHER_GETFRAMESIZE
+	// includes it. A complete message must fit into our USB receive buffer.
+	maxPayloadSize = B_LENDIAN_TO_HOST_INT32(maxPayloadSize);
+	if (maxPayloadSize == 0 || maxPayloadSize > sizeof(fReadBuffer)
+			- kRNDISPacketHeaderSize - ETHER_HEADER_LENGTH) {
+		return B_BAD_DATA;
+	}
+	fMaxSegmentSize = maxPayloadSize + ETHER_HEADER_LENGTH;
+	TRACE_ALWAYS("max Ethernet frame size: %" B_PRIu32 "\n", fMaxSegmentSize);
 	return B_OK;
 }
 
