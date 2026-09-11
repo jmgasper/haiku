@@ -464,3 +464,54 @@ configuration under RNDIS. The base image is
 fixture's parent hash and exact settings are recorded in its manifest. Native
 DHCP, sustained networking, configuration arbitration and hotplug acceptance
 are separate checks.
+
+## Native USB networking and automatic diagnostics
+
+Native RNDIS obtained `10.239.6.146/24` in
+`artifacts/interactive/20260911T130941Z-72a087`, using image
+`13b806fb0988e0c07341070dba3ff1ce0c1bafda132b6dc02297991488a69932`.
+All four pings from NanoKVM's `10.239.6.1` returned, with no packet loss.
+An automatic lab startup script reported all eight CPUs, approximately 16 GiB
+of managed RAM, the network configuration and USB inventory through
+`/dev/dprintf`. Reporting available RAM is not a high-memory integrity test.
+The image includes a correction to high-speed interrupt polling intervals:
+EHCI now converts the descriptor's microframe exponent to a frame interval and
+S-mask instead of issuing bursts of eight polls.
+
+The next trial, `interactive/20260911T131644Z-1a3764`, repeated DHCP and four
+successful pings. Its image is
+`bf6efe2c9b55d800d95ae80b6812b0a12b3c9b70ce8ca1ad93d6d29b1eaa2674`.
+A separate queue-retirement experiment preserved removed periodic links and
+waited before reusing their storage. It did not resolve HID inactivity:
+direct Ctrl+Alt+Delete reports were accepted by NanoKVM, but no Haiku HID input
+transfer completed. Both runs returned to ROOBI with fresh boot IDs and no
+serial transport errors. Sustained network traffic and other USB ports remain
+separate acceptance work.
+
+Linux input comparison is recorded in
+`artifacts/linux-input/20260911T132936Z-8274f1`. ROOBI kernel
+`5.10.110-33-rockchip` received the expected Ctrl press/release, relative X/Y
+movement and absolute X/Y coordinates on all three NanoKVM interfaces using
+the same raw report path. A final metadata SSH call briefly failed; a follow-up
+confirmed the same ROOBI boot ID. This validates the physical input path and
+these basic Linux events, not the complete Linux hardware baseline.
+
+The cache-handoff diagnostic caught another loader fault in
+`interactive/20260911T125610Z-ceced9`: ESR was `0x02000000`, and the saved loader
+has an `orr` instruction at the reported PC, offset `0x3100`. This is an
+unknown-instruction exception, not evidence of a trapped cache-maintenance
+instruction or a valid FAR memory address. Cleaning caches before disabling
+the firmware MMU/cache configuration then passed the two native boots above.
+Stale instruction contents are a hypothesis; these two successes do not yet
+establish a reliable fix. The temporary exception instrumentation remains
+in the development image.
+
+The login program stored `getopt()`'s integer return value in a `char`.
+This ARM64 toolchain defines `__CHAR_UNSIGNED__`, so the `-1` end marker became
+255 and login exited through its usage path. Keeping the result as an `int`
+allowed an authenticated shell in `artifacts/qemu-shell/20260911T133038Z-625a42`:
+an incorrect password was rejected, then the correct private credentials ran
+`uname`, `ifconfig` and a service-configuration check. The local image overlay
+contains a generated password hash and an explicit opt-in file; telnet binds
+only to the USB address. QEMU uses localhost forwarding and blocks the
+competing ECM configuration. Native shell access is still a separate check.
