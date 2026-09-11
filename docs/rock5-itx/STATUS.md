@@ -686,3 +686,46 @@ interval had delayed failure detection. Interactive sessions also return a
 nonzero process status when the trial or recovery fails. All 32 host checks
 passed after these changes in
 `artifacts/control-checks-20260911-final-shell.log`.
+
+## Bounded RNDIS control waits
+
+Topic branch `rock5-rndis-control`, source commit `7d51890c72`, returns failed
+initialization sends immediately and limits response-notification waits to five
+seconds. Failed opens cancel the notification transfer, and subsequent opens
+clear old semaphore counts. A timeout or interruption during an optional query
+also stops initialization, since a late response must not be consumed as the
+next command's reply. This bounds the notification wait; it does not establish
+the cause of the earlier intermittent startup failures.
+
+Three temporary fault injections were exercised in QEMU:
+
+| Injected failure | Observed result | Evidence under `artifacts/rndis-faults/` |
+| --- | --- | --- |
+| Drop control-response notifications | Initialization returned a timeout after approximately five seconds; the desktop startup probe completed | `20260911T162522Z-a711a9` |
+| Fail the initialization send | Open returned the send error without entering the response wait | `20260911T162858Z-8abd58` |
+| Return a timeout from the maximum-frame-size query | Initialization stopped before media-state and link-speed queries; no shell was configured through the failed adapter | `20260911T163744Z-acad91` |
+
+An earlier query-fault attempt, `20260911T163304Z-7c63e9`, stalled during general
+userspace startup before reaching either the RNDIS driver or startup probe. It
+is retained as a failed trial, not counted as a fault-handling pass. The later
+attempt used the same immutable image and reached the intended injection.
+
+All injections were removed before the final development image was built.
+The full QEMU suite passed in `artifacts/qemu-shell/20260911T163918Z-9a7a33`:
+authenticated commands, memory and platform probes, service-listener regression
+and negative control, an 8 MiB binary round trip with truncated-input rejection,
+normal reboot, fresh login and normal power-off. All 32 host control checks
+passed in `artifacts/control-checks-rndis-timeouts.log`.
+
+A clean build from `7d51890c72d5f22986b95b53e8138ccb2d9e29af` has base-image
+SHA-256 `9ab5f631c0ae3a78dc027142b90df7530554cc796f11897521d99f01c10bc238`.
+Its private shell overlay also passed the full suite in
+`artifacts/qemu-shell/20260911T164148Z-612466`, including normal reset and off.
+The manifest and gate are indexed locally by
+`state/rock5-rndis-control-checkpoint.json`; the private overlay remains local.
+
+Native validation of this change remains pending: NanoKVM is still unreachable
+at its saved address, and its saved mDNS name did not resolve. The hardware
+checkpoint on `rock5-itx` remains available separately. Response-length and
+request-ID validation, retry behavior and sustained USB network testing remain
+open; the new timeout is not evidence of full RNDIS reliability.
