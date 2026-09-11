@@ -13,9 +13,11 @@
 #include <boot/net/RemoteDisk.h>
 
 #include "Header.h"
+#include "device_path_match.h"
 
 #include "efi_platform.h"
 #include <efi/protocol/block-io.h>
+#include <efi/protocol/loaded-image.h>
 
 #include "gpt.h"
 #include "gpt_known_guids.h"
@@ -30,6 +32,8 @@
 
 
 static efi_guid BlockIoGUID = EFI_BLOCK_IO_PROTOCOL_GUID;
+static efi_guid sLoadedImageGUID = EFI_LOADED_IMAGE_PROTOCOL_GUID;
+static efi_guid sDevicePathGUID = EFI_DEVICE_PATH_PROTOCOL_GUID;
 
 
 class EfiDevice : public Node
@@ -161,6 +165,22 @@ platform_add_boot_device(struct stage2_args *args, NodeList *devicesList)
 		}
 	}
 
+	// DeviceHandle identifies the volume from which EFI loaded this image.
+	// Its device path extends the path of the containing whole disk.
+	efi_loaded_image_protocol* loadedImage = NULL;
+	efi_handle imageDevice = NULL;
+	efi_device_path_protocol* imagePath = NULL;
+	if (kBootServices->HandleProtocol(kImage, &sLoadedImageGUID,
+			(void**)&loadedImage) == EFI_SUCCESS) {
+		imageDevice = loadedImage->DeviceHandle;
+		if (kBootServices->HandleProtocol(imageDevice, &sDevicePathGUID,
+				(void**)&imagePath) != EFI_SUCCESS)
+			imagePath = NULL;
+	}
+	EfiDevice* firstDisk = NULL;
+	EfiDevice* preferredDisk = NULL;
+	size_t bestPrefixLength = 0;
+
 	// Read to zero sized buffer to get memory needed for handles
 	if (kBootServices->LocateHandle(ByProtocol, &BlockIoGUID, 0, &memSize, 0)
 			!= EFI_BUFFER_TOO_SMALL)
@@ -206,6 +226,29 @@ platform_add_boot_device(struct stage2_args *args, NodeList *devicesList)
 		if (device == NULL)
 			panic("Can't allocate memory for block devices!");
 		devicesList->Insert(device);
+		if (firstDisk == NULL)
+			firstDisk = device;
+
+		efi_device_path_protocol* diskPath = NULL;
+		size_t prefixLength = 0;
+		if (handles[n] == imageDevice)
+			prefixLength = SIZE_MAX;
+		else if (imagePath != NULL && kBootServices->HandleProtocol(handles[n],
+				&sDevicePathGUID, (void**)&diskPath) == EFI_SUCCESS)
+			prefixLength = efi_device_path_prefix_length(diskPath, imagePath);
+		if (prefixLength > bestPrefixLength) {
+			bestPrefixLength = prefixLength;
+			preferredDisk = device;
+			dprintf("EFI boot disk candidate: blockIo=%p, path prefix=%" B_PRIuSIZE "\n",
+				blockIo, prefixLength);
+		}
+	}
+
+	// Try the disk that supplied the loader before probing unrelated devices.
+	// Keep an explicitly requested network boot first, and retain disk fallback.
+	if (preferredDisk != NULL && preferredDisk != firstDisk) {
+		devicesList->Remove(preferredDisk);
+		devicesList->InsertBefore(firstDisk, preferredDisk);
 	}
 
 	return devicesList->Count() > 0 ? B_OK : B_ENTRY_NOT_FOUND;
