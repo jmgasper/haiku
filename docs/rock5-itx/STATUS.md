@@ -774,3 +774,15 @@ syntax/CLI checks; its hardware cases have not run. Sipeed documents an optional
 [controller watchdog](https://wiki.sipeed.com/hardware/en/kvm/NanoKVM/user_guide.html).
 Its installed behavior and recovery operation still need verification. The
 pending work is indexed locally by `state/controller-outage-next.json`.
+
+Inspection of the vendor's 2.4.3 source clarifies that this documented watchdog
+is a userspace service monitor: `kvm_system` checks a heartbeat file each second
+and calls `system("reboot")` after more than ten missing checks. It does not arm
+a hardware watchdog in that loop. Thus enabling the documented flag alone
+cannot establish recovery from a whole-kernel hang; a LAN-only failure may also
+leave the monitored service alive. See the pinned
+[watchdog loop](https://github.com/sipeed/NanoKVM/blob/3b2ba7c0c1214f44da9d328f90bbdd025fac0413/support/sg2002/kvm_system/main/src/main.cpp#L238-L256)
+and [heartbeat check](https://github.com/sipeed/NanoKVM/blob/3b2ba7c0c1214f44da9d328f90bbdd025fac0413/support/sg2002/kvm_system/main/lib/system_state/system_state.cpp#L506-L525).
+The installed `/dev/watchdog*` devices, driver identity, timeout and clean
+disarm behavior must be inspected on the controller before planning a hardware
+watchdog trial. No watchdog setting has been changed.
