@@ -405,3 +405,46 @@ sustained storage writes, SMP/memory stress and other peripheral acceptance
 remain untested by this desktop observation. NanoKVM's USB network endpoint is
 configured as `10.239.6.1/24`, and the image includes `usb_rndis`; loading that
 driver alone does not prove a working network connection.
+
+## Recovery cycle audit and interactive diagnostics
+
+The reset/recovery portion of phase 1 now has 20 reviewed cycles with serial
+readiness, more than 10,000 captured bytes, no serial transport errors, a Linux
+recovery marker, and different pre-trial and recovered SSH boot IDs. The audit
+is `artifacts/reset-recovery-audit-20260911.json`; its runs span
+`hardware/20260911T065636Z-50ed62` through
+`interactive/20260911T122522Z-f213a0`. Eighteen contain the Haiku EFI loader
+banner. The first two precede that handoff. Trials used different development
+images and firmware profiles, so this validates the recovery mechanism, not
+20 consecutive successful Haiku boots. Transfer failures and trials without
+serial capture are excluded. UART transmit reliability and a measured Linux
+functional baseline remain open.
+
+The clean desktop checkpoint at source `9a1b6b0b2ebc9eaa5eb091483a75a5e36f2ff65c`
+has image SHA-256
+`bb19f2f074ad705e6910f57c777321734cd436733890979438173d907100c811`.
+Its EL2 QEMU EHCI gate passed in `artifacts/qemu/20260911T114903Z-264eac`.
+The real desktop was visible in
+`artifacts/interactive/20260911T115408Z-597177/frame-007.jpg`, but keyboard and
+mouse actions did not visibly change it. The unsupported keyboard control
+`0x2710` is the optional `KB_GET_KEYBOARD_ID` query; input initialization proceeds
+past it. In QEMU, Ctrl+Alt+Delete opens Team Monitor and its Terminal can run
+commands whose output is captured through `/dev/dprintf`. See
+`artifacts/qemu-interactive/20260911T121444Z-20d5f4` and
+`artifacts/qemu-rndis/20260911T122650Z-7c1a8c`.
+
+Two subsequent native trials stopped before entering the kernel, at the
+loader's cache clean-by-set/way instruction (`Loop3`, offset `0x11c0`). These
+are `interactive/20260911T120538Z-8264bf` and
+`interactive/20260911T121718Z-fbfcbf`; the latter received no keyboard input
+during the firmware countdown. Their loader bytes match the preceding clean
+desktop image. A temporary exception diagnostic then booted successfully in
+`interactive/20260911T122522Z-f213a0`, reporting EL2 with `DAIF=0x3c0` before
+cache cleanup. That success does not establish the cause or a fix for the
+earlier faults.
+
+The diagnostic desktop trial queued input reads for all three NanoKVM HID
+interfaces, but no input transfer completed after direct writes to NanoKVM's
+keyboard and relative-mouse character devices. Recovery returned boot ID
+`53228bd4-6825-4c57-be8e-ba21e9231e48`; 175,805 serial bytes were captured with
+no transport errors. USB input and networking remain under investigation.
