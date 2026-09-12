@@ -15,6 +15,7 @@ import sys
 import time
 
 import lab
+import qemu_nvme
 import shell
 import shell_image
 
@@ -105,7 +106,9 @@ def diagnose(output):
 
 
 def run(manifest_path, el1=False, memory=False, power=False, normal=False, platform=False,
-        transfer=False, services=False, cache=False):
+        transfer=False, services=False, cache=False, nvme=False):
+    if nvme and not (power and normal):
+        raise ValueError('NVMe validation requires normal reboot and power-off')
     manifest, image = lab.read_manifest(manifest_path)
     if not manifest.get('private_image'):
         raise ValueError('An authenticated private shell image is required')
@@ -113,6 +116,8 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
     output = lab.WORK / 'artifacts/qemu-shell' / lab.timestamp()
     output.mkdir(parents=True)
     print(json.dumps({'started': str(output)}), flush=True)
+    if nvme:
+        nvme_fixture = qemu_nvme.prepare(output)
     firmware = output / 'QEMU_EFI.fd'
     shutil.copyfile('/usr/share/qemu-efi-aarch64/QEMU_EFI.fd', firmware)
     subprocess.run(['qemu-img', 'create', '-q', '-f', 'qcow2', '-F', 'raw', '-b',
@@ -140,10 +145,15 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
                '-netdev', network,
                '-device', 'usb-net,bus=hid.0,netdev=nic',
                '-object', f'filter-dump,id=trace,netdev=nic,file={output / "network.pcap"}']
+    if nvme:
+        command += ['-drive', f'file={nvme_fixture["disk"]},if=none,id=nvme0,format=raw',
+                    '-device', f'nvme,drive=nvme0,serial={nvme_fixture["serial"]}']
     result = {'artifact': manifest, 'command': command, 'evidence': str(output),
               'status': 'incomplete', 'expect': 'authenticated remote commands',
               'firmware_sha256': lab.digest(firmware),
               'power_mode': 'normal' if normal else 'quick'}
+    if nvme:
+        result['nvme'] = {'fixture': nvme_fixture}
     serial = output / 'serial.log'
 
     def wait_for_boot(previous=0):
@@ -229,6 +239,9 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
                     if 'ROCK5_SERVICES_PASS' not in text or 'ROCK5_SERVICES_FAIL' not in text:
                         raise RuntimeError('Missing service descriptor regression evidence')
                     result['services_probe'] = 'Reverse descriptors pass; legacy range fails'
+                if nvme:
+                    result['nvme'].update(qemu_nvme.check_initial(
+                        client, output, credentials, nvme_fixture))
                 if power:
                     previous = serial.read_bytes().count(b'ROCK5_SHELL_CONFIGURED 10.0.2.15')
                     result['software_reboot_requested_at'] = lab.timestamp()
@@ -247,6 +260,9 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
                     time.sleep(2)
                     shell.execute(client, 'uname -a\nsystem_time\n', output / 'after-reboot.txt',
                                   credentials)
+                    if nvme:
+                        result['nvme'].update(qemu_nvme.check_after_reboot(
+                            client, output, credentials, nvme_fixture))
                     result.update(software_reboot='pass', psci_conduit=conduit.decode())
                     client.write(b'sync; shutdown ' + (b'' if normal else b'-q') + b'\r\n')
                     time.sleep(1)
@@ -254,6 +270,8 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
                 if process.returncode != 0 or b'PSCI: requesting system off' not in serial.read_bytes():
                     raise RuntimeError('Missing successful firmware power-off evidence')
                 result['software_power_off'] = 'pass'
+                if nvme:
+                    result['nvme'].update(qemu_nvme.verify_host(nvme_fixture))
             result['status'] = 'pass'
         except Exception as error:
             result.update(status='error', error=str(error))
@@ -283,17 +301,21 @@ def main():
     parser.add_argument('--cache', action='store_true', help='Check ARM64 instruction replacement on each CPU')
     parser.add_argument('--transfer', action='store_true', help='Check binary round trip and truncated input')
     parser.add_argument('--services', action='store_true', help='Check reverse pipe descriptors')
+    parser.add_argument('--nvme', action='store_true',
+                        help='Check disposable NVMe I/O across normal reboot and shutdown')
     parser.add_argument('--power', action='store_true', help='Reboot, log in again, then power off')
     parser.add_argument('--normal', action='store_true', help='Use desktop shutdown (requires --power)')
     parser.add_argument('--result', help='Also save the full result at this local path')
     args = parser.parse_args()
     if args.normal and not args.power:
         parser.error('--normal requires --power')
+    if args.nvme and not (args.power and args.normal):
+        parser.error('--nvme requires --power --normal')
     if not os.path.ismount(lab.WORK):
         raise RuntimeError(f'Required filesystem is not mounted: {lab.WORK}')
     os.umask(0o077)
     result = run(args.manifest, args.el1, args.memory, args.power, args.normal, args.platform,
-                 args.transfer, args.services, args.cache)
+                 args.transfer, args.services, args.cache, args.nvme)
     if args.result:
         lab.save(args.result, result)
     print(json.dumps({key: result.get(key) for key in

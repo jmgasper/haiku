@@ -122,6 +122,7 @@ typedef struct {
 	rw_lock					rounded_write_lock;
 
 	ConditionVariable		interrupt;
+	uint32					interrupt_id;
 	int32					polling;
 
 	struct qpair_info {
@@ -210,6 +211,9 @@ nvme_disk_init_device(void* _info, void** _cookie)
 	// enable busmaster and memory mapped access
 	uint16 command = pci->read_pci_config(pcidev, PCI_command, 2);
 	command |= PCI_command_master | PCI_command_memory;
+#if defined(__aarch64__)
+	command |= PCI_command_int_disable;
+#endif
 	pci->write_pci_config(pcidev, PCI_command, 2, command);
 
 	// open the controller
@@ -257,13 +261,19 @@ nvme_disk_init_device(void* _info, void** _cookie)
 		nsstat.sector_size, info->ns->stripe_size);
 	nvme_disk_set_capacity(info, nsstat.sectors, nsstat.sector_size);
 
+#if defined(__aarch64__)
+	// The handler defers completion queue processing to the waiting thread.
+	// An unacknowledged level-triggered INTx can prevent that thread from
+	// running on ARM64. Keep INTx disabled and poll without a working MSI route.
+	uint32 irq = 0;
+#else
 	command = pci->read_pci_config(pcidev, PCI_command, 2);
-	command &= ~(PCI_command_int_disable);
+	command &= ~PCI_command_int_disable;
 	pci->write_pci_config(pcidev, PCI_command, 2, command);
-
 	uint32 irq = info->info.u.h0.interrupt_line;
 	if (irq == 0xFF)
 		irq = 0;
+#endif
 
 	if (pci->get_msix_count(pcidev)) {
 		uint32 msixVector = 0;
@@ -282,14 +292,23 @@ nvme_disk_init_device(void* _info, void** _cookie)
 	}
 
 	if (irq == 0) {
-		TRACE_ERROR("device PCI:%d:%d:%d was assigned an invalid IRQ\n",
+		TRACE_ALWAYS("device PCI:%d:%d:%d has no usable interrupt; using polling\n",
 			info->info.bus, info->info.device, info->info.function);
 		info->polling = 1;
 	} else {
 		info->polling = 0;
 	}
 	info->interrupt.Init(info, "nvme_disk interrupt");
-	install_io_interrupt_handler(irq, nvme_interrupt_handler, (void*)info, B_NO_HANDLED_INFO);
+	info->interrupt_id = 0;
+	if (irq != 0) {
+		status_t status = install_io_interrupt_handler(irq, nvme_interrupt_handler,
+			(void*)info, B_NO_HANDLED_INFO);
+		if (status != B_OK) {
+			nvme_ctrlr_close(info->ctrlr);
+			return status;
+		}
+		info->interrupt_id = irq;
+	}
 
 	if (info->ctrlr->feature_supported[NVME_FEAT_INTERRUPT_COALESCING]) {
 		uint32 microseconds = 16, threshold = 32;
@@ -439,8 +458,10 @@ nvme_disk_uninit_device(void* _cookie)
 	CALLED();
 	nvme_disk_driver_info* info = (nvme_disk_driver_info*)_cookie;
 
-	remove_io_interrupt_handler(info->info.u.h0.interrupt_line,
-		nvme_interrupt_handler, (void*)info);
+	if (info->interrupt_id != 0) {
+		remove_io_interrupt_handler(info->interrupt_id,
+			nvme_interrupt_handler, (void*)info);
+	}
 
 	rw_lock_destroy(&info->rounded_write_lock);
 
@@ -525,6 +546,7 @@ await_status(nvme_disk_driver_info* info, struct nvme_qpair* qpair, status_t& st
 
 	ConditionVariableEntry entry;
 	int timeouts = 0;
+	bigtime_t pollingDelay = 1000;
 	while (status == EINPROGRESS) {
 		info->interrupt.Add(&entry);
 
@@ -534,9 +556,8 @@ await_status(nvme_disk_driver_info* info, struct nvme_qpair* qpair, status_t& st
 			return;
 
 		if (info->polling > 0) {
-			entry.Wait(B_RELATIVE_TIMEOUT, min_c(5 * 1000 * 1000,
-				(1 << timeouts) * 1000));
-			timeouts++;
+			entry.Wait(B_RELATIVE_TIMEOUT, pollingDelay);
+			pollingDelay = min_c((bigtime_t)5 * 1000 * 1000, pollingDelay * 2);
 		} else if (entry.Wait(B_RELATIVE_TIMEOUT, 5 * 1000 * 1000) != B_OK) {
 			// This should never happen, as we are woken up on every interrupt
 			// no matter the qpair or transfer within; so if it does occur,

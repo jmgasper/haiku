@@ -1050,4 +1050,41 @@ any test write. This shows that rewriting an existing BFS destination file is
 not required for the stall. Both runs retain their unchanged source image,
 command script, serial log and failed result. Device enumeration and individual
 successful transfers do not establish NVMe readiness; the blocked thread's
-kernel stack is the next diagnostic target.
+kernel stack was the next diagnostic target.
+
+## ARM64 NVMe interrupt starvation and polling fallback
+
+Two further diagnostic runs localized the stall. In
+`artifacts/qemu-nvme/20260912T002241Z-b3286d`, the writing thread was running on
+CPU 0, stopped immediately after `ConditionVariableEntry::Wait` re-enabled
+interrupts. Its caller was NVMe `await_status`. Switching KDL to the actual CPU
+was necessary: ARM64's current `bt` command ignores its advertised thread-ID
+argument. Matching kernel/driver symbols and all CPU stacks are preserved.
+
+The driver used legacy INTx without acknowledging the completion queue in its
+interrupt handler. The waiting thread normally consumes that queue, but a
+reasserted level interrupt can prevent it from returning to the polling code.
+The [QEMU 8.2.2 NVMe model](https://github.com/qemu/qemu/blob/v8.2.2/hw/nvme/ctrl.c)
+asserts the pin for pending completions and deasserts it when they are consumed.
+This supports interrupt starvation as the cause, rather than a locked condition
+variable or a requirement to overwrite a BFS destination file.
+
+The ARM64 candidate keeps PCI INTx disabled and uses polling when MSI/MSI-X
+cannot be configured. It installs no handler for that polling path, records
+the actual installed interrupt vector for teardown, and caps polling backoff
+without an unbounded shift. Successful MSI/MSI-X setup retains interrupt mode.
+Polling is a compatibility fallback with a performance cost; controller-stall
+recovery and native MSI routing remain separate work.
+
+The candidate passed the entire original reproduction in
+`artifacts/qemu-nvme/20260912T003443Z-c825f9`: both initial reads, an 8 MiB write
+with `fsync`, readback before and after normal reboot, normal power-off and
+independent host checksums. Its private image SHA-256 is
+`c9ef547b9da38799203c4a245ad8707663d06e8bd90c132554c4f7338d353c7f`;
+the manifest records the development patch against `97ba616c21`.
+The serial log reports polling on both boots. This is emulated NVMe validation,
+not Samsung SSD access or native RK3588 PCIe support.
+
+`qemu_shell.py --nvme --power --normal` now provides this regression as a regular
+gate with its own disposable namespace. A clean build and the combined QEMU
+gate are pending at this checkpoint.

@@ -197,6 +197,14 @@ emulation does not establish physical cache coherence.
 control. `--transfer` verifies an 8 MiB binary round trip and rejects truncated
 input.
 
+Add `--nvme --power --normal` to attach a newly created 8 GiB sparse NVMe
+namespace. The check reads distinct 8 MiB patterns at offsets zero and 4 GiB,
+writes and flushes the first pattern at 4 GiB, verifies both regions, reboots
+and checks again. After normal shutdown, the host independently checks both
+regions in the backing file. The namespace, fixture hashes and transcripts
+stay in the QEMU artifact directory; this command uses no physical drive.
+It tests the generic ARM64 NVMe path, independently of the ROCK's PCIe host.
+
 `session.py` owns the hardware lock, captures UART/HDMI, verifies the deployment
 and consumes one JSON command per line. Run it with an interactive stdin. For
 example, using the target address actually reported by that boot:
