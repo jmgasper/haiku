@@ -91,8 +91,9 @@ ASM1164 `1b21:1164` SATA controller, ES8316 audio and HYM8563 RTC. Linux's runni
 device tree also identifies RK806/RK8602/RK8603 power devices, FUSB302 Type-C
 control and PWM fan. Identification does not establish Haiku driver support.
 
-The owner has now installed a 256 GB Samsung 950 Pro NVMe SSD for testing;
-its Linux inventory is pending controller recovery. No SATA disk or
+The installed 256 GB Samsung 950 Pro NVMe SSD is identified in ROOBI. The owner
+authorizes erasing its existing data for testing and eventual Haiku installation.
+Native Haiku PCIe/NVMe discovery remains pending. No SATA disk or
 Wi-Fi/Bluetooth module has been identified as installed.
 Additional storage, network peers, audio loopback/receivers, displays and camera
 fixtures are needed for the corresponding acceptance tests. The owner confirmed
@@ -965,3 +966,88 @@ QEMU does not prove physical cache coherence. Native validation remains pending:
 the owner reported power-cycling NanoKVM, but its saved LAN address remained
 unreachable and its saved mDNS name did not resolve at the subsequent check.
 No new controller boot ID or native test result has yet been observed.
+
+## Controller recovery and installed NVMe fixture
+
+NanoKVM subsequently returned at its saved LAN address with boot ID
+`84b69ae8-4d9e-4c03-9f5c-6c9547084819`. Recovery with UART capture passed in
+`artifacts/controller-recovery/20260911T235338Z-d1dc1a`, recording 130,051 bytes
+without capture errors and ROOBI boot ID
+`907709b6-075c-481e-9863-b42af8a54ef6`. The initial screenshot showed the previous
+Haiku session in `last transaction (7) still open!` during a syslog/BFS write.
+The capture gap does not establish whether that panic preceded or followed
+the controller outage/restart, or explain the controller failure.
+
+Read-only Linux inventory in `artifacts/nvme-inventory/20260911T235503Z-f4fa6c`
+identifies `Samsung SSD 950 PRO 256GB`, firmware `1B0QBXX7`, at PCI address
+`0000:01:00.0` (`144d:a802`). The namespace is 256,060,514,304 bytes with
+512-byte logical/physical sectors. Linux reports an 8.0 GT/s, two-lane link;
+the SSD advertises a four-lane maximum. This records the observed configuration,
+not a diagnosis of lane sharing or a throughput measurement.
+
+The SSD has an unmounted 1 GiB FAT partition and a 254,984,323,072-byte Btrfs
+partition. Neither was mounted or modified by the inventory. ROOBI continues
+to run from eMMC with kernel `5.10.110-33-rockchip`; Haiku support and SSD
+functional acceptance remain open. ROOBI's clock was approximately 37 minutes
+behind the workstation during inventory, so artifact names use workstation UTC.
+
+After inventory, the owner explicitly authorized discarding all existing data
+on this SSD, using it for testing, and eventually installing Haiku on it. This
+drive is now an available scratch fixture; that authorization does not establish
+native driver support or a completed installation.
+
+## Native cache validation and SSD reference patterns
+
+The cache-fix image subsequently passed a bounded native trial in
+`artifacts/interactive/20260911T235552Z-f9a804`. Before and after normal reboot,
+all eight CPUs passed 32-round and 256-round cache probes: 16,384 and 131,072
+instruction checks per boot, or 294,912 checks with zero mismatches overall.
+The service regression, ten-second platform probe and 64 MiB memory check
+passed on both boots. A locked 8 GiB/eight-worker/two-pass memory check passed
+in 3.52 seconds before the reboot. UART recorded the normal reset request and
+two independently started authenticated Haiku sessions. The inspected initial
+screenshot shows Tracker and Deskbar.
+
+ROOBI recovery passed with boot ID `79c7c397-b254-49a8-8fcf-045c2b94fa52`.
+UART capture saved 232,353 bytes without errors, and the scoped controller
+watchdog disarmed normally. All 144 five-second controller samples retained
+the same NanoKVM boot ID; minimum available memory was 46,756 KiB and maximum
+reported temperature was 44.095 degrees Celsius. Evidence is in
+`artifacts/controller-health/20260911T235545Z-e59823`. The collector was stopped
+manually after recovery; its interrupted SSH exit is not an outage. This trial
+did not exercise bulk downloads or establish sustained cache/memory acceptance.
+
+With the owner's erasure authorization, the physical Samsung SSD then passed
+a bounded Linux direct-I/O test in
+`artifacts/nvme-linux-baseline/20260912T000649Z-0d883f`. The test checked the
+model, serial, firmware, size and absence of mounted partitions/holders before
+opening the exact device exclusively. It wrote and flushed two 8 MiB patterns
+at offsets 2 GiB and 5 GiB, then read them through `O_DIRECT`; both SHA-256
+values matched. The patterns and offsets remain recorded for future native
+Haiku read comparisons. Existing filesystem data is disposable; this test
+overwrote 16 MiB but did not alter the partition table. These small transfers
+do not establish sustained throughput or power-loss durability.
+
+## Initial ARM64 NVMe emulation checks
+
+An exploratory [QEMU NVMe device](https://www.qemu.org/docs/master/system/devices/nvme.html)
+with a separate 8 GiB sparse namespace exposes the existing ARM64 driver as
+`/dev/disk/nvme/0/raw`. This exercises generic PCI/NVMe independently of the
+RK3588 PCIe host, which remains unimplemented. The local test seeds distinct
+8 MiB patterns at offsets zero and 4 GiB; all virtual disks and evidence remain
+under `/mnt/HaikuWork`.
+
+The first run, `artifacts/qemu-nvme/20260912T000322Z-e48924`, read both initial
+patterns and completed a checked 8 MiB write with `fsync`, then stalled during
+another readback into an existing BFS file. Host inspection after QEMU stopped
+confirmed the written region's expected checksum. The complete test failed its
+180-second command deadline; it did not reach reboot or shutdown validation.
+Its process listing retained a running `dd` command.
+
+A second run, `artifacts/qemu-nvme/20260912T001016Z-e5a4bf`, streamed read data
+directly into the checksum program and stalled on the first bulk read, before
+any test write. This shows that rewriting an existing BFS destination file is
+not required for the stall. Both runs retain their unchanged source image,
+command script, serial log and failed result. Device enumeration and individual
+successful transfers do not establish NVMe readiness; the blocked thread's
+kernel stack is the next diagnostic target.
