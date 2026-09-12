@@ -1862,12 +1862,12 @@ The retained failure review explains the original comparator's failed result.
 These emulated networking trials use xHCI because the bundled USB network model
 has only a full-speed descriptor. Native EHCI remains a separate gate.
 
-`update-rndis-override.sh` verifies the expected current driver, replacement and
-stack, saves a verified copy of the old driver, then renames the staged replacement
-into place. Initial update, identical repeat, rejection of incorrect new/old
+The first `update-rndis-override.sh` version verified the expected current driver,
+replacement and stack, saved a verified copy of the old driver, then renamed the
+staged replacement into place. Initial update, identical repeat, rejection of incorrect new/old
 hashes, subsequent boot with the replacement and old-backup readback passed in
-`qemu-shell/20260912T095559Z-2f1a35`. Native readback and update qualification are
-underway. Evidence and scripts are in
+`qemu-shell/20260912T095559Z-2f1a35`. Native installation and cleanup are recorded
+below. Evidence and scripts are in
 `artifacts/native-rndis-notify-update/20260912T095522Z-11431b`.
 
 
@@ -1893,7 +1893,7 @@ counters, one notification worker, normal reboot and shutdown all passed.
 A clone of the original QEMU installation with fifteen unreferenced blocks
 was repaired in `qemu-shell/20260912T102055Z-29d4fb`. `checkfs /boot` reclaimed
 them; subsequent read-only checks, transfers, driver/backup hashes, reboot and
-shutdown passed. Native cleanup of the eight SSD blocks is underway.
+shutdown passed. Native cleanup of the eight SSD blocks passed as recorded below.
 
 The host now parses the actual allocation counters and rejects incomplete or
 ambiguous reports and node-damage diagnostics. A substring containing zero is
@@ -1958,10 +1958,40 @@ real emulated traffic; it does not qualify native EHCI transaction recovery
 or real endpoint STALL recovery. Production sources contain no injection.
 
 The native SSD still has notification-worker component `f661a168ac` and stack
-`3d928a4833`; these bulk changes have not been installed on it. Its current
-trial in `interactive/20260912T105126Z-c9bc47` has passed three automatic
+`3d928a4833`; these bulk changes have not been installed on it. Its completed
+trial in `interactive/20260912T105126Z-c9bc47` passed three automatic
 authenticated reconnects, an 8 MiB upload/return after each, and a 360-second
 pause in guest test traffic after the second cycle. No serial bytes appeared
 during the pause, and the subsequent authenticated shell passed. Strict BFS
-allocation checks and the single-worker check passed before the first cycle
-and after the second. Final storage and normal-reboot readback remain in progress.
+allocation checks and the single-worker check passed before the first cycle,
+after the second, and after the third. The disconnect segments contained 147,
+347 and 626 USB check-sum messages respectively, with none after RNDIS was
+added again in any cycle. No control-request or response timeouts were observed.
+
+The 2 GiB file pattern, independent SHA-256, both 8 MiB guards, eleven package
+hashes and zero BFS allocation counters passed after all three cycles. Normal
+reboot returned ROOBI boot ID `e491cdf7-5164-496a-a028-351cf684a45a`. A second
+SSD boot in `interactive/20260912T111904Z-da79d8` repeated the component,
+single-worker, large-file, guard, package and allocation checks successfully.
+All three newly written reconnect files also retained their expected hashes.
+Its normal reboot returned ROOBI boot ID
+`c9cd10c5-22be-411a-aa45-be59bbee28c1`. Both guards disarmed, and NanoKVM kept
+its original boot ID. The full qualification is indexed by
+`state/native-rndis-notify-retest.json`.
+
+This qualifies the specified NanoKVM/EHCI reconnect trial and SSD persistence;
+all USB ports and sustained mixed loads remain separate work. Downloads were
+staged at 256 KiB/s, and the SSD checks used ordinary buffered file reads.
+
+Production bulk-error component `2016925fa8` has SHA-256
+`653fade5f9498ff0a7a87b134dca5e59db19276c25af98c10f271e591b905a9f`.
+The combined image with the existing stack is
+`69b9c2d57f95fd04588107cef9293f79917e0ea573aee081ffebc10cef4837a0`.
+A single-reconnect production trial passed in
+`qemu-shell/20260912T111733Z-a9d917`. Its update rehearsal in
+`qemu-shell/20260912T112050Z-4b7756` passed install/idempotence, wrong-hash
+rejection, transfers, correct post-reboot component and backup hashes,
+zero allocation counters, one worker, normal reboot and shutdown. The update
+plan and rollback command are in
+`artifacts/native-rndis-bulk-update/20260912T112049Z-2f94b9`; hardware deployment
+also requires the repeated-reconnect gate in its session wrapper.
