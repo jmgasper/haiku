@@ -253,7 +253,6 @@ status_t
 RNDISDevice::Close()
 {
 	if (fRemoved) {
-		fOpen = false;
 		return B_OK;
 	}
 
@@ -263,7 +262,6 @@ RNDISDevice::Close()
 	gUSBModule->cancel_queued_transfers(fReadEndpoint);
 	gUSBModule->cancel_queued_transfers(fWriteEndpoint);
 
-	fOpen = false;
 	return B_OK;
 }
 
@@ -271,6 +269,9 @@ RNDISDevice::Close()
 status_t
 RNDISDevice::Free()
 {
+	// Removal must retain the USB cookie until the final handle is freed,
+	// including the interval after Close() has stopped its transfers.
+	fOpen = false;
 	return B_OK;
 }
 

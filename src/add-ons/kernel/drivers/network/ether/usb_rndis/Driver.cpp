@@ -229,7 +229,10 @@ usb_rndis_close(void *cookie)
 {
 	TRACE("close(%p)\n", cookie);
 	RNDISDevice *device = (RNDISDevice *)cookie;
-	return device->Close();
+	mutex_lock(&gDriverLock);
+	status_t status = device->Close();
+	mutex_unlock(&gDriverLock);
+	return status;
 }
 
 
