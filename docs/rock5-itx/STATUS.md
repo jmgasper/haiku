@@ -1426,3 +1426,52 @@ checks pass, including an injected flush failure that must stop before the
 next write round. Emulator command-trace verification and a corrected native
 write/reboot/Linux-readback trial are pending; high-address DMA persistence
 is not yet qualified.
+
+
+## Corrected native high-address DMA flush and persistence checks
+
+The corrected probe at source `33d832c078a3236f1ab8907421dbb9e8179fffdd`
+has ARM64 binary SHA-256
+`8d826730f9490da896b1055df94f5a93213de87d60d02bf560a550eb6f6856e8`.
+The kernel/private high-DMA image remains `a7fe3ac0...fc202eb0`, isolating the
+probe's flush change. Forty-six host checks pass in
+`artifacts/control-checks-nvme-flush.log`, including injected flush failure.
+
+QEMU `artifacts/qemu-shell/20260912T042339Z-2affe3` passed two 128 MiB rounds,
+reboot readback, independent backing-file hashes, normal shutdown, memory and
+cache checks. The NVMe trace records exactly two namespace flushes and two
+completion callbacks during the two rounds, with no flush from the preceding
+raw `dd conv=fsync` checks. The selected events follow the actual
+[QEMU 8.2.2 flush implementation](https://github.com/qemu/qemu/blob/v8.2.2/hw/nvme/ctrl.c).
+Two preceding harness failures remain recorded: `20260912T041756Z-739a3f`
+rejected a corrupted terminal/base64 upload before storage testing; binary
+transfer replaced it. `20260912T042131Z-7d506b` completed the writes but rejected
+an obsolete, unused callback trace event; the corrected check uses
+`pci_nvme_misc_cb` alongside `pci_nvme_flush_ns`.
+
+Native `artifacts/interactive/20260912T042647Z-9310c1` passed the corrected
+four-round 16–18 GiB workload with one worker pinned to each CPU. All four
+`B_FLUSH_DRIVE_CACHE` calls succeeded. It wrote and verified 8 GiB in 35.497
+seconds, then verified the complete final 2 GiB after normal reboot in 6.644
+seconds. Normal power-off, an 800 ms NanoKVM power-button pulse and a third
+Haiku boot followed; all 2 GiB matched again in 6.845 seconds. The two 1 MiB
+guards remained unchanged. All 27 logged buffer pools across these three USB
+boots were above 4 GiB. This trial does not change the installed SSD image.
+
+After recovery, Linux `O_RDONLY|O_DIRECT|O_EXCL` reads independently matched
+all eight 256 MiB region hashes and both guards. ROOBI returned with boot ID
+`7d6f1d18-478e-46b1-bbd5-5ee95dd0f28a`; the controller retained boot ID
+`84b69ae8-4d9e-4c03-9f5c-6c9547084819` and its watchdog disarmed. UART captured
+301,387 bytes without transport errors. All 77 USB checksum messages occurred
+after the final passing readback during forced recovery. HDMI capture timed
+out while the board was powered off. Neither observation invalidates the
+completed storage checks or establishes a fix for the earlier USB outage.
+
+The scripts, source, binary, QEMU references, Linux results and reviewed
+checkpoint are in
+`artifacts/native-nvme-high-dma-flush/20260912T041905Z-f547db` and indexed by
+`state/native-nvme-high-dma-flush-checkpoint.json`. The earlier failure snapshot
+is retained. Explicit flushing resolves this reproduction and qualifies the
+bounded workload with high DMA addresses across normal reset and power-off.
+Sudden power loss, longer mixed workloads, controller-stall recovery, TRIM,
+MSI and full-size SSD installation remain separate acceptance work.

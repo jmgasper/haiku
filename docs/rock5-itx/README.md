@@ -10,9 +10,11 @@ The Samsung 950 Pro now boots a small Haiku development installation. Two native
 SSD boots, a persisted file, normal reboot and power-off passed. Bounded raw
 reads, writes and reboot readback were independently checked through Linux. Its current PCIe support requires the explicit
 [installed-firmware profile](PCIE-FIRMWARE.md). Most SSD capacity remains
-unallocated. A later high-address DMA trial lost 192 KiB of its final raw-write
-round across reboot. The probe omitted an explicit drive-cache flush; corrected
-flush testing, sustained storage and full-size installation qualification remain.
+unallocated. Concurrent writes with DMA buffers above 4 GiB now pass explicit
+drive-cache flushes, normal reboot and power-off/startup readback, with
+independent Linux hashes. This required correcting the probe: raw-device
+`fsync()` had not flushed the SSD. Sustained storage, error recovery and
+full-size installation qualification remain.
 
 This fork uses AI-assisted development at its owner's request. Upstream Haiku
 does not accept AI-assisted contributions. The `rock5-itx` branch contains this
