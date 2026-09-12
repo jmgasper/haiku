@@ -318,3 +318,12 @@ region and SPI hashes. A full USB write/read-back/ROOBI-boot restoration drill h
 and evidence.
 Reliable serial command entry remains phase 1 work.
 Netboot remains optional; NanoKVM already removes physical USB image swapping.
+
+The EFI diagnostic also records firmware PCI locations, 256-byte configuration
+snapshots and root-bridge resource descriptors using the standard
+[UEFI PCI interfaces](https://uefi.org/specs/UEFI/2.10/14_Protocols_PCI_Bus_Support.html).
+It reads these interfaces without writing PCI configuration or SoC registers.
+Saved `pci-device-*.bin`, `pci-root-*.bin` and `haiku-efi-probe.txt` files belong
+to the diagnostic USB volume. Recover the ROCK, detach that volume and verify
+its copied image before reading the files. Some firmware PCI protocol handles
+return vendor ID `ffff`; they are not evidence of physical PCI functions.

@@ -1112,3 +1112,36 @@ SSD serial number in firmware messages as well as driver messages. The saved
 `nvme-boot-review.json` checks the exact driver and mounted-partition markers;
 the original wrapper error is retained. This qualifies a basic emulated BFS
 boot through the NVMe driver, not installation or boot from the physical SSD.
+
+## Read-only native UEFI PCI inventory
+
+The extended EFI diagnostic reads UEFI PCI I/O and PCI Root Bridge I/O protocols.
+It records device locations, the first 256 configuration bytes and the root
+resource descriptors. QEMU validation in
+`artifacts/efi-pci-qemu/20260912T005250Z-cde6bb` checked the emulated NVMe identity
+and saved configuration bytes and verified that its separate virtual SSD was
+unchanged. The source files and development patch against `0ca44d8dc3` are
+preserved there. The tested diagnostic image SHA-256 is
+`9c838892b82f8fac7fdd0a57832624190398a4c2455cf60cc3da76244852e019`;
+the EFI application SHA-256 is
+`532215cebc61b8fa4221a1b7a9510608299618f47a52ddda231b04362e16e76d`.
+
+The same image passed a native deployment/inventory/recovery cycle in
+`artifacts/hardware/20260912T005517Z-8be452`. Firmware exposes four PCI root
+bridges and fourteen PCI protocol handles. Eight handles have valid vendor IDs:
+four RK3588 bridges, Samsung NVMe, ASM1164 SATA and two RTL8125 controllers.
+The other six report vendor ID `ffff` and are not counted as physical functions.
+The Samsung is at segment 0, bus 1, device/function 0 with ID `144d:a802`,
+class `010802`, revision 1 and PCIe link status reporting 8.0 GT/s, two lanes.
+Its BAR0 is assigned `0xf0000000`; firmware reports a 2 MiB memory aperture
+starting there for root segment 0. This differs from the saved Linux/mainline
+device-tree resource arrangement. A Haiku handoff must account for the actual
+firmware setup instead of treating the Linux device tree as live PCI mappings.
+
+All device snapshots were read back from the copied USB image and matched the
+logged identities. The copy's SHA-256 matched the detached NanoKVM file.
+UART captured 186,546 bytes without errors; ROOBI returned with boot ID
+`ed4cce1a-9c0f-4fe3-b64c-f532a8afcc51`. No PCI configuration, SoC register,
+SSD, eMMC or SPI writes were requested by this inventory. The probe's files
+were written only to its USB image. This establishes firmware discovery,
+not native Haiku PCIe discovery or physical NVMe I/O under Haiku.
