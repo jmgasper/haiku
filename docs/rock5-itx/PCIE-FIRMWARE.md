@@ -11,6 +11,15 @@ The opt-in setting in `home/config/settings/kernel/drivers/rk3588_pcie` is:
 firmware_profile rock5-itx-edk2-v1.1-dt-samsung950
 ```
 
+The additional `rock5-itx-edk2-v1.1-dt-onboard` setting enables the four known
+root/endpoint pairs in the candidate host driver. It checks each port's own
+firmware memory window, endpoint identity/class/revision and measured BAR
+extents. Overlapping or out-of-window BARs are rejected. The default lab
+setting remains the Samsung-only profile. The expanded profile has compiled
+and passed host tests against synthetic and captured hardware configuration;
+QEMU and native host-enumeration trials are pending. Initial enumeration
+images must block the AHCI driver until its interrupt route is implemented.
+
 Only the lab UserBuildConfig installs that setting. It asserts that the board
 is running the installed EDK2 v1.1 release in mainline DT-only mode. The driver
 does not infer a firmware version from a PCI ID. Changing firmware or table

@@ -8,6 +8,40 @@ import unittest
 
 
 class PCIeProfileTests(unittest.TestCase):
+    def test_onboard_profiles_and_bar_containment(self):
+        directory = Path(__file__).resolve().parent
+        source = directory.parents[1]
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as temporary:
+            path = Path(temporary)
+            binary = path / 'onboard-profile-test'
+            subprocess.run([
+                'g++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
+                '-fsanitize=address,undefined', '-fno-sanitize-recover=all',
+                '-I', str(source / 'src/add-ons/kernel/busses/pci/rk3588'),
+                str(directory / 'test_pcie_onboard.cpp'), '-o', str(binary),
+            ], check=True, capture_output=True, text=True)
+            fixtures = []
+            for segment, identity, class_revision, bars in (
+                (0, 0xa802144d, 0x01080201, [0xf0000004, 0, 1, 0, 0, 0]),
+                (1, 0x11641b21, 0x01060102, [0xf1002000, 0, 0, 0, 0, 0xf1000000]),
+                (3, 0x812510ec, 0x02000005, [1, 0, 0xf3000004, 0, 0xf3010004, 0]),
+                (4, 0x812510ec, 0x02000005, [1, 0, 0xf4000004, 0, 0xf4010004, 0]),
+            ):
+                root = [0] * 64
+                root[:4] = [0x35881d87, 0x00100007, 0x06040001, 0x00010000]
+                base = 0xf0000000 + segment * 0x1000000
+                root[6], root[8] = 0x00010100, base | (base >> 16)
+                root[0x70 // 4] = 0x1042b010
+                root[0x80 // 4] = 0x30230000 if segment < 2 else 0x30120000
+                endpoint = [0] * 64
+                endpoint[:4] = [identity, 0x00100007, class_revision, 0]
+                endpoint[4:10] = bars
+                for name, words in [('root', root), ('endpoint', endpoint)]:
+                    fixture = path / (str(segment) + '-' + name)
+                    fixture.write_bytes(struct.pack('<64I', *words))
+                    fixtures.append(str(fixture))
+            subprocess.run([str(binary), *fixtures], check=True, timeout=5)
+
     def test_firmware_resources_and_config_bounds(self):
         directory = Path(__file__).resolve().parent
         source = directory.parents[1]

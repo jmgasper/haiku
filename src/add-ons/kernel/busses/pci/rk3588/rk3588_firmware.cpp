@@ -48,27 +48,29 @@ HasString(fdt_device_module_info* fdt, fdt_device* device, const char* property,
 
 
 static bool
-ProfileEnabled()
+ProfileEnabled(const PortProfile& port)
 {
 	void* settings = load_driver_settings("rk3588_pcie");
 	if (settings == NULL)
 		return false;
 	const char* profile = get_driver_parameter(settings, "firmware_profile", "", "");
-	bool enabled = strcmp(profile, "rock5-itx-edk2-v1.1-dt-samsung950") == 0;
+	bool enabled = ProfileAllowsPort(profile, port);
 	unload_driver_settings(settings);
 	return enabled;
 }
 
 
 static bool
-FirmwareIommuDescription(fdt_device_module_info* fdt, fdt_device* device)
+FirmwareIommuDescription(fdt_device_module_info* fdt, fdt_device* device,
+	const PortProfile& port)
 {
 	int length;
 	const uint32* map = (const uint32*)fdt->get_prop(device, "iommu-map", &length);
 	if (map == NULL)
 		return true;
-	if (length != 16 || B_BENDIAN_TO_HOST_INT32(map[0]) != 0
-		|| B_BENDIAN_TO_HOST_INT32(map[2]) != 0
+	uint32 requesterBase = port.segment * 0x1000;
+	if (length != 16 || B_BENDIAN_TO_HOST_INT32(map[0]) != requesterBase
+		|| B_BENDIAN_TO_HOST_INT32(map[2]) != requesterBase
 		|| B_BENDIAN_TO_HOST_INT32(map[3]) != 0x1000) {
 		return false;
 	}
@@ -97,7 +99,7 @@ FirmwareIommuDescription(fdt_device_module_info* fdt, fdt_device* device)
 
 
 static bool
-MatchesNode(device_node* node)
+MatchesNode(device_node* node, const PortProfile** matchedPort)
 {
 	const char* bus;
 	if (sDeviceManager->get_attr_string(node, B_DEVICE_BUS, &bus, false) != B_OK
@@ -112,12 +114,14 @@ MatchesNode(device_node* node)
 		return false;
 	}
 	uint64 base, size;
-	if (!fdt->get_reg(device, 0, &base, &size)
-		|| base != kRootConfig || size != 0x400000) {
+	if (!fdt->get_reg(device, 0, &base, &size) || size != 0x400000) {
 		return false;
 	}
+	const PortProfile* port = FindPort(base);
+	if (port == NULL)
+		return false;
 
-	if (!FirmwareIommuDescription(fdt, device))
+	if (!FirmwareIommuDescription(fdt, device, *port))
 		return false;
 	// Require an untranslated parent bus on the exact board. This explicit
 	// firmware profile is not a general driver for the Linux DT resources.
@@ -166,14 +170,18 @@ MatchesNode(device_node* node)
 			sDeviceManager->put_node(current);
 		current = next;
 	}
-	return supported && board;
+	if (!supported || !board)
+		return false;
+	*matchedPort = port;
+	return true;
 }
 
 
 static float
 SupportsDevice(device_node* parent)
 {
-	return MatchesNode(parent) && ProfileEnabled() ? 1.0f : 0.0f;
+	const PortProfile* port;
+	return MatchesNode(parent, &port) && ProfileEnabled(*port) ? 1.0f : 0.0f;
 }
 
 
@@ -182,7 +190,7 @@ RegisterDevice(device_node* parent)
 {
 	device_attr attrs[] = {
 		{ B_DEVICE_PRETTY_NAME, B_STRING_TYPE,
-			{.string = "RK3588 EDK2 v1.1 NVMe PCIe host"} },
+			{.string = "RK3588 EDK2 v1.1 PCIe host"} },
 		{ B_DEVICE_FIXED_CHILD, B_STRING_TYPE,
 			{.string = "bus_managers/pci/root/driver_v1"} },
 		{}
@@ -205,12 +213,13 @@ static status_t
 InitDriver(device_node* node, void** cookie)
 {
 	DeviceNodePutter<&sDeviceManager> parent(sDeviceManager->get_parent_node(node));
-	if (!MatchesNode(parent.Get()) || !ProfileEnabled())
+	const PortProfile* port;
+	if (!MatchesNode(parent.Get(), &port) || !ProfileEnabled(*port))
 		return B_NOT_SUPPORTED;
 	ObjectDeleter<Controller> controller(new(std::nothrow) Controller);
 	if (!controller.IsSet())
 		return B_NO_MEMORY;
-	controller->rootArea.SetTo(map_physical_memory("RK3588 root config", kRootConfig,
+	controller->rootArea.SetTo(map_physical_memory("RK3588 root config", port->rootConfig,
 		kConfigSize, B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY,
 		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, (void**)&controller->config[0]));
 	if (controller->rootArea.Get() < B_OK)
@@ -221,20 +230,20 @@ InitDriver(device_node* node, void** cookie)
 	if (*(volatile uint32*)controller->config[0] != 0x35881d87)
 		return B_NOT_SUPPORTED;
 	ReadSnapshot(controller->config[0], snapshot);
-	if (!RootMatches(snapshot, memoryBase, memorySize)) {
+	if (!RootMatches(snapshot, memoryBase, memorySize, *port)) {
 		dprintf("rk3588_pcie: firmware root configuration does not match profile\n");
 		return B_NOT_SUPPORTED;
 	}
-	controller->endpointArea.SetTo(map_physical_memory("RK3588 SSD config", kEndpointConfig,
+	controller->endpointArea.SetTo(map_physical_memory("RK3588 endpoint config", port->endpointConfig,
 		kConfigSize, B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY,
 		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, (void**)&controller->config[1]));
 	if (controller->endpointArea.Get() < B_OK)
 		return controller->endpointArea.Get();
-	if (*(volatile uint32*)controller->config[1] != 0xa802144d)
+	if (*(volatile uint32*)controller->config[1] != port->endpointId)
 		return B_NOT_SUPPORTED;
 	ReadSnapshot(controller->config[1], snapshot);
-	if (!EndpointMatches(snapshot, memoryBase, memorySize)) {
-		dprintf("rk3588_pcie: firmware SSD configuration does not match profile\n");
+	if (!EndpointMatches(snapshot, memoryBase, memorySize, *port)) {
+		dprintf("rk3588_pcie: firmware endpoint configuration does not match profile\n");
 		return B_NOT_SUPPORTED;
 	}
 	controller->memory.type = B_IO_MEMORY;
@@ -242,9 +251,10 @@ InitDriver(device_node* node, void** cookie)
 	controller->memory.host_address = memoryBase;
 	controller->memory.pci_address = memoryBase;
 	controller->memory.size = memorySize;
-	dprintf("rk3588_pcie: EDK2 v1.1 segment 0, buses 0..1, Samsung 950 Pro; "
+	dprintf("rk3588_pcie: EDK2 v1.1 segment %u, buses 0..1, %s; "
 		"MMIO %#" B_PRIx64 "+%#" B_PRIx64 "; retaining firmware PHY/clocks/iATU, "
-		"identity noncoherent DMA; NVMe polling only\n", memoryBase, memorySize);
+		"identity noncoherent DMA; host IRQ routing unavailable\n",
+		port->segment, port->endpointName, memoryBase, memorySize);
 	*cookie = controller.Detach();
 	return B_OK;
 }
@@ -304,7 +314,7 @@ static pci_controller_module_info sController = {
 		return B_NOT_SUPPORTED;
 	},
 	.get_range = [](void* cookie, uint32 index, pci_resource_range* range) {
-		// I/O ports and prefetchable windows are not part of this NVMe profile.
+		// I/O ports and prefetchable windows are not part of these profiles.
 		if (index != 0)
 			return B_BAD_INDEX;
 		*range = ((Controller*)cookie)->memory;

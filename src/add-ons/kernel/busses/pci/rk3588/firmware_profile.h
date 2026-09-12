@@ -6,6 +6,7 @@
 #define RK3588_PCIE_FIRMWARE_PROFILE_H
 
 #include <stdint.h>
+#include <string.h>
 
 namespace RK3588Firmware {
 
@@ -13,18 +14,59 @@ namespace RK3588Firmware {
 // Firmware commit 6a682c0ef3ed74feb8b0d98f1c2aa771ddfbae18.
 // Rk3588Pcie.h and PciSegmentLib.c define these live mappings. The Linux
 // DT config/ranges describe a different setup and must not replace them.
-static const uint64_t kRootConfig = UINT64_C(0xa40000000);
-static const uint64_t kEndpointConfig = UINT64_C(0x900100000);
-static const uint64_t kMemoryBase = UINT64_C(0xf0000000);
 static const uint64_t kMemorySize = UINT64_C(0x01000000);
 static const unsigned kConfigSize = 4096;
+
+struct PortProfile {
+	unsigned segment;
+	uint64_t rootConfig;
+	uint64_t endpointConfig;
+	uint64_t memoryBase;
+	uint32_t endpointId;
+	uint32_t classCode;
+	uint8_t revision;
+	const char* endpointName;
+};
+
+// Only root/endpoint pairs independently captured under EDK2 and Haiku.
+// Segment 2 is disabled and must never be accessed by this profile.
+static const PortProfile kPorts[] = {
+	{0, UINT64_C(0xa40000000), UINT64_C(0x900100000), 0xf0000000,
+		0xa802144d, 0x010802, 1, "Samsung 950 Pro"},
+	{1, UINT64_C(0xa40400000), UINT64_C(0x940100000), 0xf1000000,
+		0x11641b21, 0x010601, 2, "ASM1164"},
+	{3, UINT64_C(0xa40c00000), UINT64_C(0x9c0100000), 0xf3000000,
+		0x812510ec, 0x020000, 5, "RTL8125"},
+	{4, UINT64_C(0xa41000000), UINT64_C(0xa00100000), 0xf4000000,
+		0x812510ec, 0x020000, 5, "RTL8125"}
+};
+
+inline const PortProfile*
+FindPort(uint64_t rootConfig)
+{
+	for (unsigned i = 0; i < sizeof(kPorts) / sizeof(kPorts[0]); i++) {
+		if (kPorts[i].rootConfig == rootConfig)
+			return &kPorts[i];
+	}
+	return nullptr;
+}
+
+inline bool
+ProfileAllowsPort(const char* profile, const PortProfile& port)
+{
+	return ((port.segment == 0 || port.segment == 1 || port.segment == 3
+			|| port.segment == 4)
+			&& strcmp(profile, "rock5-itx-edk2-v1.1-dt-onboard") == 0)
+		|| (port.segment == 0
+			&& strcmp(profile, "rock5-itx-edk2-v1.1-dt-samsung950") == 0);
+}
 
 inline bool
 ValidAccess(unsigned bus, unsigned device, unsigned function, unsigned offset,
 	unsigned size)
 {
 	// CFG0 has mirrored slots. Accessing 01:01.0 can hang this controller.
-	// This profile supports only the root and the single-function Samsung SSD.
+	// Every supported root has one captured single-function endpoint.
 	return bus <= 1 && device == 0 && function == 0
 		&& (size == 1 || size == 2 || size == 4)
 		&& offset < kConfigSize && size <= kConfigSize - offset
@@ -32,7 +74,8 @@ ValidAccess(unsigned bus, unsigned device, unsigned function, unsigned offset,
 }
 
 inline bool
-RootMatches(const uint32_t* config, uint64_t& memoryBase, uint64_t& memorySize)
+RootMatches(const uint32_t* config, uint64_t& memoryBase, uint64_t& memorySize,
+	const PortProfile& port = kPorts[0])
 {
 	if (config[0] != 0x35881d87 || (config[2] >> 8) != 0x060400
 		|| ((config[3] >> 16) & 0xff) != 1
@@ -51,8 +94,8 @@ RootMatches(const uint32_t* config, uint64_t& memoryBase, uint64_t& memorySize)
 	// The PCI core can then reserve the firmware BAR without moving it.
 	uint64_t base = uint64_t(config[8] & 0xfff0) << 16;
 	uint64_t limit = uint64_t(config[8] & 0xfff00000) | 0xfffff;
-	if (base < kMemoryBase || limit < base
-		|| limit >= kMemoryBase + kMemorySize) {
+	if (base < port.memoryBase || limit < base
+		|| limit >= port.memoryBase + kMemorySize) {
 		return false;
 	}
 	memoryBase = base;
@@ -61,13 +104,49 @@ RootMatches(const uint32_t* config, uint64_t& memoryBase, uint64_t& memorySize)
 }
 
 inline bool
-EndpointMatches(const uint32_t* config, uint64_t memoryBase, uint64_t memorySize)
+MemoryBarMatches(const uint32_t* config, unsigned index, unsigned flags,
+	uint64_t bytes, uint64_t memoryBase, uint64_t memorySize)
 {
-	uint64_t bar = (uint64_t(config[5]) << 32) | (config[4] & ~UINT64_C(0xf));
-	return config[0] == 0xa802144d && (config[2] >> 8) == 0x010802
-		&& ((config[3] >> 16) & 0xff) == 0 && (config[1] & 2) != 0
-		&& (config[4] & 0xf) == 4 && memorySize >= 0x4000
-		&& bar >= memoryBase && bar - memoryBase <= memorySize - 0x4000;
+	if (index >= 6 || (flags != 0 && flags != 4) || (flags == 4 && index >= 5)
+		|| bytes == 0 || (bytes & (bytes - 1)) != 0) {
+		return false;
+	}
+	uint64_t bar = config[4 + index] & ~UINT64_C(0xf);
+	if (flags == 4)
+		bar |= uint64_t(config[5 + index]) << 32;
+	return (config[4 + index] & 0xf) == flags && memorySize >= bytes
+		&& (bar & (bytes - 1)) == 0 && bar >= memoryBase
+		&& bar - memoryBase <= memorySize - bytes;
+}
+
+inline bool
+EndpointMatches(const uint32_t* config, uint64_t memoryBase, uint64_t memorySize,
+	const PortProfile& port = kPorts[0])
+{
+	if (config[0] != port.endpointId || config[2] >> 8 != port.classCode
+		|| ((config[3] >> 16) & 0xff) != 0 || (config[1] & 2) == 0) {
+		return false;
+	}
+	if (port.segment == 0)
+		return MemoryBarMatches(config, 0, 4, 0x4000, memoryBase, memorySize);
+	if ((config[2] & 0xff) != port.revision)
+		return false;
+	// BAR extents independently recorded from this unit's Linux resources.
+	if (port.segment == 1) {
+		return MemoryBarMatches(config, 0, 0, 0x2000, memoryBase, memorySize)
+			&& MemoryBarMatches(config, 5, 0, 0x2000, memoryBase, memorySize)
+			&& config[4] != config[9];
+	}
+	if (port.segment == 3 || port.segment == 4) {
+		if (!MemoryBarMatches(config, 2, 4, 0x10000, memoryBase, memorySize)
+			|| !MemoryBarMatches(config, 4, 4, 0x4000, memoryBase, memorySize)) {
+			return false;
+		}
+		uint64_t first = (uint64_t(config[7]) << 32) | (config[6] & ~UINT64_C(0xf));
+		uint64_t second = (uint64_t(config[9]) << 32) | (config[8] & ~UINT64_C(0xf));
+		return first <= second ? second - first >= 0x10000 : first - second >= 0x4000;
+	}
+	return false;
 }
 
 } // namespace RK3588Firmware
