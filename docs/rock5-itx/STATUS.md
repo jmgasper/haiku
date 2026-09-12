@@ -12,7 +12,7 @@ firmware supports it.
 | NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; staged downloads passed before/after native reboot, but simultaneous USB/Ethernet relay still causes outages; the latest outage did not recover through the hardware watchdog |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | Forty-one host checks pass locally, including the firmware PCIe profile, NVMe fixture and sector-guard validation, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
+| Automated controls | Forty-five host checks pass locally, including bounded concurrent storage writes and corruption detection, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
 | Native Haiku on ROCK | All eight CPUs start; Tracker/Deskbar, NanoKVM input, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; Samsung NVMe bounded raw I/O has independent Linux hashes, and a small SSD installation passed two native boots, file persistence, normal reboot and power-off; sustained acceptance remains open |
@@ -1328,3 +1328,51 @@ power-loss durability remain unqualified. The firmware-specific PCIe and
 polling limitations still apply. BFS resizing is currently unimplemented, so
 using the rest of the SSD requires a new larger filesystem and a proper copy
 or installation, rather than growing this 300 MiB volume in place.
+
+## Concurrent native NVMe I/O and USB control failure
+
+The standalone `rock5_nvme_stress` probe at source
+`726258c8d56e6744cb69a7529a0c308bc6e0905e` uses eight workers pinned across the
+available Haiku CPUs. Each writes offset- and round-dependent patterns in
+1 MiB requests, followed by a flush and cross-worker reads in reverse block
+order. Host checks verify independent expected bytes, unchanged surrounding
+data, read-only verification and corruption detection. The ARM64 binary SHA-256
+is `85f353259e6d8eea216fed6da66d79ef1dc6a076827d0bb2e0b8ccae4d974f33`.
+QEMU `artifacts/qemu-shell/20260912T031611Z-42d3cf` passed two rounds over
+128 MiB, CPU placement, reboot readback and independent backing-file comparison.
+The kernel/driver image remains the earlier SHA-256 `31be3e08...0989bee3`.
+
+On the physical SSD, `artifacts/interactive/20260912T032043Z-2037fd` ran four
+rounds over the unallocated 16–18 GiB range: 8 GiB written and 8 GiB verified,
+with one worker on each of the eight CPUs. Every round and both 1 MiB guards
+passed. The test took 35.409 seconds; each 2 GiB write/flush phase took about
+2.35 seconds and each verification phase about 6.50 seconds. These timings
+include pattern generation/comparison and describe this bounded workload,
+not a sustained performance qualification. The existing BFS file also matched
+after the earlier normal power-off and power-button startup.
+
+After the storage command completed, Haiku's EHCI/RNDIS/HID paths reported
+USB transaction/checksum errors. A new shell connection closed before it
+could request normal reboot. This trial remains **error**, despite its passing
+storage transcript. It recorded 1,547 `Device check-sum error` messages.
+NanoKVM SSH and watchdog heartbeats continued, with the same controller boot
+ID. External recovery returned ROOBI `2ccc97af-b233-4b82-b251-e98e7049c1d6`;
+the watchdog disarmed and UART transport itself stayed intact. NanoKVM's saved
+kernel log includes DWC2 endpoint-stop timeouts during recovery. The cause of
+the USB failure is unresolved; this does not establish that NVMe load caused it.
+
+ROOBI then independently read all eight 256 MiB regions and both guards through
+`O_RDONLY|O_DIRECT|O_EXCL`. Every hash matched the host-generated expected data.
+The plan, source, binary, reference hashes, Linux scripts and results are in
+`artifacts/nvme-stress/20260912T031610Z-16369c`. The obsolete 336 MiB installation
+staging file was removed from ROOBI after its hash was verified; the immutable
+workstation image remains available.
+
+A subsequent SSD boot, `artifacts/interactive/20260912T032858Z-dc3cac`, read
+the same 2 GiB from Haiku in 6.625 seconds, with all eight CPU placements,
+patterns, guards, the probe executable and the BFS file checked. Normal Haiku
+reboot returned ROOBI `973dfc55-a390-4c3f-b1bd-b7bce69e3392`. No USB checksum
+errors appeared through that reboot. This qualifies the bounded concurrent
+storage workload and reset readback, while USB control stability, longer
+mixed workloads, high physical DMA addresses, error recovery, TRIM and
+full-size SSD installation remain open.
