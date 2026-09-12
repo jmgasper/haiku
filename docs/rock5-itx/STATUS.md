@@ -2067,4 +2067,28 @@ overlapped that write-and-verify invocation. The final independent region hash,
 both guards, clean filesystem check, normal reboot, readback and shutdown
 passed. The prepared native test uses a separate 2 GiB region, preserving the
 existing large-file reference for independent checks. Its plan is
-`state/mixed-write-plan.json`; native write qualification is still pending.
+`state/mixed-write-plan.json`.
+
+The native write trial in `interactive/20260912T124354Z-9d3b53` completed
+three invocations, each with four write/fsync/peer-read rounds and eight
+workers, over the new 2 GiB region. Both directions of an 8 MiB USB round trip
+matched the host hash; guest monotonic timestamps recorded 4.099 seconds of
+write-and-verify process overlap during receive and 34.870 seconds during
+send. No USB check-sum messages, control-request/response timeouts or kernel
+debugger appeared between initial shell configuration and workload collection.
+
+Independent verification of the new region hash and its two 8 MiB guards
+passed afterward, along with the old reference region, its guards, all eleven
+package hashes and strict zero BFS allocation counters. Component hashes and
+the single RNDIS notification worker also passed. Normal reboot returned ROOBI
+boot ID `a389dac6-b202-4bd3-bdea-4ade7ff158b1`. The next SSD boot in
+`interactive/20260912T125722Z-8aa76a` repeated both region/guard checks, package
+and component checks, and verified the new round-trip file. Normal reboot
+returned `28a3f4b8-c152-43ae-966b-eb51d6346670`. Both guards disarmed without a
+NanoKVM restart. The full result is `state/native-mixed-write.json`.
+
+These twelve write rounds represent 24 GiB of logical regular-file writes,
+with an explicit file flush and peer read after each round. They are not a
+physical throughput measurement. This short mixed-write qualification uses
+the specified NanoKVM/EHCI path with staged downloads at 256 KiB/s; sustained
+load, all USB ports and storage error recovery remain open.
