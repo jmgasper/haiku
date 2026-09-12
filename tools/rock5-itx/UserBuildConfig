@@ -12,5 +12,5 @@ rule UserBuildConfigRulePreImage
 	AddFilesToHaikuImage home config settings boot : $(bootscript) ;
 	AddFilesToHaikuImage home config non-packaged bin
 		: rock5_memory_probe rock5_platform_probe rock5_cache_probe rock5_file_transfer
-			rock5_services_probe ;
+			rock5_services_probe rock5_pci_config_probe ;
 }

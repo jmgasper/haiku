@@ -205,6 +205,15 @@ regions in the backing file. The namespace, fixture hashes and transcripts
 stay in the QEMU artifact directory; this command uses no physical drive.
 It tests the generic ARM64 NVMe path, independently of the ROCK's PCIe host.
 
+`--pci-config` additionally runs a read-only physical mapping diagnostic before
+and after reboot. Its `qemu` profile requires the exact extra-NVMe topology
+above. The installed `rock5_pci_config_probe rock5-efi-v1.1` profile instead
+reads only the known RK3588 segment-zero root and Samsung configuration pages
+at addresses used by the installed EDK2 v1.1 firmware. Both profiles request
+uncached, read-only mappings and check device identities before reading the
+remaining configuration words. This diagnostic does not enumerate a PCI bus
+or initialize a driver; it must not be used with a different firmware mapping.
+
 `session.py` owns the hardware lock, captures UART/HDMI, verifies the deployment
 and consumes one JSON command per line. Run it with an interactive stdin. For
 example, using the target address actually reported by that boot:

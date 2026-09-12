@@ -105,10 +105,23 @@ def diagnose(output):
             lab.qmp_command(stream, 'screendump', {'filename': str(output / 'failure.ppm')})
 
 
+def check_pci_config(client, output, credentials, after_reboot=False):
+    name = 'pci-config-after-reboot.txt' if after_reboot else 'pci-config.txt'
+    transcript = output / name
+    shell.execute(client,
+                  '/boot/home/config/non-packaged/bin/rock5_pci_config_probe qemu\n',
+                  transcript, credentials, timeout=30)
+    if 'ROCK5_PCI_CONFIG_PASS profile=qemu functions=2' not in transcript.read_text():
+        raise RuntimeError('Missing read-only PCI configuration evidence')
+    return {'status': 'pass', 'functions': 2, 'transcript': str(transcript)}
+
+
 def run(manifest_path, el1=False, memory=False, power=False, normal=False, platform=False,
-        transfer=False, services=False, cache=False, nvme=False):
+        transfer=False, services=False, cache=False, nvme=False, pci_config=False):
     if nvme and not (power and normal):
         raise ValueError('NVMe validation requires normal reboot and power-off')
+    if pci_config and not nvme:
+        raise ValueError('PCI configuration probe requires the extra NVMe fixture')
     manifest, image = lab.read_manifest(manifest_path)
     if not manifest.get('private_image'):
         raise ValueError('An authenticated private shell image is required')
@@ -240,6 +253,8 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
                         raise RuntimeError('Missing service descriptor regression evidence')
                     result['services_probe'] = 'Reverse descriptors pass; legacy range fails'
                 if nvme:
+                    if pci_config:
+                        result['pci_config'] = check_pci_config(client, output, credentials)
                     result['nvme'].update(qemu_nvme.check_initial(
                         client, output, credentials, nvme_fixture))
                 if power:
@@ -261,6 +276,9 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
                     shell.execute(client, 'uname -a\nsystem_time\n', output / 'after-reboot.txt',
                                   credentials)
                     if nvme:
+                        if pci_config:
+                            result['pci_config_after_reboot'] = check_pci_config(
+                                client, output, credentials, after_reboot=True)
                         result['nvme'].update(qemu_nvme.check_after_reboot(
                             client, output, credentials, nvme_fixture))
                     result.update(software_reboot='pass', psci_conduit=conduit.decode())
@@ -303,6 +321,8 @@ def main():
     parser.add_argument('--services', action='store_true', help='Check reverse pipe descriptors')
     parser.add_argument('--nvme', action='store_true',
                         help='Check disposable NVMe I/O across normal reboot and shutdown')
+    parser.add_argument('--pci-config', action='store_true',
+                        help='Read known host/NVMe configuration pages (requires --nvme)')
     parser.add_argument('--power', action='store_true', help='Reboot, log in again, then power off')
     parser.add_argument('--normal', action='store_true', help='Use desktop shutdown (requires --power)')
     parser.add_argument('--result', help='Also save the full result at this local path')
@@ -311,11 +331,13 @@ def main():
         parser.error('--normal requires --power')
     if args.nvme and not (args.power and args.normal):
         parser.error('--nvme requires --power --normal')
+    if args.pci_config and not args.nvme:
+        parser.error('--pci-config requires --nvme')
     if not os.path.ismount(lab.WORK):
         raise RuntimeError(f'Required filesystem is not mounted: {lab.WORK}')
     os.umask(0o077)
     result = run(args.manifest, args.el1, args.memory, args.power, args.normal, args.platform,
-                 args.transfer, args.services, args.cache, args.nvme)
+                 args.transfer, args.services, args.cache, args.nvme, args.pci_config)
     if args.result:
         lab.save(args.result, result)
     print(json.dumps({key: result.get(key) for key in
