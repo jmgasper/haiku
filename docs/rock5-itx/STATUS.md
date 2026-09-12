@@ -1831,3 +1831,41 @@ Two later trials recreated the interface and exchanged TCP handshakes, but the
 harness closed each connection after a two-second login timeout. Corrected tests
 allow ten seconds per prompt and save separate results. These harness failures
 are not evidence that the final driver failed to recreate the interface.
+
+## RNDIS notification completion worker
+
+The notification callback previously called synchronous `clear_feature` while
+running on a USB completion thread. The same thread could be needed to complete
+that request. The driver now uses a notification worker; callbacks only record
+the result and wake it. Close/removal serialize cancellation with submission and
+join the worker before releasing the USB device. Only an endpoint STALL clears
+the halt/data toggle; other notification errors retry after a bounded delay.
+
+Production component `f661a168ac` (SHA-256
+`0728416cb6d1003ba1cb2d51f13ea6a36b85fd58fb4a3aa39ae6863e2812a3d8`)
+and the existing replacement-aware stack passed three automatic reconnects,
+connected-interface down/up, transfer checks, the 130-second reference wait,
+normal reboot and shutdown in `qemu-shell/20260912T095008Z-d02d27`. The combined
+image is `ba54c0f3f5526556d5d307329bc736035573ff8a4305668743adebce54fb9df0`;
+base kernel/packages remain `hrev60097+57`. All 58 host checks passed.
+
+Diagnostic-only CRC and short-notification injections passed boot, transfers,
+reboot and shutdown in `qemu-shell/20260912T095521Z-1e491d`, with no control
+request/response timeouts. The combined STALL injection trial did not pass its
+boot gate. QEMU's [USB network model](https://github.com/qemu/qemu/blob/v8.2.2/hw/usb/dev-network.c)
+and [descriptor handler](https://github.com/qemu/qemu/blob/v8.2.2/hw/usb/desc.c)
+lack endpoint CLEAR_FEATURE handling. The new worker returned from that request
+in 489 microseconds, but the resulting control-endpoint stall broke subsequent
+initialization. The old callback did not return before its 180-second observation
+ended. This timing comparison does not qualify real endpoint STALL recovery.
+The retained failure review explains the original comparator's failed result.
+These emulated networking trials use xHCI because the bundled USB network model
+has only a full-speed descriptor. Native EHCI remains a separate gate.
+
+`update-rndis-override.sh` verifies the expected current driver, replacement and
+stack, saves a verified copy of the old driver, then renames the staged replacement
+into place. Initial update, identical repeat, rejection of incorrect new/old
+hashes, subsequent boot with the replacement and old-backup readback passed in
+`qemu-shell/20260912T095559Z-2f1a35`. Native readback and update qualification are
+underway. Evidence and scripts are in
+`artifacts/native-rndis-notify-update/20260912T095522Z-11431b`.
