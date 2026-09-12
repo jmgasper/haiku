@@ -1921,5 +1921,47 @@ before deployment and report the required interpreter when it is missing. The
 local virtual environment provides version 1.9.2. All 64 host checks pass, and
 a CLI check confirmed the missing-dependency failure occurs before the hardware
 lock/deployment. Native recovery from the interrupted session then encountered
-Linux I2C/SPI timeouts and did not restore ROOBI through its reset/power sequence;
-further recovery observations remain in progress.
+Linux I2C/SPI timeouts and did not restore ROOBI through its reset/power sequence.
+A later captured 1,500 ms reset restored ROOBI boot ID
+`710d64b2-ca95-4589-8ff5-876d21676b2b`. NanoKVM GPIO readback showed assertion
+and release, and UART captured the fresh firmware/Linux boot in
+`recovery-observed-reset/20260912T104943Z-39d80f`. The cause of the earlier
+recovery failure remains open.
+
+## RNDIS bulk completion errors and byte counts
+
+Bulk reads and writes previously cleared ENDPOINT_HALT for every non-canceled
+error while the device was present. A failed write could then return the
+clear-halt result instead of its original transfer status, or claim success if
+clearing succeeded. Successful writes also included the 44-byte RNDIS header
+in the caller's Ethernet byte count. The driver now clears only STALL, returns
+the original failed-transfer status with zero bytes, rejects a short completed
+write, and reports the Ethernet payload length on success. Failed reads remain
+errors when device removal overlaps their completion.
+
+Diagnostic-only completion injection reproduced both unnecessary clear-halt
+calls and excess write counts in `qemu-shell/20260912T110429Z-f4129b`. The
+original write's injected CRC status became a control-request timeout. The
+same traffic eventually completed, so this is an error-path/byte-count
+reproducer rather than a boot-failure claim. The interpretation of transaction
+errors follows the [Linux USB error documentation](https://www.kernel.org/doc/html/v5.10/driver-api/usb/error-codes.html);
+such an error does not establish an endpoint STALL or a physical wire CRC fault.
+
+The corrected CRC trial in `qemu-shell/20260912T110829Z-651e6a` retained the
+original read/write error, issued no clear-halt requests, reported exact
+successful write lengths, and had no control-request or response timeouts.
+A separate short-write trial in `qemu-shell/20260912T111133Z-b60a5f` returned
+`B_IO_ERROR` with zero bytes on both boots. Both trials passed authenticated
+commands, the 8 MiB transfer/negative checks, normal reboot and shutdown.
+All 64 host checks passed. The injection changes completion metadata after
+real emulated traffic; it does not qualify native EHCI transaction recovery
+or real endpoint STALL recovery. Production sources contain no injection.
+
+The native SSD still has notification-worker component `f661a168ac` and stack
+`3d928a4833`; these bulk changes have not been installed on it. Its current
+trial in `interactive/20260912T105126Z-c9bc47` has passed three automatic
+authenticated reconnects, an 8 MiB upload/return after each, and a 360-second
+pause in guest test traffic after the second cycle. No serial bytes appeared
+during the pause, and the subsequent authenticated shell passed. Strict BFS
+allocation checks and the single-worker check passed before the first cycle
+and after the second. Final storage and normal-reboot readback remain in progress.

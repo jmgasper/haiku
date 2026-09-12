@@ -327,19 +327,20 @@ RNDISDevice::Read(uint8 *buffer, size_t *numBytes)
 			return fStatusRead;
 		}
 
-		if ((fStatusRead != B_OK) && !fRemoved) {
-			// In other error cases (triggered by the device), we need to clear the "halt" feature
-			// so that the next transfers will work.
-			TRACE_ALWAYS("device read status error: %s\n", strerror(fStatusRead));
+		if (fStatusRead != B_OK) {
+			const status_t status = fStatusRead;
+			TRACE_ALWAYS("device read status error: %s\n", strerror(status));
 
-			gUSBModule->cancel_queued_transfers(fReadEndpoint);
-
-			result = gUSBModule->clear_feature(fReadEndpoint, USB_FEATURE_ENDPOINT_HALT);
-			if (result != B_OK) {
-				TRACE_ALWAYS("failed to clear halt state on read\n");
+			// A transaction error does not imply an endpoint STALL. Reset
+			// the halt/data toggle only when the endpoint actually stalled.
+			if (status == B_DEV_STALLED && !fRemoved) {
+				gUSBModule->cancel_queued_transfers(fReadEndpoint);
+				result = gUSBModule->clear_feature(fReadEndpoint, USB_FEATURE_ENDPOINT_HALT);
+				if (result != B_OK)
+					TRACE_ALWAYS("failed to clear halt state on read\n");
 			}
 			fReadHeader = NULL;
-			return fStatusRead;
+			return status;
 		}
 		if (fActualLengthRead > sizeof(fReadBuffer))
 			return B_BAD_DATA;
@@ -391,67 +392,65 @@ private:
 status_t
 RNDISDevice::Write(const uint8 *buffer, size_t *numBytes)
 {
-	if (fRemoved) {
-		*numBytes = 0;
+	const size_t length = *numBytes;
+	*numBytes = 0;
+	if (fRemoved)
 		return B_DEVICE_NOT_FOUND;
-	}
 
 	iovec vec[2];
 
 	uint32 header[11] = { 0 };
 	header[0] = REMOTE_NDIS_PACKET_MSG;
-	header[1] = *numBytes + sizeof(header);
+	header[1] = length + sizeof(header);
 	header[2] = 0x24;
-	header[3] = *numBytes;
+	header[3] = length;
 
 	vec[0].iov_base = &header;
 	vec[0].iov_len = sizeof(header);
 
 	vec[1].iov_base = (void*)buffer;
-	vec[1].iov_len = *numBytes;
+	vec[1].iov_len = length;
 
 	SemLocker mutex(fLockWriteSem);
 	status_t result = mutex.fStatus;
-	if (result < B_OK) {
-		*numBytes = 0;
+	if (result < B_OK)
 		return result;
-	}
 
 	result = gUSBModule->queue_bulk_v(fWriteEndpoint, vec, 2, _WriteCallback, this);
-	if (result != B_OK) {
-		*numBytes = 0;
+	if (result != B_OK)
 		return result;
-	}
 
 	do {
 		result = acquire_sem_etc(fNotifyWriteSem, 1, B_CAN_INTERRUPT, 0);
 	} while (result == B_INTERRUPTED);
 
-	if (result < B_OK) {
-		*numBytes = 0;
+	if (result < B_OK)
 		return result;
-	}
 
 	if (fStatusWrite == B_CANCELED) {
 		// The transfer was canceled, so no data was actually sent.
-		*numBytes = 0;
 		return fStatusWrite;
 	}
 
-	if ((fStatusWrite != B_OK) && !fRemoved) {
-		TRACE_ALWAYS("device write status error 0x%08" B_PRIx32 "\n", fStatusWrite);
+	if (fStatusWrite != B_OK) {
+		const status_t status = fStatusWrite;
+		TRACE_ALWAYS("device write status error 0x%08" B_PRIx32 "\n", status);
 
-		gUSBModule->cancel_queued_transfers(fWriteEndpoint);
-
-		result = gUSBModule->clear_feature(fWriteEndpoint, USB_FEATURE_ENDPOINT_HALT);
-		if (result != B_OK) {
-			TRACE_ALWAYS("failed to clear halt state on write\n");
-			*numBytes = 0;
-			return result;
+		if (status == B_DEV_STALLED && !fRemoved) {
+			gUSBModule->cancel_queued_transfers(fWriteEndpoint);
+			result = gUSBModule->clear_feature(fWriteEndpoint, USB_FEATURE_ENDPOINT_HALT);
+			if (result != B_OK)
+				TRACE_ALWAYS("failed to clear halt state on write\n");
 		}
+		// Clearing a halt prepares the next transfer; this one still failed.
+		return status;
 	}
 
-	*numBytes = fActualLengthWrite;
+	if (fActualLengthWrite != sizeof(header) + length)
+		return B_IO_ERROR;
+
+	// The caller supplied an Ethernet frame, without the USB/RNDIS header.
+	*numBytes = length;
 
 	return B_OK;
 }
