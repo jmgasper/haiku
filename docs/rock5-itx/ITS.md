@@ -41,7 +41,8 @@ entire allocation must still fit below 32 GiB. The allocator and returned
 physical ranges both enforce the bounds; failure prevents ITS attachment
 without falling back to low memory. This option is absent from ordinary
 images and the installed SSD. Actual table addresses and hash-checked native
-I/O must be recorded before accepting that trial; it is currently unqualified.
+I/O must be recorded before accepting that trial. The bounded native pass is
+recorded below.
 
 Initialization refuses active LPIs on any Redistributor and requires ITS1 to
 be disabled and quiescent before writing table descriptors. Device and
@@ -115,7 +116,36 @@ ROOBI `f5b86238-1904-4170-96ed-8a208f14047c`; the guard disarmed and NanoKVM
 retained its boot ID. `state/native-its-storage-stress.json` records this pass.
 The earlier failed file is preserved and installed components are unchanged.
 
-These boots allocated ITS tables below 4 GiB. High-address table DMA,
-allocation/free/reuse,
+These initial boots allocated ITS tables below 4 GiB. Allocation/free/reuse,
 multi-vector devices, other ITS instances and CPU affinity remain separate
 qualification work.
+
+The forced high-table build from `b8571b931a` (`hrev60097+88`) passed 73 host
+checks and QEMU regression/rejection gates in `qemu-shell/20260912T232143Z-aad50b`.
+Its image SHA-256 is
+`242d790c27c2b6f8599c71cb962e093bf3f2b9082d926c42032054f3d11007fa`.
+Native session `interactive/20260912T232610Z-fc067f` recorded these six
+Normal Non-cacheable allocations on both boots:
+
+| Table | Physical address | Bytes |
+| --- | --- | --- |
+| Devices | `0x114880000` | 524288 |
+| Collections | `0x114900000` | 65536 |
+| Commands | `0x114910000` | 65536 |
+| LPI properties | `0x114920000` | 65536 |
+| CPU 0 pending | `0x114930000` | 65536 |
+| Interrupt translations | `0x114879000` | 4096 |
+
+All ranges were aligned, distinct, at or above 4 GiB and entirely below 32 GiB.
+The same four-round, eight-worker 2 GiB workload passed in a new file: 8 GiB
+writes, four `fsync()` calls, peer reads, independent region hash, guards and
+11 package hashes. A normal reboot restored authenticated access in 94 seconds;
+eight-worker readback and all hashes/filesystem checks passed again. Logged
+interrupt counts reached 65536 and 16384, with arrivals during both workloads
+and no polling fallback or other errors from the acceptance gate.
+
+Recovery returned ROOBI `b6ea3fc1-1ada-42b2-a4f6-0ffed26a3443`, the guard
+disarmed and NanoKVM retained its boot ID. The complete report is
+`state/native-its-high-storage-stress.json`, with evidence under
+`its-high-storage-stress/20260912T232553Z-7f4aa0`. This remains a USB-root
+qualification; installed SSD packages and settings have not yet been updated.

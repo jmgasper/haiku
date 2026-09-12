@@ -2244,3 +2244,22 @@ NanoKVM did not restart. `state/native-its-storage-stress.json` indexes the
 complete evidence. The failed setup record and partial file remain preserved.
 ITS tables were below 4 GiB in these boots; a separate opt-in high-table
 allocation trial is now built and awaiting QEMU/native qualification.
+
+That high-table trial also passed. Build `b8571b931a` (`hrev60097+88`) and all
+73 host checks passed, followed by QEMU in `qemu-shell/20260912T232143Z-aad50b`.
+Native session `interactive/20260912T232610Z-fc067f` allocated all six ITS/LPI
+tables above 4 GiB on both boots; [ITS.md](ITS.md) records the actual addresses.
+Every range remained aligned and entirely below the GIC's 32 GiB limit.
+Another 8 GiB of eight-worker writes, four `fsync()` calls and peer reads
+passed, followed by guard/region/package hashes and normal reboot readback.
+The two boots logged interrupt thresholds 65536 and 16384 during the accepted
+windows without polling fallback, quarantine, unexpected IDs or USB control
+errors. Component hashes, PCI inventory, one RNDIS worker and strict zero
+filesystem allocation counters passed throughout.
+
+Recovery returned ROOBI `b6ea3fc1-1ada-42b2-a4f6-0ffed26a3443`; the guard
+disarmed and NanoKVM did not restart. The evidence index is
+`state/native-its-high-storage-stress.json`. The installed SSD still has its
+earlier packages; an emulated upgrade rehearsal is in progress before changing
+that installation. General ITS lifecycle, other devices and CPU targets, and
+noncoherent network DMA remain open.
