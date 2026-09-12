@@ -12,7 +12,7 @@ firmware supports it.
 | NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; staged downloads passed before/after native reboot, but simultaneous USB/Ethernet relay still causes outages; the latest outage did not recover through the hardware watchdog |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | Thirty-seven host checks pass locally, including ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
+| Automated controls | Thirty-nine host checks pass locally, including NVMe fixture validation, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
 | Native Haiku on ROCK | All eight CPUs start; platform EHCI mounts the NanoKVM boot volume; Tracker/Deskbar, NanoKVM keyboard and mouse, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; sustained acceptance remains open |
@@ -1086,5 +1086,29 @@ The serial log reports polling on both boots. This is emulated NVMe validation,
 not Samsung SSD access or native RK3588 PCIe support.
 
 `qemu_shell.py --nvme --power --normal` now provides this regression as a regular
-gate with its own disposable namespace. A clean build and the combined QEMU
-gate are pending at this checkpoint.
+gate with its own disposable namespace. Thirty-nine host checks pass, including
+rejection of an unwritten or misplaced high region, corrupted data and a
+truncated namespace. The clean source is
+`2f2efd5c51d8ce40a514b4d7cf408605a6f16e50`; its private image SHA-256 is
+`adae21d51f65d81a3d8edb15e3de88f2314c070367d5373dbc03c56eeaec1ddd`.
+
+The first combined clean-image run,
+`artifacts/qemu-shell/20260912T004022Z-8a2cc1`, failed before executing guest
+tests: RNDIS initialization timed out waiting for its control notification.
+That failed result remains preserved. A diagnostic repeat with QEMU xHCI
+startup tracing passed in `artifacts/qemu-shell/20260912T004506Z-be4600`, including
+memory and its negative control, platform, cache, service regression, 8 MiB USB
+round trip and truncated-input rejection, all NVMe checks, normal reboot and
+power-off. The trace is in
+`artifacts/qemu-usb-notify/20260912T004506Z-9aafbc`. This successful repeat does
+not explain or fix the intermittent RNDIS startup failure.
+
+A separate run booted the same clean image directly from emulated NVMe, with
+no USB boot disk. `artifacts/qemu-shell/20260912T004328Z-4c3846` records
+`Mounted boot partition: /dev/disk/nvme/0/1` on both boots. Memory, cache, the
+USB file round trip and negative checks, normal reboot and power-off passed.
+The exploratory wrapper initially rejected the log because it counted the
+SSD serial number in firmware messages as well as driver messages. The saved
+`nvme-boot-review.json` checks the exact driver and mounted-partition markers;
+the original wrapper error is retained. This qualifies a basic emulated BFS
+boot through the NVMe driver, not installation or boot from the physical SSD.
