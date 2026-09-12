@@ -200,8 +200,11 @@ input.
 Add `--nvme --power --normal` to attach a newly created 8 GiB sparse NVMe
 namespace. The check reads distinct 8 MiB patterns at offsets zero and 4 GiB,
 writes and flushes the first pattern at 4 GiB, verifies both regions, reboots
-and checks again. After normal shutdown, the host independently checks both
-regions in the backing file. The namespace, fixture hashes and transcripts
+and checks again. Five additional writes inside a seeded 2 MiB region at 6 GiB
+exercise partial sectors and lengths across the 128 KiB command boundary.
+Their complete surrounding region must match after each write and reboot.
+After normal shutdown, the host independently checks all three regions in the
+backing file. The namespace, fixture hashes and transcripts
 stay in the QEMU artifact directory; this command uses no physical drive.
 It tests the generic ARM64 NVMe path, independently of the ROCK's PCIe host.
 

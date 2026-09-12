@@ -1110,6 +1110,9 @@ nvme_ctrlr_attach(struct pci_device *pci_dev,
 
 	/* Set default transfer size */
 	ctrlr->max_xfer_size = NVME_MAX_XFER_SIZE;
+#if defined(NVME_HAIKU_NONCOHERENT_DMA)
+	ctrlr->max_xfer_size = nvme_min(ctrlr->max_xfer_size, NVME_DMA_MAX_TRANSFER);
+#endif
 
 	/* Create the admin queue pair */
 	ret = nvme_qpair_construct(ctrlr, &ctrlr->adminq, 0,
@@ -1454,7 +1457,7 @@ struct nvme_qpair *nvme_ioqp_get(struct nvme_ctrlr *ctrlr,
 	/* Construct the qpair */
 	ret = nvme_qpair_construct(ctrlr, qpair, qprio, qd, trackers);
 	if (ret != 0) {
-		nvme_qpair_destroy(qpair);
+		// The constructor releases partially allocated resources on failure.
 		qpair = NULL;
 		goto out;
 	}

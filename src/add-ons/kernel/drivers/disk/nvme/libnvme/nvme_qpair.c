@@ -398,6 +398,20 @@ static void nvme_qpair_complete_tracker(struct nvme_qpair *qpair,
 		return;
 	}
 
+#if defined(NVME_HAIKU_NONCOHERENT_DMA)
+	struct nvme_cpl completion = *cpl;
+	if (!error && req->payload_size != 0
+	    && (nvme_opc_get_data_transfer(req->cmd.opc) & NVME_DATA_CONTROLLER_TO_HOST)) {
+		if (nvme_dma_copy_payload(req, qpair->dma_buffers[tr->cid],
+				NVME_DMA_TO_HOST) != 0) {
+			completion.status.sct = NVME_SCT_GENERIC;
+			completion.status.sc = NVME_SC_DATA_TRANSFER_ERROR;
+			completion.status.dnr = 1;
+		}
+	}
+	cpl = &completion;
+#endif
+
 	if (req->cb_fn)
 		req->cb_fn(req->cb_arg, cpl);
 
@@ -524,6 +538,40 @@ static inline void _nvme_qpair_req_bad_phys(struct nvme_qpair *qpair,
 /*
  * Build PRP list describing physically contiguous payload buffer.
  */
+#if defined(NVME_HAIKU_NONCOHERENT_DMA)
+nvme_static_assert(NVME_DMA_MAX_TRANSFER <= NVME_MAX_PRP_LIST_ENTRIES * PAGE_SIZE,
+	"DMA buffer exceeds the PRP list capacity");
+
+static int nvme_qpair_build_dma_request(struct nvme_qpair *qpair,
+		struct nvme_request *req, struct nvme_tracker *tr)
+{
+	enum nvme_dma_copy operation =
+		(nvme_opc_get_data_transfer(req->cmd.opc) & NVME_DATA_HOST_TO_CONTROLLER)
+		? NVME_DMA_FROM_HOST : NVME_DMA_VALIDATE;
+	int ret = nvme_dma_copy_payload(req, qpair->dma_buffers[tr->cid], operation);
+	if (ret != 0) {
+		nvme_qpair_manual_complete_tracker(qpair, tr, NVME_SCT_GENERIC,
+			NVME_SC_DATA_TRANSFER_ERROR, 1, true);
+		return ret;
+	}
+
+	// Every tracker owns one page-aligned, physically contiguous RAM buffer.
+	uint64_t address = qpair->dma_bus_addresses[tr->cid];
+	uint32_t pages = (req->payload_size + PAGE_SIZE - 1) / PAGE_SIZE;
+	req->cmd.psdt = NVME_PSDT_PRP;
+	req->cmd.dptr.prp.prp1 = address;
+	req->cmd.dptr.prp.prp2 = 0;
+	if (pages == 2)
+		req->cmd.dptr.prp.prp2 = address + PAGE_SIZE;
+	else if (pages > 2) {
+		req->cmd.dptr.prp.prp2 = tr->prp_sgl_bus_addr;
+		for (uint32_t page = 1; page < pages; page++)
+			tr->u.prp[page - 1] = address + page * PAGE_SIZE;
+	}
+	return 0;
+}
+#endif
+
 static int _nvme_qpair_build_contig_request(struct nvme_qpair *qpair,
 					    struct nvme_request *req,
 					    struct nvme_tracker *tr)
@@ -856,6 +904,12 @@ int nvme_qpair_construct(struct nvme_ctrlr *ctrlr, struct nvme_qpair *qpair,
 
 	pthread_mutex_init(&qpair->lock, NULL);
 
+#if defined(NVME_HAIKU_NONCOHERENT_DMA)
+	// Keep bounded DMA storage ready before submissions can hold this lock.
+	// Admin trackers also carry long-lived asynchronous event requests.
+	if (qpair->id != 0)
+		trackers = nvme_min(trackers, NVME_DMA_IO_TRACKERS);
+#endif
 	qpair->entries = entries;
 	qpair->trackers = trackers;
 	qpair->qprio = qprio;
@@ -957,6 +1011,23 @@ int nvme_qpair_construct(struct nvme_ctrlr *ctrlr, struct nvme_qpair *qpair,
 		phys_addr += sizeof(struct nvme_tracker);
 	}
 
+#if defined(NVME_HAIKU_NONCOHERENT_DMA)
+	qpair->dma_buffers = calloc(trackers, sizeof(void *));
+	qpair->dma_bus_addresses = calloc(trackers, sizeof(phys_addr_t));
+	if (!qpair->dma_buffers || !qpair->dma_bus_addresses)
+		goto fail;
+	for (i = 0; i < trackers; i++) {
+		qpair->dma_buffers[i] = nvme_mem_alloc_node(NVME_DMA_MAX_TRANSFER,
+			PAGE_SIZE, NVME_NODE_ID_ANY, &qpair->dma_bus_addresses[i]);
+		if (!qpair->dma_buffers[i])
+			goto fail;
+	}
+	nvme_log(NVME_LOG_INFO,
+		"libnvme: ARM64 noncoherent DMA: qpair %u, %u buffers of %u bytes, first %#llx\n",
+		qpair->id, trackers, NVME_DMA_MAX_TRANSFER,
+		(unsigned long long)qpair->dma_bus_addresses[0]);
+#endif
+
 	nvme_qpair_reset(qpair);
 
 	return 0;
@@ -974,6 +1045,19 @@ void nvme_qpair_destroy(struct nvme_qpair *qpair)
 
 	if (nvme_qpair_is_admin_queue(qpair))
 		_nvme_qpair_admin_qpair_destroy(qpair);
+
+#if defined(NVME_HAIKU_NONCOHERENT_DMA)
+	if (qpair->dma_buffers) {
+		for (uint16_t i = 0; i < qpair->trackers; i++) {
+			if (qpair->dma_buffers[i])
+				nvme_free(qpair->dma_buffers[i]);
+		}
+		free(qpair->dma_buffers);
+		qpair->dma_buffers = NULL;
+	}
+	free(qpair->dma_bus_addresses);
+	qpair->dma_bus_addresses = NULL;
+#endif
 
 	if (qpair->cmd && !qpair->sq_in_cmb) {
 		nvme_free(qpair->cmd);
@@ -1071,6 +1155,10 @@ int nvme_qpair_submit_request(struct nvme_qpair *qpair,
 	if (req->payload_size == 0) {
 		/* Null payload - leave PRP fields zeroed */
 		ret = 0;
+#if defined(NVME_HAIKU_NONCOHERENT_DMA)
+	} else {
+		ret = nvme_qpair_build_dma_request(qpair, req, tr);
+#else
 	} else if (req->payload.type == NVME_PAYLOAD_TYPE_CONTIG) {
 		ret = _nvme_qpair_build_contig_request(qpair, req, tr);
 	} else if (req->payload.type == NVME_PAYLOAD_TYPE_SGL) {
@@ -1083,6 +1171,7 @@ int nvme_qpair_submit_request(struct nvme_qpair *qpair,
 						   NVME_SC_INVALID_FIELD,
 						   1 /* do not retry */, true);
 		ret = -EINVAL;
+#endif
 	}
 
 	if (ret == 0)
@@ -1127,9 +1216,17 @@ unsigned int nvme_qpair_poll(struct nvme_qpair *qpair,
 	while (1) {
 
 		cpl = &qpair->cpl[qpair->cq_head];
-		if (cpl->status.p != qpair->phase)
+		if (((volatile struct nvme_cpl *)cpl)->status.p != qpair->phase)
 			break;
 
+#ifdef __HAIKU__
+		// The phase tag publishes both the rest of the CQE and device data.
+		nvme_rmb();
+#endif
+		if (cpl->cid >= qpair->trackers) {
+			nvme_panic("completion command ID exceeds tracker array\n");
+			break;
+		}
 		tr = &qpair->tr[cpl->cid];
 		if (tr->active) {
 			nvme_qpair_complete_tracker(qpair, tr, cpl, true);
@@ -1238,4 +1335,3 @@ void nvme_qpair_fail(struct nvme_qpair *qpair)
 
 	pthread_mutex_unlock(&qpair->lock);
 }
-

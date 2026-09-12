@@ -31,11 +31,34 @@ class NVMeFixtureTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'data differs'):
             qemu_nvme.verify_host(self.fixture)
         self.copy_region(qemu_nvme.HIGH_OFFSET)
+        guard = self.fixture['unaligned']
+        with self.disk.open('r+b') as stream:
+            stream.seek(guard['offset'])
+            stream.write(Path(guard['expected_file']).read_bytes())
         self.assertEqual(qemu_nvme.verify_host(self.fixture)[
             'host_readback_after_shutdown'], 'pass')
         with self.disk.open('r+b') as stream:
             stream.write(b'corrupt!')
         with self.assertRaisesRegex(RuntimeError, 'data differs'):
+            qemu_nvme.verify_host(self.fixture)
+
+    def test_neighboring_sector_bytes_must_be_preserved(self):
+        self.copy_region(qemu_nvme.HIGH_OFFSET)
+        with self.assertRaisesRegex(RuntimeError, 'sector guards differ'):
+            qemu_nvme.verify_host(self.fixture)
+        guard = self.fixture['unaligned']
+        with self.disk.open('r+b') as stream:
+            stream.seek(guard['offset'])
+            stream.write(Path(guard['expected_file']).read_bytes())
+        self.assertEqual(qemu_nvme.verify_host(self.fixture)[
+            'host_readback_after_shutdown'], 'pass')
+        # The last byte is outside every requested write. Detect damaged padding.
+        with self.disk.open('r+b') as stream:
+            stream.seek(guard['offset'] + guard['bytes'] - 1)
+            original = stream.read(1)
+            stream.seek(-1, 1)
+            stream.write(bytes([original[0] ^ 1]))
+        with self.assertRaisesRegex(RuntimeError, 'sector guards differ'):
             qemu_nvme.verify_host(self.fixture)
 
     def test_truncated_namespace_is_rejected(self):

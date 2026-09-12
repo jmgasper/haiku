@@ -44,6 +44,7 @@
 #include <sys/user.h> /* PAGE_SIZE */
 #else
 #include "nvme_platform.h"
+#include "nvme_dma.h"
 #endif
 
 /*
@@ -371,6 +372,11 @@ struct nvme_qpair {
 	 */
 	uint16_t			trackers;
 	struct nvme_tracker		*tr;
+
+#if defined(NVME_HAIKU_NONCOHERENT_DMA)
+	void**				dma_buffers;
+	phys_addr_t*			dma_bus_addresses;
+#endif
 
 	struct nvme_request		*reqs;
 	unsigned int			num_reqs;

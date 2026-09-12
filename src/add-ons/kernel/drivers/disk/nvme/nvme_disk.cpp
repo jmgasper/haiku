@@ -604,7 +604,8 @@ ior_reset_sgl(nvme_io_request* request, uint32_t offset)
 	TRACE("IOR Reset: %" B_PRIu32 "\n", offset);
 
 	int32 i = 0;
-	while (offset > 0 && request->iovecs[i].size <= offset) {
+	while (i < request->iovec_count && offset > 0
+		&& request->iovecs[i].size <= offset) {
 		offset -= request->iovecs[i].size;
 		i++;
 	}
@@ -617,7 +618,8 @@ static int
 ior_next_sge(nvme_io_request* request, uint64_t* address, uint32_t* length)
 {
 	int32 index = request->iovec_i;
-	if (index < 0 || index > request->iovec_count)
+	if (index < 0 || index >= request->iovec_count
+		|| request->iovec_offset >= request->iovecs[index].size)
 		return -1;
 
 	*address = request->iovecs[index].address + request->iovec_offset;
