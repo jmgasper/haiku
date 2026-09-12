@@ -48,6 +48,14 @@ endpoint are exposed. Port I/O, prefetchable windows, other root ports, hotplug,
 INTx routing, MSI/ITS and controller reinitialization remain unsupported. The
 NVMe driver uses its ARM64 polling path and noncoherent DMA buffers.
 
+For explicit high-address DMA testing, a separate `nvme_disk` driver settings
+file may contain `force_high_dma true`. On ARM64 this requires every libnvme
+physical allocation, including queues, PRP lists and payload buffers, to start
+at or above 4 GiB. Allocation failure prevents attachment; there is no fallback
+to lower addresses. The setting is absent from ordinary images and is not a
+performance recommendation. Trials must record actual physical buffer addresses
+and data integrity, with enough RAM above 4 GiB available to the kernel.
+
 The profile test accepts the actual captured 256-byte root and endpoint files,
 checks the expected window, and exercises invalid bus/device/function/offset,
 identity, class and BAR cases with sanitizers. Ordinary QEMU tests cover the

@@ -12,6 +12,7 @@
 
 #if defined(__aarch64__)
 #include <arch/arm64/cache_line_size.h>
+#include <driver_settings.h>
 #endif
 
 extern "C" {
@@ -25,6 +26,10 @@ extern "C" {
 
 static pci_module_info* sPCIModule = NULL;
 
+#if defined(NVME_HAIKU_NONCOHERENT_DMA)
+static int32 sForceHighDMA = 0;
+#endif
+
 
 // #pragma mark - memory
 
@@ -32,7 +37,18 @@ static pci_module_info* sPCIModule = NULL;
 int
 nvme_mem_init()
 {
-	/* nothing to do */
+#if defined(NVME_HAIKU_NONCOHERENT_DMA)
+	// Explicit lab opt-in: exercise full-width DMA addresses without changing
+	// the normal allocation policy or silently falling back to low memory.
+	void* settings = load_driver_settings("nvme_disk");
+	bool forceHighDMA = settings != NULL && get_driver_boolean_parameter(
+		settings, "force_high_dma", false, false);
+	if (settings != NULL)
+		unload_driver_settings(settings);
+	atomic_set(&sForceHighDMA, forceHighDMA ? 1 : 0);
+	if (forceHighDMA)
+		nvme_notice("ARM64 lab DMA floor: 0x100000000 (4 GiB)\n");
+#endif
 	return 0;
 }
 
@@ -56,15 +72,27 @@ nvme_mem_alloc_node(size_t size, size_t align, unsigned int node_id,
 
 	physical_address_restrictions physicalRestrictions = {};
 	physicalRestrictions.alignment = align;
+#if defined(NVME_HAIKU_NONCOHERENT_DMA)
+	if (atomic_get(&sForceHighDMA) != 0)
+		physicalRestrictions.low_address = UINT64_C(0x100000000);
+#endif
 
 	void* address;
 	area_id area = create_area_etc(B_SYSTEM_TEAM, "nvme physical buffer",
 		size, B_CONTIGUOUS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
 		0, 0, &virtualRestrictions, &physicalRestrictions, &address);
-	if (area < 0)
+	if (area < 0) {
+		if (physicalRestrictions.low_address != 0)
+			nvme_crit("Cannot allocate %zu bytes above lab DMA floor\n", size);
 		return NULL;
+	}
 
 	phys_addr_t physicalAddress = nvme_mem_vtophys(address);
+	if (physicalAddress < physicalRestrictions.low_address) {
+		nvme_crit("Allocation violates physical address restriction\n");
+		delete_area(area);
+		return NULL;
+	}
 #if defined(NVME_HAIKU_NONCOHERENT_DMA)
 	// create_area_etc() zeroes through a cached mapping. Remove those lines
 	// before changing the allocation's private mapping to Normal Non-cacheable.
