@@ -2131,3 +2131,28 @@ Rockchip's [RK3588 TRM, Table 1-3](https://www.scs.stanford.edu/~zyedidia/docs/r
 confirms wired sources through ID 453 and labels 454 through 511 reserved.
 The entire advertised MBI pool must not be enabled without resolving those
 conflicts. Interrupt routing and noncoherent network DMA remain unimplemented.
+
+The opt-in onboard host profile from `08ccc83a79` passed its first native
+enumeration trial. Image `hrev60097+79`, SHA-256
+`08dfd31c523fd53d11b6c4852bfd6e449f18addda5f0f8ec4171806631d4c998`,
+first passed QEMU in `qemu-shell/20260912T141001Z-0a8c43`, including emulated
+PCI/NVMe checks, USB transfer, component hashes, AHCI exclusion, filesystem
+checks, normal reboot and shutdown. QEMU did not claim the RK3588 host.
+
+On native USB boots in `interactive/20260912T141439Z-cea686`, the host attached
+all four firmware roots and enumerated four bridges, Samsung NVMe, ASM1164 and
+both RTL8125 controllers. Each root retained its 1 MiB firmware memory window.
+The initial boot and a normal Haiku reboot both passed a 64 MiB NVMe EFI-prefix
+read against Linux SHA-256
+`6e5cdc10b948959d2f419beca3dd590e065d151a18b75433c36a3de520e6a265`,
+all four component hashes, one RNDIS notification worker and strict zero BFS
+allocation counters on the USB boot filesystem. No USB check-sum messages or
+control-request timeouts occurred during either check window.
+
+Normal reboot restored authenticated Haiku access, and session recovery returned
+ROOBI `c5422540-cfee-418d-b9fe-847b7f587914`. The guard disarmed without a
+NanoKVM restart. Evidence is indexed by `state/native-onboard-host.json`.
+This accepts the expanded firmware host's enumeration and bounded NVMe read
+milestone. AHCI was blocked, RTL8125 was absent, and peripheral operation,
+interrupt routing and sustained host qualification remain open. The SSD's
+installed packages were not replaced by this USB-image trial.

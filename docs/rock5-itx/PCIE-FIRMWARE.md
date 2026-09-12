@@ -15,10 +15,12 @@ The additional `rock5-itx-edk2-v1.1-dt-onboard` setting enables the four known
 root/endpoint pairs in the candidate host driver. It checks each port's own
 firmware memory window, endpoint identity/class/revision and measured BAR
 extents. Overlapping or out-of-window BARs are rejected. The default lab
-setting remains the Samsung-only profile. The expanded profile has compiled
-and passed host tests against synthetic and captured hardware configuration;
-QEMU and native host-enumeration trials are pending. Initial enumeration
-images must block the AHCI driver until its interrupt route is implemented.
+setting remains the Samsung-only profile. The expanded profile passed host
+tests against synthetic and captured configuration, QEMU regression checks,
+and native enumeration before and after a normal Haiku reboot. All eight PCI
+functions appeared, and a 64 MiB NVMe EFI read matched an independent Linux
+hash on both boots. Initial enumeration images block AHCI and omit RTL8125;
+SATA/Ethernet driver operation and interrupt routing remain unimplemented.
 
 Only the lab UserBuildConfig installs that setting. It asserts that the board
 is running the installed EDK2 v1.1 release in mainline DT-only mode. The driver
@@ -52,9 +54,10 @@ No SMMU, PHY, pin, clock or iATU registers are written by this host driver.
 
 Configuration uses Device-nGnRnE mappings, sized volatile accesses and full
 system barriers. The ordinary PCI core still performs standard configuration
-writes, including command bits and BAR sizing. Only the root and the Samsung
-endpoint are exposed. Port I/O, prefetchable windows, other root ports, hotplug,
-INTx routing, MSI/ITS and controller reinitialization remain unsupported. The
+writes, including command bits and BAR sizing. The Samsung profile exposes
+one root/endpoint pair; the onboard profile exposes the four captured pairs.
+Port I/O, prefetchable windows, other root ports, hotplug, INTx routing,
+MSI/ITS and controller reinitialization remain unsupported. The
 NVMe driver uses its ARM64 polling path and noncoherent DMA buffers.
 
 For explicit high-address DMA testing, a separate `nvme_disk` driver settings
@@ -102,3 +105,15 @@ The first normal reboot encountered a ROOBI Linux AHCI startup stall and needed
 the established reset recovery sequence. The second normal reboot recovered
 successfully. Both guards disarmed, and NanoKVM remained online. The complete
 record, including the recovery failure, is `state/native-onboard-pci-probe.json`.
+
+The expanded host image was built from `08ccc83a79` (`hrev60097+79`), with
+host binary SHA-256
+`9fcd7c3ba29213cab572f31ffb21b13960477d1edf2d76ac7f84f9c514e851b3`.
+QEMU passed in `qemu-shell/20260912T141001Z-0a8c43`. Native session
+`interactive/20260912T141439Z-cea686` attached firmware segments 3, 4, 0 and 1,
+retaining each root's 1 MiB memory window. Both boots had clean USB BFS checks,
+verified component hashes and one RNDIS notification worker. Normal reboot
+returned authenticated Haiku access; session recovery then returned ROOBI
+`c5422540-cfee-418d-b9fe-847b7f587914`, with the controller guard disarmed and
+NanoKVM unchanged. The result is `state/native-onboard-host.json`. The installed
+SSD packages remain on their previously qualified revision.
