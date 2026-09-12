@@ -80,7 +80,10 @@ echo ROCK5_QEMU_NVME_WRITE_PASS
     if text.count('ROCK5_QEMU_NVME_READ_PASS') != 2 \
             or 'ROCK5_QEMU_NVME_WRITE_PASS' not in text:
         raise RuntimeError('Missing NVMe read/write evidence')
-    result = {'reads_and_flushed_write': 'pass', 'written_bytes': REGION_BYTES}
+    # Haiku's devfs_fsync() is a no-op: dd conv=fsync does not prove that an
+    # NVMe Flush command was issued. Keep this test's result limited to I/O.
+    result = {'reads_and_write': 'pass', 'written_bytes': REGION_BYTES,
+              'raw_device_flush': 'untested: devfs fsync is a no-op'}
     result['unaligned_io'] = check_unaligned(client, output, credentials, fixture)
     return result
 

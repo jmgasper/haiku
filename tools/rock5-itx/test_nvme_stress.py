@@ -30,9 +30,19 @@ class NVMeStressTests(unittest.TestCase):
         cls.directory = tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR'))
         cls.root = Path(cls.directory.name)
         cls.binary = cls.root / 'nvme-stress'
+        wrapper = cls.root / 'flush-fault.cpp'
+        wrapper.write_text('''#include <errno.h>
+#include <stdlib.h>
+extern "C" int __real_fsync(int);
+extern "C" int __wrap_fsync(int fd) {
+    if (getenv("ROCK5_TEST_FSYNC_ERROR")) { errno = EIO; return -1; }
+    return __real_fsync(fd);
+}
+''')
         subprocess.run(['g++', '-std=c++17', '-O2', '-pthread', '-Wall', '-Wextra', '-Werror',
                         '-fsanitize=address,undefined', '-fno-sanitize-recover=all',
-                        str(Path(__file__).with_name('nvme_stress.cpp')), '-o', str(cls.binary)],
+                        str(Path(__file__).with_name('nvme_stress.cpp')), str(wrapper),
+                        '-Wl,--wrap=fsync', '-o', str(cls.binary)],
                        check=True, capture_output=True, text=True)
 
     @classmethod
@@ -44,10 +54,10 @@ class NVMeStressTests(unittest.TestCase):
         self.guard = b'\x6d' * MIB
         self.disk.write_bytes(self.guard * 10)
 
-    def run_probe(self, mode, offset=1, length=8, workers=8, rounds=2, status=0):
+    def run_probe(self, mode, offset=1, length=8, workers=8, rounds=2, status=0, env=None):
         result = subprocess.run([str(self.binary), mode, str(self.disk), str(offset),
                                  str(length), str(workers), str(rounds)],
-                                capture_output=True, text=True, timeout=20)
+                                capture_output=True, text=True, timeout=20, env=env)
         self.assertEqual(result.returncode, status, result.stdout + result.stderr)
         return result.stdout + result.stderr
 
@@ -55,12 +65,15 @@ class NVMeStressTests(unittest.TestCase):
         output = self.run_probe('write')
         self.assertIn('ROCK5_NVME_STRESS_PASS', output)
         self.assertEqual(output.count('ROCK5_NVME_STRESS_WRITE round='), 2)
+        self.assertEqual(output.count('method=fsync status=pass'), 2)
         data = self.disk.read_bytes()
         self.assertEqual(data[:MIB], self.guard)
         self.assertEqual(data[9*MIB:], self.guard)
         self.assertEqual(data[MIB:9*MIB], expected(MIB, 8*MIB, 2))
         before = hashlib.sha256(data).digest()
-        self.assertIn('ROCK5_NVME_STRESS_PASS', self.run_probe('verify'))
+        verification = self.run_probe('verify')
+        self.assertIn('ROCK5_NVME_STRESS_PASS', verification)
+        self.assertNotIn('ROCK5_NVME_STRESS_FLUSH', verification)
         self.assertEqual(hashlib.sha256(self.disk.read_bytes()).digest(), before)
 
     def test_corruption_is_detected_at_beginning_middle_and_end(self):
@@ -76,6 +89,18 @@ class NVMeStressTests(unittest.TestCase):
                 stream.seek(offset)
                 stream.write(original)
                 stream.flush()
+
+    def test_flush_failure_stops_before_another_write_round(self):
+        output = self.run_probe('write', status=1,
+                                env=dict(os.environ, ROCK5_TEST_FSYNC_ERROR='1'))
+        self.assertIn('method=fsync status=fail', output)
+        self.assertIn('ROCK5_NVME_STRESS_FAIL', output)
+        self.assertNotIn('ROCK5_NVME_STRESS_PASS', output)
+        self.assertNotIn('round=2', output)
+        data = self.disk.read_bytes()
+        self.assertEqual(data[:MIB], self.guard)
+        self.assertEqual(data[9*MIB:], self.guard)
+        self.assertEqual(data[MIB:9*MIB], expected(MIB, 8*MIB, 1))
 
     def test_bad_bounds_and_worker_partition_do_not_write(self):
         original = self.disk.read_bytes()

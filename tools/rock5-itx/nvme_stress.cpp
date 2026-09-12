@@ -43,6 +43,7 @@ struct Probe {
 	unsigned rounds;
 	unsigned cpuCount;
 	bool write;
+	bool rawDevice;
 	bool start;
 	bool abort;
 	pthread_mutex_t mutex;
@@ -150,6 +151,30 @@ CheckWorkers(Probe& probe)
 }
 
 
+static bool
+Flush(Probe& probe, unsigned round)
+{
+	const char* method = "fsync";
+	int result;
+	do {
+#ifdef __HAIKU__
+		if (probe.rawDevice) {
+			// devfs_fsync() succeeds without calling the device driver. Raw
+			// namespace writes require the explicit drive-cache flush ioctl.
+			method = "B_FLUSH_DRIVE_CACHE";
+			result = ioctl(probe.fd, B_FLUSH_DRIVE_CACHE, NULL, 0);
+		} else
+#endif
+			result = fsync(probe.fd);
+	} while (result != 0 && errno == EINTR);
+	if (result != 0)
+		perror(method);
+	printf("ROCK5_NVME_STRESS_FLUSH round=%u method=%s status=%s\n",
+		round + 1, method, result == 0 ? "pass" : "fail");
+	return result == 0;
+}
+
+
 static void*
 RunWorker(void* cookie)
 {
@@ -192,10 +217,8 @@ RunWorker(void* cookie)
 			WriteRegion(worker, round);
 			pthread_barrier_wait(&probe.barrier);
 			if (worker.index == 0) {
-				if (fsync(probe.fd) != 0) {
-					perror("fsync");
+				if (!Flush(probe, round))
 					worker.failed = true;
-				}
 				CheckWorkers(probe);
 				printf("ROCK5_NVME_STRESS_WRITE round=%u bytes=%" PRIu64
 					" elapsed_us=%" PRIu64 " status=%s\n", round + 1,
@@ -277,6 +300,7 @@ main(int argc, char** argv)
 			&& geometry.bytes_per_sector == 512 && !geometry.read_only
 			&& ioctl(probe.fd, B_GET_DEVICE_SIZE, &deviceBytes, sizeof(deviceBytes)) == 0) {
 			capacity = deviceBytes;
+			probe.rawDevice = true;
 		}
 	}
 #endif

@@ -12,7 +12,7 @@ firmware supports it.
 | NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; staged downloads passed before/after native reboot, but simultaneous USB/Ethernet relay still causes outages; the latest outage did not recover through the hardware watchdog |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | Forty-five host checks pass locally, including bounded concurrent storage writes and corruption detection, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
+| Automated controls | Forty-six host checks pass locally, including bounded concurrent storage writes and corruption detection, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
 | Native Haiku on ROCK | All eight CPUs start; Tracker/Deskbar, NanoKVM input, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; Samsung NVMe bounded raw I/O has independent Linux hashes, and a small SSD installation passed two native boots, file persistence, normal reboot and power-off; sustained acceptance remains open |
@@ -1170,7 +1170,7 @@ The clean private image has SHA-256
 `ec7d1ef97100b754112881f81b7a9b8f2d7fa04a751d6f13a8c2c50e0554b374`.
 QEMU passed in `artifacts/qemu-shell/20260912T012011Z-d2825f`: host/NVMe
 configuration reads before and after normal reboot, the separate NVMe fixture's
-read/write/flush/reboot/host-hash checks, 64 MiB memory with its negative control,
+read/write/reboot/host-hash checks, 64 MiB memory with its negative control,
 8,192 cache checks and normal power-off.
 
 The same image passed the native probe before and after normal reboot in
@@ -1220,7 +1220,7 @@ The clean private image SHA-256 is
 `6d1096c0fe01c5449e2a0df609ee63d263f6a2725e600b564db77b125d3a71af`.
 
 The clean image passed in `artifacts/qemu-shell/20260912T014338Z-47339f`:
-the original 8 MiB reads/flushed write, five unaligned writes of 1, 513, 4,097,
+the original 8 MiB reads/write, five unaligned writes of 1, 513, 4,097,
 131,073 and 1,048,579 bytes above 6 GiB, and complete 2 MiB surrounding-region
 hashes after every write. All three regions matched again after normal reboot
 and through independent host reads after normal power-off. The same run passed
@@ -1259,7 +1259,7 @@ BAR0 remains CPU/PCI address `0xf0000000`, size 16 KiB. Tracker/Deskbar and the
 USB shell remained usable; the eight-worker locked 64 MiB memory check passed.
 
 The first native reads matched both independently generated Linux 8 MiB
-fixtures at 2 GiB and 5 GiB. Haiku then wrote and flushed 8 MiB at 5 GiB, seeded
+fixtures at 2 GiB and 5 GiB. Haiku then wrote 8 MiB at 5 GiB using `dd conv=fsync`, seeded
 a 2 MiB surrounding-byte test region at 7 GiB, and performed writes of 1, 513,
 4,097, 131,073 and 1,048,579 bytes at unaligned offsets in that region. The full
 2 MiB hash matched the host-generated expected bytes after each operation.
@@ -1270,7 +1270,8 @@ The final surrounding-region hash is
 Expected bytes, scripts and Linux results are in
 `artifacts/native-nvme-fixture/20260912T022046Z-338b9d`.
 
-This is bounded physical read/write/flush and warm-reboot evidence. It does not
+This is bounded physical read/write and warm-reboot evidence. Raw-device
+`fsync()` did not flush the drive cache; see the correction below. It does not
 qualify sustained performance, concurrent queues, controller-error recovery,
 TRIM, high physical DMA addresses, native SSD boot or power-loss durability.
 The logged DMA buffer addresses were below 4 GiB; large disk offsets do not
@@ -1334,8 +1335,8 @@ or installation, rather than growing this 300 MiB volume in place.
 The standalone `rock5_nvme_stress` probe at source
 `726258c8d56e6744cb69a7529a0c308bc6e0905e` uses eight workers pinned across the
 available Haiku CPUs. Each writes offset- and round-dependent patterns in
-1 MiB requests, followed by a flush and cross-worker reads in reverse block
-order. Host checks verify independent expected bytes, unchanged surrounding
+1 MiB requests, followed by raw-device `fsync()` and cross-worker reads in
+reverse block order. That `fsync()` was a no-op, as diagnosed below. Host checks verify independent expected bytes, unchanged surrounding
 data, read-only verification and corruption detection. The ARM64 binary SHA-256
 is `85f353259e6d8eea216fed6da66d79ef1dc6a076827d0bb2e0b8ccae4d974f33`.
 QEMU `artifacts/qemu-shell/20260912T031611Z-42d3cf` passed two rounds over
@@ -1345,7 +1346,7 @@ The kernel/driver image remains the earlier SHA-256 `31be3e08...0989bee3`.
 On the physical SSD, `artifacts/interactive/20260912T032043Z-2037fd` ran four
 rounds over the unallocated 16–18 GiB range: 8 GiB written and 8 GiB verified,
 with one worker on each of the eight CPUs. Every round and both 1 MiB guards
-passed. The test took 35.409 seconds; each 2 GiB write/flush phase took about
+passed. The test took 35.409 seconds; each 2 GiB write phase took about
 2.35 seconds and each verification phase about 6.50 seconds. These timings
 include pattern generation/comparison and describe this bounded workload,
 not a sustained performance qualification. The existing BFS file also matched
@@ -1372,7 +1373,56 @@ A subsequent SSD boot, `artifacts/interactive/20260912T032858Z-dc3cac`, read
 the same 2 GiB from Haiku in 6.625 seconds, with all eight CPU placements,
 patterns, guards, the probe executable and the BFS file checked. Normal Haiku
 reboot returned ROOBI `973dfc55-a390-4c3f-b1bd-b7bce69e3392`. No USB checksum
-errors appeared through that reboot. This qualifies the bounded concurrent
-storage workload and reset readback, while USB control stability, longer
+errors appeared through that reboot. These are passing bounded concurrent
+storage and reset-readback observations. Explicit flush qualification was
+missing; the subsequent high-address DMA failure is recorded below. USB control
+stability, longer
 mixed workloads, high physical DMA addresses, error recovery, TRIM and
 full-size SSD installation remain open.
+
+
+## High-address NVMe trial and raw-device flush correction
+
+Source `215a43a021913435a29f4b009fdff0af415d9fbb` adds an opt-in ARM64
+allocation floor above 4 GiB, described in [PCIE-FIRMWARE.md](PCIE-FIRMWARE.md).
+The private diagnostic image SHA-256 is
+`a7fe3ac018dcffae29a9b7e7234e7cc7057dfb5dab394d5ba810c5d9fc202eb0`.
+QEMU with 6 GiB RAM passed in `artifacts/qemu-shell/20260912T033950Z-a5ad84`,
+with all ten logged buffer pools above 4 GiB across two boots. With only 2 GiB
+RAM, `artifacts/qemu-shell/20260912T034228Z-1a1779` confirmed allocation failure,
+failed namespace reads and unchanged backing data, while USB boot and reset
+remained functional. A lazily published device entry can still exist after
+attachment fails; successful I/O, rather than entry absence, is the criterion.
+
+The native USB-boot trial `artifacts/interactive/20260912T034602Z-eda8a5`
+recorded all eighteen buffer pools above 4 GiB across two boots. The same
+8-worker probe `85f35325...d974f33` wrote and immediately verified four rounds
+over 16–18 GiB, totaling 8 GiB each way, in 35.417 seconds. The surrounding
+1 MiB guards matched. However, readback after normal Haiku reboot **failed**.
+Independent Linux direct reads confirmed stale disk data. A complete read-only
+2 GiB snapshot, its transfer/hash checks and sector analysis are retained in
+`artifacts/native-nvme-high-dma/20260912T034405Z-f5f561`.
+Exactly 192 KiB matches round three instead of round four: 16 KiB in each of
+the first two worker regions and 160 KiB in the third. Every remaining sector
+matches round four. The snapshot SHA-256 is
+`dd783842e50b7647afef3d65251944f478c02f2e032e8be1a638ec65dbcad04c`.
+The controller remained reachable and recovery returned ROOBI
+`ec369cf5-3a67-4f59-a47e-22abf6c04926`. USB checksum errors appeared during
+automatic recovery after the failed readback, not during the storage command.
+
+Source inspection found that `devfs_fsync()` returns success without calling
+the device driver. Therefore neither earlier raw `dd conv=fsync` commands nor
+the original concurrent probe proved a drive-cache flush. Their recorded data
+checks remain observations, but prior descriptions of raw-device flush
+qualification were incorrect. BFS file syncing follows a different path and
+can issue `B_FLUSH_DRIVE_CACHE`; the earlier SSD-boot trials may have benefited
+from incidental filesystem flushes. That is an explanation to test, not an
+established cause of the high-address failure.
+
+The probe now calls `B_FLUSH_DRIVE_CACHE` explicitly for the raw namespace,
+keeps `fsync()` for regular files, logs every flush result and fails on errors.
+The QEMU `dd` test no longer reports a flushed-write result. Forty-six host
+checks pass, including an injected flush failure that must stop before the
+next write round. Emulator command-trace verification and a corrected native
+write/reboot/Linux-readback trial are pending; high-address DMA persistence
+is not yet qualified.

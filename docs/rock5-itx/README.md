@@ -8,10 +8,11 @@ The [GitHub work items](TRACKING.md) split the roadmap into issues and milestone
 
 The Samsung 950 Pro now boots a small Haiku development installation. Two native
 SSD boots, a persisted file, normal reboot and power-off passed. Bounded raw
-reads, writes, flushes and reboot readback were independently checked through
-Linux. Its current PCIe support requires the explicit
+reads, writes and reboot readback were independently checked through Linux. Its current PCIe support requires the explicit
 [installed-firmware profile](PCIE-FIRMWARE.md). Most SSD capacity remains
-unallocated; sustained storage and full-size installation qualification remain.
+unallocated. A later high-address DMA trial lost 192 KiB of its final raw-write
+round across reboot. The probe omitted an explicit drive-cache flush; corrected
+flush testing, sustained storage and full-size installation qualification remain.
 
 This fork uses AI-assisted development at its owner's request. Upstream Haiku
 does not accept AI-assisted contributions. The `rock5-itx` branch contains this
@@ -206,7 +207,7 @@ input.
 
 Add `--nvme --power --normal` to attach a newly created 8 GiB sparse NVMe
 namespace. The check reads distinct 8 MiB patterns at offsets zero and 4 GiB,
-writes and flushes the first pattern at 4 GiB, verifies both regions, reboots
+writes the first pattern at 4 GiB, verifies both regions, reboots
 and checks again. Five additional writes inside a seeded 2 MiB region at 6 GiB
 exercise partial sectors and lengths across the 128 KiB command boundary.
 Their complete surrounding region must match after each write and reboot.
@@ -214,6 +215,8 @@ After normal shutdown, the host independently checks all three regions in the
 backing file. The namespace, fixture hashes and transcripts
 stay in the QEMU artifact directory; this command uses no physical drive.
 It tests the generic ARM64 NVMe path, independently of the ROCK's PCIe host.
+Haiku's raw-device `fsync()` is a no-op; this `dd`-based test does not establish
+that an NVMe Flush command was issued.
 
 The separate `rock5_nvme_stress` Jam target is an uploadable concurrent I/O
 diagnostic. Its arguments are `write|verify PATH OFFSET_MiB REGION_MiB WORKERS
@@ -224,8 +227,10 @@ write distinct offset/round-dependent patterns in 1 MiB requests, flush, and
 verify one another's regions in reverse block order. Verify mode reads only
 the last round's expected pattern, for reboot/readback checks. On Haiku, workers
 are pinned across the available CPUs and check their CPU before each request.
-The region must
-divide evenly among workers. Host checks compare independent expected bytes,
+Regular files use `fsync()`; the raw NVMe namespace uses
+`B_FLUSH_DRIVE_CACHE`, since devfs does not forward `fsync()` to the driver.
+Each round logs its flush method and result, and a flush error fails the test.
+The region must divide evenly among workers. Host checks compare independent expected bytes,
 surrounding guards, read-only verification and deliberate corruption. The
 ten-minute process alarm does not guarantee recovery from a stuck kernel I/O;
 retain the lab's external recovery controls during a native trial.
