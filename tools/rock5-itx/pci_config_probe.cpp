@@ -12,6 +12,8 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
+#include "pci_config_probe_checks.h"
+
 struct ConfigFunction {
 	const char* name;
 	phys_addr_t address;
@@ -26,11 +28,19 @@ static const ConfigFunction kQemu[] = {
 
 static const ConfigFunction kRock[] = {
 	{"root", 0xa40000000ULL, 0x35881d87, 0x060400},
-	{"nvme", 0x900100000ULL, 0xa802144d, 0x010802}
+	{"nvme", 0x900100000ULL, 0xa802144d, 0x010802},
+	// Only the other root/endpoint pairs captured by the native EFI inventory.
+	// Segment 2 is disabled; no alternate slot or function is probed.
+	{"root-sata", 0xa40400000ULL, 0x35881d87, 0x060400},
+	{"sata", 0x940100000ULL, 0x11641b21, 0x010601},
+	{"root-ethernet-3", 0xa40c00000ULL, 0x35881d87, 0x060400},
+	{"ethernet-3", 0x9c0100000ULL, 0x812510ec, 0x020000},
+	{"root-ethernet-4", 0xa41000000ULL, 0x35881d87, 0x060400},
+	{"ethernet-4", 0xa00100000ULL, 0x812510ec, 0x020000}
 };
 
 static bool
-ReadFunction(int fd, const ConfigFunction& function)
+ReadFunction(int fd, const ConfigFunction& function, bool requireActiveRoot = false)
 {
 	printf("PCI_MAP_BEGIN function=%s address=%#" B_PRIxPHYSADDR "\n",
 		function.name, function.address);
@@ -77,6 +87,11 @@ ReadFunction(int fd, const ConfigFunction& function)
 			words[i], words[i + 1], words[i + 2], words[i + 3]);
 	}
 	printf("PCI_CONFIG_END function=%s\n", function.name);
+	if (requireActiveRoot && !Rock5RootLinkReady(words)) {
+		fprintf(stderr, "PCI_LINK_NOT_READY function=%s; downstream access skipped\n",
+			function.name);
+		return false;
+	}
 	return true;
 }
 
@@ -88,19 +103,25 @@ main(int argc, char** argv)
 	return 1;
 #endif
 	if (argc != 2 || (strcmp(argv[1], "qemu") != 0
-		&& strcmp(argv[1], "rock5-efi-v1.1") != 0)) {
-		fprintf(stderr, "Usage: %s qemu|rock5-efi-v1.1\n", argv[0]);
+		&& strcmp(argv[1], "rock5-efi-v1.1") != 0
+		&& strcmp(argv[1], "rock5-efi-v1.1-onboard") != 0)) {
+		fprintf(stderr, "Usage: %s qemu|rock5-efi-v1.1|rock5-efi-v1.1-onboard\n",
+			argv[0]);
 		return 2;
 	}
 	const ConfigFunction* functions = strcmp(argv[1], "qemu") == 0 ? kQemu : kRock;
+	bool onboard = strcmp(argv[1], "rock5-efi-v1.1-onboard") == 0;
+	unsigned count = onboard ? sizeof(kRock) / sizeof(kRock[0]) : 2;
 	int fd = open(POKE_DEVICE_FULLNAME, O_RDONLY);
 	if (fd < 0) {
 		fprintf(stderr, "Cannot open PCI mapping interface: %s\n", strerror(errno));
 		return 1;
 	}
-	bool passed = ReadFunction(fd, functions[0]) && ReadFunction(fd, functions[1]);
+	bool passed = true;
+	for (unsigned index = 0; index < count && passed; index++)
+		passed = ReadFunction(fd, functions[index], onboard && index % 2 == 0);
 	close(fd);
 	printf("ROCK5_PCI_CONFIG_%s profile=%s functions=%u\n",
-		passed ? "PASS" : "FAIL", argv[1], passed ? 2 : 0);
+		passed ? "PASS" : "FAIL", argv[1], passed ? count : 0);
 	return passed ? 0 : 1;
 }

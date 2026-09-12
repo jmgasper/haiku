@@ -62,3 +62,22 @@ identity, class and BAR cases with sanitizers. Ordinary QEMU tests cover the
 shared PCI/NVMe stack and the new driver's refusal to bind to unrelated hardware;
 they cannot emulate the RK3588 host. Native hash checks and reboot tests are
 required before calling physical storage functional.
+
+The separate `rock5_pci_config_probe rock5-efi-v1.1-onboard` diagnostic reads
+the eight known root/endpoint functions on firmware segments 0, 1, 3 and 4:
+Samsung NVMe, ASM1164 SATA and both RTL8125 controllers. It checks each root's
+identity, bridge layout, bus numbering, memory decode and active PCIe link
+before reading the corresponding endpoint. Segment 2 and alternate slots or
+functions are never accessed. This mode makes no configuration writes and
+does not extend the host driver's attachment scope. The original
+`rock5-efi-v1.1` diagnostic remains limited to the Samsung pair.
+
+The diagnostic's root-link rejection checks passed with host sanitizers.
+Binary SHA-256
+`2faf3d56407c4707e0376e6f80b09068745398b4d93722ebe0d4e259199dc586`
+passed QEMU configuration reads before and after normal reboot in
+`qemu-shell/20260912T130118Z-311278`, together with the existing emulated NVMe
+and USB transfer checks. This build records source `860b9b95d1` plus its patch
+and full snapshots of the diagnostic sources; later commits do not change its
+recorded provenance. The native diagnostic is tracked separately in
+`state/pci-onboard-probe-plan.json` and has not yet qualified the other roots.
