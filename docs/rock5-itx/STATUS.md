@@ -12,7 +12,7 @@ firmware supports it.
 | NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; staged downloads passed before/after native reboot, but simultaneous USB/Ethernet relay still causes outages; the latest outage did not recover through the hardware watchdog |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | Fifty-eight host checks pass locally, including SSH controller-input isolation, explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
+| Automated controls | Sixty-two host checks pass locally, including strict BFS report parsing, SSH controller-input isolation, explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
 | Native Haiku on ROCK | All eight CPUs start; Tracker/Deskbar, NanoKVM input, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; Samsung NVMe bounded raw I/O has independent Linux hashes; the 238 GiB SSD installation boots repeatedly and has passed large-file persistence after normal reboot and shutdown/startup; the installed hrev60097+57 update also passes filesystem TRIM and reboot readback; intermittent USB control failures and sustained acceptance remain open |
@@ -1869,3 +1869,38 @@ hashes, subsequent boot with the replacement and old-backup readback passed in
 `qemu-shell/20260912T095559Z-2f1a35`. Native readback and update qualification are
 underway. Evidence and scripts are in
 `artifacts/native-rndis-notify-update/20260912T095522Z-11431b`.
+
+
+## Preserve the loaded driver inode during updates
+
+The first notification-driver update exposed a filesystem allocation leak.
+Although `checkfs -c` returned zero, its next-boot report listed eight
+unreferenced 4 KiB blocks on the SSD. The matching QEMU installation listed
+fifteen 2 KiB blocks. These counts match the replaced 28,019-byte driver and
+its inode. Copying the loaded file to a backup and overwriting its original
+name left the original inode open and unlinked until reboot. Pre-update
+large-file, guard and package hashes had passed; the new driver loaded and
+connected-interface down/up also passed.
+
+The update helper now stages the replacement, renames the original into its
+backup, and publishes the replacement. It can resume if interrupted after the
+original rename. It rejects a conflicting backup. The corrected standard
+update and interrupted-update rehearsal passed in
+`qemu-shell/20260912T102054Z-30fd50` and
+`qemu-shell/20260912T102056Z-0760df`: component/backup hashes, zero allocation
+counters, one notification worker, normal reboot and shutdown all passed.
+
+A clone of the original QEMU installation with fifteen unreferenced blocks
+was repaired in `qemu-shell/20260912T102055Z-29d4fb`. `checkfs /boot` reclaimed
+them; subsequent read-only checks, transfers, driver/backup hashes, reboot and
+shutdown passed. Native cleanup of the eight SSD blocks is underway.
+
+The host now parses the actual allocation counters and rejects incomplete or
+ambiguous reports and node-damage diagnostics. A substring containing zero is
+not accepted as a zero count. All 62 host checks pass. The SSH stdin tests also
+use the configured temporary directory so they can run on CI without the lab
+mount. Two intermediate QEMU reviews failed an added thread-list assertion:
+Haiku `ps` treats a positional argument as a team-name filter, not a numeric
+PID. The corrected trials use `ps -as`. A native diagnostic using unavailable
+`grep` likewise ended its session through normal automatic recovery; no USB
+reset result was recorded in that session.

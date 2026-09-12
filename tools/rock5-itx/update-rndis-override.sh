@@ -36,11 +36,13 @@ if check_hash "$driver" "$new_sha"; then
 	echo ROCK5_RNDIS_UPDATE_ALREADY_INSTALLED
 	exit 0
 fi
-check_hash "$driver" "$old_sha"
-if [ -e "$backup" ] || [ -L "$backup" ]; then
-	check_hash "$backup" "$old_sha"
+if [ -e "$driver" ] || [ -L "$driver" ]; then
+	check_hash "$driver" "$old_sha"
+	# Keep the loaded inode linked. Copying it and overwriting its old name
+	# leaves an open, unlinked BFS inode whose blocks survive a reboot.
+	[ ! -e "$backup" ] && [ ! -L "$backup" ]
 else
-	cp "$driver" "$backup"
+	# Resume an interrupted update after the original was renamed.
 	check_hash "$backup" "$old_sha"
 fi
 
@@ -51,6 +53,11 @@ cp "$source" "$stage"
 chmod 755 "$stage"
 check_hash "$stage" "$new_sha"
 sync
+if [ -e "$driver" ]; then
+	mv "$driver" "$backup"
+	check_hash "$backup" "$old_sha"
+	sync
+fi
 mv -f "$stage" "$driver"
 sync
 check_hash "$driver" "$new_sha"

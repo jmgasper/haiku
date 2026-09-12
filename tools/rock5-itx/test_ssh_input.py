@@ -12,7 +12,7 @@ import lab
 
 class SSHInputTests(unittest.TestCase):
     def run_fixture(self, mode):
-        with tempfile.TemporaryDirectory(dir=lab.WORK / 'tmp') as directory:
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
             root = Path(directory)
             executable = root / 'ssh'
             executable.write_text('#!' + sys.executable + '\n'
@@ -20,8 +20,10 @@ class SSHInputTests(unittest.TestCase):
                                   'print(json.dumps(sys.stdin.read()))\n')
             executable.chmod(0o700)
             program = '''import json,sys
+from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 import lab
+lab.WORK = Path(sys.argv[2]).parent
 config = {'ssh_config': sys.argv[2], 'target': 'local-fixture'}
 mode = sys.argv[3]
 if mode == 'legacy':
