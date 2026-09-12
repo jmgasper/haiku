@@ -1957,9 +1957,8 @@ All 64 host checks passed. The injection changes completion metadata after
 real emulated traffic; it does not qualify native EHCI transaction recovery
 or real endpoint STALL recovery. Production sources contain no injection.
 
-The native SSD still has notification-worker component `f661a168ac` and stack
-`3d928a4833`; these bulk changes have not been installed on it. Its completed
-trial in `interactive/20260912T105126Z-c9bc47` passed three automatic
+The completed native trial of notification-worker component `f661a168ac` and
+stack `3d928a4833` in `interactive/20260912T105126Z-c9bc47` passed three automatic
 authenticated reconnects, an 8 MiB upload/return after each, and a 360-second
 pause in guest test traffic after the second cycle. No serial bytes appeared
 during the pause, and the subsequent authenticated shell passed. Strict BFS
@@ -1995,3 +1994,21 @@ zero allocation counters, one worker, normal reboot and shutdown. The update
 plan and rollback command are in
 `artifacts/native-rndis-bulk-update/20260912T112049Z-2f94b9`; hardware deployment
 also requires the repeated-reconnect gate in its session wrapper.
+
+That repeated production gate passed in `qemu-shell/20260912T112306Z-ac3ab4`:
+connected-interface down/up, three automatic reconnects with transfer checks,
+a 130-second wait for retired network references, another transfer check,
+normal reboot and shutdown. Native update in
+`interactive/20260912T113046Z-7bc3ab` then passed initial and identical repeat
+installation. The new driver and the renamed original both matched their
+hashes, with zero allocation counters. Normal reboot returned ROOBI boot ID
+`2abb3402-55ea-47ba-9e2e-e05488e248f4`, and its guard disarmed.
+
+The subsequent SSD boot in `interactive/20260912T114032Z-24b674` verified the
+new `2016925fa8` component and existing stack in their loaded non-packaged
+paths, one notification worker, and zero missing, duplicate or unreferenced
+blocks. This also verifies the inode-preserving update on native 4 KiB BFS
+across reboot. Repeated native reconnect and storage qualification for this
+component is underway. Current component identity is indexed by
+`state/rock5-installed-network-components.json`; the earlier notification
+trial remains a separate result for its recorded component hash.
