@@ -2222,3 +2222,25 @@ its boot ID. `state/native-its-provider.json` records the completed read/reboot
 milestone separately from this setup failure. Write qualification is pending.
 The installed SSD components remain unchanged. Other ITS devices and CPU
 targets, allocation/free/reuse and noncoherent network DMA remain open.
+
+The corrected write trial passed in `interactive/20260912T230705Z-74d328`
+using the same immutable `hrev60097+86` USB image. It verified all 11 installed
+package hashes before creating a new 2064 MiB file. Eight workers pinned to
+CPUs 0 through 7 wrote four rounds over its 2 GiB region, with successful
+`fsync()` and peer reads after each round. The 8 GiB write/8 GiB peer-read
+workload passed in 33.5 seconds; this bounded regular-file check is not a
+sustained disk benchmark. Independent region SHA-256 and the two 8 MiB guards
+matched. A normal Haiku reboot restored authenticated access in 94 seconds.
+Eight-worker readback, independent hashes, packages and strict zero allocation
+counters on SSD and USB BFS all passed afterward.
+
+ITS interrupt counts reached logged thresholds 65536 before reboot and 16384
+afterward, with arrivals in both workloads. Four preflights verified all six
+components, the PCI inventory, USB root and one RNDIS notification worker.
+The accepted windows contained no interrupt timeout, polling fallback, ITS
+quarantine, unexpected interrupt ID or USB checksum/control timeout. Recovery
+returned ROOBI `f5b86238-1904-4170-96ed-8a208f14047c`; the guard disarmed and
+NanoKVM did not restart. `state/native-its-storage-stress.json` indexes the
+complete evidence. The failed setup record and partial file remain preserved.
+ITS tables were below 4 GiB in these boots; a separate opt-in high-table
+allocation trial is now built and awaiting QEMU/native qualification.

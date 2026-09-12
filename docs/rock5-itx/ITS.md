@@ -92,7 +92,30 @@ the main write workload had not started. That session remains an error, and
 the partially prepared file and failed script are retained. Automatic recovery
 returned ROOBI, the guard disarmed and NanoKVM stayed on the same boot.
 `state/native-its-provider.json` accepts only the completed two-boot read
-milestone and links the later setup failure. Write qualification is pending.
-Allocation/free/reuse,
+milestone and links the later setup failure.
+
+The corrected trial used a new file in
+`its-storage-stress/20260912T230918Z-5c1c54` and native USB session
+`interactive/20260912T230705Z-74d328`. Before creating it, all 11 installed
+packages matched the previous installation's hashes and BFS checked clean.
+Eight workers pinned across the eight CPUs then wrote four rounds over a
+2 GiB region, with `fsync()` and peer readback after each round: 8 GiB written
+and 8 GiB cross-checked. The independent final-region SHA-256
+`1dd5024c69c405b3612e60bcaaffe139546da461cb8777bb889b42cf18bbbd27`
+and both 8 MiB guards matched. A normal Haiku reboot restored authenticated
+access in 94 seconds, and eight-worker verification, the region hash, guards,
+all packages and both filesystem allocation checks passed again.
+
+NVMe interrupts arrived during the write and reboot-read windows, with logged
+counts reaching 65536 and 16384 respectively. There was no interrupt timeout,
+polling fallback, quarantine, unexpected interrupt ID or USB checksum/control
+timeout in the accepted windows. Four preflights verified the six components,
+PCI inventory, USB root and one RNDIS notification worker. Recovery returned
+ROOBI `f5b86238-1904-4170-96ed-8a208f14047c`; the guard disarmed and NanoKVM
+retained its boot ID. `state/native-its-storage-stress.json` records this pass.
+The earlier failed file is preserved and installed components are unchanged.
+
+These boots allocated ITS tables below 4 GiB. High-address table DMA,
+allocation/free/reuse,
 multi-vector devices, other ITS instances and CPU affinity remain separate
 qualification work.
