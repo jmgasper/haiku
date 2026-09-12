@@ -10,6 +10,9 @@ rule UserBuildConfigRulePreImage
 	local bootscript = <rock5-lab>UserBootscript ;
 	SEARCH on $(bootscript) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
 	AddFilesToHaikuImage home config settings boot : $(bootscript) ;
+	local pcieSettings = <rock5-lab>rk3588_pcie ;
+	SEARCH on $(pcieSettings) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
+	AddFilesToHaikuImage home config settings kernel drivers : $(pcieSettings) ;
 	AddFilesToHaikuImage home config non-packaged bin
 		: rock5_memory_probe rock5_platform_probe rock5_cache_probe rock5_file_transfer
 			rock5_services_probe rock5_pci_config_probe ;
