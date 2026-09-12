@@ -57,13 +57,11 @@ init_hardware(void)
 status_t
 init_driver(void)
 {
+	// Physical memory operations are useful on platforms without either bus.
 	if (get_module(B_ISA_MODULE_NAME, (module_info**)&isa) < B_OK)
-		return ENOSYS;
-
-	if (get_module(B_PCI_MODULE_NAME, (module_info**)&pci) < B_OK) {
-		put_module(B_ISA_MODULE_NAME);
-		return ENOSYS;
-	}
+		isa = NULL;
+	if (get_module(B_PCI_MODULE_NAME, (module_info**)&pci) < B_OK)
+		pci = NULL;
 
 	return B_OK;
 }
@@ -72,8 +70,10 @@ init_driver(void)
 void
 uninit_driver(void)
 {
-	put_module(B_ISA_MODULE_NAME);
-	put_module(B_PCI_MODULE_NAME);
+	if (isa != NULL)
+		put_module(B_ISA_MODULE_NAME);
+	if (pci != NULL)
+		put_module(B_PCI_MODULE_NAME);
 }
 
 
@@ -146,6 +146,8 @@ poke_control(void* cookie, uint32 op, void* arg, size_t length)
 	switch (op) {
 		case POKE_PORT_READ:
 		{
+			if (isa == NULL)
+				return B_NOT_SUPPORTED;
 			status_t result = B_OK;
 			port_io_args ioctl;
 			if (user_memcpy(&ioctl, arg, sizeof(port_io_args)) != B_OK)
@@ -174,6 +176,8 @@ poke_control(void* cookie, uint32 op, void* arg, size_t length)
 
 		case POKE_PORT_WRITE:
 		{
+			if (isa == NULL)
+				return B_NOT_SUPPORTED;
 			status_t result = B_OK;
 			port_io_args ioctl;
 			if (user_memcpy(&ioctl, arg, sizeof(port_io_args)) != B_OK)
@@ -200,6 +204,8 @@ poke_control(void* cookie, uint32 op, void* arg, size_t length)
 
 		case POKE_PORT_INDEXED_READ:
 		{
+			if (isa == NULL)
+				return B_NOT_SUPPORTED;
 			port_io_args ioctl;
 			if (user_memcpy(&ioctl, arg, sizeof(port_io_args)) != B_OK)
 				return B_BAD_ADDRESS;
@@ -216,6 +222,8 @@ poke_control(void* cookie, uint32 op, void* arg, size_t length)
 
 		case POKE_PORT_INDEXED_WRITE:
 		{
+			if (isa == NULL)
+				return B_NOT_SUPPORTED;
 			port_io_args ioctl;
 			if (user_memcpy(&ioctl, arg, sizeof(port_io_args)) != B_OK)
 				return B_BAD_ADDRESS;
@@ -229,6 +237,8 @@ poke_control(void* cookie, uint32 op, void* arg, size_t length)
 
 		case POKE_PCI_READ_CONFIG:
 		{
+			if (pci == NULL)
+				return B_NOT_SUPPORTED;
 			pci_io_args ioctl;
 			if (user_memcpy(&ioctl, arg, sizeof(pci_io_args)) != B_OK)
 				return B_BAD_ADDRESS;
@@ -244,6 +254,8 @@ poke_control(void* cookie, uint32 op, void* arg, size_t length)
 
 		case POKE_PCI_WRITE_CONFIG:
 		{
+			if (pci == NULL)
+				return B_NOT_SUPPORTED;
 			pci_io_args ioctl;
 			if (user_memcpy(&ioctl, arg, sizeof(pci_io_args)) != B_OK)
 				return B_BAD_ADDRESS;
@@ -257,6 +269,8 @@ poke_control(void* cookie, uint32 op, void* arg, size_t length)
 
 		case POKE_GET_NTH_PCI_INFO:
 		{
+			if (pci == NULL)
+				return B_NOT_SUPPORTED;
 			pci_info_args ioctl;
 			if (user_memcpy(&ioctl, arg, sizeof(pci_info_args)) != B_OK)
 				return B_BAD_ADDRESS;
