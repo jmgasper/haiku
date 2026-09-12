@@ -2035,6 +2035,36 @@ file-verification passes while both directions of an 8 MiB USB round trip
 ran. Guest monotonic timestamps recorded 1.405 seconds of read-process overlap
 during receive and 1.871 seconds during send. The independent file hash,
 strict allocation check, normal reboot, repeated file verification and shutdown
-passed. This rehearses the workload and observation scripts; native execution
-against the existing 2 GiB SSD pattern remains the next test. It does not
-measure physical SSD throughput. The plan is `state/mixed-read-plan.json`.
+passed. The plan is `state/mixed-read-plan.json`.
+
+The corresponding native trial in `interactive/20260912T122302Z-a7c3ac`
+completed 29 verification passes over the existing 2 GiB file region, with
+all eight workers confirming their assigned CPU on every pass. The 8 MiB
+upload and staged return matched their independent host hash. Monotonic guest
+timestamps recorded 3.865 seconds of verification-process overlap during
+receive and 34.831 seconds during send. No USB check-sum messages,
+control-request/response timeouts or kernel debugger appeared after the initial
+shell configuration through collection of the workload results.
+
+The old file pattern, independent SHA-256, both guard regions, all eleven
+package hashes and zero BFS allocation counters passed afterward, as did the
+component hashes and single notification worker. Normal reboot returned ROOBI
+boot ID `d77d0873-ee18-4851-b32f-8d1ed782175e`. The subsequent SSD boot in
+`interactive/20260912T123510Z-aebe2c` repeated those checks and verified the new
+round-trip file. Its normal reboot returned
+`f76bc95e-c7da-4eb5-8d68-5245ab14f3d3`. Both guards disarmed without a NanoKVM
+restart. The complete result is `state/native-mixed-read.json`.
+
+This is a short mixed-read qualification on the specified NanoKVM USB path.
+The repeated reads use ordinary file caching; 29 passes do not mean 58 GiB of
+physical SSD traffic. Downloads remain staged at 256 KiB/s. Writes and sustained
+platform acceptance remain separate tests.
+
+A write-workload rehearsal passed in `qemu-shell/20260912T123403Z-b573ab`.
+Eight virtual CPUs completed four write/fsync/peer-read rounds over a separate
+64 MiB region between two 8 MiB guards. Both directions of an 8 MiB round trip
+overlapped that write-and-verify invocation. The final independent region hash,
+both guards, clean filesystem check, normal reboot, readback and shutdown
+passed. The prepared native test uses a separate 2 GiB region, preserving the
+existing large-file reference for independent checks. Its plan is
+`state/mixed-write-plan.json`; native write qualification is still pending.
