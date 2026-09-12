@@ -2008,7 +2008,33 @@ The subsequent SSD boot in `interactive/20260912T114032Z-24b674` verified the
 new `2016925fa8` component and existing stack in their loaded non-packaged
 paths, one notification worker, and zero missing, duplicate or unreferenced
 blocks. This also verifies the inode-preserving update on native 4 KiB BFS
-across reboot. Repeated native reconnect and storage qualification for this
-component is underway. Current component identity is indexed by
-`state/rock5-installed-network-components.json`; the earlier notification
-trial remains a separate result for its recorded component hash.
+across reboot. The completed trial then passed three automatic authenticated
+USB reconnects with an 8 MiB upload/return after each. A 360-second pause after
+cycle two produced no UART bytes, and authenticated access afterward passed.
+The three disconnect segments contained 188, 676 and 301 USB check-sum
+messages; none appeared after the corresponding RNDIS reattachment. No USB
+control-request or response timeouts were observed. The single-worker and
+strict zero-allocation checks passed before and after the cycles.
+
+After all three cycles, the 2 GiB pattern, independent SHA-256, both 8 MiB
+guards, all eleven package hashes and BFS checks passed. Normal reboot returned
+ROOBI boot ID `ecf9f5da-aad3-44ad-be77-813608c62934`. The subsequent SSD boot in
+`interactive/20260912T121602Z-9b82a3` repeated those checks successfully and
+verified the three reconnect files and saved previous-driver binary. Its
+normal reboot returned ROOBI boot ID
+`554c8790-241f-4452-aebc-d9e0355bae78`. Both guards disarmed, with NanoKVM's boot
+ID unchanged. Qualification is indexed by `state/native-rndis-bulk-retest.json`;
+current component identity is in `state/rock5-installed-network-components.json`.
+The earlier notification trial remains separate evidence for its component
+hash. Downloads were staged at 256 KiB/s; these are buffered file checks and
+the specified NanoKVM/EHCI path, not sustained mixed-load or all-port acceptance.
+
+A subsequent mixed-load script rehearsal passed in
+`qemu-shell/20260912T120519Z-e62e75`. Eight virtual CPUs completed five 64 MiB
+file-verification passes while both directions of an 8 MiB USB round trip
+ran. Guest monotonic timestamps recorded 1.405 seconds of read-process overlap
+during receive and 1.871 seconds during send. The independent file hash,
+strict allocation check, normal reboot, repeated file verification and shutdown
+passed. This rehearses the workload and observation scripts; native execution
+against the existing 2 GiB SSD pattern remains the next test. It does not
+measure physical SSD throughput. The plan is `state/mixed-read-plan.json`.
