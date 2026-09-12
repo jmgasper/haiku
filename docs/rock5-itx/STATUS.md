@@ -15,7 +15,7 @@ firmware supports it.
 | Automated controls | Forty-seven host checks pass locally, including bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
-| Native Haiku on ROCK | All eight CPUs start; Tracker/Deskbar, NanoKVM input, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; Samsung NVMe bounded raw I/O has independent Linux hashes; the 238 GiB SSD installation has reached the desktop on four boots and passed large-file persistence after normal reboot and shutdown/startup; one USB control interruption required repeating the final checks, and sustained acceptance remains open |
+| Native Haiku on ROCK | All eight CPUs start; Tracker/Deskbar, NanoKVM input, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; Samsung NVMe bounded raw I/O has independent Linux hashes; the 238 GiB SSD installation boots repeatedly and has passed large-file persistence after normal reboot and shutdown/startup; the installed hrev60097+57 update also passes filesystem TRIM and reboot readback; intermittent USB control failures and sustained acceptance remain open |
 | Board revision | Owner confirmed ROCK 5 ITX PCB v1.12; current public electrical schematic is v1.11, so exact revision electrical details remain to be checked before raw register work |
 | USB recovery | Workstation USB-C connection enumerates as `2207:350b`; remote loader and MaskROM entry, RAM loader download, eMMC/SPI selection and matching read-back hashes verified |
 | Serial | NanoKVM UART1 (`/dev/ttyS1`) captures readable DDR/SPL, U-Boot and Linux output at 1,500,000 baud, 8N1; longer input is corrupted and an interactive login has not passed |
@@ -1654,7 +1654,72 @@ Scripts, raw results and the reviewed checkpoint are in
 
 This qualifies successful filesystem free-space TRIM commands and preservation
 across reboot/recovery; it does not measure physical NAND reclamation or sudden
-power-loss durability. The installed SSD kernel is still the prior
-`215a43a021913435a29f4b009fdff0af415d9fbb` build. Updating it to include the new
-driver is being rehearsed separately. Controller-stall handling, sustained
+power-loss durability. That SSD readback used the prior
+`215a43a021913435a29f4b009fdff0af415d9fbb` build; the subsequent installed update
+is recorded below. Controller-stall handling, sustained
 mixed load, MSI, the other PCI roots and overall board parity remain open.
+
+
+## Installed NVMe TRIM update
+
+The physical Samsung installation now runs `hrev60097+57`, driver source
+`5ac55e25f837c686b7489753312eacbdb59f733b`. Installer copied from the ordinary
+private image SHA-256
+`01c26d17692268e2f6dfe70792b217e2e0465f48e0e0b2c0022efe1282020191` onto
+the existing full-capacity BFS volume. The GPT layout remains unchanged.
+The installed image does not contain the high-DMA diagnostic setting.
+
+The update rehearsal exposed a FAT overwrite problem: copying directly over
+the read-only `BOOTAA64.EFI` returned `Operation not allowed` after truncating
+the file to zero bytes. This occurred only in a disposable QEMU copy. The new
+`install-efi-loader.sh` helper verifies the old loader, a separate backup and
+a staged replacement before renaming the new file into place. QEMU checks
+covered rejection of a wrong old hash, successful replacement and backup,
+and an already-current retry. The new loader SHA-256 is
+`31d8f11cef5a998ad2ef0a29608397dc1d1ce51cb8cfe4d6aea7eadfd1d9dc75`;
+the retained previous loader is
+`ac0bc6ace649e94c3b67190c27e91cd733d8fda8349b31c3c6821f072f57f8db`.
+
+The complete QEMU installation repeat in
+`qemu-shell/20260912T072836Z-41d159` passed the full 5 GiB + 8 MiB file hash,
+eleven package hashes, filesystem checks, staged EFI replacement and explicit
+sync/unmount. Independent cold readback of all packages and both EFI files
+passed. The resulting full-capacity image then booted as NVMe-only storage in
+`qemu-shell/20260912T075048Z-922b2c`; the full file and packages matched on
+both sides of normal reboot, and normal shutdown completed. Memory, cache
+and binary-transfer checks also passed. The transfer harness now resets its
+two known fixture files in the disposable overlay, allowing reuse of an
+installed image that retains those fixtures.
+
+Failed rehearsals remain recorded. One whole-file hash exceeded the original
+deadline before Installer started. A clone of the interrupted EFI-overwrite
+run later had a mismatching `noto` package; that run had not reached its final
+sync/unmount, and the exact cause is not established. Installation was repeated
+from the original qualified disk and verified after clean shutdown. The first
+updated-image boot test also stopped on a preexisting transfer-test file before
+the corrected test setup was applied. These failures are not counted as passes.
+
+On the board, `interactive/20260912T071040Z-13b11c` lost USB control after
+the eight-worker precheck and before Installer launched; it recorded 13,118
+USB check-sum errors and recovered to ROOBI. The fresh session
+`interactive/20260912T074104Z-2c2277` completed Installer, a one-worker read of
+the existing 2 GiB pattern region, its independent SHA-256, both 8 MiB guards,
+all eleven package hashes, filesystem checks and the EFI update. Both volumes
+were synced and cleanly unmounted. No USB check-sum errors were recorded in
+that repeat. Using one reader here does not establish eight-core USB stability.
+
+Two subsequent SSD boots in `interactive/20260912T075633Z-8ce009` and
+`interactive/20260912T080235Z-7edb2d` mounted `/boot` from
+`/dev/disk/nvme/0/1` with the updated kernel. On the first boot, installed-system
+TRIM reported 231,038,304,256 bytes, matching 56,405,836 free 4 KiB blocks.
+The full pattern region, guards, packages and filesystem checks passed before
+TRIM and after normal reboot/recovery and the second SSD boot. Linux also
+verified both EFI file hashes between those boots. Both native sessions
+completed normal reboot to ROOBI, and their controller guards disarmed.
+Neither recorded USB check-sum errors before its reboot.
+
+Scripts and retained failure reviews are under
+`artifacts/nvme-installed-update/20260912T070143Z-d7ec4d`; the final reviewed
+checkpoint is `state/nvme-installed-update-checkpoint.json`. This qualifies the
+installed update and the stated persistence checks. Sudden power-loss
+durability, controller-stall recovery and overall hardware parity remain open.

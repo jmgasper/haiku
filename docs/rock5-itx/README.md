@@ -9,7 +9,7 @@ The [GitHub work items](TRACKING.md) split the roadmap into issues and milestone
 The Samsung 950 Pro now has a full-capacity Haiku development installation:
 a 512 MiB EFI partition and a 238 GiB BFS volume. Native Installer copying,
 package and EFI hashes, filesystem checks and large-file readback after normal
-reboot and shutdown/startup have passed. Four SSD boots reached the desktop;
+reboot and shutdown/startup have passed. Repeated SSD boots reached the desktop;
 a USB control failure interrupted one check session, and a subsequent repeat
 with results captured on UART passed. PCIe support currently requires the
 explicit
@@ -20,8 +20,9 @@ This required correcting the probe: raw-device `fsync()` had not flushed the
 SSD. The old raw test ranges are now inside the BFS volume and must not be
 reused. Further write tests use regular files. A newer USB-booted driver has
 passed BFS free-space TRIM on the SSD, preserving file/package hashes and the
-complete EFI partition through an installed-system boot and recovery. Updating
-the SSD to include that driver is being rehearsed. Sustained storage, error
+complete EFI partition through an installed-system boot and recovery. The SSD
+has since been updated to include that driver; installed-system TRIM and
+large-file/package readback across normal reboot also passed. Sustained storage, error
 recovery and the remaining board hardware still need qualification.
 
 This fork uses AI-assisted development at its owner's request. Upstream Haiku
@@ -310,6 +311,33 @@ recovery succeeds. No persistent controller startup service is installed.
 The watchdog recovered earlier outages, but a later relay failure left the
 controller unreachable beyond the recovery deadline. A physical controller
 power cycle remains necessary when that recovery route fails.
+
+## Updating the installed SSD
+
+Boot a qualified ordinary lab image and use Installer to replace the system on
+the existing BFS volume. The high-DMA diagnostic image carries a driver setting
+that is not intended for the ordinary installation. Verify the installed
+packages and retained test files, run `sync`, and check the filesystem before
+updating the EFI partition.
+
+The existing FAT loader can carry a read-only attribute. In a QEMU rehearsal,
+copying directly over it failed after truncating it. The
+[EFI update helper](../../tools/rock5-itx/install-efi-loader.sh) instead checks
+the expected old and new SHA-256 values, verifies a previous-loader backup,
+copies to a new staging file, and renames that verified file into place. Run it
+inside Haiku against an already identified and mounted EFI partition:
+
+```sh
+/bin/sh /boot/home/rock5-lab/install-efi-loader.sh \
+    /HaikuEFI/EFI/BOOT OLD_SHA256 NEW_SHA256
+```
+
+The new loader comes from the running image's
+`/boot/system/data/platform_loaders/haiku_loader.efi`. The helper retains
+`BOOTAA64.EFI.rock5-previous`; a mismatched backup or leftover staging file
+requires inspection. An already-current loader is a successful no-op. Finish
+with `sync` and clean unmounts, then verify cold readback and an installed-system
+boot. This procedure has not been qualified against sudden power loss.
 
 ## EFI firmware and recovery
 

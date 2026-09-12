@@ -57,7 +57,10 @@ def check_transfers(client, output, credentials, fixture):
     helper = '/boot/home/config/non-packaged/bin/rock5_file_transfer'
     token = fixture['token']
     path = '/boot/home/rock5-roundtrip.bin'
-    commands = (f'umask 077\n{helper} receive 10.0.2.100 9000 {token} {path}\n'
+    # Installed images can retain fixtures from an earlier qualification run.
+    # Reset only these test files in this run's disposable QEMU overlay.
+    commands = (f'umask 077\nrm -f {path} /boot/home/rock5-partial.bin\n'
+                f'{helper} receive 10.0.2.100 9000 {token} {path}\n'
                 f'actual=$(sha256sum {path})\n'
                 f'[ "${{actual%% *}}" = {fixture["sha256"]} ]\n'
                 f'{helper} send 10.0.2.100 9001 {token} {path}\n'
