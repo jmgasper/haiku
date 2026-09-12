@@ -16,7 +16,7 @@ is running the installed EDK2 v1.1 release in mainline DT-only mode. The driver
 does not infer a firmware version from a PCI ID. Changing firmware or table
 mode requires rechecking this profile before enabling it. The FDT board ID,
 root register range, root/endpoint IDs, classes, single-function headers,
-firmware bus numbering, memory decode and BAR containment are checked before
+firmware bus numbering, active PCIe link, memory decode and BAR containment are checked before
 the PCI core attaches. Unsupported slots/functions are rejected without MMIO.
 
 Source contract: edk2-rk3588 commit

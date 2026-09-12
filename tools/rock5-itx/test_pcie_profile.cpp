@@ -41,11 +41,17 @@ main(int argc, char** argv)
 	for (unsigned width : {0u, 3u, 8u, UINT32_MAX})
 		assert(!ValidAccess(1, 0, 0, 0, width));
 	// Reject wrong identities, classes, multifunction headers and bus layouts.
-	const unsigned rootFields[] = {0, 2, 3, 6, 8};
+	const unsigned rootFields[] = {0, 2, 3, 6, 8, 0x70 / 4, 0x80 / 4};
 	for (unsigned field : rootFields) {
 		uint32_t copy[64];
 		memcpy(copy, root, sizeof(copy));
 		copy[field] = 0xffffffff;
+		assert(!RootMatches(copy, base, size));
+	}
+	for (uint32_t link : {0x10230000u, 0x38230000u, 0x30200000u, 0x30030000u}) {
+		uint32_t copy[64];
+		memcpy(copy, root, sizeof(copy));
+		copy[0x80 / 4] = link;
 		assert(!RootMatches(copy, base, size));
 	}
 	assert(RootMatches(root, base, size));

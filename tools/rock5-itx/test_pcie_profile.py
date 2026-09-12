@@ -25,6 +25,7 @@ class PCIeProfileTests(unittest.TestCase):
             root = [0] * 64
             root[0:4] = [0x35881d87, 0x00100007, 0x06040001, 0x00010000]
             root[6], root[8] = 0x00010100, 0xf000f000
+            root[0x70 // 4], root[0x80 // 4] = 0x1042b010, 0x30230000
             endpoint = [0] * 64
             endpoint[0:6] = [0xa802144d, 0x00100007, 0x01080201, 0, 0xf0000004, 0]
             for name, data in [('root', root), ('endpoint', endpoint)]:
