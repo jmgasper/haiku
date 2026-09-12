@@ -5,6 +5,8 @@
 
 #ifdef __HAIKU__
 #include <Drivers.h>
+#include <OS.h>
+#include <syscalls.h>
 #include <sys/ioctl.h>
 #endif
 
@@ -39,6 +41,7 @@ struct Probe {
 	uint64_t bytesPerWorker;
 	unsigned workers;
 	unsigned rounds;
+	unsigned cpuCount;
 	bool write;
 	bool start;
 	bool abort;
@@ -70,6 +73,13 @@ Pattern(uint64_t wordOffset, unsigned round)
 static bool
 Transfer(Worker& worker, bool write, uint64_t offset)
 {
+#ifdef __HAIKU__
+	if (_kern_get_cpu() != int(worker.index % worker.probe->cpuCount)) {
+		fprintf(stderr, "worker=%u ran on an unexpected CPU\n", worker.index);
+		worker.failed = true;
+		return false;
+	}
+#endif
 	size_t done = 0;
 	while (done < kMiB) {
 		void* buffer = (char*)worker.buffer + done;
@@ -153,6 +163,28 @@ RunWorker(void* cookie)
 	if (abort)
 		return NULL;
 
+#ifdef __HAIKU__
+	unsigned cpu = worker.index % probe.cpuCount;
+	uint32 mask[32] = {};
+	mask[cpu / 32] = 1U << (cpu % 32);
+	status_t status = _kern_set_thread_affinity(0, mask, sizeof(mask));
+	bigtime_t deadline = system_time() + 1000000;
+	while (status == B_OK && _kern_get_cpu() != int(cpu)) {
+		if (system_time() >= deadline)
+			status = B_TIMED_OUT;
+		snooze(50);
+	}
+	worker.failed = status != B_OK;
+	printf("ROCK5_NVME_STRESS_CPU worker=%u cpu=%u status=%s\n",
+		worker.index, cpu, worker.failed ? "fail" : "pass");
+	pthread_barrier_wait(&probe.barrier);
+	if (worker.index == 0)
+		CheckWorkers(probe);
+	pthread_barrier_wait(&probe.barrier);
+	if (probe.abort)
+		return NULL;
+#endif
+
 	unsigned firstRound = probe.write ? 0 : probe.rounds - 1;
 	for (unsigned round = firstRound; round < probe.rounds; round++) {
 		uint64_t start = Microseconds();
@@ -221,6 +253,12 @@ main(int argc, char** argv)
 		return 2;
 	}
 	Probe probe = {};
+#ifdef __HAIKU__
+	system_info info;
+	if (get_system_info(&info) != B_OK || info.cpu_count < 1 || info.cpu_count > 64)
+		return 1;
+	probe.cpuCount = info.cpu_count;
+#endif
 	probe.write = strcmp(argv[1], "write") == 0;
 	probe.fd = open(argv[2], probe.write ? O_RDWR : O_RDONLY);
 	if (probe.fd < 0) {

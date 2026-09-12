@@ -222,7 +222,9 @@ or `/dev/disk/nvme/0/raw`. Use only an explicitly disposable, unmounted region
 that does not overlap an installation or another test. One to eight workers
 write distinct offset/round-dependent patterns in 1 MiB requests, flush, and
 verify one another's regions in reverse block order. Verify mode reads only
-the last round's expected pattern, for reboot/readback checks. The region must
+the last round's expected pattern, for reboot/readback checks. On Haiku, workers
+are pinned across the available CPUs and check their CPU before each request.
+The region must
 divide evenly among workers. Host checks compare independent expected bytes,
 surrounding guards, read-only verification and deliberate corruption. The
 ten-minute process alarm does not guarantee recovery from a stuck kernel I/O;
