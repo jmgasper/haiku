@@ -12,7 +12,7 @@ firmware supports it.
 | NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; staged downloads passed before/after native reboot, but simultaneous USB/Ethernet relay still causes outages; the latest outage did not recover through the hardware watchdog |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | Fifty-six host checks pass locally, including explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
+| Automated controls | Fifty-eight host checks pass locally, including SSH controller-input isolation, explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
 | Native Haiku on ROCK | All eight CPUs start; Tracker/Deskbar, NanoKVM input, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; Samsung NVMe bounded raw I/O has independent Linux hashes; the 238 GiB SSD installation boots repeatedly and has passed large-file persistence after normal reboot and shutdown/startup; the installed hrev60097+57 update also passes filesystem TRIM and reboot readback; intermittent USB control failures and sustained acceptance remain open |
@@ -1798,10 +1798,32 @@ kernel image listings and file hashes verify that the overrides were loaded.
 `install-network-overrides.sh` stages and hashes both components before placing
 them in the non-packaged add-on directories. Its initial install, identical
 second invocation, subsequent boot with both overrides, and shutdown passed in
-`qemu-shell/20260912T091505Z-978bac`. All 56 host checks also passed. Native
-installation and controlled USB reset qualification are underway; these QEMU
-results are not a native reconnect acceptance. The plan, rollback script and
-reproducers are in `artifacts/native-network-overrides/20260912T091424Z-79df24`.
+`qemu-shell/20260912T091505Z-978bac`. Native installation in
+`interactive/20260912T091817Z-8ab084` passed initial and identical repeat
+installation, then normal reboot to ROOBI. The subsequent SSD boot in
+`interactive/20260912T092446Z-7f6097` verified both loaded component paths and
+hashes. Connected-interface down/up and the first USB reset passed automatic
+network configuration, authenticated commands and an 8 MiB upload/return with
+matching SHA-256. There were 64 USB check-sum errors during the first disconnect
+and none between reattachment and the second reset preparation.
+
+The second reset restored the interface and ICMP reachability, but the later
+authenticated login failed. Between the second preparation and recovery entry,
+UART recorded 145 USB check-sum errors, including 68 after the RNDIS device was
+added again. HID and RNDIS both reported errors. Recovery returned ROOBI boot ID
+`fbcb1834-5fdb-4c17-86dc-8744326a8ac5`; NanoKVM's boot ID stayed unchanged and its
+guard disarmed. Three-cycle native qualification and the final SSD readback
+remain incomplete. The overrides remain installed for investigation; they are
+not a qualified replacement for the recorded base image. The plan, rollback
+script and reproducers are in
+`artifacts/native-network-overrides/20260912T091424Z-79df24`.
+
+This trial also exposed a host controller-input defect: a read-only SSH child
+inherited stdin and consumed a queued JSON action. Such children now use null
+stdin; explicit input remains available for sudo. Two subprocess tests include
+a reproducer of the old behavior and verify both corrected paths. All 58 host
+checks passed. The active hardware session predated that fix and issued later
+actions individually.
 
 Failed diagnostic runs are retained. Early manual-recovery attempts had commands
 queued behind `netstat`; diagnostics now use `netstat -n` to avoid name resolution.

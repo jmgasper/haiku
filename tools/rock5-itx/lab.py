@@ -110,8 +110,11 @@ def lock(name):
 
 
 def ssh(config, host, command, timeout=30, input=None):
+    # Read-only SSH commands must not consume a session controller's queued
+    # JSON commands from its terminal. Explicit input still supports sudo.
+    stdin = {'stdin': subprocess.DEVNULL} if input is None else {'input': input}
     return run(['ssh', '-F', str(local_path(config['ssh_config'])),
-                config[host], command], timeout=timeout, input=input)
+                config[host], command], timeout=timeout, **stdin)
 
 
 def remote_python(config, code, timeout=30):
