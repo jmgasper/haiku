@@ -240,13 +240,15 @@ usb_rndis_free(void *cookie)
 	RNDISDevice *device = (RNDISDevice *)cookie;
 	mutex_lock(&gDriverLock);
 	status_t status = device->Free();
-	for (int32 i = 0; i < MAX_DEVICES; i++) {
-		if (gRNDISDevices[i] == device) {
-			// the device is removed already but as it was open the
-			// removed hook has not deleted the object
-			gRNDISDevices[i] = NULL;
-			delete device;
-			break;
+	// The USB cookie must remain valid when a connected interface is closed.
+	if (device->IsRemoved()) {
+		for (int32 i = 0; i < MAX_DEVICES; i++) {
+			if (gRNDISDevices[i] == device) {
+				// The removed hook retained the object while it was open.
+				gRNDISDevices[i] = NULL;
+				delete device;
+				break;
+			}
 		}
 	}
 
@@ -267,7 +269,10 @@ publish_devices()
 	int32 deviceCount = 0;
 	mutex_lock(&gDriverLock);
 	for (int32 i = 0; i < MAX_DEVICES; i++) {
-		if (gRNDISDevices[i] == NULL)
+		// Unpublish a removed device even while its last handle is closing.
+		// net_server needs the removal/creation notifications to recreate its
+		// interface when this slot is reused on reconnect.
+		if (gRNDISDevices[i] == NULL || gRNDISDevices[i]->IsRemoved())
 			continue;
 
 		gDeviceNames[deviceCount] = (char *)malloc(strlen(sDeviceBaseName) + 4);
