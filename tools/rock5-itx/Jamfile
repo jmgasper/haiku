@@ -2,6 +2,7 @@ SubDir HAIKU_TOP tools rock5-itx ;
 UsePrivateSystemHeaders ;
 
 SimpleTest rock5_memory_probe : memory_probe.cpp ;
+SimpleTest rock5_nvme_stress : nvme_stress.cpp ;
 SimpleTest rock5_platform_probe : platform_probe.cpp ;
 SimpleTest rock5_cache_probe : cache_probe.cpp ;
 UsePrivateHeaders drivers ;

@@ -215,6 +215,19 @@ backing file. The namespace, fixture hashes and transcripts
 stay in the QEMU artifact directory; this command uses no physical drive.
 It tests the generic ARM64 NVMe path, independently of the ROCK's PCIe host.
 
+The separate `rock5_nvme_stress` Jam target is an uploadable concurrent I/O
+diagnostic. Its arguments are `write|verify PATH OFFSET_MiB REGION_MiB WORKERS
+ROUNDS`. Write mode destroys exactly that region of an existing regular file
+or `/dev/disk/nvme/0/raw`. Use only an explicitly disposable, unmounted region
+that does not overlap an installation or another test. One to eight workers
+write distinct offset/round-dependent patterns in 1 MiB requests, flush, and
+verify one another's regions in reverse block order. Verify mode reads only
+the last round's expected pattern, for reboot/readback checks. The region must
+divide evenly among workers. Host checks compare independent expected bytes,
+surrounding guards, read-only verification and deliberate corruption. The
+ten-minute process alarm does not guarantee recovery from a stuck kernel I/O;
+retain the lab's external recovery controls during a native trial.
+
 `--pci-config` additionally runs a read-only physical mapping diagnostic before
 and after reboot. Its `qemu` profile requires the exact extra-NVMe topology
 above. The installed `rock5_pci_config_probe rock5-efi-v1.1` profile instead
