@@ -15,7 +15,7 @@ firmware supports it.
 | Automated controls | Forty-one host checks pass locally, including the firmware PCIe profile, NVMe fixture and sector-guard validation, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
-| Native Haiku on ROCK | All eight CPUs start; platform EHCI mounts the NanoKVM boot volume; Tracker/Deskbar, NanoKVM keyboard and mouse, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; the Samsung NVMe now passes bounded native reads/writes/flush/reboot with independent Linux hashes; sustained acceptance remains open |
+| Native Haiku on ROCK | All eight CPUs start; Tracker/Deskbar, NanoKVM input, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; Samsung NVMe bounded raw I/O has independent Linux hashes, and a small SSD installation passed two native boots, file persistence, normal reboot and power-off; sustained acceptance remains open |
 | Board revision | Owner confirmed ROCK 5 ITX PCB v1.12; current public electrical schematic is v1.11, so exact revision electrical details remain to be checked before raw register work |
 | USB recovery | Workstation USB-C connection enumerates as `2207:350b`; remote loader and MaskROM entry, RAM loader download, eMMC/SPI selection and matching read-back hashes verified |
 | Serial | NanoKVM UART1 (`/dev/ttyS1`) captures readable DDR/SPL, U-Boot and Linux output at 1,500,000 baud, 8N1; longer input is corrupted and an interactive login has not passed |
@@ -93,7 +93,8 @@ control and PWM fan. Identification does not establish Haiku driver support.
 
 The installed 256 GB Samsung 950 Pro NVMe SSD is identified in ROOBI. The owner
 authorizes erasing its existing data for testing and eventual Haiku installation.
-Native Haiku PCIe/NVMe discovery remains pending. No SATA disk or
+Native Haiku PCIe/NVMe discovery and a small SSD boot installation now work
+through the explicit firmware profile described below. No SATA disk or
 Wi-Fi/Bluetooth module has been identified as installed.
 Additional storage, network peers, audio loopback/receivers, displays and camera
 fixtures are needed for the corresponding acceptance tests. The owner confirmed
@@ -1285,3 +1286,45 @@ The same clean image subsequently booted directly from emulated NVMe on both
 boots in `artifacts/qemu-shell/20260912T023150Z-6008aa`. Both kernel mounts were
 `/dev/disk/nvme/0/1`; memory/cache, USB transfer and truncated-input checks,
 normal reboot and power-off passed. This gates the first native SSD boot image.
+
+## Native Samsung SSD development installation
+
+The owner authorized erasing the entire Samsung drive. Installation evidence
+in `artifacts/nvme-install/20260912T024056Z-90ec70` records the exact model,
+serial and capacity checks, removal of its old GPT, and writing the tested
+336 MiB private image above. A full Linux `O_DIRECT` readback matched the
+source SHA-256. The resulting MBR contains a 32 MiB EFI partition and a
+300 MiB BFS partition; most of the 256 GB drive remains unallocated. This is
+a development installation, not a full-drive installation or release image.
+
+Both physical trials used a one-time UEFI `BootNext` option with the full
+Samsung namespace device path. The ordinary `BootOrder` stayed unchanged and
+NanoKVM kept the ROOBI recovery image selected. Haiku's boot volume therefore
+had to come from the SSD; UART and `df` both report `/dev/disk/nvme/0/1`.
+The bootstrap image and firmware loader are unchanged from the QEMU gate.
+
+- `artifacts/interactive/20260912T024625Z-d59135`: native SSD desktop and shell;
+  eight-worker locked 64 MiB memory check; 16,384 instruction-cache checks;
+  an 8 MiB file written and flushed to BFS. Normal Haiku reboot returned to
+  ROOBI after firmware consumed the one-time boot option.
+- `artifacts/interactive/20260912T025256Z-8dd22a`: a second one-time SSD boot
+  read that existing file with matching SHA-256
+  `e2641c6d7df3dc39fe21e02b32825f37ba0b6f76fa908b269882d4b917580abf`.
+  The memory check passed again. Normal Haiku shutdown reached
+  `PSCI: requesting system off`; a NanoKVM power-button command then started
+  fresh DDR/SPL/EDK2 output and returned ROOBI.
+
+The two UART captures contain 313,122 and 311,779 bytes with no transport
+errors. HDMI capture timed out while powered off, and a short burst of
+undecodable UART bytes followed the power-off marker. NanoKVM SSH remained
+reachable with controller boot ID `84b69ae8-4d9e-4c03-9f5c-6c9547084819`.
+Both scoped watchdogs disarmed. Final recovery boot ID is
+`4b3a06db-b95e-4257-ad0e-ea291e12d62f`; review assertions and the per-trial
+results are saved as `native-boot-review.json` in the installation evidence.
+
+The persisted file was checked after reboot, before the subsequent power-off.
+Concurrent/sustained I/O, controller-error recovery, TRIM, DMA above 4 GiB and
+power-loss durability remain unqualified. The firmware-specific PCIe and
+polling limitations still apply. BFS resizing is currently unimplemented, so
+using the rest of the SSD requires a new larger filesystem and a proper copy
+or installation, rather than growing this 300 MiB volume in place.
