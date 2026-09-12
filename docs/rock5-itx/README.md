@@ -18,7 +18,10 @@ concurrent writes with DMA buffers above 4 GiB passed explicit drive-cache
 flushes, normal reboot and shutdown/startup, with independent Linux hashes.
 This required correcting the probe: raw-device `fsync()` had not flushed the
 SSD. The old raw test ranges are now inside the BFS volume and must not be
-reused. Further tests use regular files. Sustained storage, TRIM, error
+reused. Further write tests use regular files. A newer USB-booted driver has
+passed BFS free-space TRIM on the SSD, preserving file/package hashes and the
+complete EFI partition through an installed-system boot and recovery. Updating
+the SSD to include that driver is being rehearsed. Sustained storage, error
 recovery and the remaining board hardware still need qualification.
 
 This fork uses AI-assisted development at its owner's request. Upstream Haiku

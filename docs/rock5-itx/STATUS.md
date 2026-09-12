@@ -1594,10 +1594,67 @@ sending an unencodable CNS selector. Optional Identify rejection on pre-2.0
 controllers retains those defaults; other discovery failures disable TRIM
 while retaining ordinary I/O. Nonzero limits also enable the mandatory DSM
 support variant. Host interval and batch-limit checks and the ARM64 driver
-build pass; refreshed QEMU and native filesystem tests are pending.
+build pass. Refreshed ordinary/high-DMA QEMU raw ioctl checks pass in
+`qemu-shell/20260912T064028Z-63836b` and
+`qemu-shell/20260912T064326Z-957939`. The BFS test passes in
+`qemu-shell/20260912T064325Z-3230f4`, with CNS 06h / CSI 00h Identify traces,
+five DSM ranges covering every requested block, and no skipped ranges. The
+high-DMA BFS run `qemu-shell/20260912T064028Z-1aa8cf` also passes independent
+review of those ranges, file checks, reboot, guards and ten DMA pools above
+4 GiB. Its original wrapper error is retained: it expected a `nvme_notice`
+message suppressed by the driver's library log level; the corrected wrapper
+uses controller Identify traces. `state/nvme-trim-qemu-checkpoint.json` records
+the combined gate. The image manifest records untracked host build libraries
+created by checks; its tracked source patch is empty, and those libraries were
+subsequently archived outside the source tree.
 
 The field layout and processing semantics were checked against the
 [NVM Command Set 1.0d specification](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVM-Command-Set-Specification-1.0d-2023.12.28-Ratified.pdf),
 with the skipped-range behavior checked in QEMU 8.2.2's `hw/nvme/ctrl.c`.
 The previous physical raw fixture plan is retired; the next native test uses
 BFS's free-space interface.
+
+
+## Native BFS TRIM qualification
+
+Driver source `5ac55e25f837c686b7489753312eacbdb59f733b` passed native
+free-space TRIM from the diagnostic USB image SHA-256
+`2d1b1f04c009f23607754ad70215bdef92376816243b26881d32230b050f15e4`.
+In `interactive/20260912T064648Z-456e0c`, all nine NVMe DMA pools were above
+4 GiB. The Samsung's full BFS volume was mounted at `/HaikuNVMe`;
+`fstrim -f -v` reported 231,037,755,392 bytes, exactly its 56,405,702 free
+4 KiB blocks. The existing 2 GiB pattern region, surrounding guards, eleven
+installed package hashes, EFI loader and filesystem allocation checks passed
+before and immediately after trimming. No USB check-sum errors appeared in
+that initial TRIM/readback segment.
+
+Normal reboot loaded the same diagnostic image and again allocated all nine
+DMA pools above 4 GiB. The next command referenced a missing local script,
+triggering automatic recovery before its readback could execute. That failed
+session is preserved. Its serial capture also contains 59 USB transaction-error
+messages after the second boot and before recovery; it does not establish USB
+reliability. The preparation script now gives reboot requests and reboot
+readback distinct filenames.
+
+A subsequent one-time SSD boot in `interactive/20260912T065903Z-d24410`
+reached the installed desktop with `/boot` on `/dev/disk/nvme/0/1`. Full
+2 GiB verification passed in 6.744 seconds, the independent SHA-256 and both
+guards matched, all eleven packages still matched, and `checkfs -c` reported
+no allocation errors. That session captured no USB check-sum errors and
+completed a normal reboot to ROOBI. Both controller guards disarmed.
+
+Linux inspection before and after these trials used read-only direct I/O on
+the identified, unmounted Samsung namespace. The primary GPT prefix, the entire
+512 MiB EFI partition and the complete region after BFS containing the backup
+GPT match exactly. The loader SHA-256 remains
+`ac0bc6ace649e94c3b67190c27e91cd733d8fda8349b31c3c6821f072f57f8db`.
+Scripts, raw results and the reviewed checkpoint are in
+`artifacts/native-nvme-fstrim/20260912T064429Z-1c2c08` and
+`state/native-nvme-fstrim-checkpoint.json`.
+
+This qualifies successful filesystem free-space TRIM commands and preservation
+across reboot/recovery; it does not measure physical NAND reclamation or sudden
+power-loss durability. The installed SSD kernel is still the prior
+`215a43a021913435a29f4b009fdff0af415d9fbb` build. Updating it to include the new
+driver is being rehearsed separately. Controller-stall handling, sustained
+mixed load, MSI, the other PCI roots and overall board parity remain open.
