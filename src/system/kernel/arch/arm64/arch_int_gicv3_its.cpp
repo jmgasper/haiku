@@ -30,10 +30,12 @@ Counter()
 
 
 status_t
-GICv3Its::Memory::Allocate(const char* name, size_t bytes, size_t alignment)
+GICv3Its::Memory::Allocate(const char* name, size_t bytes, size_t alignment,
+	phys_addr_t minimumAddress)
 {
 	virtual_address_restrictions virtualRestrictions{};
 	physical_address_restrictions physicalRestrictions{};
+	physicalRestrictions.low_address = minimumAddress;
 	physicalRestrictions.high_address = UINT64_C(1) << 35;
 	physicalRestrictions.alignment = alignment;
 	area = create_area_etc(B_SYSTEM_TEAM, name, bytes, B_CONTIGUOUS,
@@ -44,7 +46,7 @@ GICv3Its::Memory::Allocate(const char* name, size_t bytes, size_t alignment)
 	physical_entry entry;
 	status_t status = get_memory_map(address, bytes, &entry, 1);
 	if (status != B_OK || entry.size < bytes
-		|| !ValidTableRange(entry.address, bytes, alignment)) {
+		|| !ValidTableRange(entry.address, bytes, alignment, minimumAddress)) {
 		delete_area(area);
 		area = -1;
 		address = nullptr;
@@ -126,12 +128,18 @@ GICv3Its::_PrepareTables()
 	// measured 2-byte entries; one 64 KiB page is more than the 16-ID capacity.
 	// All tables use Non-shareable Normal-NC accesses (RK3588001).
 	status_t status;
-	if ((status = fDevices.Allocate("ITS devices", 8 * 65536, kTablePage)) != B_OK
-		|| (status = fCollections.Allocate("ITS collections", kTablePage, kTablePage)) != B_OK
-		|| (status = fCommands.Allocate("ITS commands", kQueueBytes, kTablePage)) != B_OK
-		|| (status = fProperties.Allocate("LPI properties", kTablePage, kTablePage)) != B_OK
-		|| (status = fPending.Allocate("CPU0 LPI pending", kTablePage, kTablePage)) != B_OK
-		|| (status = fInterrupts.Allocate("NVMe ITS entries", B_PAGE_SIZE, B_PAGE_SIZE)) != B_OK) {
+	if ((status = fDevices.Allocate("ITS devices", 8 * 65536, kTablePage,
+			fMinimumTableAddress)) != B_OK
+		|| (status = fCollections.Allocate("ITS collections", kTablePage, kTablePage,
+			fMinimumTableAddress)) != B_OK
+		|| (status = fCommands.Allocate("ITS commands", kQueueBytes, kTablePage,
+			fMinimumTableAddress)) != B_OK
+		|| (status = fProperties.Allocate("LPI properties", kTablePage, kTablePage,
+			fMinimumTableAddress)) != B_OK
+		|| (status = fPending.Allocate("CPU0 LPI pending", kTablePage, kTablePage,
+			fMinimumTableAddress)) != B_OK
+		|| (status = fInterrupts.Allocate("NVMe ITS entries", B_PAGE_SIZE, B_PAGE_SIZE,
+			fMinimumTableAddress)) != B_OK) {
 		return status;
 	}
 	// Configuration entry byte zero corresponds to INTID 8192, not INTID 0.
@@ -142,10 +150,12 @@ GICv3Its::_PrepareTables()
 
 
 status_t
-GICv3Its::Init(volatile uint8* redistributors, uint32 count, bool trace)
+GICv3Its::Init(volatile uint8* redistributors, uint32 count, bool trace,
+	bool forceHighTables)
 {
 	fRedistributors = redistributors;
 	fTrace = trace;
+	fMinimumTableAddress = forceHighTables ? UINT64_C(1) << 32 : 0;
 	if (count != 8 || smp_get_current_cpu() != 0)
 		return B_NOT_SUPPORTED;
 	// Never replace a live Redistributor's pending/property tables. CommonLPIAff

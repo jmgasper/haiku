@@ -123,6 +123,8 @@ GICv3InterruptController::_InitIts(phys_addr_t distributor, phys_addr_t redistri
 		&& redistributor == Gicv3Mbi::kRedistributor
 		&& Rk3588Its::FirmwareMatches(gFDT) && !msi_supported();
 	bool trace = get_driver_boolean_parameter(settings, "trace", false, false);
+	bool forceHighTables = get_driver_boolean_parameter(settings,
+		"force_high_tables", false, false);
 	unload_driver_settings(settings);
 	if (!allowed || GICD_TYPER != 0x7b040f) {
 		dprintf("GICv3 ITS: firmware profile rejected\n");
@@ -131,7 +133,7 @@ GICv3InterruptController::_InitIts(phys_addr_t distributor, phys_addr_t redistri
 	fIts = new(std::nothrow) GICv3Its;
 	if (fIts == nullptr)
 		return;
-	status_t status = fIts->Init(fGicrBase, fNumCpus, trace);
+	status_t status = fIts->Init(fGicrBase, fNumCpus, trace, forceHighTables);
 	if (status != B_OK) {
 		dprintf("GICv3 ITS: initialization rejected/failed: %" B_PRId32 "\n", status);
 		return;

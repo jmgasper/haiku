@@ -13,7 +13,8 @@
 // Tables and reservations live for the kernel lifetime, including on failure.
 class GICv3Its : public MSIInterface {
 public:
-	status_t Init(volatile uint8* redistributors, uint32 count, bool trace);
+	status_t Init(volatile uint8* redistributors, uint32 count, bool trace,
+		bool forceHighTables);
 	status_t AllocateVectors(uint32, uint32&, uint64&, uint32&) override
 		{ return B_NOT_SUPPORTED; }
 	status_t AllocateVectorsForDevice(const msi_requester* requester, uint32 count,
@@ -31,7 +32,8 @@ private:
 		void* address = nullptr;
 		phys_addr_t physical = 0;
 		size_t size = 0;
-		status_t Allocate(const char* name, size_t bytes, size_t alignment);
+		status_t Allocate(const char* name, size_t bytes, size_t alignment,
+			phys_addr_t minimumAddress);
 	};
 	status_t _PrepareTables();
 	bool _WriteChecked(size_t offset, uint64 value);
@@ -54,6 +56,7 @@ private:
 	uint64 fDeviceBaser = 0;
 	uint64 fCollectionBaser = 0;
 	uint64 fTarget = 0;
+	phys_addr_t fMinimumTableAddress = 0;
 	uint32 fWriteOffset = 0;
 	uint32 fCount = 0;
 	uint32 fEnabledMask = 0;

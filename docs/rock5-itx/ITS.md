@@ -35,6 +35,14 @@ allocator's cached lines and retypes the mappings to Normal Non-cacheable,
 following the qualified NVMe DMA approach. Command, device, collection,
 property, pending and interrupt-translation tables remain kernel-owned.
 
+For a separate address-width trial, `force_high_tables true` in the same
+settings file requires all six allocations to start at or above 4 GiB. The
+entire allocation must still fit below 32 GiB. The allocator and returned
+physical ranges both enforce the bounds; failure prevents ITS attachment
+without falling back to low memory. This option is absent from ordinary
+images and the installed SSD. Actual table addresses and hash-checked native
+I/O must be recorded before accepting that trial; it is currently unqualified.
+
 Initialization refuses active LPIs on any Redistributor and requires ITS1 to
 be disabled and quiescent before writing table descriptors. Device and
 collection tables are flat, with 64 KiB pages; the command queue is 64 KiB.

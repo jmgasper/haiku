@@ -30,6 +30,10 @@ int main()
 	assert(!ValidCount(0) && !ValidCount(33) && !ValidCount(UINT32_MAX));
 	for (unsigned i = 1; i <= 32; i++) assert(ValidCount(i));
 	assert(ValidTableRange(0x100000000, 0x80000, 0x10000));
+	assert(ValidTableRange(0x100000000, 0x80000, 0x10000, 0x100000000));
+	assert(!ValidTableRange(0xffff0000, 0x80000, 0x10000, 0x100000000));
+	assert(ValidTableRange(0x7ffff0000, 0x10000, 0x10000, 0x100000000));
+	assert(!ValidTableRange(0x7ffff0000, 0x10001, 0x10000, 0x100000000));
 	assert(ValidTableRange(0x7ffff0000, 0x10000, 0x10000));
 	assert(!ValidTableRange(0x7ffff0000, 0x10001, 0x10000));
 	assert(!ValidTableRange(0x800000000, 1, 1));

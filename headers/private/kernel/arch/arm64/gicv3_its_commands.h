@@ -65,11 +65,13 @@ ValidCount(uint32_t count)
 }
 
 inline bool
-ValidTableRange(uint64_t address, uint64_t bytes, uint64_t alignment)
+ValidTableRange(uint64_t address, uint64_t bytes, uint64_t alignment,
+	uint64_t minimumAddress = 0)
 {
 	// RK3588 GIC/ITS table masters address 35 bits. Validate the whole buffer.
 	return bytes != 0 && alignment != 0 && (alignment & (alignment - 1)) == 0
-		&& address % alignment == 0 && address < (UINT64_C(1) << 35)
+		&& address >= minimumAddress && address % alignment == 0
+		&& address < (UINT64_C(1) << 35)
 		&& bytes <= (UINT64_C(1) << 35) - address;
 }
 
