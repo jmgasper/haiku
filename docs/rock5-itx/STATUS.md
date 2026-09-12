@@ -2092,3 +2092,42 @@ with an explicit file flush and peer read after each round. They are not a
 physical throughput measurement. This short mixed-write qualification uses
 the specified NanoKVM/EHCI path with staged downloads at 256 KiB/s; sustained
 load, all USB ports and storage error recovery remain open.
+
+## Onboard PCI configuration after firmware handoff
+
+Diagnostic `2faf3d56407c4707e0376e6f80b09068745398b4d93722ebe0d4e259199dc586`
+passed on SSD boots `interactive/20260912T133024Z-3b996f` and
+`interactive/20260912T134213Z-228a3d`. Both read the eight known functions on
+firmware segments 0, 1, 3 and 4, checking each root's active link before its
+endpoint. All eight 256-byte captures are identical across the two Haiku boots.
+The six SATA/Ethernet captures also match the EFI snapshots byte for byte.
+The Samsung pair differs in three bytes of standard command/bridge state.
+No PCI configuration, clock, regulator, address-window or DMA writes were
+performed by the diagnostic. The full result is
+`state/native-onboard-pci-probe.json`.
+
+Component hashes, one notification worker and strict zero-allocation BFS
+checks passed before and after each probe. The second boot also passed the
+existing 2 GiB reference pattern, independent hash, guards and eleven package
+hashes. Its normal reboot returned ROOBI boot ID
+`86635310-fa37-4af4-9c24-cf9609519b61`. The first normal recovery instead reported
+inaccessible SATA configuration and stalled in Linux's `ahci_enable_ahci`.
+The established reset recovery restored ROOBI with boot ID
+`6d646fa5-d809-4bd8-bf57-107e81cb5ab4`. Both guards disarmed without a NanoKVM
+restart. The read-only configuration milestone passed; the recovery failure's
+cause remains open.
+
+The subsequent ROOBI resource snapshot in
+`pci-linux-reference/20260912T135308Z-07733b` records 8 KiB SATA BAR0/BAR5,
+and 64 KiB BAR2 plus 16 KiB BAR4 for each RTL8125. Linux's BAR addresses differ
+from EDK2's retained configuration. Ethernet segment 4 is connected at 1 Gb/s;
+segment 3 has no carrier. This is resource evidence, not a Linux throughput
+baseline or a native Ethernet pass.
+
+The firmware DT advertises MBI interrupt IDs 424 through 479, but the same DT
+assigns several of those IDs to USB PHY, ADC, thermal and random-number devices.
+The audit is `pci-onboard-probe/20260912T125505Z-9edda7/mbi-resource-audit.json`.
+Rockchip's [RK3588 TRM, Table 1-3](https://www.scs.stanford.edu/~zyedidia/docs/rockchip/rk3588_part1.pdf)
+confirms wired sources through ID 453 and labels 454 through 511 reserved.
+The entire advertised MBI pool must not be enabled without resolving those
+conflicts. Interrupt routing and noncoherent network DMA remain unimplemented.

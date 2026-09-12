@@ -80,4 +80,16 @@ passed QEMU configuration reads before and after normal reboot in
 and USB transfer checks. This build records source `860b9b95d1` plus its patch
 and full snapshots of the diagnostic sources; later commits do not change its
 recorded provenance. The native diagnostic is tracked separately in
-`state/pci-onboard-probe-plan.json` and has not yet qualified the other roots.
+`state/pci-onboard-probe-plan.json`. Native configuration reads subsequently
+passed on two SSD boots with identical 256-byte captures for all eight
+functions. SATA and Ethernet captures match the earlier EFI snapshots exactly;
+the NVMe pair has three changed bytes in secondary status, bridge control and
+the endpoint's INTx-disable command bit. All four roots forward a 1 MiB memory
+window at their respective firmware MEM32 bases. This verifies configuration
+access after ExitBootServices, without extending driver attachment or proving
+peripheral operation.
+
+The first normal reboot encountered a ROOBI Linux AHCI startup stall and needed
+the established reset recovery sequence. The second normal reboot recovered
+successfully. Both guards disarmed, and NanoKVM remained online. The complete
+record, including the recovery failure, is `state/native-onboard-pci-probe.json`.
