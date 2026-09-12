@@ -574,6 +574,12 @@ struct nvme_ctrlr {
 	 */
 	struct nvme_ctrlr_data		cdata;
 
+	/* Cached Dataset Management support and processing limits. */
+	bool				dsm_supported;
+	uint16_t			dsm_max_ranges;
+	uint32_t			dsm_max_range_blocks;
+	uint64_t			dsm_max_command_blocks;
+
 	/*
 	 * Array of Identify Namespace data.
 	 * Stored separately from ns since nsdata should
@@ -626,6 +632,9 @@ struct nvme_ctrlr {
  */
 extern int nvme_admin_identify_ctrlr(struct nvme_ctrlr *ctrlr,
 				     struct nvme_ctrlr_data *cdata);
+
+extern int nvme_admin_identify_nvm_ctrlr(struct nvme_ctrlr *ctrlr,
+				     struct nvme_nvm_ctrlr_data *cdata);
 
 extern int nvme_admin_get_feature(struct nvme_ctrlr *ctrlr,
 				  enum nvme_feat_sel sel,

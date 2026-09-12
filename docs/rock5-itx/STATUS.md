@@ -1572,6 +1572,32 @@ Forty-seven host tests pass, including more than two million interval cases
 checked against a separate 128-bit arithmetic calculation. The ARM64 driver
 and a QEMU-only ioctl probe compile. That probe requires an 8 GiB namespace
 with a private test marker, so it rejects this physical Samsung drive.
-QEMU command traces, surrounding-data checks and native filesystem trimming
-are pending. No physical raw TRIM test is authorized by the retired fixture
-plan; the next native test must go through BFS's free-space interface.
+The raw ioctl probe passes in ordinary and forced-high-DMA QEMU runs
+`qemu-shell/20260912T060739Z-436e5d` and `qemu-shell/20260912T060739Z-d3c4c3`:
+ten cases, exactly three nonempty DSM commands, exact surrounding bytes and
+post-reboot readback. Earlier harness failures with QEMU's default discard
+policy of `ignore` remain recorded; the corrected runs use `discard=unmap`.
+
+The BFS test in `qemu-shell/20260912T061028Z-af5780` exposed a separate driver
+issue. Although `fstrim` reported 8,025,243,648 bytes and allocated-file checks
+passed, the controller trace skipped a 7,335,920-sector range exceeding its
+advertised DMRSL of 4,194,303 sectors. This is a failed TRIM qualification;
+`state/nvme-trim-dmrsl-failure.json` preserves the trace and review. GPT, EFI
+and tail guards remained intact, and all ten DMA pools were above 4 GiB.
+
+The follow-up candidate reads NVM command-set-specific controller Identify
+limits and splits intervals to honor range count, per-range blocks and total
+blocks per command. It retains intervals beyond `UINT32_MAX`, validates every
+input before the first command, and waits for completion before reusing the
+DMA descriptor buffer. Pre-1.2 controllers use legacy format limits without
+sending an unencodable CNS selector. Optional Identify rejection on pre-2.0
+controllers retains those defaults; other discovery failures disable TRIM
+while retaining ordinary I/O. Nonzero limits also enable the mandatory DSM
+support variant. Host interval and batch-limit checks and the ARM64 driver
+build pass; refreshed QEMU and native filesystem tests are pending.
+
+The field layout and processing semantics were checked against the
+[NVM Command Set 1.0d specification](https://nvmexpress.org/wp-content/uploads/NVM-Express-NVM-Command-Set-Specification-1.0d-2023.12.28-Ratified.pdf),
+with the skipped-range behavior checked in QEMU 8.2.2's `hw/nvme/ctrl.c`.
+The previous physical raw fixture plan is retired; the next native test uses
+BFS's free-space interface.

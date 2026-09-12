@@ -1032,39 +1032,21 @@ nvme_disk_trim(nvme_disk_driver_info* info, fs_trim_data* trimData)
 
 	const uint64 deviceSize = info->capacity * info->block_size;
 
-	// We need contiguous memory for the DSM ranges.
-	nvme_dsm_range* dsmRanges = (nvme_dsm_range*)nvme_mem_alloc_node(
-		trimData->range_count * sizeof(nvme_dsm_range), 0, 0, NULL);
-	if (dsmRanges == NULL)
-		return B_NO_MEMORY;
-	CObjectDeleter<void, void, nvme_free> dsmRangesDeleter(dsmRanges);
-
+	// Validate every input before submitting any deallocation. In particular,
+	// a bad later range must not leave the earlier ranges partially trimmed.
 	uint64 trimmingSize = 0;
-	uint16 rangeCount = 0;
 	for (uint32 i = 0; i < trimData->range_count; i++) {
-		uint64 lba;
-		uint32 blocks;
+		uint64 lba, blocks;
 		if (!nvme_normalize_trim_range(deviceSize, info->block_size,
 				trimData->ranges[i].offset, trimData->ranges[i].size, lba, blocks)) {
 			return B_BAD_VALUE;
 		}
-		if (blocks == 0)
-			continue;
-
-		uint64 length = uint64(blocks) * info->block_size;
+		uint64 length = blocks * info->block_size;
 		if (trimmingSize > UINT64_MAX - length)
 			return B_BAD_VALUE;
-		TRACE("trim %" B_PRIu64 " bytes from %" B_PRIu64 "\n", length,
-			lba * info->block_size);
-
-		dsmRanges[rangeCount].attributes = 0;
-		dsmRanges[rangeCount].length = blocks;
-		dsmRanges[rangeCount].starting_lba = lba;
-		rangeCount++;
-
 		trimmingSize += length;
 	}
-	if (rangeCount == 0)
+	if (trimmingSize == 0)
 		return B_OK;
 
 	struct nvme_ns_stat nsstat;
@@ -1074,18 +1056,53 @@ nvme_disk_trim(nvme_disk_driver_info* info, fs_trim_data* trimData)
 	if ((nsstat.flags & NVME_NS_DEALLOCATE_SUPPORTED) == 0)
 		return B_UNSUPPORTED;
 
-	status_t status = EINPROGRESS;
-	qpair_info* qpair = get_qpair(info);
-	if (nvme_ns_deallocate(info->ns, qpair->qpair, dsmRanges, rangeCount,
-			(nvme_cmd_cb)io_finished_callback, &status) != 0)
-		return B_IO_ERROR;
+	NVMeTrimBatch batch(nsstat.dsm_max_ranges, nsstat.dsm_max_range_blocks,
+		nsstat.dsm_max_command_blocks);
+	nvme_dsm_range* dsmRanges = (nvme_dsm_range*)nvme_mem_alloc_node(
+		batch.MaxRanges() * sizeof(nvme_dsm_range), 0, 0, NULL);
+	if (dsmRanges == NULL)
+		return B_NO_MEMORY;
+	CObjectDeleter<void, void, nvme_free> dsmRangesDeleter(dsmRanges);
 
-	await_status(info, qpair->qpair, status);
-	if (status != B_OK)
+	auto submitBatch = [&]() -> status_t {
+		if (batch.Count() == 0)
+			return B_OK;
+		status_t status = EINPROGRESS;
+		qpair_info* qpair = get_qpair(info);
+		if (nvme_ns_deallocate(info->ns, qpair->qpair, dsmRanges, batch.Count(),
+				(nvme_cmd_cb)io_finished_callback, &status) != 0) {
+			return B_IO_ERROR;
+		}
+		// Completion is required before this DMA buffer may be reused or freed.
+		await_status(info, qpair->qpair, status);
+		if (status == B_OK) {
+			trimData->trimmed_size += batch.Blocks() * info->block_size;
+			batch.Reset();
+		}
 		return status;
+	};
 
-	trimData->trimmed_size = trimmingSize;
-	return B_OK;
+	for (uint32 i = 0; i < trimData->range_count; i++) {
+		uint64 lba, blocks;
+		nvme_normalize_trim_range(deviceSize, info->block_size,
+			trimData->ranges[i].offset, trimData->ranges[i].size, lba, blocks);
+		while (blocks != 0) {
+			uint32 count = batch.Add(blocks);
+			if (count == 0) {
+				status_t status = submitBatch();
+				if (status != B_OK)
+					return status;
+				continue;
+			}
+			nvme_dsm_range& range = dsmRanges[batch.Count() - 1];
+			range.attributes = 0;
+			range.length = count;
+			range.starting_lba = lba;
+			lba += count;
+			blocks -= count;
+		}
+	}
+	return submitBatch();
 }
 
 

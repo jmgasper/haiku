@@ -956,6 +956,9 @@ enum nvme_identify_cns {
 	 */
 	NVME_IDENTIFY_ACTIVE_NS_LIST		= 0x02,
 
+	/* I/O Command Set specific Identify Controller (CDW11.CSI selects NVM). */
+	NVME_IDENTIFY_CTRLR_NVM			= 0x06,
+
 	/*
 	 * List allocated NSIDs greater than CDW1.NSID.
 	 */
@@ -1406,6 +1409,18 @@ struct __attribute__((packed)) nvme_ctrlr_data {
 
 };
 nvme_static_assert(sizeof(struct nvme_ctrlr_data) == 4096, "Incorrect size");
+
+/* NVM Command Set specific Identify Controller, CNS 06h and CSI 00h. */
+struct __attribute__((packed)) nvme_nvm_ctrlr_data {
+	uint8_t vsl;
+	uint8_t wzsl;
+	uint8_t wusl;
+	uint8_t dmrl;
+	uint32_t dmrsl;
+	uint64_t dmsl;
+	uint8_t reserved[4080];
+};
+nvme_static_assert(sizeof(struct nvme_nvm_ctrlr_data) == 4096, "Incorrect size");
 
 struct nvme_ns_data {
 

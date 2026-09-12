@@ -446,6 +446,11 @@ struct nvme_ns_stat {
 	 */
 	enum nvme_pi_type		pi_type;
 
+	/** Dataset Management processing limits, in logical blocks. */
+	uint16_t			dsm_max_ranges;
+	uint32_t			dsm_max_range_blocks;
+	uint64_t			dsm_max_command_blocks;
+
 };
 
 /**

@@ -420,6 +420,55 @@ static void nvme_ctrlr_set_state(struct nvme_ctrlr *ctrlr,
 }
 
 /*
+ * Read non-MDTS limits before namespace construction, while the admin queue
+ * is exclusively owned by initialization. Failed discovery disables DSM
+ * without preventing ordinary namespace I/O.
+ */
+static void nvme_ctrlr_identify_dsm_limits(struct nvme_ctrlr *ctrlr)
+{
+	struct nvme_nvm_ctrlr_data *data;
+	uint32_t version = nvme_reg_mmio_read_4(ctrlr, vs.raw);
+	int ret;
+
+	ctrlr->dsm_supported = ctrlr->cdata.oncs.dsm;
+	ctrlr->dsm_max_ranges = NVME_DATASET_MANAGEMENT_MAX_RANGES;
+	ctrlr->dsm_max_range_blocks = UINT32_MAX;
+	ctrlr->dsm_max_command_blocks = UINT64_MAX;
+
+	/* Before 1.2 the CNS field is too narrow to encode selector 06h. */
+	if (version < NVME_VERSION(1, 2, 0))
+		goto report;
+
+	data = nvme_zmalloc(sizeof(*data), 64);
+	if (!data) {
+		ctrlr->dsm_supported = false;
+		nvme_notice("Cannot allocate DSM Identify data; TRIM disabled\n");
+		return;
+	}
+	ret = nvme_admin_identify_nvm_ctrlr(ctrlr, data);
+	if (ret == 0) {
+		if (data->dmrl)
+			ctrlr->dsm_max_ranges = data->dmrl;
+		if (data->dmrsl)
+			ctrlr->dsm_max_range_blocks = data->dmrsl;
+		if (data->dmsl)
+			ctrlr->dsm_max_command_blocks = data->dmsl;
+		/* Nonzero limits also describe the mandatory DSM support variant. */
+		if (data->dmrl && data->dmrsl && data->dmsl)
+			ctrlr->dsm_supported = true;
+	} else if (ret != ENOTSUP || version >= NVME_VERSION(2, 0, 0)) {
+		ctrlr->dsm_supported = false;
+		nvme_notice("NVM Identify failed (%d); TRIM disabled\n", ret);
+	}
+	nvme_free(data);
+report:
+	nvme_notice("DSM supported %u, max ranges %u, range blocks %" PRIu32
+		    ", command blocks %" PRIu64 "\n", ctrlr->dsm_supported,
+		    ctrlr->dsm_max_ranges, ctrlr->dsm_max_range_blocks,
+		    ctrlr->dsm_max_command_blocks);
+}
+
+/*
  * Get a controller data.
  */
 static int nvme_ctrlr_identify(struct nvme_ctrlr *ctrlr)
@@ -431,6 +480,8 @@ static int nvme_ctrlr_identify(struct nvme_ctrlr *ctrlr)
 		nvme_notice("Identify controller failed\n");
 		return ret;
 	}
+
+	nvme_ctrlr_identify_dsm_limits(ctrlr);
 
 	/*
 	 * Use MDTS to ensure our default max_xfer_size doesn't

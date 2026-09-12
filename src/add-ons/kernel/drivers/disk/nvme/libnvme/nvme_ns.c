@@ -68,7 +68,7 @@ static int nvme_ns_identify_update(struct nvme_ns *ns)
 
 	ns->flags = 0x0000;
 
-	if (ctrlr->cdata.oncs.dsm)
+	if (ctrlr->dsm_supported)
 		ns->flags |= NVME_NS_DEALLOCATE_SUPPORTED;
 
 	if (ctrlr->cdata.vwc.present)
@@ -204,6 +204,9 @@ int nvme_ns_stat(struct nvme_ns *ns, struct nvme_ns_stat *ns_stat)
 	ns_stat->flags = ns->flags;
 	ns_stat->pi_type = ns->pi_type;
 	ns_stat->md_size = ns->md_size;
+	ns_stat->dsm_max_ranges = ctrlr->dsm_max_ranges;
+	ns_stat->dsm_max_range_blocks = ctrlr->dsm_max_range_blocks;
+	ns_stat->dsm_max_command_blocks = ctrlr->dsm_max_command_blocks;
 
 	pthread_mutex_unlock(&ctrlr->lock);
 
