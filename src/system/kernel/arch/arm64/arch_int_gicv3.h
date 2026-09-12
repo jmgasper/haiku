@@ -6,11 +6,14 @@
 #define ARCH_ARM_GICV3_H
 
 #include <SupportDefs.h>
+#include <arch/arm64/gicv3_mbi_vectors.h>
+#include <arch/generic/msi.h>
+#include <lock.h>
 
 #include "soc.h"
 
 
-class GICv3InterruptController : public InterruptController {
+class GICv3InterruptController : public InterruptController, public MSIInterface {
 public:
 	GICv3InterruptController(
 		phys_addr_t gicd_phys_addr,
@@ -25,6 +28,9 @@ public:
 
 	void SendBroadcastIci() override;
 	status_t PerCpuInit() override;
+	status_t AllocateVectors(uint32 count, uint32& startVector,
+		uint64& address, uint32& data) override;
+	void FreeVectors(uint32 count, uint32 startVector) override;
 
 
 private:
@@ -34,6 +40,11 @@ private:
 	int32_t fMaxInt;
 	uint64_t fGicrStride;
 	uint32_t fNumCpus;
+	bool fMbiEnabled = false;
+	bool fMbiTrace = false;
+	spinlock fMbiLock = B_SPINLOCK_INITIALIZER;
+	Gicv3Mbi::VectorPool fMbiVectors;
+	int32 fMbiInterrupts[Gicv3Mbi::kVectorCount]{};
 
 	// Register accessors.
 	// All register offsets are given in the spec (and in gicv3_regs.h) at byte offsets.
@@ -51,6 +62,7 @@ private:
 
 	void _SetEnable(uint vector, bool enable);
 	void _RedistributorSleep(bool sleep);
+	void _InitMbi(phys_addr_t distributor, phys_addr_t redistributor);
 };
 
 #endif /* ARCH_ARM_GICV3_H */

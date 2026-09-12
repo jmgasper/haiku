@@ -11,6 +11,12 @@
 #include "smp.h"
 #include "vm/vm.h"
 
+#include <arch/arm64/rk3588_mbi.h>
+#include <driver_settings.h>
+#include <util/AutoLock.h>
+
+extern void* gFDT;
+
 // #define TRACE_ARCH_INT_GICV3
 #ifdef TRACE_ARCH_INT_GICV3
 #define TRACE(x...) dprintf(x)
@@ -97,6 +103,117 @@ GICv3InterruptController::GICv3InterruptController(phys_addr_t gicd_phys_addr,
 	dprintf("GICv3: GICD phys %#lx, "
 			"GICR offset/stride %#lx/%#lx\n",
 		gicd_phys_addr, gicr_phys_addr, fGicrStride);
+	_InitMbi(gicd_phys_addr, gicr_phys_addr);
+}
+
+
+void
+GICv3InterruptController::_InitMbi(phys_addr_t distributor, phys_addr_t redistributor)
+{
+	void* settings = load_driver_settings("gicv3_mbi");
+	if (settings == nullptr)
+		return;
+	const char* profile = get_driver_parameter(settings, "firmware_profile", "", "");
+	bool allowed = strcmp(profile, "rock5-itx-edk2-v1.1-dt-mbi") == 0
+		&& distributor == Gicv3Mbi::kDistributor
+		&& redistributor == Gicv3Mbi::kRedistributor
+		&& Gicv3Mbi::FirmwareMatches(gFDT) && !msi_supported();
+	fMbiTrace = get_driver_boolean_parameter(settings, "trace", false, false);
+	unload_driver_settings(settings);
+	if (!allowed) {
+		dprintf("GICv3 MBI: firmware profile rejected\n");
+		return;
+	}
+	static_assert(Gicv3Mbi::kFirstVector % 16 == 0 && Gicv3Mbi::kVectorCount == 16,
+		"MBI pool must cover exactly one aligned ICFGR word");
+	for (uint32 vector = Gicv3Mbi::kFirstVector;
+		vector < Gicv3Mbi::kFirstVector + Gicv3Mbi::kVectorCount; vector++) {
+		uint32 priority = (GICD_IPRIORITYR(vector / 4) >> ((vector % 4) * 8)) & 0xff;
+		uint32 mask = 1u << (vector % 32);
+		if (!Gicv3Mbi::RegistersMatch(GICD_TYPER, GICD_PIDR2, GICD_CTLR,
+			GICD_IGROUPR(vector / 32), priority, GICD_ISENABLER(vector / 32),
+			GICD_ISPENDR(vector / 32), GICD_ISACTIVER(vector / 32), mask)
+			|| (GICD_IGRPMODR(vector / 32) & mask) != 0) {
+			dprintf("GICv3 MBI: controller state rejected at vector %" B_PRIu32 "\n", vector);
+			return;
+		}
+	}
+	uint32 oldConfig = GICD_ICFGR(Gicv3Mbi::kFirstVector / 16);
+	GICD_ICFGR(Gicv3Mbi::kFirstVector / 16) = oldConfig | 0xaaaaaaaa;
+	memory_full_barrier();
+	if (GICD_ICFGR(Gicv3Mbi::kFirstVector / 16) != (oldConfig | 0xaaaaaaaa)) {
+		GICD_ICFGR(Gicv3Mbi::kFirstVector / 16) = oldConfig;
+		memory_full_barrier();
+		dprintf("GICv3 MBI: edge configuration rejected\n");
+		return;
+	}
+	// The GIC's existing reservation owns these hardware vector IDs for the
+	// kernel lifetime. The local pool grants exclusive MSI leases within it.
+	// Leave the established non-secure grouping, priority and CPU 0 routes.
+	fMbiEnabled = true;
+	msi_set_interface(this);
+	dprintf("GICv3 MBI: enabled vectors 464..479, address %#" B_PRIx64 ", CPU 0\n",
+		Gicv3Mbi::kAlias + 0x40);
+}
+
+
+status_t
+GICv3InterruptController::AllocateVectors(uint32 count, uint32& startVector,
+	uint64& address, uint32& data)
+{
+	if (!fMbiEnabled)
+		return B_NOT_SUPPORTED;
+	if (count == 0 || count > Gicv3Mbi::kVectorCount)
+		return B_BAD_VALUE;
+	InterruptsSpinLocker locker(fMbiLock);
+	int offset = fMbiVectors.Find(count);
+	if (offset < 0)
+		return B_NO_MEMORY;
+	uint32 vector = Gicv3Mbi::kFirstVector + offset;
+	uint32 mask = ((1u << count) - 1) << (vector % 32);
+	uint32 busy = GICD_ISENABLER(vector / 32) | GICD_ISPENDR(vector / 32)
+		| GICD_ISACTIVER(vector / 32);
+	memory_full_barrier();
+	if ((busy & mask) != 0)
+		return B_BUSY;
+	if (!fMbiVectors.Claim(offset, count))
+		return B_ERROR;
+	startVector = vector;
+	address = Gicv3Mbi::kAlias + 0x40;
+	data = vector;
+	dprintf("GICv3 MBI: allocated count=%" B_PRIu32 " vector=%" B_PRIu32
+		" address=%#" B_PRIx64 " data=%" B_PRIu32 "\n", count, vector, address, data);
+	return B_OK;
+}
+
+
+void
+GICv3InterruptController::FreeVectors(uint32 count, uint32 startVector)
+{
+	InterruptsSpinLocker locker(fMbiLock);
+	uint32 offset = startVector - Gicv3Mbi::kFirstVector;
+	if (!fMbiEnabled || !fMbiVectors.Contains(offset, count)) {
+		dprintf("GICv3 MBI: invalid free count=%" B_PRIu32 " vector=%" B_PRIu32 "\n",
+			count, startVector);
+		return;
+	}
+	// The caller must first disable the PCI message source and remove its
+	// interrupt handlers. Quarantine a live lease instead of reusing its IDs.
+	uint32 mask = ((1u << count) - 1) << (startVector % 32);
+	uint32 busy = GICD_ISENABLER(startVector / 32) | GICD_ISACTIVER(startVector / 32);
+	memory_full_barrier();
+	if ((busy & mask) != 0) {
+		dprintf("GICv3 MBI: retaining live vector %" B_PRIu32 "\n", startVector);
+		return;
+	}
+	GICD_ICPENDR(startVector / 32) = mask;
+	memory_full_barrier();
+	if ((GICD_ISPENDR(startVector / 32) & mask) != 0) {
+		dprintf("GICv3 MBI: retaining pending vector %" B_PRIu32 "\n", startVector);
+		return;
+	}
+	fMbiVectors.Release(offset, count);
+	dprintf("GICv3 MBI: freed count=%" B_PRIu32 " vector=%" B_PRIu32 "\n", count, startVector);
 }
 
 
@@ -191,7 +308,7 @@ GICv3InterruptController::PerCpuInit()
 	GICR_ICPENDR0(cpu_id) = ~0;
 	_WaitForMask(&GICR_CTLR(cpu_id), GICR_CTLR_RWP, 0);
 
-	// TODO lpi init (needed for MSI(-X))
+	// TODO LPI/ITS initialization. MBI-capable controllers can use reserved SPIs.
 
 	// enable system register interface
 	uint32_t sre = gic_read_sre();
@@ -348,8 +465,18 @@ GICv3InterruptController::HandleInterrupt()
 	// deliver the interrupt
 	if (irq == ICI_IRQ)
 		smp_intercpu_interrupt_handler(smp_get_current_cpu());
-	else
-		io_interrupt_handler(irq, B_LEVEL_TRIGGERED);
+	else {
+		bool mbi = fMbiEnabled && irq >= int32(Gicv3Mbi::kFirstVector)
+			&& irq < int32(Gicv3Mbi::kFirstVector + Gicv3Mbi::kVectorCount);
+		if (mbi && fMbiTrace) {
+			uint32 count = uint32(atomic_add(&fMbiInterrupts[irq - Gicv3Mbi::kFirstVector], 1)) + 1;
+			if (count != 0 && (count <= 8 || (count & (count - 1)) == 0)) {
+				dprintf("GICv3 MBI: received vector=%" B_PRId32 " count=%" B_PRIu32
+					" cpu=%" B_PRId32 "\n", irq, count, smp_get_current_cpu());
+			}
+		}
+		io_interrupt_handler(irq, mbi ? B_EDGE_TRIGGERED : B_LEVEL_TRIGGERED);
+	}
 
 	gic_write_eoir(irq);
 

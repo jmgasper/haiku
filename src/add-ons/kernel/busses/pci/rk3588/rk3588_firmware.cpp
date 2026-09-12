@@ -5,6 +5,7 @@
 
 #include <bus/FDT.h>
 #include <bus/PCI.h>
+#include <arch/generic/msi.h>
 #include <driver_settings.h>
 #include <KernelExport.h>
 #include <AutoDeleterDrivers.h>
@@ -253,8 +254,9 @@ InitDriver(device_node* node, void** cookie)
 	controller->memory.size = memorySize;
 	dprintf("rk3588_pcie: EDK2 v1.1 segment %u, buses 0..1, %s; "
 		"MMIO %#" B_PRIx64 "+%#" B_PRIx64 "; retaining firmware PHY/clocks/iATU, "
-		"identity noncoherent DMA; host IRQ routing unavailable\n",
-		port->segment, port->endpointName, memoryBase, memorySize);
+		"identity noncoherent DMA; INTx unavailable, MSI provider %s\n",
+		port->segment, port->endpointName, memoryBase, memorySize,
+		msi_supported() ? "available" : "unavailable");
 	*cookie = controller.Detach();
 	return B_OK;
 }

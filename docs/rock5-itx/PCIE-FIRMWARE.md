@@ -57,8 +57,12 @@ system barriers. The ordinary PCI core still performs standard configuration
 writes, including command bits and BAR sizing. The Samsung profile exposes
 one root/endpoint pair; the onboard profile exposes the four captured pairs.
 Port I/O, prefetchable windows, other root ports, hotplug, INTx routing,
-MSI/ITS and controller reinitialization remain unsupported. The
-NVMe driver uses its ARM64 polling path and noncoherent DMA buffers.
+ITS and controller reinitialization remain unsupported. The qualified images
+use the NVMe driver's ARM64 polling path and noncoherent DMA buffers.
+The separate [GIC message-interrupt trial](MBI-PROBE.md) now has a CPU-generated
+delivery pass and an opt-in MSI provider implementation. Real PCIe message
+delivery still needs qualification. Selecting that provider also lets NVMe
+choose MSI-X; a provider's presence alone does not prove the route works.
 
 For explicit high-address DMA testing, a separate `nvme_disk` driver settings
 file may contain `force_high_dma true`. On ARM64 this requires every libnvme

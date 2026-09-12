@@ -13,7 +13,8 @@ class MbiProfileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as temporary:
             root = Path(temporary)
             flags = ['-fsanitize=address,undefined', '-fno-sanitize-recover=all',
-                     '-I', str(source / 'headers/libs/libfdt')]
+                     '-I', str(source / 'headers/libs/libfdt'),
+                     '-I', str(source / 'headers/private/kernel')]
             objects = []
             for name in ('fdt', 'fdt_ro', 'fdt_rw', 'fdt_sw', 'fdt_wip', 'fdt_strerror',
                          'fdt_empty_tree'):

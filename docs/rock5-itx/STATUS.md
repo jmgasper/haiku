@@ -12,7 +12,7 @@ firmware supports it.
 | NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; staged downloads passed before/after native reboot, but simultaneous USB/Ethernet relay still causes outages; the latest outage did not recover through the hardware watchdog |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | Sixty-seven host checks pass locally, including onboard PCI host resource/profile rejection and root-link rejection, native-input dependency preflight, strict BFS report parsing, SSH controller-input isolation, explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
+| Automated controls | Sixty-nine host checks pass locally, including GIC MBI firmware/register admission and MSI vector allocation/reuse, onboard PCI host resource/profile rejection and root-link rejection, native-input dependency preflight, strict BFS report parsing, SSH controller-input isolation, explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
 | Native Haiku on ROCK | All eight CPUs start; Tracker/Deskbar, NanoKVM input, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; Samsung NVMe bounded raw I/O has independent Linux hashes; the 238 GiB SSD installation boots repeatedly and has passed large-file persistence after normal reboot and shutdown/startup; the installed hrev60097+57 update also passes filesystem TRIM and reboot readback; intermittent USB control failures and sustained acceptance remain open |
@@ -2156,3 +2156,24 @@ This accepts the expanded firmware host's enumeration and bounded NVMe read
 milestone. AHCI was blocked, RTL8125 was absent, and peripheral operation,
 interrupt routing and sustained host qualification remain open. The SSD's
 installed packages were not replaced by this USB-image trial.
+
+The CPU-generated GIC message diagnostic from `5e961c4459` passed three runs
+across two USB boots, including a normal Haiku reboot, in
+`interactive/20260912T211720Z-6d22f2`. The 24 messages all arrived exactly once
+on CPU 0, half through the distributor and half through its DT alias. Each
+run passed quiet intervals and restored the selected vector's trigger state,
+with delivery disabled and inactive afterward. Both boots retained eight PCI
+functions, verified five component hashes, matched the 64 MiB NVMe EFI-prefix
+Linux hash, and passed strict zero BFS allocation counters and one RNDIS
+notification worker. No USB checksum or control timeout errors occurred in
+these workload windows. QEMU passed its rejection-before-MMIO and existing
+storage/USB/reboot gates in `qemu-shell/20260912T145447Z-7b7d61`.
+
+Recovery returned ROOBI `adf214ad-c5dc-4348-85b0-efe008f0aade`; the guard
+was disarmed and NanoKVM did not restart. `state/native-mbi-probe.json` and
+[MBI-PROBE.md](MBI-PROBE.md) record the scope and the earlier register-view
+rejection. This proves CPU-generated message delivery on reserved ID 464.
+The new opt-in kernel MSI provider leases IDs 464 through 479 and is awaiting
+its first real PCIe delivery test. NVMe will select MSI-X when it is enabled;
+ITS and noncoherent network DMA remain unimplemented. The installed SSD
+continues to use its previously qualified components.

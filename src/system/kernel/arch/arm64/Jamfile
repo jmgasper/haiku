@@ -3,6 +3,7 @@ SubDir HAIKU_TOP src system kernel arch arm64 ;
 SubDirHdrs $(HAIKU_TOP) src add-ons kernel bus_managers acpi acpica include ;
 SubDirHdrs $(SUBDIR) $(DOTDOT) generic ;
 UsePrivateKernelHeaders ;
+UseLibraryHeaders [ FDirName libfdt ] ;
 
 SEARCH_SOURCE += [ FDirName $(SUBDIR) $(DOTDOT) generic ] ;
 SEARCH_SOURCE += [ FDirName $(SUBDIR) $(DOTDOT) arm ] ;
@@ -45,6 +46,7 @@ KernelMergeObject kernel_arch_arm64.o :
 	:
 	$(TARGET_KERNEL_PIC_CCFLAGS) -Wno-unused
 	:
+	kernel_fdt.a
 ;
 
 CreateAsmStructOffsetsHeader asm_offsets.h : asm_offsets.cpp : $(TARGET_KERNEL_ARCH) ;
