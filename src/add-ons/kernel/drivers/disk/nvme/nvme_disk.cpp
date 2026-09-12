@@ -24,6 +24,7 @@
 
 #include "IORequest.h"
 #include "IOScheduler.h"
+#include "trim_range.h"
 
 extern "C" {
 #include <libnvme/nvme.h>
@@ -1022,22 +1023,14 @@ nvme_disk_trim(nvme_disk_driver_info* info, fs_trim_data* trimData)
 	CALLED();
 	trimData->trimmed_size = 0;
 
-	const off_t deviceSize = info->capacity * info->block_size; // in bytes
-	if (deviceSize < 0)
+	if (info->block_size == 0
+		|| info->capacity > uint64(INT64_MAX) / info->block_size
+		|| trimData->range_count > NVME_DATASET_MANAGEMENT_MAX_RANGES)
 		return B_BAD_VALUE;
+	if (trimData->range_count == 0)
+		return B_OK;
 
-	STATIC_ASSERT(sizeof(deviceSize) <= sizeof(uint64));
-	ASSERT(deviceSize >= 0);
-
-	// Do not trim past device end.
-	for (uint32 i = 0; i < trimData->range_count; i++) {
-		uint64 offset = trimData->ranges[i].offset;
-		uint64& size = trimData->ranges[i].size;
-
-		if (offset >= (uint64)deviceSize)
-			return B_BAD_VALUE;
-		size = std::min(size, (uint64)deviceSize - offset);
-	}
+	const uint64 deviceSize = info->capacity * info->block_size;
 
 	// We need contiguous memory for the DSM ranges.
 	nvme_dsm_range* dsmRanges = (nvme_dsm_range*)nvme_mem_alloc_node(
@@ -1047,34 +1040,43 @@ nvme_disk_trim(nvme_disk_driver_info* info, fs_trim_data* trimData)
 	CObjectDeleter<void, void, nvme_free> dsmRangesDeleter(dsmRanges);
 
 	uint64 trimmingSize = 0;
+	uint16 rangeCount = 0;
 	for (uint32 i = 0; i < trimData->range_count; i++) {
-		uint64 offset = trimData->ranges[i].offset;
-		uint64 length = trimData->ranges[i].size;
-
-		// Round up offset and length to the block size.
-		// (Some space at the beginning and end may thus not be trimmed.)
-		offset = ROUNDUP(offset, info->block_size);
-		length -= offset - trimData->ranges[i].offset;
-		length = ROUNDDOWN(length, info->block_size);
-
-		if (length == 0)
+		uint64 lba;
+		uint32 blocks;
+		if (!nvme_normalize_trim_range(deviceSize, info->block_size,
+				trimData->ranges[i].offset, trimData->ranges[i].size, lba, blocks)) {
+			return B_BAD_VALUE;
+		}
+		if (blocks == 0)
 			continue;
-		if ((length / info->block_size) > UINT32_MAX)
-			length = uint64(UINT32_MAX) * info->block_size;
-			// TODO: Break into smaller trim ranges!
 
-		TRACE("trim %" B_PRIu64 " bytes from %" B_PRIu64 "\n", length, offset);
+		uint64 length = uint64(blocks) * info->block_size;
+		if (trimmingSize > UINT64_MAX - length)
+			return B_BAD_VALUE;
+		TRACE("trim %" B_PRIu64 " bytes from %" B_PRIu64 "\n", length,
+			lba * info->block_size);
 
-		dsmRanges[i].attributes = 0;
-		dsmRanges[i].length = length / info->block_size;
-		dsmRanges[i].starting_lba = offset / info->block_size;
+		dsmRanges[rangeCount].attributes = 0;
+		dsmRanges[rangeCount].length = blocks;
+		dsmRanges[rangeCount].starting_lba = lba;
+		rangeCount++;
 
 		trimmingSize += length;
 	}
+	if (rangeCount == 0)
+		return B_OK;
+
+	struct nvme_ns_stat nsstat;
+	int ret = nvme_ns_stat(info->ns, &nsstat);
+	if (ret != 0)
+		return ret;
+	if ((nsstat.flags & NVME_NS_DEALLOCATE_SUPPORTED) == 0)
+		return B_UNSUPPORTED;
 
 	status_t status = EINPROGRESS;
 	qpair_info* qpair = get_qpair(info);
-	if (nvme_ns_deallocate(info->ns, qpair->qpair, dsmRanges, trimData->range_count,
+	if (nvme_ns_deallocate(info->ns, qpair->qpair, dsmRanges, rangeCount,
 			(nvme_cmd_cb)io_finished_callback, &status) != 0)
 		return B_IO_ERROR;
 

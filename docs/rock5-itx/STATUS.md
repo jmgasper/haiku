@@ -12,7 +12,7 @@ firmware supports it.
 | NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; staged downloads passed before/after native reboot, but simultaneous USB/Ethernet relay still causes outages; the latest outage did not recover through the hardware watchdog |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | Forty-six host checks pass locally, including bounded concurrent storage writes and corruption detection, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
+| Automated controls | Forty-seven host checks pass locally, including bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
 | Native Haiku on ROCK | All eight CPUs start; Tracker/Deskbar, NanoKVM input, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; Samsung NVMe bounded raw I/O has independent Linux hashes; the 238 GiB SSD installation has reached the desktop on four boots and passed large-file persistence after normal reboot and shutdown/startup; one USB control interruption required repeating the final checks, and sustained acceptance remains open |
@@ -1556,3 +1556,22 @@ subsequent write tests must use identified regular files on the installed
 filesystem. This is an experimental minimal installation with eleven packages,
 the firmware-specific PCIe profile and polling. TRIM, controller-stall recovery,
 MSI, sudden power loss, sustained mixed load and full-board parity remain open.
+
+
+## NVMe TRIM range candidate
+
+Source review found that subtracting the partial leading sector from a smaller
+TRIM request could underflow. For example, offset 17 and length 1 with 512-byte
+sectors should trim nothing; the old arithmetic produced a range subsequently
+capped at `UINT32_MAX` sectors. The candidate normalizes only complete sectors
+inside the requested and namespace intervals, compacts away empty ranges,
+checks the 256-range command limit before narrowing the count, and checks
+namespace DSM support before submission. Empty work succeeds without a command.
+
+Forty-seven host tests pass, including more than two million interval cases
+checked against a separate 128-bit arithmetic calculation. The ARM64 driver
+and a QEMU-only ioctl probe compile. That probe requires an 8 GiB namespace
+with a private test marker, so it rejects this physical Samsung drive.
+QEMU command traces, surrounding-data checks and native filesystem trimming
+are pending. No physical raw TRIM test is authorized by the retired fixture
+plan; the next native test must go through BFS's free-space interface.
