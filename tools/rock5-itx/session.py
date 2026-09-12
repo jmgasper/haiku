@@ -88,6 +88,7 @@ if not 60 <= args.seconds <= 3600:
     parser.error('--seconds must be between 60 and 3600')
 if not os.path.ismount(lab.WORK):
     raise RuntimeError(f'Required filesystem is not mounted: {lab.WORK}')
+nanokvm.input_client()
 os.umask(0o077)
 config = json.loads(lab.CONFIG.read_text())
 nanokvm.BASE = config['nanokvm_url']

@@ -167,7 +167,9 @@ covered by PTY tests; the physical USB adapter has not yet been tested.
 SSH credentials, host keys and API cookies remain local. After an expired API
 session, run `python3 tools/rock5-itx/nanokvm.py login` to renew it; that command
 prompts for the web account password. Existing NanoKVM keyboard/mouse commands
-use `nanokvm/.venv/bin/python` with `websocket-client` installed.
+use `/mnt/HaikuWork/nanokvm/.venv/bin/python` with `websocket-client` installed.
+Interactive sessions validate this dependency before acquiring the hardware lock
+or deploying an image.
 
 GitHub Actions exercises control logic with mocked hardware. Builds and actual
 device access run here on the workstation. There is no unattended public

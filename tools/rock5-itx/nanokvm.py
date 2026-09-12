@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Small NanoKVM 2.4.3 client for the dedicated Haiku hardware lab.
 
-Run with ../.venv/bin/python. Credentials are read interactively or from
+Run with /mnt/HaikuWork/nanokvm/.venv/bin/python. Credentials are read interactively or from
 NANOKVM_PASSWORD; the session cookie is saved privately under /mnt/HaikuWork/state.
 """
 
@@ -81,8 +81,20 @@ def screenshot(path):
     raise TimeoutError("No video frame within 15 seconds")
 
 
+def input_client():
+    message = ('NanoKVM input requires websocket-client; run native sessions with '
+               '/mnt/HaikuWork/nanokvm/.venv/bin/python')
+    try:
+        import websocket
+    except ImportError:
+        raise RuntimeError(message) from None
+    if not callable(getattr(websocket, 'create_connection', None)):
+        raise RuntimeError(message)
+    return websocket
+
+
 def send_reports(reports):
-    import websocket
+    websocket = input_client()
     ws = websocket.create_connection(BASE.replace("http", "ws", 1) + "/api/ws",
                                      cookie=cookie(), origin=BASE, timeout=10)
     try:
