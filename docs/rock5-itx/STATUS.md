@@ -12,7 +12,7 @@ firmware supports it.
 | NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; staged downloads passed before/after native reboot, but simultaneous USB/Ethernet relay still causes outages; the latest outage did not recover through the hardware watchdog |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | Thirty-nine host checks pass locally, including NVMe fixture validation, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
+| Automated controls | Forty host checks pass locally, including NVMe fixture and sector-guard validation, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
 | Native Haiku on ROCK | All eight CPUs start; platform EHCI mounts the NanoKVM boot volume; Tracker/Deskbar, NanoKVM keyboard and mouse, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; sustained acceptance remains open |
@@ -1187,3 +1187,48 @@ boot ID `84b69ae8-4d9e-4c03-9f5c-6c9547084819` and its scoped watchdog disarmed
 normally. `pci-config-review.json` preserves the parsed comparisons and raw
 configuration files. Firmware handoff support, noncoherent DMA and PCIe
 interrupt routing remain open before native disk qualification.
+
+## ARM64 NVMe DMA buffer isolation
+
+Source `6b8a1be864` adds a conservative ARM64 DMA path. Queue entries, PRP lists
+and transfer buffers use private Normal Non-cacheable mappings. Allocation
+cleans and invalidates the initial cached zeroing before changing the mapping,
+as in the previously tested platform EHCI allocator. Device payloads use
+preallocated 128 KiB buffers owned by command trackers, including admin
+identification data and scattered block-I/O data. Copying follows the opcode's
+transfer direction and preserves split-request offsets. Metadata payloads are
+rejected rather than sent through an unimplemented metadata mapping.
+
+The change adds full-system ordering before MMIO writes and after observing a
+completion phase tag, reads that tag through a volatile access and bounds-checks
+completion IDs. Coherent allocation alone would not provide ordering; see the
+[Linux DMA guide](https://docs.kernel.org/core-api/dma-api-howto.html) and the
+[Linux NVMe completion barrier](https://github.com/torvalds/linux/blob/v6.6/drivers/nvme/host/pci.c).
+Eight data buffers are reserved per I/O queue and sixteen per admin queue;
+the admin count leaves room for asynchronous event requests. This limits memory
+use and avoids allocating new DMA areas while submitting I/O. Copying and the
+smaller transfer/queue limits have a performance cost. This does not implement
+an IOMMU, general PCI DMA translations, controller-stall recovery or per-device
+coherence policy; other CPU architectures retain their existing payload path.
+
+The development candidate passed the original NVMe checks in
+`artifacts/qemu-shell/20260912T013856Z-ae3b4a`. Its recorded source patch and new
+header are in `artifacts/nvme-dma-source/20260912T013855Z-ce6d9f`.
+All forty host checks passed in `artifacts/control-checks-nvme-dma.log`.
+The clean private image SHA-256 is
+`6d1096c0fe01c5449e2a0df609ee63d263f6a2725e600b564db77b125d3a71af`.
+
+The clean image passed in `artifacts/qemu-shell/20260912T014338Z-47339f`:
+the original 8 MiB reads/flushed write, five unaligned writes of 1, 513, 4,097,
+131,073 and 1,048,579 bytes above 6 GiB, and complete 2 MiB surrounding-region
+hashes after every write. All three regions matched again after normal reboot
+and through independent host reads after normal power-off. The same run passed
+the memory negative control, 8,192 cache checks and PCI configuration probes.
+Serial records the noncached buffer pools on both boots.
+
+`artifacts/qemu-shell/20260912T014540Z-839cbc` then booted the clean image directly
+from emulated NVMe, with no USB boot disk. Both boots mounted
+`/dev/disk/nvme/0/1`; memory/cache, an 8 MiB USB round trip and its truncated-input
+check, normal reboot and power-off passed. These are functional emulation
+checks. Physical Samsung DMA, storage performance and native SSD boot remain
+untested until the firmware PCIe host handoff is implemented and qualified.
