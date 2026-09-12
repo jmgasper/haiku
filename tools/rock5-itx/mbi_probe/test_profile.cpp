@@ -63,15 +63,20 @@ main(int argc, char** argv)
 		assert(fdt_setprop(changed.data(), node, "mbi-alias", alias, sizeof(alias)) == 0);
 		assert(!FirmwareMatches(changed.data(), profile));
 	}
-	assert(RegistersMatch(0x7b040f, 0x3b, kMask, 0, 0, 0));
-	assert(!RegistersMatch(0x37a0008, 0x3b, kMask, 0, 0, 0));
-	assert(!RegistersMatch(0x7a040f, 0x3b, kMask, 0, 0, 0));
-	assert(!RegistersMatch(0x7b040f, 0x2b, kMask, 0, 0, 0));
-	assert(!RegistersMatch(0x7b040f, 0x3b, 0, 0, 0, 0));
-	assert(!RegistersMatch(0x7b040f, 0x3b, kMask, kMask, 0, 0));
-	assert(!RegistersMatch(0x7b040f, 0x3b, kMask, 0, kMask, 0));
-	assert(!RegistersMatch(0x7b040f, 0x3b, kMask, 0, 0, kMask));
-	assert(RegistersMatch(0x7b040f, 0x3b, kMask, ~kMask, ~kMask, ~kMask));
+	assert(RegistersMatch(0x7b040f, 0x3b, 0x13, 0, 0x80, 0, 0, 0));
+	assert(RegistersMatch(0x7b040f, 0x3b, 0x53, kMask, 0x80, 0, 0, 0));
+	assert(!RegistersMatch(0x7b040f, 0x3b, 0x53, 0, 0x80, 0, 0, 0));
+	assert(!RegistersMatch(0x7b040f, 0x3b, 0x13, kMask, 0x80, 0, 0, 0));
+	assert(!RegistersMatch(0x7b040f, 0x3b, 0x13, 0, 0, 0, 0, 0));
+	for (uint32_t control : {0x80000013u, 0x3u, 0x11u, 0u})
+		assert(!RegistersMatch(0x7b040f, 0x3b, control, 0, 0x80, 0, 0, 0));
+	assert(!RegistersMatch(0x37a0008, 0x3b, 0x13, 0, 0x80, 0, 0, 0));
+	assert(!RegistersMatch(0x7a040f, 0x3b, 0x13, 0, 0x80, 0, 0, 0));
+	assert(!RegistersMatch(0x7b040f, 0x2b, 0x13, 0, 0x80, 0, 0, 0));
+	assert(!RegistersMatch(0x7b040f, 0x3b, 0x13, 0, 0x80, kMask, 0, 0));
+	assert(!RegistersMatch(0x7b040f, 0x3b, 0x13, 0, 0x80, 0, kMask, 0));
+	assert(!RegistersMatch(0x7b040f, 0x3b, 0x13, 0, 0x80, 0, 0, kMask));
+	assert(RegistersMatch(0x7b040f, 0x3b, 0x13, 0, 0x80, ~kMask, ~kMask, ~kMask));
 	assert(kVector >= 454 && kVector <= 479 && kVector == 464);
 	puts("ROCK5_MBI_PROFILE_TEST_PASS");
 	return 0;

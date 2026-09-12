@@ -16,7 +16,10 @@ The driver requires root, this exact setting, the ROCK 5 ITX/RK3588 compatible
 strings, the captured GIC register ranges, four interrupt-description cells,
 the firmware MBI range and alias, and no active global MSI provider. Mismatches
 fail before MMIO. Controller reads then require the measured GICv3 TYPER with
-MBIS support, Group 1, and an inactive, disabled test interrupt.
+MBIS support, enabled Group 1 forwarding and affinity routing, the expected
+non-secure priority, and an inactive, disabled test interrupt. The group bit
+is checked only when the single-security-state view exposes it. The selected
+trigger field and interrupt enable must read back before any message is sent.
 
 The only test vector is absolute interrupt ID 464. The captured DT advertises
 IDs 424 through 479 for MBI, but many earlier IDs overlap wired devices.
@@ -46,3 +49,15 @@ through `ROCK5_MBI_CAPTURED_DTB`. They reject changed board/resource description
 absent MBI properties, missing MBIS support and enabled/pending/active vectors.
 QEMU must demonstrate rejection before MMIO, along with the existing boot,
 NVMe, USB and reboot gates. Native message delivery and cleanup remain pending.
+
+The first native attempt, `interactive/20260912T144340Z-fd001c`, rejected the
+controller before writes because the original predicate expected a visible
+Group 1 bit. TYPER and PIDR2 matched, and the vector was inactive/disabled, but
+IGROUPR read zero. Arm IHI 0069G,
+[section 12.9.13, GICD_IGROUPR](https://www.scs.stanford.edu/~zyedidia/docs/arm/gic_v3.pdf),
+specifies zero reads for non-secure access when DS is zero. The corrected
+predicate distinguishes the two register views and also checks the priority
+and enable readback. It does not change security grouping or GICD_CTLR.
+The original QEMU rejection gate passed in `qemu-shell/20260912T144020Z-e72eeb`.
+Native recovery returned ROOBI `5cdbe255-0734-44b6-98bc-bc884e1047ab`, with
+the guard disarmed. This attempt did not test message delivery.

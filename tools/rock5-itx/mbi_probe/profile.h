@@ -66,12 +66,17 @@ FirmwareMatches(const void* fdt, const char* profile)
 }
 
 inline bool
-RegistersMatch(uint32_t typer, uint32_t pidr2, uint32_t group,
-	uint32_t enabled, uint32_t pending, uint32_t active)
+RegistersMatch(uint32_t typer, uint32_t pidr2, uint32_t control, uint32_t group,
+	uint32_t priority, uint32_t enabled, uint32_t pending, uint32_t active)
 {
 	// This is the measured controller, with MBIS and 512 total interrupt IDs.
+	// With DS=0, IGROUPR is RAZ/WI from this non-secure OS. With DS=1,
+	// its Group 1 bit is visible. Priority is readable for an accessible SPI
+	// in either view; the kernel set its non-secure priority to 0x80.
 	return typer == 0x7b040f && ((pidr2 >> 4) & 0xf) == 3
-		&& (group & kMask) != 0 && ((enabled | pending | active) & kMask) == 0;
+		&& (control & 0x80000012) == 0x12 && priority == 0x80
+		&& ((control & 0x40) != 0 ? (group & kMask) != 0 : group == 0)
+		&& ((enabled | pending | active) & kMask) == 0;
 }
 
 } // namespace Rock5MbiProbe

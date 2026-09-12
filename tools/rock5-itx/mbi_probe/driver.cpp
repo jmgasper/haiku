@@ -95,14 +95,18 @@ RunProbe(ProbeCookie* cookie)
 	const unsigned activeOffset = 0x300 + (kVector / 32) * 4;
 	uint32 typer = distributor.Read(4);
 	uint32 pidr2 = distributor.Read(0xffe8);
+	uint32 control = distributor.Read(0);
 	uint32 group = distributor.Read(groupOffset);
+	uint32 priority = (distributor.Read(0x400 + (kVector / 4) * 4)
+		>> ((kVector % 4) * 8)) & 0xff;
 	uint32 enabled = distributor.Read(enableOffset);
 	uint32 pending = distributor.Read(pendingOffset);
 	uint32 active = distributor.Read(activeOffset);
 	dprintf("ROCK5_MBI_REGISTERS typer=%#" B_PRIx32 " pidr2=%#" B_PRIx32
-		" group=%#" B_PRIx32 " enabled=%#" B_PRIx32 " pending=%#" B_PRIx32
-		" active=%#" B_PRIx32 "\n", typer, pidr2, group, enabled, pending, active);
-	if (!RegistersMatch(typer, pidr2, group, enabled, pending, active)
+		" control=%#" B_PRIx32 " group=%#" B_PRIx32 " priority=%#" B_PRIx32
+		" enabled=%#" B_PRIx32 " pending=%#" B_PRIx32 " active=%#" B_PRIx32
+		"\n", typer, pidr2, control, group, priority, enabled, pending, active);
+	if (!RegistersMatch(typer, pidr2, control, group, priority, enabled, pending, active)
 		|| (distributor.Read(0xd00 + (kVector / 32) * 4) & kMask) != 0)
 		return B_NOT_SUPPORTED;
 	Registers alias("ROCK5 MBI test alias", kAlias, B_PAGE_SIZE);
@@ -123,7 +127,8 @@ RunProbe(ProbeCookie* cookie)
 		installed = status == B_OK;
 	}
 	if (installed) {
-		status = acquire_sem_etc(state.sem, 1, B_RELATIVE_TIMEOUT, 20000);
+		status = (distributor.Read(enableOffset) & kMask) != 0
+			? acquire_sem_etc(state.sem, 1, B_RELATIVE_TIMEOUT, 20000) : B_ERROR;
 		if (status == B_TIMED_OUT && atomic_get(&state.count) == 0) {
 			status = B_OK;
 			dprintf("ROCK5_MBI_QUIET_PASS vector=%u\n", kVector);
