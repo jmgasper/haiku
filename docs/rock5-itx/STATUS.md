@@ -12,7 +12,7 @@ firmware supports it.
 | NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; staged downloads passed before/after native reboot, but simultaneous USB/Ethernet relay still causes outages; the latest outage did not recover through the hardware watchdog |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | Sixty-nine host checks pass locally, including GIC MBI firmware/register admission and MSI vector allocation/reuse, onboard PCI host resource/profile rejection and root-link rejection, native-input dependency preflight, strict BFS report parsing, SSH controller-input isolation, explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
+| Automated controls | Seventy-one host checks pass locally, including GIC MBI firmware/register admission and MSI vector allocation/reuse, onboard PCI host resource/profile rejection and root-link rejection, native-input dependency preflight, strict BFS report parsing, SSH controller-input isolation, explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
 | Native Haiku on ROCK | All eight CPUs start; Tracker/Deskbar, NanoKVM input, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; Samsung NVMe bounded raw I/O has independent Linux hashes; the 238 GiB SSD installation boots repeatedly and has passed large-file persistence after normal reboot and shutdown/startup; the installed hrev60097+57 update also passes filesystem TRIM and reboot readback; intermittent USB control failures and sustained acceptance remain open |
@@ -2173,7 +2173,31 @@ Recovery returned ROOBI `adf214ad-c5dc-4348-85b0-efe008f0aade`; the guard
 was disarmed and NanoKVM did not restart. `state/native-mbi-probe.json` and
 [MBI-PROBE.md](MBI-PROBE.md) record the scope and the earlier register-view
 rejection. This proves CPU-generated message delivery on reserved ID 464.
-The new opt-in kernel MSI provider leases IDs 464 through 479 and is awaiting
-its first real PCIe delivery test. NVMe will select MSI-X when it is enabled;
-ITS and noncoherent network DMA remain unimplemented. The installed SSD
-continues to use its previously qualified components.
+The opt-in kernel MSI provider from `6a613b204d` leases IDs 464 through 479.
+Its QEMU gate passed in `qemu-shell/20260912T213553Z-9f5c4b`, but native session
+`interactive/20260912T213902Z-a71c6d` received no SSD messages. NVMe enabled
+MSI-X, timed out once and recovered through its existing polling fallback.
+Two 64 MiB EFI reads still matched the Linux hash.
+
+The read-only MSI inspector from `29f14a00b0` passed QEMU rejection and the
+existing regression gates in `qemu-shell/20260912T215411Z-b066fc`, then captured
+identical state before and after the second native read. The SSD's unmasked
+table entry held the intended address `0xfe610040` and data 464. That GIC ID
+was enabled, edge-triggered and routed to CPU 0, with no pending or active
+interrupt. PHP_GRF ITS address selectors retained `0xfe65`/`0xfe67`. The reads
+do not establish where messages were lost; no routing registers were changed.
+
+Final checks passed all six component hashes, strict zero BFS allocation
+counters and one RNDIS notification worker. There were no USB checksum or
+control timeout errors in the workload window. Recovery returned ROOBI
+`4488812d-d230-491b-b6ec-2385f8110a39`, the guard disarmed and NanoKVM stayed
+on the same boot. `state/native-mbi-provider.json` retains the delivery failure
+and `state/native-msi-inspect.json` records the inspection/recovery evidence.
+
+Linux reference `linux-nvme-msix/20260912T220657Z-de3cda` then captured nine
+unmasked NVMe MSI-X entries targeting ITS1 at `0xfe670040`, with event data
+0 through 8. A matching 64 MiB EFI read generated 513 NVMe interrupts; the
+table remained unchanged. `state/linux-nvme-msix.json` retains the actual
+resources, kernel and before/after counts. ITS and noncoherent network DMA
+remain unimplemented. The installed SSD continues to use its previously
+qualified components.

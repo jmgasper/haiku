@@ -102,10 +102,10 @@ frees and still-enabled/active vectors cannot be reused. Trace mode reports
 the first eight interrupts per vector and later power-of-two counts.
 
 This setting is absent from ordinary images and the installed SSD. Enabling
-it also lets the existing NVMe driver select MSI-X automatically. The next
-USB image must qualify that real PCIe path, with AHCI blocked and RTL8125
-absent, before moving to network DMA. CPU-generated message delivery does not
-accept PCIe MSI, ITS, Ethernet operation, or the complete firmware MBI range.
+it also lets the existing NVMe driver select MSI-X automatically. The first
+USB trial kept AHCI blocked and RTL8125 absent. CPU-generated message delivery
+does not accept PCIe MSI, ITS, Ethernet operation, or the complete firmware
+MBI range.
 
 The provider's first native image from `6a613b204d` passed QEMU in
 `qemu-shell/20260912T213553Z-9f5c4b`, but failed real message delivery in
@@ -114,8 +114,7 @@ with address `0xfe610040`; no GIC message interrupt arrived. One interrupt
 timeout caused the existing NVMe fallback to select polling. The 64 MiB EFI
 read then matched the Linux reference, all five component hashes matched,
 the eight PCI functions remained visible, and filesystem checks were clean.
-The native MSI-X/reboot milestone has not passed. The configured table and
-SoC ingress path need inspection before changing routing registers.
+The native MSI-X/reboot milestone has not passed.
 
 `rock5_msi_inspect`, built as a separate lab driver, reads that state through
 read-only Device mappings. Its settings file must specify
@@ -124,6 +123,35 @@ board/GIC firmware description, an active MSI provider, a live Samsung root
 link and the captured SSD BAR/MSI-X layout. It reads the first table entry,
 pending bitmap, controller status, ID 464's GIC state and the PHP_GRF ITS
 address-match/TBU registers documented in the TRM. It has no MMIO write path.
-Host tests reject changed SSD identities, BARs and MSI-X layouts; QEMU must
-reject opening `/dev/misc/rock5_msi_inspect` before MMIO. Native inspection
-remains pending.
+Host tests reject changed SSD identities, BARs and MSI-X layouts. QEMU rejected
+opening `/dev/misc/rock5_msi_inspect` before MMIO and passed the existing
+storage/USB/reboot gates in `qemu-shell/20260912T215411Z-b066fc`. The inspector
+from `29f14a00b0`, SHA-256
+`cc6e84bf71c6dd2bf15814cd10642fad870823d2f688bb31b1fd4bae5bc8b4e8`,
+was then uploaded to the same native session.
+
+Two inspections, separated by another matching 64 MiB EFI read, returned
+identical values. MSI-X was enabled, entry zero was unmasked with address
+`0xfe610040` and data 464, and its pending bitmap was zero. GIC ID 464 was
+enabled, edge-triggered, routed to CPU 0 at priority `0x80`, and neither pending
+nor active. PHP_GRF ITS address selectors remained `0xfe65` and `0xfe67`;
+PCIe MMU mode/control were `3`/`0x28`. These reads establish the programmed
+state but do not locate where PCIe messages were lost. No routing register
+writes were attempted.
+
+All six component hashes, strict zero BFS allocation counters and one RNDIS
+notification worker passed at session closure. No USB checksum/control timeout
+errors appeared in the workload window. Recovery returned ROOBI
+`4488812d-d230-491b-b6ec-2385f8110a39`; the guard disarmed and NanoKVM's boot ID
+remained unchanged. `state/native-mbi-provider.json` retains the MSI failure;
+`state/native-msi-inspect.json` separately records the diagnostic pass and
+verified recovery. The installed SSD components were unchanged.
+
+A subsequent read-only Linux reference in
+`linux-nvme-msix/20260912T220657Z-de3cda` captured nine unmasked NVMe MSI-X
+entries with address `0xfe670040` (ITS1) and event data 0 through 8. The same
+64 MiB EFI read matched the reference hash and generated 513 NVMe interrupts.
+The MSI-X table was unchanged across the read. `state/linux-nvme-msix.json`
+records the kernel, actual Linux resources, table and interrupt counts. ITS/LPI
+support is the next implementation step; this Linux observation is not a Haiku
+ITS pass.

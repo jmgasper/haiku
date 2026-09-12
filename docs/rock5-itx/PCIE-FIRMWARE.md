@@ -61,8 +61,10 @@ ITS and controller reinitialization remain unsupported. The qualified images
 use the NVMe driver's ARM64 polling path and noncoherent DMA buffers.
 The separate [GIC message-interrupt trial](MBI-PROBE.md) now has a CPU-generated
 delivery pass and an opt-in MSI provider implementation. Real PCIe message
-delivery still needs qualification. Selecting that provider also lets NVMe
-choose MSI-X; a provider's presence alone does not prove the route works.
+delivery failed in its first NVMe MSI-X trial and recovered through polling.
+Read-only inspection confirmed the intended table and GIC state. Linux's
+working NVMe messages target ITS1 at `0xfe670040`, so ITS/LPI support is the
+next step. Selecting an MSI provider alone does not prove the route works.
 
 For explicit high-address DMA testing, a separate `nvme_disk` driver settings
 file may contain `force_high_dma true`. On ARM64 this requires every libnvme
