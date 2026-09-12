@@ -72,7 +72,8 @@ RNDISDevice::RNDISDevice(usb_device device)
 	:	fStatus(B_ERROR),
 		fOpen(false),
 		fRemoved(false),
-		fInsideNotify(0),
+		fNotifyRunning(0),
+		fNotifyThread(-1),
 		fDevice(device),
 		fDataInterfaceIndex(0),
 		fMaxSegmentSize(0),
@@ -83,6 +84,9 @@ RNDISDevice::RNDISDevice(usb_device device)
 		fNotifyWriteSem(-1),
 		fLockWriteSem(-1),
 		fNotifyControlSem(-1),
+		fNotifyCompleteSem(-1),
+		fNotifyStatus(B_OK),
+		fNotifyActualLength(0),
 		fNotifyBuffer(NULL),
 		fNotifyBufferLength(0),
 		fReadHeader(NULL),
@@ -90,6 +94,8 @@ RNDISDevice::RNDISDevice(usb_device device)
 		fMediaConnectState(MEDIA_STATE_UNKNOWN),
 		fDownstreamSpeed(0)
 {
+	mutex_init(&fNotifyLock, DRIVER_NAME "_notify");
+
 	const usb_device_descriptor *deviceDescriptor
 		= gUSBModule->get_device_descriptor(device);
 
@@ -125,6 +131,12 @@ RNDISDevice::RNDISDevice(usb_device device)
 		return;
 	}
 
+	fNotifyCompleteSem = create_sem(0, DRIVER_NAME "_notify_complete");
+	if (fNotifyCompleteSem < B_OK) {
+		TRACE_ALWAYS("failed to create notification completion sem\n");
+		return;
+	}
+
 	if (_SetupDevice() != B_OK) {
 		TRACE_ALWAYS("failed to setup device\n");
 		return;
@@ -136,6 +148,9 @@ RNDISDevice::RNDISDevice(usb_device device)
 
 RNDISDevice::~RNDISDevice()
 {
+	_StopNotifications();
+	mutex_destroy(&fNotifyLock);
+
 	if (fNotifyReadSem >= B_OK)
 		delete_sem(fNotifyReadSem);
 	if (fNotifyWriteSem >= B_OK)
@@ -144,9 +159,9 @@ RNDISDevice::~RNDISDevice()
 		delete_sem(fLockWriteSem);
 	if (fNotifyControlSem >= B_OK)
 		delete_sem(fNotifyControlSem);
+	if (fNotifyCompleteSem >= B_OK)
+		delete_sem(fNotifyCompleteSem);
 
-	if (!fRemoved)
-		gUSBModule->cancel_queued_transfers(fNotifyEndpoint);
 	free(fNotifyBuffer);
 }
 
@@ -191,13 +206,11 @@ RNDISDevice::Open()
 	while (acquire_sem_etc(fNotifyControlSem, 1, B_RELATIVE_TIMEOUT, 0) == B_OK) {
 	}
 
-	if (gUSBModule->queue_interrupt(fNotifyEndpoint, fNotifyBuffer,
-		fNotifyBufferLength, _NotifyCallback, this) != B_OK) {
-		TRACE_ALWAYS("failed to setup notification interrupt\n");
-		return B_ERROR;
-	}
+	status_t status = _StartNotifications();
+	if (status != B_OK)
+		return status;
 
-	status_t status = _RNDISInitialize();
+	status = _RNDISInitialize();
 	if (status != B_OK) {
 		TRACE_ALWAYS("failed to initialize RNDIS device: %s\n", strerror(status));
 		goto failed;
@@ -244,7 +257,7 @@ RNDISDevice::Open()
 	return B_OK;
 
 failed:
-	gUSBModule->cancel_queued_transfers(fNotifyEndpoint);
+	_StopNotifications();
 	return status;
 }
 
@@ -258,7 +271,7 @@ RNDISDevice::Close()
 
 	// TODO tell the device to disconnect?
 
-	gUSBModule->cancel_queued_transfers(fNotifyEndpoint);
+	_StopNotifications();
 	gUSBModule->cancel_queued_transfers(fReadEndpoint);
 	gUSBModule->cancel_queued_transfers(fWriteEndpoint);
 
@@ -502,16 +515,7 @@ RNDISDevice::Removed()
 	fMediaConnectState = MEDIA_STATE_DISCONNECTED;
 	fDownstreamSpeed = 0;
 
-	// the notify hook is different from the read and write hooks as it does
-	// itself schedule traffic (while the other hooks only release a semaphore
-	// to notify another thread which in turn safly checks for the removed
-	// case) - so we must ensure that we are not inside the notify hook anymore
-	// before returning, as we would otherwise violate the promise not to use
-	// any of the pipes after returning from the removed hook
-	while (atomic_add(&fInsideNotify, 0) != 0)
-		snooze(100);
-
-	gUSBModule->cancel_queued_transfers(fNotifyEndpoint);
+	_StopNotifications();
 	gUSBModule->cancel_queued_transfers(fReadEndpoint);
 	gUSBModule->cancel_queued_transfers(fWriteEndpoint);
 
@@ -927,33 +931,107 @@ RNDISDevice::_NotifyCallback(void *cookie, int32 status, void *_data,
 	size_t actualLength)
 {
 	RNDISDevice *device = (RNDISDevice *)cookie;
-	atomic_add(&device->fInsideNotify, 1);
-	if (status == B_CANCELED || device->fRemoved) {
-		atomic_add(&device->fInsideNotify, -1);
-		return;
+	device->fNotifyStatus = status;
+	device->fNotifyActualLength = actualLength;
+	release_sem_etc(device->fNotifyCompleteSem, 1, B_DO_NOT_RESCHEDULE);
+}
+
+
+status_t
+RNDISDevice::_StartNotifications()
+{
+	while (acquire_sem_etc(fNotifyCompleteSem, 1, B_RELATIVE_TIMEOUT, 0) == B_OK) {
 	}
 
+	fNotifyThread = spawn_kernel_thread(_NotifyThread, DRIVER_NAME "_notify",
+		B_NORMAL_PRIORITY, this);
+	if (fNotifyThread < B_OK)
+		return fNotifyThread;
+
+	atomic_set(&fNotifyRunning, 1);
+	status_t status = resume_thread(fNotifyThread);
 	if (status != B_OK) {
-		TRACE_ALWAYS("device notify status error 0x%08" B_PRIx32 "\n", status);
-
-		if (gUSBModule->clear_feature(device->fNotifyEndpoint,
-			USB_FEATURE_ENDPOINT_HALT) != B_OK)
-			TRACE_ALWAYS("failed to clear halt state in notify hook\n");
-	} else if (actualLength != 8) {
-		TRACE_ALWAYS("Received notification with unexpected number of bytes %" B_PRIuSIZE "\n",
-			actualLength);
-	} else {
-#ifdef TRACE_RNDIS
-		uint32* data = (uint32*)_data;
-		uint32 notification = data[0];
-		uint32 reserved = data[1];
-		TRACE("Received notification %" B_PRIx32 " %" B_PRIx32 "\n", notification, reserved);
-#endif
-		release_sem_etc(device->fNotifyControlSem, 1, B_DO_NOT_RESCHEDULE);
+		atomic_set(&fNotifyRunning, 0);
+		kill_thread(fNotifyThread);
+		fNotifyThread = -1;
 	}
+	return status;
+}
 
-	// schedule next notification buffer
-	gUSBModule->queue_interrupt(device->fNotifyEndpoint, device->fNotifyBuffer,
-		device->fNotifyBufferLength, _NotifyCallback, device);
-	atomic_add(&device->fInsideNotify, -1);
+
+void
+RNDISDevice::_StopNotifications()
+{
+	if (fNotifyThread < B_OK)
+		return;
+
+	// Serialize cancel with queueing so the worker cannot submit another
+	// notification after its last pending request has been canceled.
+	mutex_lock(&fNotifyLock);
+	atomic_set(&fNotifyRunning, 0);
+	gUSBModule->cancel_queued_transfers(fNotifyEndpoint);
+	mutex_unlock(&fNotifyLock);
+
+	status_t result;
+	wait_for_thread(fNotifyThread, &result);
+	fNotifyThread = -1;
+}
+
+
+int32
+RNDISDevice::_NotifyThread(void *cookie)
+{
+	((RNDISDevice*)cookie)->_ProcessNotifications();
+	return B_OK;
+}
+
+
+void
+RNDISDevice::_ProcessNotifications()
+{
+	while (atomic_get(&fNotifyRunning) != 0) {
+		mutex_lock(&fNotifyLock);
+		if (atomic_get(&fNotifyRunning) == 0) {
+			mutex_unlock(&fNotifyLock);
+			break;
+		}
+		status_t status = gUSBModule->queue_interrupt(fNotifyEndpoint,
+			fNotifyBuffer, fNotifyBufferLength, _NotifyCallback, this);
+		mutex_unlock(&fNotifyLock);
+		if (status != B_OK) {
+			TRACE_ALWAYS("failed to queue notification interrupt: %s\n",
+				strerror(status));
+			break;
+		}
+
+		do {
+			status = acquire_sem(fNotifyCompleteSem);
+		} while (status == B_INTERRUPTED);
+		if (status != B_OK || atomic_get(&fNotifyRunning) == 0
+			|| fNotifyStatus == B_CANCELED) {
+			break;
+		}
+
+		if (fNotifyStatus != B_OK) {
+			TRACE_ALWAYS("device notify status error 0x%08" B_PRIx32 "\n",
+				fNotifyStatus);
+			// clear_feature waits for USB completion; it must never run in
+			// the USB completion callback. Only STALL resets the data toggle.
+			if (fNotifyStatus == B_DEV_STALLED) {
+				status = gUSBModule->clear_feature(fNotifyEndpoint,
+					USB_FEATURE_ENDPOINT_HALT);
+				if (status != B_OK) {
+					TRACE_ALWAYS("failed to clear notification halt: %s\n",
+						strerror(status));
+				}
+			}
+			// Bound retries while a failed device awaits removal.
+			snooze(100000);
+		} else if (fNotifyActualLength != 8) {
+			TRACE_ALWAYS("Received notification with unexpected number of bytes %"
+				B_PRIuSIZE "\n", fNotifyActualLength);
+		} else {
+			release_sem(fNotifyControlSem);
+		}
+	}
 }
