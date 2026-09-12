@@ -18,3 +18,5 @@ SimpleTest rock5_services_probe : services_probe.cpp Services.cpp
 SEARCH on [ FGristFiles Services.cpp ]
 	= [ FDirName $(HAIKU_TOP) src servers net ] ;
 LINKFLAGS on rock5_services_probe += -Wl,--wrap=pipe -Wl,--wrap=select ;
+
+SubInclude HAIKU_TOP tools rock5-itx mbi_probe ;
