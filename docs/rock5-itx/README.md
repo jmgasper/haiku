@@ -6,15 +6,20 @@ and driver support are tracked separately in [STATUS.md](STATUS.md) and the
 [hardware roadmap](ROADMAP.md). This is not a fully supported Haiku image yet.
 The [GitHub work items](TRACKING.md) split the roadmap into issues and milestones.
 
-The Samsung 950 Pro now boots a small Haiku development installation. Two native
-SSD boots, a persisted file, normal reboot and power-off passed. Bounded raw
-reads, writes and reboot readback were independently checked through Linux. Its current PCIe support requires the explicit
-[installed-firmware profile](PCIE-FIRMWARE.md). Most SSD capacity remains
-unallocated. Concurrent writes with DMA buffers above 4 GiB now pass explicit
-drive-cache flushes, normal reboot and power-off/startup readback, with
-independent Linux hashes. This required correcting the probe: raw-device
-`fsync()` had not flushed the SSD. Sustained storage, error recovery and
-full-size installation qualification remain.
+The Samsung 950 Pro now has a full-capacity Haiku development installation:
+a 512 MiB EFI partition and a 238 GiB BFS volume. Native Installer copying,
+package and EFI hashes, filesystem checks and large-file readback after normal
+reboot and shutdown/startup have passed. Four SSD boots reached the desktop;
+a USB control failure interrupted one check session, and a subsequent repeat
+with results captured on UART passed. PCIe support currently requires the
+explicit
+[installed-firmware profile](PCIE-FIRMWARE.md). Earlier bounded raw I/O and
+concurrent writes with DMA buffers above 4 GiB passed explicit drive-cache
+flushes, normal reboot and shutdown/startup, with independent Linux hashes.
+This required correcting the probe: raw-device `fsync()` had not flushed the
+SSD. The old raw test ranges are now inside the BFS volume and must not be
+reused. Further tests use regular files. Sustained storage, TRIM, error
+recovery and the remaining board hardware still need qualification.
 
 This fork uses AI-assisted development at its owner's request. Upstream Haiku
 does not accept AI-assisted contributions. The `rock5-itx` branch contains this

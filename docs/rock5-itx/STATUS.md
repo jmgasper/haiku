@@ -15,7 +15,7 @@ firmware supports it.
 | Automated controls | Forty-six host checks pass locally, including bounded concurrent storage writes and corruption detection, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
-| Native Haiku on ROCK | All eight CPUs start; Tracker/Deskbar, NanoKVM input, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; Samsung NVMe bounded raw I/O has independent Linux hashes, and a small SSD installation passed two native boots, file persistence, normal reboot and power-off; sustained acceptance remains open |
+| Native Haiku on ROCK | All eight CPUs start; Tracker/Deskbar, NanoKVM input, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; Samsung NVMe bounded raw I/O has independent Linux hashes; the 238 GiB SSD installation has reached the desktop on four boots and passed large-file persistence after normal reboot and shutdown/startup; one USB control interruption required repeating the final checks, and sustained acceptance remains open |
 | Board revision | Owner confirmed ROCK 5 ITX PCB v1.12; current public electrical schematic is v1.11, so exact revision electrical details remain to be checked before raw register work |
 | USB recovery | Workstation USB-C connection enumerates as `2207:350b`; remote loader and MaskROM entry, RAM loader download, eMMC/SPI selection and matching read-back hashes verified |
 | Serial | NanoKVM UART1 (`/dev/ttyS1`) captures readable DDR/SPL, U-Boot and Linux output at 1,500,000 baud, 8N1; longer input is corrupted and an interactive login has not passed |
@@ -93,7 +93,7 @@ control and PWM fan. Identification does not establish Haiku driver support.
 
 The installed 256 GB Samsung 950 Pro NVMe SSD is identified in ROOBI. The owner
 authorizes erasing its existing data for testing and eventual Haiku installation.
-Native Haiku PCIe/NVMe discovery and a small SSD boot installation now work
+Native Haiku PCIe/NVMe discovery and a full-capacity SSD installation now work
 through the explicit firmware profile described below. No SATA disk or
 Wi-Fi/Bluetooth module has been identified as installed.
 Additional storage, network peers, audio loopback/receivers, displays and camera
@@ -1473,5 +1473,86 @@ checkpoint are in
 `state/native-nvme-high-dma-flush-checkpoint.json`. The earlier failure snapshot
 is retained. Explicit flushing resolves this reproduction and qualifies the
 bounded workload with high DMA addresses across normal reset and power-off.
-Sudden power loss, longer mixed workloads, controller-stall recovery, TRIM,
-MSI and full-size SSD installation remain separate acceptance work.
+These raw-device checks did not qualify sudden power loss, longer mixed
+workloads, controller-stall recovery, TRIM, MSI or full-size SSD installation.
+
+
+## Full-capacity SSD installation and large-file checks
+
+The owner-authorized Samsung SSD was repartitioned as GPT with a 512 MiB EFI
+partition at sector 2048 and a 255,522,242,560-byte BFS partition at sector
+1,050,624. The BFS volume uses 4096-byte blocks and reports 238.0 GiB. Exact
+model, serial, firmware, capacity, mount/swap state and partition geometry were
+checked before formatting. The disk GUID is
+`0eee8446-86b3-4e3a-8181-f49193b4968c`; EFI and BFS partition GUIDs are
+`251a9ddb-8c8b-4935-876a-fe51d3e2f5f6` and
+`f7e520a0-41fd-459a-9f92-e431d817faec` respectively.
+
+The workflow was first rehearsed in QEMU
+`artifacts/qemu-shell/20260912T043159Z-853d71`: Haiku formatted the partitions,
+Installer copied the system, and the EFI loader and installed files were
+verified. A sparse full-capacity image then passed two NVMe-only boots, a file
+extending beyond 5 GiB, reboot readback, filesystem checking and normal shutdown
+in `artifacts/qemu-shell/20260912T045749Z-a98c4a`. The original wrapper rejected
+an overlong emulated serial label that the driver truncated. Its error remains
+recorded; `fullsize-nvme-boot-review.json` checks the actual label, NVMe-only
+configuration, two boot-volume markers and all passing core results. The
+256 GB logical image is for QEMU only and was never uploaded to NanoKVM.
+
+Native installation used the ordinary private USB image `6a2e3322...031bc7a7`,
+built from kernel source `215a43a021913435a29f4b009fdff0af415d9fbb`.
+`artifacts/interactive/20260912T050604Z-ee7d20` records Haiku's FAT32/BFS
+formatting and Installer's successful copy. All eleven installed package hashes
+and three required lab settings matched the source. The ARM64 EFI loader was
+copied separately to `EFI/BOOT/BOOTAA64.EFI` and matched SHA-256
+`ac0bc6ace649e94c3b67190c27e91cd733d8fda8349b31c3c6821f072f57f8db`.
+`checkfs -c` checked 241 nodes without allocation errors. Both SSD volumes were
+cleanly unmounted before recovery.
+
+The full GPT device path is recorded in lab option `Boot0010`. Trials request
+it through one-time `BootNext`, with the verified ROOBI USB selected and
+`BootOrder` unchanged. This keeps the automated recovery route available.
+The first two SSD sessions, `interactive/20260912T052301Z-b7462a` and
+`interactive/20260912T053049Z-c5f388`, both reached the desktop and authenticated
+USB shell with `/boot` mounted from `/dev/disk/nvme/0/1`. The first also passed
+the locked 64 MiB, eight-worker memory probe and 16,384 cache checks.
+
+A regular BFS file of 7 GiB + 8 MiB holds the storage test. Eight workers, one
+per CPU, wrote and read four rounds over file offsets 5–7 GiB: 8 GiB written
+and immediately verified in 36.524 seconds. Regular-file `fsync()` succeeded
+after each round. The final 2 GiB independently matches the host-calculated
+pattern SHA-256 `ae657b8cc8195eb7aacfe432772c9dcc8102f0e14ec5a4d010d263babcafc94b`.
+Two surrounding 8 MiB guards also match. Normal reboot returned to recovery;
+the next SSD boot verified the complete region in 6.733 seconds and repeated
+the hash and guard checks. Filesystem checking found no allocation errors.
+Normal Haiku shutdown and an 800 ms NanoKVM power-button startup subsequently
+returned ROOBI, followed by another one-time SSD boot. This sequence checks
+persistence across shutdown/startup with recovery intervening; it does not
+establish direct SSD cold boot without that recovery step.
+
+The third SSD session, `interactive/20260912T053644Z-187855`, verified the full
+region, both guards and the host-calculated hash after shutdown/startup.
+However, USB control failed during the subsequent filesystem check: UART
+recorded 2,535 USB checksum messages, and the shell command timed out before
+reporting completion. This remains an interrupted run, with its partial
+transcript and successful automatic recovery retained. There was no observed
+data mismatch, but the interruption does not qualify USB reliability.
+
+The fourth SSD session, `interactive/20260912T054356Z-162715`, sent all final
+check output to UART as well as returning a shell completion marker. Its full
+2 GiB probe passed in 6.746 seconds, the independent hash and both guards
+matched, and all eleven installed packages still matched their original
+hashes. The filesystem check processed 254 nodes with no allocation errors;
+the 47 indices and indirect block runs were checked. This session had no USB
+checksum messages and completed a normal Haiku reboot. Each guarded session
+returned to ROOBI with the NanoKVM controller still reachable.
+
+The partition plan, scripts and receipts are in
+`artifacts/nvme-full-install/20260912T044937Z-703399`; the reviewed checkpoint is
+`state/nvme-full-install-checkpoint.json`. The earlier raw test ranges
+at 2, 5, 7 and 16–18 GiB now lie inside the BFS partition and are retired in
+`state/nvme-raw-fixtures-retired.json`. Their historical evidence is retained;
+subsequent write tests must use identified regular files on the installed
+filesystem. This is an experimental minimal installation with eleven packages,
+the firmware-specific PCIe profile and polling. TRIM, controller-stall recovery,
+MSI, sudden power loss, sustained mixed load and full-board parity remain open.
