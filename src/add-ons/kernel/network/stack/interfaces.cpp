@@ -1288,7 +1288,7 @@ interface_removed_device_interface(net_device_interface* deviceInterface)
 	RecursiveLocker locker(sLock);
 
 	Interface* interface = find_interface(deviceInterface->device->name);
-	if (interface != NULL)
+	if (interface != NULL && interface->DeviceInterface() == deviceInterface)
 		remove_interface(interface);
 }
 
