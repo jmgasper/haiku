@@ -56,16 +56,18 @@ Configuration uses Device-nGnRnE mappings, sized volatile accesses and full
 system barriers. The ordinary PCI core still performs standard configuration
 writes, including command bits and BAR sizing. The Samsung profile exposes
 one root/endpoint pair; the onboard profile exposes the four captured pairs.
-Port I/O, prefetchable windows, other root ports, hotplug, INTx routing,
-ITS and controller reinitialization remain unsupported. The qualified images
-use the NVMe driver's ARM64 polling path and noncoherent DMA buffers.
+Port I/O, prefetchable windows, other root ports, hotplug, INTx routing
+and controller reinitialization remain unsupported. The installed system
+uses the NVMe driver's ARM64 polling path and noncoherent DMA buffers.
 The separate [GIC message-interrupt trial](MBI-PROBE.md) now has a CPU-generated
 delivery pass and an opt-in MSI provider implementation. Real PCIe message
 delivery failed in its first NVMe MSI-X trial and recovered through polling.
 Read-only inspection confirmed the intended table and GIC state. Linux's
-working NVMe messages target ITS1 at `0xfe670040`, so ITS/LPI support is the
-next step. The [initial ITS implementation](ITS.md) is opt-in and awaiting
-native qualification. Selecting an MSI provider alone does not prove the route works.
+working NVMe messages target ITS1 at `0xfe670040`. The opt-in
+[initial ITS implementation](ITS.md) has now delivered real NVMe MSI-X
+interrupts during hash-checked reads on two native USB boots, including a
+normal Haiku reboot. Its later write-test setup failed on a test-script package
+filename; write qualification and other devices' interrupt routes remain open.
 
 For explicit high-address DMA testing, a separate `nvme_disk` driver settings
 file may contain `force_high_dma true`. On ARM64 this requires every libnvme

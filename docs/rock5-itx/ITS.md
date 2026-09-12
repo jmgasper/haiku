@@ -64,9 +64,27 @@ access freed/reused tables. No allocation occurs under the interrupt spinlock.
 
 Host tests check known command packets, queue wraparound, whole-buffer DMA
 limits and firmware/requester rejection, including the actual captured DTB.
-The first full ARM64 build passed, along with 73 host checks. QEMU and native
-validation remain pending. Native acceptance requires real SSD interrupt
-counts during hash-checked I/O, no polling fallback, normal reboot, component
-hashes, filesystem checks and verified recovery. Allocation/free/reuse,
+The full ARM64 build from `3ce6f6c457` passed, along with 73 host checks.
+QEMU `qemu-shell/20260912T223910Z-1aec32` rejected the profile before MMIO on
+both boots and passed the existing PCI/NVMe, USB, filesystem and reboot gates.
+The same immutable image, SHA-256
+`cddbc64c93322eee1174797a12b8a773567c5cdced6c73e983c3e37e44d169f8`,
+then delivered native NVMe MSI-X interrupts on two USB boots in
+`interactive/20260912T224223Z-79bc34`, separated by a normal Haiku reboot.
+Both boots used event 0 at `0xfe670040`, LPI 8192 on CPU 0. Logged counts
+reached 512, including arrivals during each 64 MiB EFI-prefix read. Both reads
+matched the retained Linux hash. Six component hashes, eight PCI functions,
+one RNDIS notification worker and zero BFS allocation counters also passed.
+Neither accepted window contained an interrupt timeout, polling fallback,
+ITS quarantine, unexpected interrupt ID or USB checksum/control timeout.
+
+The later write-test setup failed because its script assumed an unversioned
+`haiku.hpkg` filename. It had created only the new file's two 8 MiB guards;
+the main write workload had not started. That session remains an error, and
+the partially prepared file and failed script are retained. Automatic recovery
+returned ROOBI, the guard disarmed and NanoKVM stayed on the same boot.
+`state/native-its-provider.json` accepts only the completed two-boot read
+milestone and links the later setup failure. Write qualification is pending.
+Allocation/free/reuse,
 multi-vector devices, other ITS instances and CPU affinity remain separate
 qualification work.

@@ -2198,12 +2198,27 @@ Linux reference `linux-nvme-msix/20260912T220657Z-de3cda` then captured nine
 unmasked NVMe MSI-X entries targeting ITS1 at `0xfe670040`, with event data
 0 through 8. A matching 64 MiB EFI read generated 513 NVMe interrupts; the
 table remained unchanged. `state/linux-nvme-msix.json` retains the actual
-resources, kernel and before/after counts. ITS and noncoherent network DMA
-remain unimplemented. The installed SSD continues to use its previously
-qualified components.
+resources, kernel and before/after counts. At that checkpoint ITS and
+noncoherent network DMA were unimplemented; the later ITS trial is recorded
+below. The installed SSD continues to use its previously qualified components.
 
-The initial [ITS1/LPI provider](ITS.md) now builds and passes host tests for
-command encoding, DMA limits and firmware admission against the captured DTB.
-It is confined to Samsung DeviceID `0x100` and CPU 0; kernel vector dispatch
-now accommodates LPIs starting at ID 8192. Its first QEMU/native trials are
-pending. Noncoherent network DMA remains unimplemented.
+The initial [ITS1/LPI provider](ITS.md) from `3ce6f6c457` passed the ARM64 build,
+73 host checks and QEMU rejection/regression gates in
+`qemu-shell/20260912T223910Z-1aec32`. Native USB session
+`interactive/20260912T224223Z-79bc34` then delivered Samsung NVMe MSI-X
+interrupts on CPU 0, LPI 8192, through ITS1 at `0xfe670040`. The initial boot
+and a normal Haiku reboot both logged interrupts during the 64 MiB EFI-prefix
+read, reaching a logged count of 512 and matching the Linux hash. Six component
+hashes, eight PCI functions, one RNDIS notification worker and zero USB BFS
+allocation counters passed. No interrupt timeout, polling fallback, quarantine,
+unexpected ID or USB checksum/control timeout occurred in either read window.
+
+A subsequent write-test setup in that session failed on the script's incorrect
+unversioned package filename. Only a new file's two 8 MiB guards had been
+written; the main workload never started. The failed script, partial file and
+session error remain preserved. Automatic recovery returned ROOBI
+`1368635e-ecc8-4384-afde-40edf7177e7b`, the guard disarmed and NanoKVM retained
+its boot ID. `state/native-its-provider.json` records the completed read/reboot
+milestone separately from this setup failure. Write qualification is pending.
+The installed SSD components remain unchanged. Other ITS devices and CPU
+targets, allocation/free/reuse and noncoherent network DMA remain open.
