@@ -168,7 +168,20 @@ find_device_interface(const char* name)
 	DeviceInterfaceList::Iterator iterator = sInterfaces.GetIterator();
 
 	while (net_device_interface* interface = iterator.Next()) {
-		if (!strcmp(interface->device->name, name))
+		if (!interface->removed && !strcmp(interface->device->name, name))
+			return interface;
+	}
+
+	return NULL;
+}
+
+
+static net_device_interface*
+find_device_interface(net_device* device)
+{
+	DeviceInterfaceList::Iterator iterator = sInterfaces.GetIterator();
+	while (net_device_interface* interface = iterator.Next()) {
+		if (interface->device == device)
 			return interface;
 	}
 
@@ -196,6 +209,7 @@ allocate_device_interface(net_device* device, net_device_module_info* module)
 	interface->up_count = 0;
 	interface->ref_count = 1;
 	interface->busy = false;
+	interface->removed = false;
 	interface->monitor_count = 0;
 	interface->deframe_func = NULL;
 	interface->deframe_ref_count = 0;
@@ -340,9 +354,9 @@ count_device_interfaces()
 	DeviceInterfaceList::Iterator iterator = sInterfaces.GetIterator();
 	uint32 count = 0;
 
-	while (iterator.HasNext()) {
-		iterator.Next();
-		count++;
+	while (net_device_interface* interface = iterator.Next()) {
+		if (!interface->removed)
+			count++;
 	}
 
 	return count;
@@ -362,6 +376,8 @@ list_device_interfaces(void* _buffer, size_t* bufferSize)
 	UserBuffer buffer(_buffer, *bufferSize);
 
 	while (net_device_interface* interface = iterator.Next()) {
+		if (interface->removed)
+			continue;
 		buffer.Push(interface->device->name, IF_NAMESIZE);
 
 		sockaddr_storage address;
@@ -426,7 +442,7 @@ get_device_interface(uint32 index)
 	DeviceInterfaceList::Iterator iterator = sInterfaces.GetIterator();
 	while (net_device_interface* interface = iterator.Next()) {
 		if (interface->device->index == index) {
-			if (interface->busy)
+			if (interface->busy || interface->removed)
 				break;
 
 			if (atomic_add(&interface->ref_count, 1) != 0)
@@ -435,6 +451,18 @@ get_device_interface(uint32 index)
 	}
 
 	return NULL;
+}
+
+
+/*!	Stop publishing this instance by name before a replacement can be added.
+	Routes and sockets may retain the old interface and its protocol handlers.
+	Keep it alive for those references, and use device identity for their cleanup.
+*/
+void
+retire_device_interface(net_device_interface* interface)
+{
+	MutexLocker locker(sLock);
+	interface->removed = true;
 }
 
 
@@ -598,7 +626,7 @@ unregister_device_deframer(net_device* device)
 	MutexLocker locker(sLock);
 
 	// find device interface for this device
-	net_device_interface* interface = find_device_interface(device->name);
+	net_device_interface* interface = find_device_interface(device);
 	if (interface == NULL)
 		return B_DEVICE_NOT_FOUND;
 
@@ -624,7 +652,7 @@ register_device_deframer(net_device* device, net_deframe_func deframeFunc)
 	MutexLocker locker(sLock);
 
 	// find device interface for this device
-	net_device_interface* interface = find_device_interface(device->name);
+	net_device_interface* interface = find_device_interface(device);
 	if (interface == NULL)
 		return B_DEVICE_NOT_FOUND;
 
@@ -662,7 +690,7 @@ register_device_handler(struct net_device* device, int32 type,
 	MutexLocker locker(sLock);
 
 	// find device interface for this device
-	net_device_interface* interface = find_device_interface(device->name);
+	net_device_interface* interface = find_device_interface(device);
 	if (interface == NULL)
 		return B_DEVICE_NOT_FOUND;
 
@@ -698,7 +726,7 @@ unregister_device_handler(struct net_device* device, int32 type)
 	MutexLocker locker(sLock);
 
 	// find device interface for this device
-	net_device_interface* interface = find_device_interface(device->name);
+	net_device_interface* interface = find_device_interface(device);
 	if (interface == NULL)
 		return B_DEVICE_NOT_FOUND;
 
@@ -731,7 +759,7 @@ register_device_monitor(net_device* device, net_device_monitor* monitor)
 	MutexLocker locker(sLock);
 
 	// find device interface for this device
-	net_device_interface* interface = find_device_interface(device->name);
+	net_device_interface* interface = find_device_interface(device);
 	if (interface == NULL)
 		return B_DEVICE_NOT_FOUND;
 
@@ -750,7 +778,7 @@ unregister_device_monitor(net_device* device, net_device_monitor* monitor)
 	MutexLocker locker(sLock);
 
 	// find device interface for this device
-	net_device_interface* interface = find_device_interface(device->name);
+	net_device_interface* interface = find_device_interface(device);
 	if (interface == NULL)
 		return B_DEVICE_NOT_FOUND;
 
@@ -792,7 +820,7 @@ device_removed(net_device* device)
 {
 	MutexLocker locker(sLock);
 
-	net_device_interface* interface = find_device_interface(device->name);
+	net_device_interface* interface = find_device_interface(device);
 	if (interface == NULL)
 		return B_DEVICE_NOT_FOUND;
 	if (interface->busy)
@@ -807,6 +835,7 @@ device_removed(net_device* device)
 	// Propagate the loss of the device throughout the stack.
 
 	interface_removed_device_interface(interface);
+	retire_device_interface(interface);
 	notify_device_monitors(interface, B_DEVICE_BEING_REMOVED);
 
 	// By now all of the monitors must have removed themselves. If they
@@ -877,4 +906,3 @@ uninit_device_interfaces()
 	mutex_destroy(&sLock);
 	return B_OK;
 }
-

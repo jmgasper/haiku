@@ -1272,6 +1272,7 @@ remove_interface(Interface* interface)
 	sInterfaces.Remove(interface);
 	locker.Unlock();
 
+	retire_device_interface(interface->DeviceInterface());
 	notify_interface_removed(interface);
 
 	interface->ReleaseReference();
@@ -1700,4 +1701,3 @@ uninit_interfaces()
 	mutex_destroy(&sHashLock);
 	return B_OK;
 }
-

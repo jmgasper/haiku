@@ -33,6 +33,7 @@ struct net_device_interface : DoublyLinkedListLinkImpl<net_device_interface> {
 		// a device can be brought up by more than one interface
 	int32				ref_count;
 	bool				busy;
+	bool				removed;
 
 	net_deframe_func	deframe_func;
 	int32				deframe_ref_count;
@@ -58,6 +59,7 @@ void get_device_interface_address(net_device_interface* interface,
 uint32 count_device_interfaces();
 status_t list_device_interfaces(void* buffer, size_t* _bufferSize);
 void put_device_interface(struct net_device_interface* interface);
+void retire_device_interface(net_device_interface* interface);
 struct net_device_interface* get_device_interface(uint32 index);
 struct net_device_interface* get_device_interface(const char* name,
 	bool create = true);
