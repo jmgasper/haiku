@@ -13,6 +13,7 @@ import time
 import lab
 import nanokvm
 import shell
+import usb_reset
 
 
 def emit(value):
@@ -118,6 +119,7 @@ with lab.lock('hardware'):
         next_capture = time.monotonic() + 10
         input_buffer = b''
         input_lines = deque()
+        prepared_usb_reset = None
         frame = 0
         def capture():
             global frame
@@ -178,6 +180,17 @@ with lab.lock('hardware'):
                         command.get('transport', 'staged'), command.get('rate_limit', 256 * 1024))
                     result['events'][-1]['result'] = value
                     emit(value)
+                elif action == 'prepare_usb_reset':
+                    prepared_usb_reset = usb_reset.prepare(config,
+                        result['deployment'], output, command['target'])
+                    result['events'][-1]['result'] = prepared_usb_reset
+                    emit({'usb_reset_prepared': prepared_usb_reset})
+                elif action == 'reset_usb':
+                    preparation = prepared_usb_reset
+                    prepared_usb_reset = None
+                    value = usb_reset.reset(config, preparation, output)
+                    result['events'][-1]['result'] = value
+                    emit({'usb_reset': value})
                 elif action == 'gpio':
                     kind = command['type']
                     duration = command.get('duration', 800)

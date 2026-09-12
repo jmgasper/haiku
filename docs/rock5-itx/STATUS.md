@@ -12,7 +12,7 @@ firmware supports it.
 | NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; staged downloads passed before/after native reboot, but simultaneous USB/Ethernet relay still causes outages; the latest outage did not recover through the hardware watchdog |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | Forty-seven host checks pass locally, including bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
+| Automated controls | Fifty-six host checks pass locally, including explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
 | Native Haiku on ROCK | All eight CPUs start; Tracker/Deskbar, NanoKVM input, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; Samsung NVMe bounded raw I/O has independent Linux hashes; the 238 GiB SSD installation boots repeatedly and has passed large-file persistence after normal reboot and shutdown/startup; the installed hrev60097+57 update also passes filesystem TRIM and reboot readback; intermittent USB control failures and sustained acceptance remain open |
@@ -1723,3 +1723,47 @@ Scripts and retained failure reviews are under
 checkpoint is `state/nvme-installed-update-checkpoint.json`. This qualifies the
 installed update and the stated persistence checks. Sudden power-loss
 durability, controller-stall recovery and overall hardware parity remain open.
+
+
+## Explicit USB reset while booted from NVMe
+
+The session tools now support a prepared, single-use NanoKVM USB reset for an
+installed NVMe boot. Preparation verifies the boot receipt and UART mount,
+uses an authenticated shell to sync and reject mounted USB filesystems, and
+checks the selected and persistent recovery images. A changed target boot,
+controller boot or image invalidates preparation. Failed reset operations
+retain their error receipt and the session's normal recovery route. Nine new
+host checks cover these interlocks; the complete 56-check suite passed.
+
+The implementation uses NanoKVM's documented Reset HID operation. The
+[2.4.3 implementation](https://github.com/sipeed/NanoKVM/blob/3b2ba7c0c1214f44da9d328f90bbdd025fac0413/server/service/hid/status.go)
+invokes the installed USB script's `restart_phy` action. The local script was
+read and archived before testing; it unbinds/rebinds the NanoKVM DWC2 device
+and restores gadget mode. The configured recovery image remained selected,
+and NanoKVM's boot ID did not change.
+
+Native session `interactive/20260912T081718Z-9e2e7f` ran the qualified
+`hrev60097+57` SSD installation, with the preceding ordinary-image QEMU gate
+in `qemu-shell/20260912T081407Z-671b8c`. The reset removed and re-enumerated
+the USB disk, HID and RNDIS device without rebooting Haiku. Keyboard and mouse
+worked afterward. A Tracker prompt to mount the recovery FAT volume was
+canceled. UART recorded 67 USB check-sum errors during disconnect and no more
+after the new RNDIS device was added. A notification callback also recorded a
+five-second control-request timeout during removal.
+
+Networking did not return automatically. Through the KVM Terminal, `ifconfig`
+showed only loopback, although `/dev/net/usb_rndis/0` existed. Explicitly running
+`ifconfig /dev/net/usb_rndis/0 auto-config` restored `10.239.6.102`. Authenticated
+commands and a filesystem check then passed. An 8 MiB upload took 17.81 seconds;
+its staged return at 256 KiB/second took 53.68 seconds. Both copies matched
+SHA-256 `7d212b9c884f5c77896de960ae17cc341cda43b14d6a971f34ca29ebd4badf7f`.
+The target completed normal reboot to ROOBI boot ID
+`f6dcbdce-97a0-435c-8066-3667219d1267`, and the controller guard disarmed.
+
+This was a controlled reset of a working link. It establishes that USB reset,
+KVM input and explicit network reconfiguration can preserve a running SSD
+session; it does not qualify automatic reconnect or recovery from a spontaneous
+controller outage. Evidence and source snapshots are in
+`artifacts/native-usb-reset/20260912T081408Z-1af315` and
+`state/native-usb-reset-checkpoint.json`. Automatic interface recreation is the
+next investigation.

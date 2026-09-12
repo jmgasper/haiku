@@ -312,6 +312,25 @@ The watchdog recovered earlier outages, but a later relay failure left the
 controller unreachable beyond the recovery deadline. A physical controller
 power cycle remains necessary when that recovery route fails.
 
+An installed-SSD session can explicitly prepare and perform one NanoKVM USB
+reset without rebooting Haiku:
+
+```json
+{"action":"prepare_usb_reset","target":"10.239.6.102"}
+{"action":"reset_usb"}
+```
+
+Preparation requires the session's NVMe deployment receipt, matching UART boot
+evidence, a live Haiku shell, no mounted USB filesystem, and matching selected
+and persistent recovery images on NanoKVM. A subsequent boot, controller or
+image change invalidates it. The reset consumes the preparation and saves its
+own receipt; API completion alone is not a reconnection pass. In the first
+native trial, HID returned but networking required
+`ifconfig /dev/net/usb_rndis/0 auto-config` entered through the KVM Terminal.
+Authenticated commands and an 8 MiB round trip then passed. This remains an
+explicit diagnostic operation; failed guest commands are not automatically
+retried.
+
 ## Updating the installed SSD
 
 Boot a qualified ordinary lab image and use Installer to replace the system on
