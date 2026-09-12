@@ -1145,3 +1145,45 @@ UART captured 186,546 bytes without errors; ROOBI returned with boot ID
 SSD, eMMC or SPI writes were requested by this inventory. The probe's files
 were written only to its USB image. This establishes firmware discovery,
 not native Haiku PCIe discovery or physical NVMe I/O under Haiku.
+
+## Native PCI configuration after the firmware handoff
+
+The installed EDK2 v1.1 source (commit
+`6a682c0ef3ed74feb8b0d98f1c2aa771ddfbae18`) uses separate RK3588 root/endpoint
+configuration mappings and filters invalid device slots. For segment zero,
+the root is at `0xa40000000` and bus 1/device 0/function 0 is at `0x900100000`.
+These are firmware mappings, not the Linux device tree's configuration window.
+The new `rock5_pci_config_probe` reads only those two known functions through
+read-only, uncached Haiku mappings. Its generated ARM64 loop uses individual
+32-bit volatile loads. It does not write PCI configuration or program SoC
+registers, clocks, address windows or DMA.
+
+The first QEMU run, `artifacts/qemu-shell/20260912T011650Z-86bb19`, failed before
+mapping any PCI page. The `poke` driver was packaged but could not load because
+it required an ISA module absent from the ARM64 image. Source
+`20a934e26caf2a1445af826382fc40dd88f5a5c0` makes its ISA/PCI module dependencies
+optional, rejects operations requiring an unavailable bus and retains root-only
+access. The initial failed evidence remains preserved.
+
+The clean private image has SHA-256
+`ec7d1ef97100b754112881f81b7a9b8f2d7fa04a751d6f13a8c2c50e0554b374`.
+QEMU passed in `artifacts/qemu-shell/20260912T012011Z-d2825f`: host/NVMe
+configuration reads before and after normal reboot, the separate NVMe fixture's
+read/write/flush/reboot/host-hash checks, 64 MiB memory with its negative control,
+8,192 cache checks and normal power-off.
+
+The same image passed the native probe before and after normal reboot in
+`artifacts/interactive/20260912T012245Z-e698d4`. All 256 bytes of each root and
+Samsung configuration snapshot matched the earlier UEFI inventory on both
+boots. The Samsung retains ID `144d:a802`, BAR0 `0xf0000000` and PCIe 3.0 x2.
+Both boots also passed a locked 64 MiB/eight-worker/two-pass memory check.
+The inspected screenshot shows Tracker and Deskbar. Haiku's disk directory
+still contains only USB and virtual devices: this proves configuration access
+after ExitBootServices, not a PCI host driver or native SSD I/O.
+
+ROOBI recovery passed with boot ID `71c3342d-95d3-421f-afb1-68d15e737dfb`.
+UART saved 251,544 bytes without transport errors. The controller retained
+boot ID `84b69ae8-4d9e-4c03-9f5c-6c9547084819` and its scoped watchdog disarmed
+normally. `pci-config-review.json` preserves the parsed comparisons and raw
+configuration files. Firmware handoff support, noncoherent DMA and PCIe
+interrupt routing remain open before native disk qualification.
