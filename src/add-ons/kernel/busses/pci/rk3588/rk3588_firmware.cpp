@@ -189,13 +189,55 @@ SupportsDevice(device_node* parent)
 static status_t
 RegisterDevice(device_node* parent)
 {
+	const PortProfile* port;
+	if (!MatchesNode(parent, &port))
+		return B_NOT_SUPPORTED;
+	// Only segment zero currently has a qualified requester-ID contract.
+	// EDK2 numbers every root's secondary bus as 1; Linux's msi-map bases
+	// for the other ports must not be added to those firmware BDFs blindly.
+	bool samsungMsi = false;
+	if (port->segment == 0) {
+		fdt_device_module_info* fdt;
+		fdt_device* device;
+		if (sDeviceManager->get_driver(parent, (driver_module_info**)&fdt,
+				(void**)&device) == B_OK) {
+			int length;
+			const uint32* map = (const uint32*)fdt->get_prop(device, "msi-map", &length);
+			if (map != NULL && length == 16 && B_BENDIAN_TO_HOST_INT32(map[0]) == 0
+				&& B_BENDIAN_TO_HOST_INT32(map[2]) == 0
+				&& B_BENDIAN_TO_HOST_INT32(map[3]) == 0x1000
+				&& fdt->get_prop(device, "msi-map-mask", NULL) == NULL) {
+				fdt_bus_module_info* busModule;
+				fdt_bus* bus;
+				if (sDeviceManager->get_driver(fdt->get_bus(device),
+						(driver_module_info**)&busModule, (void**)&bus) == B_OK) {
+					device_node* itsNode = busModule->node_by_phandle(bus,
+						B_BENDIAN_TO_HOST_INT32(map[1]));
+					fdt_device_module_info* itsModule;
+					fdt_device* itsDevice;
+					uint64 base, size;
+					if (itsNode != NULL && sDeviceManager->get_driver(itsNode,
+							(driver_module_info**)&itsModule, (void**)&itsDevice) == B_OK) {
+						samsungMsi = HasString(itsModule, itsDevice, "compatible", "arm,gic-v3-its")
+							&& itsModule->get_reg(itsDevice, 0, &base, &size)
+							&& base == 0xfe660000 && size == 0x20000;
+					}
+				}
+			}
+		}
+	}
 	device_attr attrs[] = {
 		{ B_DEVICE_PRETTY_NAME, B_STRING_TYPE,
 			{.string = "RK3588 EDK2 v1.1 PCIe host"} },
 		{ B_DEVICE_FIXED_CHILD, B_STRING_TYPE,
 			{.string = "bus_managers/pci/root/driver_v1"} },
+		{ B_PCI_MSI_CONTROLLER_ADDRESS, B_UINT64_TYPE, {.ui64 = 0xfe660000} },
+		{ B_PCI_MSI_REQUESTER_BASE, B_UINT32_TYPE, {.ui32 = 0} },
+		{ B_PCI_MSI_REQUESTER_COUNT, B_UINT32_TYPE, {.ui32 = 0x200} },
 		{}
 	};
+	if (!samsungMsi)
+		attrs[2] = {};
 	return sDeviceManager->register_node(parent, DRIVER_NAME, attrs, NULL, NULL);
 }
 

@@ -64,7 +64,8 @@ delivery pass and an opt-in MSI provider implementation. Real PCIe message
 delivery failed in its first NVMe MSI-X trial and recovered through polling.
 Read-only inspection confirmed the intended table and GIC state. Linux's
 working NVMe messages target ITS1 at `0xfe670040`, so ITS/LPI support is the
-next step. Selecting an MSI provider alone does not prove the route works.
+next step. The [initial ITS implementation](ITS.md) is opt-in and awaiting
+native qualification. Selecting an MSI provider alone does not prove the route works.
 
 For explicit high-address DMA testing, a separate `nvme_disk` driver settings
 file may contain `force_high_dma true`. On ARM64 this requires every libnvme

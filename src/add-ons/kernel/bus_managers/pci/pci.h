@@ -218,6 +218,8 @@ private:
 								uint8 bus, uint8 device, uint8 function);
 
 			void			_HtMSIMap(PCIDev *device, uint64 address);
+			status_t		_AllocateMSIVectors(PCIDev* device, uint32 count,
+								uint32* startVector, uint64* address, uint32* data);
 			void			_ReadMSIInfo(PCIDev *device);
 			void			_ReadMSIXInfo(PCIDev *device);
 			void			_ReadHtMappingInfo(PCIDev *device);

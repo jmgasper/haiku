@@ -12,6 +12,13 @@
 
 typedef struct pci_device pci_device;
 
+// Optional host-node attributes for a contiguous requester-ID translation.
+// The local PCI BDF is added to BASE, and must be below COUNT. Hosts with a
+// different map must not publish this simplified description.
+#define B_PCI_MSI_CONTROLLER_ADDRESS "pci/msi/controller_address"
+#define B_PCI_MSI_REQUESTER_BASE "pci/msi/requester_base"
+#define B_PCI_MSI_REQUESTER_COUNT "pci/msi/requester_count"
+
 typedef struct pci_device_module_info {
 	driver_module_info info;
 

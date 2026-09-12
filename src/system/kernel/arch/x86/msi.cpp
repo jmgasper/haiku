@@ -93,6 +93,14 @@ msi_free_vectors(uint32 count, uint32 startVector)
 }
 
 
+status_t
+msi_allocate_vectors_for_device(const msi_requester* requester, uint32 count,
+	uint32* startVector, uint64* address, uint32* data)
+{
+	return msi_allocate_vectors(count, startVector, address, data);
+}
+
+
 void
 msi_assign_interrupt_to_cpu(uint32 irq, int32 cpu)
 {
@@ -102,4 +110,3 @@ msi_assign_interrupt_to_cpu(uint32 irq, int32 cpu)
 	*address = MSI_ADDRESS_BASE | (apic_id << MSI_DESTINATION_ID_SHIFT)
 		| MSI_NO_REDIRECTION | MSI_DESTINATION_MODE_PHYSICAL;
 }
-

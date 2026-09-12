@@ -5,6 +5,7 @@
  */
 
 #include "arch_int_gicv3.h"
+#include "arch_int_gicv3_its.h"
 
 #include "debug.h"
 #include "gicv3_regs.h"
@@ -12,7 +13,9 @@
 #include "vm/vm.h"
 
 #include <arch/arm64/rk3588_mbi.h>
+#include <arch/arm64/rk3588_its.h>
 #include <driver_settings.h>
+#include <new>
 #include <util/AutoLock.h>
 
 extern void* gFDT;
@@ -104,6 +107,36 @@ GICv3InterruptController::GICv3InterruptController(phys_addr_t gicd_phys_addr,
 			"GICR offset/stride %#lx/%#lx\n",
 		gicd_phys_addr, gicr_phys_addr, fGicrStride);
 	_InitMbi(gicd_phys_addr, gicr_phys_addr);
+	_InitIts(gicd_phys_addr, gicr_phys_addr);
+}
+
+
+void
+GICv3InterruptController::_InitIts(phys_addr_t distributor, phys_addr_t redistributor)
+{
+	void* settings = load_driver_settings("gicv3_its");
+	if (settings == nullptr)
+		return;
+	const char* profile = get_driver_parameter(settings, "firmware_profile", "", "");
+	bool allowed = strcmp(profile, "rock5-itx-edk2-v1.1-dt-its-nvme") == 0
+		&& distributor == Gicv3Mbi::kDistributor
+		&& redistributor == Gicv3Mbi::kRedistributor
+		&& Rk3588Its::FirmwareMatches(gFDT) && !msi_supported();
+	bool trace = get_driver_boolean_parameter(settings, "trace", false, false);
+	unload_driver_settings(settings);
+	if (!allowed || GICD_TYPER != 0x7b040f) {
+		dprintf("GICv3 ITS: firmware profile rejected\n");
+		return;
+	}
+	fIts = new(std::nothrow) GICv3Its;
+	if (fIts == nullptr)
+		return;
+	status_t status = fIts->Init(fGicrBase, fNumCpus, trace);
+	if (status != B_OK) {
+		dprintf("GICv3 ITS: initialization rejected/failed: %" B_PRId32 "\n", status);
+		return;
+	}
+	msi_set_interface(fIts);
 }
 
 
@@ -308,7 +341,7 @@ GICv3InterruptController::PerCpuInit()
 	GICR_ICPENDR0(cpu_id) = ~0;
 	_WaitForMask(&GICR_CTLR(cpu_id), GICR_CTLR_RWP, 0);
 
-	// TODO LPI/ITS initialization. MBI-capable controllers can use reserved SPIs.
+	// The first ITS profile enables LPIs only on CPU 0 after this initial call.
 
 	// enable system register interface
 	uint32_t sre = gic_read_sre();
@@ -421,8 +454,12 @@ void
 GICv3InterruptController::EnableInterrupt(int32_t vector)
 {
 	TRACE("enable vector %u\n", vector);
+	if (fIts != nullptr && fIts->Contains(vector)) {
+		fIts->SetEnabled(vector, true);
+		return;
+	}
 
-	if (vector >= fMaxInt)
+	if (vector < 0 || vector >= fMaxInt)
 		return;
 
 	_SetEnable(vector, true);
@@ -433,8 +470,12 @@ void
 GICv3InterruptController::DisableInterrupt(int32_t vector)
 {
 	TRACE("disable vector %u\n", vector);
+	if (fIts != nullptr && fIts->Contains(vector)) {
+		fIts->SetEnabled(vector, false);
+		return;
+	}
 
-	if (vector >= fMaxInt)
+	if (vector < 0 || vector >= fMaxInt)
 		return;
 
 	_SetEnable(vector, false);
@@ -446,16 +487,24 @@ GICv3InterruptController::HandleInterrupt()
 {
 	// get the current vector
 	uint32_t iar = gic_read_iar();
-	int32_t irq = static_cast<int32_t>(iar) & 0x3ff;
+	int32_t irq = static_cast<int32_t>(iar & 0xffffff);
 
 	TRACE("iar %#x, irq %u\n", iar, irq);
 
-	if (irq >= 1020) {
+	if (irq >= 1020 && irq <= 1023) {
 		if (irq == 1023)
 			TRACE("gicv3: no pending interrupt\n");
 		else
 			dprintf("gicv3: spurious interrupt (%d)\n", irq);
 
+		return;
+	}
+	bool lpi = fIts != nullptr && fIts->Contains(irq);
+	if (irq >= fMaxInt && !lpi) {
+		static int32 unexpected = 0;
+		if (atomic_add(&unexpected, 1) < 8)
+			dprintf("GICv3: unexpected INTID %" B_PRId32 "\n", irq);
+		gic_write_eoir(irq);
 		return;
 	}
 
@@ -475,7 +524,9 @@ GICv3InterruptController::HandleInterrupt()
 					" cpu=%" B_PRId32 "\n", irq, count, smp_get_current_cpu());
 			}
 		}
-		io_interrupt_handler(irq, mbi ? B_EDGE_TRIGGERED : B_LEVEL_TRIGGERED);
+		if (lpi)
+			fIts->TraceInterrupt(irq);
+		io_interrupt_handler(irq, (mbi || lpi) ? B_EDGE_TRIGGERED : B_LEVEL_TRIGGERED);
 	}
 
 	gic_write_eoir(irq);

@@ -2157,6 +2157,29 @@ PCI::SetPowerstate(uint8 domain, uint8 bus, uint8 _device, uint8 function,
 
 //#pragma mark - MSI
 
+status_t
+PCI::_AllocateMSIVectors(PCIDev* device, uint32 count, uint32* startVector,
+	uint64* address, uint32* data)
+{
+	msi_requester requester{};
+	device_node* root = _GetDomainData(device->domain)->root_node;
+	if (root == NULL || gDeviceManager->get_attr_uint64(root, B_PCI_MSI_CONTROLLER_ADDRESS,
+			&requester.controller_address, true) != B_OK) {
+		return msi_allocate_vectors_for_device(NULL, count, startVector, address, data);
+	}
+	uint32 base, range;
+	uint32 rid = (uint32(device->bus) << 8) | (uint32(device->device) << 3)
+		| device->function;
+	if (gDeviceManager->get_attr_uint32(root, B_PCI_MSI_REQUESTER_BASE, &base, true) != B_OK
+		|| gDeviceManager->get_attr_uint32(root, B_PCI_MSI_REQUESTER_COUNT, &range, true) != B_OK
+		|| rid >= range || base > UINT32_MAX - rid) {
+		return B_BAD_VALUE;
+	}
+	requester.device_id = base + rid;
+	return msi_allocate_vectors_for_device(&requester, count, startVector, address, data);
+}
+
+
 uint32
 PCI::GetMSICount(PCIDev *device)
 {
@@ -2192,7 +2215,7 @@ PCI::ConfigureMSI(PCIDev *device, uint32 count, uint32 *startVector)
 	if (info->configured_count != 0)
 		return B_BUSY;
 
-	status_t result = msi_allocate_vectors(count, &info->start_vector,
+	status_t result = _AllocateMSIVectors(device, count, &info->start_vector,
 		&info->address_value, &info->data_value);
 	if (result != B_OK)
 		return result;
@@ -2384,7 +2407,7 @@ PCI::ConfigureMSIX(PCIDev *device, uint32 count, uint32 *startVector)
 		info->pba_area_id = -1;
 	info->pba_address = address + info->pba_offset;
 
-	status_t result = msi_allocate_vectors(count, &info->start_vector,
+	status_t result = _AllocateMSIVectors(device, count, &info->start_vector,
 		&info->address_value, &info->data_value);
 	if (result != B_OK) {
 		delete_area(info->pba_area_id);
