@@ -12,10 +12,10 @@ firmware supports it.
 | NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; staged downloads passed before/after native reboot, but simultaneous USB/Ethernet relay still causes outages; the latest outage did not recover through the hardware watchdog |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | Forty host checks pass locally, including NVMe fixture and sector-guard validation, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
+| Automated controls | Forty-one host checks pass locally, including the firmware PCIe profile, NVMe fixture and sector-guard validation, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
-| Native Haiku on ROCK | All eight CPUs start; platform EHCI mounts the NanoKVM boot volume; Tracker/Deskbar, NanoKVM keyboard and mouse, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; sustained acceptance remains open |
+| Native Haiku on ROCK | All eight CPUs start; platform EHCI mounts the NanoKVM boot volume; Tracker/Deskbar, NanoKVM keyboard and mouse, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; the Samsung NVMe now passes bounded native reads/writes/flush/reboot with independent Linux hashes; sustained acceptance remains open |
 | Board revision | Owner confirmed ROCK 5 ITX PCB v1.12; current public electrical schematic is v1.11, so exact revision electrical details remain to be checked before raw register work |
 | USB recovery | Workstation USB-C connection enumerates as `2207:350b`; remote loader and MaskROM entry, RAM loader download, eMMC/SPI selection and matching read-back hashes verified |
 | Serial | NanoKVM UART1 (`/dev/ttyS1`) captures readable DDR/SPL, U-Boot and Linux output at 1,500,000 baud, 8N1; longer input is corrupted and an interactive login has not passed |
@@ -1232,3 +1232,56 @@ from emulated NVMe, with no USB boot disk. Both boots mounted
 check, normal reboot and power-off passed. These are functional emulation
 checks. Physical Samsung DMA, storage performance and native SSD boot remain
 untested until the firmware PCIe host handoff is implemented and qualified.
+
+## First native Samsung NVMe I/O
+
+Source `2d9159afce62b19faadb086e01a3da23ce85a7be` adds the explicit
+[EDK2 v1.1 host profile](PCIE-FIRMWARE.md). It exposes only firmware segment 0,
+retains the firmware's PCIe setup and checks the root/SSD configuration and
+active link before the PCI core attaches. The existing Linux DT windows are
+not used as live mappings. The opt-in setting is installed by the lab build.
+Other PCIe ports, port I/O and MSI/INTx routing are not part of this profile.
+
+All 41 host checks pass, including malformed profile/configuration cases under
+sanitizers and the profile executable run against both captured firmware
+configuration files. The clean private image SHA-256 is
+`31be3e08dcb649c3ecc1d60b5afd1cbb89033c3d343157c1a9b041ed0989bee3`.
+QEMU passed the NVMe sector guards, original I/O, normal reboot/readback,
+independent host hashes, memory/cache and PCI config checks in
+`artifacts/qemu-shell/20260912T021806Z-3cea25`.
+
+On the ROCK, `artifacts/interactive/20260912T022104Z-706c6a` shows Haiku's
+driver attaching to the Samsung 950 Pro on both boots, publishing
+`/dev/disk/nvme/0/raw`, identifying the 512-byte namespace and using polling.
+The 16 admin and 8-by-8 I/O tracker buffers use the ARM64 noncoherent path.
+BAR0 remains CPU/PCI address `0xf0000000`, size 16 KiB. Tracker/Deskbar and the
+USB shell remained usable; the eight-worker locked 64 MiB memory check passed.
+
+The first native reads matched both independently generated Linux 8 MiB
+fixtures at 2 GiB and 5 GiB. Haiku then wrote and flushed 8 MiB at 5 GiB, seeded
+a 2 MiB surrounding-byte test region at 7 GiB, and performed writes of 1, 513,
+4,097, 131,073 and 1,048,579 bytes at unaligned offsets in that region. The full
+2 MiB hash matched the host-generated expected bytes after each operation.
+All three regions matched before and after normal Haiku reboot. After recovery,
+Linux `O_RDONLY|O_DIRECT|O_EXCL` reads independently matched all three hashes.
+The final surrounding-region hash is
+`91d744cbe2803fbd788226912c73d56102634e1dbafe071cb70ecfa4da80f582`.
+Expected bytes, scripts and Linux results are in
+`artifacts/native-nvme-fixture/20260912T022046Z-338b9d`.
+
+This is bounded physical read/write/flush and warm-reboot evidence. It does not
+qualify sustained performance, concurrent queues, controller-error recovery,
+TRIM, high physical DMA addresses, native SSD boot or power-loss durability.
+The logged DMA buffer addresses were below 4 GiB; large disk offsets do not
+establish high-memory DMA. Both boots still used the NanoKVM USB boot volume.
+The SSD's partition table is unchanged and its filesystem contents are disposable.
+
+Recovery returned ROOBI boot ID `5a2d044f-2ea1-4d8b-9df5-ae5c6730bf40`.
+UART captured 249,402 bytes without transport errors; the controller retained
+boot ID `84b69ae8-4d9e-4c03-9f5c-6c9547084819` and its scoped watchdog disarmed.
+`nvme-review.json` in the native artifact records the reviewed transcripts.
+
+The same clean image subsequently booted directly from emulated NVMe on both
+boots in `artifacts/qemu-shell/20260912T023150Z-6008aa`. Both kernel mounts were
+`/dev/disk/nvme/0/1`; memory/cache, USB transfer and truncated-input checks,
+normal reboot and power-off passed. This gates the first native SSD boot image.

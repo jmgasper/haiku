@@ -6,6 +6,11 @@ and driver support are tracked separately in [STATUS.md](STATUS.md) and the
 [hardware roadmap](ROADMAP.md). This is not a fully supported Haiku image yet.
 The [GitHub work items](TRACKING.md) split the roadmap into issues and milestones.
 
+The Samsung 950 Pro now passes bounded native Haiku reads, writes, flushes and
+reboot readback, independently checked through Linux. Its current PCIe support
+requires the explicit [installed-firmware profile](PCIE-FIRMWARE.md). Native
+SSD boot and sustained storage qualification are the next steps.
+
 This fork uses AI-assisted development at its owner's request. Upstream Haiku
 does not accept AI-assisted contributions. The `rock5-itx` branch contains this
 work; `master` is retained as an upstream baseline. There is no upstream PR.
