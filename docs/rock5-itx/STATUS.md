@@ -1767,3 +1767,45 @@ controller outage. Evidence and source snapshots are in
 `artifacts/native-usb-reset/20260912T081408Z-1af315` and
 `state/native-usb-reset-checkpoint.json`. Automatic interface recreation is the
 next investigation.
+
+## USB network interface replacement
+
+QEMU reproduced the missing interface after unplug/replug. Keeping the RNDIS
+USB cookie alive through the final free hook and excluding removed devices
+from publication corrected driver lifetime errors. A second failure remained:
+an old socket/route retained the previous network interface and its ARP receive
+handler, so creating the replacement failed with a duplicate handler. Network
+interfaces now retire from name/index lookup while their old references finish
+closing. Handler cleanup matches the device object, and delayed removal checks
+the interface's device identity before removing it.
+
+The first complete reconnect pass is
+`qemu-shell/20260912T090748Z-1b769a`. The extended run in
+`qemu-shell/20260912T091124Z-00b718` also passed connected-interface down/up,
+three unplug/replug cycles with automatic authenticated reconnect, and 8 MiB
+checksum-verified transfers before and after each cycle. After a 130-second
+wait for old TCP references, another round trip and filesystem check passed.
+Normal reboot, power-off, memory/cache checks and their negative controls passed.
+Reconnection took about 20 seconds in this emulator configuration.
+
+The image remains based on the installed `hrev60097+57` kernel and packages.
+It overlays RNDIS component `fbd0d76c9f` and network stack `3d928a4833`, with
+combined image SHA-256
+`9a4468089f4ad7d1e838c3c355c8ae55519937f2f10887b0b852e8cabef47688`.
+The manifest records both component revisions and hashes separately. Guest
+kernel image listings and file hashes verify that the overrides were loaded.
+
+`install-network-overrides.sh` stages and hashes both components before placing
+them in the non-packaged add-on directories. Its initial install, identical
+second invocation, subsequent boot with both overrides, and shutdown passed in
+`qemu-shell/20260912T091505Z-978bac`. All 56 host checks also passed. Native
+installation and controlled USB reset qualification are underway; these QEMU
+results are not a native reconnect acceptance. The plan, rollback script and
+reproducers are in `artifacts/native-network-overrides/20260912T091424Z-79df24`.
+
+Failed diagnostic runs are retained. Early manual-recovery attempts had commands
+queued behind `netstat`; diagnostics now use `netstat -n` to avoid name resolution.
+Two later trials recreated the interface and exchanged TCP handshakes, but the
+harness closed each connection after a two-second login timeout. Corrected tests
+allow ten seconds per prompt and save separate results. These harness failures
+are not evidence that the final driver failed to recreate the interface.

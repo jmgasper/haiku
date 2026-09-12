@@ -100,7 +100,7 @@ def diagnose(output):
                 {'type': 'btn', 'data': {'button': 'left', 'down': False}}]})
             time.sleep(3)
             codes = {' ': 'spc', '/': 'slash', '-': 'minus', '\n': 'ret'}
-            for command in ('ifconfig', 'netstat', 'ps', 'tail -60 /var/log/syslog',
+            for command in ('ifconfig', 'netstat -n', 'ps', 'tail -60 /var/log/syslog',
                             'cat /boot/system/settings/network/services'):
                 for character in command + ' > /dev/dprintf\n':
                     key(['shift', 'dot'] if character == '>' else [codes.get(character, character)])
