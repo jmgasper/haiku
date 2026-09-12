@@ -20,4 +20,15 @@ Rock5RootLinkReady(const uint32_t* words)
 		&& (link & 0x000f) != 0 && (link & 0x03f0) != 0;
 }
 
+// Read-only MSI inspection is limited to this 16 KiB Samsung BAR layout.
+inline bool
+Rock5SamsungMsixLayoutMatches(const uint32_t* words)
+{
+	return words[0] == 0xa802144d && words[2] == 0x01080201
+		&& words[0x10 / 4] == 0xf0000004 && words[0x14 / 4] == 0
+		&& (words[1] & 2) != 0
+		&& (words[0xb0 / 4] & 0x07ffffff) == 0x00080011
+		&& words[0xb4 / 4] == 0x3000 && words[0xb8 / 4] == 0x2000;
+}
+
 #endif

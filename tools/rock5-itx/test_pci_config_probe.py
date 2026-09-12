@@ -15,11 +15,12 @@ class PCIConfigProbeTests(unittest.TestCase):
         source = root / 'root-link.cpp'
         source.write_text('''#include <stdio.h>
 #include "pci_config_probe_checks.h"
-int main() {
+int main(int argc, char**) {
     uint32_t words[64];
     if (fread(words, sizeof(words), 1, stdin) != 1)
         return 2;
-    return Rock5RootLinkReady(words) ? 0 : 1;
+    return (argc == 1 ? Rock5RootLinkReady(words)
+        : Rock5SamsungMsixLayoutMatches(words)) ? 0 : 1;
 }
 ''')
         cls.binary = root / 'root-link'
@@ -41,8 +42,8 @@ int main() {
         words[0x80 // 4] = 0x30230000
         return words
 
-    def check(self, words, expected):
-        result = subprocess.run([str(self.binary)], input=struct.pack('=64I', *words),
+    def check(self, words, expected, msix=False):
+        result = subprocess.run([str(self.binary)] + (['msix'] if msix else []), input=struct.pack('=64I', *words),
             capture_output=True, timeout=5)
         self.assertEqual(result.returncode, expected, result.stderr.decode(errors='replace'))
 
@@ -63,6 +64,29 @@ int main() {
                 words = self.root()
                 words[index] = value
                 self.check(words, 1)
+
+    def samsung(self):
+        words = [0] * 64
+        words[:3] = [0xa802144d, 0x00100407, 0x01080201]
+        words[4] = 0xf0000004
+        words[0xb0 // 4:0xbc // 4] = [0x80080011, 0x3000, 0x2000]
+        return words
+
+    def test_samsung_msix_layout_with_each_enable_mask_state(self):
+        for state in (0, 0x40000000, 0x80000000, 0xc0000000):
+            words = self.samsung()
+            words[0xb0 // 4] = 0x00080011 | state
+            self.check(words, 0, msix=True)
+
+    def test_other_msix_resources_are_rejected_before_bar_access(self):
+        for offset, value in [(0, 0x812510ec), (4, 0x405), (8, 0x01080202),
+                (0x10, 0xf0200004), (0x14, 1), (0xb0, 0x80070011),
+                (0xb0, 0x80080005), (0xb4, 0x3004), (0xb4, 0x4000),
+                (0xb8, 0x2004), (0xb8, 0x4000)]:
+            with self.subTest(offset=offset, value=value):
+                words = self.samsung()
+                words[offset // 4] = value
+                self.check(words, 1, msix=True)
 
 
 if __name__ == '__main__':
