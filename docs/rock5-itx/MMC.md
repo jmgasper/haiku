@@ -526,6 +526,28 @@ Native address observations and independent data checks are
 still required; enabling the setting or running the low-RAM QEMU suite alone
 does not qualify high-memory I/O.
 
+The first native `+142` trial (`interactive/20260913T175742Z-ec3134`) observed
+a successful read with CPU address `0x114879000`, scheduler floor `0x100000000`
+and private SDMA address `0x2e80000`. Inventory and the first two 8 MiB raw
+reference hashes passed. The third reference read timed out after 8,376,320
+bytes, so no FAT file check, write or planned Haiku reboot was attempted. The
+guard recovered ROOBI with boot ID `e89535da-4168-4035-ba45-4ecd9f697104`.
+Linux independently verified the complete FAT partition unchanged, both retained
+file hashes, filesystem consistency and all three raw reference hashes in
+`emmc-file-readback/20260913T180600Z-a0e0f4` and
+`emmc-read-reference/20260913T180717Z-3cd7f0` under `artifacts/`.
+
+Review found a completion-publication race: another CPU could observe the
+software completion before the interrupt handler acknowledged the hardware
+event. The late acknowledgement could then clear the next command's completion.
+A host regression reproduces the lost event with the previous production
+ordering for both command and transfer completion. The handler now acknowledges
+the observed bits and completes a memory barrier before publishing the result.
+Data-transfer errors also record the offset, CPU/DMA addresses and interrupt
+state before recovery. All 105 host checks pass; another native trial is
+required to establish whether this resolves the observed timeout. The failed
+trial remains indexed by `state/native-mmc-high-first-failure.json`.
+
 ## Native work remaining
 
 Extend native eight-bit operation to orderly shutdown/startup. Extend the

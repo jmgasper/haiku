@@ -587,6 +587,13 @@ SdhciBus::DoIO(uint8_t command, IOOperation* operation, bool offsetAsSectors)
 		}
 		status = WaitForCompletion(SDHCI_INT_TRANS_CMP, 1000000);
 		if (status != B_OK) {
+			ERROR("Data transfer failed: command=%u offset=%" B_PRIu64
+				" bytes=%" B_PRIu64 " status=%s result=%#x IRQ=%#x signal=%#x"
+				" present=%#x CPU=%#" B_PRIx64 " DMA32=%#" B_PRIx64 "\n",
+				command, (uint64)offset, (uint64)size, strerror(status),
+				(uint32)atomic_get(&fCommandResult), (uint32)fRegisters->interrupt_status,
+				(uint32)fRegisters->interrupt_signal_enable, fRegisters->present_state.Bits(),
+				(uint64)vecs[i].base, (uint64)fDMAAddress);
 			RecoverError();
 			return status;
 		}
@@ -843,8 +850,12 @@ SdhciBus::HandleInterrupt()
 	uint32_t completion = intmask & (SDHCI_INT_CMD_CMP | SDHCI_INT_TRANS_CMP
 		| SDHCI_INT_ERROR | SDHCI_INT_ERROR_MASK);
 	if (completion != 0) {
-		atomic_or(&fCommandResult, completion);
+		// A waiter on another CPU can observe fCommandResult before NotifyAll.
+		// Finish the acknowledgement before allowing it to submit the next
+		// command, otherwise this W1C could erase that command's completion.
 		fRegisters->interrupt_status = completion;
+		memory_full_barrier();
+		atomic_or(&fCommandResult, completion);
 		fInterruptNotifier.NotifyAll();
 	}
 

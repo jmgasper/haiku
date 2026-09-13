@@ -16,7 +16,7 @@ struct W1C32 {
 };
 struct Fifo32 { uint32 unused; operator uint32() const { return readFifo(); } };
 static bigtime_t now;
-static std::function<void()> onAdd, onWait;
+static std::function<void()> onAdd, onWait, onPublish;
 struct ConditionVariableEntry {
     status_t Wait(int flags, bigtime_t deadline) {
         assert(flags == B_ABSOLUTE_TIMEOUT);
@@ -39,7 +39,10 @@ static status_t vm_memcpy_from_physical(void*, phys_addr_t, size_t, bool);
 static status_t vm_memcpy_to_physical(phys_addr_t, const void*, size_t, bool);
 static int32 atomic_get(int32* p) { return *p; }
 static void atomic_set(int32* p, int32 n) { *p = n; }
-static void atomic_or(int32* p, int32 n) { *p |= n; }
+static void atomic_or(int32* p, int32 n) {
+    *p |= n;
+    if (onPublish) { auto callback = onPublish; onPublish = {}; callback(); }
+}
 static status_t install_io_interrupt_handler(uint32, int32 (*)(void*), void*, int);
 static void remove_io_interrupt_handler(uint32, int32 (*)(void*), void*);
 static thread_id spawn_kernel_thread(status_t (*)(void*), const char*, int, void*);
@@ -227,7 +230,7 @@ struct Fixture {
         assert(!installed && !workers);
         unmapped = resets = pioWords = freedDMA = 0; pending = false;
         copiedIn = copiedOut = 0; dmaTransfer = {};
-        onAdd = {}; onWait = {}; submissions.clear();
+        onAdd = {}; onWait = {}; onPublish = {}; submissions.clear();
         regs->capabilities.fBits = (uint64(1) << 24) | (200 << 8) | 1;
         regs->host_controller_version.specVersion = 2;
         regs->present_state.fBits = 1 << 16;
@@ -328,6 +331,24 @@ int main()
       regs->interrupt_signal_enable = 0;
       regs->interrupt_status.bits = SDHCI_INT_CMD_CMP;
       assert(bus->HandleInterrupt() == B_UNHANDLED_INTERRUPT);
+    }
+    for (uint32 completion : {SDHCI_INT_CMD_CMP, SDHCI_INT_TRANS_CMP}) {
+        Fixture f;
+        regs->interrupt_status.bits = completion;
+        onPublish = [completion] {
+            // Another CPU can observe completion without waiting for NotifyAll.
+            assert(bus->WaitForCompletion(completion, 1000) == B_OK);
+            // Model its next command completing while this handler is still
+            // running. A late acknowledgement must not erase that new event.
+            atomic_set(&bus->fCommandResult, 0);
+            regs->interrupt_status.bits |= completion;
+        };
+        assert(bus->HandleInterrupt() == B_HANDLED_INTERRUPT);
+        assert((regs->interrupt_status.bits & completion) != 0);
+        assert(atomic_get(&bus->fCommandResult) == 0);
+        assert(bus->HandleInterrupt() == B_HANDLED_INTERRUPT);
+        assert(bus->WaitForCompletion(completion, 1000) == B_OK);
+        assert(regs->interrupt_status.bits == 0);
     }
     { Fixture f; ClockControl clock{};
       for (uint16 divisor : {1, 2, 3, 256, 512, 1024, 2046}) {
