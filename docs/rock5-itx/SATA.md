@@ -11,6 +11,15 @@ firmware profile and missed AHCI attachment. That intermittent startup failure
 remains unresolved; [SSD-INTEGRATION.md](SSD-INTEGRATION.md) records all three
 attempts and the additional emulated SSD/SATA regression.
 
+The `+154` USB diagnostic reproduced this failure. Segment 1's root snapshot
+reported link status `0xb823`: the data link was active at x2 and speed encoding
+3, but Link Training (`0x0800`) was still set. Every other firmware-profile
+condition matched. The root passed validation later in that same boot, but
+AHCI did not attach. A normal reboot of the unchanged image initialized all
+four ports. This identifies the rejected condition; it does not yet fix the
+startup race. The two boots and their integrity checks are recorded in
+[PCIe training diagnostics](PCIE-TRAINING.md).
+
 ## Firmware and interrupt contract
 
 The retained EDK2 v1.1 device tree identifies segment 1, APB `0xfe160000`

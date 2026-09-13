@@ -4,6 +4,11 @@ Updated 2026-09-14 (Australia/Hobart). This page distinguishes lab readiness fro
 support. No hardware row in the roadmap is accepted merely because Linux or
 firmware supports it.
 
+Latest diagnostic: the `+154` USB image reproduced the intermittent SATA
+startup failure with segment 1's Link Training flag set. A normal reboot of
+the unchanged image attached all four ports. The failure remains open;
+[PCIE-TRAINING.md](PCIE-TRAINING.md) records the exact snapshot and both boots.
+
 | Area | Evidence and state |
 | --- | --- |
 | Repository | `jmgasper/haiku`, `rock5-itx` branch; upstream base `855b5d0e3126c86acc84d09f8e859272019bbbc2` |

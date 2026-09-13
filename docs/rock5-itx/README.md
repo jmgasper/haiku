@@ -32,6 +32,10 @@ read-only eMMC checks and normal reboot to recovery. The first updated SSD boot
 missed SATA initialization after an early PCIe profile rejection; that failure
 and the earlier `+88` startup stall remain unresolved. Sustained storage, error
 recovery and the remaining board hardware still need qualification.
+The subsequent `+154` USB diagnostic captured the SATA rejection while its
+PCIe Link Training bit was still set; the unchanged image attached SATA after
+normal reboot. [PCIe training diagnostics](PCIE-TRAINING.md) records that
+failure/pass comparison and the proposed bounded wait.
 
 Both onboard Ethernet ports now pass DHCP, static IPv4 and static IPv6 checks,
 including simultaneous sending and receiving before and after normal reboot.
