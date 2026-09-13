@@ -12,6 +12,8 @@ legacy API's virtual bus numbers to the owning controller. A controller may
 advertise a separate provider; its failures never fall back to a truncated
 configuration-space interrupt-line byte. Hosts without a provider retain their
 existing byte routing and enable behavior.
+ARM64 BSD drivers require the new module to load successfully; they fail
+initialization if it is unavailable rather than guessing a byte-sized route.
 
 The RK3588 provider requires the existing exact board/firmware/endpoint checks,
 the onboard firmware profile, and `legacy_interrupts true` in `rk3588_pcie`.
