@@ -26,11 +26,19 @@ AHCIController::AHCIController(device_node *node,
 	fPCIVendorID(0xffff),
 	fPCIDeviceID(0xffff),
 	fFlags(0),
+	fIntx(NULL),
+	fBus(0),
+	fDevice(0),
+	fFunction(0),
+	fPCIEnabled(false),
+	fRegs(NULL),
+	fRegsArea(-1),
 	fCommandSlotCount(0),
 	fPortCount(0),
 	fPortImplementedMask(0),
 	fIRQ(0),
-	fUseMSI(false),
+	fMSIConfigured(false),
+	fInterruptInstalled(false),
 	fInstanceCheck(-1)
 {
 	memset(fPort, 0, sizeof(fPort));
@@ -46,6 +54,7 @@ AHCIController::AHCIController(device_node *node,
 
 AHCIController::~AHCIController()
 {
+	Uninit();
 }
 
 
@@ -57,6 +66,9 @@ AHCIController::Init()
 
 	fPCIVendorID = pciInfo.vendor_id;
 	fPCIDeviceID = pciInfo.device_id;
+	fBus = pciInfo.bus;
+	fDevice = pciInfo.device;
+	fFunction = pciInfo.function;
 
 	TRACE("AHCIController::Init %u:%u:%u vendor %04x, device %04x\n",
 		pciInfo.bus, pciInfo.device, pciInfo.function, fPCIVendorID, fPCIDeviceID);
@@ -70,6 +82,8 @@ AHCIController::Init()
 		return B_ERROR;
 	}
 	fInstanceCheck = create_port(1, sName);
+	if (fInstanceCheck < B_OK)
+		return fInstanceCheck;
 // --- Instance check workaround end
 
 	get_device_info(fPCIVendorID, fPCIDeviceID, NULL, &fFlags);
@@ -88,10 +102,11 @@ AHCIController::Init()
 
 	uint16 pcicmd = fPCI->read_pci_config(fPCIDevice, PCI_command, 2);
 	TRACE("pcicmd old 0x%04x\n", pcicmd);
-	pcicmd &= ~(PCI_command_io | PCI_command_int_disable);
-	pcicmd |= PCI_command_master | PCI_command_memory;
+	pcicmd &= ~PCI_command_io;
+	pcicmd |= PCI_command_master | PCI_command_memory | PCI_command_int_disable;
 	TRACE("pcicmd new 0x%04x\n", pcicmd);
 	fPCI->write_pci_config(fPCIDevice, PCI_command, 2, pcicmd);
+	fPCIEnabled = true;
 
 	if (fPCIVendorID == PCI_VENDOR_JMICRON) {
 		uint32 ctrl = fPCI->read_pci_config(fPCIDevice, PCI_JMICRON_CONTROLLER_CONTROL_1, 4);
@@ -102,25 +117,9 @@ AHCIController::Init()
 		fPCI->write_pci_config(fPCIDevice, PCI_JMICRON_CONTROLLER_CONTROL_1, 4, ctrl);
 	}
 
-	fIRQ = pciInfo.u.h0.interrupt_line;
-	if (fIRQ == 0xff)
-		fIRQ = 0;
-
-	if (fPCI->get_msi_count(fPCIDevice) >= 1) {
-		uint32 vector;
-		if (fPCI->configure_msi(fPCIDevice, 1, &vector) == B_OK
-			&& fPCI->enable_msi(fPCIDevice) == B_OK) {
-			TRACE("using MSI vector %" B_PRIu32 "\n", vector);
-			fIRQ = vector;
-			fUseMSI = true;
-		} else {
-			TRACE("couldn't use MSI\n");
-		}
-	}
-	if (fIRQ == 0) {
-		TRACE("Error: PCI IRQ not assigned\n");
-		return B_ERROR;
-	}
+	res = ConfigureInterrupts(pciInfo);
+	if (res != B_OK)
+		return res;
 
 	phys_addr_t addr = pciInfo.u.h0.base_registers[5];
 	size_t size = pciInfo.u.h0.base_register_sizes[5];
@@ -166,6 +165,10 @@ AHCIController::Init()
 	if (fPortCount < highestPort) {
 		TRACE("reported number of ports is wrong, using %d instead.\n", highestPort);
 		fPortCount = highestPort;
+	}
+	if (size < offsetof(ahci_hba, port) + fPortCount * sizeof(ahci_port)) {
+		TRACE("register BAR does not cover implemented ports\n");
+		goto err;
 	}
 
 	TRACE("cap: Interface Speed Support: generation %" B_PRIu32 "\n",
@@ -228,6 +231,7 @@ AHCIController::Init()
 		TRACE("can't install interrupt handler\n");
 		goto err;
 	}
+	fInterruptInstalled = true;
 
 	for (int i = 0; i < fPortCount; i++) {
 		if (fPortImplementedMask & (1 << i)) {
@@ -252,6 +256,18 @@ AHCIController::Init()
 	FlushPostedWrites();
 
 	// enable interrupts
+	if (fMSIConfigured) {
+		if (fPCI->enable_msi(fPCIDevice) != B_OK)
+			goto err;
+	} else if (fIntx != NULL) {
+		if (fIntx->set_enabled(fBus, fDevice, fFunction, true) != B_OK)
+			goto err;
+	}
+	if (!fMSIConfigured) {
+		pcicmd = fPCI->read_pci_config(fPCIDevice, PCI_command, 2);
+		fPCI->write_pci_config(fPCIDevice, PCI_command, 2,
+			pcicmd & ~PCI_command_int_disable);
+	}
 	fRegs->ghc |= GHC_IE;
 	FlushPostedWrites();
 
@@ -260,9 +276,7 @@ AHCIController::Init()
 			status_t status = fPort[i]->Init2();
 			if (status < B_OK) {
 				TRACE("init-2 port %d failed\n", i);
-				fPort[i]->Uninit();
-				delete fPort[i];
-				fPort[i] = NULL;
+				goto err;
 			}
 		}
 	}
@@ -271,43 +285,97 @@ AHCIController::Init()
 	return B_OK;
 
 err:
-	delete_area(fRegsArea);
+	Uninit();
 	return B_ERROR;
+}
+
+
+status_t
+AHCIController::ConfigureInterrupts(const pci_info& info)
+{
+	// Keep the controller and PCI interrupt sources disabled until a handler
+	// exists. A successful MSI allocation is owned even if enable later fails.
+	if (fPCI->get_msi_count(fPCIDevice) >= 1
+		&& fPCI->configure_msi(fPCIDevice, 1, &fIRQ) == B_OK) {
+		fMSIConfigured = true;
+		TRACE("allocated MSI vector %" B_PRIu32 "\n", fIRQ);
+		return B_OK;
+	}
+	if (get_module(B_PCI_INTX_MODULE_NAME, (module_info**)&fIntx) == B_OK) {
+		status_t status = fIntx->get_irq(fBus, fDevice, fFunction, &fIRQ);
+		if (status != B_OK)
+			return status;
+		// An advertised platform provider owns routing failures; never fall
+		// back to a truncated configuration-space interrupt-line byte.
+	} else {
+		fIntx = NULL;
+		fIRQ = info.u.h0.interrupt_line;
+		if (fIRQ == 0xff)
+			fIRQ = 0;
+	}
+	if (fIRQ == 0)
+		return B_ERROR;
+	TRACE("using INTx IRQ %" B_PRIu32 "\n", fIRQ);
+	return B_OK;
 }
 
 
 void
 AHCIController::Uninit()
 {
-	TRACE("AHCIController::Uninit\n");
-
+	// Also handles partial Init() failures, and is safe to call again from the
+	// destructor. Stop interrupts before destroying objects seen by the handler.
+	if (fRegsArea >= B_OK) {
+		fRegs->ghc &= ~GHC_IE;
+		fRegs->is = 0xffffffff;
+		FlushPostedWrites();
+	}
+	if (fIntx != NULL)
+		fIntx->set_enabled(fBus, fDevice, fFunction, false);
+	if (fPCIEnabled) {
+		uint16 command = fPCI->read_pci_config(fPCIDevice, PCI_command, 2);
+		fPCI->write_pci_config(fPCIDevice, PCI_command, 2,
+			command | PCI_command_int_disable);
+	}
+	if (fMSIConfigured) {
+		fPCI->disable_msi(fPCIDevice);
+	}
+	if (fInterruptInstalled) {
+		remove_io_interrupt_handler(fIRQ, Interrupt, this);
+		fInterruptInstalled = false;
+	}
+	if (fMSIConfigured) {
+		fPCI->unconfigure_msi(fPCIDevice);
+		fMSIConfigured = false;
+	}
+	if (fIntx != NULL) {
+		put_module(B_PCI_INTX_MODULE_NAME);
+		fIntx = NULL;
+	}
 	for (int i = 0; i < fPortCount; i++) {
-		if (fPort[i]) {
+		if (fPort[i] != NULL) {
 			fPort[i]->Uninit();
 			delete fPort[i];
+			fPort[i] = NULL;
 		}
 	}
-
-	// disable interrupts
-	fRegs->ghc &= ~GHC_IE;
-	FlushPostedWrites();
-
-	// clear pending interrupts
-	fRegs->is = 0xffffffff;
-	FlushPostedWrites();
-
-	// well...
-	remove_io_interrupt_handler(fIRQ, Interrupt, this);
-
-	if (fUseMSI) {
-		fPCI->disable_msi(fPCIDevice);
-		fPCI->unconfigure_msi(fPCIDevice);
+	if (fPCIEnabled) {
+		uint16 command = fPCI->read_pci_config(fPCIDevice, PCI_command, 2);
+		fPCI->write_pci_config(fPCIDevice, PCI_command, 2,
+			command & ~PCI_command_master);
+		fPCIEnabled = false;
+	}
+	if (fRegsArea >= B_OK) {
+		delete_area(fRegsArea);
+		fRegsArea = -1;
+		fRegs = NULL;
 	}
 
-	delete_area(fRegsArea);
-
 // --- Instance check workaround begin
-	delete_port(fInstanceCheck);
+	if (fInstanceCheck >= B_OK) {
+		delete_port(fInstanceCheck);
+		fInstanceCheck = -1;
+	}
 // --- Instance check workaround end
 }
 
@@ -360,6 +428,8 @@ int32
 AHCIController::Interrupt(void *data)
 {
 	AHCIController *self = (AHCIController *)data;
+	if ((self->fRegs->ghc & GHC_IE) == 0)
+		return B_UNHANDLED_INTERRUPT;
 	uint32 interruptPending = self->fRegs->is & self->fPortImplementedMask;
 
 	if (interruptPending == 0)

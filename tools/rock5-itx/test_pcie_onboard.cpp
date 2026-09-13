@@ -87,12 +87,12 @@ main(int argc, char** argv)
 	for (unsigned segment = 0; segment < 8; segment++) {
 		IntxProfile profile;
 		bool supported = FindIntxProfile(segment, profile);
-		assert(supported == (segment == 3 || segment == 4));
+		assert(supported == (segment == 1 || segment == 3 || segment == 4));
 		if (!supported)
 			continue;
-		uint32_t specifier[] = {0, segment == 3 ? 245u : 250u, 4, 0};
-		uint64_t apb = segment == 3 ? 0xfe180000 : 0xfe190000;
-		uint32_t irq = segment == 3 ? 277 : 282;
+		uint32_t specifier[] = {0, segment == 1 ? 255u : segment == 3 ? 245u : 250u, 4, 0};
+		uint64_t apb = segment == 1 ? 0xfe160000 : segment == 3 ? 0xfe180000 : 0xfe190000;
+		uint32_t irq = segment == 1 ? 287 : segment == 3 ? 277 : 282;
 		assert(irq > UINT8_MAX);
 		assert(IntxResourcesMatch(profile, apb, 0x10000, specifier, 4, irq, 0xfe600000));
 		assert(!IntxResourcesMatch(profile, apb, 0x10000, nullptr, 4, irq, 0xfe600000));

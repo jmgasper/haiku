@@ -5,6 +5,7 @@
 
 
 #include <string.h>
+#include <vm/vm.h>
 
 #include "sata_request.h"
 #include "scsi_cmds.h"
@@ -50,6 +51,60 @@ sata_request::SetData(void* data, size_t dataSize)
 	ASSERT(fCcb == NULL);
 	fData = data;
 	fDataSize = dataSize;
+}
+
+
+status_t
+sata_request::CopyData(void* buffer, size_t size, bool toRequest, bool validateOnly)
+{
+	if (size == 0)
+		return B_OK;
+	if (buffer == NULL || size > Size())
+		return B_BAD_VALUE;
+	if (fCcb == NULL) {
+		if (fData == NULL || (addr_t)fData > UINTPTR_MAX - (size - 1))
+			return B_BAD_ADDRESS;
+		if (!validateOnly) {
+			if (toRequest)
+				memcpy(fData, buffer, size);
+			else
+				memcpy(buffer, fData, size);
+		}
+		return B_OK;
+	}
+	if (fCcb->sg_list == NULL || fCcb->sg_count <= 0)
+		return B_BAD_VALUE;
+	// Validate the complete scatter/gather span before copying any bytes.
+	// The SCSI manager owns the physical pages; do not change their cache type.
+	size_t remaining = size;
+	for (int i = 0; i < fCcb->sg_count && remaining != 0; i++) {
+		const physical_entry& entry = fCcb->sg_list[i];
+		size_t length = min_c(remaining, entry.size);
+		if (length == 0 || entry.address > ~(phys_addr_t)0 - (length - 1))
+			return B_BAD_VALUE;
+		remaining -= length;
+	}
+	if (remaining != 0)
+		return B_BAD_VALUE;
+	if (validateOnly)
+		return B_OK;
+	size_t copied = 0;
+	for (int i = 0; copied < size; i++) {
+		const physical_entry& entry = fCcb->sg_list[i];
+		size_t length = min_c(size - copied, entry.size);
+		status_t status;
+		if (toRequest) {
+			status = vm_memcpy_to_physical(entry.address,
+				(const uint8*)buffer + copied, length, false);
+		} else {
+			status = vm_memcpy_from_physical((uint8*)buffer + copied,
+				entry.address, length, false);
+		}
+		if (status != B_OK)
+			return status;
+		copied += length;
+	}
+	return B_OK;
 }
 
 

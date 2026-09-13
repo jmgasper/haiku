@@ -12,7 +12,7 @@ extern "C" {
 #endif
 
 area_id alloc_mem(void **virt, phys_addr_t *phy, size_t size, uint32 protection,
-			const char *name);
+			const char *name, bool supports64Bit);
 area_id map_mem(void **virt, phys_addr_t phy, size_t size, uint32 protection,
 			const char *name);
 

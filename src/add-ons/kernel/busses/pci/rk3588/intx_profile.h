@@ -20,6 +20,7 @@ inline bool
 FindIntxProfile(unsigned segment, IntxProfile& profile)
 {
 	switch (segment) {
+		case 1: profile = {0xfe160000, 287}; return true;
 		case 3: profile = {0xfe180000, 277}; return true;
 		case 4: profile = {0xfe190000, 282}; return true;
 	}
