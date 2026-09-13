@@ -9,8 +9,9 @@ firmware_profile rock5-itx-edk2-v1.1-dt-its-nvme
 trace true
 ```
 
-The setting is absent from ordinary images and the installed SSD. Do not combine
-it with the experimental MBI provider. It requires the captured EDK2 v1.1 DT
+The setting is absent from ordinary images and enabled explicitly on the
+`hrev60097+88` SSD installation. Do not combine it with the experimental MBI
+provider. It requires the captured EDK2 v1.1 DT
 profile, ITS1 resources, segment-zero identity `msi-map`, eight CPUs and the
 measured GIC-600 capabilities. An unrelated QEMU machine must reject it before
 ITS MMIO. AHCI remains blocked and RTL8125 absent in initial native trials.
@@ -147,5 +148,52 @@ and no polling fallback or other errors from the acceptance gate.
 Recovery returned ROOBI `b6ea3fc1-1ada-42b2-a4f6-0ffed26a3443`, the guard
 disarmed and NanoKVM retained its boot ID. The complete report is
 `state/native-its-high-storage-stress.json`, with evidence under
-`its-high-storage-stress/20260912T232553Z-7f4aa0`. This remains a USB-root
-qualification; installed SSD packages and settings have not yet been updated.
+`its-high-storage-stress/20260912T232553Z-7f4aa0`. This was a USB-root
+qualification; the subsequent installed-system update is recorded below.
+
+## Installed SSD update and data persistence
+
+The standard Installer upgrade was first rehearsed against a disposable
+full-capacity QEMU NVMe image in `qemu-shell/20260912T233237Z-1c30ad`.
+Two subsequent NVMe-root boots passed in `qemu-shell/20260912T235232Z-80a7ea`,
+including full-file and package hashes, filesystem checks, USB transfer and
+normal reboot/shutdown. The existing EFI loader from `hrev60097+57` was retained:
+bootloader and kernel-argument sources are unchanged, and its compatibility
+with the new kernel was exercised in those boots.
+
+Native Installer session `interactive/20260912T235929Z-4b5d53` then updated
+all 11 SSD packages to the source image's versions, including the three
+`hrev60097+88` Haiku packages. Before/after checks verified two 2 GiB file
+regions, their four 8 MiB guards, networking overrides, the existing EFI
+loader and zero filesystem allocation counters. The installed settings enable
+the onboard PCI profile and ITS1, without `force_high_tables` or MBI.
+
+The first installed boot, `interactive/20260913T001949Z-8efbf6`, mounted
+`/dev/disk/nvme/0/1`, verified all six components, and delivered NVMe interrupts
+on CPU 0/LPI 8192. Eight-worker checks and independent hashes passed for both
+2 GiB regions and all packages. Free-space TRIM completed for 222279335936 bytes,
+and the immediate readback and filesystem checks passed. A normal Haiku reboot
+returned to the selected ROOBI recovery image; a new one-shot EFI request was
+needed for the next SSD boot. BootOrder was preserved.
+
+That next boot, `interactive/20260913T002814Z-a838e2`, stalled after mounting
+the SSD and package-daemon volume verification, before desktop/RNDIS startup.
+It had initialized ITS1 and received NVMe interrupts; there was no reported
+panic or NVMe timeout. The keyboard debugger request produced no response.
+Its complete evidence is retained in `state/native-its-installed-boot-stall.json`.
+Recovery succeeded, and the cause remains unknown.
+
+A retry in `interactive/20260913T003535Z-5cadd4` reached the installed desktop.
+Both file regions, guards, all packages, six components, one RNDIS notification
+worker and zero filesystem allocation counters passed again. Both accepted
+sessions logged interrupt counts through 32768, with arrivals during their
+first read workloads and no polling fallback or ITS quarantine. The retry
+also rebooted normally to ROOBI. All session guards disarmed and NanoKVM
+retained its boot ID. Final recovery was `0d7bb955-5b56-4139-ad05-624394ab219c`.
+
+`state/native-its-installed-update.json` accepts the update and bounded
+TRIM/data-persistence checks, explicitly linking the intervening startup stall.
+It does not establish repeatable boot reliability. The update session also
+captured a Time preferences crash in timezone enumeration; subsequent read-only
+inspection found that ICU's compiled data path differs from the installed
+bootstrap package path. That desktop defect requires separate reproduction.

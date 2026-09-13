@@ -57,8 +57,9 @@ system barriers. The ordinary PCI core still performs standard configuration
 writes, including command bits and BAR sizing. The Samsung profile exposes
 one root/endpoint pair; the onboard profile exposes the four captured pairs.
 Port I/O, prefetchable windows, other root ports, hotplug, INTx routing
-and controller reinitialization remain unsupported. The installed system
-uses the NVMe driver's ARM64 polling path and noncoherent DMA buffers.
+and controller reinitialization remain unsupported. The installed
+`hrev60097+88` system uses the explicit ITS1 profile for NVMe MSI-X and
+noncoherent DMA buffers; earlier installed builds used polling.
 The separate [GIC message-interrupt trial](MBI-PROBE.md) now has a CPU-generated
 delivery pass and an opt-in MSI provider implementation. Real PCIe message
 delivery failed in its first NVMe MSI-X trial and recovered through polling.
@@ -70,6 +71,9 @@ normal Haiku reboot. After correcting a test-script package filename, a fresh
 trial also passed 8 GiB of concurrent file writes with `fsync()`, peer reads,
 guard/package hashes and readback after another normal reboot. Other devices'
 interrupt routes and general interrupt lifecycle qualification remain open.
+The SSD installation now also passes bounded interrupt-driven reads, free-space
+TRIM and readback on a later boot. One intervening startup stall remains open;
+see [ITS.md](ITS.md) for the accepted sessions and the separate failed boot.
 
 For explicit high-address DMA testing, a separate `nvme_disk` driver settings
 file may contain `force_high_dma true`. On ARM64 this requires every libnvme

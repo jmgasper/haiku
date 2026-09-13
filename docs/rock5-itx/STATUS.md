@@ -15,7 +15,7 @@ firmware supports it.
 | Automated controls | Seventy-three host checks pass locally, including GIC MBI firmware/register admission and MSI vector allocation/reuse, onboard PCI host resource/profile rejection and root-link rejection, native-input dependency preflight, strict BFS report parsing, SSH controller-input isolation, explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
-| Native Haiku on ROCK | All eight CPUs start; Tracker/Deskbar, NanoKVM input, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; Samsung NVMe bounded raw I/O has independent Linux hashes; the 238 GiB SSD installation boots repeatedly and has passed large-file persistence after normal reboot and shutdown/startup; the installed hrev60097+57 update also passes filesystem TRIM and reboot readback; intermittent USB control failures and sustained acceptance remain open |
+| Native Haiku on ROCK | All eight CPUs start; Tracker/Deskbar, NanoKVM input, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; Samsung NVMe bounded raw I/O has independent Linux hashes; the 238 GiB SSD installation has passed large-file persistence after normal reboot and shutdown/startup; the installed hrev60097+88 update now passes ITS1 NVMe MSI-X, filesystem TRIM and subsequent boot readback; one intervening startup stall, intermittent USB control failures and sustained acceptance remain open |
 | Board revision | Owner confirmed ROCK 5 ITX PCB v1.12; current public electrical schematic is v1.11, so exact revision electrical details remain to be checked before raw register work |
 | USB recovery | Workstation USB-C connection enumerates as `2207:350b`; remote loader and MaskROM entry, RAM loader download, eMMC/SPI selection and matching read-back hashes verified |
 | Serial | NanoKVM UART1 (`/dev/ttyS1`) captures readable DDR/SPL, U-Boot and Linux output at 1,500,000 baud, 8N1; longer input is corrupted and an interactive login has not passed |
@@ -2263,3 +2263,44 @@ disarmed and NanoKVM did not restart. The evidence index is
 earlier packages; an emulated upgrade rehearsal is in progress before changing
 that installation. General ITS lifecycle, other devices and CPU targets, and
 noncoherent network DMA remain open.
+
+## Installed ITS1 update and intermittent startup stall
+
+The `hrev60097+88` upgrade passed the full-capacity QEMU Installer rehearsal
+in `qemu-shell/20260912T233237Z-1c30ad` and two NVMe-root boots in
+`qemu-shell/20260912T235232Z-80a7ea`. Native Installer then completed in
+`interactive/20260912T235929Z-4b5d53`. All 11 packages matched the source image;
+before/after checks preserved two 2 GiB data regions, guards, network overrides
+and the existing EFI loader, with strict zero allocation counters on both
+filesystems. The installed settings now enable the onboard PCI profile and
+ITS1, with no high-table requirement or MBI setting.
+
+Installed session `interactive/20260913T001949Z-8efbf6` reached the desktop
+with `/boot` on `/dev/disk/nvme/0/1` and verified all six components. NVMe
+interrupts arrived through ITS1 on CPU 0/LPI 8192. Eight-worker verification
+and independent hashes passed for both data regions, guards and all packages.
+TRIM completed for 222279335936 free bytes; immediate readback and filesystem
+checks passed. Normal Haiku reboot returned to ROOBI with BootOrder unchanged.
+
+The next one-shot SSD boot, `interactive/20260913T002814Z-a838e2`, stalled
+before the desktop and remote shell. It had mounted the SSD, enabled ITS1,
+received interrupts and completed package-daemon volume verification. There
+was no reported panic or NVMe timeout, and the keyboard debugger request
+produced no response. Recovery succeeded. The failed startup is retained in
+`state/native-its-installed-boot-stall.json`; its cause is still unknown.
+
+Retry `interactive/20260913T003535Z-5cadd4` reached the installed desktop and
+passed both regions, guards, all package/component hashes, one RNDIS worker
+and strict zero allocation counters. The two accepted sessions logged NVMe
+interrupt thresholds through 32768 during their workloads, without polling
+fallback or ITS quarantine. The retry rebooted normally to ROOBI
+`0d7bb955-5b56-4139-ad05-624394ab219c`. All guards disarmed; NanoKVM did not
+restart. `state/native-its-installed-update.json` accepts the bounded update,
+TRIM and data-persistence checks while keeping startup reliability open.
+
+The Installer session also captured a Time preferences process crash in
+`GetAvailableTimeZonesWithRegionInfo`. Read-only inspection on the successful
+SSD retry confirmed that ICU's compiled data directory names the old bootstrap
+package, while the actual data is under the renamed package and
+`/boot/system/data/icu/74.1`. This is a separate desktop defect under investigation.
+See [ITS.md](ITS.md) for the installation evidence and limits.
