@@ -8,7 +8,8 @@ and orderly shutdown/startup in `+148`, including CPU buffers forced above
 four-bit images also pass orderly shutdown/startup with the cache disabled.
 These results have independent Linux file, filesystem and reference-region
 checks. Power-loss integrity, faster clocks and Haiku boot from eMMC remain
-unqualified.
+unqualified. A separate four-writer, 128 MiB cached-I/O trial also passes
+normal reboot and independent Linux readback.
 MicroSD uses a different controller and is not covered
 by this work.
 ROOBI remains on its eMMC root partition; the write fixture uses the separately
@@ -821,7 +822,7 @@ recent copies. The retry passed; the failed deployment is retained separately.
 | Pre-test deployment failure | `artifacts/interactive/20260913T195712Z-972231/result.json` |
 | NanoKVM storage cleanup | `artifacts/nanokvm-storage/20260913T195948Z-3642d8/cleanup-result.json` |
 
-## Native work remaining
+## Bounded concurrent cached file I/O
 
 The concurrent-file harness prepares four disjoint 2 MiB regions in the
 existing 16 MiB target. Each writer performs 16 changing overwrites, explicitly
@@ -829,9 +830,47 @@ flushes the device and checks its own region, for 128 MiB written. Intermediate
 file reads may use the filesystem cache; the final complete-file comparisons
 use a fresh mount, followed by reboot and independent backing-file readback.
 Host tests reject a lost writer, corrupted guard bytes and incomplete or
-incorrect per-write/flush evidence. All 110 host checks pass; QEMU and native
-qualification of this workload are pending. This is not a full-cache pressure
-test or sustained-I/O acceptance.
+incorrect per-write/flush evidence. All 110 host checks pass. Harness source
+`c3a3f5ad2f00c0a16e51c5fcc85e1675dd7a3c80` is recorded separately from the
+unchanged `+148` driver image and its build. QEMU passes all 64 region checks,
+65 explicit flushes, final full-file comparison, normal reboot and independent
+filesystem/backing-file readback. Its emulated card still has cache disabled
+and does not exercise the native high-memory/eight-bit profile.
+
+The native trial then passes the same workload with the cache enabled and
+CPU buffers forced above 4 GiB. Its initial target is the qualified shutdown
+fixture; the expected final state is calculated locally before deployment.
+All four workers complete 16 changing writes and per-region comparisons, and
+all 65 explicit flush requests pass. Serial records 134 completed card-cache
+flushes, including filesystem requests, each ending with ready status `0x900`.
+No data-transfer failure, command reset or panic appears; the four retained
+initialization transfer-complete diagnostics remain `2`. The final target hash
+`4d989ebc045a8cfbd66e2311ee3f3d57286b46c661a64a69c69c315351cfcb4e` matches on
+a fresh mount and after normal reboot. The test checks 128 MiB through
+per-region file reads, 72 MiB through complete source/target comparisons and
+48 MiB of raw references. Both desktops and expected components are verified.
+
+Both boots verify the enabled 65,536 KiB cache and eight-bit width. CPU reads
+start at `0x114879000` and the first write at `0x11488c000`, each 512 bytes
+with the private DMA32 payload at `0x2e80000`. Linux independently confirms both
+files, passes the FAT check and rereads the unchanged reference regions. The
+complete final FAT partition hash is
+`7eabc57f93999c0342176a487872fa5fa2bf80ec133532627b426d0f909f8da4`.
+The guard disarmed normally. This bounded workload does not establish full
+64 MiB cache pressure, sustained load, error recovery or abrupt power loss.
+
+| Evidence | Location under `/mnt/HaikuWork` |
+| --- | --- |
+| Host checks | `tmp/host-checks-mmc-concurrent.log` |
+| QEMU qualification and harness snapshots | `artifacts/qemu-shell/20260913T202403Z-5efbee/concurrency-result.json` |
+| Native fixture and expected contents | `artifacts/mmc-concurrent-fixture/20260913T202536Z-02772d/fixture.json` |
+| Native qualification | `artifacts/interactive/20260913T203018Z-e6381e/qualification.json` |
+| Concurrent writes/readback/flush | `artifacts/interactive/20260913T203018Z-e6381e/shell-20260913T203553Z-25e5ab.txt` |
+| File readback after reboot | `artifacts/interactive/20260913T203018Z-e6381e/shell-20260913T204026Z-a50f83.txt` |
+| Linux partition/filesystem/file check | `artifacts/emmc-file-readback/20260913T204402Z-de9cd9/result.json` |
+| Linux raw-reference readback | `artifacts/emmc-read-reference/20260913T204413Z-f64471/result.json` |
+
+## Native work remaining
 
 Extend the bounded file result to power-loss integrity, longer mixed I/O and
 error recovery. Speed negotiation/tuning and Haiku boot from eMMC remain open.
