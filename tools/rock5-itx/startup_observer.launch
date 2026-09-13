@@ -1,0 +1,3 @@
+job rock5-boot-state {
+	launch /bin/sh /boot/home/rock5-lab/boot-state.sh
+}

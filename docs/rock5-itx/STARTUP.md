@@ -50,11 +50,38 @@ inheritance and delay. `--expect-leak` is only for evaluating the original
 implementation or the deliberate negative control. The helper is not installed
 in ordinary images or launched automatically.
 
+The complete `hrev60097+92` image from `8343e1b537` also passed two QEMU boots,
+seven component hashes, PCI/NVMe checks, USB transfers, normal reboot and
+shutdown in `qemu-shell/20260913T011356Z-7f5a14`. Its private image SHA-256 is
+`2ccb84f6e3485449b55af770ad4f796d520de5bd5234b65e5bb3955322c38242`.
 This establishes a launcher bug and the focused fix. It does not identify the
-wait in the stalled native boot. A separate, opt-in system launch job is
-prepared to capture early thread states and selected process file descriptors
-to UART; it must pass QEMU validation before deployment. The installed SSD
-has not yet received the launcher fix or that observer.
+wait in the stalled native boot, and the SSD still uses the original launcher.
+
+The opt-in [observer script](../../tools/rock5-itx/startup_observer.sh) and
+[launch job](../../tools/rock5-itx/startup_observer.launch) are installed as
+`/boot/home/rock5-lab/boot-state.sh` and
+`/boot/system/settings/launch/rock5-boot-state`, respectively. They are excluded
+from ordinary images. The job captures five snapshots of thread states and
+selected process file descriptors to UART, then exits. Both the original
+launcher image and the fixed image passed the observer's two-boot QEMU checks.
+The observer files are now installed on the original `+88` SSD, with flushed
+readback hashes and zero BFS allocation counters. Native reboot persistence
+and startup tracing are pending. `state/startup-state-observer-plan.json`
+records the immutable inputs and every install attempt.
+
+The installation exposed two lab-script issues: the minimum image lacks `sed`,
+and interactive Bash consumes tabs in raw here-documents as completion requests.
+Failed attempts reset before their final `sync`; three partial files later
+read as zeros. Their contents are preserved separately. The successful install
+used base64, flushed writes before checking them, and archived the partial files
+outside the launch-settings directory. Do not treat unflushed files followed
+by a forced reset as a durability test.
+
+The command transport now disables Bash's interactive editing before parsing
+the command block. `qemu-shell/20260913T012005Z-e7b326` reproduced the missing
+tab, while `qemu-shell/20260913T012847Z-6eba5d` preserved the exact same file's
+hash, including its tab. Both runs also checked base64 transfers and normal
+reboot/shutdown; all 73 host checks passed after the transport change.
 
 ## Time preferences
 
@@ -67,6 +94,15 @@ The renamed package supplies the data under
 `/packages/icu74-74.1_bootstrap-1/.self/data/icu/74.1` and
 `/boot/system/data/icu/74.1`. Native and host data-file hashes match.
 
-`state/time-preferences-observation.json` retains that evidence. A controlled
-ICU/API reproduction and repair are pending; this desktop defect is separate
+`tools/rock5-itx/locale_probe` now provides `rock5_icu_data_probe`. It checks
+initialization, canonical time-zone enumeration and decimal formatting without
+dereferencing failed ICU objects. In `qemu-shell/20260913T012005Z-e7b326`, the
+default package path produced `U_FILE_ACCESS_ERROR` and
+`U_MISSING_RESOURCE_ERROR`. Setting `ICU_DATA=/boot/system/data/icu/74.1` for
+that process produced 468 zones and the expected `1234.5` string. An explicitly
+missing directory reproduced the errors. `state/qemu-icu-and-observer-transfer.json`
+retains the probe's checksum and results. The same checks passed on the physical
+SSD in `interactive/20260913T012748Z-badc26`, with an identical ICU data-file
+hash; `state/native-icu-data-probe.json` retains that result. No persistent ICU
+setting or library repair has been applied. This desktop defect is separate
 from the accepted NVMe integrity checks.

@@ -21,3 +21,4 @@ LINKFLAGS on rock5_services_probe += -Wl,--wrap=pipe -Wl,--wrap=select ;
 
 SubInclude HAIKU_TOP tools rock5-itx mbi_probe ;
 SubInclude HAIKU_TOP tools rock5-itx launch_probe ;
+SubInclude HAIKU_TOP tools rock5-itx locale_probe ;

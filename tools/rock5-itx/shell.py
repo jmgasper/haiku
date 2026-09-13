@@ -61,7 +61,9 @@ def execute(client, commands, output, credentials, timeout=60):
     token = secrets.token_hex(8)
     begin = f'ROCK5_BEGIN_{token}'
     end = f'ROCK5_END_{token}'
-    payload = (f"PS1= PS2=\nprintf '\\n{begin}\\n'\n(\nset -e\n{commands}\n)\n"
+    # Readline treats tabs in here-documents as completion requests. Disable
+    # interactive editing before the shell parses the command block.
+    payload = (f"PS1= PS2=\nset +o emacs\nset +o vi\nprintf '\\n{begin}\\n'\n(\nset -e\n{commands}\n)\n"
                f"rock5_result=$?; printf '\\n{end}:%d\\n' \"$rock5_result\"\n")
     received = b''
     result = {'status': 'incomplete', 'transcript': str(output)}
