@@ -422,7 +422,17 @@ InitDriver(device_node* node, void** cookie)
 		return B_NOT_SUPPORTED;
 	ReadSnapshot(controller->config[0], snapshot);
 	if (!RootMatches(snapshot, memoryBase, memorySize, *port)) {
-		dprintf("rk3588_pcie: firmware root configuration does not match profile\n");
+		dprintf("rk3588_pcie: segment %u firmware root configuration "
+			"does not match profile\n",
+			port->segment);
+		// Record the snapshot already read for validation; do not issue further
+		// register reads or relax the firmware profile after rejection.
+		dprintf("rk3588_pcie: root snapshot id=%08" B_PRIx32
+			" command=%08" B_PRIx32 " class=%08" B_PRIx32 " header=%08" B_PRIx32
+			" buses=%08" B_PRIx32 " memory=%08" B_PRIx32
+			" capability=%08" B_PRIx32 " link=%08" B_PRIx32 "\n",
+			snapshot[0], snapshot[1], snapshot[2], snapshot[3], snapshot[6],
+			snapshot[8], snapshot[0x70 / 4], snapshot[0x80 / 4]);
 		return B_NOT_SUPPORTED;
 	}
 	controller->endpointArea.SetTo(map_physical_memory("RK3588 endpoint config", port->endpointConfig,
@@ -434,7 +444,15 @@ InitDriver(device_node* node, void** cookie)
 		return B_NOT_SUPPORTED;
 	ReadSnapshot(controller->config[1], snapshot);
 	if (!EndpointMatches(snapshot, memoryBase, memorySize, *port)) {
-		dprintf("rk3588_pcie: firmware endpoint configuration does not match profile\n");
+		dprintf("rk3588_pcie: segment %u firmware endpoint configuration "
+			"does not match profile\n",
+			port->segment);
+		dprintf("rk3588_pcie: endpoint snapshot id=%08" B_PRIx32
+			" command=%08" B_PRIx32 " class=%08" B_PRIx32 " header=%08" B_PRIx32
+			" bars=%08" B_PRIx32 ",%08" B_PRIx32 ",%08" B_PRIx32
+			",%08" B_PRIx32 ",%08" B_PRIx32 ",%08" B_PRIx32 "\n",
+			snapshot[0], snapshot[1], snapshot[2], snapshot[3], snapshot[4],
+			snapshot[5], snapshot[6], snapshot[7], snapshot[8], snapshot[9]);
 		return B_NOT_SUPPORTED;
 	}
 	controller->memory.type = B_IO_MEMORY;
