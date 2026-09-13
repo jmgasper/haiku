@@ -1,7 +1,7 @@
 SubDir HAIKU_TOP src system libroot posix string arch arm64 ;
 
 # Optimizations create infinite recursion otherwise.
-SubDirCcFlags -fno-builtin ;
+SubDirCcFlags -fno-builtin -mgeneral-regs-only ;
 
 local architectureObject ;
 for architectureObject in [ MultiArchSubDirSetup arm64 ] {
@@ -13,7 +13,7 @@ for architectureObject in [ MultiArchSubDirSetup arm64 ] {
 		SEARCH_SOURCE += [ FDirName $(SUBDIR) $(DOTDOT) generic ] ;
 
 		MergeObject <$(architecture)>posix_string_arch_$(TARGET_ARCH).o :
-			generic_memcpy.c
+			arm64_memcpy.c
 			generic_memset.c
 			;
 	}

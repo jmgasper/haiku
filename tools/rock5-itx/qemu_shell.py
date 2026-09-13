@@ -80,6 +80,21 @@ def check_transfers(client, output, credentials, fixture, address='10.0.2.100'):
             'roundtrip': 'pass', 'truncated_transfer_rejected': True}
 
 
+def check_memcpy(client, output, credentials, manifest, phase):
+    expected = manifest['arm64_memcpy_test']
+    helper = '/boot/home/config/non-packaged/bin/rock5_memcpy_probe'
+    commands = (f'rock5_copy_hash=$(sha256sum {helper})\n'
+                f'[ "${{rock5_copy_hash%% *}}" = {expected["probe_sha256"]} ]\n'
+                'rock5_root_hash=$(sha256sum /boot/system/lib/libroot.so)\n'
+                f'[ "${{rock5_root_hash%% *}}" = {expected["libroot_sha256"]} ]\n'
+                f'{helper}\n')
+    transcript = output / ('memcpy-' + phase + '.txt')
+    shell.execute(client, commands, transcript, credentials, timeout=150)
+    if 'ROCK5_MEMCPY_PASS cases=51301 alignments=16 guarded_pages=yes' not in transcript.read_text():
+        raise RuntimeError('Missing actual memcpy alignment/page-boundary checks')
+    return {'status': 'pass', 'cases': 51301, 'transcript': str(transcript), **expected}
+
+
 def prepare_stream_peer(output):
     binary = output / 'network-probe-peer'
     source = lab.SOURCE / 'tools/rock5-itx/network_probe.cpp'
@@ -185,7 +200,7 @@ def check_pci_config(client, output, credentials, after_reboot=False):
 
 def run(manifest_path, el1=False, memory=False, power=False, normal=False, platform=False,
         transfer=False, services=False, cache=False, nvme=False, pci_config=False,
-        pci_network=False, network_stream=False):
+        pci_network=False, network_stream=False, memcpy=False):
     if nvme and not (power and normal):
         raise ValueError('NVMe validation requires normal reboot and power-off')
     if pci_config and not nvme:
@@ -203,6 +218,10 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
     probe_hash = manifest.get('network_stream_probe_sha256', '')
     if network_stream and not re.fullmatch(r'[0-9a-f]{64}', probe_hash):
         raise ValueError('Network streams require a pinned native probe hash')
+    if memcpy and not all(re.fullmatch(r'[0-9a-f]{64}',
+            manifest.get('arm64_memcpy_test', {}).get(key, ''))
+            for key in ('probe_sha256', 'libroot_sha256')):
+        raise ValueError('Memcpy checks require pinned helper and libroot hashes')
     stream_fixture = None
     credentials = shell_image.read_credentials()
     output = lab.WORK / 'artifacts/qemu-shell' / lab.timestamp()
@@ -349,6 +368,9 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
                                              'mismatches': 0}
                 if transfer:
                     result['file_transfer'] = check_transfers(client, output, credentials, fixture)
+                if memcpy:
+                    result['memcpy_first_boot'] = check_memcpy(
+                        client, output, credentials, manifest, 'first-boot')
                 if pci_network:
                     result['pci_network'] = check_pci_network(client, output, credentials,
                         pci_fixture, driver_hash, 'first-boot', stream_fixture, probe_hash)
@@ -379,6 +401,9 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
                     time.sleep(2)
                     shell.execute(client, 'uname -a\nsystem_time\n', output / 'after-reboot.txt',
                                   credentials)
+                    if memcpy:
+                        result['memcpy_after_reboot'] = check_memcpy(
+                            client, output, credentials, manifest, 'after-reboot')
                     if pci_network:
                         result['pci_network_after_reboot'] = check_pci_network(
                             client, output, credentials, pci_fixture, driver_hash, 'after-reboot',
@@ -425,6 +450,8 @@ def main():
     parser.add_argument('--memory', action='store_true')
     parser.add_argument('--platform', action='store_true')
     parser.add_argument('--cache', action='store_true', help='Check ARM64 instruction replacement on each CPU')
+    parser.add_argument('--memcpy', action='store_true',
+                        help='Check actual memcpy across alignments and protected page edges')
     parser.add_argument('--transfer', action='store_true', help='Check binary round trip and truncated input')
     parser.add_argument('--services', action='store_true', help='Check reverse pipe descriptors')
     parser.add_argument('--nvme', action='store_true',
@@ -454,7 +481,7 @@ def main():
     os.umask(0o077)
     result = run(args.manifest, args.el1, args.memory, args.power, args.normal, args.platform,
                  args.transfer, args.services, args.cache, args.nvme, args.pci_config,
-                 args.pci_network, args.network_stream)
+                 args.pci_network, args.network_stream, args.memcpy)
     if args.result:
         lab.save(args.result, result)
     print(json.dumps({key: result.get(key) for key in

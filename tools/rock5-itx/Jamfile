@@ -11,6 +11,7 @@ UsePrivateHeaders drivers ;
 SimpleTest rock5_pci_config_probe : pci_config_probe.cpp ;
 SimpleTest rock5_file_transfer : file_transfer.cpp : network ;
 SimpleTest rock5_network_probe : network_probe.cpp : network ;
+SimpleTest rock5_memcpy_probe : memcpy_probe.cpp ;
 
 UsePrivateHeaders app net shared storage ;
 UseHeaders [ FDirName $(HAIKU_TOP) src servers net ]
