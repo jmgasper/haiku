@@ -16,6 +16,7 @@
 #include <stdint.h>
 
 #include <mmc.h>
+#include <lock.h>
 
 #include "IOSchedulerSimple.h"
 
@@ -34,6 +35,9 @@ typedef struct {
 	mmc_device_interface* mmc;
 	uint16_t rca;
 	uint32_t flags;
+	card_type cardType;
+	bool cacheEnabled;
+	mutex geometryLock;
 
 	device_geometry geometry;
 

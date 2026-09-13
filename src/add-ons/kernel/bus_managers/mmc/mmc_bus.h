@@ -41,19 +41,19 @@ class CidWrapper {
 
 		uint32_t VendorID() const
 		{
-			return (fWords[3] >> 24) & 0xFF;
+			return mmc_response_bits(fWords, 120, 8);
 		}
 
 		uint32_t ProductSerial() const
 		{
-			return (fWords[1] << 16) | (fWords[0] >> 16);
+			return mmc_response_bits(fWords, 24, 32);
 		}
 
 		uint16_t ProductRevision() const
 		{
-			uint16 rev = (fWords[1] >> 20) & 0xF;
+			uint16 rev = mmc_response_bits(fWords, 60, 4);
 			rev *= 100;
-			rev += (fWords[1] >> 16) & 0xF;
+			rev += mmc_response_bits(fWords, 56, 4);
 			return rev;
 		}
 
@@ -82,8 +82,8 @@ class SDCid : public CidWrapper {
 			out[5] = '\0';
 		}
 
-		uint8_t  ManufactureMonth() const { return (fWords[0] >> 8) & 0xF; }
-		uint16_t ManufactureYear()  const { return 2000 + ((fWords[0] >> 12) & 0xFF); }
+		uint8_t ManufactureMonth() const { return mmc_response_bits(fWords, 8, 4); }
+		uint16_t ManufactureYear() const { return 2000 + mmc_response_bits(fWords, 12, 8); }
 };
 
 
@@ -98,19 +98,22 @@ class MMCCid : public CidWrapper {
 
 		void ProductName(char out[7]) const
 		{
-			out[0] = (char)(fWords[3] & 0xFF);
-			out[1] = (char)(fWords[2] >> 24);
-			out[2] = (char)(fWords[2] >> 16);
-			out[3] = (char)(fWords[2] >> 8);
-			out[4] = (char)(fWords[2]);
-			out[5] = (char)(fWords[1] >> 24);
+			for (unsigned i = 0; i < 6; i++)
+				out[i] = (char)mmc_response_bits(fWords, 96 - 8 * i, 8);
 			out[6] = '\0';
+		}
+
+		uint32_t ProductSerial() const { return mmc_response_bits(fWords, 16, 32); }
+		uint16_t ProductRevision() const
+		{
+			return 100 * mmc_response_bits(fWords, 52, 4)
+				+ mmc_response_bits(fWords, 48, 4);
 		}
 
 		uint8_t ManufactureMonth() const
 		{
 			// detailed in sec 7.2.7 MDT[15:8]
-			return (fWords[0] >> 12) & 0x0F;
+			return mmc_response_bits(fWords, 12, 4);
 		}
 
 		uint16_t ManufactureYear(bool modern) const
@@ -118,7 +121,7 @@ class MMCCid : public CidWrapper {
 			// For eMMC 4.41 and later devices,
 			// indicated by a value larger than 4 in EXT_CSD_REV[192]
 			// year offset is 2013 instead of 1997.
-			uint8_t yearOffset = (fWords[0] >> 8) & 0x0F;
+			uint8_t yearOffset = mmc_response_bits(fWords, 8, 4);
 			return  yearOffset + (modern? 2013 : 1997);
 		}
 };
@@ -143,7 +146,7 @@ public:
 									IOOperation* operation,
 									bool offsetAsSectors);
 
-				void			SetClock(int frequency);
+				status_t		SetClock(int frequency);
 				void			SetBusWidth(int width);
 				void			SetCardType(card_type type);
 

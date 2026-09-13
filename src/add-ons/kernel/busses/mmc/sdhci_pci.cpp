@@ -35,7 +35,7 @@
 
 
 #define SDHCI_DEVICE_MODULE_NAME "busses/mmc/sdhci/driver_v1"
-#define SDHCI_PCI_MMC_BUS_MODULE_NAME "busses/mmc/sdhci/pci/device/v1"
+#define SDHCI_PCI_MMC_BUS_MODULE_NAME "busses/mmc/sdhci/pci/device/v2"
 
 #define SLOT_NUMBER				"device/slot"
 #define BAR_INDEX				"device/bar"
@@ -329,4 +329,5 @@ mmc_bus_interface gSDHCIPCIDeviceModule = {
 	.set_bus_width = set_bus_width,
 	.terminate_bus = terminate_bus,
 	.set_card_type = set_card_type,
+	.read_extended_csd = read_extended_csd,
 };

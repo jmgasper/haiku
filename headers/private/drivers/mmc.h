@@ -29,6 +29,43 @@ typedef enum card_type {
 } card_type;
 
 
+inline bool
+is_mmc_card(card_type type)
+{
+	return type == CARD_TYPE_MMC || type == CARD_TYPE_MMC_EXTENDED_CAPACITY;
+}
+
+
+// SDHCI exposes bits 127..8 of an R2 reply, in low-word-first order.
+// Field positions below retain the bit numbers used by the card specification.
+inline uint32_t
+mmc_response_bits(const uint32_t response[4], unsigned first, unsigned width)
+{
+	if (first < 8 || first > 127 || width == 0 || width > 32 || first + width > 128)
+		return 0;
+	unsigned shift = first - 8;
+	unsigned word = shift / 32;
+	shift %= 32;
+	uint64_t value = response[word] >> shift;
+	if (shift != 0 && width > 32 - shift)
+		value |= (uint64_t)response[word + 1] << (32 - shift);
+	return value & (((uint64_t)1 << width) - 1);
+}
+
+
+inline uint32_t
+mmc_ext_csd_sector_count(const uint8_t data[512])
+{
+	return (uint32_t)data[212] | ((uint32_t)data[213] << 8)
+		| ((uint32_t)data[214] << 16) | ((uint32_t)data[215] << 24);
+}
+
+
+// Native R1 status: command/data errors, locked/write-protected media and
+// erase status, plus the MMC SWITCH_ERROR flag (bit 7).
+const uint32_t kMmcR1ErrorMask = 0xfff9a080;
+
+
 // Commands for SD/eMMC cards defined in:
 // SD: Physical Layer Simplified Specification Version 8.00
 // eMMC: JEDEC Standard No. 84-B51. Sec 6.10.4
@@ -55,6 +92,8 @@ enum SD_COMMANDS {
 	MMC_SEND_EXT_CSD = 8,
 	SEND_CSD = 9,
 	SD_STOP_TRANSMISSION = 12,
+	SEND_STATUS = 13,
+	SET_BLOCK_LENGTH = 16,
 
 	// Block oriented read and write commands, class 2
 	SD_READ_SINGLE_BLOCK = 17,
@@ -105,6 +144,8 @@ typedef struct mmc_bus_interface {
 		// Set the data bus width to 1, 4 or 8 bit mode.
 	void (*terminate_bus)(void* controller);
 	void (*set_card_type)(void* controller, card_type type);
+	status_t (*read_extended_csd)(void* controller, uint8_t data[512]);
+		// Read the selected MMC card's 512-byte EXT_CSD data phase.
 } mmc_bus_interface;
 
 
@@ -129,6 +170,8 @@ typedef struct mmc_device_interface {
 // Device attribute paths for the MMC device
 const char* const kMmcRcaAttribute = "mmc/rca";
 const char* const kMmcTypeAttribute = "mmc/type";
+const char* const kMmcSectorCountAttribute = "mmc/sector_count";
+const char* const kMmcCacheEnabledAttribute = "mmc/cache_enabled";
 
 
 #endif /* _MMC_H */

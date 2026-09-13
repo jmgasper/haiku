@@ -19,6 +19,8 @@ MMCBus::MMCBus(device_node* node)
 	fCookie(NULL),
 	fStatus(B_OK),
 	fWorkerThread(-1),
+	fScanSemaphore(-1),
+	fLockSemaphore(-1),
 	fActiveDevice(0),
 	fCardType(CARD_TYPE_UNKNOWN)
 {
@@ -37,10 +39,27 @@ MMCBus::MMCBus(device_node* node)
 	}
 
 	fScanSemaphore = create_sem(0, "MMC bus scan");
+	if (fScanSemaphore < B_OK) {
+		fStatus = fScanSemaphore;
+		return;
+	}
 	fLockSemaphore = create_sem(1, "MMC bus lock");
+	if (fLockSemaphore < B_OK) {
+		fStatus = fLockSemaphore;
+		return;
+	}
 	fWorkerThread = spawn_kernel_thread(_WorkerThread, "SD bus controller",
 		B_NORMAL_PRIORITY, this);
-	resume_thread(fWorkerThread);
+	if (fWorkerThread < B_OK) {
+		fStatus = fWorkerThread;
+		return;
+	}
+	fStatus = resume_thread(fWorkerThread);
+	if (fStatus != B_OK) {
+		kill_thread(fWorkerThread);
+		fWorkerThread = -1;
+		return;
+	}
 
 	fController->set_scan_semaphore(fCookie, fScanSemaphore);
 }
@@ -53,15 +72,18 @@ MMCBus::~MMCBus()
 	// Tell the worker thread we want to stop
 	fStatus = B_SHUTTING_DOWN;
 
-	// Delete the semaphores (this will unlock the worker thread if it was
-	// waiting on them)
-	delete_sem(fScanSemaphore);
-	delete_sem(fLockSemaphore);
+	if (fController != NULL)
+		fController->set_scan_semaphore(fCookie, -1);
+	// Wake the scanner, keeping its bus lock alive until it has exited.
+	if (fScanSemaphore >= B_OK)
+		delete_sem(fScanSemaphore);
 
 	// Wait for the worker thread to terminate
 	status_t result;
-	if (fWorkerThread != 0)
+	if (fWorkerThread >= B_OK)
 		wait_for_thread(fWorkerThread, &result);
+	if (fLockSemaphore >= B_OK)
+		delete_sem(fLockSemaphore);
 }
 
 
@@ -102,10 +124,10 @@ MMCBus::DoIO(uint16_t rca, uint8_t command, IOOperation* operation,
 }
 
 
-void
+status_t
 MMCBus::SetClock(int frequency)
 {
-	fController->set_clock(fCookie, frequency);
+	return fController->set_clock(fCookie, frequency);
 }
 
 
@@ -136,6 +158,8 @@ MMCBus::_ActivateDevice(uint16_t rca)
 	result = fController->execute_command(fCookie, SELECT_DESELECT_CARD, ((uint32)rca) << 16,
 		&response);
 
+	if (result == B_OK && rca != 0 && (response & kMmcR1ErrorMask) != 0)
+		result = B_IO_ERROR;
 	if (result == B_OK)
 		fActiveDevice = rca;
 
@@ -166,9 +190,6 @@ MMCBus::_WorkerThread(void* cookie)
 
 	bus->AcquireBus();
 
-	// We assume the bus defaults to 400kHz clock and has already powered on
-	// cards.
-
 	// Reset all cards on the bus
 	// This does not work if the bus has not been powered on yet (the command
 	// will timeout), in that case we wait until asked to scan again when a
@@ -185,6 +206,15 @@ MMCBus::_WorkerThread(void* cookie)
 		}
 
 		TRACE("Reset the bus...\n");
+		// Card power and clock stabilization run in this worker, not in
+		// the host controller's card-insertion interrupt handler.
+		result = bus->SetClock(400);
+		if (result != B_OK) {
+			bus->_TerminateBus();
+			bus->ReleaseBus();
+			return result;
+		}
+		bus->SetBusWidth(1);
 		result = bus->ExecuteCommand(0, GO_IDLE_STATE, 0, NULL);
 		TRACE("CMD0 result: %s\n", strerror(result));
 	} while (result != B_OK);
@@ -199,8 +229,14 @@ MMCBus::_WorkerThread(void* cookie)
 		TRACE("Scanning the bus\n");
 
 		// Use the low speed clock and 1bit bus width for scanning
-		bus->SetClock(400);
+		status_t clockStatus = bus->SetClock(400);
+		if (clockStatus != B_OK) {
+			bus->_TerminateBus();
+			bus->ReleaseBus();
+			return clockStatus;
+		}
 		bus->SetBusWidth(1);
+		bus->SetCardType(CARD_TYPE_UNKNOWN);
 
 		// Probe the voltage range
 		enum {
@@ -218,7 +254,7 @@ MMCBus::_WorkerThread(void* cookie)
 		// If ACMD41 also does not work, it may be an SDIO card, too
 		uint32_t probe = (HOST_27_36V << 8) | kVoltageCheckPattern;
 		uint32_t hcs = 1 << 30;
-		uint32_t ocr;
+		uint32_t ocr = 0;
 		status_t status = bus->ExecuteCommand(0, SD_SEND_IF_COND, probe, &response);
 		if (status != B_OK) {
 			TRACE("Card does not implement CMD8, may be a V1 SD or MMC card\n");
@@ -226,9 +262,10 @@ MMCBus::_WorkerThread(void* cookie)
 			hcs = 0;
 
 			TRACE("Trying MMC CMD1 initialization...\n");
+			bigtime_t deadline = system_time() + 2000000;
 			do {
-				status = bus->ExecuteCommand(0, MMC_SEND_OP_COND, 0xFF8000, &ocr);
-				// full voltage window, byte addressable, should look into this.
+				status = bus->ExecuteCommand(0, MMC_SEND_OP_COND, 0x40FF8000, &ocr);
+				// Request sector addressing; the reply determines the actual mode.
 				if (status != B_OK) {
 					TRACE("MMC CMD1 failed\n");
 					break;
@@ -237,7 +274,7 @@ MMCBus::_WorkerThread(void* cookie)
 					TRACE("MMC card is busy\n");
 					snooze(100000);
 				}
-			} while ((ocr & (1 << 31)) == 0);
+			} while ((ocr & (1 << 31)) == 0 && system_time() < deadline);
 
 			if (status == B_OK && (ocr & (1 << 31)) != 0) {
 				TRACE("Detected MMC card after CMD1\n");
@@ -258,24 +295,32 @@ MMCBus::_WorkerThread(void* cookie)
 		// We keep repeating ACMD41 until the card replies that it is
 		// initialized. For MMC we already probed using CMD1 above.
 		if ((cardType != CARD_TYPE_MMC) && (cardType != CARD_TYPE_MMC_EXTENDED_CAPACITY)) {
+			bigtime_t deadline = system_time() + 2000000;
+			ocr = 0;
 			do {
-				uint32_t cardStatus;
-				while (bus->ExecuteCommand(0, SD_APP_CMD, 0, &cardStatus) == B_BUSY) {
-					ERROR("Card locked after CMD8...\n");
-					snooze(1000000);
+				uint32_t cardStatus = 0;
+				status = bus->ExecuteCommand(0, SD_APP_CMD, 0, &cardStatus);
+				if (status != B_OK)
+					break;
+				if ((cardStatus & 0xfff9a000) != 0 || (cardStatus & (1 << 5)) == 0) {
+					status = B_BAD_DATA;
+					break;
 				}
-				if ((cardStatus & 0xFFFF8000) != 0)
-					ERROR("SD card reports error %x\n", cardStatus);
-				if ((cardStatus & (1 << 5)) == 0)
-					ERROR("Card did not enter ACMD mode\n");
-
-				bus->ExecuteCommand(0, SD_SEND_OP_COND, hcs | 0xFF8000, &ocr);
+				status = bus->ExecuteCommand(0, SD_SEND_OP_COND, hcs | 0xFF8000, &ocr);
+				if (status != B_OK)
+					break;
 
 				if ((ocr & (1 << 31)) == 0) {
 					TRACE("Card is busy\n");
 					snooze(100000);
 				}
-			} while ((ocr & (1 << 31)) == 0);
+			} while ((ocr & (1 << 31)) == 0 && system_time() < deadline);
+			if (status != B_OK || (ocr & (1 << 31)) == 0) {
+				ERROR("Card initialization did not complete: %s\n", strerror(status));
+				bus->_TerminateBus();
+				bus->ReleaseBus();
+				return status == B_OK ? B_TIMED_OUT : status;
+			}
 		}
 
 		// FIXME this should be asked to each card, when there are multiple
@@ -321,7 +366,7 @@ MMCBus::_WorkerThread(void* cookie)
 				status
 					= bus->ExecuteCommand(0, MMC_SET_RELATIVE_ADDR, ((uint32)rca) << 16, &response);
 				TRACE("MMC RCA: %x Status: %x\n", rca, response & 0xFFFF);
-				if (status != B_OK) {
+				if (status != B_OK || (response & kMmcR1ErrorMask) != 0) {
 					TRACE("Failed to set RCA for MMC card\n");
 				} else {
 					MMCCid mmcCid(cid);
@@ -331,18 +376,15 @@ MMCBus::_WorkerThread(void* cookie)
 					revision = mmcCid.ProductRevision();
 					month = mmcCid.ManufactureMonth();
 					year = mmcCid.ManufactureYear(true);
-					TRACE("MMC CID: MID=%" B_PRIu32 ", name=\"%s\", PSN=%" B_PRIu32
-						  ", PRV=%u, MDT=%u/%u\n",
-						vendor, name, serial, revision, month, year);
 					cardFound = true;
 				}
 			}
 		} else if (bus->ExecuteCommand(0, ALL_SEND_CID, 0, cid) == B_OK) {
-			bus->ExecuteCommand(0, SD_SEND_RELATIVE_ADDR, 0, &response);
+			status = bus->ExecuteCommand(0, SD_SEND_RELATIVE_ADDR, 0, &response);
 
 			TRACE("RCA: %x Status: %x\n", response >> 16, response & 0xFFFF);
 
-			if ((response & 0xFF00) != 0x500) {
+			if (status != B_OK || (response & 0xFF00) != 0x500) {
 				TRACE("Card did not enter data state\n");
 				// This probably means there are no more cards to scan on the
 				// bus, so exit the loop.
@@ -363,6 +405,40 @@ MMCBus::_WorkerThread(void* cookie)
 			cardFound = true;
 		}
 
+		uint32_t sectorCount = 0;
+		uint8_t cacheEnabled = 0;
+		if (cardFound && is_mmc_card((card_type)cardType)) {
+			uint8_t extended[512];
+			status = bus->_ActivateDevice(rca);
+			if (status == B_OK)
+				status = bus->fController->read_extended_csd(bus->fCookie, extended);
+			if (status == B_OK && (extended[192] < 2
+					|| (extended[179] & 7) != 0 || extended[61] != 0))
+				status = B_NOT_SUPPORTED;
+			if (status == B_OK) {
+				sectorCount = mmc_ext_csd_sector_count(extended);
+				if (sectorCount == 0)
+					status = B_BAD_DATA;
+			}
+			if (status != B_OK) {
+				ERROR("MMC user-area discovery failed: %s\n", strerror(status));
+				cardFound = false;
+			} else {
+				cacheEnabled = extended[33] & 1;
+				year = MMCCid(cid).ManufactureYear(extended[192] > 4);
+				TRACE_ALWAYS("MMC EXT_CSD: revision %u, sectors %" B_PRIu32
+					", cache enabled %u\n", extended[192], sectorCount, cacheEnabled);
+			}
+		}
+
+		// Do not publish a disk whose operational clock could not be set.
+		clockStatus = bus->SetClock(25000);
+		if (clockStatus != B_OK) {
+			bus->_TerminateBus();
+			bus->ReleaseBus();
+			return clockStatus;
+		}
+
 		if (cardFound) {
 			device_attr attrs[] = {
 				{ B_DEVICE_BUS, B_STRING_TYPE, {.string = "mmc" }},
@@ -375,6 +451,8 @@ MMCBus::_WorkerThread(void* cookie)
 				{ "mmc/year", B_UINT16_TYPE, {.ui16 = year}},
 				{ kMmcRcaAttribute, B_UINT16_TYPE, {.ui16 = rca}},
 				{ kMmcTypeAttribute, B_UINT8_TYPE, {.ui8 = cardType}},
+				{ kMmcSectorCountAttribute, B_UINT32_TYPE, {.ui32 = sectorCount}},
+				{ kMmcCacheEnabledAttribute, B_UINT8_TYPE, {.ui8 = cacheEnabled}},
 				{}
 			};
 
@@ -386,7 +464,6 @@ MMCBus::_WorkerThread(void* cookie)
 		// TODO if there is a single card active, check if it supports CMD6
 		// (spec version 1.10 or later in SCR). If it does, check if CMD6 can
 		// enable high speed mode, use that to go to 50MHz instead of 25.
-		bus->SetClock(25000);
 
 		// FIXME we also need to unpublish devices that are gone. Probably need
 		// to "ping" all RCAs somehow? Or is there an interrupt we can look for

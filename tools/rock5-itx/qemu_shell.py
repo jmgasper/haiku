@@ -16,6 +16,7 @@ import time
 
 import lab
 import qemu_ahci
+import qemu_mmc
 import qemu_nvme
 import shell
 import shell_image
@@ -201,7 +202,9 @@ def check_pci_config(client, output, credentials, after_reboot=False):
 
 def run(manifest_path, el1=False, memory=False, power=False, normal=False, platform=False,
         transfer=False, services=False, cache=False, nvme=False, pci_config=False,
-        pci_network=False, network_stream=False, memcpy=False, ahci=False):
+        pci_network=False, network_stream=False, memcpy=False, ahci=False, mmc=False):
+    if mmc and (not (power and normal) or pci_config):
+        raise ValueError('MMC requires normal reboot/shutdown and excludes fixed PCI inventory')
     if ahci and (not (power and normal) or pci_config):
         raise ValueError('AHCI requires normal reboot/shutdown and excludes fixed PCI inventory')
     if nvme and not (power and normal):
@@ -228,6 +231,11 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
     if ahci and not all(re.fullmatch(r'[0-9a-f]{64}', manifest.get('ahci_test', {}).get(key, ''))
                         for key in ('driver_sha256', 'probe_sha256')):
         raise ValueError('AHCI requires a pinned driver and geometry/flush helper')
+    if mmc:
+        if not all(re.fullmatch(r'[0-9a-f]{64}', manifest.get('mmc_test', {}).get(key, ''))
+                   for key in qemu_mmc.COMPONENTS):
+            raise ValueError('MMC requires pinned bus, host, disk driver and helper hashes')
+        mmc_binary, mmc_toolchain = qemu_mmc.emulator()
     stream_fixture = None
     credentials = shell_image.read_credentials()
     output = lab.WORK / 'artifacts/qemu-shell' / lab.timestamp()
@@ -237,6 +245,8 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
         nvme_fixture = qemu_nvme.prepare(output)
     if ahci:
         ahci_fixture = qemu_ahci.prepare(output)
+    if mmc:
+        mmc_fixture = qemu_mmc.prepare(output)
     firmware = output / 'QEMU_EFI.fd'
     shutil.copyfile('/usr/share/qemu-efi-aarch64/QEMU_EFI.fd', firmware)
     subprocess.run(['qemu-img', 'create', '-q', '-f', 'qcow2', '-F', 'raw', '-b',
@@ -294,6 +304,10 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
     if ahci:
         command += qemu_ahci.command(ahci_fixture)
         result['ahci'] = {'fixture': ahci_fixture}
+    if mmc:
+        command[0] = str(mmc_binary)
+        command += qemu_mmc.command(mmc_fixture)
+        result['mmc'] = {'fixture': mmc_fixture, 'emulator': mmc_toolchain}
     if stream_fixture is not None:
         result['network_stream_peer'] = {
             key: value for key, value in stream_fixture.items() if key != 'token'}
@@ -397,6 +411,9 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
                 if ahci:
                     result['ahci']['first_boot'] = qemu_ahci.check(
                         client, output, credentials, ahci_fixture, manifest)
+                if mmc:
+                    result['mmc']['first_boot'] = qemu_mmc.check(
+                        client, output, credentials, mmc_fixture, manifest)
                 if power:
                     previous = serial.read_bytes().count(b'ROCK5_SHELL_CONFIGURED 10.0.2.15')
                     result['software_reboot_requested_at'] = lab.timestamp()
@@ -431,6 +448,9 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
                     if ahci:
                         result['ahci']['after_reboot'] = qemu_ahci.check(
                             client, output, credentials, ahci_fixture, manifest, True)
+                    if mmc:
+                        result['mmc']['after_reboot'] = qemu_mmc.check(
+                            client, output, credentials, mmc_fixture, manifest, True)
                     result.update(software_reboot='pass', psci_conduit=conduit.decode())
                     client.write(b'sync; shutdown ' + (b'' if normal else b'-q') + b'\r\n')
                     time.sleep(1)
@@ -442,6 +462,8 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
                     result['nvme'].update(qemu_nvme.verify_host(nvme_fixture))
                 if ahci:
                     result['ahci']['host_readback'] = qemu_ahci.verify_host(ahci_fixture)
+                if mmc:
+                    result['mmc']['host_readback'] = qemu_mmc.verify_host(mmc_fixture)
             result['status'] = 'pass'
         except Exception as error:
             result.update(status='error', error=str(error))
@@ -477,6 +499,8 @@ def main():
                         help='Check disposable NVMe I/O across normal reboot and shutdown')
     parser.add_argument('--ahci', action='store_true',
                         help='Check two disposable AHCI disks, cache flush and reboot readback')
+    parser.add_argument('--mmc', action='store_true',
+                        help='Check disposable SD/eMMC cards using pinned local QEMU 10.2.0')
     parser.add_argument('--pci-config', action='store_true',
                         help='Read known host/NVMe configuration pages (requires --nvme)')
     parser.add_argument('--pci-network', action='store_true',
@@ -502,7 +526,7 @@ def main():
     os.umask(0o077)
     result = run(args.manifest, args.el1, args.memory, args.power, args.normal, args.platform,
                  args.transfer, args.services, args.cache, args.nvme, args.pci_config,
-                 args.pci_network, args.network_stream, args.memcpy, args.ahci)
+                 args.pci_network, args.network_stream, args.memcpy, args.ahci, args.mmc)
     if args.result:
         lab.save(args.result, result)
     print(json.dumps({key: result.get(key) for key in

@@ -21,7 +21,7 @@
 
 class SdhciBus {
 	public:
-								SdhciBus(struct registers* registers, uint8_t irq, bool poll);
+								SdhciBus(struct registers* registers, uint32_t irq, bool poll);
 								~SdhciBus();
 
 			void				EnableInterrupts(uint32_t mask);
@@ -38,17 +38,20 @@ class SdhciBus {
 			void				SetBusWidth(int width);
 			void				SetCardType(card_type type);
 			void				TerminateBus();
+			status_t			ReadExtendedCsd(uint8_t data[512]);
 
 	private:
 			bool				PowerOn();
 			void				PowerOff();
 			void				RecoverError();
+			status_t			WaitForCompletion(uint32_t mask, bigtime_t timeout);
 	static	status_t			_WorkerThread(void*);
 
 	private:
 			struct registers*	fRegisters;
-			uint32				fCommandResult;
-			uint8				fIrq;
+			int32				fCommandResult;
+			uint32				fIrq;
+			bool				fInterruptInstalled;
 			ConditionVariable	fInterruptNotifier;
 			sem_id				fScanSemaphore;
 			status_t			fStatus;
@@ -172,10 +175,10 @@ class ClockControl
 			if (divider == 1)
 				divider = 0;
 			else
-				divider /= 2;
+				divider = (divider + 1) / 2;
 			uint16_t bits = fBits & ~0xffc0;
 			bits |= divider << 8;
-			bits |= (divider >> 8) & 0xc0;
+			bits |= (divider >> 2) & 0xc0;
 			fBits = bits;
 
 			return divider == 0 ? 1 : divider * 2;
@@ -228,31 +231,31 @@ class SoftwareReset {
 	public:
 		uint8_t Bits() { return fBits; }
 
-		bool ResetAll() {
-			fBits = 1;
-			int i = 0;
-			// wait up to 100ms
-			while ((fBits & 1) != 0 && i++ < 10)
-				snooze(10000);
-			return i < 10;
+		bool ResetAll() { return ResetLines(1); }
+
+		bool ResetCommandAndDataLines() {
+			return ResetLines(6);
 		}
 
-		void ResetCommandAndDataLines() {
-			fBits |= 6;
-			while(fBits & 6);
+		bool ResetCommandLine() {
+			return ResetLines(2);
 		}
 
-		void ResetCommandLine() {
-			fBits |= 2;
-			while(fBits & 2);
-		}
-
-		void ResetDataLine() {
-			fBits |= 4;
-			while(fBits & 4);
+		bool ResetDataLine() {
+			return ResetLines(4);
 		}
 
 	private:
+		bool ResetLines(uint8_t mask) {
+			fBits = mask;
+			bigtime_t deadline = system_time() + 100000;
+			while ((fBits & mask) != 0) {
+				if (system_time() >= deadline)
+					return false;
+				snooze(100);
+			}
+			return true;
+		}
 		volatile uint8_t fBits;
 } __attribute__((packed));
 
@@ -502,7 +505,7 @@ struct registers {
 typedef void* sdhci_mmc_bus;
 
 struct sdhci_crs {
-	uint8	irq;
+	uint32	irq;
 //	uint8	irq_triggering;
 //	uint8	irq_polarity;
 //	uint8	irq_shareable;
@@ -527,6 +530,7 @@ extern void uninit_bus(void* bus_cookie);
 extern void bus_removed(void* bus_cookie);
 
 status_t set_clock(void* controller, uint32_t kilohertz);
+status_t read_extended_csd(void* controller, uint8_t data[512]);
 status_t execute_command(void* controller, uint8_t command,
 	uint32_t argument, uint32_t* response);
 status_t do_io(void* controller, uint8_t command,

@@ -19,13 +19,14 @@
 #include "acpi.h"
 
 #include <KernelExport.h>
+#include <arch/atomic.h>
 
 #include "IOSchedulerSimple.h"
 #include "mmc.h"
 #include "sdhci.h"
 
 
-#define TRACE_SDHCI
+//#define TRACE_SDHCI
 #ifdef TRACE_SDHCI
 #	define TRACE(x...) dprintf("\33[33msdhci:\33[0m " x)
 #else
@@ -51,10 +52,15 @@ sdhci_generic_interrupt(void* data)
 }
 
 
-SdhciBus::SdhciBus(struct registers* registers, uint8_t irq, bool poll)
+SdhciBus::SdhciBus(struct registers* registers, uint32_t irq, bool poll)
 	:
 	fRegisters(registers),
+	fCommandResult(0),
 	fIrq(irq),
+	fInterruptInstalled(false),
+	fScanSemaphore(-1),
+	fStatus(B_OK),
+	fWorkerThread(-1),
 	fCardType(CARD_TYPE_UNKNOWN)
 {
 	if (irq == 0 || irq == 0xff) {
@@ -74,10 +80,13 @@ SdhciBus::SdhciBus(struct registers* registers, uint8_t irq, bool poll)
 		ERROR("can't install interrupt handler\n");
 		return;
 	}
+	fInterruptInstalled = true;
 
 	// First of all, we have to make sure we are in a sane state. The easiest
 	// way is to reset everything.
 	Reset();
+	if (fStatus != B_OK)
+		return;
 
 	TRACE("Controller spec version: %d, vendor version: %#02x\n",
 		fRegisters->host_controller_version.specVersion,
@@ -128,43 +137,52 @@ SdhciBus::SdhciBus(struct registers* registers, uint8_t irq, bool poll)
 		// Then we configure the clock to the frequency needed for
 		// initialization
 		SetClock(400, false);
+		if (fStatus != B_OK)
+			return;
 	}
 
 	fRegisters->timeout_control.SetDivider(fRegisters->capabilities.TimeoutClockFrequency(), 500);
 
 	// Finally, configure some useful interrupts
 	EnableInterrupts(SDHCI_INT_CMD_CMP | SDHCI_INT_CARD_REM
-		| SDHCI_INT_TRANS_CMP | SDHCI_INT_DATA_TIMEOUT | SDHCI_INT_COMMAND_TIMEOUT);
+		| SDHCI_INT_TRANS_CMP | SDHCI_INT_ERROR | SDHCI_INT_ERROR_MASK);
 
 	// We want to see the other bits in the status register, but not have an
-	// interrupt trigger on them (we get a "command complete" interrupt on
-	// errors already)
+	// interrupt trigger on buffer readiness: EXT_CSD uses polled PIO.
 	fRegisters->interrupt_status_enable |= SDHCI_INT_ERROR_MASK | SDHCI_INT_NORMAL_MASK;
 
 	if (poll) {
 		// Spawn a polling thread, as the interrupts won't currently work on ACPI.
 		fWorkerThread = spawn_kernel_thread(_WorkerThread, "SD bus poller",
 			B_NORMAL_PRIORITY, this);
-		resume_thread(fWorkerThread);
+		if (fWorkerThread < B_OK)
+			fStatus = fWorkerThread;
+		else {
+			fStatus = resume_thread(fWorkerThread);
+			if (fStatus != B_OK) {
+				kill_thread(fWorkerThread);
+				fWorkerThread = -1;
+			}
+		}
 	}
 }
 
 
 SdhciBus::~SdhciBus()
 {
+	fStatus = B_SHUTTING_DOWN;
+	status_t result;
+	if (fWorkerThread >= B_OK)
+		wait_for_thread(fWorkerThread, &result);
+
 	TerminateBus();
 
-	if (fIrq != 0)
+	if (fInterruptInstalled)
 		remove_io_interrupt_handler(fIrq, sdhci_generic_interrupt, this);
 
 	area_id regs_area = area_for(fRegisters);
 	delete_area(regs_area);
 
-	fStatus = B_SHUTTING_DOWN;
-
-	status_t result;
-	if (fWorkerThread != 0)
-		wait_for_thread(fWorkerThread, &result);
 }
 
 
@@ -190,12 +208,37 @@ PartA2, SD Host Controller Simplified Specification, Version 4.20
 §3.7.1.1 The sequence to issue an SD Command
 */
 status_t
+SdhciBus::WaitForCompletion(uint32_t mask, bigtime_t timeout)
+{
+	bigtime_t deadline = system_time() + timeout;
+	while (true) {
+		ConditionVariableEntry waiter;
+		fInterruptNotifier.Add(&waiter);
+		uint32_t result = atomic_get(&fCommandResult);
+		if ((result & (SDHCI_INT_ERROR | SDHCI_INT_ERROR_MASK)) != 0)
+			return (result & (SDHCI_INT_COMMAND_TIMEOUT | SDHCI_INT_DATA_TIMEOUT))
+				!= 0 ? B_TIMED_OUT : B_IO_ERROR;
+		if ((result & mask) != 0)
+			return B_OK;
+		status_t status = waiter.Wait(B_ABSOLUTE_TIMEOUT, deadline);
+		if (status != B_OK && status != B_INTERRUPTED)
+			return status;
+	}
+}
+
+
+status_t
 SdhciBus::ExecuteCommand(uint8_t command, uint32_t argument, uint32_t* response)
 {
 	TRACE("ExecuteCommand(%d, %x)\n", command, argument);
+	if (fStatus != B_OK)
+		return fStatus;
+	if (response == NULL && command != GO_IDLE_STATE
+		&& !(command == SELECT_DESELECT_CARD && argument == 0))
+		return B_BAD_VALUE;
 
 	// First of all clear the result
-	fCommandResult = 0;
+	atomic_set(&fCommandResult, 0);
 
 	// Check if it's possible to send a command right now.
 	// It is not possible to send a command as long as the command line is busy.
@@ -214,10 +257,6 @@ SdhciBus::ExecuteCommand(uint8_t command, uint32_t argument, uint32_t* response)
 		return B_BUSY;
 	}
 
-	// Get ready to accet interrupts that will occur during the command
-	ConditionVariableEntry waiter;
-	fInterruptNotifier.Add(&waiter);
-
 	uint32_t replyType;
 	uint16 transferMode = 0;
 
@@ -227,11 +266,15 @@ SdhciBus::ExecuteCommand(uint8_t command, uint32_t argument, uint32_t* response)
 			replyType = Command::kNoReplyType;
 			break;
 		case SD_APP_CMD:
+		case SEND_STATUS:
+		case SET_BLOCK_LENGTH:
 		case SD_ERASE_WR_BLK_START:
 		case SD_ERASE_WR_BLK_END:
 			replyType = Command::kR1Type;
 			break;
 		case SELECT_DESELECT_CARD:
+			replyType = argument == 0 ? Command::kNoReplyType : Command::kR1bType;
+			break;
 		case SD_ERASE:
 			replyType = Command::kR1bType;
 			break;
@@ -246,21 +289,22 @@ SdhciBus::ExecuteCommand(uint8_t command, uint32_t argument, uint32_t* response)
 
 		// Commands defined with different reply types in SD and MMC specifications
 		case SD_SET_BUS_WIDTH: // SD application command. Also MMC_SWITCH, which is not.
-			if (fCardType == CARD_TYPE_MMC)
+			if (is_mmc_card(fCardType))
 				replyType = Command::kR1bType;
 			else
 				replyType = Command::kR1Type;
 			break;
 		case SD_SEND_RELATIVE_ADDR: // also MMC_SET_RELATIVE_ADDR
-			if (fCardType == CARD_TYPE_MMC)
+			if (is_mmc_card(fCardType))
 				replyType = Command::kR1Type;
 			else
 				replyType = Command::kR6Type;
 			break;
 		case SD_SEND_IF_COND: // also MMC_SEND_EXT_CSD
-			if (fCardType == CARD_TYPE_MMC)
-				replyType = Command::kR1Type;
-			else
+			if (is_mmc_card(fCardType)) {
+				replyType = Command::kR1Type | Command::kDataPresent;
+				transferMode = TransferMode::kRead;
+			} else
 				replyType = Command::kR7Type;
 			break;
 
@@ -308,59 +352,26 @@ SdhciBus::ExecuteCommand(uint8_t command, uint32_t argument, uint32_t* response)
 		|| (replyType == (Command::kR1Type | Command::kDataPresent)))
 		fRegisters->transfer_mode = transferMode;
 
+	memory_full_barrier();
 	fRegisters->command.SendCommand(command, replyType);
+	memory_full_barrier();
 
-	// Wait for command response to be available ("command complete" interrupt)
-	TRACE("Wait for command complete...");
-	do {
-		status_t result = waiter.Wait(B_RELATIVE_TIMEOUT, 1000000);
-		if (result == B_TIMED_OUT) {
-			TRACE("Command complete interrupt did not trigger for a while, status %x\n",
-				fRegisters->interrupt_status);
-		} else if (result != B_OK)
-			panic("sdhci: Failed to wait for command complete: %s", strerror(result));
-
-		fInterruptNotifier.Add(&waiter);
-		TRACE("Command status: %x\n", fCommandResult);
-		TRACE("real status = %x command line busy: %d\n",
-			fRegisters->interrupt_status,
-			fRegisters->present_state.CommandInhibit());
-	} while (fCommandResult == 0);
-
-	TRACE("Command response available\n");
-
-	if (fCommandResult & SDHCI_INT_ERROR) {
-		// TODO is it a good idea to clear interrupts here from outside the interrupt handler?
-		fRegisters->interrupt_status |= fCommandResult;
-		if (fCommandResult & SDHCI_INT_COMMAND_TIMEOUT) {
-			ERROR("Command execution timed out\n");
-			// At this point, the "command inhibit" bit is not set yet, it will be set only after
-			// another command is sent while the controller is in the timeout state.
-			// But resetting the controller state pre-emptively will allow to send another command.
-			//
-			// Clear the data line at the same time if it is busy
-			fRegisters->software_reset.ResetCommandAndDataLines();
-			return B_TIMED_OUT;
-		}
-		if (fCommandResult & SDHCI_INT_COMMAND_CRC) {
-			ERROR("CRC error\n");
-			return B_BAD_VALUE;
-		}
-		ERROR("Command execution failed %x\n", fCommandResult);
-		// TODO look at errors in interrupt_status register for more details
-		// and return a more appropriate error code
-		return B_ERROR;
+	status_t status = WaitForCompletion(SDHCI_INT_CMD_CMP, 1000000);
+	if (status != B_OK) {
+		ERROR("Command %u failed: %s (status %#x)\n", command,
+			strerror(status), (uint32_t)atomic_get(&fCommandResult));
+		RecoverError();
+		return status;
 	}
-
 	if (fRegisters->present_state.CommandInhibit()) {
-		TRACE("Command execution failed, card stalled\n");
-		// Clear the stall
-		fRegisters->software_reset.ResetCommandLine();
-		return B_ERROR;
+		RecoverError();
+		return B_IO_ERROR;
 	}
+	memory_full_barrier();
 
 	switch (replyType & Command::kReplySizeMask) {
 		case Command::k32BitResponse:
+		case Command::k32BitResponseCheckBusy:
 			*response = fRegisters->response[0];
 			break;
 		case Command::k128BitResponse:
@@ -375,22 +386,16 @@ SdhciBus::ExecuteCommand(uint8_t command, uint32_t argument, uint32_t* response)
 			break;
 	}
 
-	if ((replyType == Command::kR1bType)
-			&& (fCommandResult & SDHCI_INT_TRANSFER_MASK) == 0) {
-		// R1b commands may use the data line so we must wait for the
-		// "transfer complete" interrupt here.
-		TRACE("Waiting for data line...\n");
-		fInterruptNotifier.Add(&waiter);
-		while (fRegisters->present_state.DataInhibit()) {
-			status_t result = waiter.Wait();
-			if (result != B_OK)
-				panic("sdhci: Failed to wait for data line release: %s", strerror(result));
-			fInterruptNotifier.Add(&waiter);
+	// Even an immediately released DAT0 has a transfer-complete event.
+	// Consume it before the next command can mistake it for its data phase.
+	if (replyType == Command::kR1bType) {
+		status = WaitForCompletion(SDHCI_INT_TRANS_CMP, 1000000);
+		if (status != B_OK || fRegisters->present_state.DataInhibit()) {
+			RecoverError();
+			return status == B_OK ? B_IO_ERROR : status;
 		}
-		TRACE("Dataline is released.\n");
 	}
-
-	ERROR("Command execution %d complete\n", command);
+	TRACE("Command execution %d complete\n", command);
 	return B_OK;
 }
 
@@ -405,169 +410,176 @@ SdhciBus::InitCheck()
 void
 SdhciBus::Reset()
 {
-	if (!fRegisters->software_reset.ResetAll())
+	if (!fRegisters->software_reset.ResetAll()) {
 		ERROR("SdhciBus::Reset: SoftwareReset timeout\n");
+		fStatus = B_TIMED_OUT;
+	}
 }
 
 
 void
 SdhciBus::SetClock(int kilohertz, bool allowAuto)
 {
-	if (allowAuto && (fRegisters->host_controller_version.specVersion > 2)) {
-		TRACE("Ignoring set_clock, controller support presets\n");
-		fRegisters->host_control_2 |= (1<<15);
-		TRACE("Host control 2 after enabling preset mode: %x\n", fRegisters->host_control_2);
+	// Presets depend on a negotiated timing mode. Enumeration currently
+	// requests explicit legacy clocks, even on a newer host controller.
+	(void)allowAuto;
+	if (kilohertz == 400)
+		PowerOn();
+	int baseClock = fRegisters->capabilities.BaseClockFrequency() * 1000;
+	if (kilohertz <= 0 || baseClock == 0) {
+		fStatus = B_BAD_VALUE;
 		return;
 	}
-
-	int base_clock = fRegisters->capabilities.BaseClockFrequency();
-	// Try to get as close to 400kHz as possible, but not faster
-	int divider = base_clock * 1000 / kilohertz;
-
+	int divider = (baseClock + kilohertz - 1) / kilohertz;
+	if (divider < 1)
+		divider = 1;
 	if (fRegisters->host_controller_version.specVersion <= 1) {
-		// Old controller only support power of two dividers up to 256,
-		// round to next power of two up to 256
-		if (divider > 256)
-			divider = 256;
-
-		divider--;
-		divider |= divider >> 1;
-		divider |= divider >> 2;
-		divider |= divider >> 4;
-		divider++;
+		int powerOfTwo = 1;
+		while (powerOfTwo < divider && powerOfTwo < 256)
+			powerOfTwo <<= 1;
+		if (powerOfTwo < divider) {
+			fStatus = B_NOT_SUPPORTED;
+			return;
+		}
+		divider = powerOfTwo;
+	} else if (divider > 2046) {
+		fStatus = B_NOT_SUPPORTED;
+		return;
 	}
-
+	fRegisters->clock_control.DisableSD();
+	if (fRegisters->host_controller_version.specVersion >= 2)
+		fRegisters->host_control_2 &= ~(1 << 15);
 	divider = fRegisters->clock_control.SetDivider(divider);
-
-	// Log the value after possible rounding by SetDivider (only even values
-	// are allowed).
-	TRACE("SDCLK frequency: requested %dkHz, effective %dMHz / %d = %dkHz\n", kilohertz,
-		base_clock, divider, base_clock * 1000 / divider);
-
-	// We have set the divider, now we can enable the internal clock.
 	fRegisters->clock_control.EnableInternal();
-
-	// wait until internal clock is stabilized
-	while (!(fRegisters->clock_control.InternalStable()));
-
-	fRegisters->clock_control.EnablePLL();
-	while (!(fRegisters->clock_control.InternalStable()));
-
-	// Finally, route the clock to the SD card
+	bigtime_t deadline = system_time() + 100000;
+	while (!fRegisters->clock_control.InternalStable()) {
+		if (system_time() >= deadline) {
+			fStatus = B_TIMED_OUT;
+			ERROR("Internal clock did not stabilize\n");
+			return;
+		}
+		snooze(100);
+	}
+	memory_full_barrier();
 	fRegisters->clock_control.EnableSD();
+	TRACE("SDCLK: requested %d kHz, effective %d kHz\n", kilohertz,
+		baseClock / divider);
 }
 
 
 status_t
 SdhciBus::DoIO(uint8_t command, IOOperation* operation, bool offsetAsSectors)
 {
-	bool isWrite = operation->IsWrite();
-
-	static const uint32 kBlockSize = 512;
-	off_t offset = operation->Offset();
+	if (operation == NULL || operation->Offset() < 0)
+		return B_BAD_VALUE;
+	const uint32_t blockSize = 512;
+	uint64_t offset = operation->Offset();
 	generic_size_t length = operation->Length();
-
-	TRACE("%s %" B_PRIuGENADDR " bytes at %" B_PRIdOFF "\n",
-		isWrite ? "Write" : "Read", length, offset);
-
-	// Check that the IO scheduler did its job in following our DMA restrictions
-	// We can start a read only at a sector boundary
-	ASSERT(offset % kBlockSize == 0);
-	// We can only read complete sectors
-	ASSERT(length % kBlockSize == 0);
-
+	if (offset % blockSize != 0 || length % blockSize != 0)
+		return B_BAD_VALUE;
+	if ((operation->IsWrite() && command != SD_WRITE_MULTIPLE_BLOCKS
+			&& command != SD_WRITE_SINGLE_BLOCK)
+		|| (!operation->IsWrite() && command != SD_READ_MULTIPLE_BLOCKS
+			&& command != SD_READ_SINGLE_BLOCK))
+		return B_BAD_VALUE;
+	if (length == 0)
+		return B_OK;
+	if ((command == SD_READ_SINGLE_BLOCK || command == SD_WRITE_SINGLE_BLOCK)
+		&& length != blockSize)
+		return B_BAD_VALUE;
 	const generic_io_vec* vecs = operation->Vecs();
-	generic_size_t vecOffset = 0;
+	size_t count = operation->VecCount();
+	if (vecs == NULL || count == 0)
+		return B_BAD_VALUE;
 
-	status_t result = B_OK;
-
-	while (length > 0) {
-		size_t toCopy = std::min((generic_size_t)length,
-			vecs->length - vecOffset);
-
-		// If the current vec is empty, we can move to the next
-		if (toCopy == 0) {
-			vecs++;
-			vecOffset = 0;
+	// Validate the complete request before any command can change the card.
+	generic_size_t remaining = length;
+	for (size_t i = 0; i < count && remaining != 0; i++) {
+		generic_size_t size = std::min(remaining, vecs[i].length);
+		if (size == 0)
 			continue;
+		uint64_t address = vecs[i].base;
+		if (size % blockSize != 0 || (address & (blockSize - 1)) != 0
+			|| size > 0x80000 || address >= UINT64_C(0x100000000)
+			|| size > UINT64_C(0x100000000) - address
+			|| (address & 0x7ffff) + size > 0x80000)
+			return B_BAD_VALUE;
+		remaining -= size;
+	}
+	uint64_t unit = offsetAsSectors ? blockSize : 1;
+	if (remaining != 0 || offset / unit > UINT32_MAX
+		|| (length - blockSize) / unit > UINT32_MAX - offset / unit)
+		return B_BAD_VALUE;
+
+	for (size_t i = 0; i < count && length != 0; i++) {
+		generic_size_t size = std::min(length, vecs[i].length);
+		if (size == 0)
+			continue;
+		fRegisters->host_control.SetDMAMode(HostControl::kSdma);
+		fRegisters->system_address = vecs[i].base;
+		fRegisters->block_size.ConfigureTransfer(blockSize, BlockSize::kDmaBoundary512K);
+		fRegisters->block_count = size / blockSize;
+		uint32_t response = 0;
+		status_t status = ExecuteCommand(command, offset / unit, &response);
+		if (status != B_OK)
+			return status;
+		if ((response & kMmcR1ErrorMask) != 0) {
+			RecoverError();
+			return B_IO_ERROR;
 		}
-
-		// Follow steps from SD Host Controller Simplified Specification Version 4.20
-		// section 3.7.2.2.
-
-		// With SDMA we can only transfer multiples of 1 sector
-		ASSERT(toCopy % kBlockSize == 0);
-
-		// Step 1: set system address
-		fRegisters->system_address = vecs->base + vecOffset;
-		// TODO detect if the host controller supports "advanced DMA", in that case, use the ADMA
-		// registers:
-		// fRegisters->adma_system_address = fDmaMemory;
-
-		// Step 2: Set block size
-		// For simplicity we use a transfer size equal to the sector size. We could
-		// go up to 2K here if the length to read in each individual vec is a
-		// multiple of 2K, but we have no easy way to know this (we would need to
-		// iterate through the IOOperation vecs and check the size of each of them).
-		// We could also do smaller transfers, but it is not possible to start a
-		// transfer anywhere else than the start of a sector, so it's a lot simpler
-		// to always work in complete sectors. We set the B_DMA_ALIGNMENT device
-		// node property accordingly, making sure that we don't get asked to do
-		// transfers that are not aligned with sectors.
-		//
-		// Additionnally, set SDMA buffer boundary aligment to 512K. This is the
-		// largest possible size. We also set the B_DMA_BOUNDARY property on the
-		// published device node, so that the DMA resource manager knows that it
-		// must respect this boundary. As a result, we will never be asked to
-		// do a transfer that crosses this boundary, and we don't need to handle
-		// the DMA boundary interrupt (the transfer will be split in two at an
-		// upper layer).
-		fRegisters->block_size.ConfigureTransfer(kBlockSize,
-			BlockSize::kDmaBoundary512K);
-
-		// Step 3: set block count
-		fRegisters->block_count = toCopy / kBlockSize;
-
-		// Steps done in ExecuteCommand:
-		// Steps 4, 5 and 6: set argument register, transfer_mode and command register
-		// Step 7, 8, 9: wait for command complete interrupt, clear interrupt, read response
-		ConditionVariableEntry waiter;
-		fInterruptNotifier.Add(&waiter);
-
-		uint32_t response;
-		result = ExecuteCommand(command,
-			offset / (offsetAsSectors ? kBlockSize : 1), &response);
-		if (result != B_OK)
-			break;
-
-		// Step 10: Wait for DMA transfer to complete
-		// In theory we could go on and send other commands as long as they
-		// don't need the DAT lines, but it's overcomplicating things.
-		TRACE("Wait for transfer complete...");
-		while ((fCommandResult & SDHCI_INT_TRANSFER_MASK) == 0) {
-			status_t result = waiter.Wait(B_RELATIVE_TIMEOUT, 1000000);
-			if (result == B_TIMED_OUT) {
-				TRACE("Transfer complete interrupt did not trigger for a while, status %x\n",
-					fRegisters->interrupt_status);
-			} else if (result != B_OK)
-				panic("sdhci: Failed to wait for end of DMA transfer: %s", strerror(result));
-			fInterruptNotifier.Add(&waiter);
+		status = WaitForCompletion(SDHCI_INT_TRANS_CMP, 1000000);
+		if (status != B_OK) {
+			RecoverError();
+			return status;
 		}
+		memory_full_barrier();
+		length -= size;
+		offset += size;
+	}
+	return B_OK;
+}
 
-		if (fCommandResult & SDHCI_INT_DATA_TIMEOUT) {
-			TRACE_ALWAYS("Request timed out!\n");
-			fRegisters->software_reset.ResetDataLine();
-			return B_TIMED_OUT;
-		}
 
-		TRACE("transfer complete OK.\n");
-
-		length -= toCopy;
-		vecOffset += toCopy;
-		offset += toCopy;
+status_t
+SdhciBus::ReadExtendedCsd(uint8_t data[512])
+{
+	if (data == NULL || !is_mmc_card(fCardType))
+		return B_BAD_VALUE;
+	if (fStatus != B_OK)
+		return fStatus;
+	fRegisters->block_size.ConfigureTransfer(512, BlockSize::kDmaBoundary4K);
+	fRegisters->block_count = 1;
+	uint32_t response = 0;
+	status_t status = ExecuteCommand(MMC_SEND_EXT_CSD, 0, &response);
+	if (status != B_OK)
+		return status;
+	if ((response & kMmcR1ErrorMask) != 0) {
+		RecoverError();
+		return B_IO_ERROR;
 	}
 
-	return result;
+	bigtime_t deadline = system_time() + 1000000;
+	for (unsigned offset = 0; offset < 512; offset += sizeof(uint32_t)) {
+		while ((fRegisters->present_state.Bits() & (1 << 11)) == 0) {
+			if ((atomic_get(&fCommandResult) & SDHCI_INT_ERROR_MASK) != 0) {
+				RecoverError();
+				return B_IO_ERROR;
+			}
+			if (system_time() >= deadline) {
+				RecoverError();
+				return B_TIMED_OUT;
+			}
+			snooze(10);
+		}
+		uint32_t word = fRegisters->buffer_data_port;
+		for (unsigned byte = 0; byte < sizeof(word); byte++)
+			data[offset + byte] = word >> (8 * byte);
+	}
+	fRegisters->interrupt_status = SDHCI_INT_BUF_READ_READY;
+	status = WaitForCompletion(SDHCI_INT_TRANS_CMP, 1000000);
+	if (status != B_OK)
+		RecoverError();
+	return status;
 }
 
 
@@ -575,6 +587,10 @@ void
 SdhciBus::SetScanSemaphore(sem_id sem)
 {
 	fScanSemaphore = sem;
+	if (sem < B_OK) {
+		fRegisters->interrupt_signal_enable &= ~SDHCI_INT_CARD_INS;
+		return;
+	}
 
 	// If there is already a card in, start a scan immediately
 	if (fRegisters->present_state.IsCardInserted())
@@ -673,16 +689,21 @@ SdhciBus::TerminateBus()
 void
 SdhciBus::RecoverError()
 {
-	fRegisters->interrupt_signal_enable &= ~(SDHCI_INT_CMD_CMP
-		| SDHCI_INT_TRANS_CMP | SDHCI_INT_CARD_INS | SDHCI_INT_CARD_REM);
-
-	if (fRegisters->interrupt_status & 7)
-		fRegisters->software_reset.ResetCommandLine();
-
-	int16_t error_status = fRegisters->interrupt_status;
-	fRegisters->interrupt_status &= ~(error_status);
+	uint32_t signals = fRegisters->interrupt_signal_enable;
+	fRegisters->interrupt_signal_enable = 0;
+	memory_full_barrier();
+	if (!fRegisters->software_reset.ResetCommandAndDataLines()) {
+		fStatus = B_TIMED_OUT;
+		ERROR("Command/data reset timed out; controller disabled\n");
+		return;
+	}
+	fRegisters->interrupt_status = SDHCI_INT_CMD_CMP | SDHCI_INT_TRANS_CMP
+		| SDHCI_INT_ERROR | SDHCI_INT_ERROR_MASK
+		| SDHCI_INT_BUF_READ_READY | SDHCI_INT_BUF_WRITE_READY;
+	atomic_set(&fCommandResult, 0);
+	fRegisters->interrupt_signal_enable = signals;
+	memory_full_barrier();
 }
-
 
 int32
 SdhciBus::HandleInterrupt()
@@ -717,7 +738,7 @@ SdhciBus::HandleInterrupt()
 		else
 			TRACE("Card removed interrupt, but card is inserted\n");
 
-		fRegisters->interrupt_status |= SDHCI_INT_CARD_REM;
+		fRegisters->interrupt_status = SDHCI_INT_CARD_REM;
 		TRACE("Card removal interrupt handled\n");
 	}
 
@@ -725,44 +746,26 @@ SdhciBus::HandleInterrupt()
 		// We can get spurious interrupts as the card is inserted or removed,
 		// so check the actual state before acting
 		if (fRegisters->present_state.IsCardInserted()) {
-			if (PowerOn())
-				SetClock(400, false);
-			release_sem_etc(fScanSemaphore, 1, B_DO_NOT_RESCHEDULE);
+			if (fScanSemaphore >= B_OK)
+				release_sem_etc(fScanSemaphore, 1, B_DO_NOT_RESCHEDULE);
 		} else
 			TRACE("Card insertion interrupt, but card is removed\n");
 
-		fRegisters->interrupt_status |= SDHCI_INT_CARD_INS;
+		fRegisters->interrupt_status = SDHCI_INT_CARD_INS;
 		TRACE("Card presence interrupt handled\n");
 	}
 
-	// handling command interrupt
-	if (intmask & SDHCI_INT_CMD_MASK) {
-		fCommandResult |= intmask;
-			// Save the status before clearing so the thread can handle it
-
-		fRegisters->interrupt_status |= (intmask & SDHCI_INT_CMD_MASK);
-
-		// Notify the thread
+	uint32_t completion = intmask & (SDHCI_INT_CMD_CMP | SDHCI_INT_TRANS_CMP
+		| SDHCI_INT_ERROR | SDHCI_INT_ERROR_MASK);
+	if (completion != 0) {
+		atomic_or(&fCommandResult, completion);
+		fRegisters->interrupt_status = completion;
 		fInterruptNotifier.NotifyAll();
-		TRACE("Command complete interrupt handled\n");
-	}
-
-	if (intmask & SDHCI_INT_TRANSFER_MASK) {
-		fCommandResult |= intmask;
-		fRegisters->interrupt_status |= (intmask & SDHCI_INT_TRANSFER_MASK);
-		fInterruptNotifier.NotifyAll();
-		TRACE("Transfer complete interrupt handled\n");
-	}
-
-	// handling bus power interrupt
-	if (intmask & SDHCI_INT_BUS_POWER) {
-		fRegisters->interrupt_status |= SDHCI_INT_BUS_POWER;
-		TRACE("card is consuming too much power\n");
 	}
 
 	// Check that all interrupts have been cleared (we check all the ones we
 	// enabled, so that should always be the case)
-	intmask = fRegisters->interrupt_status;
+	intmask = fRegisters->interrupt_status & fRegisters->interrupt_signal_enable;
 	if (intmask != 0) {
 		ERROR("Remaining interrupts at end of handler: %x\n", intmask);
 	}
@@ -772,28 +775,15 @@ SdhciBus::HandleInterrupt()
 
 
 status_t
-SdhciBus::_WorkerThread(void* cookie) {
+SdhciBus::_WorkerThread(void* cookie)
+{
 	SdhciBus* bus = (SdhciBus*)cookie;
 	while (bus->fStatus != B_SHUTTING_DOWN) {
-		uint32_t intmask = bus->fRegisters->interrupt_status;
-		if (intmask & SDHCI_INT_CMD_CMP) {
-			bus->fCommandResult = intmask;
-			bus->fRegisters->interrupt_status |= (intmask & SDHCI_INT_CMD_MASK);
-			bus->fInterruptNotifier.NotifyAll();
-		}
-		if (intmask & SDHCI_INT_TRANS_CMP) {
-			bus->fCommandResult = intmask;
-			bus->fRegisters->interrupt_status |= SDHCI_INT_TRANS_CMP;
-			bus->fInterruptNotifier.NotifyAll();
-		}
+		bus->HandleInterrupt();
 		snooze(100);
 	}
-	TRACE("poller thread terminating");
 	return B_OK;
 }
-
-
-// #pragma mark -
 
 
 void
@@ -931,7 +921,14 @@ set_clock(void* controller, uint32_t kilohertz)
 	SdhciBus* bus = (SdhciBus*)controller;
 
 	bus->SetClock(kilohertz, true);
-	return B_OK;
+	return bus->InitCheck();
+}
+
+
+status_t
+read_extended_csd(void* controller, uint8_t data[512])
+{
+	return ((SdhciBus*)controller)->ReadExtendedCsd(data);
 }
 
 
