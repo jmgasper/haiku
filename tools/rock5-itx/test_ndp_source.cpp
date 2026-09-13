@@ -4,9 +4,9 @@
 #include <cstring>
 #include <vector>
 
-static bool operator!=(const in6_addr& a, const in6_addr& b)
+static bool SameAddress(const in6_addr& a, const in6_addr& b)
 {
-	return memcmp(&a, &b, sizeof(a)) != 0;
+	return memcmp(&a, &b, sizeof(a)) == 0;
 }
 
 struct net_interface {};
@@ -63,16 +63,16 @@ main()
 	listed = {&old};
 	ndp_replace_local_source(&protocol, oldAddress.sin6_addr,
 		reinterpret_cast<sockaddr*>(&newAddress));
-	assert(!(protocol.local_address != newAddress.sin6_addr) && visits == 0);
+	assert(SameAddress(protocol.local_address, newAddress.sin6_addr) && visits == 0);
 	// Removing an unrelated alias must retain the selected source.
 	ndp_replace_local_source(&protocol, oldAddress.sin6_addr, nullptr);
-	assert(!(protocol.local_address != newAddress.sin6_addr) && visits == 0);
+	assert(SameAddress(protocol.local_address, newAddress.sin6_addr) && visits == 0);
 	for (auto entries : {std::vector<net_interface_address*>{&old, &v4, &empty, &other},
 			std::vector<net_interface_address*>{&other, &old}}) {
 		listed = entries;
 		protocol.local_address = oldAddress.sin6_addr;
 		ndp_replace_local_source(&protocol, oldAddress.sin6_addr, nullptr);
-		assert(!(protocol.local_address != remaining.sin6_addr) && held == 0);
+		assert(SameAddress(protocol.local_address, remaining.sin6_addr) && held == 0);
 	}
 	for (sockaddr* replacement : {static_cast<sockaddr*>(nullptr), &ipv4}) {
 		listed = {&old, &v4, &empty};

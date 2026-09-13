@@ -530,7 +530,7 @@ static void
 ndp_replace_local_source(ipv6_datalink_protocol* protocol,
 	const in6_addr& removed, const sockaddr* replacement)
 {
-	if (protocol->local_address != removed)
+	if (memcmp(&protocol->local_address, &removed, sizeof(in6_addr)) != 0)
 		return;
 
 	// change_address runs before the interface's address list is updated.
@@ -549,7 +549,7 @@ ndp_replace_local_source(ipv6_datalink_protocol* protocol,
 			continue;
 
 		const in6_addr& candidate = ((sockaddr_in6*)address->local)->sin6_addr;
-		if (candidate != removed)
+		if (memcmp(&candidate, &removed, sizeof(in6_addr)) != 0)
 			protocol->local_address = candidate;
 	}
 }
