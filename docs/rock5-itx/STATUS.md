@@ -2395,7 +2395,22 @@ the retained firmware resources and enables INTA only after handler installation
 The Realtek top half now masks level interrupts before scheduling its worker;
 setup failure cleanup also handles suspended workers. Review additionally found
 and corrected rejection of RTL8125's unrestricted parent DMA tag, which had
-silently lost the driver's 32-bit address ceiling. All 77 host checks passed,
-and ARM64 component compilation passed. Full-image, QEMU and native qualification
-remain pending. The SSD and recovery setup are unchanged. See
+silently lost the driver's 32-bit address ceiling. Review also corrected a
+hard-coded root-device unit that associated both Realtek interfaces with the
+first device, and checked interface allocation before enabling bus mastering.
+
+All 77 final host checks passed, including injected failure of the required
+ARM64 interrupt module. The full `hrev60097+102` image built from `fdcd191d20`.
+QEMU in `qemu-shell/20260913T052005Z-47931a` passed memory/platform/cache/service
+checks, USB control and transfers, NVMe persistence, normal reboot and shutdown.
+The Intel PCI fixture passed an 8 MiB round trip before and after reboot, with
+independent returned-file hashes and packet capture confirming at least 16 MiB
+of TCP payload each way. Both boots used IRQ 35 through the new interface and
+rejected the unrelated RK3588 host profile. The preceding `+101` candidate's
+QEMU pass is retained separately.
+
+`state/network-intx-checkpoint.json` accepts this software/emulation milestone.
+Native RTL8125 attachment, interrupt arrival, DMA coherence and packet traffic
+remain untested. The earlier USB timeout and native startup stall remain open.
+The SSD and recovery setup are unchanged. See
 [ETHERNET.md](ETHERNET.md) for implementation, evidence and remaining limits.

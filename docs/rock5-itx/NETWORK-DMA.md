@@ -1,8 +1,8 @@
 # ARM64 BSD network DMA
 
 This is an experimental foundation for the RTL8125 port. The onboard NICs have
-not passed a native Haiku traffic test. Interrupt routing remains a separate
-prerequisite; Linux's PCI bus numbers and ITS requester IDs must not be assumed
+not passed a native Haiku traffic test. The interrupt candidate is tracked in
+[ETHERNET.md](ETHERNET.md); Linux's PCI bus numbers and ITS requester IDs must not be assumed
 to match EDK2's retained configuration.
 
 ## Implementation
@@ -51,8 +51,8 @@ including the wrapper cleanup and empty-mbuf copy correction, passed in
 image built in `artifacts/build-20260913T041514Z.log` from `c68654e89d`.
 Compilation does not establish native device support.
 
-The lab image includes `ipro1000` for QEMU's emulated Intel NIC; `rtl8125` remains
-excluded. `qemu_shell.py --pci-network` retains the RNDIS control network and
+The `+98` image used for this checkpoint included `ipro1000` for QEMU's emulated
+Intel NIC and excluded `rtl8125`. `qemu_shell.py --pci-network` retains the RNDIS control network and
 adds an isolated Intel interface at `10.240.7.15`. Its peer performs an 8 MiB
 round trip with independent hashes and a truncated-transfer check, repeated
 after a requested normal reboot. The manifest must supply

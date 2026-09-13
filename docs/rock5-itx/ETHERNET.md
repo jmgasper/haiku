@@ -70,7 +70,7 @@ above 4 GiB. This correction still needs native evidence.
 
 ## Validation status
 
-All 77 host checks passed in `tmp/host-checks-network-intx.log`, including the
+All 77 host checks passed in `tmp/host-checks-network-intx-final.log`, including the
 actual PCI INTx methods, BSD setup/teardown bodies and Realtek top half compiled
 with fault-injecting kernel/MMIO substitutes. Checks cover vectors 277/282,
 provider failure without byte fallback, enable/disable ordering, MSI conflicts,
@@ -78,9 +78,33 @@ failed configuration writes, masking after endpoint configuration becomes
 inaccessible, allocation/semaphore/thread/handler failures, and refusing handler
 removal when masking fails. The profile tests reject incorrect resources,
 specifier flags, truncated vectors and unsupported BDF/pin combinations.
+The initialization checks also inject failure of either required PCI module
+and verify reference cleanup and rejection of the ARM64 byte fallback.
 
-The ARM64 components compile. The complete image and QEMU/native checks are
-pending for this candidate. The lab image includes RTL8125, but its default
+The complete `hrev60097+102` image built from
+`fdcd191d208a49a5cc0ba42425a178a8b738add9` in
+`artifacts/build-20260913T051802Z.log`. QEMU session
+`qemu-shell/20260913T052005Z-47931a` passed authenticated USB control, memory,
+platform, cache, services, USB file transfer, NVMe persistence, normal reboot
+and shutdown. An additional Intel PCI NIC passed an 8 MiB round trip before
+and after reboot, including truncated-transfer rejection. Each returned file's
+size/hash matched independently. Packet capture contains 39,391 frames, with
+16,785,440 TCP payload bytes toward the guest and 16,777,622 toward its peer.
+Both boots used the new interface's legacy IRQ 35 fallback; the unrelated
+RK3588 firmware profile was rejected in QEMU.
+
+The exact private candidate is indexed by `state/network-intx-image-plan.json`,
+with SHA-256
+`027f72a035c04cbdff95ab15b70e0360fdabddd16556658d8a4c2d891d0c9385`.
+`state/network-intx-checkpoint.json` retains the reviewed result, packet counts,
+component hashes and native limits. The preceding `+101` candidate also passed
+QEMU in `qemu-shell/20260913T051454Z-4562e0`; it was superseded before any native
+trial by the two-port association/allocation checks. The older `+98` USB timeout
+and native `+88` startup stall remain unresolved.
+
+Native RTL8125 attachment, IRQ delivery and traffic remain pending. These QEMU
+checks cannot establish RK3588 cache coherency or physical interrupt routing.
+The lab image includes RTL8125, but its default
 Samsung-only PCIe profile does not expose the onboard NICs. A native trial must
 enable the onboard profile and legacy routes explicitly, keep AHCI blocked,
 retain RNDIS control and recovery, check exact component hashes, and distinguish
