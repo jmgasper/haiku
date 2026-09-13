@@ -8,6 +8,11 @@
 
 #include <machine/_bus.h>
 
+#if defined(__aarch64__)
+#define _bus_space_io_barrier() memory_full_barrier()
+#else
+#define _bus_space_io_barrier() __compiler_membar()
+#endif
 
 #define	BUS_SPACE_ALIGNED_POINTER(p, t) ALIGNED_POINTER(p, t)
 
@@ -29,7 +34,9 @@ bus_space_read_1(bus_space_tag_t tag, bus_space_handle_t handle,
 {
 	if (tag != BUS_SPACE_TAG_MEM)
 		return BUS_SPACE_INVALID_DATA;
-	return (*(volatile u_int8_t *)(handle + offset));
+	u_int8_t value = *(volatile u_int8_t *)(handle + offset);
+	_bus_space_io_barrier();
+	return value;
 }
 
 
@@ -39,7 +46,9 @@ bus_space_read_2(bus_space_tag_t tag, bus_space_handle_t handle,
 {
 	if (tag != BUS_SPACE_TAG_MEM)
 		return BUS_SPACE_INVALID_DATA;
-	return (*(volatile u_int16_t *)(handle + offset));
+	u_int16_t value = *(volatile u_int16_t *)(handle + offset);
+	_bus_space_io_barrier();
+	return value;
 }
 
 
@@ -49,7 +58,9 @@ bus_space_read_4(bus_space_tag_t tag, bus_space_handle_t handle,
 {
 	if (tag != BUS_SPACE_TAG_MEM)
 		return BUS_SPACE_INVALID_DATA;
-	return (*(volatile u_int32_t *)(handle + offset));
+	u_int32_t value = *(volatile u_int32_t *)(handle + offset);
+	_bus_space_io_barrier();
+	return value;
 }
 
 
@@ -59,7 +70,9 @@ bus_space_read_8(bus_space_tag_t tag, bus_space_handle_t handle,
 {
 	if (tag != BUS_SPACE_TAG_MEM)
 		return BUS_SPACE_INVALID_DATA;
-	return (*(volatile uint64_t *)(handle + offset));
+	uint64_t value = *(volatile uint64_t *)(handle + offset);
+	_bus_space_io_barrier();
+	return value;
 }
 
 
@@ -69,6 +82,7 @@ bus_space_write_1(bus_space_tag_t tag, bus_space_handle_t bsh,
 {
 	if (tag != BUS_SPACE_TAG_MEM)
 		return;
+	_bus_space_io_barrier();
 	*(volatile u_int8_t *)(bsh + offset) = value;
 }
 
@@ -79,6 +93,7 @@ bus_space_write_2(bus_space_tag_t tag, bus_space_handle_t bsh,
 {
 	if (tag != BUS_SPACE_TAG_MEM)
 		return;
+	_bus_space_io_barrier();
 	*(volatile u_int16_t *)(bsh + offset) = value;
 }
 
@@ -89,6 +104,7 @@ bus_space_write_4(bus_space_tag_t tag, bus_space_handle_t bsh,
 {
 	if (tag != BUS_SPACE_TAG_MEM)
 		return;
+	_bus_space_io_barrier();
 	*(volatile u_int32_t *)(bsh + offset) = value;
 }
 
@@ -99,6 +115,7 @@ bus_space_write_8(bus_space_tag_t tag, bus_space_handle_t bsh,
 {
 	if (tag != BUS_SPACE_TAG_MEM)
 		return;
+	_bus_space_io_barrier();
 	*(volatile uint64_t *)(bsh + offset) = value;
 }
 
@@ -219,7 +236,7 @@ static __inline void
 bus_space_barrier(bus_space_tag_t tag __unused, bus_space_handle_t bsh __unused,
 	bus_size_t offset __unused, bus_size_t len __unused, int flags)
 {
-	__compiler_membar();
+	_bus_space_io_barrier();
 }
 
 

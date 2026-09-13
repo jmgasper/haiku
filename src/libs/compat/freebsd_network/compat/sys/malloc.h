@@ -40,6 +40,13 @@ void *_kernel_contigmalloc(const char *file, int line, size_t size, int flags,
 	unsigned long boundary);
 void _kernel_contigfree(void *addr, unsigned long size);
 
+#if defined(__aarch64__)
+#define FBSD_NONCOHERENT_DMA 1
+/* Only private allocations from this compatibility library qualify. */
+bool _kernel_contig_dma_address(const void *addr, size_t size,
+	vm_paddr_t *physicalAddress);
+#endif
+
 #define kernel_malloc(size, base, flags) \
 	_kernel_malloc(size, flags)
 

@@ -17,4 +17,7 @@ rule UserBuildConfigRulePreImage
 	AddFilesToHaikuImage home config non-packaged bin
 		: rock5_memory_probe rock5_platform_probe rock5_cache_probe rock5_file_transfer
 			rock5_services_probe rock5_pci_config_probe ;
+	# Exercise the BSD DMA layer with QEMU's Intel NIC. This is a lab fixture;
+	# the onboard RTL8125 driver remains excluded pending interrupt routing.
+	AddDriversToHaikuImage net : ipro1000 ;
 }

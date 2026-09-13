@@ -2366,3 +2366,15 @@ normal reboot to ROOBI also passed. This is `+94` plus the settings file, not a
 native qualification of the full `+96` USB image. The evidence index is
 `state/native-icu-installed-environment.json`. RTC/NTP and general ARM64 package
 completeness remain open.
+
+## ARM64 BSD network DMA preparation
+
+The next Ethernet prerequisite is implemented on `rock5-network-dma` and remains
+unqualified on native NIC hardware. Private ARM64 DMA allocations use Normal
+Non-cacheable RAM; descriptor rings stay direct and ordinary packets use
+preallocated bounce buffers. Mapping ownership, interval checks, failure cleanup
+and partial synchronization are covered by the actual-source host tests. All
+76 host checks passed; RTL8125 and the Intel QEMU fixture driver cross-linked.
+The complete image and QEMU traffic qualification are pending. The physical SSD
+still has its accepted `+94` installation and ICU setting, and the ROCK remains
+in ROOBI. See [NETWORK-DMA.md](NETWORK-DMA.md) for scope and acceptance limits.

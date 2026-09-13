@@ -53,26 +53,50 @@ else:
             'sha256': hashlib.sha256(fixture).hexdigest()}
 
 
-def check_transfers(client, output, credentials, fixture):
+def check_transfers(client, output, credentials, fixture, address='10.0.2.100'):
     helper = '/boot/home/config/non-packaged/bin/rock5_file_transfer'
     token = fixture['token']
     path = '/boot/home/rock5-roundtrip.bin'
+    peer_returned = os.path.join(os.path.dirname(fixture['peer']), 'transfer-returned.bin')
+    if os.path.exists(peer_returned):
+        os.unlink(peer_returned)
     # Installed images can retain fixtures from an earlier qualification run.
     # Reset only these test files in this run's disposable QEMU overlay.
     commands = (f'umask 077\nrm -f {path} /boot/home/rock5-partial.bin\n'
-                f'{helper} receive 10.0.2.100 9000 {token} {path}\n'
+                f'{helper} receive {address} 9000 {token} {path}\n'
                 f'actual=$(sha256sum {path})\n'
                 f'[ "${{actual%% *}}" = {fixture["sha256"]} ]\n'
-                f'{helper} send 10.0.2.100 9001 {token} {path}\n'
-                f'if {helper} receive 10.0.2.100 9002 {token} /boot/home/rock5-partial.bin; '
+                f'{helper} send {address} 9001 {token} {path}\n'
+                f'if {helper} receive {address} 9002 {token} /boot/home/rock5-partial.bin; '
                 'then exit 1; else rock5_partial=$?; [ "$rock5_partial" -eq 1 ]; fi\n'
                 'echo ROCK5_TRANSFER_CHECKS_PASS\n')
     shell.execute(client, commands, output / 'transfer.txt', credentials, timeout=180)
     returned = output / 'transfer-returned.bin'
-    if not returned.exists() or lab.digest(returned) != fixture['sha256']:
+    if not os.path.exists(peer_returned) or lab.digest(peer_returned) != fixture['sha256']:
         raise RuntimeError('Guest round-trip checksum differs from the fixture')
+    if os.path.abspath(peer_returned) != os.path.abspath(returned):
+        shutil.copyfile(peer_returned, returned)
     return {'bytes': fixture['bytes'], 'sha256': fixture['sha256'],
             'roundtrip': 'pass', 'truncated_transfer_rejected': True}
+
+
+def check_pci_network(client, output, credentials, fixture, driver_hash, phase):
+    evidence = output / 'pci-network' / phase
+    evidence.mkdir()
+    commands = (
+        'ifconfig /dev/net/ipro1000/0\n'
+        'rock5_nic_hash=$(sha256sum /boot/system/add-ons/kernel/drivers/bin/ipro1000)\n'
+        f'[ "${{rock5_nic_hash%% *}}" = {driver_hash} ]\n'
+        'echo ROCK5_PCI_NETWORK_DRIVER_HASH_PASS\n')
+    shell.execute(client, commands, evidence / 'interface.txt', credentials)
+    text = (evidence / 'interface.txt').read_text()
+    for expected in ('inet addr: 10.240.7.15', '52:54:00:35:88:01',
+                     'ROCK5_PCI_NETWORK_DRIVER_HASH_PASS'):
+        if expected not in text:
+            raise RuntimeError('Missing PCI network evidence: ' + expected)
+    transfer = check_transfers(client, evidence, credentials, fixture, '10.240.7.100')
+    return {'status': 'pass', 'evidence': str(evidence), 'driver_sha256': driver_hash,
+            'interface': '/dev/net/ipro1000/0', 'file_transfer': transfer}
 
 
 def diagnose(output):
@@ -120,14 +144,20 @@ def check_pci_config(client, output, credentials, after_reboot=False):
 
 
 def run(manifest_path, el1=False, memory=False, power=False, normal=False, platform=False,
-        transfer=False, services=False, cache=False, nvme=False, pci_config=False):
+        transfer=False, services=False, cache=False, nvme=False, pci_config=False,
+        pci_network=False):
     if nvme and not (power and normal):
         raise ValueError('NVMe validation requires normal reboot and power-off')
     if pci_config and not nvme:
         raise ValueError('PCI configuration probe requires the extra NVMe fixture')
+    if pci_network and pci_config:
+        raise ValueError('The fixed PCI configuration probe excludes the extra NIC')
     manifest, image = lab.read_manifest(manifest_path)
     if not manifest.get('private_image'):
         raise ValueError('An authenticated private shell image is required')
+    driver_hash = manifest.get('network_dma_test', {}).get('ipro1000_sha256', '')
+    if pci_network and not re.fullmatch(r'[0-9a-f]{64}', driver_hash):
+        raise ValueError('PCI network trial requires a pinned ipro1000 hash in the manifest')
     credentials = shell_image.read_credentials()
     output = lab.WORK / 'artifacts/qemu-shell' / lab.timestamp()
     output.mkdir(parents=True)
@@ -164,6 +194,17 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
     if nvme:
         command += ['-drive', f'file={nvme_fixture["disk"]},if=none,id=nvme0,format=raw',
                     '-device', f'nvme,drive=nvme0,serial={nvme_fixture["serial"]}']
+    if pci_network:
+        pci_output = output / 'pci-network'
+        pci_output.mkdir()
+        pci_fixture = prepare_transfer_peer(pci_output)
+        pci_net = 'user,id=dma,net=10.240.7.0/24,dhcpstart=10.240.7.15,restrict=on'
+        for offset, direction in enumerate(('receive', 'send', 'truncated')):
+            peer_command = shlex.join([sys.executable, pci_fixture['peer'], direction])
+            pci_net += f',guestfwd=tcp:10.240.7.100:{9000 + offset}-cmd:{peer_command}'
+        command += ['-netdev', pci_net,
+                    '-device', 'e1000,netdev=dma,mac=52:54:00:35:88:01',
+                    '-object', f'filter-dump,id=dma-trace,netdev=dma,file={pci_output / "network.pcap"}']
     result = {'artifact': manifest, 'command': command, 'evidence': str(output),
               'status': 'incomplete', 'expect': 'authenticated remote commands',
               'firmware_sha256': lab.digest(firmware),
@@ -252,6 +293,9 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
                                              'mismatches': 0}
                 if transfer:
                     result['file_transfer'] = check_transfers(client, output, credentials, fixture)
+                if pci_network:
+                    result['pci_network'] = check_pci_network(client, output, credentials,
+                                                              pci_fixture, driver_hash, 'first-boot')
                 if services:
                     if 'ROCK5_SERVICES_PASS' not in text or 'ROCK5_SERVICES_FAIL' not in text:
                         raise RuntimeError('Missing service descriptor regression evidence')
@@ -279,6 +323,9 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
                     time.sleep(2)
                     shell.execute(client, 'uname -a\nsystem_time\n', output / 'after-reboot.txt',
                                   credentials)
+                    if pci_network:
+                        result['pci_network_after_reboot'] = check_pci_network(
+                            client, output, credentials, pci_fixture, driver_hash, 'after-reboot')
                     if nvme:
                         if pci_config:
                             result['pci_config_after_reboot'] = check_pci_config(
@@ -327,6 +374,8 @@ def main():
                         help='Check disposable NVMe I/O across normal reboot and shutdown')
     parser.add_argument('--pci-config', action='store_true',
                         help='Read known host/NVMe configuration pages (requires --nvme)')
+    parser.add_argument('--pci-network', action='store_true',
+                        help='Test BSD DMA with a separate emulated Intel NIC; retain USB control')
     parser.add_argument('--power', action='store_true', help='Reboot, log in again, then power off')
     parser.add_argument('--normal', action='store_true', help='Use desktop shutdown (requires --power)')
     parser.add_argument('--result', help='Also save the full result at this local path')
@@ -337,11 +386,14 @@ def main():
         parser.error('--nvme requires --power --normal')
     if args.pci_config and not args.nvme:
         parser.error('--pci-config requires --nvme')
+    if args.pci_config and args.pci_network:
+        parser.error('--pci-config has a fixed inventory and excludes --pci-network')
     if not os.path.ismount(lab.WORK):
         raise RuntimeError(f'Required filesystem is not mounted: {lab.WORK}')
     os.umask(0o077)
     result = run(args.manifest, args.el1, args.memory, args.power, args.normal, args.platform,
-                 args.transfer, args.services, args.cache, args.nvme, args.pci_config)
+                 args.transfer, args.services, args.cache, args.nvme, args.pci_config,
+                 args.pci_network)
     if args.result:
         lab.save(args.result, result)
     print(json.dumps({key: result.get(key) for key in
