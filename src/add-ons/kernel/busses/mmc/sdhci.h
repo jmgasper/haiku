@@ -25,6 +25,8 @@ struct sdhci_platform_info {
 	bool read_only;
 	bool divider_zero_broken;
 	uint32 identification_clock;
+	// Optional scheduler CPU-vector restriction; private SDMA stays below 4 GiB.
+	uint64 cpu_address_floor;
 };
 
 
@@ -72,6 +74,8 @@ class SdhciBus {
 			void*				fDMABuffer;
 			phys_addr_t			fDMAAddress;
 			bool				fDMAQuarantined;
+			bool				fReportedHighCpuRead;
+			bool				fReportedHighCpuWrite;
 };
 
 

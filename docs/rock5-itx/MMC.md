@@ -508,6 +508,24 @@ power-loss, cached-card flush, sustained I/O or faster-mode acceptance.
 `state/emmc-write-fixture.json` records the retained final bytes for subsequent
 tests.
 
+## Opt-in high-memory CPU-buffer test mode
+
+The RK3588 profile accepts `force_high_cpu_buffers true` in the `sdhci` driver
+settings. It defaults to false. When enabled, the profile publishes a 4 GiB
+lower address bound to the existing I/O scheduler; lower caller addresses use
+its constrained bounce buffers. The SDHCI driver validates every used physical
+vector against the same bound before submitting any card command. The private
+512 KiB noncacheable SDMA payload retains its separate below-4-GiB allocation.
+
+The driver records the minimum CPU-vector address and the SDMA address after
+the first successful complete read and write on each boot. A lower vector must
+reject the whole operation, including when it follows a valid vector. Host
+cases cover that rejection, data integrity through the private buffer, and
+copy/command failures; the existing SDMA allocation-failure checks also pass.
+Native address observations and independent data checks are
+still required; enabling the setting or running the low-RAM QEMU suite alone
+does not qualify high-memory I/O.
+
 ## Native work remaining
 
 Extend native eight-bit operation to orderly shutdown/startup. Extend the

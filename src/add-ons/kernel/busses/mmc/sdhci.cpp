@@ -68,7 +68,9 @@ SdhciBus::SdhciBus(struct registers* registers, uint32_t irq, bool poll,
 	fDMAArea(-1),
 	fDMABuffer(NULL),
 	fDMAAddress(0),
-	fDMAQuarantined(false)
+	fDMAQuarantined(false),
+	fReportedHighCpuRead(false),
+	fReportedHighCpuWrite(false)
 {
 	if (irq == 0 || irq == 0xff) {
 		ERROR("IRQ not assigned\n");
@@ -535,18 +537,21 @@ SdhciBus::DoIO(uint8_t command, IOOperation* operation, bool offsetAsSectors)
 
 	// Validate the complete request before any command can change the card.
 	generic_size_t remaining = length;
+	uint64 cpuAddress = UINT64_MAX;
 	for (size_t i = 0; i < count && remaining != 0; i++) {
 		generic_size_t size = std::min(remaining, vecs[i].length);
 		if (size == 0)
 			continue;
-		uint64_t address = vecs[i].base;
-		if (size % blockSize != 0 || (address & (blockSize - 1)) != 0
+		uint64 address = vecs[i].base;
+		if (address < fPlatform.cpu_address_floor
+			|| size % blockSize != 0 || (address & (blockSize - 1)) != 0
 			|| size > kSdhciDmaSize || size > UINT64_MAX - address)
 			return B_BAD_VALUE;
 		if (fDMABuffer == NULL && (address >= UINT64_C(0x100000000)
 			|| size > UINT64_C(0x100000000) - address
 			|| (address & 0x7ffff) + size > 0x80000))
 			return B_BAD_VALUE;
+		cpuAddress = std::min(cpuAddress, address);
 		remaining -= size;
 	}
 	uint64_t unit = offsetAsSectors ? blockSize : 1;
@@ -597,6 +602,16 @@ SdhciBus::DoIO(uint8_t command, IOOperation* operation, bool offsetAsSectors)
 		}
 		length -= size;
 		offset += size;
+	}
+	if (fPlatform.cpu_address_floor != 0) {
+		bool& reported = operation->IsWrite() ? fReportedHighCpuWrite : fReportedHighCpuRead;
+		if (!reported) {
+			TRACE_ALWAYS("CPU buffer %s completed: min=%#" B_PRIx64 " bytes=%" B_PRIu64
+				" floor=%#" B_PRIx64 " DMA32=%#" B_PRIx64 "\n",
+				operation->IsWrite() ? "write" : "read", cpuAddress,
+				(uint64)operation->Length(), fPlatform.cpu_address_floor, (uint64)fDMAAddress);
+			reported = true;
+		}
 	}
 	return B_OK;
 }

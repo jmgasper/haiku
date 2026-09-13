@@ -341,7 +341,7 @@ int main()
       assert((((raw >> 8) & 255) | ((raw & 0xc0) << 2)) == 250);
     }
     for (const char* failure : {"", "platform-clock"}) {
-        sdhci_platform_info platform = {platformClock, nullptr, true, true, 375};
+        sdhci_platform_info platform = {platformClock, nullptr, true, true, 375, 0};
         Fixture f(failure, false, &platform);
         if (fault == "platform-clock") {
             assert(bus->InitCheck() == B_IO_ERROR && !(regs->clock_control.Bits() & 4));
@@ -399,13 +399,14 @@ int main()
         assert(result == (fault == "no-transfer" ? B_TIMED_OUT : B_IO_ERROR));
         assert(submissions.size() == 1 && resets == 2 && now <= 1100000);
     }
-    for (bool write : {false, true}) {
+    for (bool forceHigh : {false, true}) for (bool write : {false, true}) {
         Fixture f;
         std::vector<uint8> payload(kSdhciDmaSize + 32, 0x7d);
         cpuMemory.assign(kSdhciDmaSize + 32, 0xa5);
         for (unsigned i = 0; i < 1024; i++) cpuMemory[512 + i] = (i * 19) ^ (i >> 3);
         std::vector<uint8> expected(cpuMemory);
         bus->fDMABuffer = payload.data(); bus->fDMAAddress = 0x800000;
+        bus->fPlatform.cpu_address_floor = forceHigh ? UINT64_C(0x100000000) : 0;
         IOOperation op; op.offset = int64_t(5) << 30; op.length = 1024; op.write = write;
         op.vecs = {{kCpuAddress + 512, 1024}};
         dmaTransfer = [&] {
@@ -417,18 +418,41 @@ int main()
         assert(bus->DoIO(write ? SD_WRITE_MULTIPLE_BLOCKS : SD_READ_MULTIPLE_BLOCKS, &op, true) == B_OK);
         assert(cpuMemory == expected && payload[kSdhciDmaSize] == 0x7d);
         assert(copiedIn == int(write) && copiedOut == int(!write));
+        assert(bus->fReportedHighCpuRead == (forceHigh && !write));
+        assert(bus->fReportedHighCpuWrite == (forceHigh && write));
+    }
+    // A bad later vector must reject the entire operation before even the
+    // first valid vector can submit a command or copy any user data.
+    for (bool write : {false, true}) for (bool later : {false, true}) {
+        Fixture f;
+        std::vector<uint8> payload(kSdhciDmaSize, 0x7d);
+        bus->fDMABuffer = payload.data(); bus->fDMAAddress = 0x800000;
+        bus->fPlatform.cpu_address_floor = UINT64_C(0x100000000);
+        IOOperation op; op.write = write;
+        op.vecs = {{UINT64_C(0xfffffe00), 512}};
+        if (later) {
+            op.vecs.insert(op.vecs.begin(), {kCpuAddress, 512});
+            op.length = 1024;
+        }
+        assert(bus->DoIO(write ? SD_WRITE_MULTIPLE_BLOCKS : SD_READ_MULTIPLE_BLOCKS,
+            &op, true) == B_BAD_VALUE);
+        assert(submissions.empty() && !copiedIn && !copiedOut);
+        assert(!bus->fReportedHighCpuRead && !bus->fReportedHighCpuWrite);
+        assert(std::all_of(payload.begin(), payload.end(), [](uint8 n) { return n == 0x7d; }));
     }
     for (const char* failure : {"data-crc", "no-transfer", "copy-in", "copy-out", "reset-after-error"}) {
         Fixture f(failure);
         std::vector<uint8> payload(kSdhciDmaSize, 0);
         cpuMemory.assign(512, 0xa5);
         bus->fDMABuffer = payload.data(); bus->fDMAAddress = 0x800000;
+        bus->fPlatform.cpu_address_floor = UINT64_C(0x100000000);
         IOOperation op; op.vecs = {{kCpuAddress, 512}}; op.write = fault == "copy-in";
         dmaTransfer = [&] { memset(payload.data(), 0x66, 512); };
         assert(bus->DoIO(op.write ? SD_WRITE_MULTIPLE_BLOCKS : SD_READ_MULTIPLE_BLOCKS, &op, true) != B_OK);
         assert(std::all_of(cpuMemory.begin(), cpuMemory.end(), [](uint8 n) { return n == 0xa5; }));
         if (fault == "copy-in") assert(submissions.empty());
         if (fault == "reset-after-error") assert(bus->fDMAQuarantined);
+        assert(!bus->fReportedHighCpuRead && !bus->fReportedHighCpuWrite);
     }
     { Fixture f; IOOperation op; op.write = true;
       bus->fPlatform.read_only = true;
