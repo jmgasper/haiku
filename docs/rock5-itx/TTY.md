@@ -57,6 +57,14 @@ startup snapshots and filesystem checks passed. The mounted SSD retained its
 old packages and both 2 GiB test regions with their guards. After `sync` and
 SSD unmount, lab recovery returned to ROOBI; UART capture completed without
 errors and the NanoKVM watchdog disarmed without a controller restart.
-`state/native-tty-fixed.json` records this USB-boot qualification. Updating and
-booting the SSD with these fixes is the next gate; sustained acceptance and the
-original intermittent startup stall remain open.
+`state/native-tty-fixed.json` records this USB-boot qualification.
+
+The SSD has since been updated with the same `+94` packages. Native installed
+sessions `interactive/20260913T031611Z-a505e7` and
+`interactive/20260913T032252Z-6d76ed` each passed the terminal probe, eight
+component hashes, five startup snapshots, both 2 GiB test regions, all eleven
+package hashes and clean filesystem checks. Both returned normally to ROOBI
+without a NanoKVM restart. `state/native-startup-installed-update.json` records
+the accepted installation and boots. A separate ICU environment setting was
+added after the second read check; its next-boot qualification is independent.
+Sustained acceptance and the original intermittent startup stall remain open.

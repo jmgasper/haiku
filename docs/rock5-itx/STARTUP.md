@@ -111,8 +111,35 @@ delayed EOF. The negative case failed the ordinary expectation and passed its
 explicit expected-leak check. Three large unpaced native command sessions and
 the original SSD's file/package checks passed, followed by SSD unmount and
 verified ROOBI recovery. `state/native-tty-fixed.json` contains the scoped
-qualification. The installed-system upgrade and boot checks are still pending;
-these successful boots do not close the original startup-stall investigation.
+qualification. The installed-system checks below followed this USB gate.
+
+## Installed launcher and terminal fixes
+
+The `+88` to `+94` Installer update passed a full-capacity QEMU rehearsal and
+two NVMe-root boots. Its final evidence checker initially compared a requested
+22-character emulated serial with the NVMe field's 20-character value. The
+original functional tests passed; re-evaluating every final assertion with
+that comparison corrected also passed. Both reports are retained in
+`qemu-shell/20260913T024538Z-c20a65`.
+
+Native Installer session `interactive/20260913T025330Z-b22da2` then completed
+the same package update. All eleven target package hashes matched, both
+existing 2 GiB test regions and their guards were intact, and SSD/USB allocation
+counters were zero. The existing EFI loader and network overrides were unchanged.
+The SSD was unmounted before recovery.
+
+Installed boots `interactive/20260913T031611Z-a505e7` and
+`interactive/20260913T032252Z-6d76ed` each reached the desktop and remote shell.
+Eight component hashes, observer/probe/profile files, the terminal probe,
+five startup snapshots, eight-worker readback of both 2 GiB regions, guards,
+eleven package hashes and filesystem checks passed. NVMe used ITS1 MSI-X on
+CPU0; interrupts continued during readback without polling fallback. Both
+normal reboots returned to ROOBI, UART capture completed without errors, and
+the NanoKVM watchdog disarmed without a controller restart.
+`state/native-startup-installed-update.json` records this scoped acceptance.
+The ICU settings file was added separately after the second read check; its
+subsequent inherited-environment boot test is recorded below. These
+successful boots do not close the original startup-stall investigation.
 
 ## Time preferences
 
@@ -145,5 +172,46 @@ data path when that data exists and the original package path is absent. An
 explicit `ICU_DATA` value is preserved. ICU documents that this environment
 variable takes precedence over its compiled directory in the
 [data-directory selection rules](https://unicode-org.github.io/icu/userguide/icu_data/#icu-data-directory).
-This keeps the package workaround in the lab image profile. Image, desktop and
-native persistence checks for the candidate are pending.
+This keeps the package workaround in the lab image profile.
+
+The `hrev60097+96` image from `ab7cd74a2e` passed two full QEMU boots in
+`qemu-shell/20260913T025821Z-4d5d54`. Each boot inherited the data path, enumerated
+468 canonical zones and formatted `1234.5` correctly. Unsetting the variable
+reproduced the missing-data error; sourcing the installed environment file
+restored operation. Explicit missing and empty values remained unchanged and
+produced the expected errors. Time preferences was visually verified on the
+first boot. The second screenshot
+shows the desktop, while its process listing contains `Time --update`; it does
+not establish a second preferences-window pass. The `df` output uses ordinary
+`sprintf` formatting and is not evidence of repaired ICU number formatting;
+the dedicated probe checks that directly. Component/file hashes,
+startup snapshots, filesystem checks,
+USB transfer, normal reboot and shutdown passed. The private image SHA-256 is
+`b66742ec9b8999ae4ac8704bcc35687fef3d48ca0c97112cd5ef078d7e99d38f`;
+`state/qemu-icu-env.json` records the evidence. This workaround does not add RTC
+support or repair the locale API's missing error checks.
+
+The physical `+94` SSD reproduced the missing path in a fresh process with
+`ICU_DATA` unset. Both default and explicitly unset runs failed; the correct
+path passed. After the second installed-system storage check, only the
+498-byte environment file was added to the SSD. Its prior absence, package,
+probe and data hashes were checked before writing; the staged file was flushed,
+hash-checked and renamed, then flushed and checked again. A sourced child
+process passed, and BFS allocation counters remained zero.
+
+Subsequent SSD boot `interactive/20260913T033150Z-f33ee2` inherited the correct
+path without an explicit command-session export. All five positive/negative
+ICU checks passed, together with eight component hashes, eight settings/probe
+file hashes, the terminal probe and filesystem checks. Time preferences opened
+normally; both its calendar/clock and time-zone tab were inspected, including
+expanding Australia's entries. The requested GUI process was present, rather
+than merely a background `Time --update` process. Tracker also displayed
+formatted modification dates. Five startup snapshots completed without a
+process crash or kernel panic. Normal reboot returned to ROOBI; UART capture
+and controller recovery passed without a NanoKVM restart.
+
+`state/native-icu-installed-environment.json` records the native acceptance.
+The evidence is **`+94` packages plus the identical qualified settings file**;
+the complete `+96` USB image has only QEMU qualification. The clock still starts
+at 1970, and RTC/NTP, locale API error handling, broader ARM64 package coverage
+and the original intermittent startup stall remain separate work.

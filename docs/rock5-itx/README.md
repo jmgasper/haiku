@@ -23,10 +23,12 @@ passed BFS free-space TRIM on the SSD, preserving file/package hashes and the
 complete EFI partition through an installed-system boot and recovery. The SSD
 has since been updated to include that driver; installed-system TRIM and
 large-file/package readback across normal reboot also passed. The latest
-`hrev60097+88` installation uses ITS1 NVMe MSI-X interrupts and has passed
-installed-system TRIM and subsequent boot readback. One intervening boot
-stalled before the desktop and remote shell; a retry passed, and the stall
-remains unresolved. Sustained storage, error
+ITS1 NVMe MSI-X driver has passed installed-system TRIM and subsequent boot
+readback. The SSD is now updated to `hrev60097+94`, including the launcher pipe
+inheritance and terminal partial-write fixes. Two installed boots passed
+component/package hashes, both 2 GiB test regions, startup snapshots, filesystem
+checks and normal reboot to recovery. One earlier `+88` boot stalled before the
+desktop and remote shell; that stall remains unresolved. Sustained storage, error
 recovery and the remaining board hardware still need qualification.
 
 This fork uses AI-assisted development at its owner's request. Upstream Haiku

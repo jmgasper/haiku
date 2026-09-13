@@ -12,10 +12,10 @@ firmware supports it.
 | NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; staged downloads passed before/after native reboot, but simultaneous USB/Ethernet relay still causes outages; the latest outage did not recover through the hardware watchdog |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | Seventy-three host checks pass locally, including GIC MBI firmware/register admission and MSI vector allocation/reuse, onboard PCI host resource/profile rejection and root-link rejection, native-input dependency preflight, strict BFS report parsing, SSH controller-input isolation, explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
+| Automated controls | Seventy-five host checks pass locally, including GIC MBI firmware/register admission and MSI vector allocation/reuse, onboard PCI host resource/profile rejection and root-link rejection, native-input dependency preflight, strict BFS report parsing, SSH controller-input isolation, explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
-| Native Haiku on ROCK | All eight CPUs start; Tracker/Deskbar, NanoKVM input, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; Samsung NVMe bounded raw I/O has independent Linux hashes; the 238 GiB SSD installation has passed large-file persistence after normal reboot and shutdown/startup; the installed hrev60097+88 update now passes ITS1 NVMe MSI-X, filesystem TRIM and subsequent boot readback; one intervening startup stall, intermittent USB control failures and sustained acceptance remain open |
+| Native Haiku on ROCK | All eight CPUs start; Tracker/Deskbar, NanoKVM input, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; Samsung NVMe bounded raw I/O has independent Linux hashes; the 238 GiB SSD installation has passed large-file persistence after normal reboot and shutdown/startup; the installed NVMe driver has passed ITS1 MSI-X, filesystem TRIM and subsequent boot readback; the latest hrev60097+94 SSD update includes launcher and terminal fixes and has passed two installed boot/readback/normal-reboot cycles; the earlier startup stall, intermittent USB control failures and sustained acceptance remain open |
 | Board revision | Owner confirmed ROCK 5 ITX PCB v1.12; current public electrical schematic is v1.11, so exact revision electrical details remain to be checked before raw register work |
 | USB recovery | Workstation USB-C connection enumerates as `2207:350b`; remote loader and MaskROM entry, RAM loader download, eMMC/SPI selection and matching read-back hashes verified |
 | Serial | NanoKVM UART1 (`/dev/ttyS1`) captures readable DDR/SPL, U-Boot and Linux output at 1,500,000 baud, 8N1; longer input is corrupted and an interactive login has not passed |
@@ -2342,5 +2342,27 @@ control, all eight component hashes and five startup snapshots. Old SSD
 packages, both 2 GiB test regions, their guards and zero BFS allocation counters
 passed before recovery. ROOBI returned after SSD unmount; NanoKVM did not restart
 and its watchdog disarmed. `state/native-tty-fixed.json` accepts this bounded
-USB-boot qualification. The physical SSD's `+94` update and installed boot
-checks remain pending.
+USB-boot qualification. The physical SSD update and boot checks below followed
+this gate.
+
+The physical `+94` installation and two installed boots have now passed.
+Installer session `interactive/20260913T025330Z-b22da2` verified all eleven
+packages, preserved test data and the EFI loader, and returned clean SSD/USB
+allocation counters. Installed sessions `interactive/20260913T031611Z-a505e7`
+and `interactive/20260913T032252Z-6d76ed` each passed eight component hashes,
+the terminal probe, five startup snapshots, both 2 GiB test regions with their
+guards and all package hashes. NVMe MSI-X interrupts continued during reads;
+normal reboot returned to ROOBI after each session. UART capture had no errors,
+and NanoKVM remained up with its watchdog disarmed. The original startup stall
+remains unresolved. `state/native-startup-installed-update.json` and
+[STARTUP.md](STARTUP.md) record the scope.
+
+A separately QEMU-qualified, 498-byte ICU settings file was installed after the
+second read check. SSD boot `interactive/20260913T033150Z-f33ee2` inherited the
+correct data directory, passed timezone/number-format probes and opened Time
+preferences without crashing. Its date/time and expanded timezone views were
+inspected; component/file hashes, five startup snapshots, filesystem checks and
+normal reboot to ROOBI also passed. This is `+94` plus the settings file, not a
+native qualification of the full `+96` USB image. The evidence index is
+`state/native-icu-installed-environment.json`. RTC/NTP and general ARM64 package
+completeness remain open.
