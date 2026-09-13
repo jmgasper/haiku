@@ -726,6 +726,13 @@ SdhciBus::HandleInterrupt()
 	if ((intmask == 0) || (intmask == 0xffffffff)) {
 		return B_UNHANDLED_INTERRUPT;
 	}
+	// Status-only events (PIO readiness and SDMA boundary notifications)
+	// can remain latched while another device asserts this shared IRQ.
+	// Claiming those events would prevent the next level-triggered handler
+	// from running, including USB controllers on the same PCI interrupt.
+	intmask &= fRegisters->interrupt_signal_enable;
+	if (intmask == 0)
+		return B_UNHANDLED_INTERRUPT;
 
 	TRACE("interrupt function called %x\n", intmask);
 

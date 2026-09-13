@@ -268,12 +268,18 @@ int main()
       regs->interrupt_status.bits = SDHCI_INT_CMD_CMP | SDHCI_INT_BUF_READ_READY;
       bus->HandleInterrupt();
       assert(regs->interrupt_status.bits == SDHCI_INT_BUF_READ_READY);
+      assert(bus->HandleInterrupt() == B_UNHANDLED_INTERRUPT);
+      regs->interrupt_status.bits |= SDHCI_INT_DMA;
+      assert(bus->HandleInterrupt() == B_UNHANDLED_INTERRUPT);
       regs->interrupt_status.bits |= SDHCI_INT_TRANS_CMP;
       bus->HandleInterrupt();
       assert((atomic_get(&bus->fCommandResult) & 3) == 3);
       regs->interrupt_status.bits |= SDHCI_INT_DATA_CRC;
       bus->HandleInterrupt();
       assert(bus->WaitForCompletion(SDHCI_INT_TRANS_CMP, 1000) == B_IO_ERROR);
+      regs->interrupt_signal_enable = 0;
+      regs->interrupt_status.bits = SDHCI_INT_CMD_CMP;
+      assert(bus->HandleInterrupt() == B_UNHANDLED_INTERRUPT);
     }
     { Fixture f; ClockControl clock{};
       for (uint16 divisor : {1, 2, 3, 256, 512, 1024, 2046}) {
