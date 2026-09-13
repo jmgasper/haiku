@@ -50,16 +50,18 @@ class NetworkProbeTests(unittest.TestCase):
     def header(self, direction, token=TOKEN):
         return token.encode() + b'\n' + struct.pack('!QQ', SIZE, SEED) + direction
 
-    def client(self, direction, serve):
-        with socket.socket() as listener, concurrent.futures.ThreadPoolExecutor(1) as pool:
-            listener.bind(('127.0.0.1', 0))
+    def client(self, direction, serve, family):
+        host = '127.0.0.1' if family == socket.AF_INET else '::1'
+        source = '127.0.0.2' if family == socket.AF_INET else '::1'
+        with socket.socket(family) as listener, concurrent.futures.ThreadPoolExecutor(1) as pool:
+            listener.bind((host, 0))
             listener.listen(1)
             listener.settimeout(5)
 
             def peer():
                 connection, address = listener.accept()
                 with connection:
-                    self.assertEqual(address[0], '127.0.0.1')
+                    self.assertEqual(address[0], source)
                     connection.settimeout(5)
                     self.assertEqual(read_exactly(connection, 82),
                                      self.header(b'R' if direction == 'receive' else b'S'))
@@ -67,9 +69,9 @@ class NetworkProbeTests(unittest.TestCase):
                     serve(connection)
 
             future = pool.submit(peer)
-            result = subprocess.run([str(self.binary), direction, '127.0.0.1',
+            result = subprocess.run([str(self.binary), direction, host,
                                      str(listener.getsockname()[1]), TOKEN,
-                                     str(SIZE), str(SEED), '127.0.0.1'],
+                                     str(SIZE), str(SEED), source],
                                     capture_output=True, timeout=10)
             future.result(timeout=5)
             return result
@@ -83,29 +85,46 @@ class NetworkProbeTests(unittest.TestCase):
             self.assertEqual(read_exactly(connection, SIZE), self.fixture)
             connection.sendall(b'P')
 
-        for direction, serve in [('receive', send), ('send', receive)]:
-            result = self.client(direction, serve)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn(b'ROCK5_NETWORK_PASS', result.stderr)
+        for family in (socket.AF_INET, socket.AF_INET6):
+            for direction, serve in [('receive', send), ('send', receive)]:
+                with self.subTest(family=family, direction=direction):
+                    result = self.client(direction, serve, family)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn(b'ROCK5_NETWORK_PASS', result.stderr)
 
     def test_corruption_and_truncation_rejected(self):
         bad = bytearray(self.fixture)
         bad[65540] ^= 1
-        for data in (bad, self.fixture[:65536]):
-            def send(connection):
-                connection.sendall(data)
-                connection.shutdown(socket.SHUT_WR)
-            result = self.client('receive', send)
-            self.assertEqual(result.returncode, 1, result.stderr)
-            self.assertNotIn(b'ROCK5_NETWORK_PASS', result.stderr)
+        for family in (socket.AF_INET, socket.AF_INET6):
+            for data in (bad, self.fixture[:65536]):
+                with self.subTest(family=family, size=len(data)):
+                    def send(connection):
+                        connection.sendall(data)
+                        connection.shutdown(socket.SHUT_WR)
+                    result = self.client('receive', send, family)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertNotIn(b'ROCK5_NETWORK_PASS', result.stderr)
 
     def test_sender_requires_checked_acknowledgement(self):
         def receive(connection):
             self.assertEqual(read_exactly(connection, SIZE), self.fixture)
             connection.sendall(b'F')
-        result = self.client('send', receive)
-        self.assertEqual(result.returncode, 1, result.stderr)
-        self.assertNotIn(b'ROCK5_NETWORK_PASS', result.stderr)
+        for family in (socket.AF_INET, socket.AF_INET6):
+            with self.subTest(family=family):
+                result = self.client('send', receive, family)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertNotIn(b'ROCK5_NETWORK_PASS', result.stderr)
+
+    def test_address_validation(self):
+        for host, source in [('localhost', '127.0.0.1'), ('::gg', '::1'),
+                             ('::1', '127.0.0.1'), ('127.0.0.1', '::1'),
+                             ('::1', '::1%lo'), ('::1', '')]:
+            with self.subTest(host=host, source=source):
+                result = subprocess.run([str(self.binary), 'send', host, '12345',
+                                         TOKEN, '1', '1', source],
+                                        capture_output=True, timeout=5)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertNotIn(b'ROCK5_NETWORK_PATH', result.stderr)
 
     def test_peer_roles_and_header_rejection(self):
         for direction, header in [('peer-send', self.header(b'R')),

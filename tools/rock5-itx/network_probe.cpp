@@ -20,6 +20,40 @@
 static const uint64_t kMaximumBytes = 512ULL * 1024 * 1024;
 
 
+union NetworkAddress {
+	struct sockaddr generic;
+	struct sockaddr_in ipv4;
+	struct sockaddr_in6 ipv6;
+};
+
+
+static bool
+ParseAddress(const char* text, uint16_t port, union NetworkAddress* address,
+	socklen_t* size)
+{
+	memset(address, 0, sizeof(*address));
+	if (inet_pton(AF_INET, text, &address->ipv4.sin_addr) == 1) {
+		address->ipv4.sin_family = AF_INET;
+		address->ipv4.sin_port = htons(port);
+		*size = sizeof(address->ipv4);
+#ifdef __HAIKU__
+		address->ipv4.sin_len = *size;
+#endif
+		return true;
+	}
+	if (inet_pton(AF_INET6, text, &address->ipv6.sin6_addr) == 1) {
+		address->ipv6.sin6_family = AF_INET6;
+		address->ipv6.sin6_port = htons(port);
+		*size = sizeof(address->ipv6);
+#ifdef __HAIKU__
+		address->ipv6.sin6_len = *size;
+#endif
+		return true;
+	}
+	return false;
+}
+
+
 static bool
 ReadExactly(int fd, void* buffer, size_t size)
 {
@@ -188,9 +222,11 @@ main(int argc, char** argv)
 			&& strcmp(argv[1], "peer-send") != 0)
 		|| (!peer && strcmp(argv[1], "receive") != 0
 			&& strcmp(argv[1], "send") != 0)) {
-		fprintf(stderr, "Usage: %s receive|send IPv4 PORT TOKEN64 BYTES SEED SOURCE_IPv4\n"
+		fprintf(stderr, "Usage: %s receive|send IP PORT TOKEN64 BYTES SEED SOURCE_IP\n"
 			"       %s peer-receive|peer-send TOKEN64 BYTES SEED (stdin/stdout)\n",
 			argv[0], argv[0]);
+		fprintf(stderr, "IP and SOURCE_IP must be IPv4 or unscoped IPv6 literals "
+			"of the same family.\n");
 		return 2;
 	}
 	const char* token = argv[peer ? 2 : 4];
@@ -203,23 +239,21 @@ main(int argc, char** argv)
 	alarm(180);
 	int input = STDIN_FILENO, output = STDOUT_FILENO;
 	if (!peer) {
-		struct sockaddr_in address, source;
-		memset(&address, 0, sizeof(address));
-		memset(&source, 0, sizeof(source));
-		address.sin_family = source.sin_family = AF_INET;
+		union NetworkAddress address, source;
+		socklen_t addressSize, sourceSize;
 		uint64_t port;
 		if (!ParseNumber(argv[3], 65535, &port) || port == 0
-			|| inet_pton(AF_INET, argv[2], &address.sin_addr) != 1
-			|| inet_pton(AF_INET, argv[7], &source.sin_addr) != 1)
+			|| !ParseAddress(argv[2], port, &address, &addressSize)
+			|| !ParseAddress(argv[7], 0, &source, &sourceSize)
+			|| address.generic.sa_family != source.generic.sa_family)
 			return 2;
-		address.sin_port = htons(port);
-		input = output = socket(AF_INET, SOCK_STREAM, 0);
+		input = output = socket(address.generic.sa_family, SOCK_STREAM, 0);
 		struct timeval timeout = {30, 0};
 		if (input < 0
 			|| setsockopt(input, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0
 			|| setsockopt(input, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) != 0
-			|| bind(input, (struct sockaddr*)&source, sizeof(source)) != 0
-			|| connect(input, (struct sockaddr*)&address, sizeof(address)) != 0) {
+			|| bind(input, &source.generic, sourceSize) != 0
+			|| connect(input, &address.generic, addressSize) != 0) {
 			perror("network probe connect");
 			if (input >= 0)
 				close(input);
