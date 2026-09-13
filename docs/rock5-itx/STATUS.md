@@ -12,11 +12,11 @@ firmware supports it.
 | NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; staged downloads passed before/after native reboot, but simultaneous USB/Ethernet relay still causes outages; the latest outage did not recover through the hardware watchdog |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | Eighty-four host checks pass locally, including actual ARM64 copy alignment/protected-page checks, checked network streams and corruption/truncation rejection, GIC MBI firmware/register admission and MSI vector allocation/reuse, onboard PCI host resource/profile rejection and root-link rejection, native-input dependency preflight, strict BFS report parsing, SSH controller-input isolation, explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
+| Automated controls | Eighty-five host checks pass locally, including the production Realtek receive routine with malformed lengths/fragments/ring wrap, actual ARM64 copy alignment/protected-page checks, checked network streams and corruption/truncation rejection, GIC MBI firmware/register admission and MSI vector allocation/reuse, onboard PCI host resource/profile rejection and root-link rejection, native-input dependency preflight, strict BFS report parsing, SSH controller-input isolation, explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
 | Native Haiku on ROCK | All eight CPUs start; Tracker/Deskbar, NanoKVM input, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; Samsung NVMe bounded raw I/O has independent Linux hashes; the 238 GiB SSD installation has passed large-file persistence after normal reboot and shutdown/startup; the installed NVMe driver has passed ITS1 MSI-X, filesystem TRIM and subsequent boot readback; the latest hrev60097+94 SSD update includes launcher and terminal fixes and has passed two installed boot/readback/normal-reboot cycles; the earlier startup stall, intermittent USB control failures and sustained acceptance remain open |
-| Onboard Ethernet | The +110 USB image improves ARM64 memory copying and passes simultaneous send/receive on both RTL8125 ports before/after normal reboot: about 2.125 GiB checked, correct physical paths and no interface errors. Links negotiate at 2.5/1 Gbit/s. Short Haiku streams measured about 123–336 Mbit/s, still below Linux's 2.29 Gbit/s sending on the new SFP connection. Throughput/variation, IPv6, sustained load and fault recovery remain open. The SSD is still at +94. |
+| Onboard Ethernet | The +112 USB image validates receive lengths and avoids copying unused buffer tails. Both RTL8125 ports pass simultaneous send/receive before/after normal reboot: about 2.125 GiB checked, correct physical paths and no interface errors. Links negotiate at 2.5/1 Gbit/s. Short Haiku streams measured about 141–317 Mbit/s; longer transfers improved, but results remain variable and below Linux's 2.29 Gbit/s sending. IPv6, sustained load and fault recovery remain open. The SSD is still at +94. |
 | Board revision | Owner confirmed ROCK 5 ITX PCB v1.12; current public electrical schematic is v1.11, so exact revision electrical details remain to be checked before raw register work |
 | USB recovery | Workstation USB-C connection enumerates as `2207:350b`; remote loader and MaskROM entry, RAM loader download, eMMC/SPI selection and matching read-back hashes verified |
 | Serial | NanoKVM UART1 (`/dev/ttyS1`) captures readable DDR/SPL, U-Boot and Linux output at 1,500,000 baud, 8N1; longer input is corrupted and an interactive login has not passed |
@@ -2525,3 +2525,28 @@ eleven installed package hashes. Those checks passed and the volume was
 unmounted. Its installed `+94` system was not updated. Full evidence, pins and
 the recovery receipt are in `state/native-arm64-memcpy.json`; implementation
 and measurement details are in [ETHERNET.md](ETHERNET.md).
+
+## Bound Realtek receive copies to validated fragment lengths
+
+Source `6ffbb12e732b85405f9e02a02d7911b3c5dc5d32` (`hrev60097+112`) validates
+each receive fragment against its mapped buffer before exposing its length.
+Valid fragments synchronize only received bytes; invalid lengths retain full
+synchronization and use the existing discard path. The production receive
+routine passed sanitizer tests with short/full buffers, errors, fragments,
+ring wrap and hardware-owned descriptors. All 85 host checks, the full ARM64
+build and the QEMU gate passed.
+
+Native session `interactive/20260913T090225Z-82d0ed` passed first boot and one
+normal reboot, fifteen component hashes and four concurrent network runs
+totaling about 2.125 GiB. Each run has complete packet coverage, both physical
+paths and zero interface/capture errors or drops. The longer 256 MiB streams
+measured 313.5/187.5 Mbit/s receive/send on port 0 and 298.5/192.2 on port 1,
+improving over `+110`'s corresponding 241.2/123.0 and 253.1/145.3. Shorter
+comparisons were mixed; a uniform speedup and Linux parity are not established.
+
+The SSD was not mounted or updated and remains at `+94`. Results and recovery
+are recorded in `state/native-rge-receive.json`. [ETHERNET.md](ETHERNET.md)
+contains the exact image, reference sources, bounded acceptance and remaining
+limits, plus a resolved local snapshot-inspection error. IPv6, throughput
+variation, sustained mixed load and link/fault recovery remain open alongside
+the rest of the hardware roadmap.

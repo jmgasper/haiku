@@ -459,6 +459,77 @@ recovered with boot ID `27495453-6502-4de4-9d60-2e4d63b6b08b`; NanoKVM retained
 its boot ID and the watchdog disarmed. Temporary test addresses and capture
 processes were removed.
 
+## Synchronize the validated receive length
+
+Revision `6ffbb12e732b85405f9e02a02d7911b3c5dc5d32` moves receive fragment-length
+decoding before payload synchronization. A valid fragment now synchronizes only
+its received bytes, including the CRC removed after frame assembly. Zero or
+oversized lengths are marked erroneous and cannot become an
+exposed mbuf length; those cases retain full-map synchronization before the
+existing discard path. Mapping lifetime, barriers, ring refill and interrupt
+locking are unchanged.
+
+The [OpenBSD DMA contract](https://man.openbsd.org/bus_dmamap_sync.9#SYNCHRONIZATION)
+defines synchronization over a specified offset and size. The
+[Linux r8169 receive routine](https://raw.githubusercontent.com/torvalds/linux/master/drivers/net/ethernet/realtek/r8169_main.c)
+also synchronizes the received length. Downloaded reference copies and hashes
+are retained in `artifacts/rge-rx-reference/20260913T085135Z`.
+
+The new host test compiles the complete production `rge_rxeof()` and its actual
+descriptor constants with checked DMA/mbuf substitutes. It verifies exact copy
+extent, untouched tails, delivery and CRC removal, invalid-length discard,
+recovery on the next packet, fragmented frames, ring wrap, abandoned fragments,
+orphan fragments and descriptors still owned by hardware. The substitutes do
+not establish native cache coherency. All 85 host checks, the ARM64 build
+(`build-20260913T085324Z.log`) and the full QEMU gate passed.
+
+Image `+112` is pinned in
+`network-intx-image/20260913T085451Z-34390b/manifest.json`, SHA-256
+`52a1359015b4ca46d9ac7d5a1fe7c1b511fb81348b81f04a678fe0af013553be`.
+QEMU evidence is `qemu-shell/20260913T085633Z-55d347`. The network stack, benchmark,
+other drivers and settings match `+110`. Libroot's only changed section is its
+recorded Haiku revision; the memory-copy machine code is identical. During
+inspection, an `objcopy --dump-section` command unintentionally rewrote two
+local library snapshots by dropping appended resources. Both were restored to
+their original hashes from the pinned build/package before native deployment.
+The original boot images were unchanged throughout; the restoration receipt is
+`artifacts/libroot-reference-restore/20260913T085921Z/restore.json`.
+
+Native session `interactive/20260913T090225Z-82d0ed` passed first boot and normal
+reboot without an additional GPIO reset. Both boots passed fifteen component
+hashes, settings, the memory/copy probes and DHCP with 2.5/1 Gbit/s links. The
+four simultaneous streams used the same sizes, routes and CPU sampling as the
+`+110` comparison. Rates are Mbit/s from the ROCK's perspective:
+
+| Phase / bytes per stream | Port 0 receive | Port 0 send | Port 1 receive | Port 1 send |
+| --- | ---: | ---: | ---: | ---: |
+| First boot / 32 MiB + 7 | 303.5 | 184.9 | 231.0 | 171.4 |
+| First boot / 128 MiB + 7 | 317.4 | 180.6 | 237.8 | 141.1 |
+| After reboot / 128 MiB + 7 | 288.0 | 170.0 | 220.1 | 159.2 |
+| After reboot / 256 MiB + 7 | 313.5 | 187.5 | 298.5 | 192.2 |
+
+All sixteen streams passed, totaling 2,281,701,488 checked bytes. Complete TCP
+coverage and the expected MAC addresses establish both physical paths in both
+directions; all four streams overlapped in each run. Interface errors/drops and
+capture drops stayed at zero across 1,054,784 captured frames. Evidence directories
+under `artifacts/native-network-stream` are `20260913T090713Z-b8ee75`,
+`20260913T090811Z-867a05`, `20260913T091358Z-74150d` and
+`20260913T091500Z-32df40`.
+
+The longer run improved over `+110`'s 241.2/123.0 and 253.1/145.3 Mbit/s
+receive/send results. Shorter comparisons are mixed: port 1 received more
+slowly in the matching 128 MiB after-reboot run. This establishes less copy
+work and bounded correctness, with some measured throughput gains; it does
+not establish a uniform speedup, sustained acceptance or Linux parity.
+Native malformed-descriptor injection and jumbo-frame traffic were not tested.
+Performance variation, CPU placement, shared synchronization, IPv6 and fault
+recovery remain open. Full results are in `state/native-rge-receive.json`.
+The SSD was not mounted or updated in this session and remains at `+94`.
+Serial capture completed with 306,697 bytes and no transport errors. ROOBI
+recovered with boot ID `9fbfe8f2-bf3b-48cf-a5bb-14924684269d`; NanoKVM retained
+its boot ID and the watchdog disarmed. Temporary test addresses and capture
+processes were removed.
+
 ## References
 
 - Rockchip RK3588 TRM v1.0, Part 2 (2022-03-09), PCIe client status, mask and

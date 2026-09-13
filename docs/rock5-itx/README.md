@@ -80,6 +80,10 @@ Commit source changes before release builds; dirty development builds are
 identified explicitly. This is revision-pinned reconstruction, not a claim of
 bit-for-bit reproducibility across host distributions or build dates.
 
+Inspect pinned ELF snapshots with read-only tools such as `readelf` or
+`objdump`. Use separate working copies and explicit output paths with
+`objcopy`, which can rewrite its input and discard Haiku's appended resources.
+
 The image uses Haiku's existing `@minimum-mmc` recipe with a 300 MiB BFS volume
 and an EFI partition containing `EFI/BOOT/BOOTAA64.EFI`. It can be presented as
 a USB disk. The target filename ending in `.image` becomes `.img` when packaged
