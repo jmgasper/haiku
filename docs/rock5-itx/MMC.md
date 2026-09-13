@@ -1,12 +1,13 @@
 # MMC and onboard eMMC
 
-The onboard eMMC now passes native read-only geometry and data checks before
-and after normal Haiku reboot. Three 8 MiB regions match Linux, including data
-beyond 4 GiB and at the end of the device. The common MMC stack also passes
-SD/eMMC writes and persistence in ARM64 QEMU. Native writes, faster speed modes
-and Haiku boot from eMMC remain unqualified. MicroSD uses a different controller
-and is not covered by this work. ROOBI remains on eMMC; these native tests have
-not written it.
+The onboard eMMC now passes native geometry, bounded file writes, explicit flush
+and readback across normal Haiku reboot, with independent Linux checks. Separate
+reference reads include data beyond 4 GiB and at the end of the device. The
+common MMC stack also passes SD/eMMC writes and persistence in ARM64 QEMU.
+Power-cycle integrity, faster speed modes and Haiku boot from eMMC remain
+unqualified. MicroSD uses a different controller and is not covered by this work.
+ROOBI remains on its eMMC root partition; the write fixture uses the separately
+backed-up, previously empty 300 MiB FAT partition.
 
 ## Common driver checkpoint
 
@@ -111,8 +112,8 @@ flushes the MMC device, then mounts read-only and checks both complete files.
 Readback repeats after normal reboot. Following shutdown, the host independently
 checks FAT consistency, file hashes, the partition table and adjacent guards.
 The host oracle rejects absent writes and corruption outside the write ranges.
-This extension is being qualified before native eMMC file writes; it does not
-change the scope of the accepted read-only hardware result below.
+The extension passes with `+136`, followed by the native file qualification
+below. The earlier `+131` read-only result remains a separate checkpoint.
 
 Its first `+133` run stopped before file writes because the geometry helper's
 legacy `B_GET_DEVICE_SIZE` ioctl reported raw-card capacity for the partition.
@@ -192,7 +193,7 @@ identification and 24 MHz for legacy operation, preserving adjacent NVM bus
 clock fields. The SDHCI divider remains nonzero. These are source-clock
 settings, not an electrically measured card-clock rate.
 
-One hundred and one host checks pass, including production resource admission,
+At the `+131` checkpoint, 101 host checks pass, including production resource admission,
 clock sequencing, DMA allocation/cleanup, physical caller buffers above 4 GiB,
 failed-read isolation, read-only geometry and reset after an unsupported SD
 probe. All three images, `+129` through `+131`, passed the complete SD/eMMC QEMU
@@ -271,12 +272,78 @@ Serial capture completed without transport errors. Recovery returned ROOBI boot
 failures. The existing complete user-area, boot-area and SPI backup files and
 the tested restoration image were rehashed successfully before planning writes.
 
+## Native FAT file writes and reboot persistence
+
+Source `921b671c8e616ce7185b8a8050350d383a1a5dad` (`hrev60097+136`) passes
+native file I/O on the existing eMMC FAT partition. Linux first verified that
+`mmcblk0p2` was unmounted and empty, saved all 314,572,800 bytes, and checked
+the backup's hash and FAT consistency. The complete recovery images also remain
+available. Linux then created an 8 MiB source file and a distinct 16 MiB target
+under `HAIKUTST`; their deterministic patterns are shared with the QEMU fixture.
+
+Before mounting, Haiku verifies the raw capacity and the partition's exact
+32 MiB offset, 300 MiB length, 512-byte logical blocks and parent device.
+An 8 MiB overwrite and five writes at odd byte offsets modify the existing target
+file. After each operation, the script synchronizes, unmounts, issues
+`B_FLUSH_DRIVE_CACHE`, mounts read-only and hashes both complete files. All six
+operations pass, including the bytes outside each write. The final source and
+target hashes pass again after normal PSCI reboot. No native raw-device write
+commands were used; FAT and Tracker also updated filesystem metadata, including
+empty `RECYCLED/_BEOS_` directories.
+
+The checked file payload is 192 MiB, with 9,572,871 bytes requested in file
+overwrites. Another 48 MiB of raw reference reads at zero, 5 GiB and the end
+of the device match the Linux baseline across both boots. Both boots also pass
+all 25 component and five setting hashes, memory/copy checks, inspected desktops
+and DHCP links at 2.5/1 Gbit/s. The SSD was not mounted or updated and remains
+at `+94`; this run did not repeat Ethernet traffic qualification.
+
+After recovery, Linux independently copied the unmounted FAT partition. Host
+`fsck.fat -n` passes, and mtools extracts both files with the expected sizes
+and SHA-256 hashes. Linux also confirms the three reference regions remain
+unchanged. Recovery returned boot ID `d0ba2e20-9591-432c-9bd3-d493fbd682d9`.
+Serial capture completed without transport errors and the NanoKVM guard disarmed.
+The final data is retained for subsequent persistence checks.
+
+The native card reported cache disabled on both boots, so the explicit flush
+ioctl exercised the ready/transfer-state check. Native cached-card CMD6 flush
+and power-loss durability remain untested. The 24 MHz external source and
+nonzero host divider remain the conservative legacy setup; card-clock frequency
+and throughput are not qualified by this file test. Caller buffers above 4 GiB
+were not forced. Two transfer-complete diagnostics appeared during each card
+initialization; no additional failed SDHCI command or kernel panic was recorded.
+Their timing cause remains unisolated.
+
+All 104 host checks, the ARM64 build and the combined QEMU suite pass. The QEMU
+filesystem result includes all six writes, fresh mounts, normal reboot,
+independent post-shutdown file hashes, FAT consistency and surrounding guards.
+The fixture records the actual card paths on each boot; this run also exercised
+the observed device renumbering. The three preceding fixture failures remain
+preserved above.
+
+| Evidence | Location under `/mnt/HaikuWork` |
+| --- | --- |
+| Image manifest | `artifacts/mmc-filesystem-image/20260913T155221Z-9d563a/manifest.json` |
+| Image SHA-256 | `bf44d09ef1fe46f5e626df4f04b73d3d026f21fdda9a4fe5f15581d813060d4f` |
+| Full ARM64 build | `artifacts/build-20260913T155206Z.log` |
+| 104 host checks | `artifacts/mmc-filesystem-image/20260913T155221Z-9d563a/host-checks.log` |
+| Combined QEMU result | `artifacts/qemu-shell/20260913T155222Z-8dbe3a/result.json` |
+| Native qualification | `artifacts/interactive/20260913T155758Z-aeeb8f/qualification.json` |
+| Native file transcripts | Same directory: `shell-20260913T160341Z-21fcc7.txt`, `shell-20260913T160801Z-8a411d.txt` |
+| Original FAT backup and seeded fixture | `artifacts/emmc-write-fixture/20260913T152325Z-4c2a87/` |
+| Independent Linux file/FS check | `artifacts/emmc-file-readback/20260913T161051Z-32c366/result.json` |
+| Post-recovery reference reads | `artifacts/emmc-read-reference/20260913T161101Z-06b516/result.json` |
+
+`state/native-mmc-filesystem.json` indexes the complete result. The ordinary
+firmware profile still defaults to read-only access. This private trial explicitly
+sets `read_only false` for its controlled file workload.
+
 ## Native work remaining
 
-Extend the bounded read result to guarded scratch-file writes and explicit
-flush/reboot persistence while preserving ROOBI and its tested recovery route.
-Longer mixed I/O, native caller buffers above 4 GiB, speed negotiation/tuning,
-power-cycle integrity, error recovery and Haiku boot from eMMC remain open.
+Extend the bounded file result to shutdown/startup and power-cycle integrity,
+longer mixed I/O, native caller buffers above 4 GiB and error recovery. Speed
+negotiation/tuning, native cached-card flush behavior and Haiku boot from eMMC
+remain open. Preserve ROOBI and its tested recovery route during these changes.
 
 The TRM specifies a 32-bit eMMC AXI address interface. Core clock selection uses
 CRU `0xfd7c0000 + 0x434`, with high-word write masks. Other clocks in that register

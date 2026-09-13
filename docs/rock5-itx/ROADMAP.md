@@ -66,7 +66,7 @@ against Windows; evaluate actual ACPI and device-tree tables for Haiku.
 
 | Work item | Starting point and dependencies | Acceptance |
 | --- | --- | --- |
-| Onboard eMMC | RK3588 FDT attachment and legacy DMA reads pass native capacity/checksum checks across normal reboot; common SD/eMMC writes and persistence pass QEMU; phases 2 and 3. See [MMC.md](MMC.md) | Extend the bounded read-only result to scratch-file writes after checking the complete recovery backup; explicit cache flush, power-cycle integrity, supported speed modes and native boot |
+| Onboard eMMC | RK3588 FDT attachment, legacy DMA reads and bounded FAT file writes pass native checks across normal reboot, with explicit flush and independent Linux file/FS verification; common SD/eMMC I/O also passes QEMU. See [MMC.md](MMC.md) | Extend the bounded file result to shutdown/startup, power-cycle integrity, native cached-card flush, sustained/error recovery, supported speed modes and Haiku boot; preserve the tested ROOBI recovery route |
 | microSD | RK3588 SD/MMC host, card detect, regulator and pinctrl; phase 2 | Multiple known cards, insertion/removal, hash-checked scratch filesystem, recovery from I/O errors and boot where firmware allows |
 | SPI NOR | RK3588 SPI/SFC attachment; observed 16 MiB loader device; phases 1 and 2 | Read and compare complete contents; expose geometry; separate read-only normal access from deliberate firmware updates; successful restore drill before writes |
 
