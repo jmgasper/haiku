@@ -43,7 +43,7 @@ Host tests exercise the actual production submission/copy routines and
 controller lifecycle with injected errors. They cover high physical addresses,
 buffer edges, partial/odd-sized payloads, malformed scatter/gather spans,
 overreported completions, timeouts, failed resets, and partial initialization.
-The QEMU fixture uses two independently seeded disposable disks, explicit
+The QEMU fixture uses two independently seeded disposable 512n/512e disks, explicit
 drive-cache flushes, guard-checked partial-sector writes, reboot readback,
 and independent backing-file hashes after shutdown. QEMU and native results
 will be recorded after their respective gates run; these changes alone do

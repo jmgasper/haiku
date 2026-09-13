@@ -18,14 +18,18 @@ def prepare(output):
     root = output / 'ahci'
     root.mkdir()
     disks = []
-    for index, sector in enumerate((512, 4096)):
+    # QEMU 8.2 IDE requires 512-byte logical sectors. Exercise 512n and 512e;
+    # distinct capacities identify the two paths without assuming SCSI IDs.
+    for index, physical_sector in enumerate((512, 4096)):
+        sector = 512
+        capacity = (8192 + index * 1024) * MIB
         disk = root / f'disk-{index}.img'
         head = hashlib.shake_256(f'AHCI port {index} initial v1'.encode()).digest(8 * MIB)
         high = hashlib.shake_256(f'AHCI port {index} high v1'.encode()).digest(8 * MIB)
         guard = bytearray(hashlib.shake_256(f'AHCI port {index} guard v1'.encode()).digest(2 * MIB))
         initial_guard = hashlib.sha256(guard).hexdigest()
         with disk.open('xb') as stream:
-            stream.truncate(8192 * MIB)
+            stream.truncate(capacity)
             for offset, data in ((0, head), (4096 * MIB, high), (6144 * MIB, guard)):
                 stream.seek(offset)
                 stream.write(data)
@@ -36,7 +40,8 @@ def prepare(output):
             guard[offset:offset + size] = head[:size]
             operations.append(dict(offset=6144 * MIB + offset, bytes=size,
                 sha256=hashlib.sha256(guard).hexdigest()))
-        disks.append(dict(index=index, sector=sector, bytes=8192 * MIB, disk=str(disk),
+        disks.append(dict(index=index, sector=sector, physical_sector=physical_sector,
+            bytes=capacity, disk=str(disk),
             serial=f'ROCK5-AHCI-{index}', head_sha256=hashlib.sha256(head).hexdigest(),
             high_sha256=hashlib.sha256(high).hexdigest(), initial_guard_sha256=initial_guard,
             operations=operations, final_guard_sha256=hashlib.sha256(guard).hexdigest()))
@@ -51,7 +56,7 @@ def command(fixture):
         i, sector = disk['index'], disk['sector']
         args += ['-drive', f'file={disk["disk"]},if=none,id=sata{i},format=raw,cache=writeback',
             '-device', f'ide-hd,bus=sata.{i},drive=sata{i},serial={disk["serial"]},'
-            f'logical_block_size={sector},physical_block_size={sector}']
+            f'logical_block_size={sector},physical_block_size={disk["physical_sector"]}']
     return args
 
 
