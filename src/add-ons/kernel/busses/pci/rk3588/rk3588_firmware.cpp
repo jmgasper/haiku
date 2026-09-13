@@ -184,15 +184,16 @@ InitIntx(Controller* controller, device_node* parent, const PortProfile& port)
 	if (controller->apbArea.Get() < B_OK)
 		return controller->apbArea.Get();
 	uint32 mode = ReadAPB(controller->apb, 0);
-	uint32 enable = ReadAPB(controller->apb, 0x194);
 	uint32 mask = ReadAPB(controller->apb, kLegacyMask);
 	uint32 status = ReadAPB(controller->apb, 8);
 	dprintf("rk3588_pcie: segment %u INTx APB %#" B_PRIx64
-		" mode %#" B_PRIx32 " enable %#" B_PRIx32 " mask %#" B_PRIx32
+		" mode %#" B_PRIx32 " mask %#" B_PRIx32
 		" status %#" B_PRIx32 " IRQ %" B_PRIu32 "\n",
-		port.segment, base, mode, enable, mask, status, profile.irq);
-	// EN_LEGACY is marked reserved in the TRM: inspect, never write it.
-	if ((mode & 0xf0) != 0x40 || (enable & 1) == 0 || mask == UINT32_MAX)
+		port.segment, base, mode, mask, status, profile.irq);
+	// EN_LEGACY at 0x194 is reserved in the TRM and reads zero on this board.
+	// It has no defined enable-state semantics; do not read or write it.
+	// Interrupt gating uses the documented MASK_LEGACY register, as in Linux.
+	if ((mode & 0xf0) != 0x40 || mask == UINT32_MAX)
 		return B_NOT_SUPPORTED;
 	controller->originalIntxMask = mask & 0xf;
 	controller->intxManaged = true;

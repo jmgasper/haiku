@@ -37,7 +37,10 @@ masked. It checks mask readback and restores the original receive mask when the
 controller is destroyed. This direct-parent route depends on the captured
 single-function topology. It does not implement a general interrupt domain,
 bridge swizzling, MSI-X through ITS0, clock/PHY setup or iATU reconfiguration.
-`PCIE_CLIENT_INTR_EN_LEGACY` is inspected but never written.
+`PCIE_CLIENT_INTR_EN_LEGACY` is reserved in the TRM. The initial `+102`
+candidate incorrectly required a reset-value bit from this register; the board
+reads it as zero. The corrected candidate neither reads nor writes it and gates
+interrupts through the documented mask register, as the Linux driver does.
 
 The BSD compatibility layer retains the full vector, enables the route after
 handler installation, and masks it before handler removal. It initializes the
@@ -110,6 +113,18 @@ enable the onboard profile and legacy routes explicitly, keep AHCI blocked,
 retain RNDIS control and recovery, check exact component hashes, and distinguish
 interrupt arrivals from successful packet traffic. The physical SSD remains on
 its accepted `+94` installation with the separately qualified ICU setting.
+
+## First native trial
+
+The first `+102` native boot, `interactive/20260913T053311Z-7bbac3`, reached USB
+remote control and initialized Samsung NVMe interrupts through ITS1. The two
+NIC roots passed their device-tree resource checks but were rejected before
+mask writes because `EN_LEGACY` read zero. Their APB mode was `0x4c`, mask and
+status were both zero. This is a driver-validation defect, not evidence that
+legacy interrupts are unavailable. The inventory script then stopped on its
+unsupported no-argument `mount` command, before component hashes or the memory
+probe; those checks are not accepted. The captured failure is retained, and the
+reserved-register correction requires a new build and QEMU/native trial.
 
 ## References
 
