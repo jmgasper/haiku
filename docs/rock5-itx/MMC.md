@@ -1,12 +1,13 @@
 # MMC and onboard eMMC
 
 The onboard eMMC now passes verified eight-bit legacy SDR selection, bounded
-file writes, explicit flush and persistence across normal reboot in `+144`,
+file writes, explicit flush and persistence across normal reboot and orderly
+shutdown/startup in `+144`,
 including CPU buffers forced above 4 GiB with the controller's private DMA32
 buffer below 4 GiB.
 The earlier `+136` four-bit image also passes orderly shutdown/startup. Both
 have independent Linux file, filesystem and reference-region checks.
-Eight-bit shutdown/startup, native cached-card flush,
+Native cached-card flush,
 power-loss integrity, faster clocks and Haiku boot from eMMC remain unqualified.
 MicroSD uses a different controller and is not covered
 by this work.
@@ -639,10 +640,43 @@ The writable image SHA-256 is
 Evidence paths above are beneath `artifacts/`; the qualification is indexed by
 `state/native-mmc-high-write.json` and `state/mmc-high-write-checkpoint.json`.
 
+## Native high-memory orderly shutdown and startup
+
+The same writable `+144` image passes a further 4 MiB file overwrite at offset
+10 MiB, explicit device flush and fresh read-only verification in
+`interactive/20260913T185834Z-3c4643`. Haiku requests PSCI system-off; the NanoKVM
+USB device detaches and HDMI capture times out. The off state remains stable
+through a 25.65-second observation, followed by one 800 ms power-button pulse.
+The same image starts Haiku again and the new file hash still matches.
+
+Both boots verify eight-bit mode, all 25 component and five settings hashes,
+memory and copy checks, and inspected HDMI desktops. The first CPU reads use
+`0x114879000`; the first write uses `0x1148a8000`. The scheduler floor remains
+4 GiB and the private SDMA address remains `0x2e80000`. The trial checks 72 MiB
+of complete file data and 48 MiB of raw references. The target changes to
+`90369b5cf904959ddb0ebab8df8158164eb36edc0c7564a7a6a42dd0a4dae4ce`; the source
+hash is unchanged.
+
+Recovery reaches ROOBI boot ID `cacb08a2-23f3-4b65-ba8a-d26b5fae15c3`. Linux
+independently verifies both files and filesystem consistency in
+`emmc-file-readback/20260913T191305Z-42a520`; the complete 300 MiB partition hash
+is `401cd69bb5b5e2ee77200829bed9a6fd5046e16367e77cd9fb411985a4ebb3d6`. Raw
+references remain unchanged in `emmc-read-reference/20260913T191424Z-31d5d2`.
+
+Cache remains disabled on both boots. Four initialization transfer-complete
+diagnostics remain, with no data-transfer errors, unexpected command failures
+or panic. Serial capture saves 564,199 bytes without transport errors; the
+recovery guard is disarmed. This is an orderly shutdown/startup result;
+electrical removal of the eMMC supply and abrupt power loss remain untested.
+It reuses the exact qualified image, build, 106 host checks and QEMU result
+from the preceding write trial. Evidence paths are beneath `artifacts/`;
+`state/native-mmc-high-shutdown.json` and `state/mmc-high-shutdown-checkpoint.json`
+index the qualification and retained fixture.
+
 ## Native work remaining
 
-Extend native eight-bit operation to orderly shutdown/startup. Extend the
-bounded file result to power-loss integrity, longer mixed I/O and error recovery. Speed
+Extend the bounded file result to power-loss integrity, longer mixed I/O and
+error recovery. Speed
 negotiation/tuning, native cached-card flush behavior and Haiku boot from eMMC
 remain open. Preserve ROOBI and its tested recovery route during these changes.
 
