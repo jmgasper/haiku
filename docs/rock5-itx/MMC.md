@@ -1,10 +1,12 @@
 # MMC and onboard eMMC
 
 The onboard eMMC now passes verified eight-bit legacy SDR selection, bounded
-file writes, explicit flush and persistence across normal reboot in `+140`.
+file writes, explicit flush and persistence across normal reboot in `+144`,
+including CPU buffers forced above 4 GiB with the controller's private DMA32
+buffer below 4 GiB.
 The earlier `+136` four-bit image also passes orderly shutdown/startup. Both
 have independent Linux file, filesystem and reference-region checks.
-Eight-bit shutdown/startup, high-memory callers, native cached-card flush,
+Eight-bit shutdown/startup, native cached-card flush,
 power-loss integrity, faster clocks and Haiku boot from eMMC remain unqualified.
 MicroSD uses a different controller and is not covered
 by this work.
@@ -559,8 +561,7 @@ A new host test executes the production translation and reproduces the oversized
 operation with the previous code. It covers short reads/writes at the device
 end, physical and virtual source vectors, partial-sector requests, transfer and
 operation limits, crossing the lower address bound, and buffers already above
-the bound. All 106 host checks pass with the fix. Native qualification must be
-repeated. No native high-memory write has been issued.
+the bound. All 106 host checks pass with the fix.
 
 The second failed trial and its diagnostic are retained in
 `state/native-mmc-high-second-failure.json`. Recovery reached ROOBI boot ID
@@ -569,11 +570,79 @@ partition unchanged, both file hashes, filesystem consistency and all three
 reference hashes. Evidence is in `artifacts/emmc-file-readback/20260913T182251Z-fadfb1`
 and `artifacts/emmc-read-reference/20260913T182356Z-5d4c65`.
 
+The corrected `+144` image, source
+`a08e634830c10f3bdd4460c427d9f948749f4a1f`, passes the complete native read-only
+trial in `interactive/20260913T183043Z-c175d5`. The first high-memory read is
+now exactly 512 bytes. On both boots its CPU address is `0x114879000`, the
+scheduler floor is `0x100000000`, and the private SDMA address is `0x2e80000`.
+All three raw reference regions, including the previously failing card end,
+match Linux before and after normal reboot (48 MiB total). Fresh read-only FAT
+mounts check 48 MiB of file data against the retained source and target hashes.
+Both boots also pass the 25 component and five settings hashes, eight-worker
+memory and 51,301 copy cases; HDMI desktops were inspected. The Ethernet links
+remain at 2.5 and 1 Gbit/s. No native write was requested in this trial.
+
+Recovery returns ROOBI boot ID `fd17695f-e21d-4ea5-99a7-0f10a05966a6`. Linux
+checks the complete 300 MiB FAT partition unchanged, both file hashes,
+filesystem consistency and the raw references in
+`emmc-file-readback/20260913T184544Z-b0916d` and
+`emmc-read-reference/20260913T184610Z-f0c6c6`. The card cache remains disabled;
+four initialization transfer-complete diagnostics remain recorded, with no
+data-transfer errors or unexpected command failures. Serial capture contains
+560,895 bytes with no transport errors, and the recovery guard is disarmed.
+
+The read-only image SHA-256 is
+`0eb3182dbff5cff6e6044c9fe0a793fd8c5615a842772336a36be685e3473a83`.
+Its ARM64 build is `build-20260913T182535Z.log`, and its complete QEMU pass is
+`qemu-shell/20260913T182634Z-853420`. Paths above are beneath `artifacts/`;
+the complete native qualification is indexed by `state/native-mmc-high.json`.
+The following trial supplies the separate high-memory write acceptance.
+
+## Native high-memory file writes and reboot
+
+The writable `+144` image uses the same 25 compiled components as the qualified
+read-only image and changes the driver setting to allow writes. Its complete
+QEMU pass is `qemu-shell/20260913T183137Z-14a804`. Native session
+`interactive/20260913T184645Z-d41fc3` passes six fresh regular-file overwrites:
+8 MiB at offset 4 MiB, followed by the five unaligned cases at offsets based
+on 2 MiB. Each operation changes the expected bytes, requests an explicit
+device flush, and checks both complete files after a fresh read-only mount.
+
+The trial writes 9,572,871 bytes and checks 192 MiB of complete file data,
+including after normal reboot. All 48 MiB of raw reference reads also match
+Linux. Both boots verify eight-bit mode, all component/settings hashes, memory
+and copy checks, and inspected HDMI desktops. The first successful CPU read
+and write use `0x114879000` and `0x114898000`, respectively, with the 4 GiB
+scheduler floor and private SDMA address `0x2e80000`. Every used CPU vector is
+validated against the floor before a card command is issued.
+
+Recovery reaches ROOBI boot ID `5dc404fe-a8a5-4b9e-a671-2383019cfba7`. Independent
+Linux checks in `emmc-file-readback/20260913T185731Z-6c24fe` confirm the full
+partition hash, filesystem consistency and both file hashes. The source remains
+`83c0cc3aa96d3bfc1cb31b72bd660866fa977905a9817d7007315683c78bba61`; the target
+changes from `6368dbcfd8e9d0ec193b28988cae0fd664eedf494da0fa6adbcba1c2dc84d348`
+to `3ea8009b2880a43e38289b25598d2827797fe9becaaa700ad8d8aca8f53d2085`. The complete
+300 MiB partition hash is
+`394dd52b7d1fbd7f4d92d9f58f8a228c8bebdf4c3d8813d73f9f864de1e9af44`.
+All three raw references remain unchanged in
+`emmc-read-reference/20260913T185800Z-3cfb6a`.
+
+The card cache is disabled on both boots. Four initialization transfer-complete
+diagnostics remain recorded; no data-transfer errors, unexpected command
+failures or panic appear. Serial capture saves 561,578 bytes without transport
+errors, and the recovery guard is disarmed. This qualifies bounded high-memory
+file writes and normal reboot, with shutdown/startup, cached-card flush,
+sustained/error recovery and faster modes still separate.
+
+The writable image SHA-256 is
+`03b641a1cc2d0d5dd2e210b616f70c8a72d3fded5077acc67a7dc11c6d2b58ae`.
+Evidence paths above are beneath `artifacts/`; the qualification is indexed by
+`state/native-mmc-high-write.json` and `state/mmc-high-write-checkpoint.json`.
+
 ## Native work remaining
 
 Extend native eight-bit operation to orderly shutdown/startup. Extend the
-bounded file result to power-loss integrity, longer mixed I/O, native caller
-buffers above 4 GiB and error recovery. Speed
+bounded file result to power-loss integrity, longer mixed I/O and error recovery. Speed
 negotiation/tuning, native cached-card flush behavior and Haiku boot from eMMC
 remain open. Preserve ROOBI and its tested recovery route during these changes.
 

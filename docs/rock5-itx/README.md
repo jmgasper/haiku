@@ -48,9 +48,10 @@ The SSD installation remains at `+94` while these newer changes are tested
 from USB.
 
 The onboard eMMC passes file writes, explicit flush and persistence after normal
-reboot in eight-bit mode, with independent Linux file, filesystem and reference
-checks. The prior four-bit image also passes orderly shutdown/startup; that
-power sequence still needs an eight-bit trial. High-memory callers, native
+reboot in eight-bit mode, including CPU buffers forced above 4 GiB, with
+independent Linux file, filesystem and reference checks. The prior four-bit
+image also passes orderly shutdown/startup; that power sequence still needs
+an eight-bit trial. Native
 cached-card flush, faster clocks, power-loss integrity and Haiku boot from eMMC remain pending.
 The ordinary driver profile defaults to read-only access. The reference,
 retained failures and tested scope are in [MMC.md](MMC.md).
