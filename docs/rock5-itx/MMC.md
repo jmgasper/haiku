@@ -1,14 +1,13 @@
 # MMC and onboard eMMC
 
-The onboard eMMC now passes verified eight-bit legacy SDR selection, bounded
-file writes, explicit flush and persistence across normal reboot and orderly
-shutdown/startup in `+144`,
-including CPU buffers forced above 4 GiB with the controller's private DMA32
-buffer below 4 GiB.
-The earlier `+136` four-bit image also passes orderly shutdown/startup. Both
-have independent Linux file, filesystem and reference-region checks.
-Native cached-card flush,
-power-loss integrity, faster clocks and Haiku boot from eMMC remain unqualified.
+The onboard eMMC now passes verified eight-bit legacy SDR selection, cached
+file writes, explicit device-cache flush and persistence across normal reboot
+in `+148`, including CPU buffers forced above 4 GiB with the controller's
+private DMA32 buffer below 4 GiB. The earlier `+144` eight-bit and `+136`
+four-bit images also pass orderly shutdown/startup with the cache disabled.
+These results have independent Linux file, filesystem and reference-region
+checks. Cache-enabled shutdown/startup, power-loss integrity, faster clocks and
+Haiku boot from eMMC remain unqualified.
 MicroSD uses a different controller and is not covered
 by this work.
 ROOBI remains on its eMMC root partition; the write fixture uses the separately
@@ -673,7 +672,7 @@ from the preceding write trial. Evidence paths are beneath `artifacts/`;
 `state/native-mmc-high-shutdown.json` and `state/mmc-high-shutdown-checkpoint.json`
 index the qualification and retained fixture.
 
-## Opt-in card-cache operation under development
+## Opt-in card-cache operation
 
 The exact RK3588 profile accepts `enable_cache true`, defaulting to false.
 After verified bus-width selection, it requires a non-removable MMC card,
@@ -698,16 +697,89 @@ All 108 host checks pass. New tests exercise delayed readiness, the total
 command budget, stuck/wrong states, card and transport errors, bus-lock
 retention, R1 selection without a hardware busy interrupt, unsupported cache
 capabilities, ignored commands, and corrupted reread metadata. The read-only
-EXT_CSD validator is shared with width verification. ARM64 build, QEMU and
-native cached-card qualification remain pending; the native results above used
-a cache-disabled card. This setting has not yet been deployed to the board.
+EXT_CSD validator is shared with width verification. The ARM64 build passes at
+`bc21c9ef581ef034a4f79ef2185b4e101ac3772b` (`hrev60097+148`), after initializing
+the discovery RCA explicitly to satisfy the compiler's definite-assignment
+check. Both read-only and writable images pass the full QEMU shell suite,
+including MMC FAT persistence and independent host readback. QEMU still uses a
+cache-disabled emulated card; native cache qualification is a separate gate.
+
+### Native cache-enabled read-only checkpoint
+
+The `+148` read-only image passes on the Samsung 8GTF4R before and after normal
+reboot. Both boots issue CACHE_CTRL[33], observe CMD13 ready/transfer state
+`0x900`, reread EXT_CSD and verify the enabled 65,536 KiB cache. Both retain
+verified eight-bit legacy SDR and CPU read buffers above 4 GiB; the logged
+512-byte CPU vectors start at `0x114879000`, with the private DMA32 payload at
+`0x2e80000`.
+
+Each boot verifies the 25 executable components and five settings, both
+Ethernet links, memory/copy probes, all three 8 MiB raw reference regions, and
+the 24 MiB FAT file fixture. Both desktops were inspected. No file-write
+operation was requested. Linux recovery independently verifies the complete
+300 MiB partition is unchanged at
+`401cd69bb5b5e2ee77200829bed9a6fd5046e16367e77cd9fb411985a4ebb3d6`, passes
+the FAT check, confirms both file hashes and rereads the raw references. The
+controller guard disarmed normally. Cached file writes and flush durability
+remain separate from this read-only result.
+
+| Evidence | Location under `/mnt/HaikuWork` |
+| --- | --- |
+| ARM64 build | `artifacts/build-20260913T192200Z.log` |
+| Read-only image manifest | `artifacts/mmc-cache-image/20260913T192431Z-c574d2/manifest.json` |
+| Read-only image SHA-256 | `81a39a804b835f514c13f00805e475551addf9a078c4571493c79f3e17f71b31` |
+| Read-only QEMU suite | `artifacts/qemu-shell/20260913T192454Z-9f4d22/result.json` |
+| Native read-only qualification | `artifacts/interactive/20260913T192959Z-778685/qualification.json` |
+| Linux full-partition and file check | `artifacts/emmc-file-readback/20260913T194458Z-0059d5/result.json` |
+| Linux raw-reference readback | `artifacts/emmc-read-reference/20260913T194515Z-71f711/result.json` |
+| Writable image manifest | `artifacts/mmc-cache-write-image/20260913T192602Z-fed11f/manifest.json` |
+| Writable image SHA-256 | `7d30e11cf05703bc4c5b6cbed4992bf47f182fe8942fb6cd449640abce570213` |
+| Writable QEMU suite | `artifacts/qemu-shell/20260913T192959Z-d4fca7/result.json` |
+
+### Native cached writes, flush and normal reboot
+
+The writable `+148` image has the same 25 executable components as the
+read-only image and changes the setting to permit writes. Its full QEMU suite
+passes before deployment. The native trial writes 8 MiB at file offset zero,
+then 1, 513, 4,097, 131,073 and 1,048,579 bytes at unaligned offsets above
+11 MiB, for 9,572,871 bytes written. Every case synchronizes and unmounts the
+FAT filesystem, explicitly requests `B_FLUSH_DRIVE_CACHE`, and verifies both
+complete files after a fresh read-only mount. All six cases and explicit
+flushes pass. The source file and untouched target bytes are included in the
+full-file comparisons.
+
+Both boots verify the enabled 65,536 KiB cache, eight-bit bus width and
+high-memory CPU buffers. Logged read vectors start at `0x114879000`, and the
+first write vector at `0x1148b8000`; both are 512 bytes, with DMA32 at
+`0x2e80000`. The serial log contains 26 completed FLUSH_CACHE[32] commands with
+CMD13 ready/transfer status `0x900`, including filesystem-triggered flushes.
+The test checks 192 MiB of complete file contents and 48 MiB of immutable raw
+reference regions across normal reboot, with both desktops inspected.
+
+Linux recovery independently confirms the source file and final target hash
+`212a0eba5cca7fbca3969b77201f4899c19e9f2a221f89c6f97906ee287bb7d9`, passes the
+FAT check and rereads the raw references. The complete final FAT partition
+hash is `616532ca7e6f00d24233bcdd15e7364d64f1ba689b36467c9e6f4825e0ad7cbf`.
+The guard disarmed normally. Four initialization transfer-complete diagnostics
+remain recorded, without data-transfer failures or a kernel panic. This
+qualifies bounded cached file writes and normal reboot; cached shutdown,
+concurrent/sustained I/O and abrupt power loss remain separate checks.
+
+| Evidence | Location under `/mnt/HaikuWork` |
+| --- | --- |
+| Fresh write fixture and expected hashes | `artifacts/mmc-cache-write-fixture/20260913T192602Z-f11209/fixture.json` |
+| Native qualification | `artifacts/interactive/20260913T194543Z-86c1aa/qualification.json` |
+| Writes and explicit flushes | `artifacts/interactive/20260913T194543Z-86c1aa/shell-20260913T195114Z-8ad86d.txt` |
+| File readback after reboot | `artifacts/interactive/20260913T194543Z-86c1aa/shell-20260913T195443Z-763bfc.txt` |
+| Linux partition/filesystem/file check | `artifacts/emmc-file-readback/20260913T195630Z-de663a/result.json` |
+| Linux raw-reference readback | `artifacts/emmc-read-reference/20260913T195642Z-6b791c/result.json` |
 
 ## Native work remaining
 
 Extend the bounded file result to power-loss integrity, longer mixed I/O and
-error recovery. Speed
-negotiation/tuning, native cached-card flush behavior and Haiku boot from eMMC
-remain open. Preserve ROOBI and its tested recovery route during these changes.
+error recovery. Cached shutdown/startup, speed negotiation/tuning and Haiku boot
+from eMMC remain open. Preserve ROOBI and its tested recovery route during
+these changes.
 
 The TRM specifies a 32-bit eMMC AXI address interface. Core clock selection uses
 CRU `0xfd7c0000 + 0x434`, with high-word write masks. Other clocks in that register
