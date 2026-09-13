@@ -66,7 +66,7 @@ against Windows; evaluate actual ACPI and device-tree tables for Haiku.
 
 | Work item | Starting point and dependencies | Acceptance |
 | --- | --- | --- |
-| Onboard eMMC | Verified eight-bit legacy SDR and read-only file/reference data pass native reboot checks; prior four-bit FAT writes pass explicit flush, reboot and orderly shutdown/startup. Linux independently verifies file/FS integrity, and common SD/eMMC I/O passes QEMU. See [MMC.md](MMC.md) | Qualify eight-bit writes, high-memory callers, power-loss integrity, native cached-card flush, sustained/error recovery, faster clock modes and Haiku boot; preserve the tested ROOBI recovery route |
+| Onboard eMMC | Verified eight-bit legacy SDR passes six FAT file overwrites, explicit flushes and normal reboot persistence; prior four-bit writes also pass orderly shutdown/startup. Linux independently verifies file/FS integrity and reference regions, and common SD/eMMC I/O passes QEMU. See [MMC.md](MMC.md) | Qualify eight-bit shutdown/startup, high-memory callers, power-loss integrity, native cached-card flush, sustained/error recovery, faster clock modes and Haiku boot; preserve the tested ROOBI recovery route |
 | microSD | RK3588 SD/MMC host, card detect, regulator and pinctrl; phase 2 | Multiple known cards, insertion/removal, hash-checked scratch filesystem, recovery from I/O errors and boot where firmware allows |
 | SPI NOR | RK3588 SPI/SFC attachment; observed 16 MiB loader device; phases 1 and 2 | Read and compare complete contents; expose geometry; separate read-only normal access from deliberate firmware updates; successful restore drill before writes |
 

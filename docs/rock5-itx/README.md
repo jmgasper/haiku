@@ -48,11 +48,10 @@ The SSD installation remains at `+94` while these newer changes are tested
 from USB.
 
 The onboard eMMC passes file writes, explicit flush and persistence after normal
-reboot and orderly shutdown/startup in four-bit mode. The newest USB image adds
-verified eight-bit read-only access across reboot. Both trials have independent
-Linux file, filesystem and reference-region checks; the eight-bit trial also
-preserved the complete FAT test partition byte-for-byte. Eight-bit writes,
-faster clock modes, power-loss integrity and Haiku boot from eMMC remain pending.
+reboot in eight-bit mode, with independent Linux file, filesystem and reference
+checks. The prior four-bit image also passes orderly shutdown/startup; that
+power sequence still needs an eight-bit trial. High-memory callers, native
+cached-card flush, faster clocks, power-loss integrity and Haiku boot from eMMC remain pending.
 The ordinary driver profile defaults to read-only access. The reference,
 retained failures and tested scope are in [MMC.md](MMC.md).
 

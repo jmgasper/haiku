@@ -1,11 +1,12 @@
 # MMC and onboard eMMC
 
-The onboard eMMC now passes verified eight-bit legacy SDR selection and read-only
-file/reference checks across normal reboot in `+139`. The earlier `+136`
-four-bit image passes bounded file writes, explicit flush and persistence across
-normal reboot and orderly shutdown/startup. Both have independent Linux checks.
-Eight-bit writes, power-loss integrity, faster clock modes and Haiku boot from
-eMMC remain unqualified. MicroSD uses a different controller and is not covered
+The onboard eMMC now passes verified eight-bit legacy SDR selection, bounded
+file writes, explicit flush and persistence across normal reboot in `+140`.
+The earlier `+136` four-bit image also passes orderly shutdown/startup. Both
+have independent Linux file, filesystem and reference-region checks.
+Eight-bit shutdown/startup, high-memory callers, native cached-card flush,
+power-loss integrity, faster clocks and Haiku boot from eMMC remain unqualified.
+MicroSD uses a different controller and is not covered
 by this work.
 ROOBI remains on its eMMC root partition; the write fixture uses the separately
 backed-up, previously empty 300 MiB FAT partition.
@@ -450,9 +451,66 @@ qualification and retained fixture remain available for the next write trial.
 include the [Linux MMC width validation](https://github.com/torvalds/linux/blob/v6.12/drivers/mmc/core/mmc.c)
 and [EXT_CSD field definitions](https://github.com/torvalds/linux/blob/v6.12/include/linux/mmc/mmc.h).
 
+## Eight-bit file writes and reboot persistence
+
+The `+140` image is built from `512e1a2bcba604fbfc3f8acc0d3cf92cad8dcb29`;
+only documentation changed since the qualified `+139` driver. Its private
+RK3588 profile sets `read_only false`. The retained 105 host checks cover that
+unchanged code, and a fresh combined QEMU run passes SD/eMMC raw and FAT I/O,
+normal reboot, host backing-file checks and the other regression gates.
+
+Native session `interactive/20260913T173214Z-2311e4` passes six fresh overwrites
+of the existing 16 MiB FAT target file. An 8 MiB overwrite starts at byte zero;
+five writes of 1, 513, 4,097, 131,073 and 1,048,579 bytes start at offsets
+10,485,777, 10,485,887, 10,486,301, 10,486,791 and 10,489,859. Each operation
+changes the previous contents, preserves the file length, and passes an explicit
+device flush followed by full source/target hashes on a fresh read-only mount.
+All 9,572,871 requested bytes are confined to regular-file writes on the backed-up
+300 MiB partition. No raw native eMMC write is used.
+
+After normal `shutdown -r`, both files and all three raw reference regions match
+again. Across both boots, checked payload totals 192 MiB of file contents and
+48 MiB of raw references. Both boots select and verify eight-bit mode, match
+twenty-five component and five setting hashes, pass the memory/copy probes,
+display inspected Tracker/Deskbar desktops and obtain DHCP at 2.5/1 Gbit/s.
+The SSD is not mounted or updated and remains at `+94`.
+
+Linux independently copies all 314,572,800 FAT bytes, passes `fsck.fat -n`,
+extracts both files and confirms their expected hashes. The final target SHA-256
+is `6368dbcfd8e9d0ec193b28988cae0fd664eedf494da0fa6adbcba1c2dc84d348`;
+the complete resulting partition hash is
+`0e58eb6b4e2154aa9405e44f52ece08e1d7de7af2dd9e77d54c7eedc28e1ed50`.
+Linux also confirms all three reference-region hashes. ROOBI recovers with
+boot ID `17ddae9c-c71e-44d1-8a25-b1a1a2f37ad7`; serial capture has no transport
+errors and the NanoKVM guard disarms.
+
+Cache is disabled on both native boots, so this exercises the CMD13
+ready/transfer-state flush path. Four transfer-complete diagnostics appear;
+their timing cause remains unisolated. No unexpected SDHCI command failure or
+panic appears. CPU vectors above 4 GiB are not forced, and the clock setup
+remains the existing legacy profile. This trial does not extend the earlier
+four-bit shutdown/startup result to eight-bit operation or establish abrupt
+power-loss, cached-card flush, sustained I/O or faster-mode acceptance.
+
+| Evidence | Location under `/mnt/HaikuWork` |
+| --- | --- |
+| Image manifest | `artifacts/mmc-width-write-image/20260913T172438Z-310b79/manifest.json` |
+| Image SHA-256 | `9b22d6ec87752d2cd73616184328da625c2d8544da96ed0dd5914ddedd6b962f` |
+| ARM64 build | `artifacts/build-20260913T172332Z.log` |
+| Combined QEMU | `artifacts/qemu-shell/20260913T172623Z-326036/result.json` |
+| Native qualification | `artifacts/interactive/20260913T173214Z-2311e4/qualification.json` |
+| Write and reboot file transcripts | Same directory: `shell-20260913T174111Z-57182a.txt`, `shell-20260913T174439Z-0c9ae6.txt` |
+| Fresh fixture and expected bytes | `artifacts/mmc-width-write-fixture/20260913T172423Z-f0e444/` |
+| Linux partition/file/FS check | `artifacts/emmc-file-readback/20260913T174708Z-f05753/result.json` |
+| Linux reference reads | `artifacts/emmc-read-reference/20260913T174721Z-9324d5/result.json` |
+
+`state/native-mmc-width-write.json` indexes this pass, and
+`state/emmc-write-fixture.json` records the retained final bytes for subsequent
+tests.
+
 ## Native work remaining
 
-Extend native eight-bit operation to file writes and persistence. Extend the
+Extend native eight-bit operation to orderly shutdown/startup. Extend the
 bounded file result to power-loss integrity, longer mixed I/O, native caller
 buffers above 4 GiB and error recovery. Speed
 negotiation/tuning, native cached-card flush behavior and Haiku boot from eMMC
