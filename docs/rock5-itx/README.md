@@ -191,6 +191,11 @@ allocations larger than 75% of currently free RAM. `--inject-error` as the fourt
 argument deliberately corrupts one word and must produce a failing exit status.
 This is a short integrity diagnostic, not a sustained qualification workload.
 
+`rock5_memcpy_probe` calls the actual libroot copy entry and checks 51,301
+alignment, canary and protected-page cases. The optional QEMU `--memcpy` gate
+runs it before and after reboot; its manifest must pin the helper and libroot
+under `arm64_memcpy_test` (`probe_sha256` and `libroot_sha256`).
+
 `UserBootscript` reports CPU, RAM, USB and network inventory to `/dev/dprintf`.
 An authenticated lab shell requires a separate private image overlay containing
 both `home/config/settings/rock5-lab/enable-shell` and a generated password hash.

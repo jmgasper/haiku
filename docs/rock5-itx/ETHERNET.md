@@ -386,6 +386,79 @@ hotplug, reset/error recovery and ITS0/MSI-X remain open. The earlier `+106`
 firmware stall, `+98` QEMU USB timeout and `+88` installed startup stall remain
 unresolved; this successful session does not establish that they were fixed.
 
+## ARM64 memory-copy improvement
+
+The generic ARM64 `memcpy` copied whole words only when source and destination
+had matching alignment. `rge_newbuf()` offsets received packets by `ETHER_ALIGN`
+(two bytes), while the DMA bounce buffer is page aligned. The `+108` kernel's
+disassembly confirms that this path copied the payload one byte at a time.
+
+Revision `381da7d16110257e49bb9a89d12073120b1db039` replaces that implementation
+in the ARM64 kernel and libroot with bounded, unaligned word copies for Normal
+memory. Both built entry points use paired general-register loads/stores for
+the 32-byte loop, followed by eight-byte and byte tails. They contain no SIMD
+instructions or calls. This is not a Device-memory/register accessor. DMA
+attributes, barriers, interrupt handling and driver locks are unchanged.
+
+The `+110` image is pinned in
+`network-intx-image/20260913T082216Z-9862a3/manifest.json`, with SHA-256
+`d9afd8f5cb720f364fd045addfee4bb908290c6fc70817f61e4153175cf34341`.
+Fifteen component hashes now include libroot and the new copy probe. The network
+drivers, network stack, benchmark executable and three driver/settings files
+match `+108` byte for byte. Build log
+`artifacts/build-20260913T082028Z.log` passed.
+
+All 84 host checks pass. The copy test compiles the production algorithm with
+address/undefined-behavior sanitizers and checks 51,301 cases: source/destination
+alignments, canaries, unchanged source data, return pointers, zero lengths,
+packet-size boundaries and protected page edges. The guest probe calls the
+actual libroot entry through a volatile function pointer. It passed the same
+51,301 cases on both QEMU boots and both native boots. QEMU evidence
+`qemu-shell/20260913T082247Z-59a606` also passes the existing memory, platform,
+instruction-cache, services, USB transfer, concurrent PCI network, NVMe
+persistence, normal reboot and shutdown gates.
+
+Native session `interactive/20260913T082603Z-4a96fc` reached the desktop on its
+first attempt and after a normal reboot, with no additional GPIO reset. Both
+boots passed component/settings hashes, the memory probe, DHCP and 2.5/1 Gbit/s
+link reporting. All four native traffic trials included the same eight-second
+CPU sample. Rates below are Mbit/s from the ROCK's perspective:
+
+| Phase / bytes per stream | Port 0 receive | Port 0 send | Port 1 receive | Port 1 send |
+| --- | ---: | ---: | ---: | ---: |
+| First boot / 32 MiB + 7 | 249.2 | 123.6 | 211.4 | 123.1 |
+| First boot / 128 MiB + 7 | 173.9 | 123.2 | 250.8 | 133.4 |
+| After reboot / 128 MiB + 7 | 265.3 | 158.3 | 335.6 | 170.3 |
+| After reboot / 256 MiB + 7 | 241.2 | 123.0 | 253.1 | 145.3 |
+
+The sixteen streams verified 2,281,701,488 bytes, about 2.125 GiB. Complete TCP
+sequence coverage and MAC addresses prove both physical paths in both
+directions. All four streams overlapped in every trial; interface errors/drops
+and capture drops stayed at zero. The four evidence directories under
+`artifacts/native-network-stream` are `20260913T083013Z-e77254`,
+`20260913T083107Z-9e7576`, `20260913T083619Z-3c87bc` and
+`20260913T083748Z-2c6881`. Together they contain 1,052,351 captured frames.
+
+Compared with the `+108` after-reboot 128 MiB run, the corresponding `+110`
+rates are about 1.8–2.8 times higher. These short application measurements still
+vary and remain well below the Linux reference; they do not establish maximum
+throughput or explain the variation between boots. Another concrete source of
+work is `rge_rxeof()` synchronizing the entire 2,046-byte receive allocation even
+for short packets. Any narrower copy must validate the descriptor's fragment
+length before using it. The shared Giant lock and CPU placement remain further
+performance leads.
+
+Because the change also affects storage paths, the native kernel mounted the
+SSD BFS volume read-only and verified both existing 2 GiB regions with eight
+workers and independent SHA-256 checks, all four 8 MiB guards, and all eleven
+installed package hashes. The volume was unmounted afterward. The installed
+system remains at `+94`; no SSD update was performed. The complete native
+qualification and recovery receipt are in `state/native-arm64-memcpy.json`.
+Serial capture completed with 493,192 bytes and no transport errors. ROOBI
+recovered with boot ID `27495453-6502-4de4-9d60-2e4d63b6b08b`; NanoKVM retained
+its boot ID and the watchdog disarmed. Temporary test addresses and capture
+processes were removed.
+
 ## References
 
 - Rockchip RK3588 TRM v1.0, Part 2 (2022-03-09), PCIe client status, mask and
