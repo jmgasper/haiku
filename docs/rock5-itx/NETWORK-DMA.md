@@ -45,8 +45,11 @@ integer arithmetic. These tests cannot model real ARM64 cache coherency.
 
 All 76 host checks passed in `tmp/host-checks-network-dma.log`. Both `rtl8125` and
 `ipro1000` cross-linked for ARM64 in
-`artifacts/network-dma-compile-20260913T040350Z.log`; the complete image and QEMU
-qualification are pending. Compilation does not establish device support.
+`artifacts/network-dma-compile-20260913T040350Z.log`. The final RTL8125 relink,
+including the wrapper cleanup and empty-mbuf copy correction, passed in
+`artifacts/network-dma-final-rtl8125-20260913T042829Z.log`. The complete `+98`
+image built in `artifacts/build-20260913T041514Z.log` from `c68654e89d`.
+Compilation does not establish native device support.
 
 The lab image includes `ipro1000` for QEMU's emulated Intel NIC; `rtl8125` remains
 excluded. `qemu_shell.py --pci-network` retains the RNDIS control network and
@@ -54,7 +57,32 @@ adds an isolated Intel interface at `10.240.7.15`. Its peer performs an 8 MiB
 round trip with independent hashes and a truncated-transfer check, repeated
 after a requested normal reboot. The manifest must supply
 `network_dma_test.ipro1000_sha256` to identify the exact guest driver. This is a
-compatibility-layer test, not a ROCK Ethernet acceptance test.
+compatibility-layer test, not a ROCK Ethernet acceptance test. The generic
+accessors do not implement PCI I/O ports, including the emulated 82540 driver's
+device-local reset path; this fixture does not qualify Intel reset or hotplug.
+
+The first combined run, `qemu-shell/20260913T041631Z-0cca15`, obtained DHCP on the
+Intel interface but timed out waiting for a RNDIS control response. USB had no
+address and the shell readiness gate failed. That failure is retained in
+`state/qemu-network-dma.json`; its cause remains open. The same image without
+the extra NIC passed USB/memory/platform/cache/service/file-transfer/NVMe checks,
+normal reboot and shutdown in `qemu-shell/20260913T042019Z-12bd62`.
+
+The combined retry in `qemu-shell/20260913T042326Z-f10238` passed those checks plus
+an 8 MiB PCI-network round trip before and after normal reboot. The host hash
+check path was corrected to the lab image's `system/non-packaged` location;
+the guest image and PCI topology were unchanged. Driver SHA-256 was
+`036a796d9a52dac7f1f8a59bffee5eb8eaabb04b38a8fbcd7cfa1a101cdbd736`.
+Independent packet-capture review counted 39,315 Ethernet frames, with at least
+16 MiB of TCP payload in each direction between the PCI interface and its peer.
+Normal shutdown and the independent NVMe host readback also passed.
+
+`state/network-dma-checkpoint.json` indexes the reviewed success, original
+failure, file hashes and packet counts. The private image is
+`lab-shell-images/20260913T041620Z-906837/haiku-lab-shell.img`, SHA-256
+`f844f2a0ac56aebea0da519e1ae9b777f6d7c74a3decb90004d5dffca2c6fbc6`.
+This establishes the stated QEMU DMA behavior. It does not close the earlier
+USB timeout or qualify native RK3588 cache coherency and RTL8125 interrupts.
 
 ## Sources
 

@@ -85,7 +85,7 @@ def check_pci_network(client, output, credentials, fixture, driver_hash, phase):
     evidence.mkdir()
     commands = (
         'ifconfig /dev/net/ipro1000/0\n'
-        'rock5_nic_hash=$(sha256sum /boot/system/add-ons/kernel/drivers/bin/ipro1000)\n'
+        'rock5_nic_hash=$(sha256sum /boot/system/non-packaged/add-ons/kernel/drivers/bin/ipro1000)\n'
         f'[ "${{rock5_nic_hash%% *}}" = {driver_hash} ]\n'
         'echo ROCK5_PCI_NETWORK_DRIVER_HASH_PASS\n')
     shell.execute(client, commands, evidence / 'interface.txt', credentials)

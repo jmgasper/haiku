@@ -2375,6 +2375,14 @@ Non-cacheable RAM; descriptor rings stay direct and ordinary packets use
 preallocated bounce buffers. Mapping ownership, interval checks, failure cleanup
 and partial synchronization are covered by the actual-source host tests. All
 76 host checks passed; RTL8125 and the Intel QEMU fixture driver cross-linked.
-The complete image and QEMU traffic qualification are pending. The physical SSD
-still has its accepted `+94` installation and ICU setting, and the ROCK remains
-in ROOBI. See [NETWORK-DMA.md](NETWORK-DMA.md) for scope and acceptance limits.
+The complete `+98` image built from `c68654e89d`. Its first combined QEMU boot
+obtained DHCP on PCI Ethernet but failed USB control readiness after a RNDIS
+response timeout. The same image passed the ordinary USB/storage/platform gates
+without the extra NIC. A combined retry then passed an 8 MiB PCI round trip
+before and after normal reboot, USB control, NVMe persistence and shutdown;
+packet capture independently confirms at least 16 MiB each way on the PCI
+interface. The original USB timeout remains open. This is a QEMU DMA milestone,
+not native Ethernet qualification. The physical SSD still has its accepted
+`+94` installation and ICU setting, and the ROCK remains in ROOBI. See
+[NETWORK-DMA.md](NETWORK-DMA.md) for evidence, the Intel fixture's limitations
+and the remaining native interrupt-routing work.
