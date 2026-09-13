@@ -40,4 +40,23 @@ command transfers had identical valid input in the guest-facing TCP capture;
 their damage occurred later. The source bug explains how a nonblocking terminal
 writer can repeat accepted bytes, but no internal trace yet ties every damaged
 byte in those sessions to that path. The host-side checked and paced transport
-remains in use. The kernel fix's full-image and native qualifications are pending.
+remains in use.
+
+The fixed `hrev60097+94` image passed two full QEMU boots in
+`qemu-shell/20260913T021120Z-799210`. Each boot reported all 65,536 bytes
+accurately in sixteen 4,096-byte writes. Six fresh logins each transferred an
+82,944-byte literal command with pacing disabled and exact hashes. The existing
+NVMe, PCI configuration, 8 MiB USB transfer, truncated-input rejection, normal
+reboot and shutdown checks also passed, with zero BFS allocation counters.
+
+The same immutable image, SHA-256
+`6760f144d43e6a78b4b3972fafd31c30e00fe4d7ea1de44ead0fa62332ad83b5`,
+passed the direct probe and three fresh unpaced command sessions on the ROCK in
+`interactive/20260913T022437Z-e73a47`. All eight component hashes, the five
+startup snapshots and filesystem checks passed. The mounted SSD retained its
+old packages and both 2 GiB test regions with their guards. After `sync` and
+SSD unmount, lab recovery returned to ROOBI; UART capture completed without
+errors and the NanoKVM watchdog disarmed without a controller restart.
+`state/native-tty-fixed.json` records this USB-boot qualification. Updating and
+booting the SSD with these fixes is the next gate; sustained acceptance and the
+original intermittent startup stall remain open.

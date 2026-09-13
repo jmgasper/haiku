@@ -55,7 +55,8 @@ seven component hashes, PCI/NVMe checks, USB transfers, normal reboot and
 shutdown in `qemu-shell/20260913T011356Z-7f5a14`. Its private image SHA-256 is
 `2ccb84f6e3485449b55af770ad4f796d520de5bd5234b65e5bb3955322c38242`.
 This establishes a launcher bug and the focused fix. It does not identify the
-wait in the stalled native boot, and the SSD still uses the original launcher.
+wait in the stalled native boot. The SSD still uses the original launcher at
+the USB qualification checkpoint described below.
 
 The opt-in [observer script](../../tools/rock5-itx/startup_observer.sh) and
 [launch job](../../tools/rock5-itx/startup_observer.launch) are installed as
@@ -100,6 +101,18 @@ and shutdown. Three fresh native command sessions then passed observer
 persistence, large-file/package checks and the ICU probe while the original
 hardware guard remained active. The underlying [terminal write defect](TTY.md)
 has a separate deterministic reproduction and candidate kernel fix.
+
+The combined launcher/TTY `hrev60097+94` image passed both full QEMU boots and
+a native USB boot in `interactive/20260913T022437Z-e73a47`. All eight component
+hashes and five startup snapshots passed. The focused launcher probe also ran
+on the ROCK: the fixed reader completed while the unrelated executable stayed
+alive; clearing close-on-exec deliberately reproduced the inherited pipe and
+delayed EOF. The negative case failed the ordinary expectation and passed its
+explicit expected-leak check. Three large unpaced native command sessions and
+the original SSD's file/package checks passed, followed by SSD unmount and
+verified ROOBI recovery. `state/native-tty-fixed.json` contains the scoped
+qualification. The installed-system upgrade and boot checks are still pending;
+these successful boots do not close the original startup-stall investigation.
 
 ## Time preferences
 

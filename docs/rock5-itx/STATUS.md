@@ -2311,23 +2311,36 @@ actual environment reader and demonstrated that an unrelated executable could
 keep it waiting for EOF. The `pipe2(O_CLOEXEC)` candidate passed the focused
 test in `qemu-shell/20260913T005634Z-1d0ab4`; deliberately clearing the flags
 reproduced the failure. This does not yet establish the cause of the native
-stall. Full-image/native validation and an early startup observer are next;
-the installed SSD still has its accepted `hrev60097+88` components.
-# Startup observer and terminal command transport follow-up
+stall. The observer and combined full-image/native qualification are recorded
+below; the installed SSD still has its accepted `hrev60097+88` components.
+
+## Startup observer and terminal command transport follow-up
 
 The original `+88` SSD completed five early thread/descriptor snapshots in
 `interactive/20260913T014533Z-453fff`. Observer file hashes survived reboot;
 six platform/storage component hashes plus the original launcher, both flushed
 2 GiB data regions and guards, eleven package hashes and zero BFS allocation
 counters passed. The traced boot reached the desktop. The earlier intermittent
-startup stall remains unexplained; the launcher pipe fix is still QEMU-qualified
-only. See [STARTUP.md](STARTUP.md).
+startup stall remains unexplained. See [STARTUP.md](STARTUP.md).
 
 Investigation also found a [terminal partial-write bug](TTY.md), reproduced
 in QEMU and on the physical SSD: a nonblocking write returns `EAGAIN` after
-accepting 4,096 bytes. A focused source fix and probe are now present; the fixed
-kernel module has not yet been qualified. The lab transport waits for the shell
-prompt, verifies received command-file hashes before execution and paces input.
+accepting 4,096 bytes. A focused source fix and probe are now present. The lab
+transport waits for the shell prompt, verifies received command-file hashes
+before execution and paces input.
 Its QEMU fresh-login/reboot/shutdown checks, native command checks and 75 host
 checks passed. Earlier failed transport/install attempts remain separately
 recorded and do not count as native startup or storage passes.
+
+The combined `hrev60097+94` image passed two full QEMU boots in
+`qemu-shell/20260913T021120Z-799210` and native USB session
+`interactive/20260913T022437Z-e73a47`. The terminal probe accounted for all
+64 KiB in sixteen partial writes; six QEMU and three native fresh logins each
+preserved an 82,944-byte literal command with pacing disabled. The ROCK also
+passed the focused launcher probe and its deliberate inheritance negative
+control, all eight component hashes and five startup snapshots. Old SSD
+packages, both 2 GiB test regions, their guards and zero BFS allocation counters
+passed before recovery. ROOBI returned after SSD unmount; NanoKVM did not restart
+and its watchdog disarmed. `state/native-tty-fixed.json` accepts this bounded
+USB-boot qualification. The physical SSD's `+94` update and installed boot
+checks remain pending.
