@@ -673,6 +673,35 @@ from the preceding write trial. Evidence paths are beneath `artifacts/`;
 `state/native-mmc-high-shutdown.json` and `state/mmc-high-shutdown-checkpoint.json`
 index the qualification and retained fixture.
 
+## Opt-in card-cache operation under development
+
+The exact RK3588 profile accepts `enable_cache true`, defaulting to false.
+After verified bus-width selection, it requires a non-removable MMC card,
+EXT_CSD revision 6 or newer, nonzero cache size and the existing 512-byte user
+area. It writes CACHE_CTRL[33] only when needed, rereads EXT_CSD, and verifies
+the enabled bit, stable fields, capacity, partition configuration and unchanged
+reset-pin programming before publishing the operational cache state.
+
+The two exact cache-enable/flush byte-write commands use R1 collection in
+SDHCI followed by CMD13 ready/transfer-state polling inside the existing MMC
+bus lock. They have a 30-second software budget; unrelated commands retain
+their existing response and timeout handling. This accounts for the hardware
+busy counter: with the admitted 24 MHz timeout clock, even its maximum
+2^27-cycle count is less than 5.6 seconds. Extending a software wait alone would
+still allow that counter to expire first. Linux likewise selects R1 and status
+polling for busy operations that exceed a host's counter limit; its cache-flush
+budget is 30 seconds. See the pinned
+[MMC busy-command handling](https://github.com/torvalds/linux/blob/v6.12/drivers/mmc/core/mmc_ops.c)
+and [cache timeout policy](https://github.com/torvalds/linux/blob/v6.12/drivers/mmc/core/mmc.c).
+
+All 108 host checks pass. New tests exercise delayed readiness, the total
+command budget, stuck/wrong states, card and transport errors, bus-lock
+retention, R1 selection without a hardware busy interrupt, unsupported cache
+capabilities, ignored commands, and corrupted reread metadata. The read-only
+EXT_CSD validator is shared with width verification. ARM64 build, QEMU and
+native cached-card qualification remain pending; the native results above used
+a cache-disabled card. This setting has not yet been deployed to the board.
+
 ## Native work remaining
 
 Extend the bounded file result to power-loss integrity, longer mixed I/O and

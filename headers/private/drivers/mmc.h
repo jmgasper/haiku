@@ -61,6 +61,14 @@ mmc_ext_csd_sector_count(const uint8_t data[512])
 }
 
 
+inline uint32_t
+mmc_ext_csd_cache_size(const uint8_t data[512])
+{
+	return (uint32_t)data[249] | ((uint32_t)data[250] << 8)
+		| ((uint32_t)data[251] << 16) | ((uint32_t)data[252] << 24);
+}
+
+
 // Native R1 status: command/data errors, locked/write-protected media and
 // erase status, plus the MMC SWITCH_ERROR flag (bit 7).
 const uint32_t kMmcR1ErrorMask = 0xfff9a080;
@@ -122,6 +130,19 @@ enum SDHCI_APPLICATION_COMMANDS {
 };
 
 
+// Cache enable and flush can outlast the SDHCI hardware busy counter. Collect
+// R1 and let the bus manager poll status while retaining its bus lock. Use a
+// bounded 30-second budget for these two operations only.
+inline bigtime_t
+mmc_cache_busy_timeout(card_type type, uint8_t command, uint32_t argument)
+{
+	if (is_mmc_card(type) && command == MMC_SWITCH
+		&& (argument == 0x03200100 || argument == 0x03210100))
+		return 30000000;
+	return 0;
+}
+
+
 // Interface between mmc_bus and underlying implementation (sdhci_pci or any
 // other thing that can execute mmc commands)
 typedef struct mmc_bus_interface {
@@ -172,6 +193,7 @@ const char* const kMmcRcaAttribute = "mmc/rca";
 const char* const kMmcTypeAttribute = "mmc/type";
 const char* const kMmcSectorCountAttribute = "mmc/sector_count";
 const char* const kMmcCacheEnabledAttribute = "mmc/cache_enabled";
+const char* const kMmcEnableCacheAttribute = "mmc/enable_cache";
 const char* const kMmcReadOnlyAttribute = "mmc/read_only";
 const char* const kMmcNonRemovableAttribute = "mmc/non_removable";
 const char* const kMmcMaxBusWidthAttribute = "mmc/max_bus_width";

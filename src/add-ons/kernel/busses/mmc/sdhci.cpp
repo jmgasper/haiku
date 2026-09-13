@@ -312,7 +312,8 @@ SdhciBus::ExecuteCommand(uint8_t command, uint32_t argument, uint32_t* response)
 
 		// Commands defined with different reply types in SD and MMC specifications
 		case SD_SET_BUS_WIDTH: // SD application command. Also MMC_SWITCH, which is not.
-			if (is_mmc_card(fCardType))
+			if (is_mmc_card(fCardType)
+				&& mmc_cache_busy_timeout(fCardType, command, argument) == 0)
 				replyType = Command::kR1bType;
 			else
 				replyType = Command::kR1Type;

@@ -273,6 +273,24 @@ int main()
         assert((submissions.back().command & 0xff) == 0x3a && submissions.back().blocks == 1);
         assert(regs->interrupt_status.bits == 0);
     }
+    // Cache busy completion belongs to the bus manager's bounded CMD13 loop.
+    // These commands must not depend on a hardware busy-complete interrupt.
+    for (card_type type : {CARD_TYPE_MMC, CARD_TYPE_MMC_EXTENDED_CAPACITY}) {
+        for (uint32 argument : {0x03200100u, 0x03210100u}) {
+            Fixture f("no-busy-irq"); bus->SetCardType(type);
+            uint32 response = 0; bigtime_t before = now;
+            assert(bus->ExecuteCommand(MMC_SWITCH, argument, &response) == B_OK);
+            assert((submissions.back().command & 0xff) == 0x1a);
+            assert(now == before && regs->interrupt_status.bits == 0);
+        }
+        for (uint32 argument : {0x03b70200u, 0x03200000u, 0x03210101u}) {
+            Fixture f("no-busy-irq"); bus->SetCardType(type);
+            uint32 response = 0; bigtime_t before = now;
+            assert(bus->ExecuteCommand(MMC_SWITCH, argument, &response) == B_TIMED_OUT);
+            assert((submissions.back().command & 0xff) == 0x1b);
+            assert(now - before >= 1000000 && now - before <= 1100000);
+        }
+    }
     for (const char* failure : {"short-pio", "pio-crc", "late-pio"}) {
         Fixture f(failure); bus->SetCardType(CARD_TYPE_MMC_EXTENDED_CAPACITY);
         std::array<uint8, 514> data; data.fill(0xa5);

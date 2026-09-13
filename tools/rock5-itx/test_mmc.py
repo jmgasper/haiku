@@ -123,9 +123,31 @@ class MMCTests(unittest.TestCase):
         def prepare(root, source):
             code = (source / 'src/add-ons/kernel/bus_managers/mmc/mmc_bus.cpp').read_text()
             (root / 'width.inc').write_text(code[
-                code.index('static status_t\nconfigure_mmc_width'):
+                code.index('static status_t\nverify_mmc_extended_csd'):
                 code.index('static status_t\ninitialize_mmc')])
         self.compile_run('test_mmc_width', prepare, 'MMC width sequencing and data corruption rejection passed')
+
+    def test_mmc_cache_busy_completion(self):
+        def prepare(root, source):
+            directory = source / 'src/add-ons/kernel/bus_managers/mmc'
+            code = (directory / 'mmc_bus.cpp').read_text()
+            module = (directory / 'mmc_module.cpp').read_text()
+            (root / 'cache_busy.inc').write_text(
+                code[code.index('status_t\nMMCBus::ExecuteCommand'):
+                     code.index('status_t\nMMCBus::DoIO')]
+                + module[module.index('static status_t\nmmc_bus_execute_command'):
+                         module.index('static status_t\nmmc_bus_do_io')])
+        self.compile_run('test_mmc_cache_busy', prepare,
+                         'MMC cache busy completion and bus serialization passed')
+
+    def test_mmc_cache_configuration(self):
+        def prepare(root, source):
+            code = (source / 'src/add-ons/kernel/bus_managers/mmc/mmc_bus.cpp').read_text()
+            (root / 'cache_config.inc').write_text(code[
+                code.index('static status_t\nverify_mmc_extended_csd'):
+                code.index('static status_t\ninitialize_mmc')])
+        self.compile_run('test_mmc_cache_config', prepare,
+                         'MMC cache capability and state verification passed')
 
 
 if __name__ == '__main__':

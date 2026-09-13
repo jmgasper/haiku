@@ -10,6 +10,7 @@
 #include <Errors.h>
 
 #include <stdint.h>
+#include <string.h>
 
 
 MMCBus::MMCBus(device_node* node)
@@ -106,10 +107,36 @@ status_t
 MMCBus::ExecuteCommand(uint16_t rca, uint8_t command, uint32_t argument,
 	uint32_t* response)
 {
+	bigtime_t busyTimeout = mmc_cache_busy_timeout(fCardType, command, argument);
+	if (busyTimeout != 0 && (rca == 0 || response == NULL))
+		return B_BAD_VALUE;
 	status_t status = _ActivateDevice(rca);
 	if (status != B_OK)
 		return status;
-	return fController->execute_command(fCookie, command, argument, response);
+	bigtime_t deadline = system_time() + busyTimeout;
+	status = fController->execute_command(fCookie, command, argument, response);
+	if (status != B_OK || busyTimeout == 0)
+		return status;
+	if ((*response & kMmcR1ErrorMask) != 0)
+		return B_IO_ERROR;
+
+	// The controller collects R1 without its short hardware busy timeout for
+	// these cache operations. Keep the existing bus lock until the selected
+	// card is ready, so another command cannot interleave with this wait.
+	do {
+		status = fController->execute_command(fCookie, SEND_STATUS,
+			(uint32_t)rca << 16, response);
+		if (status != B_OK || (*response & kMmcR1ErrorMask) != 0)
+			return status == B_OK ? B_IO_ERROR : status;
+		if ((*response & 0x1f00) == 0x900) {
+			TRACE_ALWAYS("MMC cache command completed: byte %u, status %#x\n",
+				(unsigned)((argument >> 16) & 0xff), (unsigned)*response);
+			return B_OK; // READY_FOR_DATA and TRAN state.
+		}
+		if (system_time() >= deadline)
+			return B_TIMED_OUT;
+		snooze(1000);
+	} while (true);
 }
 
 
@@ -193,6 +220,29 @@ MMCBus::_TerminateBus()
 
 
 static status_t
+verify_mmc_extended_csd(const uint8_t extended[512],
+	const uint8_t reference[512])
+{
+	// Verify stable, read-only identification/capability fields against the
+	// one-bit read. BUS_WIDTH itself is not a data-path integrity check.
+	static const uint16_t fields[] = {
+		160, 166, 168, 181, 192, 194, 196, 197, 198, 199, 200, 201, 202, 203,
+		212, 213, 214, 215, 217, 221, 222, 223, 224, 226, 229, 230, 231, 232,
+		236, 237, 238, 239, 249, 250, 251, 252, 253
+	};
+	for (unsigned i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
+		if (extended[fields[i]] != reference[fields[i]])
+			return B_BAD_DATA;
+	}
+	// Keep the user-area/sector-size and cache assumptions used by mmc_disk.
+	if ((extended[179] & 7) != 0 || extended[61] != 0
+		|| (extended[33] & 1) != (reference[33] & 1))
+		return B_BAD_DATA;
+	return B_OK;
+}
+
+
+static status_t
 configure_mmc_width(MMCBus* bus, uint16_t rca, uint8_t width,
 	const uint8_t reference[512])
 {
@@ -211,22 +261,37 @@ configure_mmc_width(MMCBus* bus, uint16_t rca, uint8_t width,
 	status = bus->ReadExtendedCsd(rca, extended);
 	if (status != B_OK)
 		return status;
-	// Verify stable, read-only identification/capability fields against the
-	// one-bit read. BUS_WIDTH itself is not a data-path integrity check.
-	static const uint16_t fields[] = {
-		160, 166, 168, 181, 192, 194, 196, 197, 198, 199, 200, 201, 202, 203,
-		212, 213, 214, 215, 217, 221, 222, 223, 224, 226, 229, 230, 231, 232,
-		236, 237, 238, 239, 249, 250, 251, 252, 253
-	};
-	for (unsigned i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
-		if (extended[fields[i]] != reference[fields[i]])
-			return B_BAD_DATA;
-	}
-	// Keep the user-area/sector-size and cache assumptions used by mmc_disk.
-	if ((extended[179] & 7) != 0 || extended[61] != 0
-		|| (extended[33] & 1) != (reference[33] & 1))
+	return verify_mmc_extended_csd(extended, reference);
+}
+
+
+static status_t
+configure_mmc_cache(MMCBus* bus, uint16_t rca, const uint8_t reference[512])
+{
+	if (reference[192] < 6 || mmc_ext_csd_cache_size(reference) == 0)
+		return B_NOT_SUPPORTED;
+	if ((reference[179] & 7) != 0 || reference[61] != 0
+		|| mmc_ext_csd_sector_count(reference) == 0)
 		return B_BAD_DATA;
-	return B_OK;
+	if ((reference[33] & 1) == 0) {
+		uint32_t response = 0;
+		// MMC SWITCH: write 1 to CACHE_CTRL[33]. ExecuteCommand retains
+		// the bus lock through the complete, bounded ready-status wait.
+		status_t status = bus->ExecuteCommand(rca, MMC_SWITCH, 0x03210100, &response);
+		if (status != B_OK || (response & kMmcR1ErrorMask) != 0)
+			return status == B_OK ? B_IO_ERROR : status;
+	}
+	uint8_t extended[512];
+	status_t status = bus->ReadExtendedCsd(rca, extended);
+	if (status != B_OK)
+		return status;
+	uint8_t expected[512];
+	memcpy(expected, reference, sizeof(expected));
+	expected[33] |= 1;
+	// Cache control must not change reset-pin programming or boot selection.
+	if (extended[162] != reference[162] || extended[179] != reference[179])
+		return B_BAD_DATA;
+	return verify_mmc_extended_csd(extended, expected);
 }
 
 
@@ -486,8 +551,6 @@ MMCBus::_WorkerThread(void* cookie)
 			} else {
 				cacheEnabled = extended[33] & 1;
 				year = MMCCid(cid).ManufactureYear(extended[192] > 4);
-				TRACE_ALWAYS("MMC EXT_CSD: revision %u, sectors %" B_PRIu32
-					", cache enabled %u\n", extended[192], sectorCount, cacheEnabled);
 			}
 		}
 
@@ -514,6 +577,30 @@ MMCBus::_WorkerThread(void* cookie)
 				return status;
 			}
 			TRACE_ALWAYS("MMC bus width: %u-bit legacy SDR, EXT_CSD verified\n", busWidth);
+
+			uint8_t enableCache = 0;
+			gDeviceManager->get_attr_uint8(bus->fNode, kMmcEnableCacheAttribute,
+				&enableCache, true);
+			if (enableCache != 0) {
+				uint8_t nonRemovable = 0;
+				gDeviceManager->get_attr_uint8(bus->fNode, kMmcNonRemovableAttribute,
+					&nonRemovable, true);
+				status = nonRemovable == 1
+					? configure_mmc_cache(bus, rca, extended) : B_NOT_SUPPORTED;
+				if (status != B_OK) {
+					ERROR("MMC cache enable verification failed: %s\n", strerror(status));
+					bus->_TerminateBus();
+					bus->ReleaseBus();
+					return status;
+				}
+				cacheEnabled = 1;
+				TRACE_ALWAYS("MMC cache enabled and EXT_CSD verified: %" B_PRIu32
+					" KiB\n", mmc_ext_csd_cache_size(extended));
+			}
+			// Report and publish the verified operational cache state, including
+			// any change from the state left by boot firmware.
+			TRACE_ALWAYS("MMC EXT_CSD: revision %u, sectors %" B_PRIu32
+				", cache enabled %u\n", extended[192], sectorCount, cacheEnabled);
 		}
 
 		if (cardFound) {

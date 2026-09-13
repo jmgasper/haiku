@@ -20,6 +20,7 @@ struct FdtMmc {
 	RK3588Mmc::Resources resources;
 	bool readOnly;
 	uint64 cpuAddressFloor;
+	bool enableCache;
 	area_id cruArea;
 	volatile uint8* cru;
 	volatile uint8* registers;
@@ -51,7 +52,7 @@ enabled(fdt_device_module_info* fdt, fdt_device* device)
 }
 
 static bool
-settings(bool& readOnly, bool& forceHighCpuBuffers)
+settings(bool& readOnly, bool& forceHighCpuBuffers, bool& enableCache)
 {
 	void* handle = load_driver_settings("sdhci");
 	if (handle == NULL)
@@ -61,6 +62,7 @@ settings(bool& readOnly, bool& forceHighCpuBuffers)
 	readOnly = get_driver_boolean_parameter(handle, "read_only", true, true);
 	forceHighCpuBuffers = get_driver_boolean_parameter(handle,
 		"force_high_cpu_buffers", false, false);
+	enableCache = get_driver_boolean_parameter(handle, "enable_cache", false, false);
 	unload_driver_settings(handle);
 	return admitted;
 }
@@ -71,9 +73,9 @@ supports_fdt(device_node* parent)
 #if !defined(__aarch64__)
 	return 0;
 #endif
-	bool readOnly, forceHighCpuBuffers;
+	bool readOnly, forceHighCpuBuffers, enableCache;
 	const char* bus;
-	if (!settings(readOnly, forceHighCpuBuffers)
+	if (!settings(readOnly, forceHighCpuBuffers, enableCache)
 		|| gDeviceManager->get_attr_string(parent, B_DEVICE_BUS, &bus, false) != B_OK
 		|| strcmp(bus, "fdt") != 0)
 		return 0;
@@ -97,8 +99,8 @@ register_fdt(device_node* parent)
 static status_t
 init_fdt(device_node* node, void** cookie)
 {
-	bool readOnly, forceHighCpuBuffers;
-	if (!settings(readOnly, forceHighCpuBuffers))
+	bool readOnly, forceHighCpuBuffers, enableCache;
+	if (!settings(readOnly, forceHighCpuBuffers, enableCache))
 		return B_NOT_SUPPORTED;
 	device_node* parent = gDeviceManager->get_parent_node(node);
 	fdt_device_module_info* fdt;
@@ -200,6 +202,7 @@ init_fdt(device_node* node, void** cookie)
 	// This constrains the scheduler's CPU vectors, not the private SDMA
 	// payload. The latter must still fit the controller's 32-bit interface.
 	info->cpuAddressFloor = forceHighCpuBuffers ? UINT64_C(0x100000000) : 0;
+	info->enableCache = enableCache;
 	info->cruArea = -1;
 	*cookie = info;
 	return B_OK;
@@ -260,6 +263,7 @@ register_children(void* cookie)
 		{kMmcReadOnlyAttribute, B_UINT8_TYPE, {.ui8 = uint8(info->readOnly)}},
 		{kMmcNonRemovableAttribute, B_UINT8_TYPE, {.ui8 = 1}},
 		{kMmcMaxBusWidthAttribute, B_UINT8_TYPE, {.ui8 = uint8(info->resources.width)}},
+		{kMmcEnableCacheAttribute, B_UINT8_TYPE, {.ui8 = uint8(info->enableCache)}},
 		{B_DMA_LOW_ADDRESS, B_UINT64_TYPE, {.ui64 = info->cpuAddressFloor}},
 		{B_DMA_ALIGNMENT, B_UINT32_TYPE, {.ui32 = 511}},
 		{B_DMA_BOUNDARY, B_UINT32_TYPE, {.ui32 = (1 << 19) - 1}},
