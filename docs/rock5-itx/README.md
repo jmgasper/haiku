@@ -35,7 +35,8 @@ Both onboard Ethernet ports now pass DHCP, static IPv4 and static IPv6 checks,
 including simultaneous sending and receiving before and after normal reboot.
 The SFP-connected port negotiates at 2.5 Gbit/s; the original connection is
 1 Gbit/s. The latest USB image also passes IPv6 address replacement and neighbor
-discovery in both directions. Throughput remains below the recorded Linux
+discovery in both directions, correct subnet selection with a default IPv6
+route present, and route-query diagnostics. Throughput remains below the recorded Linux
 reference, and automatic IPv6 configuration, sustained load and fault recovery
 remain open. See [ETHERNET.md](ETHERNET.md) for the measured scope and evidence.
 

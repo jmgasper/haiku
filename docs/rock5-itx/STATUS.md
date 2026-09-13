@@ -12,11 +12,11 @@ firmware supports it.
 | NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; staged downloads passed before/after native reboot, but simultaneous USB/Ethernet relay still causes outages; the latest outage did not recover through the hardware watchdog |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | Eighty-eight host checks pass locally, including IPv6 streams and production NDP source/link selection, the production Realtek receive routine with malformed lengths/fragments/ring wrap, actual ARM64 copy alignment/protected-page checks, checked network streams and corruption/truncation rejection, GIC MBI firmware/register admission and MSI vector allocation/reuse, onboard PCI host resource/profile rejection and root-link rejection, native-input dependency preflight, strict BFS report parsing, SSH controller-input isolation, explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
+| Automated controls | Eighty-nine host checks pass locally, including IPv6 prefix ranking and streams and production NDP source/link selection, the production Realtek receive routine with malformed lengths/fragments/ring wrap, actual ARM64 copy alignment/protected-page checks, checked network streams and corruption/truncation rejection, GIC MBI firmware/register admission and MSI vector allocation/reuse, onboard PCI host resource/profile rejection and root-link rejection, native-input dependency preflight, strict BFS report parsing, SSH controller-input isolation, explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
 | Native Haiku on ROCK | All eight CPUs start; Tracker/Deskbar, NanoKVM input, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; Samsung NVMe bounded raw I/O has independent Linux hashes; the 238 GiB SSD installation has passed large-file persistence after normal reboot and shutdown/startup; the installed NVMe driver has passed ITS1 MSI-X, filesystem TRIM and subsequent boot readback; the latest hrev60097+94 SSD update includes launcher and terminal fixes and has passed two installed boot/readback/normal-reboot cycles; the earlier startup stall, intermittent USB control failures and sustained acceptance remain open |
-| Onboard Ethernet | The +117 USB image passes DHCP and static IPv4/IPv6 on both RTL8125 ports at negotiated 2.5/1 Gbit/s. IPv6 address replacement, discovery in both directions and simultaneous send/receive pass before/after normal reboot; about 1.25 GiB of IPv4/IPv6 payload is checked with complete physical-path captures and zero interface errors. IPv6 Haiku rates of about 193–477 Mbit/s remain below the Linux reference. Automatic IPv6 configuration, sustained load and fault recovery remain open. The SSD is still at +94. |
+| Onboard Ethernet | The +120 USB image passes DHCP and static IPv4/IPv6 on both RTL8125 ports at negotiated 2.5/1 Gbit/s. IPv6 address replacement, discovery in both directions and simultaneous send/receive pass with a default route present, before/after normal reboot. About 1.25 GiB is checked with complete physical-path captures and zero interface errors; native route-query checks also pass. Throughput remains variable and below Linux. Router forwarding, automatic IPv6 configuration, sustained load and fault recovery remain open. The SSD is still at +94. |
 | Board revision | Owner confirmed ROCK 5 ITX PCB v1.12; current public electrical schematic is v1.11, so exact revision electrical details remain to be checked before raw register work |
 | USB recovery | Workstation USB-C connection enumerates as `2207:350b`; remote loader and MaskROM entry, RAM loader download, eMMC/SPI selection and matching read-back hashes verified |
 | Serial | NanoKVM UART1 (`/dev/ttyS1`) captures readable DDR/SPL, U-Boot and Linux output at 1,500,000 baud, 8N1; longer input is corrupted and an interactive login has not passed |
@@ -2587,3 +2587,31 @@ The complete result is `state/native-ndp-source.json`. Serial capture and ROOBI
 recovery passed; NanoKVM retained its boot ID and its watchdog disarmed. The SSD
 was not mounted or changed and remains at `+94`. All other open hardware rows
 in the roadmap remain active.
+
+## Route diagnostics and IPv6 longest-prefix selection
+
+Source `196adb96e8868cada83de07fbd7bfcc0f6fb6d8a` (`hrev60097+120`) corrects
+IPv6 route ranking so more specific prefixes take precedence over a default.
+The preceding route-utility fix also handles absent host masks and direct-route
+gateways. Its new runtime checks exposed the routing defect in QEMU; that
+failed `+119` run is retained and was never deployed to the board.
+
+All 89 host checks, the full build and the full QEMU regression suite passed.
+QEMU additionally passed ten real route-query cases on each boot. Native session
+`interactive/20260913T110601Z-7c7921` passed twenty route-query cases across both
+interfaces, eighteen component hashes, settings, memory/copy checks and DHCP
+at 2.5/1 Gbit/s. Three IPv6 runs passed simultaneous traffic with a default
+through port 0, including address replacement and normal reboot. Captures
+prove that port 1 retained its more specific physical path. Discovery and echo
+checks pass in both directions. A final IPv4 regression also passes.
+
+Total native payload is about 1.25 GiB across 371,192 captured frames, with no
+interface/capture errors or drops. IPv6 rates remain about 154–309 Mbit/s in
+these bounded runs, below the earlier Linux reference. Throughput variability
+and sustained acceptance remain open. Actual forwarding through an IPv6 router
+and automatic IPv6 configuration remain unqualified.
+
+Evidence and limits are in [ETHERNET.md](ETHERNET.md) and
+`state/native-ipv6-route-mask.json`. Recovery and serial capture passed, NanoKVM
+stayed up with its watchdog disarmed, and the temporary workstation fixture was
+removed. The SSD remains at `+94` and was not mounted or updated.

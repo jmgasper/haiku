@@ -629,8 +629,8 @@ retries only the failed read-only SSH verification.
 The earlier `+114` route-query timeout has a userspace crash trace:
 `BNetworkAddress::SetTo(sockaddr)` called from `get_route()+0xf8`. Disassembly
 identifies the unguarded gateway constructor; a direct route has no gateway.
-That diagnostic-tool defect still needs a fix and is separate from these
-successful data-path checks.
+The following route-query and prefix-ordering checkpoint corrects that
+diagnostic-tool defect.
 
 `state/native-ndp-source.json` records this bounded qualification. Static ULA
 traffic is established; link-local/scoped addresses, SLAAC, duplicate-address
@@ -641,6 +641,84 @@ and no transport errors. ROOBI recovered with boot ID
 `ae53edff-58b6-4700-b138-3fc9fba8246a`; NanoKVM retained its boot ID and its
 watchdog disarmed. The temporary workstation interface, routes and capture
 processes were removed.
+
+## Route queries and IPv6 prefix ordering
+
+Commit `702ce3f7ae6cef4b381c62a87dbcf0506a88da74` corrects `route get`: it
+constructs a gateway address only for gateway routes, and prints a prefix only
+when the returned route has a mask. Direct routes legitimately lack gateways;
+host routes can lack masks. The previously captured native crash occurred at
+the unconditional gateway constructor. The fix keeps the existing command
+syntax and missing-route reporting.
+
+Testing that command exposed a second defect. With an IPv6 default route
+installed, `+119` returned the default for both a connected /64 and an explicit
+/64 gateway route. The IPv6 address module returned prefix length where the
+routing table expected the position of the least significant set mask bit.
+Consequently the default ranked ahead of more specific prefixes. This failed
+QEMU run is preserved in `qemu-shell/20260913T105528Z-57af77`; no `+119` image
+was deployed to the ROCK.
+
+Commit `196adb96e8868cada83de07fbd7bfcc0f6fb6d8a` counts from the least
+significant end, matching the IPv4 module's contract: a /128 mask ranks zero
+and the default ranks 128. A missing host mask retains rank zero. The new
+sanitizer test executes the production function for all 129 prefix lengths,
+all 128 individual bit positions, additional higher bits and an implicit host
+mask. The test rejects the old code; that negative control is preserved in
+`ipv6-route-mask-regression/20260913T110122Z-120f7e`.
+
+All 89 host checks and the full ARM64 build passed. Image `hrev60097+120` is
+pinned in `network-intx-image/20260913T110230Z-6c1f3f/manifest.json`, SHA-256
+`67394665b62d99b78e4a9b989c45aea11d5cc5b81833d58d8bdc04ecc2f51c40`.
+QEMU `qemu-shell/20260913T110231Z-c6849b` passes the full regression suite,
+including IPv4/IPv6 streams, NVMe persistence, normal reboot and shutdown. Both
+boots also pass ten real route-command cases: connected subnets, interface and
+loopback host addresses, gateway routes, an IPv6 default and a missing route.
+The temporary routes are removed and the complete route table matches its
+initial state. The loopback check accepts either equally specific implicit or
+explicit /128 host representation; connected-prefix expectations remain strict.
+
+Native session `interactive/20260913T110601Z-7c7921` passes eighteen component
+hashes and three settings on both boots. The RTL8125 drivers, shared network
+stack, NDP module and existing probes match the qualified `+117` snapshots.
+Twenty route-command cases pass across the two physical interface configurations.
+Both boots also pass memory/copy checks and DHCP at 2.5/1 Gbit/s.
+
+Each IPv6 traffic run installs a default through port 0, verifies that port 1's
+more specific subnet is still selected, and runs checked send/receive streams
+on both ports. Independent captures establish the correct MAC paths and full
+TCP coverage. Each run also passes fresh discovery in both directions and
+four matching echo exchanges, then removes the temporary default route.
+Rates in Mbit/s are from the ROCK's perspective:
+
+| Phase / bytes per stream | Port 0 receive | Port 0 send | Port 1 receive | Port 1 send |
+| --- | ---: | ---: | ---: | ---: |
+| First configuration / 32 MiB + 7 | 281.8 | 154.7 | 309.0 | 153.8 |
+| Replaced addresses / 128 MiB + 7 | 256.6 | 163.6 | 225.7 | 156.9 |
+| After normal reboot / 128 MiB + 7 | 252.4 | 171.8 | 262.2 | 174.4 |
+
+IPv6 verifies 1,207,959,636 payload bytes across 314,892 captured frames. The
+three directories under `artifacts/native-network-ipv6` are
+`20260913T111127Z-d71aab`, `20260913T111447Z-38d56e` and
+`20260913T112023Z-fecb4b`. The final IPv4 regression verifies another 134,217,756
+bytes across 56,300 frames in `native-network-stream/20260913T112318Z-ff83c3`.
+All four streams overlap in every run, with zero interface errors/drops and
+zero capture drops. These results establish routing correctness under the
+tested conditions. Rates remain variable and below Linux; this is not a
+performance improvement claim.
+
+`state/native-ipv6-route-mask.json` records the full qualification. Serial
+capture completed with 504,560 bytes and no transport errors. ROOBI recovered
+with boot ID `d4155e34-b555-4253-8978-66adf9eff9b7`, NanoKVM retained its boot ID,
+and its watchdog disarmed. Temporary workstation interfaces, addresses, routes
+and capture processes were removed. The SSD was not mounted or updated and
+remains at `+94`.
+
+This tests more specific traffic while a default route exists, plus route
+lookups for gateway/default destinations. Actual traffic through an IPv6 router,
+automatic configuration, scoped/link-local addresses, duplicate-address
+detection, general multicast, sustained load and link/fault recovery remain
+open, alongside the other hardware rows.
 
 ## References
 
