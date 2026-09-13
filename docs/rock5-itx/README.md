@@ -47,10 +47,12 @@ disk is attached, so native disk I/O remains untested; see [SATA.md](SATA.md).
 The SSD installation remains at `+94` while these newer changes are tested
 from USB.
 
-The common MMC stack now passes SD/eMMC capacity, I/O and reboot persistence
-checks in QEMU. A shared-interrupt fix restores USB control in that combined
-fixture. Native Rockchip eMMC attachment, DMA and speed modes remain pending;
-the Linux reference and tested scope are in [MMC.md](MMC.md).
+The onboard eMMC now passes native read-only capacity and data checks before
+and after normal reboot. Three 8 MiB regions match independent Linux hashes;
+the common SD/eMMC stack also passes writes and persistence checks in QEMU.
+Native writes, faster speed modes and booting Haiku from eMMC remain pending.
+The Linux reference, retained initialization failures and tested scope are in
+[MMC.md](MMC.md).
 
 This fork uses AI-assisted development at its owner's request. Upstream Haiku
 does not accept AI-assisted contributions. The `rock5-itx` branch contains this

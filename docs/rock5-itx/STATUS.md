@@ -1,6 +1,6 @@
 # Tested status
 
-Updated 2026-09-13 (Australia/Hobart). This page distinguishes lab readiness from native Haiku
+Updated 2026-09-14 (Australia/Hobart). This page distinguishes lab readiness from native Haiku
 support. No hardware row in the roadmap is accepted merely because Linux or
 firmware supports it.
 
@@ -12,13 +12,13 @@ firmware supports it.
 | NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; staged downloads passed before/after native reboot, but simultaneous USB/Ethernet relay still causes outages; the latest outage did not recover through the hardware watchdog |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | Ninety-eight host checks pass locally, including production MMC/SDHCI register decoding, geometry, flush, bounded I/O and partial-initialization failures, shared-IRQ ownership, MMC backing-file corruption rejection, ARM64 AHCI request/DMA and controller lifecycle failure cases, two-disk persistence-oracle rejection, IPv6 prefix ranking and streams and production NDP source/link selection, the production Realtek receive routine with malformed lengths/fragments/ring wrap, actual ARM64 copy alignment/protected-page checks, checked network streams and corruption/truncation rejection, GIC MBI firmware/register admission and MSI vector allocation/reuse, onboard PCI host resource/profile rejection and root-link rejection, native-input dependency preflight, strict BFS report parsing, SSH controller-input isolation, explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
+| Automated controls | One hundred and one host checks pass locally, including RK3588 eMMC resource/clock admission, ARM64 SDMA allocation/cleanup, MMC reset after an unsupported SD probe, production MMC/SDHCI register decoding, geometry, flush, bounded I/O and partial-initialization failures, shared-IRQ ownership, MMC backing-file corruption rejection, ARM64 AHCI request/DMA and controller lifecycle failure cases, two-disk persistence-oracle rejection, IPv6 prefix ranking and streams and production NDP source/link selection, the production Realtek receive routine with malformed lengths/fragments/ring wrap, actual ARM64 copy alignment/protected-page checks, checked network streams and corruption/truncation rejection, GIC MBI firmware/register admission and MSI vector allocation/reuse, onboard PCI host resource/profile rejection and root-link rejection, native-input dependency preflight, strict BFS report parsing, SSH controller-input isolation, explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
 | Native Haiku on ROCK | All eight CPUs start; Tracker/Deskbar, NanoKVM input, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; Samsung NVMe bounded raw I/O has independent Linux hashes; the 238 GiB SSD installation has passed large-file persistence after normal reboot and shutdown/startup; the installed NVMe driver has passed ITS1 MSI-X, filesystem TRIM and subsequent boot readback; the latest hrev60097+94 SSD update includes launcher and terminal fixes and has passed two installed boot/readback/normal-reboot cycles; the earlier startup stall, intermittent USB control failures and sustained acceptance remain open |
 | Onboard Ethernet | The +120 USB image passes DHCP and static IPv4/IPv6 on both RTL8125 ports at negotiated 2.5/1 Gbit/s. IPv6 address replacement, discovery in both directions and simultaneous send/receive pass with a default route present, before/after normal reboot. About 1.25 GiB is checked with complete physical-path captures and zero interface errors; native route-query checks also pass. Throughput remains variable and below Linux. Router forwarding, automatic IPv6 configuration, sustained load and fault recovery remain open. The SSD is still at +94. |
 | SATA controller | The +124 USB image initializes the ASM1164 on four direct ports using INTx IRQ 287 before/after normal reboot. ARM64 two-disk 512n/512e I/O, explicit flush, guard checks and independent reboot/shutdown readback pass in QEMU. No physical SATA disk is attached, so native disk I/O, interrupt delivery under I/O and sustained acceptance remain untested. See [SATA.md](SATA.md). |
-| MMC / eMMC | The +127 image passes 8 GiB SD and 9 GiB eMMC I/O in ARM64 QEMU, including writes at 5 GiB, partial-sector guard checks, explicit MMC status/flush handling, normal reboot and independent host readback. Native RK3588 eMMC attachment/DMA/tuning remain pending. Read-only Linux inventory and controller registers are captured; ROOBI eMMC is unchanged. MicroSD uses a different host. See [MMC.md](MMC.md). |
+| MMC / eMMC | The +131 USB image identifies the onboard eMMC and passes native read-only geometry and three 8 MiB region hashes before/after normal reboot (48 MiB total), with independent Linux readback after recovery. Common SD/eMMC writes, partial-sector guards and persistence also pass ARM64 QEMU. Native writes, high-speed tuning, power-cycle integrity and Haiku boot from eMMC remain pending; ROOBI is preserved. MicroSD uses a different host. See [MMC.md](MMC.md). |
 | Board revision | Owner confirmed ROCK 5 ITX PCB v1.12; current public electrical schematic is v1.11, so exact revision electrical details remain to be checked before raw register work |
 | USB recovery | Workstation USB-C connection enumerates as `2207:350b`; remote loader and MaskROM entry, RAM loader download, eMMC/SPI selection and matching read-back hashes verified |
 | Serial | NanoKVM UART1 (`/dev/ttyS1`) captures readable DDR/SPL, U-Boot and Linux output at 1,500,000 baud, 8N1; longer input is corrupted and an interactive login has not passed |
@@ -2655,3 +2655,35 @@ artifact pins, retained failures and the remaining acceptance gates.
 record the pass. Serial capture and ROOBI recovery completed, NanoKVM stayed
 up and its watchdog disarmed. The Samsung SSD was not mounted or updated
 and remains at `+94`; the rest of the hardware roadmap remains active.
+
+
+## Native eMMC identification and read-only data
+
+Source `cee0be9cdfeab92e5ef8504bd7e4d7ede498791f` (`hrev60097+131`) adds
+native RK3588 eMMC attachment with an explicit firmware profile, private
+noncacheable DMA below 4 GiB and conservative legacy clock setup. The final
+initialization correction returns the card to idle after an unsupported SD
+probe, clearing the stale error that had prevented MMC address assignment.
+The preceding clock and RCA failures remain preserved in [MMC.md](MMC.md).
+
+All 101 host checks, the ARM64 build and the combined QEMU suite passed.
+Native session `interactive/20260913T150450Z-7f2149` passed read-only geometry
+and three 8 MiB region hashes on both sides of a normal PSCI reboot. Capacity
+is 7,818,182,656 bytes, matching Linux. The regions include offset 5 GiB and
+the end of the device; all six native hashes match the Linux references.
+Short reads measured about 7.8–8.3 MB/s in the conservative mode.
+
+Both boots also passed twenty-four component and five setting hashes, memory
+and copy checks, and inspected Tracker/Deskbar desktops. The Ethernet links
+remain at 2.5/1 Gbit/s with DHCP. The native trial did not write or flush eMMC,
+force CPU caller buffers above 4 GiB, repeat network traffic or update the
+`+94` SSD installation. One transfer-complete interrupt diagnostic appeared
+during each initialization; its timing cause remains unisolated despite the
+successful EXT_CSD and data reads.
+
+Serial capture completed without transport errors. ROOBI recovered with boot
+ID `e03fe45c-89ea-4529-94e9-95f820a9070d`, and independent Linux reads still
+match all three reference hashes. NanoKVM stayed up and its guard disarmed.
+`state/native-mmc-read-only.json` records this bounded pass. Native writes,
+flush/power-cycle persistence, faster speed modes, sustained/error recovery
+and booting Haiku from eMMC remain open, alongside the rest of the roadmap.

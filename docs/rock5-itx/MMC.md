@@ -1,10 +1,12 @@
 # MMC and onboard eMMC
 
-The common MMC stack exposes a sector-addressed eMMC user area and passes
-SD/eMMC I/O tests in ARM64 QEMU. **Native card initialization is still being
-qualified; there is no native user-area I/O acceptance yet.** MicroSD uses a
-different controller and is not covered by this work.
-ROOBI remains on eMMC; these tests have not written it.
+The onboard eMMC now passes native read-only geometry and data checks before
+and after normal Haiku reboot. Three 8 MiB regions match Linux, including data
+beyond 4 GiB and at the end of the device. The common MMC stack also passes
+SD/eMMC writes and persistence in ARM64 QEMU. Native writes, faster speed modes
+and Haiku boot from eMMC remain unqualified. MicroSD uses a different controller
+and is not covered by this work. ROOBI remains on eMMC; these native tests have
+not written it.
 
 ## Common driver checkpoint
 
@@ -26,8 +28,9 @@ The PCI/ACPI host-controller interface is now `device/v2`; the disk-facing
 interface and R2 layout are unchanged. The newer ARM64 SDMA buffer is described
 below. Hotplug/removal and broader error recovery are open.
 
-Ninety-eight host checks pass. Four suites exercise production MMC decoders,
-disk routines, bus lifecycle and SDHCI command/PIO/DMA routines under ASan/UBSan.
+At the `+127` checkpoint, ninety-eight host checks pass. Four suites exercise
+production MMC decoders, disk routines, bus lifecycle and SDHCI command/PIO/DMA
+routines under ASan/UBSan.
 Cases include the board's CID/CSD, fields crossing R2 words, unsigned capacities,
 failed mode switches, write-protected media, failed/busy flushes, missing
 completions, CRC errors, short PIO, failed resets, invalid DMA vectors and masked
@@ -132,8 +135,8 @@ not an assumed firmware handoff state.
 
 ## Native driver and first trials
 
-Source `3029920dff` (`hrev60097+130`) adds the RK3588 FDT attachment and a
-private 512 KiB noncacheable SDMA buffer below 4 GiB. Caller buffers can be
+Sources `ae716e8c93` and `3029920dff` (`hrev60097+129` / `+130`) add the RK3588
+FDT attachment and a private 512 KiB noncacheable SDMA buffer below 4 GiB. Caller buffers can be
 above 4 GiB; copies occur on the CPU, and failed reads are not copied back.
 An unrecoverable command/data reset disables further requests and retains the
 DMA allocation unless a subsequent full reset confirms that it can be freed.
@@ -154,12 +157,11 @@ identification and 24 MHz for legacy operation, preserving adjacent NVM bus
 clock fields. The SDHCI divider remains nonzero. These are source-clock
 settings, not an electrically measured card-clock rate.
 
-One hundred and one host checks pass, including production resource admission, clock
-sequencing, DMA allocation/cleanup, physical caller buffers above 4 GiB,
+One hundred and one host checks pass, including production resource admission,
+clock sequencing, DMA allocation/cleanup, physical caller buffers above 4 GiB,
 failed-read isolation, read-only geometry and reset after an unsupported SD
-probe. Both `+129` and `+130` passed
-the complete SD/eMMC QEMU fixture and combined regressions with the actual
-ARM64 DMA allocator enabled.
+probe. All three images, `+129` through `+131`, passed the complete SD/eMMC QEMU
+fixture and combined regressions with the actual ARM64 DMA allocator enabled.
 
 The first native `+129` trial initialized the controller and allocated DMA at
 `0x2e80000`, but CMD1 returned `0xffffffff` and CMD2 timed out. No MMC disk was
@@ -176,24 +178,70 @@ offsets zero, 5 GiB and the end of the user area remained unchanged. Unlike
 `+129`, `+130` lowers the external clock during identification, following the
 installed firmware's initialization.
 
-The second native `+130` trial returned a valid OCR (`0xc0ff8080` after the
-busy period) and completed CMD2. CMD3 returned `0x00400500`, including the
-`ILLEGAL_COMMAND` bit. The current change returns the card to idle before MMC
-negotiation so an unsupported SD CMD8 cannot leave that error for the first MMC
-R1 response. It also rejects an all-ones OCR. Native validation is pending.
+The second native `+130` trial returned a valid OCR voltage field (`0x00ff8080`),
+finished the busy period and completed CMD2. CMD3 returned `0x00400500`, including
+the `ILLEGAL_COMMAND` bit. Source `cee0be9cdf` (`+131`) returns the card to idle
+before MMC negotiation so an unsupported SD CMD8 cannot leave that error for
+the first MMC R1 response. It also rejects an all-ones OCR.
 The second trial's diagnostics, desktop and component/memory/copy checks are
 in `artifacts/interactive/20260913T144852Z-70d332`; the manifest is
 `artifacts/mmc-image/20260913T144450Z-48e0b5/manifest.json`. No MMC disk was
 published or user-area I/O attempted. Recovery returned ROOBI boot
 `a4faa8ee-0b14-4f6b-8f26-879c2a3ceb99`, and the guard disarmed normally.
 
+## Native read-only qualification
+
+Source `cee0be9cdfeab92e5ef8504bd7e4d7ede498791f` (`hrev60097+131`) passed
+two native boots with a normal PSCI reboot between them. The driver published
+`/dev/disk/mmc/0/raw`, reporting 512-byte sectors, 7,818,182,656 bytes and
+read-only geometry. EXT_CSD revision 8 and 15,269,888 sectors match Linux.
+The native card reported its cache disabled after firmware initialization.
+
+On each boot, three 8 MiB regions at offsets zero, 5 GiB and 7,809,794,048
+matched their Linux SHA-256 references. Total native checked payload is
+50,331,648 bytes (48 MiB). The short reads measured approximately 7.8–8.3 MB/s;
+these are initial integrity checks, not a throughput qualification. Linux
+independently read the same regions after recovery and obtained the same hashes.
+No native eMMC writes or flush ioctls were requested.
+
+Both boots also passed all 24 component and five setting hashes, an eight-worker
+64 MiB memory check and 51,301 copy cases. Tracker/Deskbar desktops were inspected.
+Both Ethernet interfaces obtained DHCP with 2.5/1 Gbit/s links. This run did not
+repeat Ethernet traffic qualification or mount/update the `+94` SSD installation.
+The DMA allocation was below 4 GiB; CPU caller buffers above 4 GiB were tested
+by the host fixture, not forced in this native run.
+
+The expected unsupported SD CMD8 timeout precedes the successful MMC fallback.
+Each initialization also printed `Remaining interrupts at end of handler: 2`
+once. That is the transfer-complete bit; subsequent EXT_CSD and all data reads
+completed. The timing cause has not been isolated, so this result does not
+establish complete interrupt/error-recovery behavior. Neither boot recorded a
+kernel panic or another failed SDHCI command.
+
+| Evidence | Location under `/mnt/HaikuWork` |
+| --- | --- |
+| Image manifest | `artifacts/mmc-image/20260913T150111Z-e19d9f/manifest.json` |
+| Image SHA-256 | `416103cd1c264f9c83b26df85656740c0d3e2c83304878f7c823c422a63974b7` |
+| Full ARM64 build | `artifacts/build-20260913T150019Z.log` |
+| 101 host checks | `artifacts/mmc-image/20260913T150111Z-e19d9f/host-checks.log` |
+| Combined QEMU result | `artifacts/qemu-shell/20260913T150112Z-52ab0f/result.json` |
+| Native session and reviewed result | `artifacts/interactive/20260913T150450Z-7f2149/qualification.json` |
+| Native read transcripts | Same directory: `shell-20260913T150930Z-e10882.txt`, `shell-20260913T151620Z-5630cb.txt` |
+| Post-recovery Linux reads | `artifacts/emmc-read-reference/20260913T151816Z-329dc0/result.json` |
+| Controller guard | `artifacts/controller-guarded-native/20260913T150450Z-866339/watchdog-result.json` |
+
+Serial capture completed without transport errors. Recovery returned ROOBI boot
+`e03fe45c-89ea-4529-94e9-95f820a9070d`; NanoKVM stayed up and its guard disarmed.
+`state/native-mmc-read-only.json` indexes the qualification and both preceding
+failures. The existing complete user-area, boot-area and SPI backup files and
+the tested restoration image were rehashed successfully before planning writes.
+
 ## Native work remaining
 
-Qualify card identification, EXT_CSD and user-area reads against Linux while
-preserving ROOBI. Native DMA and clock behavior require physical evidence.
-Scratch-file writes, flush/reboot persistence,
-speed negotiation/tuning, error recovery and native boot follow read-only
-qualification and a complete recovery backup.
+Extend the bounded read result to guarded scratch-file writes and explicit
+flush/reboot persistence while preserving ROOBI and its tested recovery route.
+Longer mixed I/O, native caller buffers above 4 GiB, speed negotiation/tuning,
+power-cycle integrity, error recovery and Haiku boot from eMMC remain open.
 
 The TRM specifies a 32-bit eMMC AXI address interface. Core clock selection uses
 CRU `0xfd7c0000 + 0x434`, with high-word write masks. Other clocks in that register
