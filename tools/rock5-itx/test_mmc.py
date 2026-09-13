@@ -97,6 +97,13 @@ class MMCTests(unittest.TestCase):
             (root / 'dma.inc').write_text(code[code.index('status_t\nsdhci_allocate_dma'):])
         self.compile_run('test_mmc_dma', prepare, 'SDHCI DMA allocation and cleanup passed')
 
+    def test_mmc_initialization_after_sd_probe(self):
+        def prepare(root, source):
+            code = (source / 'src/add-ons/kernel/bus_managers/mmc/mmc_bus.cpp').read_text()
+            (root / 'initialization.inc').write_text(code[
+                code.index('static status_t\ninitialize_mmc'):code.index('status_t\nMMCBus::_WorkerThread')])
+        self.compile_run('test_mmc_initialization', prepare, 'MMC reset after SD probe and OCR failures passed')
+
 
 if __name__ == '__main__':
     unittest.main()

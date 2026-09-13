@@ -1,8 +1,9 @@
 # MMC and onboard eMMC
 
 The common MMC stack exposes a sector-addressed eMMC user area and passes
-SD/eMMC I/O tests in ARM64 QEMU. **Native RK3588 eMMC attachment and I/O remain
-untested.** MicroSD uses a different controller and is not covered by this work.
+SD/eMMC I/O tests in ARM64 QEMU. **Native card initialization is still being
+qualified; there is no native user-area I/O acceptance yet.** MicroSD uses a
+different controller and is not covered by this work.
 ROOBI remains on eMMC; these tests have not written it.
 
 ## Common driver checkpoint
@@ -22,8 +23,8 @@ handled interrupt bits and cleans up partial initialization. Card power/clock
 setup runs in the bus worker instead of the insertion interrupt handler.
 
 The PCI/ACPI host-controller interface is now `device/v2`; the disk-facing
-interface and R2 layout are unchanged. The SDMA data path still requires native
-ARM64 noncoherent DMA work. Hotplug/removal and broader error recovery are open.
+interface and R2 layout are unchanged. The newer ARM64 SDMA buffer is described
+below. Hotplug/removal and broader error recovery are open.
 
 Ninety-eight host checks pass. Four suites exercise production MMC decoders,
 disk routines, bus lifecycle and SDHCI command/PIO/DMA routines under ASan/UBSan.
@@ -129,13 +130,68 @@ Capabilities are `0x226dc881` / `0x08000007`, SDHCI version field 5, vendor area
 offset `0x500`, and CRU CLKSEL_CON77 `0x590`. These describe running Linux,
 not an assumed firmware handoff state.
 
+## Native driver and first trials
+
+Source `3029920dff` (`hrev60097+130`) adds the RK3588 FDT attachment and a
+private 512 KiB noncacheable SDMA buffer below 4 GiB. Caller buffers can be
+above 4 GiB; copies occur on the CPU, and failed reads are not copied back.
+An unrecoverable command/data reset disables further requests and retains the
+DMA allocation unless a subsequent full reset confirms that it can be freed.
+
+The attachment requires this explicit `sdhci` driver setting:
+
+```text
+firmware_profile rock5-itx-edk2-v1.1-emmc-legacy
+read_only true
+```
+
+It admits the recorded board, controller and CRU resources, interrupt,
+clock/reset providers, identity DMA buses and controller capabilities before
+changing registers. Read-only access is the default, and disk geometry marks
+the soldered device nonremovable. High-speed modes and enhanced strobe are
+disabled. The external core/PHY source is programmed to 375 kHz for
+identification and 24 MHz for legacy operation, preserving adjacent NVM bus
+clock fields. The SDHCI divider remains nonzero. These are source-clock
+settings, not an electrically measured card-clock rate.
+
+One hundred and one host checks pass, including production resource admission, clock
+sequencing, DMA allocation/cleanup, physical caller buffers above 4 GiB,
+failed-read isolation, read-only geometry and reset after an unsupported SD
+probe. Both `+129` and `+130` passed
+the complete SD/eMMC QEMU fixture and combined regressions with the actual
+ARM64 DMA allocator enabled.
+
+The first native `+129` trial initialized the controller and allocated DMA at
+`0x2e80000`, but CMD1 returned `0xffffffff` and CMD2 timed out. No MMC disk was
+published, so native I/O failed its gate. Desktop, all 24 component and five
+setting hashes, eight-worker memory and 51,301 copy cases passed. Read-only
+register diagnostics confirmed the programmed clocks, `0x1111` pin mux values
+and enabled inputs. Evidence is in
+`artifacts/interactive/20260913T142828Z-9e5a06`; the image manifest is
+`artifacts/mmc-image/20260913T142433Z-cfca7b/manifest.json`.
+
+The NanoKVM guard disarmed normally, and recovery returned ROOBI boot
+`7ae30d53-84f7-44c4-b0ec-65be6aa2f9b5`. Three 8 MiB Linux reference regions at
+offsets zero, 5 GiB and the end of the user area remained unchanged. Unlike
+`+129`, `+130` lowers the external clock during identification, following the
+installed firmware's initialization.
+
+The second native `+130` trial returned a valid OCR (`0xc0ff8080` after the
+busy period) and completed CMD2. CMD3 returned `0x00400500`, including the
+`ILLEGAL_COMMAND` bit. The current change returns the card to idle before MMC
+negotiation so an unsupported SD CMD8 cannot leave that error for the first MMC
+R1 response. It also rejects an all-ones OCR. Native validation is pending.
+The second trial's diagnostics, desktop and component/memory/copy checks are
+in `artifacts/interactive/20260913T144852Z-70d332`; the manifest is
+`artifacts/mmc-image/20260913T144450Z-48e0b5/manifest.json`. No MMC disk was
+published or user-area I/O attempted. Recovery returned ROOBI boot
+`a4faa8ee-0b14-4f6b-8f26-879c2a3ceb99`, and the guard disarmed normally.
+
 ## Native work remaining
 
-Add the explicit RK3588 FDT attachment and validate its resource/clock profile
-before register writes. Establish a legacy clock and DLL-bypass configuration,
-read EXT_CSD and compare user-area reads against Linux while preserving ROOBI.
-Native DMA needs 32-bit address admission and explicit cache ownership or a
-private noncacheable bounce buffer. Scratch-file writes, flush/reboot persistence,
+Qualify card identification, EXT_CSD and user-area reads against Linux while
+preserving ROOBI. Native DMA and clock behavior require physical evidence.
+Scratch-file writes, flush/reboot persistence,
 speed negotiation/tuning, error recovery and native boot follow read-only
 qualification and a complete recovery backup.
 
@@ -147,6 +203,8 @@ References: [QEMU eMMC model](https://www.qemu.org/docs/master/system/devices/em
 [Linux DWC MSHC implementation](https://github.com/torvalds/linux/blob/v6.12/drivers/mmc/host/sdhci-of-dwcmshc.c),
 [FDT binding](https://github.com/torvalds/linux/blob/v6.12/Documentation/devicetree/bindings/mmc/snps,dwcmshc-sdhci.yaml),
 [MMC protocol definitions](https://github.com/torvalds/linux/blob/v6.12/include/linux/mmc/mmc.h).
+The [installed EDK2 eMMC driver](https://github.com/edk2-porting/edk2-rk3588/blob/6a682c0ef3ed74feb8b0d98f1c2aa771ddfbae18/edk2-rockchip/Silicon/Rockchip/Drivers/DwcSdhciDxe/DwcSdhciDxe.c)
+provides the firmware clock and initialization reference.
 Local RK3588 TRM v1.0 Part 1 clock/interrupt chapters and Part 2 Chapter 4 are
 retained in `artifacts/reference`; installed EDK2 v1.1 source is retained in
 `artifacts/firmware-source/edk2-rk3588-v1.1`.

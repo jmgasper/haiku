@@ -182,6 +182,32 @@ MMCBus::_TerminateBus()
 }
 
 
+static status_t
+initialize_mmc(MMCBus* bus, uint32_t& ocr)
+{
+	// The unsupported SD CMD8 can leave ILLEGAL_COMMAND in the card status.
+	// R3 and R2 do not report/clear it, so it otherwise reaches CMD3's R1.
+	// Begin MMC negotiation from idle, including after an SD probe failed.
+	ocr = 0;
+	status_t status = bus->ExecuteCommand(0, GO_IDLE_STATE, 0, NULL);
+	if (status != B_OK)
+		return status;
+	snooze(30000);
+	bigtime_t deadline = system_time() + 2000000;
+	do {
+		status = bus->ExecuteCommand(0, MMC_SEND_OP_COND, 0x40FF8000, &ocr);
+		if (status != B_OK)
+			return status;
+		if (ocr == UINT32_MAX)
+			return B_BAD_DATA;
+		if ((ocr & (1 << 31)) != 0)
+			return B_OK;
+		snooze(100000);
+	} while (system_time() < deadline);
+	return B_TIMED_OUT;
+}
+
+
 status_t
 MMCBus::_WorkerThread(void* cookie)
 {
@@ -262,19 +288,7 @@ MMCBus::_WorkerThread(void* cookie)
 			hcs = 0;
 
 			TRACE("Trying MMC CMD1 initialization...\n");
-			bigtime_t deadline = system_time() + 2000000;
-			do {
-				status = bus->ExecuteCommand(0, MMC_SEND_OP_COND, 0x40FF8000, &ocr);
-				// Request sector addressing; the reply determines the actual mode.
-				if (status != B_OK) {
-					TRACE("MMC CMD1 failed\n");
-					break;
-				}
-				if ((ocr & (1 << 31)) == 0) {
-					TRACE("MMC card is busy\n");
-					snooze(100000);
-				}
-			} while ((ocr & (1 << 31)) == 0 && system_time() < deadline);
+			status = initialize_mmc(bus, ocr);
 
 			if (status == B_OK && (ocr & (1 << 31)) != 0) {
 				TRACE("Detected MMC card after CMD1\n");
@@ -365,7 +379,7 @@ MMCBus::_WorkerThread(void* cookie)
 				rca = 1;
 				status
 					= bus->ExecuteCommand(0, MMC_SET_RELATIVE_ADDR, ((uint32)rca) << 16, &response);
-				TRACE("MMC RCA: %x Status: %x\n", rca, response & 0xFFFF);
+				TRACE("MMC RCA: %x Status: %08x, transport: %d\n", rca, response, status);
 				if (status != B_OK || (response & kMmcR1ErrorMask) != 0) {
 					TRACE("Failed to set RCA for MMC card\n");
 				} else {
