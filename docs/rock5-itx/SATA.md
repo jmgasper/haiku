@@ -22,7 +22,7 @@ register at `0x1c`; the reserved `0x194` register is not accessed. The stale
 child interrupt node's edge flag is not used. No PHY, clock, reset, or
 board-revision-dependent electrical changes are part of this step.
 
-## Driver changes under qualification
+## Driver changes
 
 The native `+123` trial reached the remote shell using IRQ 287, but reported
 CAP.NP = 23 and PI = `0x00ffff0f`: four direct ports and 16 virtual ports
@@ -61,9 +61,73 @@ buffer edges, partial/odd-sized payloads, malformed scatter/gather spans,
 overreported completions, timeouts, failed resets, and partial initialization.
 The QEMU fixture uses two independently seeded disposable 512n/512e disks, explicit
 drive-cache flushes, guard-checked partial-sector writes, reboot readback,
-and independent backing-file hashes after shutdown. QEMU and native results
-will be recorded after their respective gates run; these changes alone do
-not establish working native SATA disk I/O.
+and independent backing-file hashes after shutdown. These checks passed as
+described below; native SATA disk I/O still needs a physical fixture.
+
+## Accepted controller checkpoint
+
+Source `5f8d9b0ba429a4e968b33bf02bf950e45edd3b2e` (`hrev60097+124`)
+passed all 92 host checks and the full ARM64 build. The immutable USB image
+has SHA-256
+`4d225c32395d8cb3df205d5bb03b2e11423840c38ddeacf5f4a9cc2fe7b25c5e`.
+Its manifest pins twenty components and four settings, including the explicit
+ASM1164 direct-port selection, firmware PCI profile and ITS1 NVMe setting.
+
+QEMU passed two-disk AHCI I/O before and after normal reboot. The disks have
+512-byte logical sectors, with 512-byte and 4096-byte physical sectors
+respectively. Both passed high-offset writes, five partial-sector write sizes
+from 1 byte through 1,048,579 bytes, surrounding guard checks and explicit
+`B_FLUSH_DRIVE_CACHE`. After shutdown, six independent backing-file hashes
+confirmed the two heads, high-offset regions and final guard regions. The
+existing memory, instruction-cache, copy, service, USB/network, IPv4/IPv6,
+route-query, NVMe and power checks also passed. AHCI used IRQ 36 in this
+emulated topology; this does not qualify the ROCK's interrupt delivery or
+noncoherent DMA with a real disk.
+
+The earlier `+122` QEMU fixture did not boot: QEMU 8.2's `ide-hd` rejects a
+4096-byte logical sector. Its error artifacts are retained. The accepted
+fixture uses 512n/512e disks, and **4Kn I/O remains untested**.
+
+Native session `interactive/20260913T122354Z-c3acae` reached the desktop and
+authenticated USB shell twice, separated by a normal software reboot. Both
+boots admitted INTx IRQ 287, selected PI bits 0..3 from `0x00ffff0f`, and
+initialized only those four direct ports. All component/settings hashes, a
+64 MiB eight-worker memory check and 51,301 actual libroot copy cases passed
+on each boot. No SATA disk was attached; these observations establish
+controller initialization and reboot, not disk discovery or data transfer.
+
+The same native session checked 268,435,512 bytes of concurrent traffic over
+both Ethernet ports: IPv4 on the first boot and IPv6 after reboot. Complete
+captures contain 90,505 frames with no capture drops or interface errors.
+IPv6 also passed discovery in both directions, checked echoes and selection
+of the second port's specific route while a default existed through the
+first port. The links remained at 2.5 and 1 Gbit/s. Short transfer rates ranged
+from 143 to 396 Mbit/s, so Linux throughput parity remains open. One earlier
+peer fixture expired before its guest command was submitted; its failure and
+successful cleanup are retained separately and do not count as a native run.
+
+The Samsung NVMe installation was not mounted or updated and remains at
+`hrev60097+94`. Serial capture completed without transport errors, ROOBI
+returned with a new boot ID, NanoKVM retained its boot ID and its watchdog
+disarmed. The temporary workstation network configuration was removed.
+Acceptance evidence is indexed by:
+
+- `state/ahci-checkpoint.json` and `state/native-ahci-controller.json`
+- `artifacts/ahci-image/20260913T121921Z-a6c4e1/manifest.json`
+- `artifacts/qemu-shell/20260913T121922Z-cff830/ahci-qualification.json`
+- `artifacts/interactive/20260913T122354Z-c3acae/qualification.json`
+
+## Remaining SATA acceptance
+
+An identified disposable SATA disk is needed for initial native read/write,
+DMA coherency, actual interrupt delivery, explicit flush and independent Linux
+readback. Then test each of the four physical ports, simultaneous disks,
+filesystem integrity, TRIM where supported, link/error recovery and sustained
+load against a Linux reference. High-memory DMA, physical 4Kn disks and port
+multipliers need their own fixtures and evidence. The controller checkpoint
+does not accept the full SATA roadmap row.
+
+## References
 
 Reference: [Intel AHCI 1.3.1 specification](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/serial-ata-ahci-spec-rev1-3-1.pdf),
 especially command/PRD structures, transfer completion and port shutdown.

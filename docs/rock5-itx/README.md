@@ -40,6 +40,13 @@ route present, and route-query diagnostics. Throughput remains below the recorde
 reference, and automatic IPv6 configuration, sustained load and fault recovery
 remain open. See [ETHERNET.md](ETHERNET.md) for the measured scope and evidence.
 
+The latest USB image also initializes the ASM1164 SATA controller on its four
+direct ports before and after normal reboot. The ARM64 AHCI driver passes
+two-disk read/write, flush and persistence checks in QEMU. No physical SATA
+disk is attached, so native disk I/O remains untested; see [SATA.md](SATA.md).
+The SSD installation remains at `+94` while these newer changes are tested
+from USB.
+
 This fork uses AI-assisted development at its owner's request. Upstream Haiku
 does not accept AI-assisted contributions. The `rock5-itx` branch contains this
 work; `master` is retained as an upstream baseline. There is no upstream PR.

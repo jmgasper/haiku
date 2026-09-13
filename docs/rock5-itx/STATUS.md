@@ -12,11 +12,12 @@ firmware supports it.
 | NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; staged downloads passed before/after native reboot, but simultaneous USB/Ethernet relay still causes outages; the latest outage did not recover through the hardware watchdog |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | Eighty-nine host checks pass locally, including IPv6 prefix ranking and streams and production NDP source/link selection, the production Realtek receive routine with malformed lengths/fragments/ring wrap, actual ARM64 copy alignment/protected-page checks, checked network streams and corruption/truncation rejection, GIC MBI firmware/register admission and MSI vector allocation/reuse, onboard PCI host resource/profile rejection and root-link rejection, native-input dependency preflight, strict BFS report parsing, SSH controller-input isolation, explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
+| Automated controls | Ninety-two host checks pass locally, including ARM64 AHCI request/DMA and controller lifecycle failure cases, two-disk persistence-oracle rejection, IPv6 prefix ranking and streams and production NDP source/link selection, the production Realtek receive routine with malformed lengths/fragments/ring wrap, actual ARM64 copy alignment/protected-page checks, checked network streams and corruption/truncation rejection, GIC MBI firmware/register admission and MSI vector allocation/reuse, onboard PCI host resource/profile rejection and root-link rejection, native-input dependency preflight, strict BFS report parsing, SSH controller-input isolation, explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
 | Native Haiku on ROCK | All eight CPUs start; Tracker/Deskbar, NanoKVM input, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; Samsung NVMe bounded raw I/O has independent Linux hashes; the 238 GiB SSD installation has passed large-file persistence after normal reboot and shutdown/startup; the installed NVMe driver has passed ITS1 MSI-X, filesystem TRIM and subsequent boot readback; the latest hrev60097+94 SSD update includes launcher and terminal fixes and has passed two installed boot/readback/normal-reboot cycles; the earlier startup stall, intermittent USB control failures and sustained acceptance remain open |
 | Onboard Ethernet | The +120 USB image passes DHCP and static IPv4/IPv6 on both RTL8125 ports at negotiated 2.5/1 Gbit/s. IPv6 address replacement, discovery in both directions and simultaneous send/receive pass with a default route present, before/after normal reboot. About 1.25 GiB is checked with complete physical-path captures and zero interface errors; native route-query checks also pass. Throughput remains variable and below Linux. Router forwarding, automatic IPv6 configuration, sustained load and fault recovery remain open. The SSD is still at +94. |
+| SATA controller | The +124 USB image initializes the ASM1164 on four direct ports using INTx IRQ 287 before/after normal reboot. ARM64 two-disk 512n/512e I/O, explicit flush, guard checks and independent reboot/shutdown readback pass in QEMU. No physical SATA disk is attached, so native disk I/O, interrupt delivery under I/O and sustained acceptance remain untested. See [SATA.md](SATA.md). |
 | Board revision | Owner confirmed ROCK 5 ITX PCB v1.12; current public electrical schematic is v1.11, so exact revision electrical details remain to be checked before raw register work |
 | USB recovery | Workstation USB-C connection enumerates as `2207:350b`; remote loader and MaskROM entry, RAM loader download, eMMC/SPI selection and matching read-back hashes verified |
 | Serial | NanoKVM UART1 (`/dev/ttyS1`) captures readable DDR/SPL, U-Boot and Linux output at 1,500,000 baud, 8N1; longer input is corrupted and an interactive login has not passed |
@@ -2615,3 +2616,41 @@ Evidence and limits are in [ETHERNET.md](ETHERNET.md) and
 `state/native-ipv6-route-mask.json`. Recovery and serial capture passed, NanoKVM
 stayed up with its watchdog disarmed, and the temporary workstation fixture was
 removed. The SSD remains at `+94` and was not mounted or updated.
+
+## ARM64 AHCI and native SATA controller initialization
+
+Source `5f8d9b0ba429a4e968b33bf02bf950e45edd3b2e` (`hrev60097+124`) adds
+ARM64 private noncacheable AHCI buffers, bounded scatter/gather copies and
+completion ordering, and uses the managed 32-bit PCI interrupt interface.
+The RK3588 segment-one profile admits the documented legacy INTID 287.
+Controller and request error paths have explicit cleanup and ownership checks.
+
+All 92 host checks, the full build and the complete QEMU suite passed. Two
+independently seeded 512n/512e SATA disks passed concurrent I/O, high-offset
+and guarded partial-sector writes, explicit drive-cache flushes and normal
+reboot readback. Six host hashes checked the backing files after shutdown.
+An earlier unsupported 4Kn QEMU fixture failed before boot; that evidence is
+retained, and 4Kn I/O remains untested.
+
+Native session `interactive/20260913T122354Z-c3acae` passed desktop startup,
+twenty component hashes, four settings and memory/copy checks on both sides
+of a normal reboot. An explicit setting limits ASM1164 probing to its four
+direct ports. The previous unmasked `+123` run reached the remote shell but
+also probed sixteen virtual ports, delaying boot; it remains a separate failed
+four-direct-port readiness attempt. The default driver still permits virtual
+ports for port-multiplier configurations.
+
+Concurrent IPv4 before reboot and IPv6 afterward checked 268,435,512 bytes
+over both Ethernet ports, with 90,505 captured frames and no capture drops or
+interface errors. IPv6 discovery, echo and specific-route selection with a
+default route present also passed. Negotiation remains 2.5/1 Gbit/s, while
+short transfer rates of 143–396 Mbit/s remain below the Linux reference.
+
+The native scope is controller initialization and reboot: no SATA disk is
+attached, so physical disk I/O, interrupt delivery under I/O, DMA coherency
+and durability remain untested. [SATA.md](SATA.md) records implementation,
+artifact pins, retained failures and the remaining acceptance gates.
+`state/native-ahci-controller.json` and the session's `qualification.json`
+record the pass. Serial capture and ROOBI recovery completed, NanoKVM stayed
+up and its watchdog disarmed. The Samsung SSD was not mounted or updated
+and remains at `+94`; the rest of the hardware roadmap remains active.
