@@ -41,7 +41,11 @@ main(int argc, char** argv)
 			|| uint64_t(partition.offset) > bytes - uint64_t(partition.size)
 			|| partition.logical_block_size != int32(geometry.bytes_per_sector)
 			|| memchr(partition.device, 0, sizeof(partition.device)) == NULL) {
-			fprintf(stderr, "Invalid partition extent\n");
+			fprintf(stderr, "Invalid partition extent: offset=%" PRId64
+				" size=%" PRId64 " raw-bytes=%zu logical=%" PRId32
+				" sector=%" PRIu32 "\n", int64_t(partition.offset),
+				int64_t(partition.size), bytes, partition.logical_block_size,
+				geometry.bytes_per_sector);
 			close(fd);
 			return 1;
 		}

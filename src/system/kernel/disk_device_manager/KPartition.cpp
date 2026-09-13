@@ -892,6 +892,9 @@ KPartition::AddChild(KPartition* partition, int32 index)
 
 		partition->fParent = this;
 		partition->SetDevice(Device());
+		// devfs keeps a copy of the geometry when the child is published.
+		if (partition->BlockSize() == 0)
+			partition->SetBlockSize(BlockSize());
 		partition->SetPhysicalBlockSize(PhysicalBlockSize());
 
 		// publish to devfs

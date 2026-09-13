@@ -121,6 +121,13 @@ capacity and reports its exact offset, size and parent. The file test requires
 all three before mounting. The retained failed run is
 `artifacts/qemu-shell/20260913T153251Z-2ecc27`; native media was not changed.
 
+The `+134` repeat also stopped before file writes at the stricter extent check
+(`artifacts/qemu-shell/20260913T153850Z-4fc16e`). Source inspection found that
+`KPartition::AddChild()` published the initial zero logical block size before
+the partition scanner assigned it. New children now inherit the parent's
+logical block size before publication, while preserving an explicitly supplied
+nonzero value. The existing extent and block-size checks remain required.
+
 ## Linux and board reference
 
 The board is ROCK 5 ITX PCB v1.12, running ROOBI / Debian 11 and Linux
