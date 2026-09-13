@@ -296,6 +296,96 @@ does not consult `socket->bound_to_device`. That socket-option gap remains open;
 the datalink path's handling of `SO_BINDTODEVICE` does not establish TCP support.
 The stream fixture itself does not change TCP routing or either network driver.
 
+## Native concurrent IPv4 and Linux comparison
+
+Source `9dc5aaaa45ebb6fe3394082f056005bda5d9ae6a` built as `hrev60097+108`
+in `artifacts/build-20260913T071312Z.log`. All 83 host checks passed in
+`tmp/host-checks-network-stream-final.log`. The private image SHA-256 is
+`356691e37cefeee53f5d61de996b27af5bfae08e8b8f0bdb8732f19dbafda08d`.
+QEMU `qemu-shell/20260913T071458Z-ab0fb4` passed the memory/platform/cache,
+USB control/file-transfer, service and NVMe checks, normal reboot and shutdown.
+Both boots passed the PCI file round trip and simultaneous memory streams.
+The PCI capture contained 78,158 frames and over 32 MiB of TCP payload in each
+direction. This change adds the fixture; it does not modify the network drivers.
+
+Native session `interactive/20260913T072325Z-450eb7` booted on its first attempt
+and completed one normal Haiku reboot without an additional GPIO reset. Both
+boots passed thirteen component hashes, three settings hashes, USB control and
+the 64 MiB/eight-worker memory check. Both ports obtained their DHCP addresses
+and reported their expected 2.5/1 Gbit/s links. INTx IRQs 277/282 and ITS1 NVMe
+initialized on both boots. The framebuffer desktop after reboot was inspected
+in `frame-049.jpg`.
+
+For concurrent traffic, port 0 used `10.240.8.2/24` and port 1 used
+`10.240.9.2/24`; the workstation temporarily supplied `.1` on each subnet.
+Each run started four streams: one send and one receive per physical port.
+The receiver checked every byte, including a seven-byte partial final word.
+Packet review reconstructed complete TCP sequence coverage and checked both
+MAC addresses in both directions. All four streams overlapped in every run.
+
+| Native phase | Bytes per stream | Evidence under `artifacts/native-network-stream` |
+| --- | ---: | --- |
+| First boot | 32 MiB + 7 | `20260913T072803Z-24fd7c` |
+| First boot, larger transfer | 128 MiB + 7 | `20260913T073019Z-f23cfc` |
+| After normal reboot, with CPU sample | 128 MiB + 7 | `20260913T073550Z-e7c9ea` |
+
+All twelve streams passed: 1,207,959,636 payload bytes, approximately 1.125 GiB.
+Native interface error/drop counters stayed at zero. The three captures had
+675,138 frames in total and no capture drops. Per-port counters increased by
+the expected bulk traffic, while USB control counters increased by less than
+4 KiB in either direction during each measured transfer interval. The first
+fixture requested unsupported
+`netstat -r`; it returned a usage message without failing the script. That
+run's paths are proven by complete packet coverage. Later runs correctly used
+`route list`. The review parser was also corrected to distinguish interface
+headers from interface names appearing inside that route listing.
+
+ROOBI Linux passed the same four-stream fixture. Its complete 32 MiB capture is
+`linux-network-stream/20260913T074331Z-cc3d9c`; its complete 128 MiB capture is
+`linux-network-stream/20260913T074911Z-3fbbb7`. The latter contains 40,311 frames
+with no capture drops. The comparison below uses the 128 MiB runs and reports
+Mbit/s from the ROCK's perspective:
+
+| Port / negotiated link | Haiku receive | Haiku send | Linux receive | Linux send |
+| --- | ---: | ---: | ---: | ---: |
+| Port 0, new SFP connection / 2.5 Gbit/s | 144.5 | 86.1 | 1416.4 | 2285.2 |
+| Port 1, original connection / 1 Gbit/s | 120.5 | 76.7 | 613.9 | 936.7 |
+
+These are short application measurements with simultaneous traffic, not
+maximum link-capacity results. The Haiku numbers above are from the rebooted
+system with an eight-second `top` sample. Its first-boot runs were much slower:
+about 25–37 Mbit/s per stream, including the larger transfer. The cause of this
+variation remains open. In the sampled run, the two Realtek interrupt workers
+consumed roughly 0.84–0.92 CPU-seconds per second combined; total reported
+utilization was 18.8–21.2% across eight CPUs. Their existing shared Giant lock
+is a performance-investigation lead, not an established explanation for the
+variation or a reason to remove synchronization without a lifecycle audit.
+
+Linux setup initially lacked development headers, and a later source upload
+failed once with SSH exit 255. Both failed setup runs and successful cleanup
+are retained; neither sent benchmark traffic. Matching development files were
+staged under the lab directory without installing system packages. The first
+128 MiB Linux run verified all data but its capture socket dropped eight
+packets (`20260913T074506Z-b77462`). It remains incomplete capture evidence.
+The repeat used a larger private socket buffer and passed complete coverage.
+Linux's vendor RX byte counters also produced implausible totals; rates and
+traffic amounts come from probe timing and independent TCP coverage. Its
+pre-existing five RX drops per interface did not increase during either
+fully captured run.
+
+`state/native-network-stream-qualified.json` and `state/linux-network-stream.json`
+retain the qualifications, component hashes, raw counters, timings, capture
+hashes and limitations. Native serial capture completed without errors and
+ROOBI recovered with boot ID `872a1731-3551-46c7-9512-5771585e4c12`. NanoKVM kept
+its boot ID and the watchdog disarmed. Temporary addresses and capture processes
+were removed. The SSD was not mounted by Haiku or updated and remains at `+94`.
+
+This advances bounded simultaneous static IPv4 acceptance. Throughput,
+variation between boots, TCP device binding, IPv6, long mixed load, cable
+hotplug, reset/error recovery and ITS0/MSI-X remain open. The earlier `+106`
+firmware stall, `+98` QEMU USB timeout and `+88` installed startup stall remain
+unresolved; this successful session does not establish that they were fixed.
+
 ## References
 
 - Rockchip RK3588 TRM v1.0, Part 2 (2022-03-09), PCIe client status, mask and
