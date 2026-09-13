@@ -102,6 +102,18 @@ Each guest test verifies the exact MMC bus, SDHCI, disk and helper binaries.
 `--mmc` requires normal reboot/shutdown and excludes the fixed PCI inventory
 test. Scratch images are newly created for every run.
 
+The optional `--mmc-filesystem` extension adds a third disposable eMMC with a
+300 MiB FAT32 partition. It also requires `mmc_test.fat_sha256` in the image
+manifest and local dosfstools/mtools. An existing 16 MiB target file receives
+an 8 MiB write and five partial-sector writes from a distinct source file.
+After each write, the test synchronizes and unmounts the filesystem, explicitly
+flushes the MMC device, then mounts read-only and checks both complete files.
+Readback repeats after normal reboot. Following shutdown, the host independently
+checks FAT consistency, file hashes, the partition table and adjacent guards.
+The host oracle rejects absent writes and corruption outside the write ranges.
+This extension is being qualified before native eMMC file writes; it does not
+change the scope of the accepted read-only hardware result below.
+
 ## Linux and board reference
 
 The board is ROCK 5 ITX PCB v1.12, running ROOBI / Debian 11 and Linux

@@ -7,6 +7,7 @@ import re
 import shlex
 
 import lab
+import mmc_file_test
 import shell
 
 
@@ -31,7 +32,7 @@ def emulator():
     return binary, manifest
 
 
-def prepare(output):
+def prepare(output, filesystem=False):
     root = output / 'mmc'
     root.mkdir()
     disks = []
@@ -59,6 +60,8 @@ def prepare(output):
             initial_guard_sha256=initial_guard, operations=operations,
             final_guard_sha256=hashlib.sha256(guard).hexdigest()))
     fixture = dict(evidence=str(root), disks=disks)
+    if filesystem:
+        fixture['filesystem'] = mmc_file_test.prepare(output)
     lab.save(root / 'fixture.json', fixture)
     return fixture
 
@@ -70,6 +73,8 @@ def command(fixture):
         args += ['-device', f'sdhci-pci,id=mmc{i}',
             '-drive', f'file={disk["disk"]},if=none,id=mmc-disk{i},format=raw,cache=writeback',
             '-device', f'{disk["kind"]},drive=mmc-disk{i},bus=pcie.0/mmc{i}/sd-bus']
+    if 'filesystem' in fixture:
+        args += mmc_file_test.command(fixture['filesystem'])
     return args
 
 
@@ -89,8 +94,9 @@ def check(client, output, credentials, fixture, manifest, after_reboot=False):
     shell.execute(client, script, inventory, credentials, timeout=60)
     rows = re.findall(r'(?m)^MMC_GEOMETRY path=(/dev/disk/mmc/[0-9]+/raw) '
                       r'sector=(\d+) bytes=(\d+) readonly=0\r?$', inventory.read_text())
-    if len(rows) != 2 or len(set(row[0] for row in rows)) != 2:
-        raise RuntimeError('Expected exactly two distinct disposable MMC/SD disks')
+    count = 3 if 'filesystem' in fixture else 2
+    if len(rows) != count or len(set(row[0] for row in rows)) != count:
+        raise RuntimeError(f'Expected exactly {count} distinct disposable MMC/SD disks')
     commands = ['set -o pipefail']
     for disk in fixture['disks']:
         matches = [row for row in rows if int(row[1]) == disk['sector'] and int(row[2]) == disk['bytes']]
@@ -136,8 +142,20 @@ def check(client, output, credentials, fixture, manifest, after_reboot=False):
             expected = 'pass' if disk['kind'] == 'emmc' else 'unsupported'
             if f'MMC_FLUSH path={disk["guest_device"]} method=B_FLUSH_DRIVE_CACHE result={expected}' not in text:
                 raise RuntimeError('Missing explicit MMC/SD flush result')
+    result = dict(status='pass', disks=2, phase=phase, transcript=str(transcript), inventory=str(inventory))
+    if 'filesystem' in fixture:
+        files = fixture['filesystem']
+        matches = [row for row in rows if int(row[1]) == 512 and int(row[2]) == files['bytes']]
+        if len(matches) != 1:
+            raise RuntimeError('Expected one distinct MMC filesystem card')
+        device = matches[0][0]
+        if after_reboot and device != files['guest_device']:
+            raise RuntimeError('MMC filesystem path changed across reboot')
+        files['guest_device'] = device
+        result['filesystem'] = mmc_file_test.check(client, output, credentials,
+            files, device, manifest['mmc_test']['fat_sha256'], after_reboot)
     lab.save(root / 'fixture.json', fixture)
-    return dict(status='pass', disks=2, phase=phase, transcript=str(transcript), inventory=str(inventory))
+    return result
 
 
 def verify_host(fixture):
@@ -156,4 +174,7 @@ def verify_host(fixture):
                 if len(data) != size or digest != expected:
                     raise RuntimeError('Independent MMC/SD backing-file readback failed')
                 hashes.append(dict(disk=disk['index'], offset=offset, bytes=size, sha256=digest))
-    return dict(status='pass', hashes=hashes)
+    result = dict(status='pass', hashes=hashes)
+    if 'filesystem' in fixture:
+        result['filesystem'] = mmc_file_test.verify_host(fixture['filesystem'])
+    return result

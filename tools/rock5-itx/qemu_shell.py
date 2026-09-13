@@ -202,7 +202,10 @@ def check_pci_config(client, output, credentials, after_reboot=False):
 
 def run(manifest_path, el1=False, memory=False, power=False, normal=False, platform=False,
         transfer=False, services=False, cache=False, nvme=False, pci_config=False,
-        pci_network=False, network_stream=False, memcpy=False, ahci=False, mmc=False):
+        pci_network=False, network_stream=False, memcpy=False, ahci=False, mmc=False,
+        mmc_filesystem=False):
+    if mmc_filesystem and not mmc:
+        raise ValueError('MMC filesystem requires the MMC fixture')
     if mmc and (not (power and normal) or pci_config):
         raise ValueError('MMC requires normal reboot/shutdown and excludes fixed PCI inventory')
     if ahci and (not (power and normal) or pci_config):
@@ -235,6 +238,8 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
         if not all(re.fullmatch(r'[0-9a-f]{64}', manifest.get('mmc_test', {}).get(key, ''))
                    for key in qemu_mmc.COMPONENTS):
             raise ValueError('MMC requires pinned bus, host, disk driver and helper hashes')
+        if mmc_filesystem and not re.fullmatch(r'[0-9a-f]{64}', manifest['mmc_test'].get('fat_sha256', '')):
+            raise ValueError('MMC filesystem requires a pinned FAT driver hash')
         mmc_binary, mmc_toolchain = qemu_mmc.emulator()
     stream_fixture = None
     credentials = shell_image.read_credentials()
@@ -246,7 +251,7 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
     if ahci:
         ahci_fixture = qemu_ahci.prepare(output)
     if mmc:
-        mmc_fixture = qemu_mmc.prepare(output)
+        mmc_fixture = qemu_mmc.prepare(output, mmc_filesystem)
     firmware = output / 'QEMU_EFI.fd'
     shutil.copyfile('/usr/share/qemu-efi-aarch64/QEMU_EFI.fd', firmware)
     subprocess.run(['qemu-img', 'create', '-q', '-f', 'qcow2', '-F', 'raw', '-b',
@@ -501,6 +506,8 @@ def main():
                         help='Check two disposable AHCI disks, cache flush and reboot readback')
     parser.add_argument('--mmc', action='store_true',
                         help='Check disposable SD/eMMC cards using pinned local QEMU 10.2.0')
+    parser.add_argument('--mmc-filesystem', action='store_true',
+                        help='Also check FAT file writes, fresh mounts and persistence (requires --mmc)')
     parser.add_argument('--pci-config', action='store_true',
                         help='Read known host/NVMe configuration pages (requires --nvme)')
     parser.add_argument('--pci-network', action='store_true',
@@ -526,7 +533,8 @@ def main():
     os.umask(0o077)
     result = run(args.manifest, args.el1, args.memory, args.power, args.normal, args.platform,
                  args.transfer, args.services, args.cache, args.nvme, args.pci_config,
-                 args.pci_network, args.network_stream, args.memcpy, args.ahci, args.mmc)
+                 args.pci_network, args.network_stream, args.memcpy, args.ahci, args.mmc,
+                 args.mmc_filesystem)
     if args.result:
         lab.save(args.result, result)
     print(json.dumps({key: result.get(key) for key in
