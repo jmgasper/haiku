@@ -31,6 +31,14 @@ checks and normal reboot to recovery. One earlier `+88` boot stalled before the
 desktop and remote shell; that stall remains unresolved. Sustained storage, error
 recovery and the remaining board hardware still need qualification.
 
+Both onboard Ethernet ports now pass DHCP, static IPv4 and static IPv6 checks,
+including simultaneous sending and receiving before and after normal reboot.
+The SFP-connected port negotiates at 2.5 Gbit/s; the original connection is
+1 Gbit/s. The latest USB image also passes IPv6 address replacement and neighbor
+discovery in both directions. Throughput remains below the recorded Linux
+reference, and automatic IPv6 configuration, sustained load and fault recovery
+remain open. See [ETHERNET.md](ETHERNET.md) for the measured scope and evidence.
+
 This fork uses AI-assisted development at its owner's request. Upstream Haiku
 does not accept AI-assisted contributions. The `rock5-itx` branch contains this
 work; `master` is retained as an upstream baseline. There is no upstream PR.

@@ -530,6 +530,118 @@ recovered with boot ID `9fbfe8f2-bf3b-48cf-a5bb-14924684269d`; NanoKVM retained
 its boot ID and the watchdog disarmed. Temporary test addresses and capture
 processes were removed.
 
+## Static IPv6 and neighbor discovery on both ports
+
+The checked stream probe now accepts IPv4 and unscoped IPv6 literals, with a
+source address from the same family. Its existing bounded, seed-dependent data
+checks and receiver acknowledgement are unchanged. Host tests cover real TCP
+connections on both families, wrong-family arguments, corruption, truncation
+and a bad acknowledgement.
+
+The first IPv6 hardware trial on `+114` configured both subnet routes but all
+four connections failed with `ENETUNREACH`. QEMU reproduced the failure. NDP
+sent through the shared IPv6 protocol's ordinary route lookup, which could not
+select the required link for solicited-node multicast. The attempted global
+multicast route had no interface address and was rejected by the routing API.
+
+Commit `8b960d3b436a199fce48c11824ff593e2e1acf78` sends solicitations, retries and
+advertisement replies through the interface owning the packet's source. It
+holds an interface-address reference for the send, rejects removed/down
+interfaces, and leaves failed buffers with their caller. It does not mutate
+the shared protocol's socket options or use a local route that would loop the
+packet back. The rejected global multicast route calls were removed.
+
+That `+115` image passed its first static configuration on both ports, then
+failed with `EADDRNOTAVAIL` after replacing the addresses. The interface's
+change callback runs before its address list is updated; NDP had selected the
+old address again. Commits `0d51a83135` and
+`87ab8f7dc8149a89a9964b7d789d2f93ccfccb3d` prefer the supplied replacement, or
+select a surviving address while excluding the removed one. The intermediate
+`+116` build failed because a test substitute supplied an inequality operator
+absent from Haiku's `in6_addr`; the final implementation compares the address
+bytes, and that test-only operator was removed.
+
+All 88 host checks and the full ARM64 build passed. The new tests execute the
+production NDP helpers with sanitizer checks for interface selection, concurrent
+sends, reference lifetimes, failures, address replacement and deletion. These
+substitutes do not establish native timing or complete IPv6 conformance.
+
+Image `hrev60097+117` is pinned in
+`network-intx-image/20260913T102431Z-3b3b5c/manifest.json`, SHA-256
+`b12c58c6af6ccfef600dd8a303b387ccbc672cededa8902b5ec67f29de753f4a`.
+QEMU evidence `qemu-shell/20260913T102432Z-ed49a2` passes the full existing
+memory/platform/cache/service, USB/PCI transfer, IPv4 stream, NVMe, reboot and
+shutdown gates. It additionally passes simultaneous checked IPv6 streams on
+both boots, totaling 33,554,460 bytes. Complete packet coverage includes valid
+NDP checksums and hop limits. The temporary wrapper records its actual QEMU
+command and the explicit IPv6 host alias; the ordinary QEMU runner is unchanged.
+
+The physical fixture uses two fresh ULA /64 subnets per run and a temporary
+workstation macvlan. This leaves the workstation's existing IPv6-disabled parent
+configuration and default routes intact. Each stream binds its source address;
+complete captures require the correct port MAC, full TCP sequence coverage and
+overlapping traffic on all four streams. A second check removes only the two
+fixture neighbors from the workstation, then requires fresh workstation
+solicitations, Haiku advertisements and matching ICMPv6 echo replies. NDP's
+complete checksums and hop limit 255 are checked against
+[RFC 4861](https://www.rfc-editor.org/rfc/rfc4861.html). Incidental workstation
+mDNS announcements are identified separately and excluded from qualification.
+
+Native session `interactive/20260913T103638Z-5861fd` passes both boots, seventeen
+component hashes, three settings, the memory check and 51,301 copy-probe cases
+per boot. Both links obtain DHCP at 2.5/1 Gbit/s. IPv6 rates in Mbit/s, from the
+ROCK's perspective:
+
+| Phase / bytes per stream | Port 0 receive | Port 0 send | Port 1 receive | Port 1 send |
+| --- | ---: | ---: | ---: | ---: |
+| First configuration / 32 MiB + 7 | 274.9 | 206.9 | 373.8 | 237.9 |
+| Replaced addresses / 128 MiB + 7 | 360.2 | 201.7 | 276.2 | 192.5 |
+| After normal reboot / 128 MiB + 7 | 477.0 | 212.9 | 323.7 | 210.0 |
+| Recovery Linux / 128 MiB + 7 | 1144.6 | 1697.6 | 802.9 | 897.5 |
+
+The three native IPv6 runs verify 1,207,959,636 payload bytes across 261,685
+captured frames. All path and payload checks, NDP checksums, TCP sequence
+coverage and counter checks pass with zero interface/capture errors or drops.
+The two larger runs each
+also pass discovery initiated from either end and four matching echo exchanges.
+Their directories under `artifacts/native-network-ipv6` are
+`20260913T104051Z-29867c`, `20260913T104148Z-c239d5` and
+`20260913T104500Z-180445`.
+
+An additional simultaneous IPv4 regression after reboot verifies 134,217,756
+bytes across 62,534 frames, with the same path and error checks. Evidence is
+`native-network-stream/20260913T104615Z-e4c933`. The unchanged Linux reference
+configuration is ROOBI kernel `5.10.110-33-rockchip` and the same physical links.
+Its IPv6 comparison is `linux-network-ipv6/20260913T094119Z-96ae10`; the complete
+discovery/echo reference is `linux-network-ipv6-active/20260913T102959Z-870bdc`.
+Vendor Linux RX byte counters remain unsuitable for rates; measured bytes and
+the independent capture establish these results.
+
+Failed trials remain separate: `state/native-network-ipv6-qualified.json`
+records the `+114` failure, and `state/native-ndp-send.json` records the `+115`
+renumbering failure. One later `+115` run passed its payload checks but failed
+the extra discovery fixture because BusyBox does not support `ip neigh del`.
+Subsequent Linux fixture attempts exposed premature address cleanup and
+intermittent SSH failures. Those error receipts are retained; the final fixture
+uses scoped neighbor flushing, keeps test addresses until echo completion, and
+retries only the failed read-only SSH verification.
+
+The earlier `+114` route-query timeout has a userspace crash trace:
+`BNetworkAddress::SetTo(sockaddr)` called from `get_route()+0xf8`. Disassembly
+identifies the unguarded gateway constructor; a direct route has no gateway.
+That diagnostic-tool defect still needs a fix and is separate from these
+successful data-path checks.
+
+`state/native-ndp-source.json` records this bounded qualification. Static ULA
+traffic is established; link-local/scoped addresses, SLAAC, duplicate-address
+detection, general multicast, neighbor expiration/failure, cable changes,
+sustained mixed load and throughput parity remain open. The SSD was not mounted
+or updated and remains at `+94`. Serial capture completed with 524,135 bytes
+and no transport errors. ROOBI recovered with boot ID
+`ae53edff-58b6-4700-b138-3fc9fba8246a`; NanoKVM retained its boot ID and its
+watchdog disarmed. The temporary workstation interface, routes and capture
+processes were removed.
+
 ## References
 
 - Rockchip RK3588 TRM v1.0, Part 2 (2022-03-09), PCIe client status, mask and
