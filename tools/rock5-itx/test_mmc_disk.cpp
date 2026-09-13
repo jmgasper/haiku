@@ -3,7 +3,7 @@
 #include <climits>
 #include <sys/types.h>
 using addr_t = uintptr_t;
-constexpr int B_DISK = 0, B_READ_ONLY_DEVICE = -11;
+constexpr int B_DISK = 0;
 static const uint32 kBlockSize = 512;
 struct device_geometry {
     uint32 bytes_per_sector, sectors_per_track, cylinder_count, head_count, device_type;
@@ -43,6 +43,11 @@ static void snooze(bigtime_t n) { now += n; }
 static uint32 sectors;
 static std::string fault;
 struct device_manager_info {
+    status_t get_attr_uint8(device_node*, const char* name, uint8* out, bool) {
+        *out = fault == "readonly-profile" && (strcmp(name, kMmcReadOnlyAttribute) == 0
+            || strcmp(name, kMmcNonRemovableAttribute) == 0);
+        return B_OK;
+    }
     status_t get_attr_uint32(device_node*, const char* name, uint32* out, bool) {
         assert(strcmp(name, kMmcSectorCountAttribute) == 0);
         if (fault == "attribute") return B_ERROR;
@@ -158,6 +163,10 @@ int main()
       assert(mmc_block_io(handle, &request) == B_READ_ONLY_DEVICE && scheduled == 0);
       fs_trim_data trim{}; size_t before = commands.size();
       assert(mmc_block_trim(&f.info, &trim) == B_NOT_SUPPORTED && commands.size() == before);
+      mmc_block_free(handle);
+    }
+    { Fixture f; fault = "readonly-profile"; auto* handle = f.open();
+      assert(f.info.geometry.read_only && !f.info.geometry.removable);
       mmc_block_free(handle);
     }
     { Fixture f; auto* handle = f.open(); char buffer[512]{}; size_t length = 512;

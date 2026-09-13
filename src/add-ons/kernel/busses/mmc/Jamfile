@@ -10,6 +10,8 @@ SubDirHdrs $(HAIKU_TOP) src add-ons kernel bus_managers acpi acpica include plat
 
 KernelAddon sdhci :
 	sdhci.cpp
+	sdhci_dma.cpp
+	sdhci_fdt.cpp
 	sdhci_acpi.cpp
 	sdhci_pci.cpp
 ;

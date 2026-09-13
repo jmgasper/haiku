@@ -19,9 +19,19 @@
 #include "mmc.h"
 
 
+struct sdhci_platform_info {
+	status_t (*set_clock)(void* cookie, uint32 requested, uint32* baseClock);
+	void* cookie;
+	bool read_only;
+	bool divider_zero_broken;
+	uint32 identification_clock;
+};
+
+
 class SdhciBus {
 	public:
-								SdhciBus(struct registers* registers, uint32_t irq, bool poll);
+								SdhciBus(struct registers* registers, uint32_t irq, bool poll,
+									const sdhci_platform_info* platform = NULL);
 								~SdhciBus();
 
 			void				EnableInterrupts(uint32_t mask);
@@ -57,7 +67,16 @@ class SdhciBus {
 			status_t			fStatus;
 			thread_id			fWorkerThread;
 			card_type			fCardType;
+			sdhci_platform_info	fPlatform;
+			area_id				fDMAArea;
+			void*				fDMABuffer;
+			phys_addr_t			fDMAAddress;
+			bool				fDMAQuarantined;
 };
+
+
+const size_t kSdhciDmaSize = 512 * 1024;
+status_t sdhci_allocate_dma(area_id* area, void** buffer, phys_addr_t* address);
 
 
 class SdhciDevice {
@@ -542,6 +561,8 @@ void terminate_bus(void* controller);
 
 extern mmc_bus_interface gSDHCIACPIDeviceModule;
 extern mmc_bus_interface gSDHCIPCIDeviceModule;
+extern driver_module_info gSDHCIFDTDriverModule;
+extern mmc_bus_interface gSDHCIFDTDeviceModule;
 
 extern device_manager_info* gDeviceManager;
 

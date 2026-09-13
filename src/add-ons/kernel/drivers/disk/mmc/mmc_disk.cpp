@@ -111,7 +111,7 @@ mmc_disk_register_device(device_node* node)
 	CALLED();
 
 	device_attr attrs[] = {
-		{ B_DEVICE_PRETTY_NAME, B_STRING_TYPE, { .string = "SD Card" }},
+		{ B_DEVICE_PRETTY_NAME, B_STRING_TYPE, { .string = "MMC/SD storage" }},
 		{ NULL }
 	};
 
@@ -173,8 +173,11 @@ mmc_block_get_geometry(mmc_disk_driver_info* info, device_geometry* geometry)
 	}
 	geometry->head_count = 1;
 	geometry->device_type = B_DISK;
-	geometry->removable = true; // A platform attachment must identify soldered devices.
-	geometry->read_only = mmc_response_bits(csd.words, 12, 2) != 0;
+	uint8_t readOnly = 0, nonRemovable = 0;
+	sDeviceManager->get_attr_uint8(info->parent, kMmcReadOnlyAttribute, &readOnly, true);
+	sDeviceManager->get_attr_uint8(info->parent, kMmcNonRemovableAttribute, &nonRemovable, true);
+	geometry->removable = nonRemovable == 0;
+	geometry->read_only = readOnly != 0 || mmc_response_bits(csd.words, 12, 2) != 0;
 	geometry->write_once = false;
 
 	uint32_t cardStatus = 0;

@@ -20,6 +20,7 @@
 
 #include <KernelExport.h>
 #include <arch/atomic.h>
+#include <vm/vm.h>
 
 #include "IOSchedulerSimple.h"
 #include "mmc.h"
@@ -52,7 +53,8 @@ sdhci_generic_interrupt(void* data)
 }
 
 
-SdhciBus::SdhciBus(struct registers* registers, uint32_t irq, bool poll)
+SdhciBus::SdhciBus(struct registers* registers, uint32_t irq, bool poll,
+	const sdhci_platform_info* platform)
 	:
 	fRegisters(registers),
 	fCommandResult(0),
@@ -61,7 +63,12 @@ SdhciBus::SdhciBus(struct registers* registers, uint32_t irq, bool poll)
 	fScanSemaphore(-1),
 	fStatus(B_OK),
 	fWorkerThread(-1),
-	fCardType(CARD_TYPE_UNKNOWN)
+	fCardType(CARD_TYPE_UNKNOWN),
+	fPlatform(platform != NULL ? *platform : sdhci_platform_info{}),
+	fDMAArea(-1),
+	fDMABuffer(NULL),
+	fDMAAddress(0),
+	fDMAQuarantined(false)
 {
 	if (irq == 0 || irq == 0xff) {
 		ERROR("IRQ not assigned\n");
@@ -142,6 +149,14 @@ SdhciBus::SdhciBus(struct registers* registers, uint32_t irq, bool poll)
 	}
 
 	fRegisters->timeout_control.SetDivider(fRegisters->capabilities.TimeoutClockFrequency(), 500);
+	if (platform != NULL)
+		fRegisters->timeout_control.SetDivider(24000, 500);
+
+#if defined(__aarch64__)
+	fStatus = sdhci_allocate_dma(&fDMAArea, &fDMABuffer, &fDMAAddress);
+	if (fStatus != B_OK)
+		return;
+#endif
 
 	// Finally, configure some useful interrupts
 	EnableInterrupts(SDHCI_INT_CMD_CMP | SDHCI_INT_CARD_REM
@@ -179,6 +194,12 @@ SdhciBus::~SdhciBus()
 
 	if (fInterruptInstalled)
 		remove_io_interrupt_handler(fIrq, sdhci_generic_interrupt, this);
+	if (fDMAArea >= B_OK) {
+		if (!fDMAQuarantined || fRegisters->software_reset.ResetAll())
+			delete_area(fDMAArea);
+		else
+			ERROR("DMA area retained after failed controller reset\n");
+	}
 
 	area_id regs_area = area_for(fRegisters);
 	delete_area(regs_area);
@@ -420,19 +441,36 @@ SdhciBus::Reset()
 void
 SdhciBus::SetClock(int kilohertz, bool allowAuto)
 {
+	if (fStatus != B_OK)
+		return;
+	if (kilohertz <= 0) {
+		fStatus = B_BAD_VALUE;
+		return;
+	}
 	// Presets depend on a negotiated timing mode. Enumeration currently
 	// requests explicit legacy clocks, even on a newer host controller.
 	(void)allowAuto;
 	if (kilohertz == 400)
 		PowerOn();
-	int baseClock = fRegisters->capabilities.BaseClockFrequency() * 1000;
-	if (kilohertz <= 0 || baseClock == 0) {
+	uint32 baseClock = fRegisters->capabilities.BaseClockFrequency() * 1000;
+	fRegisters->clock_control.DisableSD();
+	memory_full_barrier();
+	if (fPlatform.set_clock != NULL) {
+		fStatus = fPlatform.set_clock(fPlatform.cookie, kilohertz, &baseClock);
+		if (fStatus != B_OK)
+			return;
+		if (kilohertz == 400 && fPlatform.identification_clock != 0)
+			kilohertz = fPlatform.identification_clock;
+	}
+	if (baseClock == 0) {
 		fStatus = B_BAD_VALUE;
 		return;
 	}
 	int divider = (baseClock + kilohertz - 1) / kilohertz;
 	if (divider < 1)
 		divider = 1;
+	if (fPlatform.divider_zero_broken && divider == 1)
+		divider = 2;
 	if (fRegisters->host_controller_version.specVersion <= 1) {
 		int powerOfTwo = 1;
 		while (powerOfTwo < divider && powerOfTwo < 256)
@@ -446,7 +484,6 @@ SdhciBus::SetClock(int kilohertz, bool allowAuto)
 		fStatus = B_NOT_SUPPORTED;
 		return;
 	}
-	fRegisters->clock_control.DisableSD();
 	if (fRegisters->host_controller_version.specVersion >= 2)
 		fRegisters->host_control_2 &= ~(1 << 15);
 	divider = fRegisters->clock_control.SetDivider(divider);
@@ -470,8 +507,12 @@ SdhciBus::SetClock(int kilohertz, bool allowAuto)
 status_t
 SdhciBus::DoIO(uint8_t command, IOOperation* operation, bool offsetAsSectors)
 {
+	if (fStatus != B_OK)
+		return fStatus;
 	if (operation == NULL || operation->Offset() < 0)
 		return B_BAD_VALUE;
+	if (fPlatform.read_only && operation->IsWrite())
+		return B_READ_ONLY_DEVICE;
 	const uint32_t blockSize = 512;
 	uint64_t offset = operation->Offset();
 	generic_size_t length = operation->Length();
@@ -500,9 +541,11 @@ SdhciBus::DoIO(uint8_t command, IOOperation* operation, bool offsetAsSectors)
 			continue;
 		uint64_t address = vecs[i].base;
 		if (size % blockSize != 0 || (address & (blockSize - 1)) != 0
-			|| size > 0x80000 || address >= UINT64_C(0x100000000)
+			|| size > kSdhciDmaSize || size > UINT64_MAX - address)
+			return B_BAD_VALUE;
+		if (fDMABuffer == NULL && (address >= UINT64_C(0x100000000)
 			|| size > UINT64_C(0x100000000) - address
-			|| (address & 0x7ffff) + size > 0x80000)
+			|| (address & 0x7ffff) + size > 0x80000))
 			return B_BAD_VALUE;
 		remaining -= size;
 	}
@@ -515,8 +558,18 @@ SdhciBus::DoIO(uint8_t command, IOOperation* operation, bool offsetAsSectors)
 		generic_size_t size = std::min(length, vecs[i].length);
 		if (size == 0)
 			continue;
+		if (fDMABuffer != NULL) {
+			if (operation->IsWrite()) {
+				status_t status = vm_memcpy_from_physical(fDMABuffer, vecs[i].base,
+					size, false);
+				if (status != B_OK)
+					return status;
+			} else
+				memset(fDMABuffer, 0, size);
+			memory_full_barrier();
+		}
 		fRegisters->host_control.SetDMAMode(HostControl::kSdma);
-		fRegisters->system_address = vecs[i].base;
+		fRegisters->system_address = fDMABuffer != NULL ? fDMAAddress : vecs[i].base;
 		fRegisters->block_size.ConfigureTransfer(blockSize, BlockSize::kDmaBoundary512K);
 		fRegisters->block_count = size / blockSize;
 		uint32_t response = 0;
@@ -533,6 +586,15 @@ SdhciBus::DoIO(uint8_t command, IOOperation* operation, bool offsetAsSectors)
 			return status;
 		}
 		memory_full_barrier();
+		if (fRegisters->present_state.DataInhibit()) {
+			RecoverError();
+			return B_IO_ERROR;
+		}
+		if (fDMABuffer != NULL && !operation->IsWrite()) {
+			status = vm_memcpy_to_physical(vecs[i].base, fDMABuffer, size, false);
+			if (status != B_OK)
+				return status;
+		}
 		length -= size;
 		offset += size;
 	}
@@ -694,6 +756,7 @@ SdhciBus::RecoverError()
 	memory_full_barrier();
 	if (!fRegisters->software_reset.ResetCommandAndDataLines()) {
 		fStatus = B_TIMED_OUT;
+		fDMAQuarantined = true;
 		ERROR("Command/data reset timed out; controller disabled\n");
 		return;
 	}
@@ -1011,5 +1074,7 @@ module_info* modules[] = {
 	(module_info* )&sSDHCIDevice,
 	(module_info* )&gSDHCIPCIDeviceModule,
 	(module_info* )&gSDHCIACPIDeviceModule,
+	(module_info* )&gSDHCIFDTDriverModule,
+	(module_info* )&gSDHCIFDTDeviceModule,
 	NULL
 };

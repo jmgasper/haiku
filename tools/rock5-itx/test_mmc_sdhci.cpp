@@ -35,6 +35,8 @@ struct ConditionVariable {
 static bigtime_t system_time() { return now; }
 static void snooze(bigtime_t);
 static void memory_full_barrier();
+static status_t vm_memcpy_from_physical(void*, phys_addr_t, size_t, bool);
+static status_t vm_memcpy_to_physical(phys_addr_t, const void*, size_t, bool);
 static int32 atomic_get(int32* p) { return *p; }
 static void atomic_set(int32* p, int32 n) { *p = n; }
 static void atomic_or(int32* p, int32 n) { *p |= n; }
@@ -69,9 +71,30 @@ static registers* regs;
 static SdhciBus* bus;
 static std::string fault;
 static std::vector<Submitted> submissions;
-static int installed, workers, unmapped, pioWords, resets;
+static int installed, workers, unmapped, pioWords, resets, freedDMA;
 static bool pending;
 static std::array<uint8, 512> cardData;
+static std::function<void()> dmaTransfer;
+static std::vector<uint8> cpuMemory;
+static const phys_addr_t kCpuAddress = UINT64_C(0x100001000);
+static int copiedIn, copiedOut;
+
+static status_t vm_memcpy_from_physical(void* out, phys_addr_t address, size_t size, bool user)
+{
+    assert(!user && address >= kCpuAddress && address + size <= kCpuAddress + cpuMemory.size());
+    copiedIn++;
+    if (fault == "copy-in") return B_IO_ERROR;
+    memcpy(out, cpuMemory.data() + address - kCpuAddress, size);
+    return B_OK;
+}
+static status_t vm_memcpy_to_physical(phys_addr_t address, const void* in, size_t size, bool user)
+{
+    assert(!user && address >= kCpuAddress && address + size <= kCpuAddress + cpuMemory.size());
+    copiedOut++;
+    if (fault == "copy-out") return B_IO_ERROR;
+    memcpy(cpuMemory.data() + address - kCpuAddress, in, size);
+    return B_OK;
+}
 
 static void service()
 {
@@ -104,6 +127,7 @@ static void service()
             if (fault != "late-pio") regs->present_state.fBits |= 1 << 11;
             completion |= SDHCI_INT_BUF_READ_READY;
         } else if (fault != "no-transfer") {
+            if (dmaTransfer) dmaTransfer();
             completion |= SDHCI_INT_TRANS_CMP;
             if (fault == "data-crc") completion |= SDHCI_INT_DATA_CRC | SDHCI_INT_ERROR;
         }
@@ -180,21 +204,35 @@ static void wait_for_thread(thread_id id, status_t* result)
     assert(id == 33 && workers == 1 && !unmapped);
     workers--; *result = B_OK;
 }
-static void delete_area(area_id id) { assert(id == 42 && !workers && !installed); unmapped++; }
+static void delete_area(area_id id) {
+    assert(!workers && !installed);
+    if (id == 71) { assert(!freedDMA); freedDMA++; }
+    else { assert(id == 42); unmapped++; }
+}
+static status_t platformClock(void*, uint32 requested, uint32* baseClock)
+{
+    assert(!(regs->clock_control.Bits() & 4));
+    if (fault == "platform-clock") return B_IO_ERROR;
+    if (requested != 400 && requested != 25000) return B_NOT_SUPPORTED;
+    *baseClock = 24000;
+    return B_OK;
+}
 
 struct Fixture {
     registers hardware{};
     SdhciBus* controller;
-    explicit Fixture(const char* injected = "", bool poll = false) {
+    explicit Fixture(const char* injected = "", bool poll = false,
+            const sdhci_platform_info* platform = nullptr) {
         fault = injected; regs = &hardware; now = 0;
         assert(!installed && !workers);
-        unmapped = resets = pioWords = 0; pending = false;
+        unmapped = resets = pioWords = freedDMA = 0; pending = false;
+        copiedIn = copiedOut = 0; dmaTransfer = {};
         onAdd = {}; onWait = {}; submissions.clear();
         regs->capabilities.fBits = (uint64(1) << 24) | (200 << 8) | 1;
         regs->host_controller_version.specVersion = 2;
         regs->present_state.fBits = 1 << 16;
         for (unsigned i = 0; i < cardData.size(); i++) cardData[i] = (i * 17) ^ (i >> 4);
-        controller = new SdhciBus(regs, 237, poll);
+        controller = new SdhciBus(regs, 237, poll, platform);
     }
     ~Fixture() { delete controller; assert(unmapped == 1 && !installed && !workers); }
 };
@@ -255,6 +293,9 @@ int main()
         if (fault == "reset-after-error") {
             assert(bus->InitCheck() == B_TIMED_OUT && !regs->interrupt_signal_enable);
             size_t count = submissions.size();
+            uint16 clock = regs->clock_control.Bits();
+            bus->SetClock(400, false);
+            assert(bus->InitCheck() == B_TIMED_OUT && clock == regs->clock_control.Bits());
             assert(bus->ExecuteCommand(SEND_STATUS, 0, &response) == B_TIMED_OUT);
             assert(submissions.size() == count);
         }
@@ -292,6 +333,32 @@ int main()
       uint16 raw = regs->clock_control.Bits();
       assert((((raw >> 8) & 255) | ((raw & 0xc0) << 2)) == 250);
     }
+    for (const char* failure : {"", "platform-clock"}) {
+        sdhci_platform_info platform = {platformClock, nullptr, true, true, 375};
+        Fixture f(failure, false, &platform);
+        if (fault == "platform-clock") {
+            assert(bus->InitCheck() == B_IO_ERROR && !(regs->clock_control.Bits() & 4));
+            continue;
+        }
+        assert(bus->InitCheck() == B_OK && (regs->clock_control.Bits() & 4));
+        uint16 raw = regs->clock_control.Bits();
+        assert((((raw >> 8) & 255) | ((raw & 0xc0) << 2)) == 32); // 24 MHz / 64
+        bus->SetClock(25000, false);
+        raw = regs->clock_control.Bits();
+        assert((raw & 4) && (((raw >> 8) & 255) | ((raw & 0xc0) << 2)) == 1); // /2
+        bus->SetClock(50000, false);
+        assert(bus->InitCheck() == B_NOT_SUPPORTED && !(regs->clock_control.Bits() & 4));
+    }
+    for (bool quarantine : {false, true}) {
+        for (bool resetFails : {false, true}) {
+            { Fixture f;
+              bus->fDMAArea = 71;
+              bus->fDMAQuarantined = quarantine;
+              if (resetFails) fault = "reset";
+            }
+            assert(freedDMA == int(!quarantine || !resetFails));
+        }
+    }
     { Fixture f; IOOperation operation;
       operation.offset = int64_t(5) << 30; operation.length = 1024;
       operation.vecs = {{0x100000, 512}, {0x200000, 512}};
@@ -324,6 +391,41 @@ int main()
         status_t result = bus->DoIO(SD_READ_MULTIPLE_BLOCKS, &operation, true);
         assert(result == (fault == "no-transfer" ? B_TIMED_OUT : B_IO_ERROR));
         assert(submissions.size() == 1 && resets == 2 && now <= 1100000);
+    }
+    for (bool write : {false, true}) {
+        Fixture f;
+        std::vector<uint8> payload(kSdhciDmaSize + 32, 0x7d);
+        cpuMemory.assign(kSdhciDmaSize + 32, 0xa5);
+        for (unsigned i = 0; i < 1024; i++) cpuMemory[512 + i] = (i * 19) ^ (i >> 3);
+        std::vector<uint8> expected(cpuMemory);
+        bus->fDMABuffer = payload.data(); bus->fDMAAddress = 0x800000;
+        IOOperation op; op.offset = int64_t(5) << 30; op.length = 1024; op.write = write;
+        op.vecs = {{kCpuAddress + 512, 1024}};
+        dmaTransfer = [&] {
+            assert(submissions.back().address == 0x800000);
+            if (write) assert(memcmp(payload.data(), expected.data() + 512, 1024) == 0);
+            else memcpy(payload.data(), expected.data() + 512, 1024);
+        };
+        if (!write) std::fill(cpuMemory.begin() + 512, cpuMemory.begin() + 1536, 0);
+        assert(bus->DoIO(write ? SD_WRITE_MULTIPLE_BLOCKS : SD_READ_MULTIPLE_BLOCKS, &op, true) == B_OK);
+        assert(cpuMemory == expected && payload[kSdhciDmaSize] == 0x7d);
+        assert(copiedIn == int(write) && copiedOut == int(!write));
+    }
+    for (const char* failure : {"data-crc", "no-transfer", "copy-in", "copy-out", "reset-after-error"}) {
+        Fixture f(failure);
+        std::vector<uint8> payload(kSdhciDmaSize, 0);
+        cpuMemory.assign(512, 0xa5);
+        bus->fDMABuffer = payload.data(); bus->fDMAAddress = 0x800000;
+        IOOperation op; op.vecs = {{kCpuAddress, 512}}; op.write = fault == "copy-in";
+        dmaTransfer = [&] { memset(payload.data(), 0x66, 512); };
+        assert(bus->DoIO(op.write ? SD_WRITE_MULTIPLE_BLOCKS : SD_READ_MULTIPLE_BLOCKS, &op, true) != B_OK);
+        assert(std::all_of(cpuMemory.begin(), cpuMemory.end(), [](uint8 n) { return n == 0xa5; }));
+        if (fault == "copy-in") assert(submissions.empty());
+        if (fault == "reset-after-error") assert(bus->fDMAQuarantined);
+    }
+    { Fixture f; IOOperation op; op.write = true;
+      bus->fPlatform.read_only = true;
+      assert(bus->DoIO(SD_WRITE_MULTIPLE_BLOCKS, &op, true) == B_READ_ONLY_DEVICE && submissions.empty());
     }
     puts("SDHCI protocol, bounds and faults passed");
 }

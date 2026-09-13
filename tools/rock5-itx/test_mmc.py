@@ -83,6 +83,20 @@ class MMCTests(unittest.TestCase):
                                               code.index('void\nMMCBus::Rescan')])
         self.compile_run('test_mmc_bus', prepare, 'MMC bus partial initialization cleanup passed')
 
+    def test_rk3588_resource_and_clock_profile(self):
+        def prepare(root, source):
+            header = source / 'src/add-ons/kernel/busses/mmc/rk3588_profile.h'
+            (root / header.name).write_bytes(header.read_bytes())
+        self.compile_run('test_mmc_profile', prepare, 'RK3588 MMC admission and clock sequencing passed')
+
+    def test_arm64_dma_allocation_failures(self):
+        def prepare(root, source):
+            code = (source / 'src/add-ons/kernel/busses/mmc/sdhci_dma.cpp').read_text()
+            # The allocator is unchanged; only the ARM cache instructions and
+            # kernel VM primitives are replaced by observed host fixtures.
+            (root / 'dma.inc').write_text(code[code.index('status_t\nsdhci_allocate_dma'):])
+        self.compile_run('test_mmc_dma', prepare, 'SDHCI DMA allocation and cleanup passed')
+
 
 if __name__ == '__main__':
     unittest.main()
