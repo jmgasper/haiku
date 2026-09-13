@@ -248,9 +248,11 @@ rge_attach(struct device *parent, struct device *self, void *aux)
 		device_printf(dev, "cannot create DMA parent tag\n");
 		return ENOMEM;
 	}
+	if (if_alloc_inplace(ifp, IFT_ETHER) != 0) {
+		bus_dma_tag_destroy(sc->sc_dmat);
+		return ENOMEM;
+	}
 	pci_enable_busmaster(sc->sc_dev);
-
-	if_alloc_inplace(ifp, IFT_ETHER);
 
 	pci_set_powerstate(pa, PCI_PMCSR_STATE_D0);
 #else
@@ -431,7 +433,7 @@ rge_attach(struct device *parent, struct device *self, void *aux)
 #endif
 
 #ifdef __FreeBSD_version
-	if_initname(ifp, device_get_name(dev), 0);
+	if_initname(ifp, device_get_name(dev), device_get_unit(dev));
 	return 0;
 
 fail:

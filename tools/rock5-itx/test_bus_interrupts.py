@@ -13,6 +13,7 @@ class BusInterruptTests(unittest.TestCase):
         bus = (source / 'src/libs/compat/freebsd_network/bus.cpp').read_text()
         rge = (source / 'src/add-ons/kernel/drivers/network/ether/rtl8125/dev/pci/if_rge.c').read_text()
         pci = (source / 'src/add-ons/kernel/bus_managers/pci/pci.cpp').read_text()
+        compat_pci = (source / 'src/libs/compat/freebsd_network/pci.cpp').read_text()
         # The bodies are copied verbatim, with kernel services substituted by
         # the harness. This tests production code, not a second implementation.
         sections = [
@@ -26,6 +27,8 @@ class BusInterruptTests(unittest.TestCase):
             (root / 'interrupts_under_test.inc').write_text('\n'.join(sections))
             (root / 'pci_intx_under_test.inc').write_text(
                 pci[pci.index('status_t\nPCI::GetIntxIRQ'):pci.index('//#pragma mark - MSI')])
+            (root / 'pci_init_under_test.inc').write_text(
+                compat_pci[compat_pci.index('pci_module_info *gPci;'):compat_pci.index('pci_info*\nget_device_pci_info')])
             binary = root / 'interrupt-tests'
             result = subprocess.run([
                 'g++', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror',

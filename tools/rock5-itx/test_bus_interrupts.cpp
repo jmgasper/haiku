@@ -179,6 +179,52 @@ static void writeRegister(uint32 reg, uint32 value) {
 #undef malloc
 #undef free
 
+namespace PciInitTest {
+using pci_module_info = pci_module;
+using pci_intx_module_info = intx_module;
+struct module_info {};
+static const char* B_PCI_MODULE_NAME = "pci";
+static const char* B_PCI_INTX_MODULE_NAME = "pci-intx";
+static int pciReferences, intxReferences, failModule;
+static status_t get_module(const char* name, module_info** out) {
+	*out = nullptr;
+	if (name == B_PCI_MODULE_NAME) {
+		if (failModule == 1) return B_ERROR;
+		pciReferences++; *out = (module_info*)&sPci;
+	} else {
+		assert(name == B_PCI_INTX_MODULE_NAME);
+		if (failModule == 2) return B_ERROR;
+		intxReferences++; *out = (module_info*)&sIntx;
+	}
+	return B_OK;
+}
+static status_t put_module(const char* name) {
+	if (name == B_PCI_MODULE_NAME) {
+		assert(pciReferences == 1 && intxReferences == 0); pciReferences--;
+	} else {
+		assert(name == B_PCI_INTX_MODULE_NAME && intxReferences == 1); intxReferences--;
+	}
+	return B_OK;
+}
+// Select the production ARM64 initialization branch; no host headers are
+// included inside this scope and no architecture instructions are substituted.
+#define __aarch64__ 1
+#include "pci_init_under_test.inc"
+#undef __aarch64__
+static void run() {
+	for (int fault : {1, 2}) {
+		failModule = fault;
+		assert(init_pci() == B_ERROR);
+		assert(gPci == nullptr && gPciIntx == nullptr && pciReferences == 0 && intxReferences == 0);
+	}
+	failModule = 0;
+	assert(init_pci() == B_OK && init_pci() == B_OK);
+	assert(pciReferences == 1 && intxReferences == 1);
+	uninit_pci(); uninit_pci();
+	assert(gPci == nullptr && gPciIntx == nullptr && pciReferences == 0 && intxReferences == 0);
+}
+} // namespace PciInitTest
+
 namespace CoreTest {
 enum { PCI_interrupt_pin = 0x3d, PCI_command = 4, PCI_command_int_disable = 0x400,
 	PCI_msi_control = 2, PCI_msix_control = 2, PCI_msi_control_enable = 1,
@@ -305,6 +351,7 @@ static size_t event(const char* name) {
 	return it - sEvents.begin();
 }
 int main() {
+	PciInitTest::run();
 	CoreTest::run();
 	reset();
 	resource irq{SYS_RES_IRQ, 0, 0};

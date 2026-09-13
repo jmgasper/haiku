@@ -53,6 +53,10 @@ layer's Giant lock with interface, timer and task callbacks. Handler publication
 follows fallible hardware and ring initialization. The driver logs bounded
 interrupt-count thresholds for native evidence. Broader attachment allocation
 cleanup, driver unload, reset/hotplug and error recovery remain open.
+Each interface now uses its actual device unit when registering its root-device
+association; the former hard-coded zero incorrectly associated a second NIC
+with the first root. Interface allocation failure is also checked before bus
+mastering is enabled.
 
 ## DMA parent correction
 
