@@ -114,6 +114,13 @@ The host oracle rejects absent writes and corruption outside the write ranges.
 This extension is being qualified before native eMMC file writes; it does not
 change the scope of the accepted read-only hardware result below.
 
+Its first `+133` run stopped before file writes because the geometry helper's
+legacy `B_GET_DEVICE_SIZE` ioctl reported raw-card capacity for the partition.
+The helper now queries `B_GET_PARTITION_INFO`, validates the extent against raw
+capacity and reports its exact offset, size and parent. The file test requires
+all three before mounting. The retained failed run is
+`artifacts/qemu-shell/20260913T153251Z-2ecc27`; native media was not changed.
+
 ## Linux and board reference
 
 The board is ROCK 5 ITX PCB v1.12, running ROOBI / Debian 11 and Linux

@@ -101,6 +101,8 @@ def script(fixture, device, partition, fat_sha256, after_reboot=False):
         f'case "$geometry" in *"sector=512 bytes={fixture["bytes"]} readonly=0"*) ;; *) exit 1 ;; esac',
         f'part_geometry=$({HELPER} geometry {shlex.quote(partition)})', 'echo "$part_geometry"',
         f'case "$part_geometry" in *"sector=512 bytes={fixture["partition_bytes"]} readonly=0"*) ;; *) exit 1 ;; esac',
+        f'case "$part_geometry" in *"MMC_PARTITION offset={fixture["partition_offset"]} '
+        f'bytes={fixture["partition_bytes"]} block=512 raw={device}"*) ;; *) exit 1 ;; esac',
         f'mkdir -p {mount}', f'mount -ro {shlex.quote(partition)} {mount}']
 
     def hashes(expected):
