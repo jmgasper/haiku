@@ -351,13 +351,17 @@ get_route(int socket, route_entry &route)
 
 	if (family != NULL) {
 		BNetworkAddress destination(*request.destination);
-		BNetworkAddress mask(*request.mask);
 		printf("%s", destination.ToString().String());
-		printf("/%zd ", mask.PrefixLength());
+		if (request.mask != NULL) {
+			BNetworkAddress mask(*request.mask);
+			printf("/%zd", mask.PrefixLength());
+		}
+		putchar(' ');
 
-		BNetworkAddress gateway(*request.gateway);
-		if (request.flags & RTF_GATEWAY)
+		if (request.flags & RTF_GATEWAY) {
+			BNetworkAddress gateway(*request.gateway);
 			printf("gateway %s ", gateway.ToString().String());
+		}
 
 		BNetworkAddress source(*request.source);
 		printf("source %s\n", source.ToString().String());
@@ -568,4 +572,3 @@ main(int argc, char** argv)
 	close(socket);
 	return 0;
 }
-
