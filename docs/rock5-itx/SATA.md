@@ -24,6 +24,22 @@ board-revision-dependent electrical changes are part of this step.
 
 ## Driver changes under qualification
 
+The native `+123` trial reached the remote shell using IRQ 287, but reported
+CAP.NP = 23 and PI = `0x00ffff0f`: four direct ports and 16 virtual ports
+at indices 8..23. Probing all of them delayed boot. This did not pass the
+four-direct-port readiness gate; the complete trial is retained at
+`/mnt/HaikuWork/artifacts/interactive/20260913T121042Z-123d3e` and
+`state/native-ahci-unmasked.json`. Recovery succeeded without serial errors.
+
+The optional `asm1164_direct_ports_only true` setting in `ahci` restricts
+this device's software port map to bits 0..3. It does not rewrite PI or
+change other controllers. The default retains all reported ports, because
+virtual ports can represent actual disks behind a port multiplier. Linux
+added an explicit mask option after reverting an unconditional restriction
+for related ASMedia controllers; see
+[the Linux port-mask change](https://git.ti.com/cgit/ti-linux-kernel/ti-linux-kernel/commit/drivers/ata?h=v5.10.161&id=24cfd86433c920188ac3f02df8aba6bc4c792f4b).
+Port-multiplier hardware is not present in this lab and remains untested.
+
 AHCI uses the optional 32-bit PCI interrupt interface, with no truncated-line
 fallback after a platform provider fails. MSI allocation, handler installation,
 enabling, and teardown have explicit ownership, including partial-init failure.

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <KernelExport.h>
+#include <driver_settings.h>
 #include <stdio.h>
 #include <string.h>
 #include <new>
@@ -165,6 +166,24 @@ AHCIController::Init()
 	if (fPortCount < highestPort) {
 		TRACE("reported number of ports is wrong, using %d instead.\n", highestPort);
 		fPortCount = highestPort;
+	}
+	if (fPCIVendorID == 0x1b21 && fPCIDeviceID == 0x1164) {
+		void* settings = load_driver_settings("ahci");
+		bool directOnly = settings != NULL && get_driver_boolean_parameter(
+			settings, "asm1164_direct_ports_only", false, false);
+		if (settings != NULL)
+			unload_driver_settings(settings);
+		if (directOnly) {
+			// ASM1164 also exposes virtual ports for port multipliers. They
+			// cannot be distinguished automatically from connected devices.
+			// Keep the default map; this explicit option selects direct disks.
+			TRACE("ASM1164 direct ports: mask %#" B_PRIx32 " -> %#" B_PRIx32 "\n",
+				fPortImplementedMask, fPortImplementedMask & 0xf);
+			fPortImplementedMask &= 0xf;
+			fPortCount = std::min(fPortCount, 4);
+			if (fPortImplementedMask == 0)
+				goto err;
+		}
 	}
 	if (size < offsetof(ahci_hba, port) + fPortCount * sizeof(ahci_port)) {
 		TRACE("register BAR does not cover implemented ports\n");

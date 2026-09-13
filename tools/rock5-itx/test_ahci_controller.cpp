@@ -1,5 +1,6 @@
 /* Inject faults into the production controller initialization and teardown. */
 #include <cassert>
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -52,6 +53,17 @@ static int irq, areas, references, instance, portObjects, interruptsEnabled;
 static bool allocatedMSI, msiEnabled;
 static std::string fault;
 static std::vector<std::string> events;
+static int settingsReferences;
+static void* load_driver_settings(const char* name)
+{
+	assert(strcmp(name, "ahci") == 0); settingsReferences++; return &fault;
+}
+static bool get_driver_boolean_parameter(void*, const char* name, bool first, bool second)
+{
+	assert(strcmp(name, "asm1164_direct_ports_only") == 0 && !first && !second);
+	return fault == "asm-direct" || fault == "asm-empty" || fault == "intel-direct";
+}
+static void unload_driver_settings(void*) { assert(settingsReferences == 1); settingsReferences--; }
 static void event(const char* s) { events.emplace_back(s); }
 static int find_port(const char*) { return fault == "duplicate" ? 5 : -1; }
 static int create_port(int, const char*)
@@ -160,13 +172,20 @@ int main()
 	pci_device_module_info pci;
 	for (const char* test : {"ok", "line-host", "no-module", "msi-ok", "duplicate",
 		"instance", "no-line", "provider", "map", "reset", "handler", "enable",
-		"msi-enable", "msi-config", "port"}) {
+		"msi-enable", "msi-config", "port", "asm-direct", "asm-all", "asm-empty",
+		"intel-direct"}) {
 		fault = test; info = {}; regs = {}; regs.cap = CAP_S64A; regs.pi = 15;
 		command = PCI_command_memory | PCI_command_int_disable;
 		if (fault == "no-line") info.u.h0.interrupt_line = 0xff;
+		if (fault.rfind("asm-", 0) == 0 || fault == "intel-direct") {
+			regs.cap |= 23; regs.pi = 0xffff0f;
+		}
+		if (fault == "asm-empty") regs.pi = 0xffff00;
+		if (fault == "intel-direct") info.vendor_id = 0x8086;
 		events.clear();
 		bool success = fault == "ok" || fault == "line-host" || fault == "no-module"
-			|| fault == "msi-ok" || fault == "msi-config";
+			|| fault == "msi-ok" || fault == "msi-config" || fault == "asm-direct"
+			|| fault == "asm-all" || fault == "intel-direct";
 		{
 			AHCIController controller(nullptr, &pci, nullptr);
 			assert((controller.Init() == B_OK) == success);
@@ -175,10 +194,17 @@ int main()
 				assert(irq == (fault == "msi-ok" ? 9000
 					: fault == "line-host" || fault == "no-module" ? 31 : 287));
 				if (fault != "msi-ok") assert(!(command & PCI_command_int_disable));
+				if (fault == "asm-direct") {
+					assert(controller.fPortImplementedMask == 0xf && controller.fPortCount == 4);
+					assert(portObjects == 4 && regs.pi == 0xffff0f);
+				} else if (fault == "asm-all" || fault == "intel-direct") {
+					assert(controller.fPortImplementedMask == 0xffff0f && controller.fPortCount == 24);
+					assert(portObjects == 20);
+				}
 			}
 			controller.Uninit();
 			assert(!irq && !references && !instance && !areas && !portObjects
-				&& !allocatedMSI && !msiEnabled && !interruptsEnabled);
+				&& !allocatedMSI && !msiEnabled && !interruptsEnabled && !settingsReferences);
 			auto count = events.size();
 			controller.Uninit();
 			assert(events.size() == count);
