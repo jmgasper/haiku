@@ -1519,8 +1519,21 @@ rge_rxeof(struct rge_queues *q)
 		}
 
 		rxq = &q->q_rx.rge_rxq[i];
+		mlen = rxstat & RGE_RDCMDSTS_FRAGLEN;
+		if (mlen == 0 || (bus_size_t)mlen > rxq->rxq_dmamap->dm_mapsize) {
+			/* Never expose a length outside the posted receive buffer. */
+			rxstat |= RGE_RDCMDSTS_RXERRSUM;
+			mlen = 0;
+		}
+		/*
+		 * Only the received fragment is needed by the CPU. On platforms
+		 * with bounce buffers, syncing the entire allocation also copies
+		 * its unused tail for every short packet. Invalid lengths retain
+		 * full-map synchronization before the existing error cleanup.
+		 */
 		bus_dmamap_sync(sc->sc_dmat, rxq->rxq_dmamap, 0,
-		    rxq->rxq_dmamap->dm_mapsize, BUS_DMASYNC_POSTREAD);
+		    mlen != 0 ? (bus_size_t)mlen : rxq->rxq_dmamap->dm_mapsize,
+		    BUS_DMASYNC_POSTREAD);
 		bus_dmamap_unload(sc->sc_dmat, rxq->rxq_dmamap);
 		m = rxq->rxq_mbuf;
 		rxq->rxq_mbuf = NULL;
@@ -1546,7 +1559,6 @@ rge_rxeof(struct rge_queues *q)
 		*q->q_rx.rge_tail = m;
 		q->q_rx.rge_tail = &m->m_next;
 
-		mlen = rxstat & RGE_RDCMDSTS_FRAGLEN;
 		m->m_len = mlen;
 
 		m = q->q_rx.rge_head;
