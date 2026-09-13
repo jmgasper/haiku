@@ -401,6 +401,54 @@ ReadSnapshot(volatile uint8* config, uint32* snapshot)
 
 
 static status_t
+WaitForRootLink(volatile uint8* config, uint32* snapshot,
+	uint64& memoryBase, uint64& memorySize, const PortProfile& port)
+{
+	// The captured ASM1164 root can still report training at early attachment.
+	// Wait only for that otherwise valid, active link; never retrain or reset it.
+	const bigtime_t start = system_time();
+	const bigtime_t deadline = start + 1000000;
+	const uint32 initialLink = snapshot[0x80 / 4];
+	unsigned polls = 0;
+	while (!RootMatches(snapshot, memoryBase, memorySize, port)) {
+		if (!RootConfigurationMatches(snapshot, memoryBase, memorySize, port)
+			|| !RootLinkActive(snapshot)
+			|| (snapshot[0x80 / 4] & 0x08000000) == 0) {
+			return B_NOT_SUPPORTED;
+		}
+		if (polls == 0) {
+			dprintf("rk3588_pcie: segment %u waiting for firmware link training, "
+				"link=%08" B_PRIx32 "\n", port.segment, initialLink);
+		}
+		bigtime_t remaining = deadline - system_time();
+		if (remaining <= 0)
+			return B_TIMED_OUT;
+		status_t status = snooze(remaining < 1000 ? remaining : 1000);
+		if (status != B_OK)
+			return status;
+		if (system_time() > deadline)
+			return B_TIMED_OUT;
+		// Check the ID before every full root snapshot, as on the initial read.
+		uint32 id = *(volatile uint32*)config;
+		if (id != 0x35881d87) {
+			memset(snapshot, 0, 64 * sizeof(uint32));
+			snapshot[0] = id;
+			return B_NOT_SUPPORTED;
+		}
+		ReadSnapshot(config, snapshot);
+		polls++;
+	}
+	if (polls != 0) {
+		dprintf("rk3588_pcie: segment %u firmware link training settled after "
+			"%" B_PRIdBIGTIME " us (%u polls), link=%08" B_PRIx32 " -> %08"
+			B_PRIx32 "\n", port.segment, system_time() - start, polls,
+			initialLink, snapshot[0x80 / 4]);
+	}
+	return B_OK;
+}
+
+
+static status_t
 InitDriver(device_node* node, void** cookie)
 {
 	DeviceNodePutter<&sDeviceManager> parent(sDeviceManager->get_parent_node(node));
@@ -421,10 +469,11 @@ InitDriver(device_node* node, void** cookie)
 	if (*(volatile uint32*)controller->config[0] != 0x35881d87)
 		return B_NOT_SUPPORTED;
 	ReadSnapshot(controller->config[0], snapshot);
-	if (!RootMatches(snapshot, memoryBase, memorySize, *port)) {
+	status_t status = WaitForRootLink(controller->config[0], snapshot,
+		memoryBase, memorySize, *port);
+	if (status != B_OK) {
 		dprintf("rk3588_pcie: segment %u firmware root configuration "
-			"does not match profile\n",
-			port->segment);
+			"does not match profile: %" B_PRId32 "\n", port->segment, status);
 		// Record the snapshot already read for validation; do not issue further
 		// register reads or relax the firmware profile after rejection.
 		dprintf("rk3588_pcie: root snapshot id=%08" B_PRIx32
@@ -433,7 +482,7 @@ InitDriver(device_node* node, void** cookie)
 			" capability=%08" B_PRIx32 " link=%08" B_PRIx32 "\n",
 			snapshot[0], snapshot[1], snapshot[2], snapshot[3], snapshot[6],
 			snapshot[8], snapshot[0x70 / 4], snapshot[0x80 / 4]);
-		return B_NOT_SUPPORTED;
+		return status;
 	}
 	controller->endpointArea.SetTo(map_physical_memory("RK3588 endpoint config", port->endpointConfig,
 		kConfigSize, B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY,
@@ -460,7 +509,7 @@ InitDriver(device_node* node, void** cookie)
 	controller->memory.host_address = memoryBase;
 	controller->memory.pci_address = memoryBase;
 	controller->memory.size = memorySize;
-	status_t status = InitIntx(controller.Get(), parent.Get(), *port);
+	status = InitIntx(controller.Get(), parent.Get(), *port);
 	if (status != B_OK) {
 		dprintf("rk3588_pcie: segment %u INTx profile rejected: %" B_PRId32 "\n",
 			port->segment, status);

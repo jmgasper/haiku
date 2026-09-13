@@ -8,6 +8,28 @@ import unittest
 
 
 class PCIeProfileTests(unittest.TestCase):
+    def test_production_training_wait_and_failures(self):
+        directory = Path(__file__).resolve().parent
+        source = directory.parents[1] / 'src/add-ons/kernel/busses/pci/rk3588'
+        driver = (source / 'rk3588_firmware.cpp').read_text()
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as temporary:
+            root = Path(temporary)
+            (root / 'training.inc').write_text(driver[
+                driver.index('static void\nReadSnapshot('):
+                driver.index('static status_t\nInitDriver(')])
+            binary = root / 'pcie-training-test'
+            result = subprocess.run([
+                'g++', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror',
+                '-fsanitize=address,undefined', '-fno-sanitize-recover=all',
+                '-I', str(source), '-I', str(root),
+                str(directory / 'test_pcie_training.cpp'), '-o', str(binary),
+            ], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('PCIe training transitions, profile rejection and bounded failures passed',
+                result.stdout)
+
     def test_onboard_profiles_and_bar_containment(self):
         directory = Path(__file__).resolve().parent
         source = directory.parents[1]

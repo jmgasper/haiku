@@ -74,7 +74,8 @@ ValidAccess(unsigned bus, unsigned device, unsigned function, unsigned offset,
 }
 
 inline bool
-RootMatches(const uint32_t* config, uint64_t& memoryBase, uint64_t& memorySize,
+RootConfigurationMatches(const uint32_t* config, uint64_t& memoryBase,
+	uint64_t& memorySize,
 	const PortProfile& port = kPorts[0])
 {
 	if (config[0] != 0x35881d87 || (config[2] >> 8) != 0x060400
@@ -83,13 +84,9 @@ RootMatches(const uint32_t* config, uint64_t& memoryBase, uint64_t& memorySize,
 		|| (config[1] & 2) == 0) {
 		return false;
 	}
-	// v1.1 keeps the root's PCIe capability at 0x70. Check link state before
-	// issuing a downstream configuration transaction; do not probe a dead link.
-	uint32_t link = config[0x80 / 4] >> 16;
-	if ((config[0x70 / 4] & 0xff) != 0x10 || (link & 0x2000) == 0
-		|| (link & 0x0800) != 0 || (link & 0x000f) == 0 || (link & 0x03f0) == 0) {
+	// v1.1 keeps the root's PCIe capability at 0x70.
+	if ((config[0x70 / 4] & 0xff) != 0x10)
 		return false;
-	}
 	// Export only the memory window currently forwarded by this root bridge.
 	// The PCI core can then reserve the firmware BAR without moving it.
 	uint64_t base = uint64_t(config[8] & 0xfff0) << 16;
@@ -101,6 +98,22 @@ RootMatches(const uint32_t* config, uint64_t& memoryBase, uint64_t& memorySize,
 	memoryBase = base;
 	memorySize = limit + 1 - base;
 	return true;
+}
+
+inline bool
+RootLinkActive(const uint32_t* config)
+{
+	uint32_t link = config[0x80 / 4] >> 16;
+	return (link & 0x2000) != 0 && (link & 0x000f) != 0 && (link & 0x03f0) != 0;
+}
+
+inline bool
+RootMatches(const uint32_t* config, uint64_t& memoryBase, uint64_t& memorySize,
+	const PortProfile& port = kPorts[0])
+{
+	// Downstream config access still requires an active link with training clear.
+	return RootLinkActive(config) && (config[0x80 / 4] & 0x08000000) == 0
+		&& RootConfigurationMatches(config, memoryBase, memorySize, port);
 }
 
 inline bool
