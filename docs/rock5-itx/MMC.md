@@ -823,6 +823,16 @@ recent copies. The retry passed; the failed deployment is retained separately.
 
 ## Native work remaining
 
+The concurrent-file harness prepares four disjoint 2 MiB regions in the
+existing 16 MiB target. Each writer performs 16 changing overwrites, explicitly
+flushes the device and checks its own region, for 128 MiB written. Intermediate
+file reads may use the filesystem cache; the final complete-file comparisons
+use a fresh mount, followed by reboot and independent backing-file readback.
+Host tests reject a lost writer, corrupted guard bytes and incomplete or
+incorrect per-write/flush evidence. All 110 host checks pass; QEMU and native
+qualification of this workload are pending. This is not a full-cache pressure
+test or sustained-I/O acceptance.
+
 Extend the bounded file result to power-loss integrity, longer mixed I/O and
 error recovery. Speed negotiation/tuning and Haiku boot from eMMC remain open.
 Preserve ROOBI and its tested recovery route during these changes.
