@@ -587,7 +587,9 @@ DMAResource::TranslateNext(IORequest* request, IOOperation* operation,
 		// Check low address: use bounce buffer for range to low address.
 		// Check alignment: if not aligned, use bounce buffer for complete vec.
 		if (base < fRestrictions.low_address) {
-			useBounceBufferSize = fRestrictions.low_address - base;
+			// The address gap can exceed both this request and the remaining
+			// device extent. Bounce only the bytes selected for this vector.
+			useBounceBufferSize = min_c(length, fRestrictions.low_address - base);
 			TRACE("  vec %" B_PRIu32 ": below low address, using bounce buffer: %lu\n", i,
 				useBounceBufferSize);
 		} else if (base & (fRestrictions.alignment - 1)) {

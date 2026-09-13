@@ -544,9 +544,30 @@ A host regression reproduces the lost event with the previous production
 ordering for both command and transfer completion. The handler now acknowledges
 the observed bits and completes a memory barrier before publishing the result.
 Data-transfer errors also record the offset, CPU/DMA addresses and interrupt
-state before recovery. All 105 host checks pass; another native trial is
-required to establish whether this resolves the observed timeout. The failed
+state before recovery. All 105 host checks passed at that checkpoint. The failed
 trial remains indexed by `state/native-mmc-high-first-failure.json`.
+
+The `+143` retry (`interactive/20260913T181347Z-26c471`) again timed out after
+the same 2,045 complete 4 KiB records in the final reference region. The new
+diagnostic exposed a 16 KiB operation at byte 7,818,170,368, where only 12 KiB
+remain in the card. The shared `DMAResource` translator used the entire address
+gap below its lower bound as the requested bounce length; this consumed the
+16 KiB bounce buffer even for a 4 KiB request. The translator now limits that
+length to the already restricted vector length before applying alignment.
+
+A new host test executes the production translation and reproduces the oversized
+operation with the previous code. It covers short reads/writes at the device
+end, physical and virtual source vectors, partial-sector requests, transfer and
+operation limits, crossing the lower address bound, and buffers already above
+the bound. All 106 host checks pass with the fix. Native qualification must be
+repeated. No native high-memory write has been issued.
+
+The second failed trial and its diagnostic are retained in
+`state/native-mmc-high-second-failure.json`. Recovery reached ROOBI boot ID
+`643de476-d921-4d3b-b293-73c6a35b61f6`; Linux again confirmed the complete FAT
+partition unchanged, both file hashes, filesystem consistency and all three
+reference hashes. Evidence is in `artifacts/emmc-file-readback/20260913T182251Z-fadfb1`
+and `artifacts/emmc-read-reference/20260913T182356Z-5d4c65`.
 
 ## Native work remaining
 

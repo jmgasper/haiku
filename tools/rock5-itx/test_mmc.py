@@ -97,6 +97,21 @@ class MMCTests(unittest.TestCase):
             (root / 'dma.inc').write_text(code[code.index('status_t\nsdhci_allocate_dma'):])
         self.compile_run('test_mmc_dma', prepare, 'SDHCI DMA allocation and cleanup passed')
 
+    def test_dma_resource_low_address_bounds(self):
+        def prepare(root, source):
+            directory = source / 'src/system/kernel/device_manager'
+            header = (directory / 'dma_resources.h').read_text()
+            (root / 'dma_resources.h').write_text('\n'.join(
+                line for line in header.splitlines() if not line.startswith('#include')))
+            code = (directory / 'dma_resources.cpp').read_text()
+            sections = [code[code.index('DMABuffer*\nDMABuffer::Create'):
+                             code.index('status_t\nDMAResource::Init')],
+                        code[code.index('inline void\nDMAResource::_RestrictBoundaryAndSegmentSize'):
+                             code.index('#if 0')]]
+            (root / 'dma_bounds.inc').write_text('\n'.join(sections))
+        self.compile_run('test_dma_resource_bounds', prepare,
+                         'DMA low-address request and device-end bounds passed')
+
     def test_mmc_initialization_after_sd_probe(self):
         def prepare(root, source):
             code = (source / 'src/add-ons/kernel/bus_managers/mmc/mmc_bus.cpp').read_text()
