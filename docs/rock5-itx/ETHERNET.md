@@ -199,8 +199,27 @@ After this run the owner connected port 0 through a 10 GbE copper SFP.
 The new Linux reference, `state/linux-ethernet-two-links.json`, records
 `enP3p49s0`/MAC ending `fc` at 2500 Mbit/s full duplex with DHCP `192.168.1.144`.
 Port 1 remains at 1000 Mbit/s and `192.168.1.154`. The workstation reports a
-5000 Mbit/s link. This establishes the fixture's negotiated Linux speed;
-Haiku's new port 0 link and traffic trial is pending.
+5000 Mbit/s link. This establishes the fixture's negotiated Linux speed.
+
+The first native port 0 run, `interactive/20260913T061539Z-181bab`, retained
+`+104`. Both ports obtained DHCP, then port 1 was brought down to isolate the
+test path. Port 0 passed an 8 MiB round trip and truncated-input rejection in
+`native-ethernet-transfer/20260913T062138Z-75e67b`; its counters increased by
+8,800,792 receive bytes and 8,900,245 transmit bytes, without errors or drops.
+USB carried only 520 receive bytes and 1773 transmit bytes. Recovery and serial
+capture completed, and the controller watchdog disarmed. The result is indexed
+by `state/native-network-port0-initial.json`.
+
+This run exposed an existing media-reporting defect. RTL8125 returned
+`0x900825`, the PHY-derived 2500BASE-T/full-duplex/active media value, but
+`ifmedia_baudrate()` discarded the extended Ethernet subtype bits and reported
+10 Mbit/s. `ifconfig` also masked those bits and lacked 2.5/5 Gbit/s labels.
+The correction uses the existing type/subtype helpers, adds the two labels,
+and prevents unknown extended subtypes from aliasing generic `auto`. The host
+regression compiles the actual baud-rate table/function and ifconfig formatter
+with Haiku's media definitions. It checks the captured value, existing and
+extended rates, unrelated flags, unknown subtypes, name parsing and wireless
+formatting. The corrected image still requires build and QEMU/native gates.
 
 ## References
 

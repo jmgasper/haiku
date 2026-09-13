@@ -393,7 +393,7 @@ ifmedia_baudrate(int mword)
 	int i;
 
 	for (i = 0; ifmedia_baudrate_descriptions[i].ifmb_word != 0; i++) {
-		if ((mword & (IFM_NMASK|IFM_TMASK)) ==
+		if ((IFM_TYPE(mword) | IFM_SUBTYPE(mword)) ==
 		    ifmedia_baudrate_descriptions[i].ifmb_word)
 			return (ifmedia_baudrate_descriptions[i].ifmb_baudrate);
 	}

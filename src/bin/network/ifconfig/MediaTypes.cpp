@@ -28,7 +28,7 @@ struct media_type {
 		int subtype;
 		const char* name;
 		const char* pretty;
-	} subtypes [10];
+	} subtypes [12];
 	struct {
 		int option;
 		bool read_only;
@@ -43,7 +43,7 @@ const media_type kMediaTypes[] = {
 		IFM_ETHER,
 		"ether",
 		"Ethernet",
-		IFM_TMASK,
+		IFM_TMASK | IFM_ETH_XTYPE,
 		{
 			//{ IFM_AUTO, "auto", "Auto-select" },
 			//{ IFM_AUI, "AUI", "10 MBit, AUI" },
@@ -51,6 +51,8 @@ const media_type kMediaTypes[] = {
 			{ IFM_10_T, "10baseT", "10 MBit, 10BASE-T" },
 			{ IFM_100_TX, "100baseTX", "100 MBit, 100BASE-TX" },
 			{ IFM_1000_T, "1000baseT", "1 GBit, 1000BASE-T" },
+			{ IFM_2500_T, "2500baseT", "2.5 GBit, 2500BASE-T" },
+			{ IFM_5000_T, "5000baseT", "5 GBit, 5000BASE-T" },
 			{ IFM_1000_SX, "1000baseSX", "1 GBit, 1000BASE-SX" },
 			{ IFM_10G_T, "10GbaseT", "10 GBit, 10GBASE-T" },
 			{ IFM_10G_SR, "10GbaseSR", "10 Gbit, 850 nm Fibre"},
@@ -158,7 +160,8 @@ media_type_to_string(int media)
 			&& kMediaTypes[i].type != IFM_TYPE(media))
 			continue;
 
-		const int subtype = (media & kMediaTypes[i].subtype_mask);
+		const int subtype = kMediaTypes[i].type == 0
+			? IFM_SUBTYPE(media) : (media & kMediaTypes[i].subtype_mask);
 		for (size_t j = 0; kMediaTypes[i].subtypes[j].subtype >= 0; j++) {
 			if (kMediaTypes[i].subtypes[j].subtype == subtype) {
 				// found a match
