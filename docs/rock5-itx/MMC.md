@@ -1,10 +1,10 @@
 # MMC and onboard eMMC
 
 The onboard eMMC now passes native geometry, bounded file writes, explicit flush
-and readback across normal Haiku reboot, with independent Linux checks. Separate
-reference reads include data beyond 4 GiB and at the end of the device. The
-common MMC stack also passes SD/eMMC writes and persistence in ARM64 QEMU.
-Power-cycle integrity, faster speed modes and Haiku boot from eMMC remain
+and readback across normal Haiku reboot and orderly shutdown/startup, with
+independent Linux checks. Separate reference reads include data beyond 4 GiB
+and at the end of the device. The common MMC stack also passes SD/eMMC writes
+and persistence in ARM64 QEMU. Power-loss integrity, faster speed modes and Haiku boot from eMMC remain
 unqualified. MicroSD uses a different controller and is not covered by this work.
 ROOBI remains on its eMMC root partition; the write fixture uses the separately
 backed-up, previously empty 300 MiB FAT partition.
@@ -338,9 +338,58 @@ preserved above.
 firmware profile still defaults to read-only access. This private trial explicitly
 sets `read_only false` for its controlled file workload.
 
+## Native orderly shutdown and startup
+
+The unchanged `+136` image also passes a separate shutdown/startup trial in
+`artifacts/interactive/20260913T163033Z-bde4d4`. Its existing build, 104 host
+checks and combined QEMU result above apply to the same image SHA-256.
+The retained 16 MiB target file first matched the previous final hash. Haiku
+then overwrote 4 MiB at file offset 8 MiB with a different source pattern,
+synchronized, unmounted and issued an explicit device flush. A fresh read-only
+mount verified both complete files before normal `shutdown`.
+
+UART recorded `PSCI: requesting system off`. More than 107 seconds after
+observing that marker, no new Haiku boot had occurred and NanoKVM's USB gadget
+reported `not attached`. NanoKVM SSH remained reachable with the same boot ID.
+HDMI capture timed out while off; no off-state frame was obtained. A single
+800 ms power-button pulse then started the same selected Haiku image. There
+was no intervening recovery boot or reset command between the two Haiku boots.
+
+After startup, the source and changed target hashes pass again. Total checked
+native file content is 72 MiB, plus 48 MiB of unchanged raw reference regions
+across the two boots. Both boots pass the 25 component and five setting hashes,
+memory/copy checks, inspected Tracker/Deskbar desktops and DHCP links at
+2.5/1 Gbit/s. This run did not mount/update the SSD or repeat network traffic.
+
+Linux subsequently copied the unmounted FAT partition, passed `fsck.fat -n`
+and independently extracted both expected files. The target SHA-256 is now
+`9617f2f3370ba58e837c0c7f5a1ebff0d1949c07268dd9ca6c0fd6268d2b780c`.
+The three raw reference hashes still match. ROOBI recovered with boot ID
+`a6a13da0-52b7-4de1-b6f0-aecb9ae716df`. Serial capture completed with 529,066
+bytes and no transport errors; the NanoKVM guard disarmed.
+
+This establishes orderly shutdown and power-button startup persistence for the
+bounded file workload. It does not establish abrupt power-loss durability or
+electrically measured removal of the eMMC supply. The card again reported cache
+disabled on both boots. The legacy clock, unforced high-memory callers and
+remaining error-recovery limits still apply. Two transfer-complete diagnostics
+were recorded in total; no other failed SDHCI command or kernel panic appeared.
+
+| Evidence | Location under `/mnt/HaikuWork` |
+| --- | --- |
+| Trial fixture and scripts | `artifacts/mmc-shutdown/20260913T162525Z-b0639b/` |
+| Native reviewed qualification | `artifacts/interactive/20260913T163033Z-bde4d4/qualification.json` |
+| File write / after-startup transcripts | Same directory: `shell-20260913T163510Z-2c10d4.txt`, `shell-20260913T164112Z-f958de.txt` |
+| Linux file and FAT check | `artifacts/emmc-file-readback/20260913T164254Z-4117a5/result.json` |
+| Linux reference reads | `artifacts/emmc-read-reference/20260913T164326Z-f33d0c/result.json` |
+| Current result index | `state/native-mmc-shutdown.json` |
+
+The final data remains on the FAT fixture for subsequent tests. The earlier
+normal-reboot qualification and its expected hashes remain preserved separately.
+
 ## Native work remaining
 
-Extend the bounded file result to shutdown/startup and power-cycle integrity,
+Extend the bounded file result to power-loss integrity,
 longer mixed I/O, native caller buffers above 4 GiB and error recovery. Speed
 negotiation/tuning, native cached-card flush behavior and Haiku boot from eMMC
 remain open. Preserve ROOBI and its tested recovery route during these changes.

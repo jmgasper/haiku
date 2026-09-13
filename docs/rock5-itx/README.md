@@ -48,9 +48,9 @@ The SSD installation remains at `+94` while these newer changes are tested
 from USB.
 
 The onboard eMMC now passes native capacity, file writes, explicit flush and
-readback after normal reboot. The file test uses a backed-up FAT partition;
-independent Linux file hashes and filesystem checks pass, and three other
-reference regions remain unchanged. Faster speed modes, power-cycle integrity
+readback after normal reboot and orderly shutdown/startup. The file test uses
+a backed-up FAT partition; independent Linux file hashes and filesystem checks
+pass, and three other reference regions remain unchanged. Faster speed modes, power-loss integrity
 and booting Haiku from eMMC remain pending. The ordinary driver profile defaults
 to read-only access. The reference, retained failures and tested scope are in
 [MMC.md](MMC.md).
