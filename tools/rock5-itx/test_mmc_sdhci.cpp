@@ -242,6 +242,13 @@ int main()
     static_assert(sizeof(W1C32) == 4 && sizeof(Doorbell16) == 2 && sizeof(Fifo32) == 4);
     static_assert(offsetof(registers, interrupt_status) == 0x30);
     static_assert(offsetof(registers, clock_control) == 0x2c);
+    { Fixture f;
+      regs->host_control.SetDMAMode(0x18);
+      for (int width : {8, 4, 1, 8}) {
+          bus->SetBusWidth(width);
+          assert(regs->host_control.Bits() == (width == 8 ? 0x38 : width == 4 ? 0x1a : 0x18));
+      }
+    }
     for (const char* failure : {"install", "reset", "clock", "spawn", "resume"}) {
         Fixture f(failure, true);
         assert(f.controller->InitCheck() != B_OK && now <= 200000);

@@ -174,6 +174,8 @@ const char* const kMmcSectorCountAttribute = "mmc/sector_count";
 const char* const kMmcCacheEnabledAttribute = "mmc/cache_enabled";
 const char* const kMmcReadOnlyAttribute = "mmc/read_only";
 const char* const kMmcNonRemovableAttribute = "mmc/non_removable";
+const char* const kMmcMaxBusWidthAttribute = "mmc/max_bus_width";
+const char* const kMmcBusWidthAttribute = "mmc/bus_width";
 
 
 #endif /* _MMC_H */

@@ -44,6 +44,11 @@ static uint32 sectors;
 static std::string fault;
 struct device_manager_info {
     status_t get_attr_uint8(device_node*, const char* name, uint8* out, bool) {
+        if (strcmp(name, kMmcBusWidthAttribute) == 0) {
+            if (fault == "width-attribute") return B_ERROR;
+            *out = fault == "invalid-width" ? 2 : 8;
+            return B_OK;
+        }
         *out = fault == "readonly-profile" && (strcmp(name, kMmcReadOnlyAttribute) == 0
             || strcmp(name, kMmcNonRemovableAttribute) == 0);
         return B_OK;
@@ -113,17 +118,17 @@ int main()
     for (card_type type : {CARD_TYPE_MMC, CARD_TYPE_MMC_EXTENDED_CAPACITY}) {
         Fixture f(type); auto* handle = f.open();
         assert(f.info.DeviceSize() == (int64_t(9) << 30));
-        assert(f.info.geometry.bytes_per_sector == 512 && busWidth == 4);
-        assert(commands.back().command == 6 && commands.back().argument == 0x03b70100);
-        assert(commands.size() == (type == CARD_TYPE_MMC ? 3 : 2));
+        assert(f.info.geometry.bytes_per_sector == 512 && busWidth == 0);
+        // Opening the disk must preserve the width already verified by the bus.
+        assert(commands.size() == (type == CARD_TYPE_MMC ? 2 : 1));
         if (type == CARD_TYPE_MMC) assert(commands[1].command == 16 && commands[1].argument == 512);
         size_t n = commands.size(); auto* second = f.open();
         assert(commands.size() == n);
         mmc_block_free(second); mmc_block_free(handle);
     }
-    for (const char* failure : {"csd", "attribute", "switch", "switch-transport"}) {
+    for (const char* failure : {"csd", "attribute", "width-attribute", "invalid-width"}) {
         Fixture f; fault = failure;
-        status_t expected = fault == "csd" ? B_TIMED_OUT : fault == "attribute" ? B_BAD_DATA : B_IO_ERROR;
+        status_t expected = fault == "csd" ? B_TIMED_OUT : B_BAD_DATA;
         f.open(expected); assert(busWidth == 0);
         fault.clear(); auto* handle = f.open();
         assert(f.info.DeviceSize() == (int64_t(9) << 30)); mmc_block_free(handle);

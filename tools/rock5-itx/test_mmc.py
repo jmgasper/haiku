@@ -104,6 +104,14 @@ class MMCTests(unittest.TestCase):
                 code.index('static status_t\ninitialize_mmc'):code.index('status_t\nMMCBus::_WorkerThread')])
         self.compile_run('test_mmc_initialization', prepare, 'MMC reset after SD probe and OCR failures passed')
 
+    def test_mmc_width_and_data_validation(self):
+        def prepare(root, source):
+            code = (source / 'src/add-ons/kernel/bus_managers/mmc/mmc_bus.cpp').read_text()
+            (root / 'width.inc').write_text(code[
+                code.index('static status_t\nconfigure_mmc_width'):
+                code.index('static status_t\ninitialize_mmc')])
+        self.compile_run('test_mmc_width', prepare, 'MMC width sequencing and data corruption rejection passed')
+
 
 if __name__ == '__main__':
     unittest.main()

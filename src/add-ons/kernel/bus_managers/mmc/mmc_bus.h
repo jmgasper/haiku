@@ -147,6 +147,7 @@ public:
 									bool offsetAsSectors);
 
 				status_t		SetClock(int frequency);
+				status_t		ReadExtendedCsd(uint16_t rca, uint8_t data[512]);
 				void			SetBusWidth(int width);
 				void			SetCardType(card_type type);
 

@@ -253,6 +253,7 @@ register_children(void* cookie)
 		{B_DEVICE_FIXED_CHILD, B_STRING_TYPE, {.string = MMC_BUS_MODULE_NAME}},
 		{kMmcReadOnlyAttribute, B_UINT8_TYPE, {.ui8 = uint8(info->readOnly)}},
 		{kMmcNonRemovableAttribute, B_UINT8_TYPE, {.ui8 = 1}},
+		{kMmcMaxBusWidthAttribute, B_UINT8_TYPE, {.ui8 = uint8(info->resources.width)}},
 		{B_DMA_ALIGNMENT, B_UINT32_TYPE, {.ui32 = 511}},
 		{B_DMA_BOUNDARY, B_UINT32_TYPE, {.ui32 = (1 << 19) - 1}},
 		{B_DMA_MAX_SEGMENT_COUNT, B_UINT32_TYPE, {.ui32 = 1}},

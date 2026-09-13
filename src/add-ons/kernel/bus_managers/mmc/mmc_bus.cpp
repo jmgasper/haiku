@@ -131,6 +131,16 @@ MMCBus::SetClock(int frequency)
 }
 
 
+status_t
+MMCBus::ReadExtendedCsd(uint16_t rca, uint8_t data[512])
+{
+	status_t status = _ActivateDevice(rca);
+	if (status != B_OK)
+		return status;
+	return fController->read_extended_csd(fCookie, data);
+}
+
+
 void
 MMCBus::SetBusWidth(int width)
 {
@@ -179,6 +189,44 @@ void
 MMCBus::_TerminateBus()
 {
 	fController->terminate_bus(fCookie);
+}
+
+
+static status_t
+configure_mmc_width(MMCBus* bus, uint16_t rca, uint8_t width,
+	const uint8_t reference[512])
+{
+	if (width != 1 && width != 4 && width != 8)
+		return B_BAD_VALUE;
+	uint32_t response = 0;
+	// JEDEC EXT_CSD BUS_WIDTH[183]: SDR values 0, 1 and 2 use 1, 4 and 8 wires.
+	uint32_t value = width == 8 ? 2 : width == 4 ? 1 : 0;
+	status_t status = bus->ExecuteCommand(rca, MMC_SWITCH,
+		0x03b70000 | (value << 8), &response);
+	if (status != B_OK || (response & kMmcR1ErrorMask) != 0)
+		return status == B_OK ? B_IO_ERROR : status;
+	bus->SetBusWidth(width);
+
+	uint8_t extended[512];
+	status = bus->ReadExtendedCsd(rca, extended);
+	if (status != B_OK)
+		return status;
+	// Verify stable, read-only identification/capability fields against the
+	// one-bit read. BUS_WIDTH itself is not a data-path integrity check.
+	static const uint16_t fields[] = {
+		160, 166, 168, 181, 192, 194, 196, 197, 198, 199, 200, 201, 202, 203,
+		212, 213, 214, 215, 217, 221, 222, 223, 224, 226, 229, 230, 231, 232,
+		236, 237, 238, 239, 249, 250, 251, 252, 253
+	};
+	for (unsigned i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
+		if (extended[fields[i]] != reference[fields[i]])
+			return B_BAD_DATA;
+	}
+	// Keep the user-area/sector-size and cache assumptions used by mmc_disk.
+	if ((extended[179] & 7) != 0 || extended[61] != 0
+		|| (extended[33] & 1) != (reference[33] & 1))
+		return B_BAD_DATA;
+	return B_OK;
 }
 
 
@@ -421,11 +469,9 @@ MMCBus::_WorkerThread(void* cookie)
 
 		uint32_t sectorCount = 0;
 		uint8_t cacheEnabled = 0;
+		uint8_t extended[512];
 		if (cardFound && is_mmc_card((card_type)cardType)) {
-			uint8_t extended[512];
-			status = bus->_ActivateDevice(rca);
-			if (status == B_OK)
-				status = bus->fController->read_extended_csd(bus->fCookie, extended);
+			status = bus->ReadExtendedCsd(rca, extended);
 			if (status == B_OK && (extended[192] < 2
 					|| (extended[179] & 7) != 0 || extended[61] != 0))
 				status = B_NOT_SUPPORTED;
@@ -453,6 +499,23 @@ MMCBus::_WorkerThread(void* cookie)
 			return clockStatus;
 		}
 
+		uint8_t busWidth = 4;
+		if (cardFound && is_mmc_card((card_type)cardType)) {
+			// Hosts without a wiring description retain the existing four-bit
+			// limit. The RK3588 profile supplies its admitted eight-bit wiring.
+			gDeviceManager->get_attr_uint8(bus->fNode, kMmcMaxBusWidthAttribute,
+				&busWidth, true);
+			status = configure_mmc_width(bus, rca, busWidth, extended);
+			if (status != B_OK) {
+				ERROR("MMC %u-bit mode verification failed: %s\n", busWidth,
+					strerror(status));
+				bus->_TerminateBus();
+				bus->ReleaseBus();
+				return status;
+			}
+			TRACE_ALWAYS("MMC bus width: %u-bit legacy SDR, EXT_CSD verified\n", busWidth);
+		}
+
 		if (cardFound) {
 			device_attr attrs[] = {
 				{ B_DEVICE_BUS, B_STRING_TYPE, {.string = "mmc" }},
@@ -467,6 +530,7 @@ MMCBus::_WorkerThread(void* cookie)
 				{ kMmcTypeAttribute, B_UINT8_TYPE, {.ui8 = cardType}},
 				{ kMmcSectorCountAttribute, B_UINT32_TYPE, {.ui32 = sectorCount}},
 				{ kMmcCacheEnabledAttribute, B_UINT8_TYPE, {.ui8 = cacheEnabled}},
+				{ kMmcBusWidthAttribute, B_UINT8_TYPE, {.ui8 = busWidth}},
 				{}
 			};
 

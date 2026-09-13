@@ -155,6 +155,11 @@ mmc_block_get_geometry(mmc_disk_driver_info* info, device_geometry* geometry)
 
 	bool mmc = is_mmc_card(info->cardType);
 	if (mmc) {
+		uint8_t width;
+		status = sDeviceManager->get_attr_uint8(info->parent, kMmcBusWidthAttribute,
+			&width, true);
+		if (status != B_OK || (width != 1 && width != 4 && width != 8))
+			return B_BAD_DATA;
 		uint32_t sectors;
 		status = sDeviceManager->get_attr_uint32(info->parent, kMmcSectorCountAttribute,
 			&sectors, true);
@@ -187,11 +192,8 @@ mmc_block_get_geometry(mmc_disk_driver_info* info, device_geometry* geometry)
 		if (status != B_OK || (cardStatus & kMmcR1ErrorMask) != 0)
 			return status == B_OK ? B_IO_ERROR : status;
 	}
-	if (mmc) {
-		// EXT_CSD[183] = 1 selects four data wires in legacy SDR mode.
-		status = info->mmc->execute_command(info->parent, info->parentCookie,
-			info->rca, MMC_SWITCH, 0x03b70100, &cardStatus);
-	} else {
+	// The bus manager verifies MMC's width before publishing the card.
+	if (!mmc) {
 		status = info->mmc->execute_command(info->parent, info->parentCookie,
 			info->rca, SD_APP_CMD, info->rca << 16, &cardStatus);
 		if (status != B_OK || (cardStatus & 0xfff9a000) != 0
@@ -199,10 +201,10 @@ mmc_block_get_geometry(mmc_disk_driver_info* info, device_geometry* geometry)
 			return status == B_OK ? B_IO_ERROR : status;
 		status = info->mmc->execute_command(info->parent, info->parentCookie,
 			info->rca, SD_SET_BUS_WIDTH, 2, &cardStatus);
+		if (status != B_OK || (cardStatus & kMmcR1ErrorMask) != 0)
+			return status == B_OK ? B_IO_ERROR : status;
+		info->mmc->set_bus_width(info->parent, info->parentCookie, 4);
 	}
-	if (status != B_OK || (cardStatus & kMmcR1ErrorMask) != 0)
-		return status == B_OK ? B_IO_ERROR : status;
-	info->mmc->set_bus_width(info->parent, info->parentCookie, 4);
 	TRACE_ALWAYS("%s user area: %" B_PRIu32 "-byte sectors, %" B_PRIu64 " bytes\n",
 		mmc ? "MMC" : "SD", geometry->bytes_per_sector,
 		(uint64_t)geometry->bytes_per_sector * geometry->sectors_per_track
