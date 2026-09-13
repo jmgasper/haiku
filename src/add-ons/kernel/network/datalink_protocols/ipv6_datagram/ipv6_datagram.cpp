@@ -527,8 +527,37 @@ ndp_update_entry(const in6_addr& protocolAddress, sockaddr_dl* hardwareAddress,
 
 
 static void
+ndp_replace_local_source(ipv6_datalink_protocol* protocol,
+	const in6_addr& removed, const sockaddr* replacement)
+{
+	if (protocol->local_address != removed)
+		return;
+
+	// change_address runs before the interface's address list is updated.
+	// Prefer the supplied replacement, and exclude the removed address when
+	// choosing another source after a deletion.
+	if (replacement != NULL && replacement->sa_family == AF_INET6) {
+		protocol->local_address = ((const sockaddr_in6*)replacement)->sin6_addr;
+		return;
+	}
+
+	memset(&protocol->local_address, 0, sizeof(in6_addr));
+	net_interface_address* address = NULL;
+	while (sDatalinkModule->get_next_interface_address(protocol->interface,
+			&address)) {
+		if (address->local == NULL || address->local->sa_family != AF_INET6)
+			continue;
+
+		const in6_addr& candidate = ((sockaddr_in6*)address->local)->sin6_addr;
+		if (candidate != removed)
+			protocol->local_address = candidate;
+	}
+}
+
+
+static void
 ndp_remove_local_entry(ipv6_datalink_protocol* protocol, const sockaddr* local,
-	bool updateLocalAddress)
+	bool updateLocalAddress, const sockaddr* replacement = NULL)
 {
 	in6_addr inetAddress;
 
@@ -563,20 +592,8 @@ ndp_remove_local_entry(ipv6_datalink_protocol* protocol, const sockaddr* local,
 		entry->flags |= NDP_FLAG_REMOVED;
 	}
 
-	if (updateLocalAddress && protocol->local_address == inetAddress) {
-		// find new local sender address
-		memset(&protocol->local_address, 0, sizeof(in6_addr));
-
-		net_interface_address* address = NULL;
-		while (sDatalinkModule->get_next_interface_address(protocol->interface,
-				&address)) {
-			if (address->local == NULL || address->local->sa_family != AF_INET6)
-				continue;
-
-			memcpy(&protocol->local_address,
-				&((sockaddr_in6*)address->local)->sin6_addr, sizeof(in6_addr));
-		}
-	}
+	if (updateLocalAddress)
+		ndp_replace_local_source(protocol, inetAddress, replacement);
 
 	locker.Unlock();
 	delete entry;
@@ -1140,7 +1157,7 @@ ipv6_datalink_change_address(net_datalink_protocol* _protocol,
 				}
 
 				if (oldAddress != NULL && oldAddress->sa_family == AF_INET6) {
-					ndp_remove_local_entry(protocol, oldAddress, true);
+					ndp_remove_local_entry(protocol, oldAddress, true, newAddress);
 				}
 			}
 			break;
