@@ -128,6 +128,15 @@ the partition scanner assigned it. New children now inherit the parent's
 logical block size before publication, while preserving an explicitly supplied
 nonzero value. The existing extent and block-size checks remain required.
 
+The `+135` run then passed partition metadata, all six file writes, explicit
+flushes and fresh-mount hashes. After reboot, the two emulated MMC devices
+exchanged device numbers, and the fixture's old path-stability assumption
+stopped the test. That run is retained in
+`artifacts/qemu-shell/20260913T154520Z-a75388`. The fixture now rediscovers each
+uniquely sized card on every boot and checks its known data; missing or
+ambiguous geometry still fails. Both observed paths are recorded. This change
+does not establish stable device numbering.
+
 ## Linux and board reference
 
 The board is ROCK 5 ITX PCB v1.12, running ROOBI / Debian 11 and Linux

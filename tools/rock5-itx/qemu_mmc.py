@@ -83,6 +83,13 @@ def check_hash(device, offset, size, expected):
             f'[ "${{actual%% *}}" = {expected} ]\n')
 
 
+def find_device(rows, sector, capacity):
+    matches = [row for row in rows if int(row[1]) == sector and int(row[2]) == capacity]
+    if len(matches) != 1:
+        raise RuntimeError('MMC/SD disk geometry did not match the fixture uniquely')
+    return matches[0][0]
+
+
 def check(client, output, credentials, fixture, manifest, after_reboot=False):
     root = Path(fixture['evidence'])
     phase = 'after-reboot' if after_reboot else 'first-boot'
@@ -99,12 +106,10 @@ def check(client, output, credentials, fixture, manifest, after_reboot=False):
         raise RuntimeError(f'Expected exactly {count} distinct disposable MMC/SD disks')
     commands = ['set -o pipefail']
     for disk in fixture['disks']:
-        matches = [row for row in rows if int(row[1]) == disk['sector'] and int(row[2]) == disk['bytes']]
-        if len(matches) != 1:
-            raise RuntimeError('MMC/SD disk geometry did not match the fixture')
-        device = matches[0][0]
-        if after_reboot and disk['guest_device'] != device:
-            raise RuntimeError('MMC/SD disk path changed across reboot')
+        device = find_device(rows, disk['sector'], disk['bytes'])
+        # Discovery is asynchronous. Re-identify this uniquely sized fixture
+        # on every boot; the content hashes below establish data identity.
+        disk.setdefault('guest_devices', {})[phase] = device
         disk['guest_device'] = device
         i = disk['index']
         job = 'set -e\nset -o pipefail\n'
@@ -145,12 +150,8 @@ def check(client, output, credentials, fixture, manifest, after_reboot=False):
     result = dict(status='pass', disks=2, phase=phase, transcript=str(transcript), inventory=str(inventory))
     if 'filesystem' in fixture:
         files = fixture['filesystem']
-        matches = [row for row in rows if int(row[1]) == 512 and int(row[2]) == files['bytes']]
-        if len(matches) != 1:
-            raise RuntimeError('Expected one distinct MMC filesystem card')
-        device = matches[0][0]
-        if after_reboot and device != files['guest_device']:
-            raise RuntimeError('MMC filesystem path changed across reboot')
+        device = find_device(rows, 512, files['bytes'])
+        files.setdefault('guest_devices', {})[phase] = device
         files['guest_device'] = device
         result['filesystem'] = mmc_file_test.check(client, output, credentials,
             files, device, manifest['mmc_test']['fat_sha256'], after_reboot)

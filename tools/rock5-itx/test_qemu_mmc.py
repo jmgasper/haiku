@@ -10,6 +10,19 @@ import qemu_shell
 
 
 class QEMUMMCTests(unittest.TestCase):
+    def test_rediscovery_uses_unique_capacity_after_renumbering(self):
+        first = [('/dev/disk/mmc/0/raw', '512', '8589934592'),
+            ('/dev/disk/mmc/1/raw', '512', '9663676416'),
+            ('/dev/disk/mmc/2/raw', '512', '7818182656')]
+        second = [first[0], (first[1][0], '512', first[2][2]),
+            (first[2][0], '512', first[1][2])]
+        self.assertEqual(qemu_mmc.find_device(first, 512, 7818182656), first[2][0])
+        self.assertEqual(qemu_mmc.find_device(second, 512, 7818182656), first[1][0])
+        with self.assertRaisesRegex(RuntimeError, 'uniquely'):
+            qemu_mmc.find_device(second + [first[2]], 512, 7818182656)
+        with self.assertRaisesRegex(RuntimeError, 'uniquely'):
+            qemu_mmc.find_device(second, 4096, 7818182656)
+
     def test_persistence_oracle(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as temporary:
             fixture = qemu_mmc.prepare(Path(temporary))
