@@ -72,12 +72,22 @@ map_mem(void **virtualAddr, phys_addr_t _phy, size_t size, uint32 protection,
 static int
 bus_alloc_irq_resource(device_t dev, struct resource *res)
 {
-	uint8 irq = pci_read_config(dev, PCI_interrupt_line, 1);
-	if (irq == 0 || irq == 0xff)
-		return -1;
+	uint32 irq;
+	if (gPciIntx != NULL) {
+		pci_info* info = get_device_pci_info(dev);
+		if (info == NULL || gPciIntx->get_irq(info->bus, info->device,
+				info->function, &irq) != B_OK || irq > INT32_MAX) {
+			return -1;
+		}
+	} else {
+		irq = pci_read_config(dev, PCI_interrupt_line, 1);
+		if (irq == 0 || irq == 0xff)
+			return -1;
+	}
 
 	res->r_bustag = BUS_SPACE_TAG_IRQ;
 	res->r_bushandle = irq;
+	device_printf(dev, "legacy interrupt IRQ %" B_PRIu32 "\n", irq);
 	return 0;
 }
 
@@ -366,7 +376,12 @@ free_internal_intr(struct internal_intr *intr)
 	if (intr->sem >= B_OK) {
 		status_t status;
 		delete_sem(intr->sem);
-		wait_for_thread(intr->thread, &status);
+		if (intr->thread >= B_OK) {
+			// Setup can fail before the worker was resumed. Let it observe the
+			// deleted semaphore instead of waiting forever for a suspended thread.
+			resume_thread(intr->thread);
+			wait_for_thread(intr->thread, &status);
+		}
 	}
 
 	free(intr);
@@ -377,6 +392,13 @@ int
 bus_setup_intr(device_t dev, struct resource *res, int flags,
 	driver_filter_t* filter, driver_intr_t handler, void *arg, void **_cookie)
 {
+	if (_cookie == NULL)
+		return EINVAL;
+	*_cookie = NULL;
+	if (res == NULL || res->r_type != SYS_RES_IRQ || res->r_bushandle > INT32_MAX
+		|| (filter == NULL && handler == NULL)) {
+		return EINVAL;
+	}
 	struct internal_intr *intr = (struct internal_intr *)malloc(
 		sizeof(struct internal_intr));
 	char semName[64];
@@ -393,6 +415,7 @@ bus_setup_intr(device_t dev, struct resource *res, int flags,
 	intr->flags = flags;
 	intr->sem = -1;
 	intr->thread = -1;
+	intr->handling = 0;
 
 	if (filter != NULL) {
 		status = install_io_interrupt_handler(intr->irq,
@@ -444,8 +467,18 @@ bus_setup_intr(device_t dev, struct resource *res, int flags,
 		free_internal_intr(intr);
 		return status;
 	}
+	if (res->r_bustag == BUS_SPACE_TAG_IRQ && gPciIntx != NULL) {
+		pci_info* info = get_device_pci_info(dev);
+		if (info == NULL || gPciIntx->set_enabled(info->bus, info->device,
+				info->function, true) != B_OK) {
+			device_printf(dev, "enabling legacy interrupt route failed\n");
+			bus_teardown_intr(dev, res, intr);
+			return ENODEV;
+		}
+	}
 
-	resume_thread(intr->thread);
+	if (intr->thread >= B_OK)
+		resume_thread(intr->thread);
 
 	*_cookie = intr;
 	return 0;
@@ -460,6 +493,17 @@ bus_teardown_intr(device_t dev, struct resource *res, void *arg)
 		return -1;
 
 	struct root_device_softc *root = (struct root_device_softc *)dev->root->softc;
+	if (res->r_bustag == BUS_SPACE_TAG_IRQ && gPciIntx != NULL) {
+		pci_info* info = &root->pci_info;
+		status_t status = gPciIntx->set_enabled(info->bus, info->device,
+			info->function, false);
+		if (status != B_OK) {
+			// Removing a handler while its level route is still enabled can
+			// storm the CPU or call into freed device state. Stop at the failure.
+			panic("bus_teardown_intr: cannot mask IRQ %d: %" B_PRId32,
+				intr->irq, status);
+		}
+	}
 
 	if (root->is_msi || root->is_msix) {
 		// disable msi generation

@@ -154,6 +154,23 @@ static void checkFailures()
 		nullptr, nullptr, 4096, 1, 4096, 0, nullptr, nullptr, &bad) == EINVAL);
 	assert(bad == nullptr);
 }
+
+static void checkUnrestrictedParent()
+{
+	bus_dma_tag_t parent;
+	assert(bus_dma_tag_create(nullptr, 1, 0, 0xffffffff, UINT64_MAX,
+		nullptr, nullptr, 0xffffffff, BUS_SPACE_UNRESTRICTED, 0xffffffff,
+		0, nullptr, nullptr, &parent) == 0);
+	assert(parent != nullptr && parent->maxsegments == INT32_MAX);
+	bus_dma_tag_t child;
+	assert(bus_dma_tag_create(parent, 1, 0, UINT64_MAX, UINT64_MAX,
+		nullptr, nullptr, 16384, 1, 16384, 0, nullptr, nullptr, &child) == 0);
+	assert(child->lowaddr == 0xffffffff && child->highaddr == UINT64_MAX);
+	assert(!_validate_address(child, UINT64_C(0x100000000), 4096));
+	assert(_validate_address(child, UINT64_C(0xfffff000), 4096));
+	assert(bus_dma_tag_destroy(child) == 0);
+	assert(bus_dma_tag_destroy(parent) == 0);
+}
 static void checkDescriptor()
 {
 	auto t = tag(4096);
@@ -336,7 +353,8 @@ static void checkOpenBSD()
 
 int main()
 {
-	checkFailures(); checkDescriptor(); checkPacket(); checkRollback(); checkIntervals(); checkOpenBSD();
+	checkFailures(); checkUnrestrictedParent(); checkDescriptor(); checkPacket();
+	checkRollback(); checkIntervals(); checkOpenBSD();
 	assert(sDMA.empty() && sHeap.empty());
 	printf("bus_dma: allocation, rings, packet copies, rollback and 50000 interval checks passed\n");
 }

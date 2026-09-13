@@ -22,6 +22,7 @@ typedef uint32_t uint32;
 #define PAGESIZE B_PAGE_SIZE
 #define PAGE_MASK (B_PAGE_SIZE - 1)
 #define BUS_SPACE_MAXADDR UINT64_MAX
+#define BUS_SPACE_UNRESTRICTED (~0)
 #define B_PRIxPHYSADDR PRIx64
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))

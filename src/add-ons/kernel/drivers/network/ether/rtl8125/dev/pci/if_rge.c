@@ -241,10 +241,13 @@ rge_attach(struct device *parent, struct device *self, void *aux)
 #ifdef __FreeBSD_version
 	sc->sc_dev = dev;
 	sc->sc_dmat = bus_get_dma_tag(sc->sc_dev);
-	bus_dma_tag_create(sc->sc_dmat, 1, 0,
+	if (bus_dma_tag_create(sc->sc_dmat, 1, 0,
 		BUS_SPACE_MAXADDR_32BIT, BUS_SPACE_MAXADDR, NULL, NULL,
 		BUS_SPACE_MAXSIZE_32BIT, BUS_SPACE_UNRESTRICTED, BUS_SPACE_MAXSIZE_32BIT, 0, NULL, NULL,
-		&sc->sc_dmat);
+		&sc->sc_dmat) != 0) {
+		device_printf(dev, "cannot create DMA parent tag\n");
+		return ENOMEM;
+	}
 	pci_enable_busmaster(sc->sc_dev);
 
 	if_alloc_inplace(ifp, IFT_ETHER);
@@ -282,6 +285,9 @@ rge_attach(struct device *parent, struct device *self, void *aux)
 
 	sc->sc_queues = q;
 	sc->sc_nqueues = 1;
+	/* Keep a retained firmware interrupt quiescent throughout attachment. */
+	RGE_WRITE_4(sc, RGE_IMR, 0);
+	(void)RGE_READ_4(sc, RGE_IMR);
 
 	/*
 	 * Allocate interrupt.
@@ -289,25 +295,13 @@ rge_attach(struct device *parent, struct device *self, void *aux)
 	if (pci_intr_map_msix(pa, 0, &ih) == 0 ||
 	    pci_intr_map_msi(pa, &ih) == 0)
 		sc->rge_flags |= RGE_FLAG_MSI;
-#ifdef __HAIKU__
-	else {
-#else
 	else if (pci_intr_map(pa, &ih) != 0) {
-#endif
 		printf(": couldn't map interrupt\n");
 		goto fail;
 	}
 	intrstr = pci_intr_string(pc, ih);
-	sc->sc_ih = pci_intr_establish(pc, ih, IPL_NET | IPL_MPSAFE, rge_intr,
-		sc, DEVNAME(sc));
-	if (sc->sc_ih == NULL) {
-		printf(": couldn't establish interrupt");
-		if (intrstr != NULL)
-			printf(" at %s", intrstr);
-		printf("\n");
-		goto fail;
-	}
-	printf(": %s", intrstr);
+	if (intrstr != NULL)
+		printf(": %s", intrstr);
 
 #ifndef __FreeBSD_version
 	sc->sc_dmat = pa->pa_dmat;
@@ -413,6 +407,22 @@ rge_attach(struct device *parent, struct device *self, void *aux)
 	ifmedia_set(&sc->sc_media, IFM_ETHER | IFM_AUTO);
 	sc->sc_media.ifm_media = sc->sc_media.ifm_cur->ifm_media;
 
+	/* All fallible hardware/DMA initialization precedes handler publication. */
+	RGE_WRITE_4(sc, RGE_IMR, 0);
+	(void)RGE_READ_4(sc, RGE_IMR);
+#ifdef __HAIKU__
+	/* Serialize the worker with the Giant-protected interface, timer and task
+	 * callbacks used by Haiku's OpenBSD compatibility layer. */
+	sc->sc_ih = pci_intr_establish(pc, ih, IPL_NET, rge_intr, sc, DEVNAME(sc));
+#else
+	sc->sc_ih = pci_intr_establish(pc, ih, IPL_NET | IPL_MPSAFE, rge_intr,
+		sc, DEVNAME(sc));
+#endif
+	if (sc->sc_ih == NULL) {
+		printf(": couldn't establish interrupt\n");
+		goto fail;
+	}
+
 	if_attach(ifp);
 	ether_ifattach(ifp, eaddr);
 
@@ -425,6 +435,15 @@ rge_attach(struct device *parent, struct device *self, void *aux)
 	return 0;
 
 fail:
+	if (sc->rge_bsize != 0) {
+		RGE_WRITE_4(sc, RGE_IMR, 0);
+		(void)RGE_READ_4(sc, RGE_IMR);
+	}
+	pci_write_config(sc->sc_dev, PCI_COMMAND_STATUS_REG,
+		pci_read_config(sc->sc_dev, PCI_COMMAND_STATUS_REG, 2)
+			& ~PCI_COMMAND_MASTER_ENABLE, 2);
+	if (sc->rge_flags & RGE_FLAG_MSI)
+		pci_release_msi(sc->sc_dev);
 	if_free_inplace(ifp);
 	return -1;
 #endif
@@ -475,6 +494,29 @@ rge_activate(struct device *self, int act)
 }
 #endif
 
+#ifdef __HAIKU__
+int
+HAIKU_CHECK_DISABLE_INTERRUPTS(device_t dev)
+{
+	struct rge_softc *sc = device_get_softc(dev);
+	uint32_t status = RGE_READ_4(sc, RGE_ISR);
+	if (status == 0 || status == 0xffffffff)
+		return 0;
+	uint32_t mask = RGE_READ_4(sc, RGE_IMR);
+	if (mask == 0xffffffff || (status & mask) == 0)
+		return 0;
+	/* A level interrupt must be deasserted before scheduling its worker. */
+	RGE_WRITE_4(sc, RGE_IMR, 0);
+	(void)RGE_READ_4(sc, RGE_IMR);
+	uint32_t count = (uint32_t)atomic_add(&sc->rge_haiku_intr_count, 1) + 1;
+	if (count <= 65536 && (count & (count - 1)) == 0) {
+		device_printf(dev, "%s interrupt count %u status %#x mask %#x\n",
+			(sc->rge_flags & RGE_FLAG_MSI) ? "MSI" : "INTx", count, status, mask);
+	}
+	return 1;
+}
+#endif
+
 int
 rge_intr(void *arg)
 {
@@ -491,8 +533,10 @@ rge_intr(void *arg)
 	RGE_WRITE_4(sc, RGE_IMR, 0);
 
 	if (!(sc->rge_flags & RGE_FLAG_MSI)) {
-		if ((RGE_READ_4(sc, RGE_ISR) & sc->rge_intrs) == 0)
+		if ((RGE_READ_4(sc, RGE_ISR) & sc->rge_intrs) == 0) {
+			RGE_WRITE_4(sc, RGE_IMR, sc->rge_intrs);
 			return (0);
+		}
 	}
 
 	status = RGE_READ_4(sc, RGE_ISR);

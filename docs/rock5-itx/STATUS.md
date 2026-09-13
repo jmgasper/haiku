@@ -2386,3 +2386,16 @@ not native Ethernet qualification. The physical SSD still has its accepted
 `+94` installation and ICU setting, and the ROCK remains in ROOBI. See
 [NETWORK-DMA.md](NETWORK-DMA.md) for evidence, the Intel fixture's limitations
 and the remaining native interrupt-routing work.
+
+## Native Ethernet interrupt candidate
+
+The next candidate adds a separate 32-bit PCI INTx module and an opt-in RK3588
+provider for the two onboard RTL8125 endpoints, GIC IRQs 277 and 282. It validates
+the retained firmware resources and enables INTA only after handler installation.
+The Realtek top half now masks level interrupts before scheduling its worker;
+setup failure cleanup also handles suspended workers. Review additionally found
+and corrected rejection of RTL8125's unrestricted parent DMA tag, which had
+silently lost the driver's 32-bit address ceiling. All 77 host checks passed,
+and ARM64 component compilation passed. Full-image, QEMU and native qualification
+remain pending. The SSD and recovery setup are unchanged. See
+[ETHERNET.md](ETHERNET.md) for implementation, evidence and remaining limits.

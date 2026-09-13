@@ -103,10 +103,13 @@ bus_dma_tag_create(bus_dma_tag_t parent, bus_size_t alignment, bus_addr_t bounda
 	if (dmat == NULL)
 		return EINVAL;
 	*dmat = NULL;
+	// Parent tags may describe an unrestricted scatter/gather count without
+	// ever allocating a map themselves (RTL8125 does this for its DMA ceiling).
+	if (nsegments == (int)BUS_SPACE_UNRESTRICTED)
+		nsegments = INT32_MAX;
 	if (alignment == 0 || (alignment & (alignment - 1)) != 0
 		|| (boundary != 0 && (boundary & (boundary - 1)) != 0)
 		|| maxsegsz == 0 || maxsize == 0 || nsegments <= 0
-		|| (size_t)nsegments > SIZE_MAX / sizeof(bus_dma_segment_t)
 		|| lowaddr > highaddr) {
 		return EINVAL;
 	}
@@ -192,7 +195,7 @@ _create_map(bus_dma_tag_t dmat, int flags, bus_dmamap_t* mapp, bool noBounce)
 	if (mapp == NULL)
 		return EINVAL;
 	*mapp = NULL;
-	if (dmat == NULL)
+	if (dmat == NULL || dmat->maxsegments > SIZE_MAX / sizeof(bus_dma_segment_t))
 		return EINVAL;
 	*mapp = (bus_dmamap_t)kernel_malloc(sizeof(**mapp), M_DEVBUF,
 		M_ZERO | M_NOWAIT);

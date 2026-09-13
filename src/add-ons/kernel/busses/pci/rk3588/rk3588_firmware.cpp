@@ -5,27 +5,61 @@
 
 #include <bus/FDT.h>
 #include <bus/PCI.h>
+#include <bus/PCIInterrupts.h>
 #include <arch/generic/msi.h>
 #include <driver_settings.h>
 #include <KernelExport.h>
 #include <AutoDeleterDrivers.h>
 #include <AutoDeleterOS.h>
+#include <util/AutoLock.h>
 #include <new>
 #include <string.h>
 
 #include "firmware_profile.h"
+#include "intx_profile.h"
 
 using namespace RK3588Firmware;
 
 #define DRIVER_NAME "busses/pci/rk3588_firmware/driver_v1"
+#define INTX_MODULE_NAME "busses/pci/rk3588_firmware/intx_v1"
+
+static const uint32 kLegacyMask = 0x1c;
+
+static uint32
+ReadAPB(volatile uint8* base, uint32 offset)
+{
+	uint32 value = *(volatile uint32*)(base + offset);
+	memory_full_barrier();
+	return value;
+}
+
+static void
+WriteAPB(volatile uint8* base, uint32 offset, uint32 value)
+{
+	memory_full_barrier();
+	*(volatile uint32*)(base + offset) = value;
+	memory_full_barrier();
+}
 
 static device_manager_info* sDeviceManager;
 
 struct Controller {
+	~Controller()
+	{
+		if (intxManaged)
+			WriteAPB(apb, kLegacyMask, 0x000f0000 | originalIntxMask);
+	}
+
 	AreaDeleter rootArea;
 	AreaDeleter endpointArea;
+	AreaDeleter apbArea;
 	volatile uint8* config[2]{};
+	volatile uint8* apb = NULL;
 	pci_resource_range memory{};
+	uint32 intxIRQ = 0;
+	uint32 originalIntxMask = 0;
+	bool intxManaged = false;
+	spinlock intxLock = B_SPINLOCK_INITIALIZER;
 };
 
 
@@ -58,6 +92,117 @@ ProfileEnabled(const PortProfile& port)
 	bool enabled = ProfileAllowsPort(profile, port);
 	unload_driver_settings(settings);
 	return enabled;
+}
+
+
+static bool
+IntxRequested(const PortProfile& port)
+{
+	IntxProfile profile;
+	if (!FindIntxProfile(port.segment, profile))
+		return false;
+	void* settings = load_driver_settings("rk3588_pcie");
+	if (settings == NULL)
+		return false;
+	bool enabled = get_driver_boolean_parameter(settings, "legacy_interrupts", false, false);
+	unload_driver_settings(settings);
+	return enabled;
+}
+
+
+static int
+StringIndex(fdt_device_module_info* fdt, fdt_device* device, const char* property,
+	const char* value)
+{
+	int length;
+	const char* data = (const char*)fdt->get_prop(device, property, &length);
+	for (int index = 0; data != NULL && length > 0; index++) {
+		const char* end = (const char*)memchr(data, 0, length);
+		if (end == NULL)
+			return -1;
+		if (strcmp(data, value) == 0)
+			return index;
+		length -= end - data + 1;
+		data = end + 1;
+	}
+	return -1;
+}
+
+
+static status_t
+InitIntx(Controller* controller, device_node* parent, const PortProfile& port)
+{
+	if (!IntxRequested(port))
+		return B_OK;
+	IntxProfile profile;
+	if (!FindIntxProfile(port.segment, profile))
+		return B_NOT_SUPPORTED;
+	fdt_device_module_info* fdt;
+	fdt_device* device;
+	if (sDeviceManager->get_driver(parent, (driver_module_info**)&fdt,
+			(void**)&device) != B_OK) {
+		return B_NOT_SUPPORTED;
+	}
+	// Match the root's named parent interrupt. The obsolete child node in this
+	// firmware DT has an inconsistent edge flag; Linux also uses the root name.
+	if (StringIndex(fdt, device, "reg-names", "apb") != 1
+		|| StringIndex(fdt, device, "interrupt-names", "legacy") != 3
+		|| fdt->get_prop(device, "interrupts-extended", NULL) != NULL) {
+		return B_NOT_SUPPORTED;
+	}
+	uint64 base, size, irq;
+	device_node* gicNode;
+	int length;
+	const uint32* interrupts = (const uint32*)fdt->get_prop(device, "interrupts", &length);
+	if (!fdt->get_reg(device, 1, &base, &size) || interrupts == NULL || length != 80
+		|| !fdt->get_interrupt(device, 3, &gicNode, &irq) || gicNode == NULL) {
+		return B_NOT_SUPPORTED;
+	}
+	fdt_device_module_info* gic;
+	fdt_device* gicDevice;
+	uint64 gicBase, gicSize;
+	if (sDeviceManager->get_driver(gicNode, (driver_module_info**)&gic,
+			(void**)&gicDevice) != B_OK
+		|| !HasString(gic, gicDevice, "compatible", "arm,gic-v3")
+		|| !gic->get_reg(gicDevice, 0, &gicBase, &gicSize)) {
+		return B_NOT_SUPPORTED;
+	}
+	const uint32* cells = (const uint32*)gic->get_prop(gicDevice, "#interrupt-cells", &length);
+	if (cells == NULL || length != 4)
+		return B_NOT_SUPPORTED;
+	uint32 specifier[4];
+	for (unsigned i = 0; i < 4; i++)
+		specifier[i] = B_BENDIAN_TO_HOST_INT32(interrupts[12 + i]);
+	if (!IntxResourcesMatch(profile, base, size, specifier,
+			B_BENDIAN_TO_HOST_INT32(cells[0]), irq, gicBase)
+		|| !ValidIntxEndpoint(1, 0, 0, controller->config[1][PCI_interrupt_pin])) {
+		return B_NOT_SUPPORTED;
+	}
+	controller->apbArea.SetTo(map_physical_memory("RK3588 PCIe INTx", base,
+		B_PAGE_SIZE, B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY,
+		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, (void**)&controller->apb));
+	if (controller->apbArea.Get() < B_OK)
+		return controller->apbArea.Get();
+	uint32 mode = ReadAPB(controller->apb, 0);
+	uint32 enable = ReadAPB(controller->apb, 0x194);
+	uint32 mask = ReadAPB(controller->apb, kLegacyMask);
+	uint32 status = ReadAPB(controller->apb, 8);
+	dprintf("rk3588_pcie: segment %u INTx APB %#" B_PRIx64
+		" mode %#" B_PRIx32 " enable %#" B_PRIx32 " mask %#" B_PRIx32
+		" status %#" B_PRIx32 " IRQ %" B_PRIu32 "\n",
+		port.segment, base, mode, enable, mask, status, profile.irq);
+	// EN_LEGACY is marked reserved in the TRM: inspect, never write it.
+	if ((mode & 0xf0) != 0x40 || (enable & 1) == 0 || mask == UINT32_MAX)
+		return B_NOT_SUPPORTED;
+	controller->originalIntxMask = mask & 0xf;
+	controller->intxManaged = true;
+	// Firmware leaves these unmasked. Hold all four receive pins masked until
+	// a driver installs its handler; only INTA can subsequently be enabled.
+	WriteAPB(controller->apb, kLegacyMask, 0x000f000f);
+	if ((ReadAPB(controller->apb, kLegacyMask) & 0xf) != 0xf)
+		return B_IO_ERROR;
+	controller->intxIRQ = profile.irq;
+	return B_OK;
 }
 
 
@@ -226,18 +371,20 @@ RegisterDevice(device_node* parent)
 			}
 		}
 	}
-	device_attr attrs[] = {
+	device_attr attrs[7] = {
 		{ B_DEVICE_PRETTY_NAME, B_STRING_TYPE,
 			{.string = "RK3588 EDK2 v1.1 PCIe host"} },
 		{ B_DEVICE_FIXED_CHILD, B_STRING_TYPE,
 			{.string = "bus_managers/pci/root/driver_v1"} },
-		{ B_PCI_MSI_CONTROLLER_ADDRESS, B_UINT64_TYPE, {.ui64 = 0xfe660000} },
-		{ B_PCI_MSI_REQUESTER_BASE, B_UINT32_TYPE, {.ui32 = 0} },
-		{ B_PCI_MSI_REQUESTER_COUNT, B_UINT32_TYPE, {.ui32 = 0x200} },
-		{}
+		// Even an opt-out controller advertises its provider, so consumers never
+		// treat a retained firmware interrupt-line byte as a valid GIC route.
+		{ B_PCI_INTX_CONTROLLER_MODULE, B_STRING_TYPE, {.string = INTX_MODULE_NAME} }
 	};
-	if (!samsungMsi)
-		attrs[2] = {};
+	if (samsungMsi) {
+		attrs[3] = { B_PCI_MSI_CONTROLLER_ADDRESS, B_UINT64_TYPE, {.ui64 = 0xfe660000} };
+		attrs[4] = { B_PCI_MSI_REQUESTER_BASE, B_UINT32_TYPE, {.ui32 = 0} };
+		attrs[5] = { B_PCI_MSI_REQUESTER_COUNT, B_UINT32_TYPE, {.ui32 = 0x200} };
+	}
 	return sDeviceManager->register_node(parent, DRIVER_NAME, attrs, NULL, NULL);
 }
 
@@ -294,11 +441,17 @@ InitDriver(device_node* node, void** cookie)
 	controller->memory.host_address = memoryBase;
 	controller->memory.pci_address = memoryBase;
 	controller->memory.size = memorySize;
+	status_t status = InitIntx(controller.Get(), parent.Get(), *port);
+	if (status != B_OK) {
+		dprintf("rk3588_pcie: segment %u INTx profile rejected: %" B_PRId32 "\n",
+			port->segment, status);
+		return status;
+	}
 	dprintf("rk3588_pcie: EDK2 v1.1 segment %u, buses 0..1, %s; "
 		"MMIO %#" B_PRIx64 "+%#" B_PRIx64 "; retaining firmware PHY/clocks/iATU, "
-		"identity noncoherent DMA; INTx unavailable, MSI provider %s\n",
+		"identity noncoherent DMA; INTx IRQ %" B_PRIu32 ", MSI provider %s\n",
 		port->segment, port->endpointName, memoryBase, memorySize,
-		msi_supported() ? "available" : "unavailable");
+		controller->intxIRQ, msi_supported() ? "available" : "unavailable");
 	*cookie = controller.Detach();
 	return B_OK;
 }
@@ -367,6 +520,44 @@ static pci_controller_module_info sController = {
 	.finalize = [](void*) { return B_OK; }
 };
 
+static status_t
+GetIntxIRQ(void* cookie, uint8 bus, uint8 device, uint8 function, uint8 pin, uint32* irq)
+{
+	if (irq == NULL)
+		return B_BAD_VALUE;
+	*irq = 0;
+	Controller* controller = (Controller*)cookie;
+	if (!ValidIntxEndpoint(bus, device, function, pin) || controller->intxIRQ == 0)
+		return B_NOT_SUPPORTED;
+	*irq = controller->intxIRQ;
+	return B_OK;
+}
+
+
+static pci_intx_controller_module_info sIntxController = {
+	.info = { .name = INTX_MODULE_NAME },
+	.get_irq = GetIntxIRQ,
+	.set_enabled = [](void* cookie, uint8 bus, uint8 device, uint8 function,
+			uint8 pin, bool enabled) {
+		uint32 irq;
+		status_t status = GetIntxIRQ(cookie, bus, device, function, pin, &irq);
+		if (status != B_OK)
+			return status;
+		Controller* controller = (Controller*)cookie;
+		BPrivate::InterruptsSpinLocker locker(controller->intxLock);
+		WriteAPB(controller->apb, kLegacyMask, enabled ? 0x00010000 : 0x00010001);
+		uint32 mask = ReadAPB(controller->apb, kLegacyMask) & 0xf;
+		if (mask != (enabled ? 0xeu : 0xfu)) {
+			WriteAPB(controller->apb, kLegacyMask, 0x000f000f);
+			return B_IO_ERROR;
+		}
+		dprintf("rk3588_pcie: INTx IRQ %" B_PRIu32 " %s, receive mask %#" B_PRIx32 "\n",
+			irq, enabled ? "enabled" : "disabled", mask);
+		return B_OK;
+	}
+};
+
+
 _EXPORT module_dependency module_dependencies[] = {
 	{ B_DEVICE_MANAGER_MODULE_NAME, (module_info**)&sDeviceManager },
 	{}
@@ -374,5 +565,6 @@ _EXPORT module_dependency module_dependencies[] = {
 
 _EXPORT module_info* modules[] = {
 	(module_info*)&sController,
+	(module_info*)&sIntxController,
 	NULL
 };

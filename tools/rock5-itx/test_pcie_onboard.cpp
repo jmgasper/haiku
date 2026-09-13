@@ -5,6 +5,7 @@
 #include <initializer_list>
 
 #include "firmware_profile.h"
+#include "intx_profile.h"
 
 using namespace RK3588Firmware;
 
@@ -83,5 +84,40 @@ main(int argc, char** argv)
 		assert(!MemoryBarMatches(endpoint, first, 0, 3, base, size));
 	}
 	assert(!FindPort(0xa40800000ULL) && !FindPort(0xa40001000ULL));
+	for (unsigned segment = 0; segment < 8; segment++) {
+		IntxProfile profile;
+		bool supported = FindIntxProfile(segment, profile);
+		assert(supported == (segment == 3 || segment == 4));
+		if (!supported)
+			continue;
+		uint32_t specifier[] = {0, segment == 3 ? 245u : 250u, 4, 0};
+		uint64_t apb = segment == 3 ? 0xfe180000 : 0xfe190000;
+		uint32_t irq = segment == 3 ? 277 : 282;
+		assert(irq > UINT8_MAX);
+		assert(IntxResourcesMatch(profile, apb, 0x10000, specifier, 4, irq, 0xfe600000));
+		assert(!IntxResourcesMatch(profile, apb, 0x10000, nullptr, 4, irq, 0xfe600000));
+		assert(!IntxResourcesMatch(profile, apb, 0x10000, specifier, 3, irq, 0xfe600000));
+		assert(!IntxResourcesMatch(profile, apb + 0x10000, 0x10000, specifier, 4,
+			irq, 0xfe600000));
+		assert(!IntxResourcesMatch(profile, apb, 0x10000, specifier, 4,
+			(uint8_t)irq, 0xfe600000));
+		assert(!IntxResourcesMatch(profile, apb, 0x10000, specifier, 4, irq, 0xfe640000));
+		assert(!IntxResourcesMatch(profile, apb, 0x1000, specifier, 4, irq, 0xfe600000));
+		for (unsigned cell = 0; cell < 4; cell++) {
+			specifier[cell] ^= 1;
+			assert(!IntxResourcesMatch(profile, apb, 0x10000, specifier, 4, irq, 0xfe600000));
+			specifier[cell] ^= 1;
+		}
+	}
+	for (unsigned bus = 0; bus < 4; bus++) {
+		for (unsigned device = 0; device < 32; device++) {
+			for (unsigned function = 0; function < 8; function++) {
+				for (unsigned pin = 0; pin <= 5; pin++) {
+					assert(ValidIntxEndpoint(bus, device, function, pin)
+						== (bus == 1 && device == 0 && function == 0 && pin == 1));
+				}
+			}
+		}
+	}
 	puts("ROCK5_PCIE_ONBOARD_PROFILE_PASS functions=8 layouts=pass rejection=pass");
 }

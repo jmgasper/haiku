@@ -14,6 +14,7 @@
 
 #include <KernelExport.h>
 #include <drivers/PCI.h>
+#include <bus/PCIInterrupts.h>
 
 #include <util/list.h>
 
@@ -52,6 +53,7 @@ enum {
 
 extern struct net_buffer_module_info *gBufferModule;
 extern pci_module_info *gPci;
+extern pci_intx_module_info* gPciIntx;
 
 
 static inline void

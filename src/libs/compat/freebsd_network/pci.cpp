@@ -23,6 +23,7 @@ extern "C" {
 
 
 pci_module_info *gPci;
+pci_intx_module_info* gPciIntx;
 
 
 status_t
@@ -34,6 +35,9 @@ init_pci()
 	status_t status = get_module(B_PCI_MODULE_NAME, (module_info **)&gPci);
 	if (status != B_OK)
 		return status;
+	// Optional for compatibility with kernels that only export the original
+	// PCI ABI. Hosts advertising a provider are resolved by the new module.
+	get_module(B_PCI_INTX_MODULE_NAME, (module_info**)&gPciIntx);
 
 	return B_OK;
 }
@@ -42,8 +46,14 @@ init_pci()
 void
 uninit_pci()
 {
-	if (gPci != NULL)
+	if (gPciIntx != NULL) {
+		put_module(B_PCI_INTX_MODULE_NAME);
+		gPciIntx = NULL;
+	}
+	if (gPci != NULL) {
 		put_module(B_PCI_MODULE_NAME);
+		gPci = NULL;
+	}
 }
 
 
