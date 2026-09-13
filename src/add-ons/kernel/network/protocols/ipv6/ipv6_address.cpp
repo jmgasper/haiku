@@ -235,7 +235,7 @@ ipv6_equal_masked_addresses(const sockaddr *a, const sockaddr *b,
 
 /*!	Routing utility function: determines the least significant bit that is set
 	in the given \a mask.
-	\return the number of the first bit that is set (0-32, where 32 means
+	\return the number of the first bit that is set (0-128, where 128 means
 		that there's no bit set in the mask).
 */
 static int32
@@ -246,11 +246,14 @@ ipv6_first_mask_bit(const sockaddr *_mask)
 
 	const uint8 *pmask = ((const sockaddr_in6 *)_mask)->sin6_addr.s6_addr;
 	for (uint8 i = 0; i < sizeof(in6_addr); ++i) {
-		if (pmask[i] == 0xff)
+		// The routing table sorts smaller values first. Count from the
+		// least significant end, as IPv4 does, so longer prefixes win.
+		uint8 byte = pmask[sizeof(in6_addr) - 1 - i];
+		if (byte == 0)
 			continue;
 
 		for (uint8 bit = 0; bit < 8; bit++) {
-			if ((pmask[i] & (1 << (7 - bit))) == 0)
+			if ((byte & (1 << bit)) != 0)
 				return i * 8 + bit;
 		}
 	}
