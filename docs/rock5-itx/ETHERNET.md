@@ -1,10 +1,12 @@
 # ROCK 5 ITX Ethernet bring-up
 
 Both onboard RTL8125 controllers now attach and receive interrupts under the
-retained EDK2 v1.1 firmware. Port 1 has passed bounded, checksum-verified transfers
-at a negotiated 1 Gbit/s link speed, including normal reboot and interface
-reopening. [NETWORK-DMA.md](NETWORK-DMA.md) records the prerequisite DMA work
-and successful emulated Intel traffic. Full Ethernet acceptance remains open.
+retained EDK2 v1.1 firmware. Each port has passed bounded, checksum-verified
+transfers in the `+106` test image: port 0 at a negotiated 2.5 Gbit/s and port 1
+at 1 Gbit/s. Port 0 also passed after normal reboot; an initial firmware stall
+required one reset and remains unresolved. [NETWORK-DMA.md](NETWORK-DMA.md)
+records the prerequisite DMA work and emulated Intel traffic. Full Ethernet
+acceptance remains open, and the SSD installation remains at `+94`.
 
 ## Legacy interrupt candidate
 
@@ -219,7 +221,54 @@ and prevents unknown extended subtypes from aliasing generic `auto`. The host
 regression compiles the actual baud-rate table/function and ifconfig formatter
 with Haiku's media definitions. It checks the captured value, existing and
 extended rates, unrelated flags, unknown subtypes, name parsing and wireless
-formatting. The corrected image still requires build and QEMU/native gates.
+formatting.
+
+## Corrected reporting and both-port image
+
+Source `7a3f5c090b6d156172b5a04baae81273f1bd529c` built as `hrev60097+106`
+in `artifacts/build-20260913T062714Z.log`. All 78 host checks passed in
+`tmp/host-checks-network-media.log`. The private image SHA-256 is
+`9af60264c6e96f5566cfa697c56ddcb60111143c1912c32008e5ae8bef9b6b83`.
+QEMU `qemu-shell/20260913T062935Z-3f3b4b` passed both boot/transfer/storage gates,
+normal reboot and shutdown; packet review counted 39,401 frames and over
+16 MiB of TCP payload in each direction on the PCI fixture.
+
+Native session `interactive/20260913T063242Z-e0d8da` initially stalled after the
+UEFI v1.1 banner, with a blank display and no Haiku loader marker. Its first
+4536 serial bytes and screenshot were preserved in `first-firmware-stall.*` and
+`frame-014.jpg`. One controlled reset reached Haiku. This first attempt remains
+a firmware/boot failure with an unidentified cause; it does not disappear from
+the qualification because the subsequent driver checks passed.
+
+Both successful Haiku boots passed twelve component hashes, including `ifconfig`
+and Network preferences, three settings hashes, USB control and the short
+eight-worker memory check. The kernel reported port 0's media `0x900825` at
+2500000000 bit/s. `ifconfig` and Network preferences displayed
+`2.5 GBit, 2500BASE-T`; both graphical views were inspected in `frame-039.jpg`
+and `frame-071.jpg`. Port 1 retained its 1 Gbit/s report. Both INTx routes and
+ITS1 NVMe initialized on both boots. The normal Haiku reboot completed without
+another manual reset, and the first downloaded file retained its checksum.
+
+| Native transfer phase | Evidence under `artifacts/native-ethernet-transfer` |
+| --- | --- |
+| Port 0, first successful boot | `20260913T064117Z-4ee823` |
+| Port 0, after normal reboot | `20260913T064549Z-564aa9` |
+| Port 1, same image after normal reboot | `20260913T064906Z-8a926d` |
+
+Each phase passed an 8 MiB round trip with guest and independent workstation
+hashes plus truncated-input rejection. The other Ethernet interface was disabled
+for each phase; observed source addresses and per-interface byte counters also
+identify the traffic path. No error/drop counter grew during transfers. These
+are individual-port tests with both cables installed, not simultaneous traffic
+or a throughput benchmark. The original port's prior interface-down receive
+error remained visible; its counter did not increase during its transfer.
+
+`state/native-network-media-qualified.json` retains the reviewed checks and
+the initial failed firmware attempt. UART capture and ROOBI recovery completed;
+NanoKVM did not restart and its watchdog disarmed. The SSD was not mounted or
+updated. Simultaneous traffic, static IPv4/IPv6, sustained mixed load, cable
+hotplug, error recovery and throughput remain open, along with the earlier
+`+98` QEMU USB timeout and `+88` native startup stall.
 
 ## References
 

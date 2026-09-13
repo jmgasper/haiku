@@ -12,10 +12,11 @@ firmware supports it.
 | NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; staged downloads passed before/after native reboot, but simultaneous USB/Ethernet relay still causes outages; the latest outage did not recover through the hardware watchdog |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | Seventy-seven host checks pass locally, including GIC MBI firmware/register admission and MSI vector allocation/reuse, onboard PCI host resource/profile rejection and root-link rejection, native-input dependency preflight, strict BFS report parsing, SSH controller-input isolation, explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
+| Automated controls | Seventy-eight host checks pass locally, including GIC MBI firmware/register admission and MSI vector allocation/reuse, onboard PCI host resource/profile rejection and root-link rejection, native-input dependency preflight, strict BFS report parsing, SSH controller-input isolation, explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
 | Native Haiku on ROCK | All eight CPUs start; Tracker/Deskbar, NanoKVM input, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; Samsung NVMe bounded raw I/O has independent Linux hashes; the 238 GiB SSD installation has passed large-file persistence after normal reboot and shutdown/startup; the installed NVMe driver has passed ITS1 MSI-X, filesystem TRIM and subsequent boot readback; the latest hrev60097+94 SSD update includes launcher and terminal fixes and has passed two installed boot/readback/normal-reboot cycles; the earlier startup stall, intermittent USB control failures and sustained acceptance remain open |
+| Onboard Ethernet | The +106 USB test image passes individual 8 MiB round trips on both RTL8125 ports, at negotiated links of 2.5 Gbit/s and 1 Gbit/s; port 0 also passes after normal reboot and reports correctly in Network preferences. One initial firmware stall required a reset. Simultaneous traffic, throughput, sustained load and error recovery remain open; the SSD is still at +94. |
 | Board revision | Owner confirmed ROCK 5 ITX PCB v1.12; current public electrical schematic is v1.11, so exact revision electrical details remain to be checked before raw register work |
 | USB recovery | Workstation USB-C connection enumerates as `2207:350b`; remote loader and MaskROM entry, RAM loader download, eMMC/SPI selection and matching read-back hashes verified |
 | Serial | NanoKVM UART1 (`/dev/ttyS1`) captures readable DDR/SPL, U-Boot and Linux output at 1,500,000 baud, 8N1; longer input is corrupted and an interactive login has not passed |
@@ -2387,9 +2388,9 @@ not native Ethernet qualification. The physical SSD still has its accepted
 [NETWORK-DMA.md](NETWORK-DMA.md) for evidence, the Intel fixture's limitations
 and the remaining native interrupt-routing work.
 
-## Native Ethernet interrupt candidate
+## Native Ethernet bring-up
 
-The next candidate adds a separate 32-bit PCI INTx module and an opt-in RK3588
+The experimental path adds a separate 32-bit PCI INTx module and an opt-in RK3588
 provider for the two onboard RTL8125 endpoints, GIC IRQs 277 and 282. It validates
 the retained firmware resources and enables INTA only after handler installation.
 The Realtek top half now masks level interrupts before scheduling its worker;
@@ -2430,9 +2431,28 @@ isolated. Both boots passed component/settings hashes, USB control and a short
 memory check. Recovery completed without a NanoKVM restart.
 `state/native-network-intx-qualified.json` records this bounded milestone.
 
-The owner then connected the second Ethernet cable. Linux now negotiates
-2.5 Gbit/s full duplex on port 0, while port 1 retains 1 Gbit/s. That new Haiku
-port 0 trial, static IPv4/IPv6, simultaneous traffic, sustained load and error
+The owner then connected the second Ethernet cable through a 10 GbE copper SFP.
+Linux negotiated 2.5 Gbit/s full duplex on port 0, while port 1 retained 1 Gbit/s.
+A native `+104` port 0 transfer passed but exposed a reporting defect: the PHY's
+extended 2500BASE-T media value was truncated to a 10 Mbit/s value, and its
+graphical speed label was blank. The correction preserves the extended subtype
+and adds 2.5/5 Gbit/s labels to the shared formatter.
+
+All 78 host checks and the complete `+106` QEMU gates passed. Native session
+`interactive/20260913T063242Z-e0d8da` initially stalled in firmware before the
+Haiku loader; one controlled reset recovered it. That failed attempt remains
+unresolved. Both subsequent Haiku boots passed twelve component hashes, settings
+hashes, USB control and the short memory check. The kernel, `ifconfig` and
+Network preferences reported port 0 at 2.5 Gbit/s. Port 0 passed 8 MiB round
+trips before and after normal reboot, and port 1 passed on the same image after
+reboot. Each phase disabled the other Ethernet interface to identify its path,
+checked hashes independently on the workstation, and rejected truncated input.
+No error/drop counter increased during transfers. Recovery and serial capture
+completed, and NanoKVM remained up with its watchdog disarmed.
+`state/native-network-media-qualified.json` records the limited driver checks
+and the firmware retry separately.
+
+Static IPv4/IPv6, simultaneous traffic, sustained load, throughput and error
 recovery remain open. The earlier USB timeout and native startup stall also
-remain open. The SSD and recovery setup are unchanged. See
+remain open. The SSD remains at `+94` with its ICU setting. See
 [ETHERNET.md](ETHERNET.md) for implementation, evidence and remaining limits.
