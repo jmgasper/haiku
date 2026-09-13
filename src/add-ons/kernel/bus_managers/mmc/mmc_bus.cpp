@@ -482,7 +482,7 @@ MMCBus::_WorkerThread(void* cookie)
 		uint16_t revision;
 		uint8_t month;
 		uint16_t year;
-		uint16_t rca;
+		uint16_t rca = 0;
 		bool cardFound = false;
 		// This being an if statement as opposed to a while statement restricts
 		// it to one device per bus.
