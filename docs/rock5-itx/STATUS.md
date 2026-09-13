@@ -2304,3 +2304,12 @@ SSD retry confirmed that ICU's compiled data directory names the old bootstrap
 package, while the actual data is under the renamed package and
 `/boot/system/data/icu/74.1`. This is a separate desktop defect under investigation.
 See [ITS.md](ITS.md) for the installation evidence and limits.
+
+The [startup investigation](STARTUP.md) found and reproduced a launcher pipe
+inheritance bug. QEMU baseline `qemu-shell/20260913T005314Z-9796e1` compiled the
+actual environment reader and demonstrated that an unrelated executable could
+keep it waiting for EOF. The `pipe2(O_CLOEXEC)` candidate passed the focused
+test in `qemu-shell/20260913T005634Z-1d0ab4`; deliberately clearing the flags
+reproduced the failure. This does not yet establish the cause of the native
+stall. Full-image/native validation and an early startup observer are next;
+the installed SSD still has its accepted `hrev60097+88` components.

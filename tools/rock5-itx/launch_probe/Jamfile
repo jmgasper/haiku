@@ -1,0 +1,12 @@
+SubDir HAIKU_TOP tools rock5-itx launch_probe ;
+UsePrivateHeaders app libroot shared storage support ;
+UsePrivateSystemHeaders ;
+
+# Only the environment reader is exercised; discard unused event helpers.
+SubDirC++Flags -ffunction-sections -fdata-sections -fvisibility=hidden ;
+SimpleTest rock5_launch_environment_probe : probe.cpp BaseJob.cpp
+	: be shared [ TargetLibstdc++ ] ;
+SEARCH on [ FGristFiles BaseJob.cpp ]
+	= [ FDirName $(HAIKU_TOP) src servers launch ] ;
+LINKFLAGS on rock5_launch_environment_probe
+	+= -Wl,--wrap=pipe -Wl,--wrap=pipe2 -Wl,--gc-sections ;

@@ -8,6 +8,7 @@
 #include "BaseJob.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <spawn.h>
 #include <stdlib.h>
 #include <string.h>
@@ -199,7 +200,9 @@ void
 BaseJob::_GetSourceFileEnvironment(const char* script, BStringList& environment)
 {
 	int pipes[2];
-	if (pipe(&pipes[0]) != 0) {
+	// Another job may exec while this script is running. Its inherited write
+	// end would keep the environment reader waiting for EOF indefinitely.
+	if (pipe2(pipes, O_CLOEXEC) != 0) {
 		// TODO: log error
 		return;
 	}
