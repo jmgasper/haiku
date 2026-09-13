@@ -2,12 +2,13 @@
 
 The onboard eMMC now passes verified eight-bit legacy SDR selection, cached
 file writes, explicit device-cache flush and persistence across normal reboot
-in `+148`, including CPU buffers forced above 4 GiB with the controller's
-private DMA32 buffer below 4 GiB. The earlier `+144` eight-bit and `+136`
+and orderly shutdown/startup in `+148`, including CPU buffers forced above
+4 GiB with the controller's private DMA32 buffer below 4 GiB. The earlier
+`+144` eight-bit and `+136`
 four-bit images also pass orderly shutdown/startup with the cache disabled.
 These results have independent Linux file, filesystem and reference-region
-checks. Cache-enabled shutdown/startup, power-loss integrity, faster clocks and
-Haiku boot from eMMC remain unqualified.
+checks. Power-loss integrity, faster clocks and Haiku boot from eMMC remain
+unqualified.
 MicroSD uses a different controller and is not covered
 by this work.
 ROOBI remains on its eMMC root partition; the write fixture uses the separately
@@ -774,12 +775,57 @@ concurrent/sustained I/O and abrupt power loss remain separate checks.
 | Linux partition/filesystem/file check | `artifacts/emmc-file-readback/20260913T195630Z-de663a/result.json` |
 | Linux raw-reference readback | `artifacts/emmc-read-reference/20260913T195642Z-6b791c/result.json` |
 
+### Native cached shutdown and startup
+
+A subsequent trial reuses the same `+148` writable image, build, 108 host checks
+and full QEMU result. It overwrites another 4 MiB at file offset 8 MiB, checks
+an explicit device-cache flush and verifies both complete files on a fresh
+read-only mount. The new target hash is
+`4c4f69c8312eb9df10cb60ba0cc01449596df5c53f63db60b365964a4386f996`.
+
+Haiku issues one PSCI system-off request. During a further 25.6-second
+observation, no second Haiku boot appears, NanoKVM reports USB not attached,
+HDMI capture times out and the controller retains its boot ID. One 800 ms
+power-button pulse then starts a new firmware and Haiku boot. Both native
+boots verify the enabled 65,536 KiB cache, eight-bit width, expected components,
+memory/copy checks and both Ethernet links. The CPU read vectors start at
+`0x114879000` and the first write vector at `0x11489c000`, each 512 bytes with
+the private DMA32 payload at `0x2e80000`. Both desktops were inspected.
+
+The final file hashes match after startup; in total the trial checks 72 MiB of
+complete file contents and 48 MiB of raw references. Linux recovery confirms
+both files, passes the FAT check and rereads the unchanged reference regions.
+The complete final FAT partition hash is
+`3079274f09a20ce389bab8dedcd432a4285c92863bc30263236bb79a3e346529`.
+Six FLUSH_CACHE[32] commands complete with ready/transfer status `0x900`,
+including filesystem-triggered flushes. Four initialization transfer-complete
+diagnostics remain recorded, with no data-transfer failure or kernel panic.
+The guard disarmed normally. This establishes orderly shutdown/startup with
+cached writes; it does not measure eMMC supply removal or qualify abrupt power
+loss. Concurrent/sustained I/O and faster timing modes remain open.
+
+The first deployment attempt stopped before test writes because NanoKVM had
+insufficient free space, then recovered to Linux. Six older successful
+deployment copies were removed after confirming their immutable local source
+images and qualification evidence, preserving the active recovery image and
+recent copies. The retry passed; the failed deployment is retained separately.
+
+| Evidence | Location under `/mnt/HaikuWork` |
+| --- | --- |
+| Fresh overwrite fixture | `artifacts/mmc-cache-shutdown/20260913T195654Z-e20b25/fixture.json` |
+| Native qualification | `artifacts/interactive/20260913T200235Z-73237c/qualification.json` |
+| Write and explicit flush | `artifacts/interactive/20260913T200235Z-73237c/shell-20260913T200744Z-55d1b0.txt` |
+| File readback after startup | `artifacts/interactive/20260913T200235Z-73237c/shell-20260913T201244Z-22cc66.txt` |
+| Linux partition/filesystem/file check | `artifacts/emmc-file-readback/20260913T201440Z-6d39ad/result.json` |
+| Linux raw-reference readback | `artifacts/emmc-read-reference/20260913T201451Z-b9b13b/result.json` |
+| Pre-test deployment failure | `artifacts/interactive/20260913T195712Z-972231/result.json` |
+| NanoKVM storage cleanup | `artifacts/nanokvm-storage/20260913T195948Z-3642d8/cleanup-result.json` |
+
 ## Native work remaining
 
 Extend the bounded file result to power-loss integrity, longer mixed I/O and
-error recovery. Cached shutdown/startup, speed negotiation/tuning and Haiku boot
-from eMMC remain open. Preserve ROOBI and its tested recovery route during
-these changes.
+error recovery. Speed negotiation/tuning and Haiku boot from eMMC remain open.
+Preserve ROOBI and its tested recovery route during these changes.
 
 The TRM specifies a 32-bit eMMC AXI address interface. Core clock selection uses
 CRU `0xfd7c0000 + 0x434`, with high-word write masks. Other clocks in that register

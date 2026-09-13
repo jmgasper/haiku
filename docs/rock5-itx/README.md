@@ -50,9 +50,9 @@ from USB.
 The onboard eMMC passes file writes, explicit flush and persistence after normal
 reboot and orderly shutdown/startup in eight-bit mode, including CPU buffers
 forced above 4 GiB, with independent Linux file, filesystem and reference checks. Native
-cached writes and device-cache flush now also pass normal reboot. Cached
-shutdown/startup, faster clocks, power-loss integrity and Haiku boot from eMMC
-remain pending.
+cached writes and device-cache flush now also pass normal reboot and orderly
+shutdown/startup. Faster clocks, sustained/error recovery, power-loss integrity
+and Haiku boot from eMMC remain pending.
 The ordinary driver profile defaults to read-only access. The reference,
 retained failures and tested scope are in [MMC.md](MMC.md).
 
