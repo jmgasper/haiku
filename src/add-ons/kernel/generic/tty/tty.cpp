@@ -1274,7 +1274,7 @@ tty_write_to_tty_master(tty_cookie* sourceCookie, const void* _buffer,
 		error = tty_write_to_tty_master_unsafe(sourceCookie, safeBuffer,
 			&written);
 		if (error != B_OK)
-			return error;
+			return *_length == 0 ? error : B_OK;
 
 		buffer += written;
 		bytesRemaining -= written;

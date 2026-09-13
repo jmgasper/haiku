@@ -4,6 +4,7 @@
 import argparse
 import base64
 import contextlib
+import hashlib
 import ipaddress
 import json
 import os
@@ -26,6 +27,21 @@ import lab
 import shell_image
 
 
+class _PacedSocket:
+    """Avoid bursts while the guest terminal switches line-editing modes."""
+    def __init__(self, connection):
+        self.connection = connection
+
+    def __getattr__(self, name):
+        return getattr(self.connection, name)
+
+    def sendall(self, data):
+        for offset in range(0, len(data), 512):
+            self.connection.sendall(data[offset:offset + 512])
+            if offset + 512 < len(data):
+                time.sleep(.005)
+
+
 def ssh_command(config):
     return ['ssh', '-F', str(lab.local_path(config['ssh_config'])),
             '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=3']
@@ -39,8 +55,10 @@ def usb_address(value):
     return str(address)
 
 
-def login(host, port, credentials, timeout=20):
+def login(host, port, credentials, timeout=20, *, wait_for_shell=True):
     client = telnetlib.Telnet(host, port, timeout)
+    client.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    client.sock = _PacedSocket(client.sock)
     try:
         if not client.read_until(b'login:', timeout).endswith(b'login:'):
             raise TimeoutError('No lab login prompt')
@@ -48,6 +66,10 @@ def login(host, port, credentials, timeout=20):
         if not client.read_until(b'password:', timeout).endswith(b'password:'):
             raise TimeoutError('No lab password prompt')
         client.write((credentials['password'] + '\r\n').encode())
+        # The private lab image uses data/etc/profile's standard prompt.
+        # Authentication can finish before the shell configures its terminal.
+        if wait_for_shell and not client.read_until(b'> ', timeout).endswith(b'> '):
+            raise TimeoutError('No lab shell prompt')
         return client
     except BaseException:
         client.close()
@@ -61,9 +83,20 @@ def execute(client, commands, output, credentials, timeout=60):
     token = secrets.token_hex(8)
     begin = f'ROCK5_BEGIN_{token}'
     end = f'ROCK5_END_{token}'
-    # Readline treats tabs in here-documents as completion requests. Disable
-    # interactive editing before the shell parses the command block.
-    payload = (f"PS1= PS2=\nset +o emacs\nset +o vi\nprintf '\\n{begin}\\n'\n(\nset -e\n{commands}\n)\n"
+    # Readline treats tabs in here-documents as completion requests. Transfer
+    # a checked script instead of parsing the program through line editing.
+    delimiter = f'ROCK5_PROGRAM_{token}'
+    program = f'/tmp/rock5-command-{token}'
+    encoded = base64.encodebytes(commands.encode()).decode()
+    digest = hashlib.sha256(commands.encode()).hexdigest()
+    payload = (f"PS1= PS2=\nprintf '\\n{begin}\\n'\n(\nset -e\n"
+               f"umask 077\nset -C\n: > {program}\nset +C\n"
+               f"trap 'rm -f {program}' EXIT\n"
+               f"base64 -d > {program} <<'{delimiter}'\n{encoded}{delimiter}\n"
+               f"rock5_program_sha=$(sha256sum {program})\n"
+               f"if [ \"${{rock5_program_sha%% *}}\" != {digest} ]; then\n"
+               "echo ROCK5_COMMAND_CHECKSUM_MISMATCH\nexit 1\nfi\n"
+               f". {program}\n)\n"
                f"rock5_result=$?; printf '\\n{end}:%d\\n' \"$rock5_result\"\n")
     received = b''
     result = {'status': 'incomplete', 'transcript': str(output)}

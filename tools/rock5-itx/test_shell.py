@@ -66,6 +66,49 @@ class ShellTests(unittest.TestCase):
                     self.fail('Tunnel opened')
             process.assert_not_called()
 
+    def command_program_trial(self, corrupt):
+        """Run the real guest wrapper locally, including decode/hash/source."""
+        destination = self.work / 'program-result'
+        contents = '\tIndented text with literal $(false) and `false`.\n'
+        commands = (f"cat > {shlex.quote(str(destination))} <<'ROCK5_TEST_TEXT'\n"
+                    + contents + 'ROCK5_TEST_TEXT\n')
+        client = Mock()
+        client.read_very_eager.return_value = b''
+
+        def accept(payload):
+            program = payload.decode().replace('\r\n', '\n')
+            program = program.replace('/tmp/rock5-command-',
+                                      str(self.work / 'command-'))
+            if corrupt:
+                start = re.search(r"<<'ROCK5_PROGRAM_[0-9a-f]+'\n", program).end()
+                # Keep the base64 valid while changing its decoded bytes.
+                character = 'A' if program[start] != 'A' else 'B'
+                program = program[:start] + character + program[start + 1:]
+            result = subprocess.run(['/bin/bash'], input=program, text=True,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    timeout=10)
+            client.read_very_eager.return_value = result.stdout.encode()
+
+        client.write.side_effect = accept
+        output = self.work / 'program.txt'
+        if corrupt:
+            with self.assertRaisesRegex(RuntimeError, 'exit status 1'):
+                shell.execute(client, commands, output, {'password': 'secret-token'})
+            self.assertFalse(destination.exists())
+            self.assertIn('ROCK5_COMMAND_CHECKSUM_MISMATCH', output.read_text())
+        else:
+            result = shell.execute(client, commands, output,
+                                   {'password': 'secret-token'})
+            self.assertEqual(result['status'], 'pass')
+            self.assertEqual(destination.read_bytes(), contents.encode())
+        self.assertEqual(list(self.work.glob('command-*')), [])
+
+    def test_command_program_preserves_literal_text_and_cleans_up(self):
+        self.command_program_trial(False)
+
+    def test_corrupt_command_program_cannot_execute(self):
+        self.command_program_trial(True)
+
     def test_shared_credentials_are_rejected(self):
         path = shell_image.credentials_path()
         path.write_text('{}')

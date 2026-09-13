@@ -2313,3 +2313,21 @@ test in `qemu-shell/20260913T005634Z-1d0ab4`; deliberately clearing the flags
 reproduced the failure. This does not yet establish the cause of the native
 stall. Full-image/native validation and an early startup observer are next;
 the installed SSD still has its accepted `hrev60097+88` components.
+# Startup observer and terminal command transport follow-up
+
+The original `+88` SSD completed five early thread/descriptor snapshots in
+`interactive/20260913T014533Z-453fff`. Observer file hashes survived reboot;
+six platform/storage component hashes plus the original launcher, both flushed
+2 GiB data regions and guards, eleven package hashes and zero BFS allocation
+counters passed. The traced boot reached the desktop. The earlier intermittent
+startup stall remains unexplained; the launcher pipe fix is still QEMU-qualified
+only. See [STARTUP.md](STARTUP.md).
+
+Investigation also found a [terminal partial-write bug](TTY.md), reproduced
+in QEMU and on the physical SSD: a nonblocking write returns `EAGAIN` after
+accepting 4,096 bytes. A focused source fix and probe are now present; the fixed
+kernel module has not yet been qualified. The lab transport waits for the shell
+prompt, verifies received command-file hashes before execution and paces input.
+Its QEMU fresh-login/reboot/shutdown checks, native command checks and 75 host
+checks passed. Earlier failed transport/install attempts remain separately
+recorded and do not count as native startup or storage passes.

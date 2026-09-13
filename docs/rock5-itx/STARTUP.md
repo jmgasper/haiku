@@ -65,8 +65,11 @@ from ordinary images. The job captures five snapshots of thread states and
 selected process file descriptors to UART, then exits. Both the original
 launcher image and the fixed image passed the observer's two-boot QEMU checks.
 The observer files are now installed on the original `+88` SSD, with flushed
-readback hashes and zero BFS allocation counters. Native reboot persistence
-and startup tracing are pending. `state/startup-state-observer-plan.json`
+readback hashes and zero BFS allocation counters. Native session
+`interactive/20260913T014533Z-453fff` completed all five snapshots, reached the
+desktop, and passed file/component hashes, both flushed 2 GiB data regions,
+guards and all eleven package hashes. The observer files survived reboot.
+The original startup stall has not been reproduced by these traced boots. `state/startup-state-observer-plan.json`
 records the immutable inputs and every install attempt.
 
 The installation exposed two lab-script issues: the minimum image lacks `sed`,
@@ -77,11 +80,26 @@ used base64, flushed writes before checking them, and archived the partial files
 outside the launch-settings directory. Do not treat unflushed files followed
 by a forced reset as a durability test.
 
-The command transport now disables Bash's interactive editing before parsing
-the command block. `qemu-shell/20260913T012005Z-e7b326` reproduced the missing
-tab, while `qemu-shell/20260913T012847Z-6eba5d` preserved the exact same file's
-hash, including its tab. Both runs also checked base64 transfers and normal
-reboot/shutdown; all 73 host checks passed after the transport change.
+The command transport now waits for the normal shell prompt, transfers a
+base64-encoded script to a private temporary file, verifies its SHA-256 before
+sourcing it, and removes the temporary file on exit. Writes are paced at
+512 bytes per 5 ms with TCP_NODELAY to limit bursts into older guest terminal
+drivers. Unit checks execute the wrapper and verify that a changed but valid
+base64 payload cannot run; all 75 host checks passed.
+
+This replaces the editing-mode experiment: it preserved tabs in QEMU but failed
+on a fresh native login. An intermediate unchecked decode also failed on the
+third fresh QEMU login; guest-facing TCP captures contained four identical,
+valid programs, locating the damage after network reception. The checked
+wrapper then rejected a damaged decode before execution. These failed trials
+remain in the evidence; they are not startup-stall or storage failures.
+
+The final paced transport passed `qemu-shell/20260913T015634Z-d8bcf9`, including
+three extra fresh logins, exact raw-tab and encoded-file hashes, normal reboot
+and shutdown. Three fresh native command sessions then passed observer
+persistence, large-file/package checks and the ICU probe while the original
+hardware guard remained active. The underlying [terminal write defect](TTY.md)
+has a separate deterministic reproduction and candidate kernel fix.
 
 ## Time preferences
 

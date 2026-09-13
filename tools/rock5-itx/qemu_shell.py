@@ -187,13 +187,14 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
             time.sleep(1)
         raise TimeoutError('No new USB shell configuration marker')
 
-    def login(value=credentials):
+    def login(value=credentials, wait_for_shell=True):
         # The configuration marker precedes network_server's asynchronous reload.
         # Record retries rather than losing the entire boot on an early connect.
         deadline = time.monotonic() + 45
         while True:
             try:
-                return shell.login('127.0.0.1', port, value, timeout=10)
+                return shell.login('127.0.0.1', port, value, timeout=10,
+                                   wait_for_shell=wait_for_shell)
             except (OSError, EOFError, TimeoutError) as error:
                 result.setdefault('login_retries', []).append(str(error))
                 if time.monotonic() >= deadline:
@@ -205,7 +206,7 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
         try:
             wait_for_boot()
             incorrect = dict(credentials, password='deliberately-invalid-password')
-            with login(incorrect) as client:
+            with login(incorrect, wait_for_shell=False) as client:
                 if b'Login failed.' not in client.read_until(b'Login failed.', 15):
                     raise RuntimeError('Incorrect password was not rejected')
                 result['incorrect_password_rejected'] = True
