@@ -1,0 +1,9 @@
+# The renamed ARM64 bootstrap ICU package retains its original compiled data
+# directory. Supply its installed data path before desktop processes use ICU.
+# Preserve an explicitly configured ICU_DATA, including an empty value.
+if [ "${ICU_DATA+x}" != x ] \
+	&& [ -f /boot/system/packages/icu74-74.1_bootstrap-1-arm64.hpkg ] \
+	&& [ -f /boot/system/data/icu/74.1/icudt74l.dat ] \
+	&& [ ! -d /packages/icu74_bootstrap-74.1-1/.self/data/icu/74.1 ]; then
+	export ICU_DATA=/boot/system/data/icu/74.1
+fi

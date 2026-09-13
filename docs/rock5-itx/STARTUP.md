@@ -135,5 +135,15 @@ missing directory reproduced the errors. `state/qemu-icu-and-observer-transfer.j
 retains the probe's checksum and results. The same checks passed on the physical
 SSD in `interactive/20260913T012748Z-badc26`, with an identical ICU data-file
 hash; `state/native-icu-data-probe.json` retains that result. No persistent ICU
-setting or library repair has been applied. This desktop defect is separate
-from the accepted NVMe integrity checks.
+setting or library repair has been applied to the physical SSD at this checkpoint.
+This desktop defect is separate from the accepted NVMe integrity checks.
+
+The ROCK image profile now includes a conditional
+[UserSetupEnvironment](../../tools/rock5-itx/UserSetupEnvironment) candidate.
+For the exact renamed ARM64 bootstrap package, it exports the installed ICU
+data path when that data exists and the original package path is absent. An
+explicit `ICU_DATA` value is preserved. ICU documents that this environment
+variable takes precedence over its compiled directory in the
+[data-directory selection rules](https://unicode-org.github.io/icu/userguide/icu_data/#icu-data-directory).
+This keeps the package workaround in the lab image profile. Image, desktop and
+native persistence checks for the candidate are pending.

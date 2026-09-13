@@ -7,9 +7,10 @@ DeferredSubInclude HAIKU_TOP tools rock5-itx ;
 
 rule UserBuildConfigRulePreImage
 {
-	local bootscript = <rock5-lab>UserBootscript ;
-	SEARCH on $(bootscript) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
-	AddFilesToHaikuImage home config settings boot : $(bootscript) ;
+	local bootscripts = <rock5-lab>UserBootscript
+		<rock5-lab>UserSetupEnvironment ;
+	SEARCH on $(bootscripts) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
+	AddFilesToHaikuImage home config settings boot : $(bootscripts) ;
 	local pcieSettings = <rock5-lab>rk3588_pcie ;
 	SEARCH on $(pcieSettings) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
 	AddFilesToHaikuImage home config settings kernel drivers : $(pcieSettings) ;
