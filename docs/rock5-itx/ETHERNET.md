@@ -1,8 +1,10 @@
 # ROCK 5 ITX Ethernet bring-up
 
-Native RTL8125 traffic is not yet qualified. The two onboard controllers are
-identified under the retained EDK2 v1.1 firmware; [NETWORK-DMA.md](NETWORK-DMA.md)
-records the prerequisite DMA work and successful emulated Intel traffic.
+Both onboard RTL8125 controllers now attach and receive interrupts under the
+retained EDK2 v1.1 firmware. Port 1 has passed bounded, checksum-verified transfers
+at a negotiated 1 Gbit/s link speed, including normal reboot and interface
+reopening. [NETWORK-DMA.md](NETWORK-DMA.md) records the prerequisite DMA work
+and successful emulated Intel traffic. Full Ethernet acceptance remains open.
 
 ## Legacy interrupt candidate
 
@@ -96,17 +98,17 @@ size/hash matched independently. Packet capture contains 39,391 frames, with
 Both boots used the new interface's legacy IRQ 35 fallback; the unrelated
 RK3588 firmware profile was rejected in QEMU.
 
-The exact private candidate is indexed by `state/network-intx-image-plan.json`,
-with SHA-256
+That private candidate is retained under
+`artifacts/network-intx-image/20260913T051943Z-a430e7`, with SHA-256
 `027f72a035c04cbdff95ab15b70e0360fdabddd16556658d8a4c2d891d0c9385`.
-`state/network-intx-checkpoint.json` retains the reviewed result, packet counts,
-component hashes and native limits. The preceding `+101` candidate also passed
+Its `qemu-checkpoint.json` retains the reviewed result, packet counts, component
+hashes and native limits. The preceding `+101` candidate also passed
 QEMU in `qemu-shell/20260913T051454Z-4562e0`; it was superseded before any native
 trial by the two-port association/allocation checks. The older `+98` USB timeout
 and native `+88` startup stall remain unresolved.
 
-Native RTL8125 attachment, IRQ delivery and traffic remain pending. These QEMU
-checks cannot establish RK3588 cache coherency or physical interrupt routing.
+These QEMU checks cannot establish RK3588 cache coherency or physical interrupt
+routing. The subsequent native trials below supply separate evidence.
 The lab image includes RTL8125, but its default
 Samsung-only PCIe profile does not expose the onboard NICs. A native trial must
 enable the onboard profile and legacy routes explicitly, keep AHCI blocked,
@@ -125,6 +127,80 @@ legacy interrupts are unavailable. The inventory script then stopped on its
 unsupported no-argument `mount` command, before component hashes or the memory
 probe; those checks are not accepted. The captured failure is retained, and the
 reserved-register correction requires a new build and QEMU/native trial.
+
+## Corrected native attachment
+
+Source `87027df9ce515034dd9bb362a392dd4673bdf2a3` built as `hrev60097+104`
+in `artifacts/build-20260913T054224Z.log`. All 77 host checks passed in
+`tmp/host-checks-network-intx-mask-only.log`. Its private image SHA-256 is
+`3e680cbecfa1ed92b163625ccfbc5990274e5461dcb48c6f47d270eaf95c4dcf`.
+QEMU `qemu-shell/20260913T054852Z-bb8e6d` passed both boot/transfer/storage gates,
+normal reboot and shutdown. Independent packet review counted 39,732 frames,
+16,785,440 TCP payload bytes toward the guest and 16,777,622 toward its peer.
+`state/network-intx-checkpoint.json` records this newer QEMU result.
+
+Native session `interactive/20260913T055134Z-f7b607` passed both APB profile
+checks, masked the receive pins, installed the two handlers and enabled IRQs
+277 and 282 with mask readback `0xe`. Both Realtek interfaces attached and logged
+interrupt arrival. `/dev/net/rtl8125/1`, MAC `00:e0:4c:68:06:fd`, negotiated
+1 Gbit/s and obtained `192.168.1.154` through DHCP. Port 0, MAC ending `fc`,
+had no link. Ten component hashes, three settings hashes, a locked 64 MiB
+eight-worker memory check, RNDIS control and the desktop passed. Samsung NVMe
+continued using ITS1 interrupts; the SSD filesystem was not mounted.
+
+The first transfer test was invalid: its TCP connection reached the workstation
+peer and received the transfer header, but creating the guest file failed with
+`ENOENT` because `/boot/home/rock5-lab` did not exist. No payload checksum passed.
+The session recovered to ROOBI with complete serial capture; the peer was stopped
+and its error retained. The command generator now creates and checks that
+directory before transferring. `state/native-network-intx-mask-only-first.json`
+records the accepted attachment/DHCP checks and failed test separately. Bulk
+traffic, the second port's physical link, warm reboot and sustained behavior
+were still unqualified at that checkpoint.
+
+## Native port 1 transfer milestone
+
+The repeat session `interactive/20260913T055957Z-afe24b` used the same `+104`
+image and passed three 8 MiB round trips with the workstation at `192.168.1.64`:
+
+| Phase | Transfer evidence under `artifacts/native-ethernet-transfer` |
+| --- | --- |
+| First boot | `20260913T060421Z-b48dbb` |
+| After normal Haiku reboot | `20260913T060721Z-ae41db` |
+| After interface down/up and DHCP reconfiguration | `20260913T061002Z-7e2d79` |
+
+Each phase verified the downloaded SHA-256 in Haiku, independently verified the
+returned file on the workstation, and rejected a truncated input. Peer sockets
+accepted the observed native address `192.168.1.154`. Realtek counters increased
+by more than 8 MiB each way per phase; USB carried under 64 KiB each way. No
+receive/send error or drop counter increased during the transfers. The earlier
+downloaded file retained its hash after reboot. Component/settings hashes,
+the short memory check and USB control passed on both boots; desktop captures
+were inspected. Native logs show both wide IRQ routes on both boots, retained
+ITS1 NVMe initialization, and the requested PSCI reset. The SSD filesystem was
+not mounted or updated.
+
+The interface cycle cleared `up`, closed/freed and reopened the device, and
+regained DHCP and its 1 Gbit/s link. One aggregate receive error appeared during
+the down operation and remained unchanged during the final transfer. The
+compatibility layer wakes a closing reader with `B_INTERRUPTED`, which the
+stack's reader counts as an error; this is a possible explanation, not an
+isolated measurement of that counter's source. Driver unload and physical cable
+hotplug were not tested by this interface cycle.
+
+`state/native-network-intx-qualified.json` and the session's `qualification.json`
+accept this bounded port 1 milestone. Recovery returned ROOBI with boot ID
+`57fdd4c0-a448-4b4b-b7c9-4afc3bf44d96`; UART capture completed without errors,
+and the unchanged NanoKVM disarmed its watchdog. The observed 1 Gbit/s link speed
+is not a throughput benchmark. Static IPv4/IPv6, simultaneous ports, sustained
+mixed load, reset/error recovery and 2.5 Gbit/s traffic remain open.
+
+After this run the owner connected port 0 through a 10 GbE copper SFP.
+The new Linux reference, `state/linux-ethernet-two-links.json`, records
+`enP3p49s0`/MAC ending `fc` at 2500 Mbit/s full duplex with DHCP `192.168.1.144`.
+Port 1 remains at 1000 Mbit/s and `192.168.1.154`. The workstation reports a
+5000 Mbit/s link. This establishes the fixture's negotiated Linux speed;
+Haiku's new port 0 link and traffic trial is pending.
 
 ## References
 

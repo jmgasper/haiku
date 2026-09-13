@@ -12,7 +12,7 @@ firmware supports it.
 | NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; staged downloads passed before/after native reboot, but simultaneous USB/Ethernet relay still causes outages; the latest outage did not recover through the hardware watchdog |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | Seventy-five host checks pass locally, including GIC MBI firmware/register admission and MSI vector allocation/reuse, onboard PCI host resource/profile rejection and root-link rejection, native-input dependency preflight, strict BFS report parsing, SSH controller-input isolation, explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
+| Automated controls | Seventy-seven host checks pass locally, including GIC MBI firmware/register admission and MSI vector allocation/reuse, onboard PCI host resource/profile rejection and root-link rejection, native-input dependency preflight, strict BFS report parsing, SSH controller-input isolation, explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
 | Native Haiku on ROCK | All eight CPUs start; Tracker/Deskbar, NanoKVM input, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; Samsung NVMe bounded raw I/O has independent Linux hashes; the 238 GiB SSD installation has passed large-file persistence after normal reboot and shutdown/startup; the installed NVMe driver has passed ITS1 MSI-X, filesystem TRIM and subsequent boot readback; the latest hrev60097+94 SSD update includes launcher and terminal fixes and has passed two installed boot/readback/normal-reboot cycles; the earlier startup stall, intermittent USB control failures and sustained acceptance remain open |
@@ -2409,8 +2409,30 @@ of TCP payload each way. Both boots used IRQ 35 through the new interface and
 rejected the unrelated RK3588 host profile. The preceding `+101` candidate's
 QEMU pass is retained separately.
 
-`state/network-intx-checkpoint.json` accepts this software/emulation milestone.
-Native RTL8125 attachment, interrupt arrival, DMA coherence and packet traffic
-remain untested. The earlier USB timeout and native startup stall remain open.
-The SSD and recovery setup are unchanged. See
+The first native `+102` trial rejected the NIC roots because it incorrectly
+required a bit in a reserved register. The corrected `+104` image passed all
+77 host checks and the same two-boot QEMU gates. Native session
+`interactive/20260913T055134Z-f7b607` then attached both Realtek interfaces,
+enabled IRQs 277/282 and observed interrupts. The connected port obtained DHCP
+at 1 Gbit/s. Component/settings hashes, USB control, desktop and a short memory
+check passed. Its first bulk-transfer test failed on a missing guest directory,
+before a payload checksum; the script is corrected and the failure retained in
+`state/native-network-intx-mask-only-first.json`.
+
+`state/network-intx-checkpoint.json` records the newer software/emulation gate.
+The repeat `+104` native session `interactive/20260913T055957Z-afe24b` passed
+8 MiB round trips on port 1 at a negotiated 1 Gbit/s, before and after normal
+reboot and after an interface down/up cycle. Guest and independent workstation
+hashes matched, truncated input was rejected, and interface counters confirm
+Ethernet carried the payload. No error/drop counter grew during transfers;
+one receive error appeared during interface shutdown and its source was not
+isolated. Both boots passed component/settings hashes, USB control and a short
+memory check. Recovery completed without a NanoKVM restart.
+`state/native-network-intx-qualified.json` records this bounded milestone.
+
+The owner then connected the second Ethernet cable. Linux now negotiates
+2.5 Gbit/s full duplex on port 0, while port 1 retains 1 Gbit/s. That new Haiku
+port 0 trial, static IPv4/IPv6, simultaneous traffic, sustained load and error
+recovery remain open. The earlier USB timeout and native startup stall also
+remain open. The SSD and recovery setup are unchanged. See
 [ETHERNET.md](ETHERNET.md) for implementation, evidence and remaining limits.
