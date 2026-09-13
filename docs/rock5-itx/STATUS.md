@@ -12,13 +12,13 @@ firmware supports it.
 | NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; staged downloads passed before/after native reboot, but simultaneous USB/Ethernet relay still causes outages; the latest outage did not recover through the hardware watchdog |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | One hundred and four host checks pass locally, including MMC fixture rediscovery after device renumbering, independent MMC FAT file persistence and guard-corruption rejection, RK3588 eMMC resource/clock admission, ARM64 SDMA allocation/cleanup, MMC reset after an unsupported SD probe, production MMC/SDHCI register decoding, geometry, flush, bounded I/O and partial-initialization failures, shared-IRQ ownership, MMC backing-file corruption rejection, ARM64 AHCI request/DMA and controller lifecycle failure cases, two-disk persistence-oracle rejection, IPv6 prefix ranking and streams and production NDP source/link selection, the production Realtek receive routine with malformed lengths/fragments/ring wrap, actual ARM64 copy alignment/protected-page checks, checked network streams and corruption/truncation rejection, GIC MBI firmware/register admission and MSI vector allocation/reuse, onboard PCI host resource/profile rejection and root-link rejection, native-input dependency preflight, strict BFS report parsing, SSH controller-input isolation, explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
+| Automated controls | One hundred and five host checks pass locally, including MMC width sequencing and corrupt EXT_CSD rejection, MMC fixture rediscovery after device renumbering, independent MMC FAT file persistence and guard-corruption rejection, RK3588 eMMC resource/clock admission, ARM64 SDMA allocation/cleanup, MMC reset after an unsupported SD probe, production MMC/SDHCI register decoding, geometry, flush, bounded I/O and partial-initialization failures, shared-IRQ ownership, MMC backing-file corruption rejection, ARM64 AHCI request/DMA and controller lifecycle failure cases, two-disk persistence-oracle rejection, IPv6 prefix ranking and streams and production NDP source/link selection, the production Realtek receive routine with malformed lengths/fragments/ring wrap, actual ARM64 copy alignment/protected-page checks, checked network streams and corruption/truncation rejection, GIC MBI firmware/register admission and MSI vector allocation/reuse, onboard PCI host resource/profile rejection and root-link rejection, native-input dependency preflight, strict BFS report parsing, SSH controller-input isolation, explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
 | Native Haiku on ROCK | All eight CPUs start; Tracker/Deskbar, NanoKVM input, RNDIS DHCP and authenticated USB shell work; a short locked 8 GiB memory check passed; Samsung NVMe bounded raw I/O has independent Linux hashes; the 238 GiB SSD installation has passed large-file persistence after normal reboot and shutdown/startup; the installed NVMe driver has passed ITS1 MSI-X, filesystem TRIM and subsequent boot readback; the latest hrev60097+94 SSD update includes launcher and terminal fixes and has passed two installed boot/readback/normal-reboot cycles; the earlier startup stall, intermittent USB control failures and sustained acceptance remain open |
 | Onboard Ethernet | The +120 USB image passes DHCP and static IPv4/IPv6 on both RTL8125 ports at negotiated 2.5/1 Gbit/s. IPv6 address replacement, discovery in both directions and simultaneous send/receive pass with a default route present, before/after normal reboot. About 1.25 GiB is checked with complete physical-path captures and zero interface errors; native route-query checks also pass. Throughput remains variable and below Linux. Router forwarding, automatic IPv6 configuration, sustained load and fault recovery remain open. The SSD is still at +94. |
 | SATA controller | The +124 USB image initializes the ASM1164 on four direct ports using INTx IRQ 287 before/after normal reboot. ARM64 two-disk 512n/512e I/O, explicit flush, guard checks and independent reboot/shutdown readback pass in QEMU. No physical SATA disk is attached, so native disk I/O, interrupt delivery under I/O and sustained acceptance remain untested. See [SATA.md](SATA.md). |
-| MMC / eMMC | The +136 USB image passes native FAT file overwrites, explicit flush ioctls and fresh-mount hashes, plus readback after normal reboot and orderly shutdown/startup. Linux independently verifies the files and FAT consistency; three other reference regions remain unchanged. The card reports its cache disabled. Common SD/eMMC and FAT persistence also pass ARM64 QEMU. Power-loss integrity, cached-card flush, high-speed tuning and Haiku boot from eMMC remain pending; ROOBI is preserved. MicroSD uses a different host. See [MMC.md](MMC.md). |
+| MMC / eMMC | The +139 USB image selects and verifies eight-bit legacy SDR, passing read-only file/reference hashes across normal reboot and an independent Linux check of the unchanged FAT partition. The prior +136 four-bit image passes file writes, explicit flush and persistence across reboot and orderly shutdown/startup. Cache remains disabled. Common SD/eMMC and FAT persistence pass QEMU. Eight-bit writes, high-memory callers, cached-card flush, power-loss integrity, faster clocks and eMMC boot remain pending. ROOBI is preserved; microSD uses a different host. See [MMC.md](MMC.md). |
 | Board revision | Owner confirmed ROCK 5 ITX PCB v1.12; current public electrical schematic is v1.11, so exact revision electrical details remain to be checked before raw register work |
 | USB recovery | Workstation USB-C connection enumerates as `2207:350b`; remote loader and MaskROM entry, RAM loader download, eMMC/SPI selection and matching read-back hashes verified |
 | Serial | NanoKVM UART1 (`/dev/ttyS1`) captures readable DDR/SPL, U-Boot and Linux output at 1,500,000 baud, 8N1; longer input is corrupted and an interactive login has not passed |
@@ -2749,3 +2749,35 @@ fixture remains available. [MMC.md](MMC.md) has the evidence paths and scope.
 Abrupt power loss and electrical removal of the eMMC supply were not tested.
 The card cache remained disabled; cached-card flush, high-memory callers,
 faster modes, sustained/error recovery and eMMC boot remain open.
+
+
+## Native eight-bit eMMC legacy SDR
+
+Source `fb1811b338f1f2cf1972d034d7391eff3abfdc01` (`hrev60097+139`) selects
+the eMMC bus width from the host's admitted wiring before publishing the card.
+It validates a fresh EXT_CSD read at that width and preserves the verified
+mode when the disk opens. The ROCK profile supplies eight-bit wiring; hosts
+without a wiring description retain the four-bit default. Host failures and
+corrupt identification/capacity data are rejected before disk publication.
+
+All 105 host checks, the ARM64 build and the combined QEMU suite pass. QEMU
+exercises the revised path at its four-bit default. Native session
+`interactive/20260913T170301Z-f34335` verifies eight-bit mode on two boots
+separated by normal PSCI reboot. Read-only geometry, three raw reference
+regions and both retained FAT files pass on each boot: 96 MiB checked in total.
+Short raw reads measured 11.1–11.7 MB/s in the existing legacy clock setup.
+Sustained throughput and faster clock modes remain unqualified.
+
+Both boots pass twenty-five component and five setting hashes, memory/copy
+checks, inspected desktops and DHCP at 2.5/1 Gbit/s. The read-only profile
+issued no native file writes or flush ioctls; eight-bit write persistence is
+the next storage gate. The earlier four-bit write/shutdown result remains
+available. Cache stayed disabled, caller buffers above 4 GiB were not forced,
+and transfer-complete diagnostics remain recorded. The SSD stays at `+94`.
+
+ROOBI recovered with boot ID `a84eee7f-49db-407d-b875-aa8f22bbbfa5`. Linux
+verified that all 300 MiB of the FAT fixture remained byte-for-byte unchanged,
+passed FAT consistency and file-hash checks, and confirmed the three raw
+references. Serial capture completed without transport errors and the NanoKVM
+guard disarmed. `state/native-mmc-width.json` and [MMC.md](MMC.md) record the
+scope and evidence. The remaining hardware roadmap stays active.

@@ -47,13 +47,14 @@ disk is attached, so native disk I/O remains untested; see [SATA.md](SATA.md).
 The SSD installation remains at `+94` while these newer changes are tested
 from USB.
 
-The onboard eMMC now passes native capacity, file writes, explicit flush and
-readback after normal reboot and orderly shutdown/startup. The file test uses
-a backed-up FAT partition; independent Linux file hashes and filesystem checks
-pass, and three other reference regions remain unchanged. Faster speed modes, power-loss integrity
-and booting Haiku from eMMC remain pending. The ordinary driver profile defaults
-to read-only access. The reference, retained failures and tested scope are in
-[MMC.md](MMC.md).
+The onboard eMMC passes file writes, explicit flush and persistence after normal
+reboot and orderly shutdown/startup in four-bit mode. The newest USB image adds
+verified eight-bit read-only access across reboot. Both trials have independent
+Linux file, filesystem and reference-region checks; the eight-bit trial also
+preserved the complete FAT test partition byte-for-byte. Eight-bit writes,
+faster clock modes, power-loss integrity and Haiku boot from eMMC remain pending.
+The ordinary driver profile defaults to read-only access. The reference,
+retained failures and tested scope are in [MMC.md](MMC.md).
 
 This fork uses AI-assisted development at its owner's request. Upstream Haiku
 does not accept AI-assisted contributions. The `rock5-itx` branch contains this

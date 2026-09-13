@@ -1,11 +1,12 @@
 # MMC and onboard eMMC
 
-The onboard eMMC now passes native geometry, bounded file writes, explicit flush
-and readback across normal Haiku reboot and orderly shutdown/startup, with
-independent Linux checks. Separate reference reads include data beyond 4 GiB
-and at the end of the device. The common MMC stack also passes SD/eMMC writes
-and persistence in ARM64 QEMU. Power-loss integrity, faster speed modes and Haiku boot from eMMC remain
-unqualified. MicroSD uses a different controller and is not covered by this work.
+The onboard eMMC now passes verified eight-bit legacy SDR selection and read-only
+file/reference checks across normal reboot in `+139`. The earlier `+136`
+four-bit image passes bounded file writes, explicit flush and persistence across
+normal reboot and orderly shutdown/startup. Both have independent Linux checks.
+Eight-bit writes, power-loss integrity, faster clock modes and Haiku boot from
+eMMC remain unqualified. MicroSD uses a different controller and is not covered
+by this work.
 ROOBI remains on its eMMC root partition; the write fixture uses the separately
 backed-up, previously empty 300 MiB FAT partition.
 
@@ -387,10 +388,73 @@ were recorded in total; no other failed SDHCI command or kernel panic appeared.
 The final data remains on the FAT fixture for subsequent tests. The earlier
 normal-reboot qualification and its expected hashes remain preserved separately.
 
+## Eight-bit legacy SDR and read-only data
+
+Source `fb1811b338f1f2cf1972d034d7391eff3abfdc01` (`hrev60097+139`) selects
+the eMMC width before publishing the card. The exact RK3588 profile advertises
+its admitted eight-bit wiring; hosts without a wiring description retain the
+existing four-bit limit. The bus manager issues the MMC width switch, changes
+the host width and rereads EXT_CSD at the operational clock. Stable read-only
+fields must match the initial one-bit read, and the user-area, sector-size and
+cache assumptions must still hold. A command error or failed verification stops
+the bus before disk publication. Opening the MMC disk preserves the verified
+width; SD continues to use its existing four-bit setup.
+
+All 105 host checks and the ARM64 build pass. New host cases cover 1/4/8-bit
+sequencing, invalid widths, command/status failures, corrupt identification and
+capacity data, changed partition/cache/sector-size assumptions, and preservation
+of other SDHCI host-control bits. The combined QEMU suite passes raw SD/eMMC
+and FAT file I/O, fresh mounts, normal reboot, backing-file hashes and filesystem
+checks along with the other regressions. QEMU uses the four-bit host default;
+native testing supplies the physical eight-bit evidence.
+
+Native session `interactive/20260913T170301Z-f34335` selected and verified
+eight-bit mode on two boots separated by normal PSCI reboot. Both boots pass
+read-only capacity and partition geometry, three 8 MiB raw reference hashes,
+and both retained FAT file hashes. Total native checked payload is 48 MiB of
+raw references plus 48 MiB of file contents. The short raw integrity reads
+measured 11.1–11.7 MB/s; sustained throughput remains unqualified. The external
+clock setup remains 375 kHz for identification and 24 MHz for legacy operation,
+with the existing nonzero host divider and no electrical card-clock measurement.
+
+Both boots also pass twenty-five component and five setting hashes, memory/copy
+checks, inspected Tracker/Deskbar desktops and DHCP at 2.5/1 Gbit/s. This trial
+used a read-only RK3588 profile and issued no file writes or flush ioctls.
+The SSD was not mounted or updated and stays at `+94`. CPU caller buffers above
+4 GiB were not forced; the card reported its cache disabled on both boots.
+Four transfer-complete diagnostics were recorded in total, with their timing
+cause still unisolated. No unexpected failed SDHCI command or panic appeared.
+
+After recovery, Linux copied all 314,572,800 FAT bytes and matched the pretrial
+partition hash `5e372be233ff1e15a894f2024d1e82f914da9f4963d5b38528f67fb38d0c3522`.
+Host FAT consistency checks and both extracted file hashes pass; Linux also
+confirms all three raw reference hashes. ROOBI recovered with boot ID
+`a84eee7f-49db-407d-b875-aa8f22bbbfa5`. Serial capture completed without transport
+errors and the NanoKVM guard disarmed. The previous four-bit write/shutdown
+qualification and retained fixture remain available for the next write trial.
+
+| Evidence | Location under `/mnt/HaikuWork` |
+| --- | --- |
+| Image manifest | `artifacts/mmc-width-image/20260913T165646Z-bb16e9/manifest.json` |
+| Image SHA-256 | `d16fc0c801d97d78ba0263d060e2a288c6b3ecb78dcf0790aa0ca000f79b5d5b` |
+| Full ARM64 build | `artifacts/build-20260913T165620Z.log` |
+| 105 host checks | `artifacts/mmc-width-image/20260913T165646Z-bb16e9/host-checks.log` |
+| Combined QEMU result | `artifacts/qemu-shell/20260913T165737Z-8ea745/result.json` |
+| Native qualification | `artifacts/interactive/20260913T170301Z-f34335/qualification.json` |
+| Native raw reads | Same directory: `shell-20260913T170754Z-933b7b.txt`, `shell-20260913T171156Z-02e0a2.txt` |
+| Native file reads | Same directory: `shell-20260913T170824Z-c70408.txt`, `shell-20260913T171222Z-ffbfd2.txt` |
+| Linux partition/file/FS check | `artifacts/emmc-file-readback/20260913T171448Z-5e2d0b/result.json` |
+| Linux reference reads | `artifacts/emmc-read-reference/20260913T171543Z-e3edbe/result.json` |
+
+`state/native-mmc-width.json` indexes this read-only pass. Protocol references
+include the [Linux MMC width validation](https://github.com/torvalds/linux/blob/v6.12/drivers/mmc/core/mmc.c)
+and [EXT_CSD field definitions](https://github.com/torvalds/linux/blob/v6.12/include/linux/mmc/mmc.h).
+
 ## Native work remaining
 
-Extend the bounded file result to power-loss integrity,
-longer mixed I/O, native caller buffers above 4 GiB and error recovery. Speed
+Extend native eight-bit operation to file writes and persistence. Extend the
+bounded file result to power-loss integrity, longer mixed I/O, native caller
+buffers above 4 GiB and error recovery. Speed
 negotiation/tuning, native cached-card flush behavior and Haiku boot from eMMC
 remain open. Preserve ROOBI and its tested recovery route during these changes.
 
