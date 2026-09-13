@@ -116,6 +116,12 @@ against Windows; evaluate actual ACPI and device-tree tables for Haiku.
 
 ## 11 — Integration and release qualification
 
+The `+148` SSD update has passed package/configuration verification, two accepted
+installed boot/data/network/eMMC/recovery cycles and independent Linux eMMC
+readback. An earlier updated boot missed SATA initialization after a PCIe
+profile rejection; it remains unresolved. [SSD-INTEGRATION.md](SSD-INTEGRATION.md)
+records this bounded checkpoint and the incomplete attempt.
+
 Run cold/warm boots, 24-hour mixed CPU/storage/network/media load, memory checks,
 power-management cycles, device hotplug and filesystem integrity checks. Compare
 each hardware row with the recorded Linux baseline and document measured gaps.

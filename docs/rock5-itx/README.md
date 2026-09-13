@@ -24,11 +24,13 @@ complete EFI partition through an installed-system boot and recovery. The SSD
 has since been updated to include that driver; installed-system TRIM and
 large-file/package readback across normal reboot also passed. The latest
 ITS1 NVMe MSI-X driver has passed installed-system TRIM and subsequent boot
-readback. The SSD is now updated to `hrev60097+94`, including the launcher pipe
-inheritance and terminal partial-write fixes. Two installed boots passed
-component/package hashes, both 2 GiB test regions, startup snapshots, filesystem
-checks and normal reboot to recovery. One earlier `+88` boot stalled before the
-desktop and remote shell; that stall remains unresolved. Sustained storage, error
+readback. The SSD now runs `hrev60097+148`, integrating the qualified Ethernet,
+SATA discovery, eMMC and DMA changes alongside the launcher and terminal fixes.
+Two accepted installed boots passed component/package hashes, both 2 GiB test
+regions, startup snapshots, filesystem checks, concurrent Ethernet traffic,
+read-only eMMC checks and normal reboot to recovery. The first updated SSD boot
+missed SATA initialization after an early PCIe profile rejection; that failure
+and the earlier `+88` startup stall remain unresolved. Sustained storage, error
 recovery and the remaining board hardware still need qualification.
 
 Both onboard Ethernet ports now pass DHCP, static IPv4 and static IPv6 checks,
@@ -44,8 +46,9 @@ The latest USB image also initializes the ASM1164 SATA controller on its four
 direct ports before and after normal reboot. The ARM64 AHCI driver passes
 two-disk read/write, flush and persistence checks in QEMU. No physical SATA
 disk is attached, so native disk I/O remains untested; see [SATA.md](SATA.md).
-The SSD installation remains at `+94` while these newer changes are tested
-from USB.
+The [SSD integration checkpoint](SSD-INTEGRATION.md) records the `+148` update,
+two accepted SSD boot cycles, the earlier SATA startup failure and the
+independent Linux eMMC integrity checks.
 
 The onboard eMMC passes file writes, explicit flush and persistence after normal
 reboot and orderly shutdown/startup in eight-bit mode, including CPU buffers

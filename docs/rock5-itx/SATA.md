@@ -5,6 +5,12 @@ at Linux `0001:11:00.0`. No SATA disk was present in the 2026-09-13 Linux
 baseline. Controller attachment and disk I/O remain separate acceptance gates.
 The Samsung 950 Pro is an NVMe device and is not a SATA test fixture.
 
+The `+148` SSD integration includes this driver. Two accepted installed boots
+initialized all four ports, but an earlier boot rejected the initial PCIe
+firmware profile and missed AHCI attachment. That intermittent startup failure
+remains unresolved; [SSD-INTEGRATION.md](SSD-INTEGRATION.md) records all three
+attempts and the additional emulated SSD/SATA regression.
+
 ## Firmware and interrupt contract
 
 The retained EDK2 v1.1 device tree identifies segment 1, APB `0xfe160000`
