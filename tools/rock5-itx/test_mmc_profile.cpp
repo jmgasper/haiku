@@ -104,9 +104,11 @@ int main()
     assert(!Controller(0x226dc881, 0x08000007, 4, 0x01800500));
     assert(!Controller(0x226dc881, 0x08000007, 5, 0x01800600));
     assert(ClockWrite(0xffff0590) == 0xff000500);
-    { IO io; io.registers.fill(0xa5); io.registers[0x2c] &= ~uint8(4);
+    for (bool identify : {false, true}) {
+      IO io; io.registers.fill(0xa5); io.registers[0x2c] &= ~uint8(4);
       auto before = io.registers;
-      assert(ConfigureLegacy(io) && io.clock == 0x8090 && io.barriers == 2);
+      assert(ConfigureLegacy(io, identify) && io.clock == (identify ? 0xbf90u : 0x8090u)
+          && io.barriers == 2);
       assert(io.Read8(0x508) == 0xa4 && io.Read16(0x52c) == 0xa4a5);
       assert(io.Read32(0x800) == 0x01000001 && io.Read32(0x804) == 0x80000000);
       assert(io.Read32(0x808) == 0 && io.Read32(0x80c) == 0 && io.Read32(0x810) == 0);
@@ -118,10 +120,10 @@ int main()
       }
     }
     { IO io; io.failClock = true;
-      assert(!ConfigureLegacy(io) && io.clockWrites == 1 && !io.writes && io.barriers == 1);
+      assert(!ConfigureLegacy(io, true) && io.clockWrites == 1 && !io.writes && io.barriers == 1);
     }
     { IO io; io.registers[0x2c] = 4;
-      assert(!ConfigureLegacy(io) && !io.clockWrites && !io.writes && !io.barriers);
+      assert(!ConfigureLegacy(io, true) && !io.clockWrites && !io.writes && !io.barriers);
     }
     puts("RK3588 MMC admission and clock sequencing passed");
 }

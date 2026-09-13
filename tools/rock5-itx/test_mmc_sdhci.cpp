@@ -214,7 +214,7 @@ static status_t platformClock(void*, uint32 requested, uint32* baseClock)
     assert(!(regs->clock_control.Bits() & 4));
     if (fault == "platform-clock") return B_IO_ERROR;
     if (requested != 400 && requested != 25000) return B_NOT_SUPPORTED;
-    *baseClock = 24000;
+    *baseClock = requested == 400 ? 375 : 24000;
     return B_OK;
 }
 
@@ -342,7 +342,7 @@ int main()
         }
         assert(bus->InitCheck() == B_OK && (regs->clock_control.Bits() & 4));
         uint16 raw = regs->clock_control.Bits();
-        assert((((raw >> 8) & 255) | ((raw & 0xc0) << 2)) == 32); // 24 MHz / 64
+        assert((((raw >> 8) & 255) | ((raw & 0xc0) << 2)) == 1); // minimum nonzero divider
         bus->SetClock(25000, false);
         raw = regs->clock_control.Bits();
         assert((raw & 4) && (((raw >> 8) & 255) | ((raw & 0xc0) << 2)) == 1); // /2

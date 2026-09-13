@@ -220,9 +220,11 @@ set_rk3588_clock(void* cookie, uint32 requested, uint32* baseClock)
 	if (requested != 400 && requested != 25000)
 		return B_NOT_SUPPORTED;
 	RkMmcIO io = {(FdtMmc*)cookie};
-	if (!RK3588Mmc::ConfigureLegacy(io))
+	if (!RK3588Mmc::ConfigureLegacy(io, requested == 400))
 		return B_IO_ERROR;
-	*baseClock = 24000;
+	// Lower the external PHY/core source for identification as the installed
+	// firmware does. The host divider alone did not identify this native card.
+	*baseClock = requested == 400 ? 375 : 24000;
 	return B_OK;
 }
 
@@ -310,8 +312,9 @@ init_bus_fdt(device_node* node, void** cookie)
 		return status;
 	}
 	*cookie = controller;
-	dprintf("sdhci: RK3588 eMMC IRQ 237, 24 MHz source, 375 kHz identification, "
-		"12 MHz legacy SDR, DMA32, %s\n", info->readOnly ? "read-only" : "writable");
+	dprintf("sdhci: RK3588 eMMC IRQ 237, external clock 375 kHz identification / "
+		"24 MHz legacy SDR, nonzero host divider, DMA32, %s\n",
+		info->readOnly ? "read-only" : "writable");
 	return B_OK;
 }
 

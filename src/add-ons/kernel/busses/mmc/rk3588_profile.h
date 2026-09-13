@@ -16,6 +16,7 @@ static const uint64_t kCru = UINT64_C(0xfd7c0000);
 static const uint32_t kClockOffset = 0x434;
 static const uint32_t kClockMask = 0xff00;
 static const uint32_t kOscillatorClock = 0x8000;
+static const uint32_t kIdentificationClock = 0xbf00; // oscillator / 64
 
 inline uint32_t Read32(const void* bytes)
 {
@@ -99,15 +100,16 @@ inline uint32_t ClockWrite(uint32_t value)
 }
 
 template<class IO>
-bool ConfigureLegacy(IO& io)
+bool ConfigureLegacy(IO& io, bool identify)
 {
 	// RK3588 TRM Part 1 CLKSEL_CON77: select the 24 MHz oscillator
 	// without changing the adjacent NVM bus clock fields. SDCLK must be off.
 	if ((io.Read16(0x2c) & 4) != 0)
 		return false;
-	io.WriteClock(ClockWrite(kOscillatorClock));
+	uint32_t clock = identify ? kIdentificationClock : kOscillatorClock;
+	io.WriteClock(ClockWrite(clock));
 	io.Barrier();
-	if ((io.ReadClock() & kClockMask) != kOscillatorClock)
+	if ((io.ReadClock() & kClockMask) != clock)
 		return false;
 	// Part 2 eMMC: legacy SDR, reset deasserted, data CRC enabled.
 	// Disable command-conflict detection, enhanced strobe and delay lines.
