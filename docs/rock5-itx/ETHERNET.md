@@ -260,8 +260,9 @@ hashes plus truncated-input rejection. The other Ethernet interface was disabled
 for each phase; observed source addresses and per-interface byte counters also
 identify the traffic path. No error/drop counter grew during transfers. These
 are individual-port tests with both cables installed, not simultaneous traffic
-or a throughput benchmark. The original port's prior interface-down receive
-error remained visible; its counter did not increase during its transfer.
+or a throughput benchmark. Both ports' error counters were zero throughout
+these +106 transfers. The one interface-down receive error belonged to the
+earlier +104 session and remains recorded with that separate result.
 
 `state/native-network-media-qualified.json` retains the reviewed checks and
 the initial failed firmware attempt. UART capture and ROOBI recovery completed;
@@ -269,6 +270,31 @@ NanoKVM did not restart and its watchdog disarmed. The SSD was not mounted or
 updated. Simultaneous traffic, static IPv4/IPv6, sustained mixed load, cable
 hotplug, error recovery and throughput remain open, along with the earlier
 `+98` QEMU USB timeout and `+88` native startup stall.
+
+## Concurrent stream fixture
+
+`rock5_network_probe` transfers at most 512 MiB per connection using 64 KiB
+memory buffers. Every word depends on the stream seed and absolute position;
+the receiver checks all bytes and acknowledges verification before the sender
+reports success. The bounded protocol checks a private fixture token, direction,
+length and seed. Socket timeouts and a process deadline limit stalled runs.
+Host tests use an independent wire implementation, partial blocks, corruption,
+truncation, rejected acknowledgements and invalid headers/lengths. The source
+also compiles as C for the recovery Linux compiler.
+
+The optional QEMU `--network-stream --pci-network` gate runs simultaneous send
+and receive streams through the emulated Intel interface on both boots. It
+checks the native helper hash and preserves the host peer's source/binary hashes.
+Reported rates include pattern generation/checking and final acknowledgement;
+they are application transfer measurements, not a claim of wire-rate capacity.
+
+Native simultaneous-port trials use separate temporary IPv4 subnets, explicit
+source addresses and observed interface counters/packet paths. Source binding
+alone cannot prove the egress interface on the shared DHCP subnet:
+`TCPEndpoint::_PrepareSendPath()` caches an unconstrained destination route and
+does not consult `socket->bound_to_device`. That socket-option gap remains open;
+the datalink path's handling of `SO_BINDTODEVICE` does not establish TCP support.
+The stream fixture itself does not change TCP routing or either network driver.
 
 ## References
 

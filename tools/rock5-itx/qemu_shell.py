@@ -80,7 +80,43 @@ def check_transfers(client, output, credentials, fixture, address='10.0.2.100'):
             'roundtrip': 'pass', 'truncated_transfer_rejected': True}
 
 
-def check_pci_network(client, output, credentials, fixture, driver_hash, phase):
+def prepare_stream_peer(output):
+    binary = output / 'network-probe-peer'
+    source = lab.SOURCE / 'tools/rock5-itx/network_probe.cpp'
+    subprocess.run(['g++', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror',
+                    str(source), '-o', str(binary)], check=True, timeout=30)
+    return {'binary': str(binary), 'source_sha256': lab.digest(source),
+            'binary_sha256': lab.digest(binary), 'token': secrets.token_hex(32),
+            'bytes': 8 * 1024 * 1024 + 7, 'seed': 35880001}
+
+
+def check_network_stream(client, output, credentials, fixture, probe_hash):
+    helper = '/boot/home/config/non-packaged/bin/rock5_network_probe'
+    commands = (f'rock5_probe_hash=$(sha256sum {helper})\n'
+                f'[ "${{rock5_probe_hash%% *}}" = {probe_hash} ]\n')
+    for index, direction in enumerate(('receive', 'send')):
+        commands += (f'{helper} {direction} 10.240.7.100 {9010 + index} '
+                     f'{fixture["token"]} {fixture["bytes"]} {fixture["seed"] + index} '
+                     f'10.240.7.15 > /boot/home/rock5-stream-{index}.log 2>&1 &\n'
+                     f'rock5_stream_pid_{index}=$!\n')
+    commands += ('rock5_stream_status=0\n'
+                 'wait "$rock5_stream_pid_0" || rock5_stream_status=1\n'
+                 'wait "$rock5_stream_pid_1" || rock5_stream_status=1\n'
+                 'cat /boot/home/rock5-stream-0.log /boot/home/rock5-stream-1.log\n'
+                 '[ "$rock5_stream_status" -eq 0 ]\n'
+                 'echo ROCK5_NETWORK_STREAM_CHECKS_PASS\n')
+    transcript = output / 'network-stream.txt'
+    shell.execute(client, commands, transcript, credentials, timeout=180)
+    content = transcript.read_text()
+    for direction in ('receive', 'send'):
+        if f'ROCK5_NETWORK_PASS direction={direction} bytes={fixture["bytes"]} ' not in content:
+            raise RuntimeError('Missing checked network stream: ' + direction)
+    return {'status': 'pass', 'bytes_each_direction': fixture['bytes'],
+            'probe_sha256': probe_hash, 'transcript': str(transcript)}
+
+
+def check_pci_network(client, output, credentials, fixture, driver_hash, phase,
+                      stream_fixture=None, probe_hash=None):
     evidence = output / 'pci-network' / phase
     evidence.mkdir()
     commands = (
@@ -95,8 +131,12 @@ def check_pci_network(client, output, credentials, fixture, driver_hash, phase):
         if expected not in text:
             raise RuntimeError('Missing PCI network evidence: ' + expected)
     transfer = check_transfers(client, evidence, credentials, fixture, '10.240.7.100')
-    return {'status': 'pass', 'evidence': str(evidence), 'driver_sha256': driver_hash,
-            'interface': '/dev/net/ipro1000/0', 'file_transfer': transfer}
+    result = {'status': 'pass', 'evidence': str(evidence), 'driver_sha256': driver_hash,
+              'interface': '/dev/net/ipro1000/0', 'file_transfer': transfer}
+    if stream_fixture is not None:
+        result['network_stream'] = check_network_stream(
+            client, evidence, credentials, stream_fixture, probe_hash)
+    return result
 
 
 def diagnose(output):
@@ -145,19 +185,25 @@ def check_pci_config(client, output, credentials, after_reboot=False):
 
 def run(manifest_path, el1=False, memory=False, power=False, normal=False, platform=False,
         transfer=False, services=False, cache=False, nvme=False, pci_config=False,
-        pci_network=False):
+        pci_network=False, network_stream=False):
     if nvme and not (power and normal):
         raise ValueError('NVMe validation requires normal reboot and power-off')
     if pci_config and not nvme:
         raise ValueError('PCI configuration probe requires the extra NVMe fixture')
     if pci_network and pci_config:
         raise ValueError('The fixed PCI configuration probe excludes the extra NIC')
+    if network_stream and not pci_network:
+        raise ValueError('Network streams require the PCI network fixture')
     manifest, image = lab.read_manifest(manifest_path)
     if not manifest.get('private_image'):
         raise ValueError('An authenticated private shell image is required')
     driver_hash = manifest.get('network_dma_test', {}).get('ipro1000_sha256', '')
     if pci_network and not re.fullmatch(r'[0-9a-f]{64}', driver_hash):
         raise ValueError('PCI network trial requires a pinned ipro1000 hash in the manifest')
+    probe_hash = manifest.get('network_stream_probe_sha256', '')
+    if network_stream and not re.fullmatch(r'[0-9a-f]{64}', probe_hash):
+        raise ValueError('Network streams require a pinned native probe hash')
+    stream_fixture = None
     credentials = shell_image.read_credentials()
     output = lab.WORK / 'artifacts/qemu-shell' / lab.timestamp()
     output.mkdir(parents=True)
@@ -202,6 +248,13 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
         for offset, direction in enumerate(('receive', 'send', 'truncated')):
             peer_command = shlex.join([sys.executable, pci_fixture['peer'], direction])
             pci_net += f',guestfwd=tcp:10.240.7.100:{9000 + offset}-cmd:{peer_command}'
+        if network_stream:
+            stream_fixture = prepare_stream_peer(pci_output)
+            for offset, direction in enumerate(('peer-send', 'peer-receive')):
+                peer_command = shlex.join([stream_fixture['binary'], direction,
+                    stream_fixture['token'], str(stream_fixture['bytes']),
+                    str(stream_fixture['seed'] + offset)])
+                pci_net += f',guestfwd=tcp:10.240.7.100:{9010 + offset}-cmd:{peer_command}'
         command += ['-netdev', pci_net,
                     '-device', 'e1000,netdev=dma,mac=52:54:00:35:88:01',
                     '-object', f'filter-dump,id=dma-trace,netdev=dma,file={pci_output / "network.pcap"}']
@@ -211,6 +264,9 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
               'power_mode': 'normal' if normal else 'quick'}
     if nvme:
         result['nvme'] = {'fixture': nvme_fixture}
+    if stream_fixture is not None:
+        result['network_stream_peer'] = {
+            key: value for key, value in stream_fixture.items() if key != 'token'}
     serial = output / 'serial.log'
 
     def wait_for_boot(previous=0):
@@ -295,7 +351,7 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
                     result['file_transfer'] = check_transfers(client, output, credentials, fixture)
                 if pci_network:
                     result['pci_network'] = check_pci_network(client, output, credentials,
-                                                              pci_fixture, driver_hash, 'first-boot')
+                        pci_fixture, driver_hash, 'first-boot', stream_fixture, probe_hash)
                 if services:
                     if 'ROCK5_SERVICES_PASS' not in text or 'ROCK5_SERVICES_FAIL' not in text:
                         raise RuntimeError('Missing service descriptor regression evidence')
@@ -325,7 +381,8 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
                                   credentials)
                     if pci_network:
                         result['pci_network_after_reboot'] = check_pci_network(
-                            client, output, credentials, pci_fixture, driver_hash, 'after-reboot')
+                            client, output, credentials, pci_fixture, driver_hash, 'after-reboot',
+                            stream_fixture, probe_hash)
                     if nvme:
                         if pci_config:
                             result['pci_config_after_reboot'] = check_pci_config(
@@ -376,6 +433,8 @@ def main():
                         help='Read known host/NVMe configuration pages (requires --nvme)')
     parser.add_argument('--pci-network', action='store_true',
                         help='Test BSD DMA with a separate emulated Intel NIC; retain USB control')
+    parser.add_argument('--network-stream', action='store_true',
+                        help='Check simultaneous memory streams over the PCI NIC')
     parser.add_argument('--power', action='store_true', help='Reboot, log in again, then power off')
     parser.add_argument('--normal', action='store_true', help='Use desktop shutdown (requires --power)')
     parser.add_argument('--result', help='Also save the full result at this local path')
@@ -388,12 +447,14 @@ def main():
         parser.error('--pci-config requires --nvme')
     if args.pci_config and args.pci_network:
         parser.error('--pci-config has a fixed inventory and excludes --pci-network')
+    if args.network_stream and not args.pci_network:
+        parser.error('--network-stream requires --pci-network')
     if not os.path.ismount(lab.WORK):
         raise RuntimeError(f'Required filesystem is not mounted: {lab.WORK}')
     os.umask(0o077)
     result = run(args.manifest, args.el1, args.memory, args.power, args.normal, args.platform,
                  args.transfer, args.services, args.cache, args.nvme, args.pci_config,
-                 args.pci_network)
+                 args.pci_network, args.network_stream)
     if args.result:
         lab.save(args.result, result)
     print(json.dumps({key: result.get(key) for key in
