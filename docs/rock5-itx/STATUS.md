@@ -6,8 +6,13 @@ firmware supports it.
 
 Current priority is [Mali-G610 GPU acceleration](GPU.md); further Ethernet
 driver work is deferred at the owner's request. The first firmware container
-component passes host checks with the official image. GPU execution and
-accelerated rendering remain pending.
+component passes host, ARM64 build and two-boot QEMU checks with the official
+image. A native first-boot CPU check passes; the reboot-controller correction
+is being retested. A separate RAM-only Linux 6.18.52 reference now initializes
+Mali-G610 firmware and passes GPU queries and empty-VM lifecycle checks, normal
+reboot and independent recovery/storage integrity. The first Haiku FDT resource
+interface passes its host fixture; its build and attachment are pending. Haiku
+GPU execution and accelerated rendering remain pending.
 
 Latest qualified installed result: `+156` passes two boot, integrity,
 network and normal-reboot cycles, with independent Linux eMMC verification.
@@ -27,7 +32,9 @@ panicked in `VMTranslationMap::PageUnmapped` during concurrent startup-shell
 activity and storage verification. Automatic recovery succeeded with no USB
 checksum errors; independent Linux integrity passed. Page-aging bookkeeping
 has a reproduced host failure and a correction passing 128 host checks;
-new QEMU/native checks are pending, and `+156` remains the qualified baseline.
+the +178 EL2 QEMU check passes. Its EL1 repeat stopped during a profiled
+fault-recovery probe after reboot, without a kernel panic; full qualification
+remains open, and `+156` remains the qualified baseline.
 See [ARM64-PAGE-AGING.md](ARM64-PAGE-AGING.md) and
 [RECOVERY-MEDIA.md](RECOVERY-MEDIA.md).
 

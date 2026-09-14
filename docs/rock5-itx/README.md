@@ -8,8 +8,10 @@ The [GitHub work items](TRACKING.md) split the roadmap into issues and milestone
 
 The current priority is [Mali-G610 GPU support](GPU.md), followed by remaining
 hardware. The owner has deferred further Ethernet driver work. The first GPU
-component validates and prepares firmware memory regions; GPU execution and
-accelerated rendering remain pending.
+component validates and prepares firmware memory regions. A RAM-only Linux
+reference now initializes the actual GPU and firmware. Haiku's next component
+validates native resource descriptions; Haiku GPU execution and accelerated
+rendering remain pending.
 
 The Samsung 950 Pro now has a full-capacity Haiku development installation:
 a 512 MiB EFI partition and a 238 GiB BFS volume. Native Installer copying,

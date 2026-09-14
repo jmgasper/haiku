@@ -1,0 +1,283 @@
+#include "CsfResources.h"
+
+#include <assert.h>
+#include <stdio.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+#include <functional>
+#include <map>
+#include <string>
+#include <vector>
+
+using namespace MaliCSF;
+using uint32 = uint32_t;
+using uint64 = uint64_t;
+using status_t = int32_t;
+static const status_t B_OK = 0, B_BAD_VALUE = -1, B_BAD_ADDRESS = -2,
+	B_DEV_INVALID_IOCTL = -3;
+
+struct module_info { const char* name; };
+struct driver_module_info { module_info info; };
+struct device_node;
+struct fdt_device { device_node* node; };
+struct fdt_bus {};
+struct fdt_device_module_info {
+	driver_module_info info;
+	device_node* (*get_bus)(fdt_device*);
+	const char* (*get_name)(fdt_device*);
+	const void* (*get_prop)(fdt_device*, const char*, int*);
+	bool (*get_reg)(fdt_device*, uint32, uint64*, uint64*);
+	bool (*get_interrupt)(fdt_device*, uint32, device_node**, uint64*);
+};
+struct fdt_bus_module_info {
+	driver_module_info info;
+	device_node* (*node_by_phandle)(fdt_bus*, int);
+};
+struct device_manager_info {
+	status_t (*get_driver)(device_node*, driver_module_info**, void**);
+	device_node* (*get_parent_node)(device_node*);
+	void (*put_node)(device_node*);
+};
+struct device_node {
+	std::string name;
+	device_node* parent = NULL;
+	std::map<std::string, std::vector<uint8_t> > properties;
+	fdt_device device{this};
+	uint64 base = 0, size = 0;
+	bool wrongModule = false;
+	int held = 0;
+};
+
+static device_node sBusNode, sRoot, sGpu, sClock, sPower, sPmu, sRegulator, sGic;
+static fdt_bus sBus;
+static std::map<int, device_node*> sPhandles;
+static uint64 sDecodedIrqs[3] = {124, 125, 126};
+static bool sWrongIrqController;
+
+static const void*
+GetProperty(fdt_device* dev, const char* property, int* length)
+{
+	auto it = dev->node->properties.find(property);
+	if (it == dev->node->properties.end()) {
+		if (length != NULL) *length = -1;
+		return NULL;
+	}
+	if (length != NULL) *length = it->second.size();
+	return it->second.data();
+}
+
+static bool
+GetReg(fdt_device* dev, uint32 index, uint64* base, uint64* size)
+{
+	assert(index == 0);
+	*base = dev->node->base;
+	*size = dev->node->size;
+	return *size != 0;
+}
+
+static bool
+GetInterrupt(fdt_device* dev, uint32 index, device_node** node, uint64* irq)
+{
+	assert(dev->node == &sGpu && index < 3);
+	*node = sWrongIrqController && index == 2 ? &sClock : &sGic;
+	*irq = sDecodedIrqs[index];
+	return true;
+}
+
+static fdt_device_module_info sFdt = {
+	{{"bus_managers/fdt/driver_v1"}},
+	[](fdt_device*) { return &sBusNode; },
+	[](fdt_device* dev) { return dev->node->name.c_str(); },
+	GetProperty, GetReg, GetInterrupt
+};
+static fdt_bus_module_info sFdtBus = {
+	{{"bus_managers/fdt/root/driver_v1"}},
+	[](fdt_bus*, int phandle) -> device_node* {
+		auto it = sPhandles.find(phandle);
+		return it == sPhandles.end() ? NULL : it->second;
+	}
+};
+static driver_module_info sWrongModule = {{"unrelated/driver_v1"}};
+
+static device_manager_info sManager = {
+	[](device_node* node, driver_module_info** module, void** cookie) -> status_t {
+		if (node->wrongModule) {
+			*module = &sWrongModule;
+			*cookie = NULL;
+		} else if (node == &sBusNode) {
+			*module = &sFdtBus.info;
+			*cookie = &sBus;
+		} else {
+			*module = &sFdt.info;
+			*cookie = &node->device;
+		}
+		return B_OK;
+	},
+	[](device_node* node) -> device_node* {
+		if (node->parent != NULL) node->parent->held++;
+		return node->parent;
+	},
+	[](device_node* node) { assert(node->held > 0); node->held--; }
+};
+
+static status_t
+user_memcpy(void* output, const void* input, size_t bytes)
+{
+	if (output == NULL) return B_BAD_ADDRESS;
+	memcpy(output, input, bytes);
+	return B_OK;
+}
+
+#include "driver.inc"
+
+static void
+Cells(device_node& node, const char* property, std::initializer_list<uint32> cells)
+{
+	auto& bytes = node.properties[property];
+	bytes.clear();
+	for (uint32 value : cells) {
+		for (int shift = 24; shift >= 0; shift -= 8)
+			bytes.push_back(value >> shift);
+	}
+}
+
+static void
+Strings(device_node& node, const char* property, std::initializer_list<const char*> strings)
+{
+	auto& bytes = node.properties[property];
+	bytes.clear();
+	for (const char* value : strings)
+		bytes.insert(bytes.end(), value, value + strlen(value) + 1);
+}
+
+static void
+Prepare()
+{
+	for (device_node* node : {&sBusNode, &sRoot, &sGpu, &sClock, &sPower,
+			&sPmu, &sRegulator, &sGic}) {
+		assert(node->held == 0);
+		node->properties.clear();
+		node->wrongModule = false;
+		node->parent = &sRoot;
+	}
+	sRoot.parent = &sBusNode;
+	sBusNode.parent = NULL;
+	sRoot.name = "";
+	sGpu.name = "gpu@fb000000";
+	sPmu.name = "power-management@fd8d8000";
+	sPower.parent = &sPmu;
+	sPhandles = {{33, &sClock}, {34, &sPower}, {77, &sRegulator}};
+	sDecodedIrqs[0] = 124; sDecodedIrqs[1] = 125; sDecodedIrqs[2] = 126;
+	sWrongIrqController = false;
+	sGpu.base = 0xfb000000; sGpu.size = 0x200000;
+	sClock.base = 0xfd7c0000; sClock.size = 0x5c000;
+	sPmu.base = 0xfd8d8000; sPmu.size = 0x400;
+	sGic.base = 0xfe600000; sGic.size = 0x10000;
+	Strings(sRoot, "compatible", {"radxa,rock-5-itx", "rockchip,rk3588"});
+	Strings(sGpu, "compatible", {"rockchip,rk3588-mali", "arm,mali-valhall-csf"});
+	Strings(sGpu, "status", {"okay"});
+	Strings(sGpu, "interrupt-names", {"job", "mmu", "gpu"});
+	Strings(sGpu, "clock-names", {"core", "coregroup", "stacks"});
+	Cells(sGpu, "interrupts", {0, 92, 4, 0, 0, 93, 4, 0, 0, 94, 4, 0});
+	Cells(sGpu, "clocks", {33, 262, 33, 263, 33, 264});
+	Cells(sGpu, "power-domains", {34, 12});
+	Cells(sGpu, "mali-supply", {77});
+	Strings(sGic, "compatible", {"arm,gic-v3"});
+	Cells(sGic, "#interrupt-cells", {4});
+	Strings(sClock, "compatible", {"rockchip,rk3588-cru"});
+	Cells(sClock, "#clock-cells", {1});
+	Strings(sPower, "compatible", {"rockchip,rk3588-power-controller"});
+	Cells(sPower, "#power-domain-cells", {1});
+	Strings(sPmu, "compatible", {"rockchip,rk3588-pmu", "syscon", "simple-mfd"});
+	Strings(sRegulator, "regulator-name", {"vdd_gpu_s0"});
+	Cells(sRegulator, "regulator-min-microvolt", {550000});
+	Cells(sRegulator, "regulator-max-microvolt", {950000});
+}
+
+int
+main()
+{
+	static_assert(sizeof(ResourceInfo) == 168, "Diagnostic ABI layout changed");
+	sDeviceManager = &sManager;
+	Prepare();
+	ResourceInfo good = {};
+	assert(ReadResources(&sGpu, good) && ResourcesMatch(good));
+	assert(good.supplyPhandle == 77 && good.interrupts[2] == 126);
+	assert(good.clockBase == 0xfd7c0000 && good.powerBase == 0xfd8d8000);
+	// Phandles are references, not fixed numerical board identifiers.
+	sPhandles.erase(33); sPhandles[909] = &sClock;
+	Cells(sGpu, "clocks", {909, 262, 909, 263, 909, 264});
+	ResourceInfo moved = {};
+	assert(ReadResources(&sGpu, moved) && memcmp(&moved, &good, sizeof(good)) == 0);
+
+	std::vector<std::function<void()> > faults = {
+		[] { sRoot.properties["compatible"].pop_back(); },
+		[] { Strings(sRoot, "compatible", {"radxa,rock-5b", "rockchip,rk3588"}); },
+		[] { Strings(sGpu, "status", {"disabled"}); },
+		[] { sGpu.wrongModule = true; },
+		[] { sClock.wrongModule = true; },
+		[] { sPmu.wrongModule = true; },
+		[] { sGpu.size = 0x1000; },
+		[] { sGpu.base += 4096; },
+		[] { sClock.base += 4096; },
+		[] { sPmu.size = 0x100; },
+		[] { sGic.base += 4096; },
+		[] { sGpu.properties.erase("mali-supply"); },
+		[] { sPhandles.erase(77); },
+		[] { Cells(sGpu, "mali-supply", {0}); },
+		[] { Strings(sRegulator, "regulator-name", {"vdd_cpu_lit_s0"}); },
+		[] { Cells(sRegulator, "regulator-max-microvolt", {1050000}); },
+		[] { sPower.parent = &sClock; },
+		[] { Cells(sGpu, "power-domains", {34, 13}); },
+		[] { Cells(sPower, "#power-domain-cells", {2}); },
+		[] { Cells(sClock, "#clock-cells", {2}); },
+		[] { Cells(sGpu, "clocks", {33, 262, 34, 263, 33, 264}); },
+		[] { Cells(sGpu, "clocks", {33, 262, 33, 264, 33, 263}); },
+		[] { sGpu.properties["clocks"].pop_back(); },
+		[] { Strings(sGpu, "clock-names", {"core", "coregroup", "stacks", "extra"}); },
+		[] { Strings(sGpu, "clock-names", {"core", "coregroup", "core"}); },
+		[] { sDecodedIrqs[1] = 93; },
+		[] { sWrongIrqController = true; },
+		[] { Cells(sGic, "#interrupt-cells", {3}); },
+		[] { sGpu.properties["interrupts"][11] = 1; },
+		[] { Cells(sGpu, "interrupts-extended", {1}); },
+		[] { sGpu.properties["interrupts"].resize(12); },
+		[] { Strings(sGpu, "interrupt-names", {"gpu", "mmu", "job"}); },
+	};
+	for (auto& fault : faults) {
+		Prepare(); fault();
+		ResourceInfo invalid;
+		memset(&invalid, 0xa5, sizeof(invalid));
+		assert(!ReadResources(&sGpu, invalid));
+		for (unsigned char byte : std::vector<unsigned char>((unsigned char*)&invalid,
+				(unsigned char*)&invalid + sizeof(invalid))) assert(byte == 0xa5);
+	}
+	Prepare(); // Also asserts that parent-node references were released on failure.
+	Controller controller{};
+	controller.resources = good;
+	ResourceInfo copy;
+	assert(Control(&controller, kGetResources, &copy, sizeof(copy)) == B_OK);
+	assert(memcmp(&copy, &good, sizeof(good)) == 0);
+	assert(Control(&controller, kGetResources, NULL, sizeof(copy)) == B_BAD_ADDRESS);
+	assert(Control(&controller, kGetResources, &copy, sizeof(copy) - 1) == B_BAD_VALUE);
+	assert(Control(&controller, kGetResources, &copy, sizeof(copy) + 1) == B_BAD_VALUE);
+	assert(Control(&controller, kGetResources + 1, &copy, sizeof(copy)) == B_DEV_INVALID_IOCTL);
+	copy.boardCompatible[16] = 'x';
+	assert(!ResourcesMatch(copy));
+
+	size_t page = sysconf(_SC_PAGESIZE);
+	uint8_t* memory = (uint8_t*)mmap(NULL, 2 * page, PROT_READ | PROT_WRITE,
+		MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	assert(memory != MAP_FAILED && mprotect(memory + page, page, PROT_NONE) == 0);
+	uint32 value = 0;
+	memcpy(memory + page - 5, "\x12\x34\x56\x78", 4);
+	assert(ReadCells(memory + page - 5, 4, &value, 1) && value == 0x12345678);
+	assert(!ReadCells(memory + page - 3, 3, &value, 1));
+	memcpy(memory + page - 3, "abc", 3);
+	assert(StringIndex(memory + page - 3, 3, "abc") == -1);
+	assert(StringIndex("core\0bad", 8, "core") == -1);
+	assert(StringIndex("core\0core", 10, "core") == -1);
+	assert(munmap(memory, 2 * page) == 0);
+	puts("MALI_CSF_RESOURCES_TEST_PASS");
+}

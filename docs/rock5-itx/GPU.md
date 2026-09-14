@@ -13,10 +13,26 @@ SCMI/CRU clocks, a regulator and a power domain. The old Panfrost module fails
 while parsing vendor operating points. Initial inventory finds no GPU driver,
 no Mali device and an off power domain. The DRM nodes belong to the display
 controller and NPU; they do not prove Mali rendering. The installed
-`bifrost_kbase` CSF module is being evaluated separately.
+`bifrost_kbase` CSF module panicked in the vendor power-domain driver while
+enabling the GPU domain. Automatic recovery and independent storage checks
+passed; that vendor trial remains failed.
+
+A separate Linux 6.18.52 EFI image now boots from a built-in RAM filesystem on
+the actual board. Mainline Panthor initializes the Mali-G610 and official
+arch10.8 firmware, reports CSF interface 1.5.0, and passes GPU/interface queries
+and empty GPU-VM creation/destruction. The GPU ID is `a8670005`, MMU features
+`2830`, shader mask `50005`, with eight address spaces and eight CSF group slots.
+The test then reboots normally to ROOBI. Its boot image, recovery image and eMMC
+integrity checks pass, and the NanoKVM watchdog disarms. This proves a working
+firmware baseline; no GPU job submission or rendering was tested. Linux used
+temporary ignore-unused clock/regulator/power-domain settings for this reference.
 
 EDK2's mainline tree uses `rockchip,rk3588-mali` / `arm,mali-valhall-csf`.
-The actual Haiku handoff must be checked before MMIO access. PCB revision is
+The actual Haiku device tree was captured on two +179 boots and is identical:
+184,025 bytes, SHA-256
+`d28f6e039a228ba655bc7e804c5fddaa843ec82d4cf965d79eec27972e74e574`.
+Its GPU, CRU, PMU, GIC, clocks, IRQs and supply description match the new
+resource admission profile. PCB revision is
 v1.12; the public v1.11 schematic alone does not validate new regulator or
 wiring assumptions. Do not read a powered-off GPU speculatively.
 
@@ -49,7 +65,29 @@ one protected region and 16 ignored metadata records. All 129 host tests pass.
 The new production-code fixture uses ASan/UBSan and guarded memory to check
 truncation, unsupported records, reversed/overlapping ranges, valid aliases,
 limits, unaligned input, copy bounds, zeroed padding and failed reinitialization.
-ARM64 build and boot execution of this probe remain pending.
+The ARM64 build and two-boot EL1/EL2 QEMU firmware checks pass. The first native
+CPU preparation check also passes, but that two-boot controller failed to
+schedule reboot because its log directory was absent. The board shut down
+cleanly and recovered with unchanged recovery/eMMC hashes. Corrected scripts
+open their `/tmp` log before launching the delayed command. Both CPU checks
+pass in the repeat; final recovery and integrity qualification are pending.
+
+## Native resource interface
+
+The next kernel component binds the RK3588 CSF device only after validating
+the board, named interrupts, clock provider, power controller and supply
+description. It resolves phandles instead of fixing their numerical values.
+It exposes a pointer-free, read-only snapshot at `graphics/mali_csf/0`, checked
+by `rock5_mali_resource_probe`. It performs no MMIO, clock, regulator, power,
+interrupt-handler or GPU-memory operation. Its diagnostic marker records
+`gpu_accessed=0`; the supply range is a firmware description, not a voltage
+measurement. It supplies no display accelerant.
+
+The production FDT traversal and ioctl run in a host fixture covering changed
+phandles, missing/wrong providers, incompatible boards, malformed cell/string
+arrays, incorrect IRQ routes, parent-reference cleanup and ioctl bounds. Guarded
+pages check truncated and unaligned input. ARM64 build and native attachment
+are pending.
 
 ## Next milestones
 
@@ -77,6 +115,12 @@ ARM64 build and boot execution of this probe remain pending.
 - [HaikuPorts recipe and patches](https://github.com/haikuports/haikuports/tree/50ed75230b0be025c78f99a47508d1825799677d/sys-libs/mesa),
   revision `50ed75230b0be025c78f99a47508d1825799677d`.
 - [Installed EDK2 v1.1 source](https://github.com/edk2-porting/edk2-rk3588/tree/6a682c0ef3ed74feb8b0d98f1c2aa771ddfbae18).
+- [Linux 6.18.52 source](https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.52.tar.xz),
+  archive SHA-256 `2b69564f7d4fea0c859b1959ba33709ee6e9139bd100e30a853b57159a8221b8`.
+  Native firmware/VM/reference qualification:
+  `artifacts/native-linux-gpu-reference/20260914T210244Z-af8ef5/qualification.json`.
+  The 96 MiB EFI/RAM image SHA-256 is
+  `2f1b2e90cb5706b0238fd40e523c2c38e3ea8876b4da24058fb99641423b1b69`.
 - [Official arch10.8 firmware](https://gitlab.com/kernel-firmware/linux-firmware/-/blob/eeccccbe83daf22e1931e3557ba05b2c02427e4e/arm/mali/arch10.8/mali_csffw.bin),
   revision `eeccccbe83daf22e1931e3557ba05b2c02427e4e`, SHA-256
   `a27847ea11f8efb3136340c3ba8aab413ae25145eeb4a7f64ff5edd829a2405b`.
