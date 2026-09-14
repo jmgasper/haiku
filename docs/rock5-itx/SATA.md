@@ -5,11 +5,11 @@ at Linux `0001:11:00.0`. No SATA disk was present in the 2026-09-13 Linux
 baseline. Controller attachment and disk I/O remain separate acceptance gates.
 The Samsung 950 Pro is an NVMe device and is not a SATA test fixture.
 
-The `+148` SSD integration includes this driver. Two accepted installed boots
-initialized all four ports, but an earlier boot rejected the initial PCIe
-firmware profile and missed AHCI attachment. The SSD still has that older
-driver; [SSD-INTEGRATION.md](SSD-INTEGRATION.md) records all three
-attempts and the additional emulated SSD/SATA regression.
+The earlier `+148` SSD integration initialized all four ports on two accepted
+boots, but its first boot rejected the PCIe firmware profile and missed AHCI
+attachment. The current SSD runs `+156` with the training fix described below.
+[SSD-INTEGRATION.md](SSD-INTEGRATION.md) records two accepted new boot cycles
+and links to the retained earlier failure.
 
 The `+154` USB diagnostic reproduced this failure. Segment 1's root snapshot
 reported link status `0xb823`: the data link was active at x2 and speed encoding
@@ -18,11 +18,12 @@ condition matched. The root passed validation later in that same boot, but
 AHCI did not attach. A normal reboot of the unchanged image initialized all
 four ports. The subsequent `+156` USB candidate now handles that condition:
 it observed the same training flag, waited 2,587 us over two polls for it to
-clear, and then initialized AHCI and all four ports. Complete native checks,
-normal reboot and independent Linux eMMC integrity passed. Integration into
-the SSD and broader startup/error coverage are still pending. The original
-failure and bounded native result are recorded in
-[PCIe training](PCIE-TRAINING.md).
+clear, and then initialized AHCI and all four ports. The installed SSD then
+encountered the same state and waited 1,577 us over one poll before successful
+SATA initialization. Two installed boot cycles, normal reboot and independent
+Linux eMMC integrity passed. Broader startup/error coverage and native SATA
+disk I/O remain pending. The original failure and bounded native results are
+recorded in [PCIe training](PCIE-TRAINING.md).
 
 ## Firmware and interrupt contract
 

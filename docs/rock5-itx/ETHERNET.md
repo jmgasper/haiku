@@ -1,12 +1,17 @@
 # ROCK 5 ITX Ethernet bring-up
 
-Both onboard RTL8125 controllers now attach and receive interrupts under the
-retained EDK2 v1.1 firmware. Each port has passed bounded, checksum-verified
-transfers in the `+106` test image: port 0 at a negotiated 2.5 Gbit/s and port 1
-at 1 Gbit/s. Port 0 also passed after normal reboot; an initial firmware stall
-required one reset and remains unresolved. [NETWORK-DMA.md](NETWORK-DMA.md)
-records the prerequisite DMA work and emulated Intel traffic. Full Ethernet
-acceptance remains open, and the SSD installation remains at `+94`.
+Both onboard RTL8125 controllers attach and receive interrupts under retained
+EDK2 v1.1 firmware. USB candidates pass DHCP and bounded simultaneous static
+IPv4/IPv6 traffic, including IPv6 address replacement and route selection.
+The current `+156` SSD passes DHCP at negotiated 2.5/1 Gbit/s and four concurrent
+IPv4 streams on each of two accepted boots. The SFP-connected port is the
+2.5 Gbit/s link; measured throughput remains below Linux. See
+[SSD-INTEGRATION.md](SSD-INTEGRATION.md) for the current installed results.
+
+The sections below retain the earlier candidates, failures and measured scope.
+[NETWORK-DMA.md](NETWORK-DMA.md) records the prerequisite DMA work. Automatic
+IPv6 configuration, sustained traffic, performance and fault recovery remain
+open, as do the earlier firmware/startup and USB control failures.
 
 ## Legacy interrupt candidate
 

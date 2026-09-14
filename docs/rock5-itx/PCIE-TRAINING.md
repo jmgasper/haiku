@@ -1,10 +1,13 @@
 # PCIe startup training
 
-The `+156` USB candidate now handles the captured SATA startup condition on
-this board. On a native reboot it observed Link Training, waited 2,587 us
-over two polls for that flag to clear, and then initialized AHCI and all four
-direct ports. This validates that specific transition; the SSD still runs
-`+148`, and other startup failures and native SATA disk I/O remain open.
+The `+156` driver handles the captured SATA startup condition on this board.
+The USB candidate waited 2,587 us over two polls for Link Training to clear,
+then initialized AHCI and all four direct ports. The updated physical SSD has
+now exercised the same fix: a 1,577 us wait on its first boot was followed by
+successful SATA initialization. Two installed boot/integrity/network/recovery
+cycles and independent Linux eMMC checks passed. This validates that specific
+transition; other startup failures and native SATA disk I/O remain open.
+The installed evidence is in [SSD-INTEGRATION.md](SSD-INTEGRATION.md).
 
 ## Original diagnostic
 

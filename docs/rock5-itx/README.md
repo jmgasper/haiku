@@ -1,8 +1,8 @@
 # Haiku on ROCK 5 ITX
 
-This is jmgasper's experimental ARM64 board fork. The immediate deliverable is
-a reproducible build and a remotely controlled hardware lab. Native ROCK boot
-and driver support are tracked separately in [STATUS.md](STATUS.md) and the
+This is jmgasper's experimental ARM64 board fork. The lab can build, deploy,
+boot, test and recover the dedicated board remotely. Native ROCK boot and
+driver support are tracked separately in [STATUS.md](STATUS.md) and the
 [hardware roadmap](ROADMAP.md). This is not a fully supported Haiku image yet.
 The [GitHub work items](TRACKING.md) split the roadmap into issues and milestones.
 
@@ -24,18 +24,16 @@ complete EFI partition through an installed-system boot and recovery. The SSD
 has since been updated to include that driver; installed-system TRIM and
 large-file/package readback across normal reboot also passed. The latest
 ITS1 NVMe MSI-X driver has passed installed-system TRIM and subsequent boot
-readback. The SSD now runs `hrev60097+148`, integrating the qualified Ethernet,
-SATA discovery, eMMC and DMA changes alongside the launcher and terminal fixes.
-Two accepted installed boots passed component/package hashes, both 2 GiB test
-regions, startup snapshots, filesystem checks, concurrent Ethernet traffic,
-read-only eMMC checks and normal reboot to recovery. The first updated SSD boot
-missed SATA initialization after an early PCIe profile rejection. A subsequent
-diagnostic found its Link Training flag still set. The `+156` USB candidate
-has now handled that same state on real hardware: a 2.6 ms bounded wait was
-followed by AHCI attachment and initialization of all four ports. Two complete
-USB boots passed the integrity checks and normal reboot. The SSD still runs
-`+148` pending integration of this change. [PCIe training](PCIE-TRAINING.md)
-records the original failure, retained incomplete trial and accepted result.
+readback. The SSD now runs `hrev60097+156`, integrating the qualified board
+drivers and the PCIe training fix. Two installed boots passed component/package
+hashes, both 2 GiB test regions, startup snapshots, filesystem checks,
+concurrent Ethernet traffic, read-only eMMC checks and normal reboot to recovery.
+Linux independently verified the eMMC files, filesystem and reference regions.
+The first new SSD boot encountered SATA Link Training, waited 1.6 ms for it to
+clear, then initialized AHCI and all four ports. The second found the link
+ready. [PCIe training](PCIE-TRAINING.md) and
+[SSD integration](SSD-INTEGRATION.md) record the original failure, retained
+incomplete trials and accepted results.
 The earlier `+88` startup stall, sustained storage, error recovery and the
 remaining board hardware still need qualification.
 
@@ -52,9 +50,9 @@ The latest USB image also initializes the ASM1164 SATA controller on its four
 direct ports before and after normal reboot. The ARM64 AHCI driver passes
 two-disk read/write, flush and persistence checks in QEMU. No physical SATA
 disk is attached, so native disk I/O remains untested; see [SATA.md](SATA.md).
-The [SSD integration checkpoint](SSD-INTEGRATION.md) records the `+148` update,
-two accepted SSD boot cycles, the earlier SATA startup failure and the
-independent Linux eMMC integrity checks.
+The [SSD integration checkpoint](SSD-INTEGRATION.md) records the `+156` update,
+two accepted SSD boot cycles and independent Linux eMMC integrity checks, with
+a link to the earlier `+148` update and SATA startup failure.
 
 The onboard eMMC passes file writes, explicit flush and persistence after normal
 reboot and orderly shutdown/startup in eight-bit mode, including CPU buffers
