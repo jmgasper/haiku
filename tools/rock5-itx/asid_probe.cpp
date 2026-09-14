@@ -94,10 +94,10 @@ static bool ReplyToParent(int fd, unsigned child, unsigned round, bool good)
 	do { bytes = write(fd, &reply, sizeof(reply)); } while (bytes < 0 && errno == EINTR);
 	return bytes == ssize_t(sizeof(reply));
 }
-static void Child(unsigned index, int gate, int reply, unsigned corrupt)
+static void Child(unsigned index, int gate, int reply, unsigned corrupt, unsigned idleSeconds)
 {
 	signal(SIGTERM, SIG_DFL); signal(SIGINT, SIG_DFL); signal(SIGALRM, SIG_DFL);
-	alarm(100);
+	alarm(100 + idleSeconds);
 	bool good = Pin(index);
 	Fill(index, 0);
 	if (!ReplyToParent(reply, index, 0, good && Check(index, 0))) _exit(2);
@@ -170,7 +170,7 @@ static unsigned Reap(unsigned count, unsigned& successful, bool& good)
 }
 int main(int argc, char** argv)
 {
-	unsigned count = 280, rounds = 4, corrupt = kMaximumChildren;
+	unsigned count = 280, rounds = 4, corrupt = kMaximumChildren, idleSeconds = 0;
 	for (int i = 1; i < argc; i += 2) {
 		if (i + 1 >= argc) return 2;
 		char* end;
@@ -179,10 +179,11 @@ int main(int argc, char** argv)
 		if (strcmp(argv[i], "--children") == 0) count = value;
 		else if (strcmp(argv[i], "--rounds") == 0) rounds = value;
 		else if (strcmp(argv[i], "--corrupt-child") == 0) corrupt = value;
+		else if (strcmp(argv[i], "--idle-seconds") == 0) idleSeconds = value;
 		else return 2;
 	}
 	if (count < 1 || count > kMaximumChildren || rounds < 1 || rounds > 16
-		|| (corrupt != kMaximumChildren && corrupt >= count)) return 2;
+		|| (corrupt != kMaximumChildren && corrupt >= count) || idleSeconds > 120) return 2;
 	if (!DiscoverCPUs()) return 1;
 	struct rlimit limit;
 	if (getrlimit(RLIMIT_NOFILE, &limit) != 0) return 1;
@@ -206,8 +207,8 @@ int main(int argc, char** argv)
 	signal(SIGTERM, Interrupted); signal(SIGINT, Interrupted); signal(SIGALRM, Interrupted);
 	signal(SIGPIPE, SIG_IGN);
 	uint64_t started = Now();
-	sDeadline = started + 90000000;
-	alarm(90);
+	sDeadline = started + uint64_t(90 + idleSeconds) * 1000000;
+	alarm(90 + idleSeconds);
 	printf("ROCK5_ASID_POOL_BEGIN children=%u rounds=%u cpus=%u page_bytes=%zu private_va=%p\n",
 		count, rounds, sCPUs, sPageBytes, (void*)sPrivate);
 	fflush(stdout);
@@ -220,7 +221,7 @@ int main(int argc, char** argv)
 		if (pid == 0) {
 			close(replies[0]);
 			for (unsigned i = 0; i <= created; ++i) close(sGates[i]);
-			Child(created, gate[0], replies[1], corrupt);
+			Child(created, gate[0], replies[1], corrupt, idleSeconds);
 			_exit(99);
 		}
 		close(gate[0]);
@@ -232,6 +233,20 @@ int main(int argc, char** argv)
 		&& Check(kMaximumChildren + 1, 0);
 	printf("ROCK5_ASID_POOL_READY created=%u expected=%u ready=%u\n", created, count, good ? count : 0);
 	fflush(stdout);
+	if (good && idleSeconds != 0) {
+		uint64_t idleStarted = Now();
+		uint64_t idleUntil = idleStarted + uint64_t(idleSeconds) * 1000000;
+		printf("ROCK5_ASID_IDLE_BEGIN children=%u seconds=%u\n", count, idleSeconds);
+		fflush(stdout);
+		// Keep all child maps alive but sleeping while the page daemon ages
+		// their accessed pages, including maps whose ASIDs were recycled.
+		while (Active() && Now() < idleUntil)
+			usleep(100000);
+		good &= Active();
+		printf("ROCK5_ASID_IDLE_END children=%u elapsed_us=%" PRIu64 "\n",
+			count, Now() - idleStarted);
+		fflush(stdout);
+	}
 	unsigned completed = 0;
 	for (unsigned round = 1; good && round <= rounds && Active(); ++round) {
 		unsigned char command = round;

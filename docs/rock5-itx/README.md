@@ -24,7 +24,7 @@ complete EFI partition through an installed-system boot and recovery. The SSD
 has since been updated to include that driver; installed-system TRIM and
 large-file/package readback across normal reboot also passed. The latest
 ITS1 NVMe MSI-X driver has passed installed-system TRIM and subsequent boot
-readback. The SSD now runs `hrev60097+156`, integrating the qualified board
+readback. The latest qualified SSD baseline is `hrev60097+156`, integrating the qualified board
 drivers and the PCIe training fix. Two installed boots passed component/package
 hashes, both 2 GiB test regions, startup snapshots, filesystem checks,
 concurrent Ethernet traffic, read-only eMMC checks and normal reboot to recovery.
@@ -64,7 +64,10 @@ process maps across all eight CPUs, deliberate memory-mismatch cleanup and
 subsequent reuse. It reserves address-space identifier zero for the empty user
 page table. Both QEMU modes, 119 host checks, network transfers, normal reboot
 and independent recovery/storage checks pass; [ARM64-ASID.md](ARM64-ASID.md)
-records the evidence and limits. SSD integration remains a separate next step.
+records the evidence and limits. Its SSD update passed installation checks and
+a separate clean recovery witness, but the first installed boot later exposed
+an [ARM64 page-aging failure](ARM64-PAGE-AGING.md). The corrected kernel is
+being validated; the physically updated `+174` SSD is not yet a qualified baseline.
 
 The latest USB image also initializes the ASM1164 SATA controller on its four
 direct ports before and after normal reboot. The ARM64 AHCI driver passes

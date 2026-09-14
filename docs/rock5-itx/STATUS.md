@@ -21,7 +21,9 @@ and passed its preflight, profiler, ASID and process-teardown checks, then
 panicked in `VMTranslationMap::PageUnmapped` during concurrent startup-shell
 activity and storage verification. Automatic recovery succeeded with no USB
 checksum errors; independent Linux integrity passed. Page-aging bookkeeping
-is under investigation, and `+156` remains the qualified baseline. See
+has a reproduced host failure and a correction passing 128 host checks;
+new QEMU/native checks are pending, and `+156` remains the qualified baseline.
+See [ARM64-PAGE-AGING.md](ARM64-PAGE-AGING.md) and
 [RECOVERY-MEDIA.md](RECOVERY-MEDIA.md).
 
 | Area | Evidence and state |

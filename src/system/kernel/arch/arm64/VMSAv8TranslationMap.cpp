@@ -932,6 +932,8 @@ VMSAv8TranslationMap::ClearAccessedAndModified(
 			// bit to proceed.
 			while (true) {
 				oldPte = atomic_get64((int64_t*)ptePtr);
+				if ((oldPte & kPteValidMask) == 0)
+					return;
 				uint64_t newPte = oldPte & ~kAttrAF;
 				newPte = set_pte_clean(newPte);
 
@@ -946,10 +948,19 @@ VMSAv8TranslationMap::ClearAccessedAndModified(
 		});
 
 	pinner.Unlock();
+	if ((oldPte & kPteValidMask) == 0) {
+		_modified = false;
+		return false;
+	}
 	_modified = is_pte_dirty(oldPte);
 
-	if (FlushVAIfAccessed(oldPte, address))
+	// Accessed state comes from the PTE. A global flush or a user map whose
+	// ASID was recycled need not return true from FlushVAIfAccessed(), but
+	// their accessed PTE was retained and still needs its mapping record.
+	if (is_pte_accessed(oldPte)) {
+		FlushVAIfAccessed(oldPte, address);
 		return true;
+	}
 
 	if (!unmapIfUnaccessed)
 		return false;
