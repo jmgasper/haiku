@@ -8,6 +8,7 @@ SimpleTest rock5_nvme_stress : nvme_stress.cpp ;
 SimpleTest rock5_nvme_trim_probe : nvme_trim_probe.cpp ;
 SimpleTest rock5_pty_write_probe : pty_write_probe.cpp ;
 SimpleTest rock5_platform_probe : platform_probe.cpp ;
+SimpleTest rock5_asid_probe : asid_probe.cpp ;
 SimpleTest rock5_cache_probe : cache_probe.cpp ;
 UsePrivateHeaders drivers ;
 SimpleTest rock5_pci_config_probe : pci_config_probe.cpp ;
