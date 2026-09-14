@@ -19,7 +19,8 @@ using status_t = int32;
 static const status_t B_OK = 0, B_ERROR = -1;
 static const size_t B_PAGE_SIZE = 4096, KERNEL_STACK_GUARD_PAGES = 1;
 static const uint32 STACK_TRACE_KERNEL = 1, STACK_TRACE_USER = 2;
-static const uint64 PSR_M_MASK = 15, PSR_M_EL0t = 0, PSR_M_EL1h = 5;
+static const uint64 PSR_M_MASK = 15, PSR_M_32 = 16, PSR_M_EL0t = 0,
+	PSR_M_EL1h = 5, PSR_M_EL2h = 9;
 static const addr_t kKernelPC = 0xffff000000100000ULL;
 static const addr_t kUserPC = 0x100000, USER_BASE = 0x1000, USER_TOP = 0xffffffff;
 static uint8* sStack;
@@ -162,6 +163,15 @@ main()
 	Expect({kKernelPC + 0x100, kKernelPC + 0x200, kUserPC + 0x100,
 		kUserPC + 0x200, kUserPC + 0x300});
 	assert(sUserReads == 2 && sUserFaults == 0);
+	// Captured QEMU VHE frames use EL2h, including other saved PSTATE bits.
+	for (uint64 mode : {PSR_M_EL1h, PSR_M_EL2h, uint64(0x60002009)}) {
+		Reset();
+		SetIFrame(1, (addr_t)sStack + 0x1808, mode, kKernelPC + 0x100,
+			(addr_t)sStack + 0x2000);
+		Expect({kKernelPC + 0x100, kKernelPC + 0x200, kUserPC + 0x100,
+			kUserPC + 0x200, kUserPC + 0x300});
+	}
+	Reset();
 	Expect({kKernelPC + 0x400, kKernelPC + 0x100, kKernelPC + 0x200,
 		kUserPC + 0x100, kUserPC + 0x200, kUserPC + 0x300}, 0);
 	Expect({kKernelPC + 0x100, kKernelPC + 0x200}, 1, 0, STACK_TRACE_KERNEL);
@@ -215,8 +225,11 @@ main()
 		Expect({});
 	}
 	Reset();
-	SetIFrame(1, (addr_t)sStack + 0x1808, 4, kKernelPC + 0x100, 0x10000);
-	Expect({});
+	for (uint64 mode : {uint64(4), uint64(8), uint64(12), PSR_M_32,
+		PSR_M_32 | PSR_M_EL1h, PSR_M_32 | PSR_M_EL2h}) {
+		SetIFrame(1, (addr_t)sStack + 0x1808, mode, kKernelPC + 0x100, 0x10000);
+		Expect({});
+	}
 	SetIFrame(1, (addr_t)sStack + 0x1808, PSR_M_EL1h, kKernelPC + 0x100, 0x10000);
 	Expect({kKernelPC + 0x100});
 	assert(sUserReads == 0);

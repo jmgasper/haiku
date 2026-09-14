@@ -20,7 +20,6 @@
 #include <vm/VMArea.h>
 
 #define NUM_PREVIOUS_LOCATIONS 32
-#define TRACE_ARM64_SAMPLING
 
 extern struct iframe_stack gBootFrameStack;
 
@@ -505,20 +504,6 @@ arch_get_stack_trace(addr_t* returnAddresses, int32 maxCount,
 		return 0;
 
 	int32 iframeCount = thread->arch_info.iframes.index;
-#ifdef TRACE_ARM64_SAMPLING
-	// Temporary bounded QEMU diagnosis of empty EL1 samples.
-	static int32 sSampleDiagnostics;
-	if (iframeCount > 0 && iframeCount <= IFRAME_TRACE_DEPTH
-		&& atomic_add(&sSampleDiagnostics, 1) < 24) {
-		sampled_iframe frame = {};
-		bool readable = read_sampled_iframe(thread, iframeCount - 1, frame);
-		dprintf("arm64 sample: depth=%" B_PRId32 " base=%#" B_PRIxADDR
-			" top=%#" B_PRIxADDR " iframe=%#" B_PRIxADDR " read=%d"
-			" pc=%#" B_PRIxADDR " fp=%#" B_PRIxADDR " spsr=%#" B_PRIx64 "\n",
-			iframeCount, thread->kernel_stack_base, thread->kernel_stack_top,
-			frame.address, readable, frame.pc, frame.fp, frame.spsr);
-	}
-#endif
 	if (iframeCount < 0 || iframeCount > IFRAME_TRACE_DEPTH
 		|| skipIframes > iframeCount) {
 		return 0;
@@ -569,8 +554,11 @@ arch_get_stack_trace(addr_t* returnAddresses, int32 maxCount,
 			if (!read_sampled_iframe(thread, foundIFrame, frame))
 				break;
 			uint64 mode = frame.spsr & PSR_M_MASK;
-			if (mode != PSR_M_EL0t && mode != PSR_M_EL1h)
+			// The EFI loader keeps the kernel at EL2 when VHE is available.
+			if ((frame.spsr & PSR_M_32) != 0
+				|| (mode != PSR_M_EL0t && mode != PSR_M_EL1h && mode != PSR_M_EL2h)) {
 				break;
+			}
 			kernel = mode != PSR_M_EL0t;
 			iframeIndex = foundIFrame - 1;
 			nextFP = frame.fp;
