@@ -57,7 +57,7 @@ against Windows; evaluate actual ACPI and device-tree tables for Haiku.
 
 | Work item | Starting point and dependencies | Acceptance |
 | --- | --- | --- |
-| PCIe host bridges | `src/add-ons/kernel/bus_managers/pci`; phase 2; RK3588 address windows, link training, INTx and MSI/MSI-X | Correct config space/BARs and DMA for each root port; cold and warm boots; no dependence on firmware boot services |
+| PCIe host bridges | `src/add-ons/kernel/bus_managers/pci`; phase 2; RK3588 address windows, link training, INTx and MSI/MSI-X. The +156 USB firmware-profile driver handles a captured active-link training transition before SATA attachment; [scope](PCIE-TRAINING.md) | Correct config space/BARs and DMA for each root port; cold and warm boots; no dependence on firmware boot services |
 | Both RTL8125 Ethernet ports | Existing `drivers/network/ether/rtl8125`; observed `10ec:8125` rev 05; PCIe and DMA | Each port obtains DHCP and works with static IPv4/IPv6; simultaneous sustained traffic, link changes and packet integrity; compare against a 2.5 GbE Linux peer; remote shell/file transfer reliable |
 | ASM1164 and four SATA ports | ARM64 AHCI DMA and managed INTx support; `1b21:1164` initializes four direct ports across native reboot, and two-disk I/O passes QEMU; no physical SATA disk attached; [measured scope](SATA.md) | Test each port with identified scratch disks; filesystem/data hashes, flush durability, error recovery and simultaneous I/O; compare throughput to Linux |
 | M.2 M-key NVMe | Existing NVMe driver; PCIe; Samsung 950 Pro 256GB identified in ROOBI with PCIe 3.0 x2 link; owner authorizes erasing this SSD for testing and eventual Haiku installation | Native namespace discovery; hash-checked I/O, flush/trim, error handling and repeated native boot; confirm lane/mux arrangement for this revision and qualify Haiku installation on this drive |
@@ -119,8 +119,10 @@ against Windows; evaluate actual ACPI and device-tree tables for Haiku.
 The `+148` SSD update has passed package/configuration verification, two accepted
 installed boot/data/network/eMMC/recovery cycles and independent Linux eMMC
 readback. An earlier updated boot missed SATA initialization after a PCIe
-profile rejection; it remains unresolved. [SSD-INTEGRATION.md](SSD-INTEGRATION.md)
-records this bounded checkpoint and the incomplete attempt.
+profile rejection. The `+156` USB candidate handles the captured training
+condition on real hardware; integrating that change into the SSD is next.
+[SSD-INTEGRATION.md](SSD-INTEGRATION.md) records the installed checkpoint and
+incomplete attempt; [PCIE-TRAINING.md](PCIE-TRAINING.md) records the later fix.
 
 Run cold/warm boots, 24-hour mixed CPU/storage/network/media load, memory checks,
 power-management cycles, device hotplug and filesystem integrity checks. Compare

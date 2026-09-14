@@ -7,8 +7,8 @@ The Samsung 950 Pro is an NVMe device and is not a SATA test fixture.
 
 The `+148` SSD integration includes this driver. Two accepted installed boots
 initialized all four ports, but an earlier boot rejected the initial PCIe
-firmware profile and missed AHCI attachment. That intermittent startup failure
-remains unresolved; [SSD-INTEGRATION.md](SSD-INTEGRATION.md) records all three
+firmware profile and missed AHCI attachment. The SSD still has that older
+driver; [SSD-INTEGRATION.md](SSD-INTEGRATION.md) records all three
 attempts and the additional emulated SSD/SATA regression.
 
 The `+154` USB diagnostic reproduced this failure. Segment 1's root snapshot
@@ -16,9 +16,13 @@ reported link status `0xb823`: the data link was active at x2 and speed encoding
 3, but Link Training (`0x0800`) was still set. Every other firmware-profile
 condition matched. The root passed validation later in that same boot, but
 AHCI did not attach. A normal reboot of the unchanged image initialized all
-four ports. This identifies the rejected condition; it does not yet fix the
-startup race. The two boots and their integrity checks are recorded in
-[PCIe training diagnostics](PCIE-TRAINING.md).
+four ports. The subsequent `+156` USB candidate now handles that condition:
+it observed the same training flag, waited 2,587 us over two polls for it to
+clear, and then initialized AHCI and all four ports. Complete native checks,
+normal reboot and independent Linux eMMC integrity passed. Integration into
+the SSD and broader startup/error coverage are still pending. The original
+failure and bounded native result are recorded in
+[PCIe training](PCIE-TRAINING.md).
 
 ## Firmware and interrupt contract
 

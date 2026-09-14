@@ -29,13 +29,15 @@ SATA discovery, eMMC and DMA changes alongside the launcher and terminal fixes.
 Two accepted installed boots passed component/package hashes, both 2 GiB test
 regions, startup snapshots, filesystem checks, concurrent Ethernet traffic,
 read-only eMMC checks and normal reboot to recovery. The first updated SSD boot
-missed SATA initialization after an early PCIe profile rejection; that failure
-and the earlier `+88` startup stall remain unresolved. Sustained storage, error
-recovery and the remaining board hardware still need qualification.
-The subsequent `+154` USB diagnostic captured the SATA rejection while its
-PCIe Link Training bit was still set; the unchanged image attached SATA after
-normal reboot. [PCIe training diagnostics](PCIE-TRAINING.md) records that
-failure/pass comparison and the proposed bounded wait.
+missed SATA initialization after an early PCIe profile rejection. A subsequent
+diagnostic found its Link Training flag still set. The `+156` USB candidate
+has now handled that same state on real hardware: a 2.6 ms bounded wait was
+followed by AHCI attachment and initialization of all four ports. Two complete
+USB boots passed the integrity checks and normal reboot. The SSD still runs
+`+148` pending integration of this change. [PCIe training](PCIE-TRAINING.md)
+records the original failure, retained incomplete trial and accepted result.
+The earlier `+88` startup stall, sustained storage, error recovery and the
+remaining board hardware still need qualification.
 
 Both onboard Ethernet ports now pass DHCP, static IPv4 and static IPv6 checks,
 including simultaneous sending and receiving before and after normal reboot.

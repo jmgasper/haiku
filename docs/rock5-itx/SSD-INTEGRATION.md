@@ -3,7 +3,9 @@
 The physical Samsung 950 Pro installation has been updated from `hrev60097+94`
 to the previously built and qualified `+148` USB components. Two repeat SSD
 boots pass the bounded integration checks; an earlier attempt missed SATA
-initialization and remains unresolved. The changes include both RTL8125 interfaces,
+initialization. The later `+156` USB candidate handles the captured PCIe
+training condition, but has not yet been installed on the SSD; see
+[PCIE-TRAINING.md](PCIE-TRAINING.md). The `+148` changes include both RTL8125 interfaces,
 ASM1164 SATA discovery, eight-bit eMMC and the DMA fixes described in
 [ETHERNET.md](ETHERNET.md), [SATA.md](SATA.md) and [MMC.md](MMC.md).
 
