@@ -60,7 +60,9 @@ public:
 
 	void Notify(uint32 eventCode, struct image* image)
 	{
-		char eventBuffer[128];
+		// The pointer field brings this message to 132 bytes on 64-bit systems.
+		// An undersized external buffer silently omits imageStruct for listeners.
+		char eventBuffer[160];
 		KMessage event;
 		event.SetTo(eventBuffer, sizeof(eventBuffer), IMAGE_MONITOR);
 		event.AddInt32("event", eventCode);

@@ -357,7 +357,8 @@ KMessage::_FindType(const char* name, type_code type, int32 index,
 	if (size != sizeof(T))
 		return B_BAD_DATA;
 
-	*value = *(T*)data;
+	// Message fields are aligned to four bytes, including 64-bit values.
+	memcpy(value, data, sizeof(T));
 
 	return B_OK;
 }
