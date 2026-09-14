@@ -131,13 +131,13 @@ deployment; the corrected launcher explicitly uses the NanoKVM virtual environme
 The matching device tree describes SPLL as 702 MHz. Its requested 200 MHz GPU
 assignment has not been applied by a native Haiku SCMI/clock driver. These
 values establish a powered-down starting state and the selected clock setting,
-not a measured GPU frequency or voltage. The next power trial must choose a
-conservative GPU divider, verify power/idle handshakes before a GPU read and
-restore its changes after the diagnostic.
+not a measured GPU frequency or voltage. The following identity diagnostic
+uses this starting state to choose a conservative divider and restore its
+changes after the GPU read.
 
-## Next milestones
+## Bounded power and identity cycle
 
-The new `rock5_mali_resource_probe --identity` diagnostic implements the next
+The +184 `rock5_mali_resource_probe --identity` diagnostic implements a bounded
 power cycle. It is disabled by default; the private image must explicitly set
 `firmware_profile rock5-itx-edk2-v1.1-gpu-identity` in the `mali_csf` driver
 settings. Admission additionally checks the fixed SPLL description and GPU
@@ -162,11 +162,31 @@ power-up/de-idle/power-down, failed clock restoration, GPU mapping failures,
 wrong identity, unexpected initial state, and a stopped/backwards timer. The
 production driver/FDT fixture also checks additional profile rejection,
 default-disabled and recovery-required ioctls, mapping permissions and cleanup.
-ARM64 build, QEMU and native identity access are pending.
+All 131 host checks, the ARM64 build and both two-boot QEMU modes pass. QEMU
+correctly rejects the absent GPU device; it does not emulate this power cycle.
 
-1. Establish a conservative GPU clock and bounded power/identity cycle using
-   the recorded native starting state. Then implement reset and interrupt
-   delivery, with regulator ownership and restoration explicitly accounted for.
+The native diagnostic passes on both +184 boots. GPU ID `a8670005`, CSF ID
+`040a0412`, MMU features `2830`, address-space mask `ff`, shader mask `50005`
+and revision zero match the mainline Linux reference. The cycles take 585 and
+590 microseconds including mappings and restoration. While powered, selector
+158 is `00001f83`, idle acknowledge/status are `00000ffe`, power request is
+`0000fff8` and repair status is `ffff8003`. All ten platform register values
+return exactly to their initial values. The 175.5 MHz setting and inherited
+supply policy remain descriptions, not measured clock/voltage qualification.
+
+An independent validator checks identity, every platform phase and restoration
+before the controller permits the next boot. Its eleven negative controls
+reject altered evidence. Both native component/firmware checks, 32 component
+and ten file hashes, identical FDT captures and reviewed desktops pass. Normal
+reboot, verified shutdown, recovery, disarmed watchdog and independent complete
+recovery-image/eMMC checks also pass. This stage issues no GPU command, loads
+no firmware into the GPU and performs no rendering.
+
+## Next milestones
+
+1. Extend the qualified power/identity cycle with reset and interrupt delivery,
+   retaining bounded completion and teardown. Regulator ownership, runtime
+   power management and DVFS remain separate work.
 2. Implement GPU page tables, backing-memory lifetime and cache operations.
    Load the validated regions and verify the MCU boot handshake, interface
    version, timeout cleanup and normal reboot.
@@ -227,3 +247,9 @@ Qualified native component evidence:
   `9ebd436f31ad82d7c9a3bd8006699fb83a561f44e82bf5c78d888127af1330b2`.
   EL2 and EL1 QEMU evidence: `artifacts/qemu-shell/20260914T215553Z-42d745`
   and `artifacts/qemu-shell/20260914T215553Z-a01013` respectively.
+- +184 power/identity/off and restoration:
+  `artifacts/automated-mali-identity/20260914T224339Z-7144b5/qualification.json`.
+  Source `a1b93227d781d23903867de464bc68666ca0eb48`, image SHA-256
+  `7ce1024f8642f4375bea77d460ab4ce6da58f9c480efabd913c8581621a4772d`.
+  EL2 and EL1 QEMU evidence: `artifacts/qemu-shell/20260914T224018Z-24475c`
+  and `artifacts/qemu-shell/20260914T224018Z-efa455` respectively.

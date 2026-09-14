@@ -12,9 +12,11 @@ component validates and prepares firmware memory regions. A RAM-only Linux
 reference now initializes the actual GPU and firmware. Haiku's resource
 interface and firmware preparation pass two native boots, reviewed desktops,
 normal shutdown/recovery and independent storage integrity. Read-only native
-clock/power observations also pass across two boots and establish the powered-down
-GPU's inherited clock setting. A bounded power/identity cycle is next. Haiku GPU execution and accelerated
-rendering remain pending.
+clock/power observations establish the powered-down GPU's inherited clock
+setting. The +184 diagnostic also passes two native power/identity/off cycles:
+static GPU features match Linux, all checked clock/power registers are restored,
+and recovery/storage integrity passes. Reset and interrupt delivery are next;
+Haiku GPU firmware execution and accelerated rendering remain pending.
 
 The Samsung 950 Pro now has a full-capacity Haiku development installation:
 a 512 MiB EFI partition and a 238 GiB BFS volume. Native Installer copying,
