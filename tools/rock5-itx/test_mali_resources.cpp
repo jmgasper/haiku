@@ -1,4 +1,4 @@
-#include "CsfPlatform.h"
+#include "CsfPower.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -15,24 +15,42 @@ using uint32 = uint32_t;
 using uint64 = uint64_t;
 using status_t = int32_t;
 static const status_t B_OK = 0, B_BAD_VALUE = -1, B_BAD_ADDRESS = -2,
-	B_DEV_INVALID_IOCTL = -3, B_NO_MEMORY = -4, B_NOT_SUPPORTED = -5;
+	B_DEV_INVALID_IOCTL = -3, B_NO_MEMORY = -4, B_NOT_SUPPORTED = -5,
+	B_NOT_ALLOWED = -6, B_BUSY = -7, B_ENTRY_NOT_FOUND = -8;
 static const unsigned B_PAGE_SIZE = 4096, B_ANY_KERNEL_ADDRESS = 4,
-	B_UNCACHED_MEMORY = 1u << 28, B_KERNEL_READ_AREA = 1u << 4;
+	B_UNCACHED_MEMORY = 1u << 28, B_KERNEL_READ_AREA = 1u << 4,
+	B_KERNEL_WRITE_AREA = 1u << 5;
 
 static std::map<int, void*> sAreas;
 static unsigned sMapAttempts, sFailMap;
 static int64_t sTime;
+static bool sAllowWritable, sAllowGpu;
+static unsigned sLockDepth;
+
+struct mutex {};
+#define MUTEX_INITIALIZER(name) {}
+class MutexLocker {
+public:
+	explicit MutexLocker(mutex&) { assert(sLockDepth++ == 0); }
+	~MutexLocker() { assert(--sLockDepth == 0); }
+};
 
 static int64_t system_time() { return ++sTime; }
 static void memory_read_barrier() {}
+static void memory_write_barrier() { assert(false); }
+static void spin(int) { assert(false); }
+static void kernel_dprintf(const char*, ...) {}
+#define dprintf kernel_dprintf
 
 static int
 map_physical_memory(const char*, uint64 base, size_t bytes, uint32 spec,
 	uint32 protection, void** address)
 {
-	assert(base == 0xfd7c0000 || base == 0xfd8d8000);
+	assert(sLockDepth == 1);
+	assert(base == 0xfd7c0000 || base == 0xfd8d8000 || (sAllowGpu && base == 0xfb000000));
 	assert(bytes == B_PAGE_SIZE && spec == (B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY));
-	assert(protection == B_KERNEL_READ_AREA);
+	assert(protection == (B_KERNEL_READ_AREA
+		| (sAllowWritable && base != 0xfb000000 ? B_KERNEL_WRITE_AREA : 0)));
 	if (++sMapAttempts == sFailMap)
 		return B_NO_MEMORY;
 	void* allocation = mmap(NULL, 3 * B_PAGE_SIZE, PROT_NONE,
@@ -42,6 +60,7 @@ map_physical_memory(const char*, uint64 base, size_t bytes, uint32 spec,
 	assert(mprotect(registers, B_PAGE_SIZE, PROT_READ | PROT_WRITE) == 0);
 	for (unsigned offset = 0; offset < B_PAGE_SIZE; offset += 4)
 		registers[offset / 4] = (base == 0xfd7c0000 ? 0x12340000 : 0xabcd0000) | offset;
+	if (base == 0xfb000000) registers[0] = 0xa8670005;
 	// A production register write fails immediately, as would either guard page.
 	assert(mprotect(registers, B_PAGE_SIZE, PROT_READ) == 0);
 	int area = 17 + sMapAttempts;
@@ -52,13 +71,16 @@ map_physical_memory(const char*, uint64 base, size_t bytes, uint32 spec,
 
 class AreaDeleter {
 public:
-	explicit AreaDeleter(int area) : fArea(area) {}
-	~AreaDeleter()
+	explicit AreaDeleter(int area = -1) : fArea(area) {}
+	~AreaDeleter() { SetTo(-1); }
+	void SetTo(int area)
 	{
-		if (fArea < 0) return;
-		assert(sAreas.count(fArea) == 1);
-		assert(munmap(sAreas.at(fArea), 3 * B_PAGE_SIZE) == 0);
-		sAreas.erase(fArea);
+		if (fArea >= 0) {
+			assert(sAreas.count(fArea) == 1);
+			assert(munmap(sAreas.at(fArea), 3 * B_PAGE_SIZE) == 0);
+			sAreas.erase(fArea);
+		}
+		fArea = area;
 	}
 	int Get() const { return fArea; }
 private:
@@ -82,10 +104,17 @@ struct fdt_bus_module_info {
 	driver_module_info info;
 	device_node* (*node_by_phandle)(fdt_bus*, int);
 };
+static const int B_STRING_TYPE = 1;
+struct device_attr {
+	const char* name;
+	int type;
+	union { const char* string; } value;
+};
 struct device_manager_info {
 	status_t (*get_driver)(device_node*, driver_module_info**, void**);
 	device_node* (*get_parent_node)(device_node*);
 	void (*put_node)(device_node*);
+	status_t (*find_child_node)(device_node*, const device_attr*, device_node**);
 };
 struct device_node {
 	std::string name;
@@ -98,6 +127,7 @@ struct device_node {
 };
 
 static device_node sBusNode, sRoot, sGpu, sClock, sPower, sPmu, sRegulator, sGic;
+static device_node sFixed, sDomain;
 static fdt_bus sBus;
 static std::map<int, device_node*> sPhandles;
 static uint64 sDecodedIrqs[3] = {124, 125, 126};
@@ -112,7 +142,7 @@ GetProperty(fdt_device* dev, const char* property, int* length)
 		return NULL;
 	}
 	if (length != NULL) *length = it->second.size();
-	return it->second.data();
+	return it->second.empty() ? (const void*)"" : it->second.data();
 }
 
 static bool
@@ -166,7 +196,21 @@ static device_manager_info sManager = {
 		if (node->parent != NULL) node->parent->held++;
 		return node->parent;
 	},
-	[](device_node* node) { assert(node->held > 0); node->held--; }
+	[](device_node* node) { assert(node->held > 0); node->held--; },
+	[](device_node* parent, const device_attr* attributes, device_node** output) -> status_t {
+		assert(*output == NULL && strcmp(attributes[0].name, "fdt/name") == 0);
+		assert(attributes[0].type == B_STRING_TYPE && attributes[1].name == NULL);
+		for (device_node* node : {&sFixed, &sDomain}) {
+			if (node->name != attributes[0].value.string) continue;
+			// The real lookup searches descendants. Profile admission must also
+			// verify the immediate parent of the returned node.
+			for (device_node* ancestor = node->parent; ancestor != NULL; ancestor = ancestor->parent) {
+				if (ancestor != parent) continue;
+				node->held++; *output = node; return B_OK;
+			}
+		}
+		return B_ENTRY_NOT_FOUND;
+	}
 };
 
 static status_t
@@ -203,7 +247,7 @@ static void
 Prepare()
 {
 	for (device_node* node : {&sBusNode, &sRoot, &sGpu, &sClock, &sPower,
-			&sPmu, &sRegulator, &sGic}) {
+			&sPmu, &sRegulator, &sGic, &sFixed, &sDomain}) {
 		assert(node->held == 0);
 		node->properties.clear();
 		node->wrongModule = false;
@@ -215,6 +259,9 @@ Prepare()
 	sGpu.name = "gpu@fb000000";
 	sPmu.name = "power-management@fd8d8000";
 	sPower.parent = &sPmu;
+	sFixed.name = "clock-0";
+	sDomain.name = "power-domain@12";
+	sDomain.parent = &sPower;
 	sPhandles = {{33, &sClock}, {34, &sPower}, {77, &sRegulator}};
 	sDecodedIrqs[0] = 124; sDecodedIrqs[1] = 125; sDecodedIrqs[2] = 126;
 	sWrongIrqController = false;
@@ -241,6 +288,15 @@ Prepare()
 	Strings(sRegulator, "regulator-name", {"vdd_gpu_s0"});
 	Cells(sRegulator, "regulator-min-microvolt", {550000});
 	Cells(sRegulator, "regulator-max-microvolt", {950000});
+	sRegulator.properties["regulator-boot-on"] = {};
+	Strings(sFixed, "compatible", {"fixed-clock"});
+	Strings(sFixed, "clock-output-names", {"spll"});
+	Cells(sFixed, "#clock-cells", {0});
+	Cells(sFixed, "clock-frequency", {702000000});
+	Cells(sDomain, "reg", {12});
+	Cells(sDomain, "clocks", {33, 262, 33, 263, 33, 264});
+	Cells(sDomain, "#power-domain-cells", {0});
+	Cells(sDomain, "domain-supply", {77});
 }
 
 int
@@ -255,17 +311,22 @@ main()
 	assert(ReadResources(&sGpu, good) && ResourcesMatch(good));
 	assert(good.supplyPhandle == 77 && good.interrupts[2] == 126);
 	assert(good.clockBase == 0xfd7c0000 && good.powerBase == 0xfd8d8000);
+	assert(ReadIdentityProfile(&sGpu, good));
 	// Phandles are references, not fixed numerical board identifiers.
 	sPhandles.erase(33); sPhandles[909] = &sClock;
 	Cells(sGpu, "clocks", {909, 262, 909, 263, 909, 264});
+	Cells(sDomain, "clocks", {909, 262, 909, 263, 909, 264});
 	ResourceInfo moved = {};
 	assert(ReadResources(&sGpu, moved) && memcmp(&moved, &good, sizeof(good)) == 0);
+	assert(ReadIdentityProfile(&sGpu, moved));
 
 	std::vector<std::function<void()> > faults = {
 		[] { sRoot.properties["compatible"].pop_back(); },
 		[] { Strings(sRoot, "compatible", {"radxa,rock-5b", "rockchip,rk3588"}); },
 		[] { Strings(sGpu, "status", {"disabled"}); },
 		[] { sGpu.wrongModule = true; },
+		[] { sBusNode.wrongModule = true; },
+		[] { Strings(sGpu, "status", {"okay", "disabled"}); },
 		[] { sClock.wrongModule = true; },
 		[] { sPmu.wrongModule = true; },
 		[] { sGpu.size = 0x1000; },
@@ -302,6 +363,26 @@ main()
 		assert(!ReadResources(&sGpu, invalid));
 		for (unsigned char byte : std::vector<unsigned char>((unsigned char*)&invalid,
 				(unsigned char*)&invalid + sizeof(invalid))) assert(byte == 0xa5);
+	}
+	std::vector<std::function<void()> > identityFaults = {
+		[] { sFixed.name = "clock-unknown"; },
+		[] { sFixed.parent = &sClock; },
+		[] { Strings(sFixed, "status", {"disabled"}); },
+		[] { Strings(sFixed, "compatible", {"unrelated-clock"}); },
+		[] { Strings(sFixed, "clock-output-names", {"spll", "extra"}); },
+		[] { Cells(sFixed, "clock-frequency", {1200000000}); },
+		[] { Cells(sFixed, "#clock-cells", {1}); },
+		[] { sDomain.name = "power-domain@13"; },
+		[] { sDomain.parent = &sRegulator; sRegulator.parent = &sPower; },
+		[] { Cells(sDomain, "reg", {13}); },
+		[] { Cells(sDomain, "#power-domain-cells", {1}); },
+		[] { Cells(sDomain, "clocks", {33, 262, 33, 264, 33, 263}); },
+		[] { Cells(sDomain, "domain-supply", {78}); },
+		[] { sRegulator.properties.erase("regulator-boot-on"); },
+	};
+	for (auto& fault : identityFaults) {
+		Prepare(); fault();
+		assert(!ReadIdentityProfile(&sGpu, good));
 	}
 	Prepare(); // Also asserts that parent-node references were released on failure.
 	Controller controller{};
@@ -347,6 +428,43 @@ main()
 		assert(snapshot.idleRequest == 0xabcd010c && snapshot.idleAck == 0xabcd0118);
 		assert(snapshot.idleStatus == 0xabcd0120 && snapshot.powerRequest == 0xabcd014c);
 		assert(snapshot.powerRepair == 0xabcd0290);
+	}
+	IdentityInfo identity;
+	sMapAttempts = 0;
+	assert(Control(&controller, kCycleIdentity, &identity, sizeof(identity)) == B_NOT_ALLOWED);
+	controller.identityEnabled = true;
+	controller.identityNeedsRecovery = true;
+	assert(Control(&controller, kCycleIdentity, &identity, sizeof(identity)) == B_BUSY);
+	assert(Control(&controller, kCycleIdentity, &identity, sizeof(identity) - 1) == B_BAD_VALUE);
+	assert(Control(&controller, kCycleIdentity, NULL, sizeof(identity)) == B_BAD_ADDRESS);
+	assert(sMapAttempts == 0 && sLockDepth == 0);
+	controller.identityNeedsRecovery = false;
+	sAllowWritable = true;
+	for (unsigned failure : {1u, 2u}) {
+		sMapAttempts = 0; sFailMap = failure;
+		assert(Control(&controller, kCycleIdentity, &identity, sizeof(identity)) == B_NO_MEMORY);
+		assert(sMapAttempts == failure && sAreas.empty() && sLockDepth == 0);
+	}
+	sMapAttempts = sFailMap = 0;
+	// The protected MMIO fixture has an unexpected initial state. No production
+	// write may occur, even though the profile enabled the diagnostic ioctl.
+	assert(Control(&controller, kCycleIdentity, &identity, sizeof(identity)) == B_OK);
+	assert(identity.result == kInitialStateMismatch && identity.flags == 0);
+	assert(!controller.identityNeedsRecovery && sAreas.empty() && sLockDepth == 0);
+	for (unsigned failure : {0u, 3u}) {
+		sMapAttempts = 0; sFailMap = failure; sAllowGpu = true;
+		{
+			MutexLocker locker(sHardwareLock);
+			IdentityHardware hardware;
+			assert(hardware.Init(good) == B_OK && sAreas.size() == 2);
+			assert(hardware.MapGpu() == (failure == 0));
+			if (failure == 0) {
+				assert(sAreas.size() == 3 && hardware.ReadGpu(0) == 0xa8670005);
+				hardware.UnmapGpu();
+				assert(sAreas.size() == 2);
+			}
+		}
+		assert(sAreas.empty() && sLockDepth == 0);
 	}
 
 	size_t page = sysconf(_SC_PAGESIZE);

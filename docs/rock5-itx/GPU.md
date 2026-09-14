@@ -137,6 +137,33 @@ restore its changes after the diagnostic.
 
 ## Next milestones
 
+The new `rock5_mali_resource_probe --identity` diagnostic implements the next
+power cycle. It is disabled by default; the private image must explicitly set
+`firmware_profile rock5-itx-edk2-v1.1-gpu-identity` in the `mali_csf` driver
+settings. Admission additionally checks the fixed SPLL description and GPU
+power-domain child, its clocks and matching boot-on supply. Node names are
+checked as direct children and phandles remain dynamic. The existing EDK2
+regulator initialization requests 750,000 microvolts for the GPU supply;
+this first diagnostic inherits that policy and does not measure or change it.
+
+The sequence changes only the GPU divider to four (described 175.5 MHz),
+requests idle, powers the domain, waits for repair completion and de-idles it.
+Only after checking the resulting state does it map the GPU page read-only
+and compare static identity/features with the Linux reference. It unmaps the
+GPU before idling/powering down, then restores the initial idle request and
+divider and compares all ten platform registers. Shared PLLs, clock gates,
+regulators, GPU commands, firmware and DMA are untouched by this diagnostic.
+Each poll has a 10 ms deadline and an iteration limit. Failed handshakes and
+restoration are retained independently; uncertain restoration blocks further
+identity cycles until recovery. Platform observations share the same lock.
+
+The production sequence passes host models with delayed handshakes, failed
+power-up/de-idle/power-down, failed clock restoration, GPU mapping failures,
+wrong identity, unexpected initial state, and a stopped/backwards timer. The
+production driver/FDT fixture also checks additional profile rejection,
+default-disabled and recovery-required ioctls, mapping permissions and cleanup.
+ARM64 build, QEMU and native identity access are pending.
+
 1. Establish a conservative GPU clock and bounded power/identity cycle using
    the recorded native starting state. Then implement reset and interrupt
    delivery, with regulator ownership and restoration explicitly accounted for.

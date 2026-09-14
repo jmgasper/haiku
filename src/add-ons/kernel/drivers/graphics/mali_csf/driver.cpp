@@ -6,10 +6,13 @@
 #include <bus/FDT.h>
 #include <KernelExport.h>
 #include <AutoDeleterOS.h>
+#include <driver_settings.h>
+#include <lock.h>
+#include <util/AutoLock.h>
 #include <fcntl.h>
 #include <stdlib.h>
 
-#include "CsfPlatform.h"
+#include "CsfPower.h"
 
 
 using namespace MaliCSF;
@@ -18,10 +21,13 @@ using namespace MaliCSF;
 #define DEVICE_NAME "drivers/graphics/mali_csf/device_v1"
 
 static device_manager_info* sDeviceManager;
+static mutex sHardwareLock = MUTEX_INITIALIZER("Mali CSF platform");
 
 struct Controller {
 	device_node* node;
 	ResourceInfo resources;
+	bool identityEnabled;
+	bool identityNeedsRecovery;
 };
 
 
@@ -32,6 +38,62 @@ ReadPlatformRegister(const volatile uint32* registers, uint32 offset)
 	memory_read_barrier();
 	return value;
 }
+
+
+static void
+WritePlatformRegister(volatile uint32* registers, uint32 offset, uint32 value)
+{
+	registers[offset / sizeof(uint32)] = value;
+#if defined(__aarch64__)
+	__asm__ __volatile__("dsb sy" ::: "memory");
+#else
+	memory_write_barrier();
+#endif
+}
+
+
+class IdentityHardware {
+public:
+	status_t Init(const ResourceInfo& resources)
+	{
+		if (!ResourcesMatch(resources))
+			return B_NOT_SUPPORTED;
+		fGpuBase = resources.gpuBase;
+		fClockArea.SetTo(map_physical_memory("Mali identity CRU",
+			resources.clockBase, B_PAGE_SIZE, B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY,
+			B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, (void**)&fClock));
+		if (fClockArea.Get() < B_OK)
+			return fClockArea.Get();
+		fPowerArea.SetTo(map_physical_memory("Mali identity PMU",
+			resources.powerBase, B_PAGE_SIZE, B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY,
+			B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, (void**)&fPower));
+		return fPowerArea.Get() < B_OK ? fPowerArea.Get() : B_OK;
+	}
+	uint32_t ReadClock(uint32_t offset) { return ReadPlatformRegister(fClock, offset); }
+	uint32_t ReadPower(uint32_t offset) { return ReadPlatformRegister(fPower, offset); }
+	void WriteClock(uint32_t offset, uint32_t value) { WritePlatformRegister(fClock, offset, value); }
+	void WritePower(uint32_t offset, uint32_t value) { WritePlatformRegister(fPower, offset, value); }
+	int64_t Now() { return system_time(); }
+	void Pause() { spin(10); }
+	bool MapGpu()
+	{
+		dprintf("mali_csf: identity power/idle ready; mapping GPU for static reads\n");
+		fGpuArea.SetTo(map_physical_memory("Mali static identity", fGpuBase,
+			B_PAGE_SIZE, B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY,
+			B_KERNEL_READ_AREA, (void**)&fGpu));
+		return fGpuArea.Get() >= B_OK;
+	}
+	void UnmapGpu() { fGpuArea.SetTo(-1); fGpu = NULL; }
+	uint32_t ReadGpu(uint32_t offset) { return ReadPlatformRegister(fGpu, offset); }
+private:
+	AreaDeleter fClockArea;
+	AreaDeleter fPowerArea;
+	AreaDeleter fGpuArea;
+	volatile uint32* fClock = NULL;
+	volatile uint32* fPower = NULL;
+	volatile uint32* fGpu = NULL;
+	uint64_t fGpuBase = 0;
+};
 
 
 static status_t
@@ -130,9 +192,10 @@ public:
 
 	bool Enabled() const
 	{
-		const void* status = fModule->get_prop(fDevice, "status", NULL);
-		return status == NULL || HasString("status", "okay")
-			|| HasString("status", "ok");
+		int length = 0;
+		const void* status = fModule->get_prop(fDevice, "status", &length);
+		return status == NULL || (length == 5 && memcmp(status, "okay", 5) == 0)
+			|| (length == 3 && memcmp(status, "ok", 3) == 0);
 	}
 
 	fdt_device_module_info* fModule = NULL;
@@ -212,7 +275,8 @@ ReadResources(device_node* parent, ResourceInfo& output)
 	fdt_bus_module_info* busModule;
 	fdt_bus* bus;
 	if (sDeviceManager->get_driver(gpu.fModule->get_bus(gpu.fDevice),
-			(driver_module_info**)&busModule, (void**)&bus) != B_OK) {
+			(driver_module_info**)&busModule, (void**)&bus) != B_OK
+		|| strcmp(busModule->info.info.name, "bus_managers/fdt/root/driver_v1") != 0) {
 		return false;
 	}
 	if (clocks[0] == 0 || clocks[0] != clocks[2] || clocks[0] != clocks[4])
@@ -262,6 +326,95 @@ ReadResources(device_node* parent, ResourceInfo& output)
 }
 
 
+static device_node*
+FindNamedChild(device_node* parent, const char* name)
+{
+	device_attr attributes[] = {
+		{"fdt/name", B_STRING_TYPE, {.string = name}},
+		{}
+	};
+	device_node* node = NULL;
+	if (sDeviceManager->find_child_node(parent, attributes, &node) != B_OK)
+		return NULL;
+	device_node* actualParent = sDeviceManager->get_parent_node(node);
+	bool directChild = actualParent == parent;
+	if (actualParent != NULL)
+		sDeviceManager->put_node(actualParent);
+	if (!directChild) {
+		sDeviceManager->put_node(node);
+		return NULL;
+	}
+	return node;
+}
+
+
+static bool
+ReadIdentityProfile(device_node* parent, const ResourceInfo& resources)
+{
+	ResourceInfo current;
+	if (!ReadResources(parent, current) || memcmp(&current, &resources, sizeof(current)) != 0)
+		return false;
+	FdtNode gpu;
+	uint32_t clocks[6], power[2];
+	if (!gpu.SetTo(parent) || !gpu.Cells("clocks", clocks, 6)
+		|| !gpu.Cells("power-domains", power, 2) || power[1] != 12) {
+		return false;
+	}
+	device_node* root = sDeviceManager->get_parent_node(parent);
+	while (root != NULL) {
+		FdtNode node;
+		if (!node.SetTo(root)) {
+			sDeviceManager->put_node(root);
+			return false;
+		}
+		if (strcmp(node.fModule->get_name(node.fDevice), "") == 0)
+			break;
+		device_node* next = sDeviceManager->get_parent_node(root);
+		sDeviceManager->put_node(root);
+		root = next;
+	}
+	if (root == NULL)
+		return false;
+	device_node* fixedNode = FindNamedChild(root, "clock-0");
+	sDeviceManager->put_node(root);
+	FdtNode fixed;
+	uint32_t cells, frequency;
+	const char* const outputNames[] = {"spll"};
+	bool valid = fixed.SetTo(fixedNode) && fixed.Enabled()
+		&& fixed.HasString("compatible", "fixed-clock")
+		&& fixed.Names("clock-output-names", outputNames, 1)
+		&& fixed.Cells("#clock-cells", &cells, 1) && cells == 0
+		&& fixed.Cells("clock-frequency", &frequency, 1) && frequency == 702000000;
+	if (fixedNode != NULL)
+		sDeviceManager->put_node(fixedNode);
+	if (!valid)
+		return false;
+	fdt_bus_module_info* busModule;
+	fdt_bus* bus;
+	if (sDeviceManager->get_driver(gpu.fModule->get_bus(gpu.fDevice),
+			(driver_module_info**)&busModule, (void**)&bus) != B_OK) {
+		return false;
+	}
+	device_node* controller = busModule->node_by_phandle(bus, power[0]);
+	if (controller == NULL)
+		return false;
+	device_node* domainNode = FindNamedChild(controller, "power-domain@12");
+	FdtNode domain;
+	uint32_t domainId, supply, domainClocks[6];
+	valid = domain.SetTo(domainNode) && domain.Enabled()
+		&& domain.Cells("reg", &domainId, 1) && domainId == 12
+		&& domain.Cells("#power-domain-cells", &cells, 1) && cells == 0
+		&& domain.Cells("clocks", domainClocks, 6)
+		&& memcmp(clocks, domainClocks, sizeof(clocks)) == 0
+		&& domain.Cells("domain-supply", &supply, 1) && supply == resources.supplyPhandle;
+	if (domainNode != NULL)
+		sDeviceManager->put_node(domainNode);
+	FdtNode regulator;
+	return valid && regulator.SetTo(busModule->node_by_phandle(bus, resources.supplyPhandle))
+		&& regulator.fModule->get_prop(regulator.fDevice, "regulator-boot-on", NULL) != NULL;
+}
+
+
 static float
 SupportsDevice(device_node* parent)
 {
@@ -294,6 +447,14 @@ InitDriver(device_node* node, void** cookie)
 		return B_NO_MEMORY;
 	device_node* parent = sDeviceManager->get_parent_node(node);
 	bool valid = ReadResources(parent, controller->resources);
+	void* settings = load_driver_settings("mali_csf");
+	if (valid && settings != NULL) {
+		const char* profile = get_driver_parameter(settings, "firmware_profile", "", "");
+		controller->identityEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-gpu-identity") == 0
+			&& ReadIdentityProfile(parent, controller->resources);
+	}
+	if (settings != NULL)
+		unload_driver_settings(settings);
 	if (parent != NULL)
 		sDeviceManager->put_node(parent);
 	if (!valid) {
@@ -302,7 +463,8 @@ InitDriver(device_node* node, void** cookie)
 	}
 	controller->node = node;
 	dprintf("mali_csf: validated firmware resources at %#" B_PRIx64
-		"; GPU access disabled\n", controller->resources.gpuBase);
+		"; identity profile %s\n", controller->resources.gpuBase,
+		controller->identityEnabled ? "enabled (inherited firmware supply)" : "disabled");
 	*cookie = controller;
 	return B_OK;
 }
@@ -352,11 +514,34 @@ Write(void*, off_t, const void*, size_t* size)
 static status_t
 Control(void* cookie, uint32 op, void* buffer, size_t length)
 {
+	if (op == kCycleIdentity) {
+		if (length != sizeof(IdentityInfo))
+			return B_BAD_VALUE;
+		if (buffer == NULL)
+			return B_BAD_ADDRESS;
+		Controller* controller = (Controller*)cookie;
+		MutexLocker locker(sHardwareLock);
+		if (!controller->identityEnabled)
+			return B_NOT_ALLOWED;
+		if (controller->identityNeedsRecovery)
+			return B_BUSY;
+		IdentityHardware hardware;
+		status_t status = hardware.Init(controller->resources);
+		if (status != B_OK)
+			return status;
+		IdentityInfo info;
+		CycleIdentity(hardware, info);
+		controller->identityNeedsRecovery = (info.flags & kIdentityNeedsRecovery) != 0;
+		dprintf("mali_csf: identity result=%u restore=%u flags=%#x gpu=%#x\n",
+			info.result, info.restoreResult, info.flags, info.gpuID);
+		return user_memcpy(buffer, &info, sizeof(info));
+	}
 	if (op == kGetPlatformSnapshot) {
 		if (length != sizeof(PlatformSnapshot))
 			return B_BAD_VALUE;
 		if (buffer == NULL)
 			return B_BAD_ADDRESS;
+		MutexLocker locker(sHardwareLock);
 		PlatformSnapshot snapshot;
 		status_t status = ReadPlatform(((Controller*)cookie)->resources, snapshot);
 		if (status != B_OK)
