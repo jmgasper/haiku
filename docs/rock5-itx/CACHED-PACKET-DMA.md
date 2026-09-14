@@ -2,8 +2,11 @@
 
 This experiment follows the IRQ-worker packet-copy samples recorded in
 [NETWORK-PROFILING.md](NETWORK-PROFILING.md). It is disabled by default.
-Native correctness and throughput qualification are pending; the qualified
-`+165` USB image and installed `+156` SSD remain the comparison checkpoints.
+The `+168` candidate passes the host checks, cross-build and both policy modes
+in QEMU. Four native boots completed all 48 checked network streams, but that
+iteration's automatic Linux recovery failed. A repeat with corrected recovery
+media handling is pending. The qualified `+165` USB image and installed `+156`
+SSD remain the comparison checkpoints.
 
 Set `cached_packet_buffers true` in
 `/boot/home/config/settings/kernel/drivers/rtl8125` to select the experiment
@@ -43,6 +46,38 @@ Five deliberately broken local variants are rejected: invalidating PREWRITE,
 cleaning POSTREAD, omitting cache completion, caching descriptors, and accepting
 cached allocations as coherent. Evidence is under
 `artifacts/cached-packet-dma/20260914T064204Z-d648d3` on the lab drive.
-Host substitutes do not establish actual cache or PCIe coherency. Required next
-checks are cross-build/disassembly, both policies in QEMU, and guarded native
-packet-integrity trials with comparison measurements and recovery checks.
+All 115 host checks passed. Disassembly of both actual ARM64 drivers contains
+the expected cache instructions and completion barriers. Both policy images
+passed two QEMU boots, policy-log and component-hash checks, packet integrity,
+profiling, storage read/write, reboot and shutdown checks. The QEMU wrapper's
+first run selected a nested MMC transcript incorrectly; correcting its path
+selection and repeating the unchanged images passed. Host and QEMU results do
+not establish native cache or PCIe coherency.
+
+The first native attempt completed twelve original-policy streams and eight
+cached-policy streams. It then lost its USB shell before starting the next
+trial. UART recorded EHCI transaction errors affecting RNDIS and HID before
+recovery began, without a kernel panic. Haiku labels this error `Device
+check-sum error`; the status alone does not establish a physical-wire CRC
+failure. The recovery controller returned Linux, whose independent eMMC
+filesystem, file and reference-region checks passed. The complete used USB
+image was archived and verified before removal from NanoKVM. Its persisted
+system log is readable but stops before the error storm captured on UART.
+
+The failure's cause and any connection to cached DMA remain unresolved.
+Earlier USB control failures occurred before this change. The repeat used the
+same binaries in original/cached/cached/original boot order, with three
+four-stream trials per boot. Each stream carried 128 MiB plus seven bytes;
+the middle trial used single-PC sampling. All 48 streams passed, verifying
+6,442,451,280 payload bytes and 2,884,895 captured frames. Inventory, desktops,
+normal reboots, platform checks, sampler teardown and eMMC checks also passed.
+No USB transaction errors appeared during the native checks.
+
+Automatic recovery then failed because the writable Linux recovery image's
+initrd was overwritten. The [recovery-media investigation](RECOVERY-MEDIA.md)
+records the BFS metadata found at the old guest partition offset, the retained
+damaged image and the corrected read-only selection. A fresh recovery image
+restored Linux; independent eMMC file, filesystem and reference checks passed.
+This does not turn the failed automatic recovery into a passing iteration.
+The next run repeats the comparison with the corrected controller and requires
+the recovery image's original hash after boot before full qualification.
