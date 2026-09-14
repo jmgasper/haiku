@@ -11,8 +11,9 @@ hardware. The owner has deferred further Ethernet driver work. The first GPU
 component validates and prepares firmware memory regions. A RAM-only Linux
 reference now initializes the actual GPU and firmware. Haiku's resource
 interface and firmware preparation pass two native boots, reviewed desktops,
-normal shutdown/recovery and independent storage integrity. The next diagnostic
-observes the inherited clock/power state. Haiku GPU execution and accelerated
+normal shutdown/recovery and independent storage integrity. Read-only native
+clock/power observations also pass across two boots and establish the powered-down
+GPU's inherited clock setting. A bounded power/identity cycle is next. Haiku GPU execution and accelerated
 rendering remain pending.
 
 The Samsung 950 Pro now has a full-capacity Haiku development installation:

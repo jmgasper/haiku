@@ -98,7 +98,7 @@ review caught this and +181 uses the modern graphics module directory.
 
 ## Clock and power observation
 
-The next opt-in diagnostic, `rock5_mali_resource_probe --platform`, reads CRU
+The +182 opt-in diagnostic, `rock5_mali_resource_probe --platform`, reads CRU
 clock selectors 158–160 and gates 66–67, plus PMU GPU idle request/ack/status,
 software power-down request and repair status. Offsets come from RK3588 TRM
 v1.0 Part 1, dated 2022-03-09. PMU offsets account for the actual FDT window
@@ -112,13 +112,34 @@ changes voltage, installs an interrupt handler or enables power. The fixed
 the reads are sequential, not atomic, and do not measure voltage or frequency.
 The host fixture tests actual production read offsets and cleanup, failed
 first/second mappings and malformed requests using guarded read-only memory.
-Build, QEMU and native observation are pending.
+All 130 host tests, ARM64 build, both two-boot QEMU modes and the native trial
+pass. Three samples on each of two native boots return identical register
+values; each observation took 2–3 microseconds. Both desktop captures were
+reviewed. Normal reboot, verified shutdown before media replacement, Linux
+recovery, disarmed watchdog and independent recovery/eMMC integrity all pass.
+The first launcher attempt failed its Python dependency preflight before
+deployment; the corrected launcher explicitly uses the NanoKVM virtual environment.
+
+| Register group | Native value on both boots | GPU interpretation |
+| --- | --- | --- |
+| CRU selectors 158/159/160 | `00001f80 / 00000000 / 00000000` | Source index 4 (SPLL), divide by 1; GPU PVTPLL selection is off |
+| CRU gates 66/67 | `00000004 / 00000000` | GPU clocks are enabled at the CRU; only the test-output gate is disabled |
+| PMU idle request/ack/status | `00000000 / 00000fff / 00000fff` | GPU software idle request is clear; idle and acknowledge are set |
+| PMU software power-down request | `0000fff9` | GPU power-down request is set |
+| PMU repair status 4 | `ffff8001` | GPU power-up/repair-complete indication is clear |
+
+The matching device tree describes SPLL as 702 MHz. Its requested 200 MHz GPU
+assignment has not been applied by a native Haiku SCMI/clock driver. These
+values establish a powered-down starting state and the selected clock setting,
+not a measured GPU frequency or voltage. The next power trial must choose a
+conservative GPU divider, verify power/idle handshakes before a GPU read and
+restore its changes after the diagnostic.
 
 ## Next milestones
 
-1. Observe Haiku's initial clock/power state, then establish clock, regulator
-   and power-domain ownership, bounded reset and interrupt delivery. Linux GPU
-   identity/firmware and the actual Haiku resource descriptions are recorded.
+1. Establish a conservative GPU clock and bounded power/identity cycle using
+   the recorded native starting state. Then implement reset and interrupt
+   delivery, with regulator ownership and restoration explicitly accounted for.
 2. Implement GPU page tables, backing-memory lifetime and cache operations.
    Load the validated regions and verify the MCU boot handshake, interface
    version, timeout cleanup and normal reboot.
@@ -173,3 +194,9 @@ Qualified native component evidence:
   controller stayed up and its watchdog disarmed; no panic or USB filesystem
   checksum error occurred. This component qualification does not resolve the
   separate EL1 profiler/fault or installed SSD page-aging qualification.
+- +182 read-only clock/power observation:
+  `artifacts/automated-mali-platform/20260914T220117Z-9df5b3/qualification.json`.
+  Source `8b2cd1e11c804a878b01b47f65ed86228ffd9262`, image SHA-256
+  `9ebd436f31ad82d7c9a3bd8006699fb83a561f44e82bf5c78d888127af1330b2`.
+  EL2 and EL1 QEMU evidence: `artifacts/qemu-shell/20260914T215553Z-42d745`
+  and `artifacts/qemu-shell/20260914T215553Z-a01013` respectively.
