@@ -2,11 +2,11 @@
 
 This experiment follows the IRQ-worker packet-copy samples recorded in
 [NETWORK-PROFILING.md](NETWORK-PROFILING.md). It is disabled by default.
-The `+168` candidate passes the host checks, cross-build and both policy modes
-in QEMU. Four native boots completed all 48 checked network streams, but that
-iteration's automatic Linux recovery failed. A repeat with corrected recovery
-media handling is pending. The qualified `+165` USB image and installed `+156`
-SSD remain the comparison checkpoints.
+The `+168` candidate passes the host checks, cross-build, both policy modes
+in QEMU and a four-boot native comparison with 48 checked network streams.
+Automatic Linux recovery and independent storage checks passed after correcting
+recovery-media handling. The earlier USB-control and recovery failures remain
+recorded below. The SSD still runs the qualified `+156` installation.
 
 Set `cached_packet_buffers true` in
 `/boot/home/config/settings/kernel/drivers/rtl8125` to select the experiment
@@ -79,5 +79,54 @@ records the BFS metadata found at the old guest partition offset, the retained
 damaged image and the corrected read-only selection. A fresh recovery image
 restored Linux; independent eMMC file, filesystem and reference checks passed.
 This does not turn the failed automatic recovery into a passing iteration.
-The next run repeats the comparison with the corrected controller and requires
-the recovery image's original hash after boot before full qualification.
+The subsequent run repeats the comparison with the corrected controller and
+qualifies the transition, including the recovery image's original hash after boot.
+
+## Qualified four-boot comparison
+
+The unchanged `+168` images completed original/cached/cached/original boots.
+All 35 shell checks and twelve four-stream trials passed: 6,442,451,280 checked
+payload bytes and 2,976,083 captured frames, with complete sequence coverage,
+simultaneous activity, correct physical MAC paths and zero interface or capture
+errors/drops. All four desktops were inspected. Component and per-boot settings
+hashes, three normal reboots, platform checks, profiler warmups and teardowns,
+and the first/last boot eMMC checks passed.
+
+These are median Mbit/s from the ROCK's perspective, using the four unprofiled
+samples per policy and direction:
+
+| Path | Original buffers | Cached buffers | Ratio |
+| --- | ---: | ---: | ---: |
+| Port 0 / SFP / 2.5 Gbit/s, receive | 304.427 | 489.117 | 1.607 |
+| Port 0 / SFP / 2.5 Gbit/s, send | 186.609 | 245.895 | 1.318 |
+| Port 1 / 1 Gbit/s, receive | 254.778 | 492.670 | 1.934 |
+| Port 1 / 1 Gbit/s, send | 165.151 | 238.171 | 1.442 |
+
+The two original-policy profiles attributed 40.9% and 49.0% of Realtek
+interrupt-worker ticks to `memcpy`; the cached profiles attributed 6.5% and
+8.2%. All interrupt-worker and workload-thread ticks had resolved symbols.
+Cache maintenance masks interrupts, so the small number of samples in its
+helper cannot measure its actual cost. Thread names do not establish CPU
+placement or port ownership. CPU clocks were not measured, ordering was not
+randomized, and these short transfers do not establish sustained or maximum
+performance. The option remains disabled by default.
+
+The corrected controller recovered Linux automatically. Its complete 96 MiB
+boot image retained SHA-256
+`211cf1c02a2bb2c23c368f5cf5d849b8ecc6d59886961f50d5a9887c71bf6d86`
+with `ro=1`. Independent Linux checks verified the eMMC FAT partition, both
+fixture files, filesystem consistency and three reference regions unchanged.
+The NanoKVM boot ID was unchanged and its watchdog disarmed. Serial capture
+closed without transport errors or a kernel panic. There were zero USB
+transaction-error labels before recovery; 139 occurred after the intentional
+media-switch marker, alongside `No media present` write failures. Their timing
+is retained separately from the first attempt's pre-recovery control failure.
+
+Source: `584802acb1320e48e087fff450fe0fba3df9d032`. The unchanged original and
+cached images have SHA-256 `77eb56ccffe9a86e82aa42d33145ae49ea3da54625c6f8f493fe009d9059777a`
+and `e2f0b7de308129625d088607c2aa786bda2c35e17f0e6077be94d63e418d9f3b`.
+Qualification, all trial rates, profiles and retained failure references are in
+`artifacts/automated-cached-packet-dma/20260914T082806Z-8121ae` beneath the lab
+drive. The independent Linux readbacks are
+`artifacts/emmc-file-readback/20260914T085106Z-f1d530` and
+`artifacts/emmc-read-reference/20260914T085106Z-b22445`.

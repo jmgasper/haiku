@@ -5,10 +5,18 @@ negotiates 2.5 Gbit/s full duplex on RTL8125 port 0, and port 1 negotiates
 1 Gbit/s full duplex. These are negotiated link rates, not measured application
 throughput. The workstation peer uses a 5 Gbit/s link.
 
-The latest qualified `+165` run passed five four-stream trials, including both
+The latest qualified `+168` run compares original and optionally cached packet
+buffers across four native boots and 48 checked streams. Short-trial median
+throughput increased in all four directions, and copying's interrupt-worker
+sample share fell. The measurements, cache-maintenance sampling bias and
+retained incomplete attempts are in [CACHED-PACKET-DMA.md](CACHED-PACKET-DMA.md).
+The option remains disabled by default. Automatic recovery and independent
+image/eMMC integrity checks passed with the [recovery-media correction](RECOVERY-MEDIA.md).
+
+The earlier qualified `+165` run passed five four-stream trials, including both
 single-PC and full-stack sampling. All twenty streams verified their payloads,
 and all eight sampled workload threads had zero unknown or dropped ticks.
-The results and limits are recorded below; the earlier slow-stream failure
+Those results and limits are recorded below; the earlier slow-stream failure
 remains unresolved.
 
 The `+163` USB candidate passed a paired experiment with four simultaneous,
@@ -38,8 +46,8 @@ The two Realtek interrupt threads contributed 2,080 samples, including 1,121
 in `memcpy` (53.9%). This makes payload copying a concrete investigation lead.
 The fork already has the ARM64 copy optimization and validated receive-length
 copy reduction; these measurements include both. Private DMA bounce buffers
-remain noncacheable. Changing that policy requires explicit cache ownership
-and coherency tests; descriptor memory has separate requirements.
+were noncacheable in this experiment. The later optional cached policy has
+explicit ownership/coherency checks; descriptor memory remains noncacheable.
 
 Sampling while interrupts are masked can bias attribution near lock and
 scheduling operations. Samples in `thread_block` or `mutex_unlock` do not

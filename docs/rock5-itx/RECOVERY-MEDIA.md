@@ -37,8 +37,13 @@ three reference regions. The SSD remained on `+156`.
 The controller change makes `lab.recover()` call `attach(..., readonly=True)`.
 A host regression injects old-guest writes during selection and immediately
 before reset; the old implementation changes the recovery contents, while
-the corrected path preserves them. All 116 host checks pass. A further native
-Haiku-to-Linux recovery cycle is required to qualify the corrected transition.
+the corrected path preserves them. All 116 host checks pass. The subsequent
+four-boot native comparison recovered Linux automatically with the corrected
+controller. The complete recovery image retained its original SHA-256 and
+`ro=1`; independent Linux eMMC file, filesystem and reference checks passed.
+The NanoKVM boot ID was unchanged and its watchdog disarmed. This qualifies
+the corrected transition for that iteration; the earlier failed recovery
+remains recorded.
 
 Evidence beneath `/mnt/HaikuWork`:
 
@@ -50,3 +55,7 @@ Evidence beneath `/mnt/HaikuWork`:
   `artifacts/readonly-recovery-restore/20260914T081743Z-a85108`.
 - Independent Linux readbacks: `artifacts/emmc-file-readback/20260914T082005Z-ea396f`
   and `artifacts/emmc-read-reference/20260914T082005Z-0f3f45`.
+- Qualified automatic recovery and complete image hash:
+  `artifacts/automated-cached-packet-dma/20260914T082806Z-8121ae/qualification.json`.
+- Independent checks after that cycle: `artifacts/emmc-file-readback/20260914T085106Z-f1d530`
+  and `artifacts/emmc-read-reference/20260914T085106Z-b22445`.

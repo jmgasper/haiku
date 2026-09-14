@@ -51,9 +51,13 @@ boots, including process exit, fault recovery and user symbols for programs
 started during sampling. [PROFILING.md](PROFILING.md) records the corrections
 and tested limits. The latest [Ethernet profiling](NETWORK-PROFILING.md)
 experiment passed twenty checked streams across five trials, including resolved
-user symbols during single-PC and full-stack sampling. Copying remains a
-performance lead. An earlier full-stack trial exposed a continuing but very
-slow TCP stream; its cause remains under investigation.
+user symbols during single-PC and full-stack sampling. The subsequent `+168`
+[cached packet DMA comparison](CACHED-PACKET-DMA.md) passed four native boots
+and 48 checked streams, with higher short-trial median throughput on both ports.
+The option remains disabled by default; sustained performance is unqualified.
+The [recovery-media correction](RECOVERY-MEDIA.md) also passed automatic Linux
+recovery and independent image/eMMC integrity checks. An earlier full-stack
+trial exposed a continuing but very slow TCP stream; its cause remains open.
 
 The latest USB image also initializes the ASM1164 SATA controller on its four
 direct ports before and after normal reboot. The ARM64 AHCI driver passes
