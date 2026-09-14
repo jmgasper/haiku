@@ -23,5 +23,5 @@ rule UserBuildConfigRulePreImage
 	# Intel is the QEMU DMA fixture. Native RTL8125 trials additionally require
 	# the explicit onboard firmware profile and legacy_interrupts setting.
 	AddDriversToHaikuImage net : ipro1000 rtl8125 ;
-	AddDriversToHaikuImage graphics : mali_csf ;
+	AddNewDriversToHaikuImage graphics : mali_csf ;
 }
