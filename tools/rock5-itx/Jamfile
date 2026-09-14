@@ -15,6 +15,7 @@ SimpleTest rock5_mmc_register_probe : mmc_register_probe.cpp ;
 SimpleTest rock5_file_transfer : file_transfer.cpp : network ;
 SimpleTest rock5_network_probe : network_probe.cpp : network ;
 SimpleTest rock5_memcpy_probe : memcpy_probe.cpp ;
+SimpleTest rock5_profile_probe : profile_probe.cpp profile_probe_arm64.S ;
 
 UsePrivateHeaders app net shared storage ;
 UseHeaders [ FDirName $(HAIKU_TOP) src servers net ]

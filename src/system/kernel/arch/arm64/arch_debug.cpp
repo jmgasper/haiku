@@ -13,6 +13,8 @@
 #include <kernel.h>
 #include <kimage.h>
 #include <thread.h>
+#include <util/AutoLock.h>
+#include <vm/vm.h>
 #include <vm/vm_types.h>
 #include <vm/VMAddressSpace.h>
 #include <vm/VMArea.h>
@@ -442,11 +444,161 @@ arch_debug_stack_trace(void)
 }
 
 
+struct sampled_iframe {
+	addr_t address;
+	addr_t pc;
+	addr_t fp;
+	uint64 spsr;
+};
+
+
+static bool
+is_sampled_kernel_stack_range(Thread* thread, addr_t address, size_t size)
+{
+	// kernel_stack_base includes the unmapped guard page. The rest of this
+	// thread's stack is wired; never follow a frame into some other kernel area.
+	return IS_KERNEL_ADDRESS(address)
+		&& address >= thread->kernel_stack_base
+		&& address - thread->kernel_stack_base
+			>= KERNEL_STACK_GUARD_PAGES * B_PAGE_SIZE
+		&& address < thread->kernel_stack_top
+		&& size <= thread->kernel_stack_top - address;
+}
+
+
+static bool
+read_sampled_iframe(Thread* thread, int32 index, sampled_iframe& frame)
+{
+	frame.address = (addr_t)thread->arch_info.iframes.frames[index];
+	if (!is_sampled_kernel_stack_range(thread, frame.address, sizeof(iframe)))
+		return false;
+
+	// EXCEPTION_HANDLER sets FP to the raw iframe, not an AAPCS64 frame
+	// record. The raw frame need not be naturally aligned (EL0's kernel SP
+	// currently starts at kernel_stack_top - 1), so copy the fields as bytes.
+	const uint8* source = (const uint8*)frame.address;
+	memcpy(&frame.pc, source + offsetof(iframe, elr), sizeof(frame.pc));
+	memcpy(&frame.fp, source + offsetof(iframe, fp), sizeof(frame.fp));
+	memcpy(&frame.spsr, source + offsetof(iframe, spsr), sizeof(frame.spsr));
+	return true;
+}
+
+
 int32
 arch_get_stack_trace(addr_t* returnAddresses, int32 maxCount,
 	int32 skipIframes, int32 skipFrames, uint32 flags)
 {
-	return 0;
+	flags &= STACK_TRACE_KERNEL | STACK_TRACE_USER;
+	if (returnAddresses == NULL || maxCount <= 0 || skipIframes < 0
+		|| skipFrames < 0 || flags == 0) {
+		return 0;
+	}
+
+	// Also support callers outside a timer interrupt. Keep the current thread
+	// and its iframe list stable, and make user_memcpy fail without paging in
+	// an absent user stack page. Its guard preserves any interrupted copy's
+	// fault handler and saved jump buffer.
+	InterruptsLocker interruptsLocker;
+	Thread* thread = thread_get_current_thread();
+	if (thread == NULL)
+		return 0;
+
+	int32 iframeCount = thread->arch_info.iframes.index;
+	if (iframeCount < 0 || iframeCount > IFRAME_TRACE_DEPTH
+		|| skipIframes > iframeCount) {
+		return 0;
+	}
+
+	addr_t fp = arm64_get_fp();
+	int32 iframeIndex = iframeCount - 1;
+	if (skipIframes > 0 || flags == STACK_TRACE_USER) {
+		// The profiler skips its timer interrupt. Start at that saved PC
+		// directly, without walking all the profiler/interrupt-handler calls.
+		if (skipIframes > 0) {
+			iframeIndex = iframeCount - skipIframes;
+			skipFrames = 0;
+		}
+		fp = 0;
+		for (; iframeIndex >= 0; iframeIndex--) {
+			sampled_iframe frame;
+			if (!read_sampled_iframe(thread, iframeIndex, frame))
+				return 0;
+			if (flags != STACK_TRACE_USER
+				|| (frame.spsr & PSR_M_MASK) == PSR_M_EL0t) {
+				fp = frame.address;
+				break;
+			}
+		}
+	}
+
+	bool kernel = true;
+	int32 count = 0;
+	// Bound work even when skipping an arbitrarily long/corrupt user chain.
+	const int32 kMaxFrames = 1024;
+	for (int32 walked = 0; fp != 0 && count < maxCount && walked < kMaxFrames;
+		walked++) {
+		bool wasKernel = kernel;
+		addr_t nextFP, pc;
+		int32 foundIFrame = -1;
+		if (kernel) {
+			for (int32 i = iframeIndex; i >= 0; i--) {
+				if ((addr_t)thread->arch_info.iframes.frames[i] == fp) {
+					foundIFrame = i;
+					break;
+				}
+			}
+		}
+
+		if (foundIFrame >= 0) {
+			sampled_iframe frame;
+			if (!read_sampled_iframe(thread, foundIFrame, frame))
+				break;
+			uint64 mode = frame.spsr & PSR_M_MASK;
+			if (mode != PSR_M_EL0t && mode != PSR_M_EL1h)
+				break;
+			kernel = mode != PSR_M_EL0t;
+			iframeIndex = foundIFrame - 1;
+			nextFP = frame.fp;
+			pc = frame.pc;
+		} else {
+			struct {
+				addr_t previous;
+				addr_t return_address;
+			} frame;
+			if ((fp & (sizeof(addr_t) - 1)) != 0)
+				break;
+			if (kernel) {
+				if (!is_sampled_kernel_stack_range(thread, fp, sizeof(frame)))
+					break;
+				memcpy(&frame, (const void*)fp, sizeof(frame));
+			} else {
+				// A failed copy needs one more InterruptScope in do_sync_handler.
+				if (iframeCount == IFRAME_TRACE_DEPTH
+					|| !is_user_address_range((const void*)fp, sizeof(frame))
+					|| user_memcpy(&frame, (const void*)fp, sizeof(frame)) != B_OK) {
+					break;
+				}
+			}
+			nextFP = frame.previous;
+			pc = frame.return_address;
+		}
+
+		if ((pc & 3) != 0 || (kernel ? !IS_KERNEL_ADDRESS(pc) : !IS_USER_ADDRESS(pc)))
+			break;
+		if ((flags & (kernel ? STACK_TRACE_KERNEL : STACK_TRACE_USER)) == 0)
+			break;
+		if (skipFrames > 0)
+			skipFrames--;
+		else
+			returnAddresses[count++] = pc;
+
+		// Frame records progress up a descending stack. Only a saved EL0
+		// exception may cross from the kernel stack into a user stack.
+		if (nextFP != 0 && nextFP <= fp && wasKernel == kernel)
+			break;
+		fp = nextFP;
+	}
+	return count;
 }
 
 
