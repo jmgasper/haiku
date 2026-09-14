@@ -46,6 +46,11 @@ route present, and route-query diagnostics. Throughput remains below the recorde
 reference, and automatic IPv6 configuration, sustained load and fault recovery
 remain open. See [ETHERNET.md](ETHERNET.md) for the measured scope and evidence.
 
+The `+163` USB image now passes native ARM64 system-profiler checks across two
+boots, including sampling during process exit and fault recovery. It provides
+the next tool for investigating Ethernet throughput. The native failure,
+corrections and tested limits are recorded in [PROFILING.md](PROFILING.md).
+
 The latest USB image also initializes the ASM1164 SATA controller on its four
 direct ports before and after normal reboot. The ARM64 AHCI driver passes
 two-disk read/write, flush and persistence checks in QEMU. No physical SATA
