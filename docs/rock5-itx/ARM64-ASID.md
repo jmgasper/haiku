@@ -5,7 +5,9 @@ page table installed while a kernel team runs. User maps use identifiers 1–255
 Recycling skips the reserved entry, and releasing zero is rejected even when
 assertions are disabled. The `+174` USB image passes all 119 host checks,
 complete two-boot QEMU trials at EL1 and EL2, and two guarded native boots with
-independent Linux storage verification. The installed SSD remains `+156`.
+independent Linux storage verification. The SSD has received the `+174` update,
+but its installed qualification is incomplete; `+156` remains the qualified
+baseline.
 
 Previously, the first user map could receive ASID zero. Switching to the empty
 TTBR0 table retained that identifier without invalidating its old translations.
@@ -105,6 +107,17 @@ also excludes zero for its reserved TTBR0 context. That is a reference for the
 identifier's purpose; no Linux implementation was copied into this change.
 The earlier profiler faults have not been attributed specifically to ASID
 reuse. [PROFILING.md](PROFILING.md) retains those observations and limits.
+
+The first `+174` installed SSD trial passed the pool and teardown checks, then
+the startup observer's shell hit a missing page-area mapping assertion in
+`VMTranslationMap::PageUnmapped`, through a copy-on-write fault, while SSD
+verification was running. There were no USB checksum-error labels. Automatic
+recovery and independent Linux storage/recovery-image integrity passed. The
+trial is retained as failed in
+`artifacts/automated-arm64-installed/20260914T105053Z-827837/failure-review.json`.
+The ARM64 page-aging path's use of a TLB-flush result as accessed-state evidence
+is being investigated separately; the native panic alone does not identify
+which map-aging path was taken.
 
 Offline evidence is under
 `/mnt/HaikuWork/artifacts/arm64-asid-zero/20260914T075211Z-offline`.

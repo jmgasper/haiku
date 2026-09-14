@@ -15,8 +15,13 @@ The SSD has since received the `+174` package/configuration update and passed
 its before/after integrity checks. Replacing the live USB boot medium during
 recovery caused a filesystem panic. Linux recovery and independent integrity
 checks passed, but the transition remains failed. The new shutdown-aware
-controller and a clean recovery witness are being validated before the two
-installed boot cycles; `+156` remains the qualified baseline. See
+controller passed a separate clean native recovery witness and independent
+image/eMMC integrity checks. The first subsequent SSD boot reached the desktop
+and passed its preflight, profiler, ASID and process-teardown checks, then
+panicked in `VMTranslationMap::PageUnmapped` during concurrent startup-shell
+activity and storage verification. Automatic recovery succeeded with no USB
+checksum errors; independent Linux integrity passed. Page-aging bookkeeping
+is under investigation, and `+156` remains the qualified baseline. See
 [RECOVERY-MEDIA.md](RECOVERY-MEDIA.md).
 
 | Area | Evidence and state |

@@ -333,8 +333,23 @@ example, using the target address actually reported by that boot:
 {"action":"shell","target":"10.239.6.146","commands":"/mnt/HaikuWork/tmp/check.sh"}
 {"action":"upload","target":"10.239.6.146","source":"/mnt/HaikuWork/build/probe","name":"probe","executable":true}
 {"action":"capture"}
-{"action":"finish"}
 ```
+
+For a normal USB-booted trial, finish by scheduling Haiku's shutdown and then
+sending `{"action":"finish_stopped"}`. The controller checks the current UART
+system-off message, unchanged serial capture for 25 seconds and USB
+disconnection before selecting read-only Linux recovery and powering on.
+A shutdown command file can contain:
+
+```sh
+set -e
+nohup sh -c 'sleep 15; sync; shutdown' > /boot/home/shutdown.log 2>&1 </dev/null &
+echo SHUTDOWN_SCHEDULED
+```
+
+Run that file through the session's `shell` action and wait for its successful
+result before sending `finish_stopped`. See [RECOVERY-MEDIA.md](RECOVERY-MEDIA.md)
+for the failure caused by replacing a live USB root and the evidence requirements.
 
 Command files run with `set -e`; exit status, partial output and connection errors
 are saved under the session's artifact directory. Uploads are limited to 16 MiB
@@ -344,7 +359,8 @@ streams binary data through NanoKVM SSH and its private USB network; the
 NanoKVM needs no additional file copy. The bootstrap Bash lacks `/dev/tcp`
 support. The slower terminal/base64 upload is available with
 `"transport":"terminal"`. Executing a program is a separate shell
-command. `finish`, EOF or the session deadline returns the board to ROOBI. Image
+command. Plain `finish`, EOF or the session deadline invokes emergency recovery
+to ROOBI, which can interrupt the running guest's filesystem. Image
 deployment still uses the full USB image; individual test programs can now be
 built, transferred and run without rebooting.
 

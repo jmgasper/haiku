@@ -83,8 +83,18 @@ using it after a failed shutdown observation preserves the session's failure.
 
 Host checks exercise media/power ordering, missing and stale shutdown evidence,
 connected USB, a controller restart, lost serial capture, delayed serial bytes,
-and the session's failure-preserving fallback. Native qualification of this
-new transition is pending. The existing `+174` image is unchanged; its completed
+and the session's failure-preserving fallback. All 124 host checks pass. The
+native witness then verified the already updated SSD without repeating the
+Installer, reached the desktop and shut down normally. The controller observed
+25.700 seconds of unchanged UART data with USB disconnected, then selected
+read-only recovery and issued one 800 ms power pulse. Linux returned with the
+NanoKVM boot ID unchanged and watchdog disarmed. The complete 235,047-byte UART
+capture contains no panic or USB checksum-error labels. Independent Linux
+eMMC files, filesystem and reference reads passed; the complete 96 MiB recovery
+image retained its original hash. The original failed transition remains
+attached to the separately qualified clean witness.
+
+The existing `+174` image is unchanged; its completed
 build, EL1/EL2 QEMU gates and installed-image rehearsal remain applicable to
 this host-controller change. The physically updated SSD must pass a clean
 recovery witness and both installed boot cycles before replacing the qualified
@@ -98,3 +108,6 @@ Evidence beneath `/mnt/HaikuWork`:
 - Preserved used USB image: `artifacts/nanokvm-image-archive/20260914T103318Z-3a0cb2`.
 - Shutdown controller snapshots and host checks:
   `artifacts/shutdown-recovery/20260914T103806Z-b5e2f7`.
+- Qualified native shutdown/recovery and independent integrity:
+  `artifacts/shutdown-recovery/20260914T103806Z-b5e2f7/qualification.json`.
+- Complete clean session: `artifacts/interactive/20260914T104001Z-0014d3`.
