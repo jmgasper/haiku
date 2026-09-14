@@ -1,8 +1,13 @@
 # Tested status
 
-Updated 2026-09-14 (Australia/Hobart). This page distinguishes lab readiness from native Haiku
+Updated 2026-09-15 (Australia/Hobart). This page distinguishes lab readiness from native Haiku
 support. No hardware row in the roadmap is accepted merely because Linux or
 firmware supports it.
+
+Current priority is [Mali-G610 GPU acceleration](GPU.md); further Ethernet
+driver work is deferred at the owner's request. The first firmware container
+component passes host checks with the official image. GPU execution and
+accelerated rendering remain pending.
 
 Latest qualified installed result: `+156` passes two boot, integrity,
 network and normal-reboot cycles, with independent Linux eMMC verification.

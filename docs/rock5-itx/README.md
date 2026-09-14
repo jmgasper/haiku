@@ -6,6 +6,11 @@ driver support are tracked separately in [STATUS.md](STATUS.md) and the
 [hardware roadmap](ROADMAP.md). This is not a fully supported Haiku image yet.
 The [GitHub work items](TRACKING.md) split the roadmap into issues and milestones.
 
+The current priority is [Mali-G610 GPU support](GPU.md), followed by remaining
+hardware. The owner has deferred further Ethernet driver work. The first GPU
+component validates and prepares firmware memory regions; GPU execution and
+accelerated rendering remain pending.
+
 The Samsung 950 Pro now has a full-capacity Haiku development installation:
 a 512 MiB EFI partition and a 238 GiB BFS volume. Native Installer copying,
 package and EFI hashes, filesystem checks and large-file readback after normal

@@ -43,7 +43,17 @@ default probe, small/full idle pools, corruption, invalid duration and
 interruption during the idle interval; cleanup leaves no children behind.
 The planned QEMU and native runs use 280 live children, a 45-second idle
 interval and four subsequent migration rounds. Those new kernel/image gates
-are pending; elapsed idle time alone is not a count of page-aging operations.
+are not yet fully qualified; elapsed idle time alone is not a count of
+page-aging operations. The `+178` build and the two-boot EL2 QEMU run pass,
+including both idle pools, memory, storage, profiler and normal reboot checks.
+The EL1 run passes its first idle pool, then stops after reboot when the
+platform probe exits during its fault-recovery stage under profiling, without
+its completion marker. No kernel panic is captured. That failure is retained
+for diagnosis; native validation and SSD qualification remain pending.
+
+New evidence: `artifacts/qemu-shell/20260914T201513Z-dd060f` (EL2 pass) and
+`artifacts/qemu-shell/20260914T201513Z-bfd88b` (EL1 failure). Network stress was
+omitted from these runs because the owner deferred network development.
 
 Evidence beneath `/mnt/HaikuWork`:
 

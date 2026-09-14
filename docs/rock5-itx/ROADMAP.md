@@ -13,6 +13,10 @@ commit, image hash, firmware settings, raw logs and physical fixtures used.
 Dependencies are phase numbers; work within a phase can be split further when
 the underlying buses permit it. No calendar estimates imply guaranteed support.
 
+Current owner priority: phase 7 GPU support, then remaining hardware. Further
+Ethernet driver development is deferred. [GPU.md](GPU.md) records the first
+firmware component and the dependencies leading to hardware rendering.
+
 ## 0 — Build and lab foundation
 
 Create the fork, pinned ARM64 toolchain, incremental image build, QEMU evidence,

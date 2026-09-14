@@ -9,6 +9,10 @@ SimpleTest rock5_nvme_trim_probe : nvme_trim_probe.cpp ;
 SimpleTest rock5_pty_write_probe : pty_write_probe.cpp ;
 SimpleTest rock5_platform_probe : platform_probe.cpp ;
 SimpleTest rock5_asid_probe : asid_probe.cpp ;
+UseHeaders [ FDirName $(HAIKU_TOP) src add-ons kernel drivers graphics mali_csf ] ;
+SimpleTest rock5_mali_firmware_probe : mali_firmware_probe.cpp CsfFirmware.cpp ;
+SEARCH on [ FGristFiles CsfFirmware.cpp ]
+	= [ FDirName $(HAIKU_TOP) src add-ons kernel drivers graphics mali_csf ] ;
 SimpleTest rock5_cache_probe : cache_probe.cpp ;
 UsePrivateHeaders drivers ;
 SimpleTest rock5_pci_config_probe : pci_config_probe.cpp ;
