@@ -21,6 +21,11 @@ and all ten platform registers return to their initial values after each cycle.
 Reviewed desktops, normal reboot/shutdown, recovery and independent complete
 recovery-image/eMMC integrity pass. Reset and interrupt delivery are next;
 Haiku GPU firmware execution and accelerated rendering remain pending.
+The +186 reset/IRQ implementation passes 132 host checks, build and both QEMU
+modes, but its first native boot panicked during device discovery before the
+GPU tests. Recovery and independent integrity passed. Investigation reproduced
+an [ARM64 instruction-cache alias defect](ARM64-ICACHE.md); its correction and
+native reset qualification are in progress.
 
 Latest qualified installed result: `+156` passes two boot, integrity,
 network and normal-reboot cycles, with independent Linux eMMC verification.

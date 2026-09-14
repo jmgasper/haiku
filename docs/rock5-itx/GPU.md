@@ -203,8 +203,13 @@ mutating cycles until recovery. No firmware, page table or GPU job is submitted.
 Host coverage includes delayed/stale/missing completion, lost or unexpected
 delivery, clock and cleanup failures, admission/mapping/handler-installation
 failures, and an actual two-thread handler/removal race through the production
-kernel adapter with guarded mappings. ARM64 build, QEMU and native reset
-qualification are pending.
+kernel adapter with guarded mappings. All 132 host checks, the ARM64 build
+and both QEMU modes pass for +186. Its first native boot panicked in device
+discovery before the shell or either GPU diagnostic ran; automatic recovery
+and independent recovery-image/eMMC integrity passed. Investigation reproduced
+an [ARM64 instruction-cache alias defect](ARM64-ICACHE.md) on the actual CPU.
+Its correction is being validated before another native reset trial. The exact
+boot failure remains retained, and native GPU reset qualification is pending.
 
 ## Next milestones
 

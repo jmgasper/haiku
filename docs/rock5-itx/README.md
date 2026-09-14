@@ -17,6 +17,10 @@ setting. The +184 diagnostic also passes two native power/identity/off cycles:
 static GPU features match Linux, all checked clock/power registers are restored,
 and recovery/storage integrity passes. Reset and interrupt delivery are next;
 Haiku GPU firmware execution and accelerated rendering remain pending.
+The first reset image passed build/QEMU but hit a native startup fault before
+the GPU tests. A reproduced [ARM64 instruction-cache alias defect](ARM64-ICACHE.md)
+is being corrected before another reset trial; automatic recovery and storage
+integrity checks passed.
 
 The Samsung 950 Pro now has a full-capacity Haiku development installation:
 a 512 MiB EFI partition and a 238 GiB BFS volume. Native Installer copying,
