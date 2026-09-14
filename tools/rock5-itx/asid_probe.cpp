@@ -249,23 +249,36 @@ int main(int argc, char** argv)
 	printf("ROCK5_ASID_POOL_STOP_BEGIN good=%d elapsed_us=%" PRIu64 "\n",
 		good, Now() - started);
 	fflush(stdout);
-	for (unsigned i = 0; i < created; ++i) {
-		if (good) {
-			unsigned char command = 255;
-			if (write(sGates[i], &command, 1) != 1) {
-				printf("ROCK5_ASID_CHILD_STOP_ERROR child=%u errno=%d\n", i, errno);
-				good = false;
-			}
-		}
-		close(sGates[i]);
-		if (!good) kill(sChildren[i], SIGTERM);
-	}
 	unsigned successful = 0, remaining = created;
 	uint64_t deadline = Now() + 5000000;
-	while (remaining && Now() < deadline) {
-		remaining = Reap(created, successful, good);
-		if (remaining) usleep(1000);
+	// Haiku retains at most 32 uncollected child-exit records. Keep every
+	// child alive through the memory rounds, then release/reap only 16 at once.
+	for (unsigned first = 0; first < created && Now() < deadline; first += 16) {
+		unsigned end = std::min(created, first + 16);
+		for (unsigned i = first; i < end; ++i) {
+			if (sChildren[i] != 0 && good) {
+				unsigned char command = 255;
+				ssize_t bytes;
+				do { bytes = write(sGates[i], &command, 1); }
+				while (bytes < 0 && errno == EINTR && Now() < deadline);
+				if (bytes != 1) {
+					printf("ROCK5_ASID_CHILD_STOP_ERROR child=%u errno=%d\n", i, errno);
+					good = false;
+				}
+			}
+			close(sGates[i]);
+			sGates[i] = -1;
+			if (!good && sChildren[i] != 0) kill(sChildren[i], SIGTERM);
+		}
+		while (Now() < deadline) {
+			remaining = Reap(created, successful, good);
+			bool pending = false;
+			for (unsigned i = first; i < end; ++i) pending |= sChildren[i] != 0;
+			if (!pending) break;
+			usleep(1000);
+		}
 	}
+	for (unsigned i = 0; i < created; ++i) if (sGates[i] >= 0) close(sGates[i]);
 	if (remaining) {
 		printf("ROCK5_ASID_POOL_REAP_DEADLINE remaining=%u elapsed_us=%" PRIu64 "\n",
 			remaining, Now() - started);

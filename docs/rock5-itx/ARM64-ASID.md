@@ -27,7 +27,8 @@ The new `rock5_asid_probe` holds 280 forked children alive with different privat
 page contents at the same virtual address. Four rounds migrate the children
 between available CPUs, verify their previous contents, write the next pattern
 and check that the parent's page remains unchanged. Per-child gates and atomic
-replies identify every completed round. A separate eight-child case deliberately
+replies identify every completed round. Exit collection releases and reaps at
+most sixteen children at a time after all memory rounds complete. A separate eight-child case deliberately
 changes one word and must fail while reaping every child; a subsequent 64-child
 case verifies operation after cleanup. The parent has a 90-second deadline,
 bounded termination/reaping and an outer command timeout; children also have
@@ -37,7 +38,18 @@ expected exits, rounds and cleanup counts.
 Linux host execution verifies the probe's normal and deliberate-corruption
 paths with no children left behind. The probe also cross-compiles and links
 against the Haiku ARM64 headers and libraries. Actual Haiku execution remains
-pending. QEMU and native plans require the live pool, failure cleanup and
+pending qualification. The initial EL1 and EL2 QEMU runs completed all 1,120
+private-page checks but lost some exit records during the original simultaneous
+release of 280 children. A focused diagnostic recorded `waitpid()` returning
+`ECHILD`, without a cleanup deadline or memory mismatch. The existing kernel
+limits uncollected child-exit records to 32 (`MAX_DEAD_CHILDREN` in
+`thread_types.h`), discarding older entries in `thread.cpp`. The probe now
+collects small batches while preserving all 280 live maps through the actual
+memory checks. That kernel exit-record limit is unchanged. Normal, small and
+large injected-corruption host cases and subsequent operation all pass with
+bounded cleanup; full QEMU gates must be repeated.
+
+QEMU and native plans require the live pool, failure cleanup and
 subsequent pool on each boot, alongside existing platform, profiler, storage,
 network, reboot and recovery checks.
 
