@@ -29,8 +29,13 @@ static unsigned sUserReads, sUserFaults;
 
 #include <arch/arm64/arch_thread_types.h>
 
+struct Team {};
+static Team sUserTeam, sKernelTeam;
+static Team* team_get_kernel_team() { return &sKernelTeam; }
+
 struct Thread {
 	arch_thread arch_info;
+	Team* team;
 	addr_t kernel_stack_base, kernel_stack_top;
 	void (*fault_handler)();
 	jmp_buf fault_handler_state;
@@ -116,6 +121,7 @@ Reset()
 {
 	memset(sStack + B_PAGE_SIZE, 0, 4 * B_PAGE_SIZE);
 	sThread = {};
+	sThread.team = &sUserTeam;
 	sCurrent = &sThread;
 	sThread.kernel_stack_base = (addr_t)sStack;
 	sThread.kernel_stack_top = (addr_t)sStack + 5 * B_PAGE_SIZE;
@@ -196,6 +202,16 @@ main()
 	for (int32 depth : {-1, IFRAME_TRACE_DEPTH + 1}) {
 		sThread.arch_info.iframes.index = depth;
 		Expect({});
+	}
+	// A dying user thread retains an EL0 iframe after changing to the kernel
+	// address space. Never attribute or dereference that stale user context.
+	for (Team* team : {&sKernelTeam, (Team*)nullptr}) {
+		Reset();
+		sThread.team = team;
+		Expect({}, 1, 0, STACK_TRACE_USER);
+		Expect({kKernelPC + 0x100, kKernelPC + 0x200});
+		Expect({}, 2);
+		assert(sUserReads == 0 && sUserFaults == 0);
 	}
 
 	// Kernel reads may neither touch guard pages nor straddle the stack top.

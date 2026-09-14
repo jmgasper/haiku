@@ -12,6 +12,7 @@
 #include <elf.h>
 #include <kernel.h>
 #include <kimage.h>
+#include <team.h>
 #include <thread.h>
 #include <util/AutoLock.h>
 #include <vm/vm.h>
@@ -502,6 +503,15 @@ arch_get_stack_trace(addr_t* returnAddresses, int32 maxCount,
 	Thread* thread = thread_get_current_thread();
 	if (thread == NULL)
 		return 0;
+
+	// thread_exit() installs the kernel address space and moves the thread to
+	// the kernel team before destroying its old user areas. Its saved EL0
+	// iframe still exists then, but no longer describes the active user map.
+	if (thread->team == NULL || thread->team == team_get_kernel_team()) {
+		flags &= ~STACK_TRACE_USER;
+		if (flags == 0)
+			return 0;
+	}
 
 	int32 iframeCount = thread->arch_info.iframes.index;
 	if (iframeCount < 0 || iframeCount > IFRAME_TRACE_DEPTH
