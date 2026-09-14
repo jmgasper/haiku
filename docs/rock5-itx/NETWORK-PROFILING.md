@@ -5,6 +5,12 @@ negotiates 2.5 Gbit/s full duplex on RTL8125 port 0, and port 1 negotiates
 1 Gbit/s full duplex. These are negotiated link rates, not measured application
 throughput. The workstation peer uses a 5 Gbit/s link.
 
+The latest qualified `+165` run passed five four-stream trials, including both
+single-PC and full-stack sampling. All twenty streams verified their payloads,
+and all eight sampled workload threads had zero unknown or dropped ticks.
+The results and limits are recorded below; the earlier slow-stream failure
+remains unresolved.
+
 The `+163` USB candidate passed a paired experiment with four simultaneous,
 checked TCP streams: one send and one receive on each port. Each stream carried
 128 MiB plus seven bytes; all twelve streams across three trials passed the
@@ -67,6 +73,45 @@ zero bytes in its profile and workload logs. No final guest sync completed;
 those files are not usable profiling evidence. Future experiments must retain
 diagnostics before their outer recovery deadline.
 
+## Qualified measurements with resolved user symbols
+
+After the image-event correction, the exact qualified `+165` candidate passed
+baseline/single-PC/baseline/full-stack/baseline trials. Each stream used a
+60-second timeout with a three-second forced-termination grace. The commands
+retained their profile and workload output before judging transfer success.
+QEMU verified normal and failing child exits, timeout termination, forced
+termination and profile collection after a child timed out. The native preflight
+also checked timeout exit handling. All actual network streams completed within
+seven seconds; the deadline was not reached during these transfers.
+
+| Trial | Port 0 receive | Port 0 send | Port 1 receive | Port 1 send |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline before | 284.039 | 185.229 | 293.343 | 190.592 |
+| Single-PC sampling | 400.381 | 230.117 | 303.298 | 209.356 |
+| Baseline middle | 220.207 | 159.096 | 267.340 | 166.395 |
+| Full-stack sampling | 291.662 | 165.784 | 346.950 | 210.344 |
+| Baseline after | 316.364 | 173.266 | 224.787 | 158.281 |
+
+Rates are Mbit/s from the ROCK's perspective. The twenty streams verified
+2,684,354,700 payload bytes; 1,211,383 captured frames established complete
+sequence coverage, simultaneous activity and the correct physical paths.
+All interface and capture error/drop checks passed. Both profiles resolved
+the four newly executed network probes' user functions: 1,707 single-PC ticks
+and 2,749 full-stack ticks, with zero unknown or dropped ticks.
+
+The single-PC profile places 693 of 1,446 Realtek interrupt-thread samples
+in `memcpy` (47.9%). Full-stack sampling places `rge_rxeof` in 1,001 of 1,453
+interrupt-thread samples and `memcpy` in 643. Full-stack counts are inclusive;
+they overlap and must not be added as independent CPU time. Copying remains
+a useful performance lead. No per-CPU placement or CPU clock was recorded.
+The variation between the three baselines still precludes a causal overhead
+or performance-improvement claim.
+
+Inventory, memory, platform, desktop, four-port AHCI discovery, sampler restart,
+profiled process exit, read-only eMMC checks and guarded recovery passed.
+Linux independently verified the complete eMMC FAT partition, fixture files,
+filesystem consistency and three reference regions. The SSD remains `+156`.
+
 ## Evidence
 
 All paths are beneath `/mnt/HaikuWork`:
@@ -81,6 +126,16 @@ All paths are beneath `/mnt/HaikuWork`:
   `artifacts/nanokvm-image-archive/20260914T055407Z-c9fc71`.
 - Summaries: `state/native-arm64-network-profile.json` and
   `state/native-arm64-network-stack-profile.json`.
+- Latest five-trial qualification, profiles, captures and performance review:
+  `artifacts/automated-arm64-network-resolved-profile/20260914T062255Z-2021ac`.
+- Latest native session and inspected desktop frame 007:
+  `artifacts/interactive/20260914T062304Z-e6f3ee`.
+- Timeout and retained-profile QEMU gate:
+  `artifacts/qemu-shell/20260914T061340Z-d1fbdf`.
+- Latest Linux filesystem and reference readbacks:
+  `artifacts/emmc-file-readback/20260914T063251Z-c20e33` and
+  `artifacts/emmc-read-reference/20260914T063251Z-a2eaa3`.
+- Latest summary: `state/native-arm64-network-resolved-profile.json`.
 
 Source references for subsequent investigation include the
 [Linux v6.12 DMA API guidance](https://github.com/torvalds/linux/blob/v6.12/Documentation/core-api/dma-api-howto.rst),

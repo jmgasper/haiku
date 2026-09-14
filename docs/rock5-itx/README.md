@@ -49,10 +49,11 @@ remain open. See [ETHERNET.md](ETHERNET.md) for the measured scope and evidence.
 The `+165` USB image passes native ARM64 system-profiler checks across two
 boots, including process exit, fault recovery and user symbols for programs
 started during sampling. [PROFILING.md](PROFILING.md) records the corrections
-and tested limits. The first [Ethernet profiling](NETWORK-PROFILING.md)
-experiment passed twelve checked streams and identified copying as a performance
-lead. A subsequent full-stack trial exposed a continuing but very slow TCP
-stream; that failure remains under investigation.
+and tested limits. The latest [Ethernet profiling](NETWORK-PROFILING.md)
+experiment passed twenty checked streams across five trials, including resolved
+user symbols during single-PC and full-stack sampling. Copying remains a
+performance lead. An earlier full-stack trial exposed a continuing but very
+slow TCP stream; its cause remains under investigation.
 
 The latest USB image also initializes the ASM1164 SATA controller on its four
 direct ports before and after normal reboot. The ARM64 AHCI driver passes
