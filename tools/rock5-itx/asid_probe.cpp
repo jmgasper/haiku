@@ -152,8 +152,16 @@ static unsigned Reap(unsigned count, unsigned& successful, bool& good)
 		if (result == sChildren[i]) {
 			sChildren[i] = 0;
 			if (WIFEXITED(status) && WEXITSTATUS(status) == 0) ++successful;
-			else good = false;
+			else {
+				printf("ROCK5_ASID_CHILD_EXIT child=%u pid=%ld status=%#x exited=%d code=%d signal=%d\n",
+					i, (long)result, status, WIFEXITED(status),
+					WIFEXITED(status) ? WEXITSTATUS(status) : -1,
+					WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+				good = false;
+			}
 		} else if (result < 0 && errno != EINTR) {
+			printf("ROCK5_ASID_CHILD_WAIT_ERROR child=%u pid=%ld errno=%d\n",
+				i, (long)sChildren[i], errno);
 			sChildren[i] = 0;
 			good = false;
 		} else ++remaining;
@@ -197,7 +205,8 @@ int main(int argc, char** argv)
 	std::fill_n(sGates, kMaximumChildren, -1);
 	signal(SIGTERM, Interrupted); signal(SIGINT, Interrupted); signal(SIGALRM, Interrupted);
 	signal(SIGPIPE, SIG_IGN);
-	sDeadline = Now() + 90000000;
+	uint64_t started = Now();
+	sDeadline = started + 90000000;
 	alarm(90);
 	printf("ROCK5_ASID_POOL_BEGIN children=%u rounds=%u cpus=%u page_bytes=%zu private_va=%p\n",
 		count, rounds, sCPUs, sPageBytes, (void*)sPrivate);
@@ -237,10 +246,16 @@ int main(int argc, char** argv)
 		fflush(stdout);
 	}
 	good &= completed == rounds && Active();
+	printf("ROCK5_ASID_POOL_STOP_BEGIN good=%d elapsed_us=%" PRIu64 "\n",
+		good, Now() - started);
+	fflush(stdout);
 	for (unsigned i = 0; i < created; ++i) {
 		if (good) {
 			unsigned char command = 255;
-			if (write(sGates[i], &command, 1) != 1) good = false;
+			if (write(sGates[i], &command, 1) != 1) {
+				printf("ROCK5_ASID_CHILD_STOP_ERROR child=%u errno=%d\n", i, errno);
+				good = false;
+			}
 		}
 		close(sGates[i]);
 		if (!good) kill(sChildren[i], SIGTERM);
@@ -252,6 +267,9 @@ int main(int argc, char** argv)
 		if (remaining) usleep(1000);
 	}
 	if (remaining) {
+		printf("ROCK5_ASID_POOL_REAP_DEADLINE remaining=%u elapsed_us=%" PRIu64 "\n",
+			remaining, Now() - started);
+		fflush(stdout);
 		good = false;
 		for (unsigned i = 0; i < created; ++i) if (sChildren[i] > 0) kill(sChildren[i], SIGKILL);
 		deadline = Now() + 5000000;
