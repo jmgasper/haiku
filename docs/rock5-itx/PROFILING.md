@@ -66,8 +66,10 @@ and orders those writes before use, and fails if allocation fails. The dirty-pag
 host regression rejects the old initialization and passes the correction,
 including a physical address above 4 GiB. The original native table contents
 were not captured, so their contribution to the recorded address-size fault is
-an inference. Reserving ASID zero exclusively for the empty table remains a
-separate source-review follow-up; this change does not establish ASID isolation.
+an inference. The subsequent `+174` change reserves ASID zero exclusively for
+the empty table and passes a host TLB model, both QEMU modes and two native
+280-child reuse/migration trials. [ARM64-ASID.md](ARM64-ASID.md) records that
+separate correction; the earlier profiler fault is not attributed to ASID reuse.
 
 ## Accepted evidence
 

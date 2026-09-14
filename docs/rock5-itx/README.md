@@ -59,6 +59,13 @@ The [recovery-media correction](RECOVERY-MEDIA.md) also passed automatic Linux
 recovery and independent image/eMMC integrity checks. An earlier full-stack
 trial exposed a continuing but very slow TCP stream; its cause remains open.
 
+The `+174` USB image also passes two native boots exercising 280 simultaneous
+process maps across all eight CPUs, deliberate memory-mismatch cleanup and
+subsequent reuse. It reserves address-space identifier zero for the empty user
+page table. Both QEMU modes, 119 host checks, network transfers, normal reboot
+and independent recovery/storage checks pass; [ARM64-ASID.md](ARM64-ASID.md)
+records the evidence and limits. SSD integration remains a separate next step.
+
 The latest USB image also initializes the ASM1164 SATA controller on its four
 direct ports before and after normal reboot. The ARM64 AHCI driver passes
 two-disk read/write, flush and persistence checks in QEMU. No physical SATA
