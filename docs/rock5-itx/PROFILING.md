@@ -1,11 +1,12 @@
 # ARM64 system profiling
 
-The `hrev60097+163` USB image supports bounded system-wide sampling with
-Haiku's `profile -a`, including kernel samples. Two native ROCK boots passed
-16 sampling checks, profiled process creation/exit and fault recovery, normal
-reboot, desktop inspection and recovery to Linux. This establishes a tool for
-investigating Ethernet throughput; performance measurements remain a separate
-step. The SSD still runs the qualified `+156` installation.
+The `hrev60097+165` USB image supports bounded system-wide sampling with
+Haiku's `profile -a`, including kernel samples and user symbols for programs
+launched after sampling begins. Two native ROCK boots passed 16 sampling
+checks, profiled process creation/exit and fault recovery, eight newly executed
+child probes, normal reboot, desktop inspection and recovery to Linux.
+[Ethernet profiling](NETWORK-PROFILING.md) records the first measurements and
+an unresolved TCP slowdown. The SSD still runs the qualified `+156` installation.
 
 The sampler starts at the saved interrupt PC and follows bounded frame-pointer
 chains. It handles the kernel's EL1 and VHE EL2 modes, validates the current
@@ -70,6 +71,9 @@ separate source-review follow-up; this change does not establish ASID isolation.
 
 ## Accepted evidence
 
+The original `+163` qualification is retained below. The subsequent `+165`
+qualification adds the image-event tests described in the next section.
+
 Source `c1dcd3760c1f1154f2bfb090adc68a71b29b71e6`, image SHA-256
 `fd1957384763a3e458cfa0de6a1341dc5a2315cfdf85f04bf7a84971514e356c`.
 All 113 host checks and the build passed. Both QEMU modes passed 16 sampling
@@ -104,3 +108,61 @@ Evidence beneath `/mnt/HaikuWork`:
   `artifacts/emmc-read-reference/20260914T051818Z-952de1`.
 - Failed native trial: `artifacts/interactive/20260914T044447Z-81fe35`.
 - Summary: `state/native-arm64-profiler.json`.
+
+## Symbols for programs started during profiling
+
+The first network experiment showed partly unresolved user samples in newly
+executed processes. The initial profiler image scan worked, but subsequent
+image notifications did not. The actual `KMessage` containing event, image ID
+and image-structure pointer requires 132 bytes on a 64-bit build; its fixed
+buffer held only 128 bytes. Adding the pointer failed, leaving the profiler
+without the information needed to load the new image's symbols.
+
+`+165` gives that message 160 bytes of storage. The production regression also
+exposed an unaligned read: message fields have four-byte alignment, while
+pointers and 64-bit integers can require eight-byte alignment. `_FindType`
+now copies scalar bytes with `memcpy`, preserving the serialized format.
+The test compiles the actual notification service and production message
+container with address and undefined-behavior sanitizers. It reproduces the
+old capacity failure, rejects the capacity-only fix for an unaligned pointer
+load, and passes both corrections. Add/remove notifications, pointer identity,
+the 32-bit-sized payload, scalar arrays and lookup failures are covered.
+
+Source `0f362f7ce0b8aa2b1f58bf58519b26c25710a0c1`, image SHA-256
+`48ab172679541697a00bdc01bca8f809b436eacacb23d6479d0777e518b619e1`.
+All 114 host checks and the build passed. QEMU EL2 and EL1 each passed the
+existing 16 sampling checks and two process-exit trials, plus two trials that
+start four child programs after sampling begins. The EL2 run also passed the
+storage and PCI network regressions.
+
+The ROCK passed the same sampling, teardown and child checks across two USB
+boots. The first child trial sampled individual PCs; the second collected
+full stacks after normal reboot. All eight child reports resolved the expected
+user functions, with two unknown ticks among 12,007 total ticks and no dropped
+ticks. Both full-stack caller levels were verified in the second trial.
+The replay oracle is [profile_image_test.py](../../tools/rock5-itx/profile_image_test.py).
+
+Both boots passed all 28 component and five setting hashes, memory/platform
+checks, the 2.5/1 Gbit/s links, four-port AHCI discovery, desktop inspection and
+read-only eMMC checks. No SATA training transition occurred in these boots.
+Linux independently verified the complete FAT partition, both fixture files,
+filesystem consistency and three eMMC reference regions. Recovery completed,
+the NanoKVM watchdog disarmed and serial capture reported no transport errors.
+This qualifies profiling symbol delivery; it does not establish a fix for the
+separate slow TCP stream.
+
+Additional evidence beneath `/mnt/HaikuWork`:
+
+- Image, host checks, snapshots and final qualification:
+  `artifacts/arm64-image-notification-image/20260914T055601Z-323207`.
+- QEMU EL2 and EL1:
+  `artifacts/qemu-shell/20260914T055642Z-9e7864` and
+  `artifacts/qemu-shell/20260914T055642Z-11fc1a`.
+- Native serial/transcripts and inspected desktop frames 007/041:
+  `artifacts/interactive/20260914T060431Z-d24e12`.
+- Automatic cycle and desktop reviews:
+  `artifacts/automated-arm64-image-notification/20260914T060425Z-3e74b9`.
+- Linux FAT and reference readbacks:
+  `artifacts/emmc-file-readback/20260914T061555Z-c2f89d` and
+  `artifacts/emmc-read-reference/20260914T061555Z-e912b8`.
+- Summary: `state/native-arm64-image-notification.json`.

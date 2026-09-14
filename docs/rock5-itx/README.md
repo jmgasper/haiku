@@ -46,10 +46,13 @@ route present, and route-query diagnostics. Throughput remains below the recorde
 reference, and automatic IPv6 configuration, sustained load and fault recovery
 remain open. See [ETHERNET.md](ETHERNET.md) for the measured scope and evidence.
 
-The `+163` USB image now passes native ARM64 system-profiler checks across two
-boots, including sampling during process exit and fault recovery. It provides
-the next tool for investigating Ethernet throughput. The native failure,
-corrections and tested limits are recorded in [PROFILING.md](PROFILING.md).
+The `+165` USB image passes native ARM64 system-profiler checks across two
+boots, including process exit, fault recovery and user symbols for programs
+started during sampling. [PROFILING.md](PROFILING.md) records the corrections
+and tested limits. The first [Ethernet profiling](NETWORK-PROFILING.md)
+experiment passed twelve checked streams and identified copying as a performance
+lead. A subsequent full-stack trial exposed a continuing but very slow TCP
+stream; that failure remains under investigation.
 
 The latest USB image also initializes the ASM1164 SATA controller on its four
 direct ports before and after normal reboot. The ARM64 AHCI driver passes
