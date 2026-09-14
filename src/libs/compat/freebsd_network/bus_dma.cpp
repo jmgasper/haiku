@@ -20,6 +20,13 @@ phys_addr_t vm_page_max_address();
 	// declared in <vm/vm_page.h> which we can't include here.
 }
 
+#if defined(FBSD_NONCOHERENT_DMA)
+#include <arch/arm64/cache_poc.h>
+#include <driver_settings.h>
+
+static bool sCachedPacketBuffers = false;
+#endif
+
 
 // #pragma mark - structures
 
@@ -54,6 +61,7 @@ struct bus_dmamap {
 	bus_size_t	buffer_length;
 	bool		loaded;
 	bool		bounce_prohibited;
+	bool		cacheable_bounce;
 
 	enum {
 		BUFFER_NONE = 0,
@@ -69,12 +77,29 @@ struct bus_dmamap {
 };
 
 static int _allocate_dmamem(bus_dma_tag_t dmat, phys_size_t size,
-	void** vaddr, int flags);
+	void** vaddr, int flags, bool cacheable = false);
 static int _prepare_bounce_buffer(bus_dmamap_t map, bus_size_t reqsize,
 	int flags);
 
 
 // #pragma mark - functions
+
+
+extern "C" void
+_fbsd_init_bus_dma(const char* driverName)
+{
+#if defined(FBSD_NONCOHERENT_DMA)
+	// Called once before driver attach and before taking Giant. Packet paths
+	// must never read settings or allocate memory while holding driver locks.
+	void* settings = load_driver_settings(driverName);
+	sCachedPacketBuffers = settings != NULL && get_driver_boolean_parameter(
+		settings, "cached_packet_buffers", false, false);
+	if (settings != NULL)
+		unload_driver_settings(settings);
+	dprintf("%s: packet DMA buffers: %s\n", driverName,
+		sCachedPacketBuffers ? "cached with explicit sync" : "non-cacheable");
+#endif
+}
 
 
 extern "C" void
@@ -204,6 +229,9 @@ _create_map(bus_dma_tag_t dmat, int flags, bus_dmamap_t* mapp, bool noBounce)
 
 	(*mapp)->dmat = dmat;
 	(*mapp)->bounce_prohibited = noBounce;
+#if defined(FBSD_NONCOHERENT_DMA)
+	(*mapp)->cacheable_bounce = !noBounce && sCachedPacketBuffers;
+#endif
 	(*mapp)->segments = (bus_dma_segment_t*)kernel_malloc(
 		dmat->maxsegments * sizeof(bus_dma_segment_t), M_DEVBUF,
 		M_ZERO | M_NOWAIT);
@@ -261,7 +289,8 @@ bus_dmamap_destroy(bus_dma_tag_t dmat, bus_dmamap_t map)
 
 
 static int
-_allocate_dmamem(bus_dma_tag_t dmat, phys_size_t size, void** vaddr, int flags)
+_allocate_dmamem(bus_dma_tag_t dmat, phys_size_t size, void** vaddr, int flags,
+	bool cacheable)
 {
 	*vaddr = NULL;
 	if (size == 0 || size > SIZE_MAX - (B_PAGE_SIZE - 1))
@@ -287,17 +316,17 @@ _allocate_dmamem(bus_dma_tag_t dmat, phys_size_t size, void** vaddr, int flags)
 	// if possible. (The most common exclusion range is 32-bit only, and
 	// ones other than that are very rare, so typically this will succeed.)
 	if (dmat->lowaddr >= B_PAGE_SIZE - 1) {
-		*vaddr = kernel_contigmalloc(size, M_DEVBUF, mflags,
+		*vaddr = kernel_contigmalloc_etc(size, M_DEVBUF, mflags,
 			0, dmat->lowaddr,
-			dmat->alignment, boundary);
+			dmat->alignment, boundary, cacheable);
 		if (*vaddr == NULL)
 			dprintf("bus_dmamem_alloc: failed to allocate with lowaddr "
 				"0x%" B_PRIxPHYSADDR "\n", dmat->lowaddr);
 	}
 	if (*vaddr == NULL && dmat->highaddr < BUS_SPACE_MAXADDR) {
-		*vaddr = kernel_contigmalloc(size, M_DEVBUF, mflags,
+		*vaddr = kernel_contigmalloc_etc(size, M_DEVBUF, mflags,
 			dmat->highaddr + 1, BUS_SPACE_MAXADDR,
-			dmat->alignment, boundary);
+			dmat->alignment, boundary, cacheable);
 	}
 
 	if (*vaddr == NULL) {
@@ -376,7 +405,8 @@ _prepare_bounce_buffer(bus_dmamap_t map, bus_size_t reqsize, int flags)
 		return 0;
 
 	void* buffer;
-	int error = _allocate_dmamem(map->dmat, reqsize, &buffer, flags);
+	int error = _allocate_dmamem(map->dmat, reqsize, &buffer, flags,
+		map->cacheable_bounce);
 	if (error != 0)
 		return error;
 	bus_addr_t physical = vtophys(buffer);
@@ -658,6 +688,47 @@ bus_dmamap_sync(bus_dma_tag_t dmat, bus_dmamap_t map, bus_dmasync_op_t op)
 }
 
 
+#if defined(FBSD_NONCOHERENT_DMA)
+static void
+_sync_bounce_cache(bus_dmamap_t map, bus_addr_t offset, bus_size_t length,
+	bus_dmasync_op_t op)
+{
+	if (length == 0) {
+		memory_full_barrier();
+		return;
+	}
+
+	cpu_status irqState = disable_interrupts();
+	const size_t lineSize = arm64_current_data_cache_line_size();
+	if (lineSize > B_PAGE_SIZE) {
+		restore_interrupts(irqState);
+		panic("bus_dmamap_sync: DMA cache line exceeds private page alignment");
+		return;
+	}
+	addr_t address = (addr_t)map->bounce_buffer + offset;
+	const addr_t last = (address + length - 1) & ~(lineSize - 1);
+	address &= ~(lineSize - 1);
+	// The allocation owns complete pages, including the partial boundary lines.
+	// POSTREAD must not clean stale CPU data over a device's completed write.
+	for (;;) {
+		if ((op & BUS_DMASYNC_PREREAD) != 0)
+			arm64_clean_invalidate_data_cache_line_poc(address);
+		else if ((op & BUS_DMASYNC_PREWRITE) != 0)
+			arm64_clean_data_cache_line_poc(address);
+		else
+			arm64_invalidate_data_cache_line_poc(address);
+		if (address == last)
+			break;
+		address += lineSize;
+	}
+	// ARM64's full barrier is DSB SY. Complete maintenance on this CPU before
+	// allowing migration, publishing descriptors or copying received bytes.
+	memory_full_barrier();
+	restore_interrupts(irqState);
+}
+#endif
+
+
 extern "C" void
 bus_dmamap_sync_etc(bus_dma_tag_t dmat, bus_dmamap_t map,
 	bus_addr_t offset, bus_size_t length, bus_dmasync_op_t op)
@@ -679,10 +750,25 @@ bus_dmamap_sync_etc(bus_dma_tag_t dmat, bus_dmamap_t map,
 	}
 	// Coherent rings still require ordering, including PREREAD/POSTWRITE.
 	// Full barriers also order the Normal Non-cacheable payload with MMIO.
-	if ((op & (BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD)) != 0)
+#if defined(FBSD_NONCOHERENT_DMA)
+	const bool cached = map->cacheable_bounce
+		&& map->buffer_type != bus_dmamap::BUFFER_DIRECT;
+#endif
+	if ((op & (BUS_DMASYNC_PREWRITE | BUS_DMASYNC_PREREAD)) != 0) {
+#if defined(FBSD_NONCOHERENT_DMA)
+		if (cached)
+			_sync_bounce_cache(map, offset, length, op);
+		else
+#endif
+			memory_full_barrier();
+	}
+	if ((op & (BUS_DMASYNC_POSTREAD | BUS_DMASYNC_POSTWRITE)) != 0) {
 		memory_full_barrier();
-	if ((op & (BUS_DMASYNC_POSTREAD | BUS_DMASYNC_POSTWRITE)) != 0)
-		memory_full_barrier();
+#if defined(FBSD_NONCOHERENT_DMA)
+		if (cached && (op & BUS_DMASYNC_POSTREAD) != 0)
+			_sync_bounce_cache(map, offset, length, BUS_DMASYNC_POSTREAD);
+#endif
+	}
 
 	if ((op & BUS_DMASYNC_POSTREAD) != 0) {
 		if (map->buffer_type == bus_dmamap::BUFFER_TYPE_SIMPLE) {

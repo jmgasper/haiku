@@ -246,6 +246,8 @@ _fbsd_init_drivers()
 	if (status < B_OK)
 		goto err6;
 
+	_fbsd_init_bus_dma(gDriverName);
+
 	// Always hold the giant lock during attach.
 	mtx_lock(&Giant);
 

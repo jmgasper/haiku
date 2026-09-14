@@ -18,6 +18,7 @@ typedef uintptr_t vm_offset_t;
 typedef uint64_t vm_paddr_t;
 typedef int32_t int32;
 typedef uint32_t uint32;
+typedef unsigned cpu_status;
 #define B_PAGE_SIZE 4096UL
 #define PAGESIZE B_PAGE_SIZE
 #define PAGE_MASK (B_PAGE_SIZE - 1)
@@ -36,6 +37,8 @@ typedef uint32_t uint32;
 #define kernel_free(ptr, type) _kernel_free(ptr)
 #define kernel_contigmalloc(size, type, flags, low, high, align, boundary) \
 	_kernel_contigmalloc(__FILE__, __LINE__, size, flags, low, high, align, boundary)
+#define kernel_contigmalloc_etc(size, type, flags, low, high, align, boundary, cached) \
+	_kernel_contigmalloc_etc(__FILE__, __LINE__, size, flags, low, high, align, boundary, cached)
 #define kernel_contigfree(ptr, size, type) _kernel_contigfree(ptr, size)
 #define vtophys(ptr) pmap_kextract((vm_offset_t)(ptr))
 #define dprintf dma_debug
@@ -58,10 +61,14 @@ void* _kernel_malloc(size_t, int);
 void _kernel_free(void*);
 void* _kernel_contigmalloc(const char*, int, size_t, int, vm_paddr_t,
 	vm_paddr_t, unsigned long, unsigned long);
+void* _kernel_contigmalloc_etc(const char*, int, size_t, int, vm_paddr_t,
+	vm_paddr_t, unsigned long, unsigned long, bool);
 void _kernel_contigfree(void*, size_t);
 bool _kernel_contig_dma_address(const void*, size_t, vm_paddr_t*);
 vm_paddr_t pmap_kextract(vm_offset_t);
 void memory_full_barrier(void);
+cpu_status disable_interrupts(void);
+void restore_interrupts(cpu_status);
 static inline int32 atomic_add(int32* p, int32 value)
 	{ int32 old = *p; *p += value; return old; }
 static inline void mtx_lock(struct mtx*) {}

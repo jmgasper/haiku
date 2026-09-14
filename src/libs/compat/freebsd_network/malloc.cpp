@@ -17,7 +17,7 @@ extern "C" {
 #include <kernel/vm/vm.h>
 
 #if defined(FBSD_NONCOHERENT_DMA)
-#include <arch/arm64/cache_line_size.h>
+#include <arch/arm64/cache_poc.h>
 #include <util/AutoLock.h>
 
 struct dma_allocation {
@@ -26,6 +26,7 @@ struct dma_allocation {
 	size_t size;
 	phys_addr_t physical;
 	area_id area;
+	bool cacheable;
 };
 
 static spinlock sDMAAllocationLock = B_SPINLOCK_INITIALIZER;
@@ -64,6 +65,16 @@ void *
 _kernel_contigmalloc(const char *file, int line, size_t size, int flags,
 	vm_paddr_t low, vm_paddr_t high, unsigned long alignment,
 	unsigned long boundary)
+{
+	return _kernel_contigmalloc_etc(file, line, size, flags, low, high,
+		alignment, boundary, false);
+}
+
+
+void*
+_kernel_contigmalloc_etc(const char* file, int line, size_t size, int flags,
+	vm_paddr_t low, vm_paddr_t high, unsigned long alignment,
+	unsigned long boundary, bool cacheable)
 {
 	const bool zero = (flags & M_ZERO) != 0, dontWait = (flags & M_NOWAIT) != 0;
 
@@ -134,29 +145,40 @@ _kernel_contigmalloc(const char *file, int line, size_t size, int flags,
 		return NULL;
 	}
 
-	// Clear dirty lines left by allocation/zeroing before changing this private
-	// RAM mapping to Normal Non-cacheable. Device memory rejects unaligned
-	// accesses made by ordinary packet copies on ARM64.
-	uint64 ctr;
-	asm volatile("mrs %0, ctr_el0" : "=r"(ctr));
-	const size_t lineSize = arm64_data_cache_line_size(ctr);
-	for (size_t offset = 0; offset < size; offset += lineSize) {
-		asm volatile("dc civac, %0"
-			:: "r"((addr_t)address + offset) : "memory");
-	}
-	memory_full_barrier();
-	if (vm_set_area_memory_type(area, entry.address,
-			B_WRITE_COMBINING_MEMORY) != B_OK) {
+	// Every line must belong to this private, page-aligned allocation. Prevent
+	// migration while using this CPU's CTR on systems with different line sizes.
+	cpu_status irqState = disable_interrupts();
+	const size_t lineSize = arm64_current_data_cache_line_size();
+	if (lineSize > B_PAGE_SIZE) {
+		restore_interrupts(irqState);
 		delete_area(area);
 		_kernel_free(allocation);
 		return NULL;
 	}
-	memory_full_barrier();
+	if (!cacheable) {
+		// Clear dirty lines before changing Normal Write-back RAM to Normal
+		// Non-cacheable. Descriptor rings retain this coherent direct mapping.
+		for (size_t offset = 0; offset < size; offset += lineSize) {
+			arm64_clean_invalidate_data_cache_line_poc((addr_t)address + offset);
+		}
+		memory_full_barrier();
+	}
+	restore_interrupts(irqState);
+	if (!cacheable) {
+		if (vm_set_area_memory_type(area, entry.address,
+				B_WRITE_COMBINING_MEMORY) != B_OK) {
+			delete_area(area);
+			_kernel_free(allocation);
+			return NULL;
+		}
+		memory_full_barrier();
+	}
 
 	allocation->address = address;
 	allocation->size = requestedSize;
 	allocation->physical = entry.address;
 	allocation->area = area;
+	allocation->cacheable = cacheable;
 	{
 		BPrivate::InterruptsSpinLocker locker(&sDMAAllocationLock);
 		allocation->next = sDMAAllocations;
@@ -213,7 +235,8 @@ _kernel_contig_dma_address(const void* address, size_t size,
 	for (dma_allocation* allocation = sDMAAllocations; allocation != NULL;
 			allocation = allocation->next) {
 		addr_t offset = (addr_t)address - (addr_t)allocation->address;
-		if ((addr_t)address >= (addr_t)allocation->address
+		if (!allocation->cacheable
+			&& (addr_t)address >= (addr_t)allocation->address
 			&& offset < allocation->size && size <= allocation->size - offset) {
 			*physicalAddress = allocation->physical + offset;
 			return true;
