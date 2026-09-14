@@ -309,7 +309,9 @@ def start_serial(config, output):
 def recover(config):
     previous = boot_id(config)
     timeout = int(config.get('recovery_timeout', 90))
-    attach(config, config['recovery_image'], readonly=False)
+    # The previous guest can still issue filesystem writes before reset takes
+    # effect. A changed LUN must not redirect those writes into recovery files.
+    attach(config, config['recovery_image'], readonly=True)
     nanokvm.api('/api/vm/gpio', {'type': 'reset', 'duration': 800})
     value = wait_recovery(config, previous, seconds=timeout)
     if not value:

@@ -166,6 +166,36 @@ class LabTests(unittest.TestCase):
             lab.recover(dict(self.config, recovery_timeout=180))
         self.assertEqual(wait.call_args.kwargs['seconds'], 180)
 
+    def test_recovery_media_rejects_late_writes_from_previous_guest(self):
+        medium = self.work / 'recovery.img'
+        original = b'known recovery kernel and initrd'
+        medium.write_bytes(original)
+        selected = {}
+        attempts = []
+
+        def late_write(stage):
+            attempts.append(stage)
+            if not selected['readonly']:
+                medium.write_bytes(b'late filesystem journal write')
+
+        def select(_config, name, readonly=False):
+            selected.update(name=name, readonly=readonly)
+            late_write('media selected before reset')
+
+        def gpio(path, body):
+            self.assertEqual(path, '/api/vm/gpio')
+            self.assertEqual(body['type'], 'reset')
+            late_write('reset not yet effective')
+
+        with patch.object(lab, 'boot_id', return_value='before'), \
+                patch.object(lab, 'attach', side_effect=select), \
+                patch.object(lab.nanokvm, 'api', side_effect=gpio), \
+                patch.object(lab, 'wait_recovery', return_value='after'):
+            result = lab.recover(self.config)
+        self.assertEqual(result['boot_id'], 'after')
+        self.assertEqual(attempts, ['media selected before reset', 'reset not yet effective'])
+        self.assertEqual(medium.read_bytes(), original)
+
     def test_symlink_cannot_escape_project_drive(self):
         (self.work / 'escape').symlink_to('/etc')
         with self.assertRaises(ValueError):
