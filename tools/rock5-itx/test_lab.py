@@ -1,5 +1,6 @@
 """Regression checks for deployment integrity and recovery after failed trials."""
 import json
+import contextlib
 import os
 from pathlib import Path
 import tempfile
@@ -195,6 +196,79 @@ class LabTests(unittest.TestCase):
         self.assertEqual(result['boot_id'], 'after')
         self.assertEqual(attempts, ['media selected before reset', 'reset not yet effective'])
         self.assertEqual(medium.read_bytes(), original)
+
+    @contextlib.contextmanager
+    def shutdown_fixture(self, raw, usb='not attached', poll=None):
+        path = self.work / 'serial.log'
+        path.write_bytes(raw)
+        serial = Mock(output=path)
+        clock = [0.0]
+        actions = []
+        controller = '84b69ae8-4d9e-4c03-9f5c-6c9547084819'
+
+        def read_state(*_args, **_kwargs):
+            if poll:
+                poll(clock[0], path, serial)
+            return controller + '\n' + usb
+
+        with patch.object(lab, 'boot_id', return_value=None), \
+                patch.object(lab.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(lab.time, 'sleep', side_effect=lambda n: clock.__setitem__(0, clock[0] + n)), \
+                patch.object(lab, 'ssh', side_effect=read_state) as ssh, \
+                patch.object(lab, 'attach', side_effect=lambda *a, **kw: actions.append(('attach', clock[0], a, kw))), \
+                patch.object(lab.nanokvm, 'api', side_effect=lambda *a: actions.append(('gpio', clock[0], a))), \
+                patch.object(lab, 'wait_recovery', return_value='new-linux-boot'):
+            yield serial, actions, ssh
+
+    def test_shutdown_recovery_changes_media_only_after_quiet_disconnection(self):
+        raw = b'Haiku revision: test\r\nPSCI: requesting system off\r\n\x00\xfe\xff'
+        with self.shutdown_fixture(raw) as (serial, actions, _ssh):
+            result = lab.recover(self.config, shutdown_serial=serial)
+        self.assertEqual([a[0] for a in actions], ['attach', 'gpio'])
+        self.assertGreaterEqual(actions[0][1], 25)
+        self.assertEqual(actions[0][3], {'readonly': True})
+        self.assertEqual(actions[1][2], ('/api/vm/gpio', {'type': 'power', 'duration': 800}))
+        self.assertEqual(result['method'], 'after_verified_shutdown')
+        self.assertEqual(result['off_observation']['serial_bytes'], len(raw))
+        self.assertEqual(result['off_observation']['serial_sha256'], lab.digest(serial.output))
+
+    def test_incomplete_or_stale_shutdown_never_changes_media(self):
+        marker = b'PSCI: requesting system off\r\n'
+        cases = [(b'Haiku running', 'not attached'), (marker, 'configured'),
+            (marker + b'DDR new boot', 'not attached'),
+            (marker + b'PANIC: bad filesystem', 'not attached')]
+        for raw, usb in cases:
+            with self.subTest(raw=raw, usb=usb), \
+                    self.shutdown_fixture(raw, usb) as (serial, actions, _ssh):
+                with self.assertRaises(RuntimeError):
+                    lab.recover(self.config, shutdown_serial=serial)
+                self.assertEqual(actions, [])
+
+    def test_shutdown_observation_rejects_controller_restart_and_lost_capture(self):
+        raw = b'PSCI: requesting system off\r\n'
+        with self.shutdown_fixture(raw) as (serial, actions, ssh):
+            ssh.side_effect = ['84b69ae8-4d9e-4c03-9f5c-6c9547084819\nnot attached',
+                '84b69ae8-4d9e-4c03-9f5c-6c9547084820\nnot attached']
+            with self.assertRaisesRegex(RuntimeError, 'NanoKVM restarted'):
+                lab.recover(self.config, shutdown_serial=serial)
+            self.assertEqual(actions, [])
+        def lost_capture(now, _path, serial):
+            if now >= 24:
+                serial.check.side_effect = RuntimeError('Serial transport ended')
+        with self.shutdown_fixture(raw, poll=lost_capture) as (serial, actions, _ssh):
+            with self.assertRaisesRegex(RuntimeError, 'Serial transport ended'):
+                lab.recover(self.config, shutdown_serial=serial)
+            self.assertEqual(actions, [])
+
+    def test_shutdown_quiet_period_restarts_when_more_serial_arrives(self):
+        raw = b'PSCI: requesting system off\r\n'
+        def more_data(now, path, _serial):
+            if now == 20:
+                path.write_bytes(raw + b'\x00\xfe')
+        with self.shutdown_fixture(raw, poll=more_data) as (serial, actions, _ssh):
+            result = lab.recover(self.config, shutdown_serial=serial)
+        self.assertGreaterEqual(actions[0][1], 45)
+        self.assertGreaterEqual(result['off_observation']['quiet_seconds'], 25)
 
     def test_symlink_cannot_escape_project_drive(self):
         (self.work / 'escape').symlink_to('/etc')

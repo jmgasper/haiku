@@ -306,9 +306,69 @@ def start_serial(config, output):
     return serial_capture.start(config, local_path(output))
 
 
-def recover(config):
+def wait_stopped(config, serial):
+    """Observe this session's shutdown and USB disconnect before changing media."""
+    path = local_path(serial.output)
+    marker = b'PSCI: requesting system off'
+    started = time.monotonic()
+    controller = None
+    quiet_since = None
+    previous = None
+    while time.monotonic() - started < 90:
+        serial.check()
+        lines = ssh(config, 'nanokvm_ssh',
+            'cat /proc/sys/kernel/random/boot_id /sys/class/udc/*/state',
+            timeout=8).splitlines()
+        if len(lines) != 2 or not re.fullmatch(
+                r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', lines[0]):
+            raise RuntimeError('Cannot verify NanoKVM boot ID and USB state')
+        if controller is None:
+            controller = lines[0]
+        elif lines[0] != controller:
+            raise RuntimeError('NanoKVM restarted during shutdown observation')
+        raw = path.read_bytes()
+        offset = raw.rfind(marker)
+        if b'PANIC:' in raw or b'Welcome to Kernel Debugging Land' in raw:
+            raise RuntimeError('Serial capture contains a kernel failure')
+        if offset >= 0:
+            tail = raw[offset + len(marker):]
+            # The board emits a short burst of UART noise as power goes off.
+            # A later firmware/kernel boot invalidates an older off message.
+            if any(value in tail for value in (b'DDR ', b'UEFI', b'BdsDxe:',
+                    b'Haiku revision:', b'Linux version', b'ROCK5_SHELL_CONFIGURED')):
+                raise RuntimeError('Target restarted after its system-off request')
+        now = time.monotonic()
+        if offset >= 0 and lines[1] == 'not attached':
+            if raw != previous or quiet_since is None:
+                quiet_since = now
+            elif now - quiet_since >= 25:
+                serial.check()
+                return {'serial': str(path), 'serial_bytes': len(raw),
+                    'serial_sha256': hashlib.sha256(raw).hexdigest(),
+                    'system_off_offset': offset, 'controller_boot_id': controller,
+                    'usb_state': lines[1], 'quiet_seconds': now - quiet_since,
+                    'elapsed_seconds': now - started}
+        else:
+            quiet_since = None
+        previous = raw
+        time.sleep(1)
+    raise RuntimeError('No verified system-off request with 25 seconds of USB disconnection')
+
+
+def recover(config, *, shutdown_serial=None):
     previous = boot_id(config)
     timeout = int(config.get('recovery_timeout', 90))
+    if shutdown_serial is not None:
+        if previous:
+            raise RuntimeError('Shutdown recovery requires the target to be off')
+        observation = wait_stopped(config, shutdown_serial)
+        attach(config, config['recovery_image'], readonly=True)
+        nanokvm.api('/api/vm/gpio', {'type': 'power', 'duration': 800})
+        value = wait_recovery(config, previous, seconds=timeout)
+        if not value:
+            raise RuntimeError('ROOBI did not return after verified shutdown and startup')
+        return {'recovery': 'ROOBI', 'boot_id': value, 'previous_boot_id': previous,
+            'method': 'after_verified_shutdown', 'off_observation': observation}
     # The previous guest can still issue filesystem writes before reset takes
     # effect. A changed LUN must not redirect those writes into recovery files.
     attach(config, config['recovery_image'], readonly=True)

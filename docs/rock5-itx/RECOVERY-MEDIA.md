@@ -59,3 +59,42 @@ Evidence beneath `/mnt/HaikuWork`:
   `artifacts/automated-cached-packet-dma/20260914T082806Z-8121ae/qualification.json`.
 - Independent checks after that cycle: `artifacts/emmc-file-readback/20260914T085106Z-f1d530`
   and `artifacts/emmc-read-reference/20260914T085106Z-b22445`.
+
+## Orderly shutdown before replacing the guest boot medium
+
+The subsequent native Installer update from `+156` to `+174` passed its
+package, configuration, EFI, two 2 GiB data-region, guard and filesystem
+checks. Replacing its live USB root during recovery then produced checksum
+errors and a `vnode undertaker` panic in `acquire_vnode()` through BFS page
+writeback. The post-install pass marker precedes the recovery boundary;
+all 150 checksum-error labels and the panic follow it. Linux returned through
+automatic recovery, but the clean-transition gate correctly failed. The
+protected Linux image retained its complete original hash, and independent
+eMMC files, filesystem and reference checks passed.
+
+The controller now offers the explicit session action `finish_stopped` after
+scheduling Haiku's normal `shutdown`. It observes the session's live serial
+capture, requires a PSCI system-off message, and waits for at least 25 seconds
+of unchanged serial data with the NanoKVM USB controller disconnected. A
+kernel panic, subsequent boot, changed controller boot ID or failed serial
+capture rejects this path. Only then does it select read-only recovery media
+and issue a short power-button pulse. Emergency recovery remains available;
+using it after a failed shutdown observation preserves the session's failure.
+
+Host checks exercise media/power ordering, missing and stale shutdown evidence,
+connected USB, a controller restart, lost serial capture, delayed serial bytes,
+and the session's failure-preserving fallback. Native qualification of this
+new transition is pending. The existing `+174` image is unchanged; its completed
+build, EL1/EL2 QEMU gates and installed-image rehearsal remain applicable to
+this host-controller change. The physically updated SSD must pass a clean
+recovery witness and both installed boot cycles before replacing the qualified
+`+156` development baseline.
+
+Evidence beneath `/mnt/HaikuWork`:
+
+- Failed transition and independent integrity review:
+  `artifacts/arm64-installed-update/20260914T093856Z-cffbeb/recovery-transition-failure`.
+- Complete failed session: `artifacts/interactive/20260914T100817Z-c93435`.
+- Preserved used USB image: `artifacts/nanokvm-image-archive/20260914T103318Z-3a0cb2`.
+- Shutdown controller snapshots and host checks:
+  `artifacts/shutdown-recovery/20260914T103806Z-b5e2f7`.

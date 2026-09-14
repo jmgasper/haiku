@@ -74,12 +74,14 @@ def controller_id(current):
     except (subprocess.SubprocessError,OSError):return None
 
 
-def recover(current):
+def recover(current, **options):
     guard=active['guard']
     before=guard.receipt['ready']['boot_id']
     observed=controller_id(current)
     need_restart=bool(guard.error) or observed is None or observed!=before
-    if not need_restart:return original_recover(current)
+    if not need_restart:return original_recover(current, **options)
+    if options.get('shutdown_serial') is not None:
+        raise RuntimeError('Controller interruption invalidated clean shutdown observation')
     report={'status':'incomplete','controller_boot_before':before}
     print(json.dumps({'waiting_for_controller_watchdog':True}),flush=True)
     serial=None

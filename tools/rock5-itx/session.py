@@ -108,6 +108,7 @@ with lab.lock('hardware'):
     nanokvm.api('/api/vm/hardware')
     serial = None
     started = False
+    finish_stopped = False
     try:
         serial = lab.start_serial(config, output / 'serial.log')
         started = True
@@ -147,7 +148,8 @@ with lab.lock('hardware'):
                 command = json.loads(input_lines.popleft())
                 result['events'].append({'time': lab.timestamp(), 'command': command})
                 action = command['action']
-                if action == 'finish':
+                if action in ('finish', 'finish_stopped'):
+                    finish_stopped = action == 'finish_stopped'
                     break
                 if action == 'key':
                     nanokvm.key(command['keys'])
@@ -227,7 +229,19 @@ with lab.lock('hardware'):
                     result['serial_baud_error'] = str(error)
             try:
                 emit({'recovering': True})
-                result['recovery'] = lab.recover(config)
+                if finish_stopped:
+                    try:
+                        result['recovery'] = lab.recover(config, shutdown_serial=serial)
+                    except BaseException as error:
+                        # Preserve the failed clean transition even if emergency
+                        # recovery restores access to the dedicated target.
+                        result['status'] = 'error'
+                        result['shutdown_recovery_error'] = str(error)
+                        emit({'shutdown_recovery_error': str(error),
+                            'emergency_recovery': True})
+                        result['recovery'] = lab.recover(config)
+                else:
+                    result['recovery'] = lab.recover(config)
             except BaseException as error:
                 result['status'] = 'recovery_failed'
                 result['recovery_error'] = str(error)
