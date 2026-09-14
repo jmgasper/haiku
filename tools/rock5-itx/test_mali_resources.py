@@ -1,4 +1,4 @@
-"""Exercise the production FDT adapter and diagnostic ioctl without GPU access."""
+"""Exercise production FDT/ioctl and platform reads using protected MMIO fixtures."""
 import os
 from pathlib import Path
 import subprocess
@@ -13,8 +13,8 @@ class MaliResourcesTest(unittest.TestCase):
         code = (source / 'driver.cpp').read_text()
         with tempfile.TemporaryDirectory(prefix='mali-resources-') as temporary:
             root = Path(temporary)
-            # Only the device-manager/FDT providers and user copy are fixtures.
-            # Resource traversal, decoding and ioctl bodies are unchanged.
+            # FDT providers, kernel mapping/area services and user copy are fixtures.
+            # Traversal, MMIO read offsets, cleanup paths and ioctl are unchanged.
             (root / 'driver.inc').write_text(
                 code[code.index('static device_manager_info*'):
                      code.index('static float\nSupportsDevice')]

@@ -70,15 +70,17 @@ CPU preparation check also passes, but that two-boot controller failed to
 schedule reboot because its log directory was absent. The board shut down
 cleanly and recovered with unchanged recovery/eMMC hashes. Corrected scripts
 open their `/tmp` log before launching the delayed command. Both CPU checks
-pass in the repeat; final recovery and integrity qualification are pending.
+pass in the corrected two-boot +179 repeat, together with all component/file
+hashes, reviewed desktops, normal reboot/shutdown and independent recovery/eMMC
+integrity. The failed first controller run remains recorded separately.
 
 ## Native resource interface
 
-The next kernel component binds the RK3588 CSF device only after validating
+The +181 kernel component binds the RK3588 CSF device only after validating
 the board, named interrupts, clock provider, power controller and supply
 description. It resolves phandles instead of fixing their numerical values.
 It exposes a pointer-free, read-only snapshot at `graphics/mali_csf/0`, checked
-by `rock5_mali_resource_probe`. It performs no MMIO, clock, regulator, power,
+by `rock5_mali_resource_probe`. The +181 implementation performs no MMIO, clock, regulator, power,
 interrupt-handler or GPU-memory operation. Its diagnostic marker records
 `gpu_accessed=0`; the supply range is a firmware description, not a voltage
 measurement. It supplies no display accelerant.
@@ -86,13 +88,37 @@ measurement. It supplies no display accelerant.
 The production FDT traversal and ioctl run in a host fixture covering changed
 phandles, missing/wrong providers, incompatible boards, malformed cell/string
 arrays, incorrect IRQ routes, parent-reference cleanup and ioctl bounds. Guarded
-pages check truncated and unaligned input. ARM64 build and native attachment
-are pending.
+pages check truncated and unaligned input. All 130 host tests, the ARM64 build
+and both two-boot QEMU modes pass. Native attachment and the exact resource
+snapshot pass on two boots, with invalid ioctl length and write-open rejection,
+32 component and nine file hashes, reviewed desktops, normal reboot/shutdown,
+and independent recovery/eMMC integrity. QEMU correctly exposes no GPU node.
+An earlier +180 image used the legacy driver packaging directory; pre-native
+review caught this and +181 uses the modern graphics module directory.
+
+## Clock and power observation
+
+The next opt-in diagnostic, `rock5_mali_resource_probe --platform`, reads CRU
+clock selectors 158–160 and gates 66–67, plus PMU GPU idle request/ack/status,
+software power-down request and repair status. Offsets come from RK3588 TRM
+v1.0 Part 1, dated 2022-03-09. PMU offsets account for the actual FDT window
+starting at `fd8d8000`. The GPU repair-complete indication is bit 1 in
+`PMU_BISR_STS4`; idle and software power-down requests use bit 0.
+
+It maps only the required CRU and PMU pages, with kernel read-only permissions,
+and releases both on every path. It never maps the GPU, writes a register,
+changes voltage, installs an interrupt handler or enables power. The fixed
+64-byte result includes observation start/end times and raw register values;
+the reads are sequential, not atomic, and do not measure voltage or frequency.
+The host fixture tests actual production read offsets and cleanup, failed
+first/second mappings and malformed requests using guarded read-only memory.
+Build, QEMU and native observation are pending.
 
 ## Next milestones
 
-1. Capture Linux GPU identity and actual Haiku resources; establish clock,
-   regulator and power-domain ownership, bounded reset and interrupt delivery.
+1. Observe Haiku's initial clock/power state, then establish clock, regulator
+   and power-domain ownership, bounded reset and interrupt delivery. Linux GPU
+   identity/firmware and the actual Haiku resource descriptions are recorded.
 2. Implement GPU page tables, backing-memory lifetime and cache operations.
    Load the validated regions and verify the MCU boot handshake, interface
    version, timeout cleanup and normal reboot.
@@ -110,6 +136,9 @@ are pending.
   offer GPL-2.0 or MIT licensing; the container layout follows `panthor_fw.c`
   under its MIT option.
 - [Mali CSF binding](https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/Documentation/devicetree/bindings/gpu/arm%2Cmali-valhall-csf.yaml).
+- RK3588 TRM v1.0 Part 1 (2022-03-09), local
+  `artifacts/reference/rk3588-trm-v1.0-part1-20220309.pdf`, SHA-256
+  `52fd969a33c0cfc4b14e90fb395c7bc71ac0132a1f65ab0e827e9b63c3404bc3`.
 - [Mesa Panfrost](https://docs.mesa3d.org/drivers/panfrost.html), Mesa 25.3.6
   archive SHA-256 `59217efeac3b64e7ced958324b9db7494f1e0741aeb22d780276514cc1b8f206`.
 - [HaikuPorts recipe and patches](https://github.com/haikuports/haikuports/tree/50ed75230b0be025c78f99a47508d1825799677d/sys-libs/mesa),
@@ -130,3 +159,17 @@ The local index is `/mnt/HaikuWork/state/gpu-bringup-plan.json`. Initial
 privileged inventory, source hashes and host evidence are under
 `artifacts/gpu-bringup/20260914T201454Z-f2ee41`. Firmware, large sources and
 images stay beneath `/mnt/HaikuWork`; firmware binaries are not committed.
+
+Qualified native component evidence:
+
+- +179 firmware preparation:
+  `artifacts/automated-mali-firmware/20260914T211726Z-fe9d49/qualification.json`.
+  Image SHA-256 `170c83873c0a3fa3509e9728833451d80976979df972c66369a47d101264d478`.
+- +181 resources and firmware preparation:
+  `artifacts/automated-mali-resources/20260914T213557Z-abfb48/qualification.json`.
+  Source `ef7d4b9f3553059ab1debeb6288a106626c82277`, image SHA-256
+  `4065a65e41b23b1f8828d3a466041af05096c60b1475dcbb6bf00029b01346fc`.
+  Both native trees retain the previously recorded FDT hash. The recovery
+  controller stayed up and its watchdog disarmed; no panic or USB filesystem
+  checksum error occurred. This component qualification does not resolve the
+  separate EL1 profiler/fault or installed SSD page-aging qualification.

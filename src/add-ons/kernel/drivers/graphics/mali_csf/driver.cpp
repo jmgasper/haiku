@@ -5,10 +5,11 @@
 
 #include <bus/FDT.h>
 #include <KernelExport.h>
+#include <AutoDeleterOS.h>
 #include <fcntl.h>
 #include <stdlib.h>
 
-#include "CsfResources.h"
+#include "CsfPlatform.h"
 
 
 using namespace MaliCSF;
@@ -22,6 +23,56 @@ struct Controller {
 	device_node* node;
 	ResourceInfo resources;
 };
+
+
+static uint32
+ReadPlatformRegister(const volatile uint32* registers, uint32 offset)
+{
+	uint32 value = registers[offset / sizeof(uint32)];
+	memory_read_barrier();
+	return value;
+}
+
+
+static status_t
+ReadPlatform(const ResourceInfo& resources, PlatformSnapshot& output)
+{
+	if (!ResourcesMatch(resources))
+		return B_NOT_SUPPORTED;
+
+	// Only these two always-on controller pages. Never map the GPU window.
+	void* clockAddress = NULL;
+	AreaDeleter clockArea(map_physical_memory("Mali CRU observation",
+		resources.clockBase, B_PAGE_SIZE, B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY,
+		B_KERNEL_READ_AREA, &clockAddress));
+	if (clockArea.Get() < B_OK)
+		return clockArea.Get();
+	void* powerAddress = NULL;
+	AreaDeleter powerArea(map_physical_memory("Mali PMU observation",
+		resources.powerBase, B_PAGE_SIZE, B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY,
+		B_KERNEL_READ_AREA, &powerAddress));
+	if (powerArea.Get() < B_OK)
+		return powerArea.Get();
+	const volatile uint32* clock = (const volatile uint32*)clockAddress;
+	const volatile uint32* power = (const volatile uint32*)powerAddress;
+	PlatformSnapshot snapshot = {};
+	snapshot.version = kPlatformVersion;
+	snapshot.flags = kPlatformReadOnly;
+	snapshot.startedMicros = system_time();
+	memory_read_barrier();
+	for (unsigned i = 0; i < 3; i++)
+		snapshot.clockSelect[i] = ReadPlatformRegister(clock, kClockSelectOffsets[i]);
+	for (unsigned i = 0; i < 2; i++)
+		snapshot.clockGate[i] = ReadPlatformRegister(clock, kClockGateOffsets[i]);
+	snapshot.idleRequest = ReadPlatformRegister(power, kIdleRequestOffset);
+	snapshot.idleAck = ReadPlatformRegister(power, kIdleAckOffset);
+	snapshot.idleStatus = ReadPlatformRegister(power, kIdleStatusOffset);
+	snapshot.powerRequest = ReadPlatformRegister(power, kPowerRequestOffset);
+	snapshot.powerRepair = ReadPlatformRegister(power, kPowerRepairOffset);
+	snapshot.finishedMicros = system_time();
+	output = snapshot;
+	return B_OK;
+}
 
 
 class FdtNode {
@@ -301,6 +352,17 @@ Write(void*, off_t, const void*, size_t* size)
 static status_t
 Control(void* cookie, uint32 op, void* buffer, size_t length)
 {
+	if (op == kGetPlatformSnapshot) {
+		if (length != sizeof(PlatformSnapshot))
+			return B_BAD_VALUE;
+		if (buffer == NULL)
+			return B_BAD_ADDRESS;
+		PlatformSnapshot snapshot;
+		status_t status = ReadPlatform(((Controller*)cookie)->resources, snapshot);
+		if (status != B_OK)
+			return status;
+		return user_memcpy(buffer, &snapshot, sizeof(snapshot));
+	}
 	if (op != kGetResources)
 		return B_DEV_INVALID_IOCTL;
 	if (length != sizeof(ResourceInfo))

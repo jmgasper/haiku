@@ -1,4 +1,4 @@
-#include "CsfResources.h"
+#include "CsfPlatform.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -15,7 +15,55 @@ using uint32 = uint32_t;
 using uint64 = uint64_t;
 using status_t = int32_t;
 static const status_t B_OK = 0, B_BAD_VALUE = -1, B_BAD_ADDRESS = -2,
-	B_DEV_INVALID_IOCTL = -3;
+	B_DEV_INVALID_IOCTL = -3, B_NO_MEMORY = -4, B_NOT_SUPPORTED = -5;
+static const unsigned B_PAGE_SIZE = 4096, B_ANY_KERNEL_ADDRESS = 4,
+	B_UNCACHED_MEMORY = 1u << 28, B_KERNEL_READ_AREA = 1u << 4;
+
+static std::map<int, void*> sAreas;
+static unsigned sMapAttempts, sFailMap;
+static int64_t sTime;
+
+static int64_t system_time() { return ++sTime; }
+static void memory_read_barrier() {}
+
+static int
+map_physical_memory(const char*, uint64 base, size_t bytes, uint32 spec,
+	uint32 protection, void** address)
+{
+	assert(base == 0xfd7c0000 || base == 0xfd8d8000);
+	assert(bytes == B_PAGE_SIZE && spec == (B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY));
+	assert(protection == B_KERNEL_READ_AREA);
+	if (++sMapAttempts == sFailMap)
+		return B_NO_MEMORY;
+	void* allocation = mmap(NULL, 3 * B_PAGE_SIZE, PROT_NONE,
+		MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	assert(allocation != MAP_FAILED);
+	uint32* registers = (uint32*)((char*)allocation + B_PAGE_SIZE);
+	assert(mprotect(registers, B_PAGE_SIZE, PROT_READ | PROT_WRITE) == 0);
+	for (unsigned offset = 0; offset < B_PAGE_SIZE; offset += 4)
+		registers[offset / 4] = (base == 0xfd7c0000 ? 0x12340000 : 0xabcd0000) | offset;
+	// A production register write fails immediately, as would either guard page.
+	assert(mprotect(registers, B_PAGE_SIZE, PROT_READ) == 0);
+	int area = 17 + sMapAttempts;
+	sAreas[area] = allocation;
+	*address = registers;
+	return area;
+}
+
+class AreaDeleter {
+public:
+	explicit AreaDeleter(int area) : fArea(area) {}
+	~AreaDeleter()
+	{
+		if (fArea < 0) return;
+		assert(sAreas.count(fArea) == 1);
+		assert(munmap(sAreas.at(fArea), 3 * B_PAGE_SIZE) == 0);
+		sAreas.erase(fArea);
+	}
+	int Get() const { return fArea; }
+private:
+	int fArea;
+};
 
 struct module_info { const char* name; };
 struct driver_module_info { module_info info; };
@@ -199,6 +247,8 @@ int
 main()
 {
 	static_assert(sizeof(ResourceInfo) == 168, "Diagnostic ABI layout changed");
+	static_assert(sizeof(PlatformSnapshot) == 64, "Platform ABI layout changed");
+	assert(sysconf(_SC_PAGESIZE) == B_PAGE_SIZE);
 	sDeviceManager = &sManager;
 	Prepare();
 	ResourceInfo good = {};
@@ -262,9 +312,42 @@ main()
 	assert(Control(&controller, kGetResources, NULL, sizeof(copy)) == B_BAD_ADDRESS);
 	assert(Control(&controller, kGetResources, &copy, sizeof(copy) - 1) == B_BAD_VALUE);
 	assert(Control(&controller, kGetResources, &copy, sizeof(copy) + 1) == B_BAD_VALUE);
-	assert(Control(&controller, kGetResources + 1, &copy, sizeof(copy)) == B_DEV_INVALID_IOCTL);
+	assert(Control(&controller, kGetResources + 127, &copy, sizeof(copy)) == B_DEV_INVALID_IOCTL);
+	assert(sMapAttempts == 0);
 	copy.boardCompatible[16] = 'x';
 	assert(!ResourcesMatch(copy));
+
+	PlatformSnapshot snapshot;
+	assert(Control(&controller, kGetPlatformSnapshot, &snapshot, sizeof(snapshot) - 1) == B_BAD_VALUE);
+	assert(Control(&controller, kGetPlatformSnapshot, &snapshot, sizeof(snapshot) + 1) == B_BAD_VALUE);
+	assert(Control(&controller, kGetPlatformSnapshot, NULL, sizeof(snapshot)) == B_BAD_ADDRESS);
+	controller.resources.clockBase += B_PAGE_SIZE;
+	assert(Control(&controller, kGetPlatformSnapshot, &snapshot, sizeof(snapshot)) == B_NOT_SUPPORTED);
+	assert(sMapAttempts == 0);
+	controller.resources = good;
+	for (unsigned failure : {1u, 2u}) {
+		sMapAttempts = 0; sFailMap = failure;
+		memset(&snapshot, 0xa5, sizeof(snapshot));
+		assert(Control(&controller, kGetPlatformSnapshot, &snapshot, sizeof(snapshot)) == B_NO_MEMORY);
+		assert(sAreas.empty() && sMapAttempts == failure);
+		for (unsigned char byte : std::vector<unsigned char>((unsigned char*)&snapshot,
+				(unsigned char*)&snapshot + sizeof(snapshot))) assert(byte == 0xa5);
+	}
+	sFailMap = 0;
+	for (int sample = 0; sample < 3; sample++) {
+		sMapAttempts = 0;
+		assert(Control(&controller, kGetPlatformSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
+		assert(sAreas.empty() && sMapAttempts == 2);
+		assert(snapshot.version == 1 && snapshot.flags == 1);
+		assert(snapshot.startedMicros == 1 + 2 * sample && snapshot.finishedMicros == 2 + 2 * sample);
+		const uint32 selectors[] = {0x12340578, 0x1234057c, 0x12340580};
+		const uint32 gates[] = {0x12340908, 0x1234090c};
+		assert(memcmp(snapshot.clockSelect, selectors, sizeof(selectors)) == 0);
+		assert(memcmp(snapshot.clockGate, gates, sizeof(gates)) == 0);
+		assert(snapshot.idleRequest == 0xabcd010c && snapshot.idleAck == 0xabcd0118);
+		assert(snapshot.idleStatus == 0xabcd0120 && snapshot.powerRequest == 0xabcd014c);
+		assert(snapshot.powerRepair == 0xabcd0290);
+	}
 
 	size_t page = sysconf(_SC_PAGESIZE);
 	uint8_t* memory = (uint8_t*)mmap(NULL, 2 * page, PROT_READ | PROT_WRITE,
