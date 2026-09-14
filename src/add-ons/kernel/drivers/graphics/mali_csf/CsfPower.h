@@ -32,12 +32,14 @@ enum IdentityResult {
 	kPowerDownFailed,
 	kRestoreRegistersFailed,
 	kPowerStateUncertain,
-	kRestoreNotAttempted
+	kRestoreNotAttempted,
+	kGpuOperationFailed
 };
 
 // All fields are output. Clock frequency is the admitted firmware description
 // divided by four, not a measurement. A failed operation retains its result
-// independently of restoration. No firmware, DMA or GPU command is issued.
+// independently of restoration. The ordinary two-argument identity cycle
+// issues no firmware, DMA or GPU command; extensions report their own work.
 struct IdentityInfo {
 	uint32_t version;
 	uint32_t result;
@@ -154,9 +156,9 @@ WaitRepair(IO& io, bool repaired)
 }
 
 
-template<typename IO>
+template<typename IO, typename Operation>
 void
-CycleIdentity(IO& io, IdentityInfo& info)
+CycleIdentity(IO& io, IdentityInfo& info, Operation operation)
 {
 	info = {};
 	info.version = kIdentityVersion;
@@ -218,11 +220,15 @@ CycleIdentity(IO& io, IdentityInfo& info)
 			info.shaderPresentHigh = io.ReadGpu(0x104);
 			info.gpuRevision = io.ReadGpu(0x280);
 		}
-		io.UnmapGpu();
 		info.result = info.gpuID == 0xa8670005 && info.mmuFeatures == 0x2830
 			&& info.addressSpaces == 0xff && info.csfID == 0x040a0412
 			&& info.shaderPresentLow == 0x50005 && info.shaderPresentHigh == 0
 			&& info.gpuRevision == 0 ? kIdentityOK : kGpuIdentityMismatch;
+		// Extensions run with validated identity and power, and must finish all
+		// GPU/interrupt activity before returning to the common power teardown.
+		if (info.result == kIdentityOK && !operation())
+			info.result = kGpuOperationFailed;
+		io.UnmapGpu();
 	} while (false);
 
 	bool safeToRestore = !powerRequested;
@@ -270,6 +276,14 @@ CycleIdentity(IO& io, IdentityInfo& info)
 	if ((info.flags & kIdentityRestored) == 0)
 		info.flags |= kIdentityNeedsRecovery;
 	info.finishedMicros = io.Now();
+}
+
+
+template<typename IO>
+void
+CycleIdentity(IO& io, IdentityInfo& info)
+{
+	CycleIdentity(io, info, []() { return true; });
 }
 
 } // namespace MaliCSF

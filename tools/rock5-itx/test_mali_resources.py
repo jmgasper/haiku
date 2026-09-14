@@ -22,7 +22,7 @@ class MaliResourcesTest(unittest.TestCase):
                        code.index('module_dependency module_dependencies[]')])
             binary = root / 'resources-test'
             built = subprocess.run([
-                'g++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-g',
+                'g++', '-pthread', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-g',
                 '-fsanitize=address,undefined', '-fno-omit-frame-pointer', '-no-pie',
                 '-I', str(source), '-I', str(root),
                 str(directory / 'test_mali_resources.cpp'), '-o', str(binary),

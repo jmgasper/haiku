@@ -182,6 +182,30 @@ reboot, verified shutdown, recovery, disarmed watchdog and independent complete
 recovery-image/eMMC checks also pass. This stage issues no GPU command, loads
 no firmware into the GPU and performs no rendering.
 
+## Reset and interrupt implementation
+
+The new `--reset` diagnostic requires the separate
+`rock5-itx-edk2-v1.1-gpu-reset` profile. It reuses the admitted power cycle and
+checks identity before examining GPU, MCU, core and interrupt state. An idle
+GPU receives one soft-reset command (`0x101`); only reset-completion bit 8 is
+enabled on the validated GPU interrupt 126. The ordinary identity ioctl keeps
+its read-only GPU mapping and unchanged ABI.
+
+The reset handler records masked/raw status, CPU and timestamp, masks the
+source and acknowledges its reset bit. A 100 ms deadline and iteration bound
+limit the wait. Raw completion without a handler record is a distinct failure.
+Cleanup masks and disarms under the capture lock, synchronously removes the
+handler, and verifies quiescent GPU/MCU/core state before GPU unmapping and
+platform power restoration. Reset, interrupt evidence, cleanup and platform
+restoration retain separate results; a failed diagnostic blocks further
+mutating cycles until recovery. No firmware, page table or GPU job is submitted.
+
+Host coverage includes delayed/stale/missing completion, lost or unexpected
+delivery, clock and cleanup failures, admission/mapping/handler-installation
+failures, and an actual two-thread handler/removal race through the production
+kernel adapter with guarded mappings. ARM64 build, QEMU and native reset
+qualification are pending.
+
 ## Next milestones
 
 1. Extend the qualified power/identity cycle with reset and interrupt delivery,

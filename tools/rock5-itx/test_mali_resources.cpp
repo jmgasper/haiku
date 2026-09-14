@@ -1,4 +1,4 @@
-#include "CsfPower.h"
+#include "CsfReset.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -6,11 +6,15 @@
 #include <unistd.h>
 
 #include <functional>
+#include <atomic>
+#include <mutex>
+#include <thread>
 #include <map>
 #include <string>
 #include <vector>
 
 using namespace MaliCSF;
+using int32 = int32_t;
 using uint32 = uint32_t;
 using uint64 = uint64_t;
 using status_t = int32_t;
@@ -21,10 +25,10 @@ static const unsigned B_PAGE_SIZE = 4096, B_ANY_KERNEL_ADDRESS = 4,
 	B_UNCACHED_MEMORY = 1u << 28, B_KERNEL_READ_AREA = 1u << 4,
 	B_KERNEL_WRITE_AREA = 1u << 5;
 
-static std::map<int, void*> sAreas;
+static std::map<int, std::pair<void*, size_t>> sAreas;
 static unsigned sMapAttempts, sFailMap;
 static int64_t sTime;
-static bool sAllowWritable, sAllowGpu;
+static bool sAllowWritable, sAllowGpu, sAllowResetGpu;
 static unsigned sLockDepth;
 
 struct mutex {};
@@ -37,7 +41,7 @@ public:
 
 static int64_t system_time() { return ++sTime; }
 static void memory_read_barrier() {}
-static void memory_write_barrier() { assert(false); }
+static void memory_write_barrier() { assert(sAllowResetGpu); }
 static void spin(int) { assert(false); }
 static void kernel_dprintf(const char*, ...) {}
 #define dprintf kernel_dprintf
@@ -48,23 +52,25 @@ map_physical_memory(const char*, uint64 base, size_t bytes, uint32 spec,
 {
 	assert(sLockDepth == 1);
 	assert(base == 0xfd7c0000 || base == 0xfd8d8000 || (sAllowGpu && base == 0xfb000000));
-	assert(bytes == B_PAGE_SIZE && spec == (B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY));
+	assert(bytes == (sAllowResetGpu && base == 0xfb000000 ? 3 : 1) * B_PAGE_SIZE
+		&& spec == (B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY));
 	assert(protection == (B_KERNEL_READ_AREA
-		| (sAllowWritable && base != 0xfb000000 ? B_KERNEL_WRITE_AREA : 0)));
+		| (sAllowWritable && (base != 0xfb000000 || sAllowResetGpu) ? B_KERNEL_WRITE_AREA : 0)));
 	if (++sMapAttempts == sFailMap)
 		return B_NO_MEMORY;
-	void* allocation = mmap(NULL, 3 * B_PAGE_SIZE, PROT_NONE,
+	void* allocation = mmap(NULL, bytes + 2 * B_PAGE_SIZE, PROT_NONE,
 		MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	assert(allocation != MAP_FAILED);
 	uint32* registers = (uint32*)((char*)allocation + B_PAGE_SIZE);
-	assert(mprotect(registers, B_PAGE_SIZE, PROT_READ | PROT_WRITE) == 0);
-	for (unsigned offset = 0; offset < B_PAGE_SIZE; offset += 4)
+	assert(mprotect(registers, bytes, PROT_READ | PROT_WRITE) == 0);
+	for (unsigned offset = 0; offset < bytes; offset += 4)
 		registers[offset / 4] = (base == 0xfd7c0000 ? 0x12340000 : 0xabcd0000) | offset;
 	if (base == 0xfb000000) registers[0] = 0xa8670005;
 	// A production register write fails immediately, as would either guard page.
-	assert(mprotect(registers, B_PAGE_SIZE, PROT_READ) == 0);
+	assert(mprotect(registers, bytes, sAllowResetGpu && base == 0xfb000000
+		? PROT_READ | PROT_WRITE : PROT_READ) == 0);
 	int area = 17 + sMapAttempts;
-	sAreas[area] = allocation;
+	sAreas[area] = {allocation, bytes + 2 * B_PAGE_SIZE};
 	*address = registers;
 	return area;
 }
@@ -77,7 +83,7 @@ public:
 	{
 		if (fArea >= 0) {
 			assert(sAreas.count(fArea) == 1);
-			assert(munmap(sAreas.at(fArea), 3 * B_PAGE_SIZE) == 0);
+			assert(munmap(sAreas.at(fArea).first, sAreas.at(fArea).second) == 0);
 			sAreas.erase(fArea);
 		}
 		fArea = area;
@@ -86,6 +92,67 @@ public:
 private:
 	int fArea;
 };
+
+static const int B_UNHANDLED_INTERRUPT = 0, B_HANDLED_INTERRUPT = 1;
+using interrupt_handler = int32 (*)(void*);
+static std::mutex sVectorLock;
+static interrupt_handler sHandler;
+static void* sHandlerCookie;
+static bool sFailInstall;
+static unsigned sInstalled, sRemoved;
+static std::atomic<bool> sPauseInCpu(false), sInsideCpu(false), sReleaseCpu(false);
+static std::atomic<unsigned> sSpinAttempts(0);
+static thread_local unsigned sSpinDepth;
+struct spinlock { std::mutex lock; };
+#define B_SPINLOCK_INITIALIZER {}
+class InterruptsSpinLocker {
+public:
+	explicit InterruptsSpinLocker(spinlock& lock) : fLock(lock)
+	{
+		sSpinAttempts++;
+		fLock.lock.lock();
+		assert(sSpinDepth++ == 0);
+	}
+	~InterruptsSpinLocker() { assert(--sSpinDepth == 0); fLock.lock.unlock(); }
+private:
+	spinlock& fLock;
+};
+static int32 smp_get_current_cpu()
+{
+	assert(sSpinDepth == 1);
+	if (sPauseInCpu.load()) {
+		sInsideCpu = true;
+		while (!sReleaseCpu.load()) std::this_thread::yield();
+	}
+	return 0;
+}
+static void snooze(int) { assert(false); }
+static status_t install_io_interrupt_handler(int32 irq, interrupt_handler handler, void* cookie, uint32 flags)
+{
+	assert(irq == 126 && flags == 0 && sAreas.size() == 3 && sSpinDepth == 0 && !sHandler);
+	if (sFailInstall) return B_NO_MEMORY;
+	std::lock_guard<std::mutex> vector(sVectorLock);
+	sHandler = handler;
+	sHandlerCookie = cookie;
+	sInstalled++;
+	return B_OK;
+}
+static status_t remove_io_interrupt_handler(int32 irq, interrupt_handler handler, void* cookie)
+{
+	assert(irq == 126 && sAreas.size() == 3 && sSpinDepth == 0);
+	std::lock_guard<std::mutex> vector(sVectorLock);
+	assert(sHandler == handler && sHandlerCookie == cookie);
+	sHandler = NULL;
+	sHandlerCookie = NULL;
+	sRemoved++;
+	return B_OK;
+}
+static int32 InvokeInterrupt()
+{
+	std::lock_guard<std::mutex> vector(sVectorLock);
+	assert(sHandler);
+	return sHandler(sHandlerCookie);
+}
 
 struct module_info { const char* name; };
 struct driver_module_info { module_info info; };
@@ -466,6 +533,66 @@ main()
 		}
 		assert(sAreas.empty() && sLockDepth == 0);
 	}
+
+	ResetInfo reset;
+	sMapAttempts = 0;
+	assert(Control(&controller, kCycleReset, &reset, sizeof(reset)) == B_NOT_ALLOWED);
+	controller.resetEnabled = true;
+	controller.identityNeedsRecovery = true;
+	assert(Control(&controller, kCycleReset, &reset, sizeof(reset)) == B_BUSY);
+	assert(Control(&controller, kCycleReset, &reset, sizeof(reset) - 1) == B_BAD_VALUE);
+	assert(Control(&controller, kCycleReset, &reset, sizeof(reset) + 1) == B_BAD_VALUE);
+	assert(Control(&controller, kCycleReset, NULL, sizeof(reset)) == B_BAD_ADDRESS);
+	assert(sMapAttempts == 0);
+	controller.identityNeedsRecovery = false;
+	for (unsigned failure : {1u, 2u}) {
+		sMapAttempts = 0; sFailMap = failure;
+		assert(Control(&controller, kCycleReset, &reset, sizeof(reset)) == B_NO_MEMORY);
+		assert(sMapAttempts == failure && sAreas.empty());
+	}
+	sMapAttempts = sFailMap = 0;
+	assert(Control(&controller, kCycleReset, &reset, sizeof(reset)) == B_OK);
+	assert(reset.result == kResetPowerCycleFailed && controller.identityNeedsRecovery);
+	assert(sAreas.empty() && !sInstalled && !sRemoved);
+	for (unsigned failure : {0u, 3u}) {
+		sMapAttempts = 0; sFailMap = failure; sAllowResetGpu = true;
+		MutexLocker locker(sHardwareLock);
+		ResetHardware hardware;
+		assert(hardware.Init(good) == B_OK && sAreas.size() == 2);
+		assert(hardware.MapGpu() == (failure == 0));
+		if (failure != 0) continue;
+		auto allocation = sAreas.rbegin()->second.first;
+		uint32* regs = (uint32*)((char*)allocation + B_PAGE_SIZE);
+		regs[kGpuRaw / 4] = 0;
+		regs[kGpuInterruptStatus / 4] = 0;
+		regs[kGpuMask / 4] = 0;
+		sFailInstall = true;
+		assert(!hardware.InstallResetHandler() && !sHandler);
+		sFailInstall = false;
+		assert(hardware.InstallResetHandler());
+		assert(InvokeInterrupt() == B_UNHANDLED_INTERRUPT);
+		assert(hardware.BeginReset() == kResetOK);
+		assert(regs[kGpuCommand / 4] == 0x101 && regs[kGpuMask / 4] == 0x100);
+		regs[kGpuRaw / 4] = 0x100;
+		regs[kGpuInterruptStatus / 4] = 0x100;
+		regs[kGpuStatus / 4] = 0;
+		sPauseInCpu = true;
+		std::thread interrupt([] { assert(InvokeInterrupt() == B_HANDLED_INTERRUPT); });
+		while (!sInsideCpu.load()) std::this_thread::yield();
+		unsigned attempts = sSpinAttempts.load();
+		std::atomic<bool> stopped(false);
+		std::thread removal([&] { hardware.StopResetHandler(); stopped = true; });
+		while (sSpinAttempts.load() == attempts) std::this_thread::yield();
+		assert(!stopped.load() && sAreas.size() == 3);
+		sReleaseCpu = true;
+		interrupt.join(); removal.join();
+		assert(stopped && !sHandler && sInstalled == 1 && sRemoved == 1);
+		assert(hardware.ReadResetCapture().count == 1);
+		assert(regs[kGpuMask / 4] == 0 && regs[kGpuClear / 4] == 0x100);
+		hardware.UnmapGpu();
+		assert(sAreas.size() == 2);
+	}
+	assert(sAreas.empty() && sLockDepth == 0);
 
 	size_t page = sysconf(_SC_PAGESIZE);
 	uint8_t* memory = (uint8_t*)mmap(NULL, 2 * page, PROT_READ | PROT_WRITE,

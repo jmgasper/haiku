@@ -170,4 +170,5 @@ int main()
 		assert(failed.gpu == NULL && failed.pauses <= 2002);
 	}
 	puts("MALI_CSF_POWER_TEST_PASS");
+	return 0;
 }
