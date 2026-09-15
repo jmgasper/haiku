@@ -26,6 +26,12 @@ the board across two contexts. Every pixel matches; buffer, VM, group, heap
 and synchronization-object counts balance. Both emulated boot modes, native
 recovery and independent storage/image integrity pass. The next Haiku work is
 the persistent userspace interface needed to run that rendering workload.
+Its first client/CPU-buffer layer now passes on the +198 image: per-open handles,
+shared CPU mappings, fork, mappings surviving handle/descriptor closure and normal
+and killed process cleanup. Both native boots retain the compute regression and
+pass normal recovery and independent storage checks. All 141 host checks, the
+ARM64 build and both QEMU modes pass. GPU VM mappings and application submission
+remain next; [GPU.md](GPU.md#haiku-userspace-interface-work) records the tested scope.
 
 The Samsung 950 Pro now has a full-capacity Haiku development installation:
 a 512 MiB EFI partition and a 238 GiB BFS volume. Native Installer copying,

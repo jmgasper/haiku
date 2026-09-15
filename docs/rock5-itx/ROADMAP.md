@@ -22,7 +22,10 @@ MCU and address-space cleanup passes. Hardware rendering and Mesa integration
 are next. A Linux Mesa/Panfrost reference now passes four complete checked
 RGBA8 images over two contexts, with balanced GPU object lifetimes and normal
 recovery. Implement Haiku's persistent userspace objects and synchronization
-to run that same workload.
+to run that same workload. The first client/CPU-buffer layer now passes on two
++198 native boots, including aliases, fork, mappings surviving handle/descriptor
+close and normal/killed process cleanup. GPU VM mappings, buffer retention during
+queued work, groups, heaps and synchronization remain next.
 
 ## 0 — Build and lab foundation
 

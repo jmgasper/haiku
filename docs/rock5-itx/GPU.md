@@ -7,6 +7,9 @@ the Mali firmware and passes four compute-shader submissions plus four CS
 memory-store regressions across two +195 native boots. Complete data matches
 the Linux reference. A separate Linux Mesa/Panfrost reference now renders four
 checked images on the board. Haiku rendering and Mesa integration remain pending.
+The +198 image also qualifies persistent client-owned buffers and CPU mappings
+across two native boots, including process teardown, while retaining the shader
+regression. GPU VM mappings and application submission are next.
 
 ## Reference and integration route
 
@@ -196,7 +199,7 @@ was archived locally, reverified and removed from the NanoKVM, restoring
 
 ### Haiku userspace interface work
 
-The first persistent client/buffer implementation is now a candidate. Each open
+The first persistent client/buffer implementation passes two native +198 boots. Each open
 owns a client and buffer handles. The native ABI supports allocation, information,
 whole-buffer CPU mappings and handle destruction. Handles are never reused during
 a module lifetime, duplicate descriptors share their client, and inherited
@@ -216,9 +219,41 @@ buffer handles per client and 64 open clients.
 The development interface requires root, `O_RDWR` and the existing explicit
 shader firmware profile. Its only advertised capability is CPU buffers. All 141
 host checks pass, including production allocation/handle/copyout cleanup, shared
-mapping lifetime, limits and concurrent clients. Build, QEMU and native acceptance
-of this candidate are pending. The native probe covers ordinary RAM clones,
-buffer aliases, fork, descriptor/handle closure and normal/killed process cleanup.
+mapping lifetime, limits and concurrent clients. The ARM64 build and both two-boot
+QEMU modes pass. QEMU tests ordinary cached RAM clones/fork and correctly rejects
+the absent Mali device; it does not emulate GPU buffer allocation.
+
+Each native boot checks six buffer sizes from one byte to 4 MiB, rounded to pages,
+with two independent CPU aliases. All bytes start at zero and match three written
+patterns. A child inherits each mapping, reads its contents and writes a fourth
+pattern visible to the parent; its inherited device descriptor correctly rejects
+operations on the parent's client. Mappings remain readable after handle removal.
+A separate mapping survives final descriptor close and a fresh allocation/write.
+Four simultaneous child clients then leave 48 handles and CPU maps open. Two exit
+normally and two receive SIGKILL. Driver counters and independently enumerated
+kernel buffer-area counts return to their baseline. The whole sequence passes on
+both boots. This tests process death without GPU work in flight.
+
+Both boots also pass the existing CS memory-store and compute-shader regressions,
+129,024 instruction-alias checks, 34 component and ten file hashes, unchanged FDTs,
+and desktop inspection. Normal reboot, verified shutdown before media replacement,
+automatic ROOBI recovery, watchdog disarming and independent recovery-image/eMMC
+integrity pass. The recovery again logs the previously recorded vendor VOP2 timeout
+and display-IOMMU message; native display support remains a separate open item.
+
+The source is `740accbe2171a2e235fc5827d88707e0134e4d73`, image `hrev60097+198`, SHA-256
+`765d82d680119accadee9a06970daf4931e2beec6825176204a40cde16eb7fed`.
+Evidence beneath `/mnt/HaikuWork`:
+
+- Build: `artifacts/build-20260915T051027Z.log`; 141 host checks in
+  `artifacts/mali-client-buffers/20260915T045909Z-a9c5a6/host-checks.log`.
+- Image: `artifacts/mali-client-image/20260915T051126Z-1cc917/manifest.json`.
+- QEMU: `artifacts/qemu-shell/20260915T051208Z-4a04b2` (EL2) and
+  `20260915T051208Z-591928` (EL1), each with `mali-client-result.json`.
+- Native qualification: `artifacts/automated-mali-client/20260915T051508Z-975443/qualification.json`;
+  transcripts and UART in `artifacts/interactive/20260915T051515Z-deb8f0`.
+- Independent eMMC files: `artifacts/emmc-file-readback/20260915T052320Z-278854`;
+  reference regions: `artifacts/emmc-read-reference/20260915T052337Z-1013ab`.
 
 Mesa still needs persistent GPU VMs, groups, queues, tiler heaps and synchronization
 objects spanning many calls, with buffer references retained until queued work
@@ -609,8 +644,9 @@ remain open.
 
 ## Next milestones
 
-1. Implement the Mesa buffer, mapping, VM, group, heap and synchronization
-   operations, then run the checked rendering workload through Haiku. The
+1. Extend the qualified client/CPU-buffer layer with GPU VM mappings, retained
+   buffer references, groups, heaps and synchronization, then run the checked
+   Mesa rendering workload through Haiku. The
    Linux Mesa reference is qualified. Regulator ownership, runtime power
    management and DVFS remain separate work.
 2. Integrate Panfrost with Haiku EGL/OpenGL and window output; qualify pixels,
