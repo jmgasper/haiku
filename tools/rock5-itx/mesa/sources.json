@@ -109,7 +109,10 @@
     "libglvnd-haiku-bitmap.patch": "e9b6c1d5301b952a536d66bdd2f2985b983d3adf45dbb6e2ef373b46ac1b81ff",
     "pipeline-probe.cpp": "99a0bbf8906153a7de9e5377bff63ba3a072798a9ccc112c1e5954712d4a12f7",
     "pipeline_validation.py": "5ba96500e9f3bc97283406813b3eab8fe0cddd8022d92c6ccd6dbd4a17410677",
-    "run-pipeline": "770551d0b5501a35f7b3d3b967a69ed147f303e1178f40ce4d7d9f02cfb01001"
+    "run-pipeline": "770551d0b5501a35f7b3d3b967a69ed147f303e1178f40ce4d7d9f02cfb01001",
+    "lifetime-probe.cpp": "fa30f2ccac9ed85e0e0ccea4894c585289889f15fa0e6e314878a29507390ea0",
+    "lifetime_validation.py": "8f0afb8f0be546ba84d7bac0a7734d9a4d4eddff6df39ec1702c9f8c92bc86cc",
+    "run-lifetime": "9ca9e8357180762c864a023b084855c34ab6b6a4ece1c94bfbbdf0f7defed409"
   },
   "host_helpers": {
     "vtn_bindgen2": "8f03a1c42332ec1494a89de73d9bdbe7bba91aeeb98c6c0cd2d6623eb276a167",
@@ -146,5 +149,6 @@
     "precomp-compiler": "system",
     "spirv-tools": "disabled"
   },
-  "pipeline_probe_scope": "Two GLES contexts, six 97x67 complete RGBA cases each: padded texture upload/nearest sampling, depth, stencil, additive blending, scissor, reflected render-to-texture. Both QEMU modes and two native boots qualified; no conformance or sustained-load claim."
+  "pipeline_probe_scope": "Two GLES contexts, six 97x67 complete RGBA cases each: padded texture upload/nearest sampling, depth, stencil, additive blending, scissor, reflected render-to-texture. Both QEMU modes and two native boots qualified; no conformance or sustained-load claim.",
+  "lifetime_probe_scope": "Three separate processes; SIGKILL after checked rendering with resources live, survivor redraw, normal cleanup and fresh-context reuse. Software/native execution pending; no pending-job kill or reset claim."
 }

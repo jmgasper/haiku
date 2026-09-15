@@ -28,6 +28,12 @@ Complete RGBA readbacks, guard bytes and native allocation baselines are checked
 independently. All 155,976 native pixels and sixty submissions pass. This
 bounded fixture does not establish GLES conformance.
 
+The new graphics-process lifetime probe builds successfully; execution is
+pending. It keeps two independent processes' contexts open, terminates one
+after completed rendering, checks a new frame in the survivor, then checks
+normal cleanup and fresh-context reuse. Every returned pixel and guard is
+checked. It does not terminate pending GPU work or test automatic GPU reset.
+
 `sources.json` pins both original archives, six SDK packages, seven kernel ABI
 headers, host compiler helpers and every patch/probe/validator. The complete
 Mesa patch includes the pinned HaikuPorts changes; do not apply those twice.
@@ -65,7 +71,7 @@ after patched-source and SDK preparation. Logs, commands, input receipts and
 failures remain in the output directory. This reconstructs pinned sources and
 configuration; build-path/debug information can change binary hashes.
 
-The package manifest lists fifteen assets for `/boot/home/mesa-trial`. The `run`
+The package manifest lists seventeen assets for `/boot/home/mesa-trial`. The `run`
 launcher uses Haiku's `LIBRARY_PATH` and a private GLVND vendor file. Its probe
 accepts `--native`, `--software` and `--absent-device`. Native mode expects
 `/dev/graphics/mali_csf/0` and the separately supplied, licensed firmware at
@@ -81,6 +87,8 @@ modes. `run-glview --software` and `run-glview --native` run the OpenGL Kit
 fixture, checked independently by `glview_validation.py`.
 `run-pipeline --software` and `run-pipeline --native` run the GLES pipeline
 fixture, checked independently by `pipeline_validation.py`.
+`run-lifetime --software` and `run-lifetime --native` run the process fixture,
+checked independently by `lifetime_validation.py`.
 
 `render_validation.py` independently compares complete readbacks with integer
 pixel-region oracles and can write actual RGBA/PNG artifacts.
