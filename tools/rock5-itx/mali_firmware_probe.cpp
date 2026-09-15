@@ -4,6 +4,7 @@
  */
 
 #include "CsfFirmware.h"
+#include "CsfRun.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -11,16 +12,89 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+
+static bool
+RunFirmware(const void* data, size_t bytes)
+{
+	using namespace MaliCSF;
+	int fd = open("/dev/graphics/mali_csf/0", O_RDONLY);
+	if (fd < 0) {
+		perror("open Mali firmware interface");
+		return false;
+	}
+	size_t requestBytes = sizeof(FirmwareRunInfo) + bytes;
+	FirmwareRunInfo* request = (FirmwareRunInfo*)calloc(1, requestBytes);
+	if (request == NULL) { close(fd); return false; }
+	request->version = kFirmwareRunVersion;
+	request->firmwareBytes = bytes;
+	memcpy((uint8_t*)request + sizeof(*request), data, bytes);
+	if (ioctl(fd, kCycleFirmware, request, sizeof(*request) - 1) == 0 || errno != EINVAL
+		|| ioctl(fd, kCycleFirmware, NULL, requestBytes) == 0 || errno != EFAULT) {
+		fprintf(stderr, "Malformed firmware request was not rejected\n");
+		free(request); close(fd); return false;
+	}
+	if (ioctl(fd, kCycleFirmware, request, requestBytes) != 0) {
+		perror("Mali firmware cycle");
+		free(request); close(fd); return false;
+	}
+	close(fd);
+	const FirmwareRunInfo& info = *request;
+	printf("ROCK5_MALI_FW_RUN version=%" PRIu32 " result=%" PRIu32
+		" cleanup=%" PRIu32 " flags=%08" PRIx32 " tables=%" PRIu32
+		" bytes=%" PRIu32 " root=%016" PRIx64 " mcu=%" PRIu32
+		" start_us=%" PRId64 " end_us=%" PRId64 "\n", info.version, info.result,
+		info.cleanupResult, info.flags, info.tablePages, info.allocationBytes,
+		info.rootPhysical, info.mcuBootStatus, info.startedMicros, info.finishedMicros);
+	printf("ROCK5_MALI_FW_INTERFACE version=%08" PRIx32 " features=%08" PRIx32
+		" groups=%" PRIu32 " streams=%" PRIu32 " registers=%" PRIu32
+		" scoreboards=%" PRIu32 " boot_irq=%" PRIu32 " ping_irq=%" PRIu32
+		" request=%08" PRIx32 " ack=%08" PRIx32 "\n", info.interface.version,
+		info.interface.features, info.interface.groupCount, info.interface.streamCount,
+		info.interface.workRegisters, info.interface.scoreboards, info.boot.count,
+		info.ping.count, info.pingRequest, info.pingAck);
+	// Preserve every raw register, event and platform phase for an independent
+	// controller decoder. The fixed ABI is entirely initialized by the kernel.
+	printf("ROCK5_MALI_FW_ABI bytes=%zu hex=", sizeof(info));
+	for (size_t i = 0; i < sizeof(info); i++) printf("%02x", ((const uint8_t*)&info)[i]);
+	putchar('\n');
+	bool ok = info.version == kFirmwareRunVersion && info.firmwareBytes == bytes
+		&& info.result == kFirmwareRunOK && info.cleanupResult == kFirmwareRunOK
+		&& info.flags == 255 && info.tablePages == 9 && info.allocationBytes == 954368
+		&& info.translationConfig == UINT64_C(0x420001c6)
+		&& info.memoryAttributes == UINT64_C(0xc0c0c0c0c0c08f4c)
+		&& info.interface.version == 0x01050000 && info.interface.groupCount == 8
+		&& info.interface.streamCount == 8 && info.interface.workRegisters == 96
+		&& info.interface.scoreboards == 8 && info.mcuBootStatus == 1
+		&& FirmwareEventMatches(info.boot, info.startedMicros, info.finishedMicros)
+		&& FirmwareEventMatches(info.ping, info.boot.whenMicros, info.finishedMicros)
+		&& ((info.pingRequest ^ info.pingAck) & kFirmwarePing) == 0
+		&& info.gpuFault.count == 0 && info.mmuFault.count == 0
+		&& info.power.result == kIdentityOK && info.power.restoreResult == kIdentityOK
+		&& info.power.flags == 7 && ResetIdleMatches(info.after)
+		&& info.jobRawAfter == 0 && info.mmuRawAfter == 0
+		&& info.asStatusAfter == 0 && info.asConfigAfter == 1;
+	free(request);
+	if (ok)
+		puts("ROCK5_MALI_FIRMWARE_CYCLE_PASS firmware_started=1 ping_acknowledged=1 restored=1 rendered=0");
+	else
+		fprintf(stderr, "Mali firmware cycle failed; retain evidence and recover the board\n");
+	return ok;
+}
 
 
 int
 main(int argc, char** argv)
 {
-	if (argc != 2) {
-		fprintf(stderr, "usage: %s mali_csffw.bin\n", argv[0]);
+	bool start = argc == 3 && strcmp(argv[1], "--start") == 0;
+	if (argc != 2 && !start) {
+		fprintf(stderr, "usage: %s [--start] mali_csffw.bin\n", argv[0]);
 		return 2;
 	}
-	FILE* file = fopen(argv[1], "rb");
+	FILE* file = fopen(argv[argc - 1], "rb");
 	if (file == NULL) {
 		fprintf(stderr, "open: %s\n", strerror(errno));
 		return 1;
@@ -84,7 +158,8 @@ main(int argc, char** argv)
 			section.memorySize, section.flags, section.dataOffset, section.dataSize);
 		free(copy);
 	}
-	free(data);
 	puts("ROCK5_MALI_FIRMWARE_CONTAINER_PASS gpu_started=0");
-	return 0;
+	bool ok = !start || RunFirmware(data, size);
+	free(data);
+	return ok ? 0 : 1;
 }

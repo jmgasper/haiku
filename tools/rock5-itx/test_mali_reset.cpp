@@ -127,6 +127,7 @@ struct ResetModel : Model {
 	}
 };
 
+#ifndef MALI_RESET_MODEL_ONLY
 int main()
 {
 	static_assert(sizeof(ResetSnapshot) == 64, "Reset register ABI changed");
@@ -192,3 +193,5 @@ int main()
 	puts("MALI_CSF_RESET_TEST_PASS");
 	return 0;
 }
+
+#endif

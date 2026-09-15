@@ -1,4 +1,5 @@
 #include "CsfReset.h"
+#include "CsfRun.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -285,6 +286,17 @@ user_memcpy(void* output, const void* input, size_t bytes)
 {
 	if (output == NULL) return B_BAD_ADDRESS;
 	memcpy(output, input, bytes);
+	return B_OK;
+}
+
+static bool sFirmwareRetained;
+static bool FirmwareMemoryRetained() { return sFirmwareRetained; }
+static unsigned sFirmwareRequests;
+static status_t RunFirmwareRequest(const ResourceInfo&, void*, size_t, bool& recovery)
+{
+	assert(sLockDepth == 1);
+	sFirmwareRequests++;
+	recovery = true;
 	return B_OK;
 }
 
@@ -593,6 +605,17 @@ main()
 		assert(sAreas.size() == 2);
 	}
 	assert(sAreas.empty() && sLockDepth == 0);
+
+	controller.identityNeedsRecovery = false;
+	assert(Control(&controller, kCycleFirmware, NULL, 0) == B_NOT_ALLOWED);
+	controller.firmwareEnabled = true;
+	sFirmwareRetained = true;
+	assert(Control(&controller, kCycleFirmware, NULL, 0) == B_BUSY);
+	sFirmwareRetained = false;
+	assert(Control(&controller, kCycleFirmware, NULL, 0) == B_OK);
+	assert(sFirmwareRequests == 1 && controller.identityNeedsRecovery);
+	assert(Control(&controller, kCycleFirmware, NULL, 0) == B_BUSY);
+	assert(sFirmwareRequests == 1);
 
 	size_t page = sysconf(_SC_PAGESIZE);
 	uint8_t* memory = (uint8_t*)mmap(NULL, 2 * page, PROT_READ | PROT_WRITE,

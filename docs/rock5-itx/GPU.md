@@ -224,6 +224,50 @@ component and ten file hashes, identical FDT captures, automatic recovery and
 independent complete recovery-image/eMMC integrity pass. This qualifies the
 bounded reset/IRQ lifecycle; no GPU firmware execution or rendering occurred.
 
+## Firmware startup implementation (not yet native-qualified)
+
+The opt-in `rock5-itx-edk2-v1.1-gpu-firmware` profile adds
+`rock5_mali_firmware_probe --start /boot/home/mali_csffw.bin`. Its root-only
+request copies the bounded firmware bytes into kernel-owned memory before
+parsing. The existing CPU-only probe mode and identity/reset interfaces remain
+available. This implementation has not yet executed firmware on the board.
+
+`CsfMemory.h` independently constructs a four-level ARM64 stage-1 table for
+48-bit input addresses, MCU allocations below 4 GiB and physical addresses below
+1 TiB. It uses 4 KiB pages, explicit read/write/execute and GPU-cache attributes,
+and excludes protected sections. The official image requires nine table pages
+and 224 payload pages, totaling 954,368 bytes. A guarded independent decoder
+checks every descriptor, all mappings, payload copies, permissions, unused slots
+and physical bounds. The GPU's `AS_MEMATTR` encoding is distinct from CPU MAIR.
+
+The kernel allocates one contiguous, private system-team arena and converts its
+CPU mapping to Normal Non-cacheable RAM after evicting cached initialization.
+Tables and firmware payloads occupy separate portions of that arena. The startup
+sequence reuses the tested power/identity/reset path, selects the Linux 6.18.52
+noncoherent GPU protocol, powers L2 and activates address space 0. It then starts
+the MCU and requires an actual global-interface job interrupt within one second.
+The interface validator checks all 219 control/input/output intervals, including
+alignment, bounds, mutual overlap and the reference 1.5.0 / eight-group /
+eight-stream / 96-register / eight-scoreboard layout. A doorbell ping requires
+both a fresh interrupt and the corresponding acknowledgment change. It configures
+no shader work or rendering job.
+
+Cleanup stops the MCU, locks and flushes GPU caches, removes the address-space
+mapping, powers down L2, masks and synchronously removes all three interrupt
+handlers, then restores platform power/clock state. Fault addresses, raw status,
+boot/ping interrupt captures, reset evidence and all platform phases are retained
+in the fixed 1,128-byte result. Host checks exercise missing/lost events, malformed
+interfaces, MMU/GPU faults, timeouts, stuck clocks, allocation failures, partial
+IRQ installation and handler/removal concurrency.
+
+The arena is freed only after the hardware cycle, GPU cleanup and platform
+restoration all succeed. A failed hardware cycle retains one system-team arena
+across process exit, device close and module removal; its name prevents a
+reloaded driver from starting another cycle. This also preserves the recovery
+guard if failure precedes address-space activation. Recovery reboots reclaim it. This
+bounded diagnostic does not yet supply persistent contexts, runtime power
+management, firmware scheduling or a display accelerant.
+
 ## Next milestones
 
 1. Implement GPU page tables, backing-memory lifetime and cache operations.

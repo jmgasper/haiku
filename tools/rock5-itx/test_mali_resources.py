@@ -10,7 +10,8 @@ class MaliResourcesTest(unittest.TestCase):
     def test_firmware_graph_and_ioctl_boundaries(self):
         directory = Path(__file__).resolve().parent
         source = directory.parents[1] / 'src/add-ons/kernel/drivers/graphics/mali_csf'
-        code = (source / 'driver.cpp').read_text()
+        code = (source / 'driver.cpp').read_text().replace(
+            '#include \"CsfHardware.h\"', (source / 'CsfHardware.h').read_text())
         with tempfile.TemporaryDirectory(prefix='mali-resources-') as temporary:
             root = Path(temporary)
             # FDT providers, kernel mapping/area services and user copy are fixtures.
