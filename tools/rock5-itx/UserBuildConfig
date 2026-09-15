@@ -18,7 +18,8 @@ rule UserBuildConfigRulePreImage
 		: rock5_memory_probe rock5_platform_probe rock5_cache_probe rock5_file_transfer
 			rock5_services_probe rock5_pci_config_probe rock5_network_probe
 			rock5_memcpy_probe rock5_profile_probe rock5_asid_probe
-			rock5_mali_firmware_probe rock5_mali_resource_probe rock5_mali_client_probe ;
+			rock5_mali_firmware_probe rock5_mali_resource_probe rock5_mali_client_probe
+			rock5_mali_vm_probe ;
 	AddFilesToHaikuImage home config non-packaged bin : rock5_ahci_probe rock5_mmc_probe ;
 	# Intel is the QEMU DMA fixture. Native RTL8125 trials additionally require
 	# the explicit onboard firmware profile and legacy_interrupts setting.

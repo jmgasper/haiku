@@ -1,7 +1,7 @@
 #include "CsfReset.h"
 #include "CsfRun.h"
 #include "CsfCommands.h"
-#include "CsfBuffer.h"
+#include "CsfVm.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -315,7 +315,8 @@ static status_t RunCommandRequest(const ResourceInfo&, void*, size_t, bool& reco
 static status_t AccessClient(void* cookie) { assert(cookie == &sFirmwareRequests); return B_OK; }
 static status_t ControlClient(void* cookie, uint32 op, void*, size_t)
 {
-    assert(cookie == &sFirmwareRequests && op >= kGetClientInfo && op <= kGetBufferInfo);
+    assert(cookie == &sFirmwareRequests
+        && ((op >= kGetClientInfo && op <= kGetBufferInfo) || (op >= kCreateVm && op <= kBindVm)));
     return B_NOT_SUPPORTED;
 }
 
@@ -494,6 +495,7 @@ main()
 	assert(Control(&opened, kGetResources, &copy, sizeof(copy) + 1) == B_BAD_VALUE);
 	assert(Control(&opened, kGetResources + 127, &copy, sizeof(copy)) == B_DEV_INVALID_IOCTL);
 	assert(Control(&opened, kGetClientInfo, NULL, 0) == B_NOT_SUPPORTED);
+	assert(Control(&opened, kBindVm, NULL, 0) == B_NOT_SUPPORTED);
 	assert(sMapAttempts == 0);
 	copy.boardCompatible[16] = 'x';
 	assert(!ResourcesMatch(copy));

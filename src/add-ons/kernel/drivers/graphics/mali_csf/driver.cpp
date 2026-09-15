@@ -502,7 +502,7 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 	status_t access = AccessClient(opened->client);
 	if (access != B_OK)
 		return access;
-	if (op >= kGetClientInfo && op <= kGetBufferInfo)
+	if ((op >= kGetClientInfo && op <= kGetBufferInfo) || (op >= kCreateVm && op <= kBindVm))
 		return ControlClient(opened->client, op, buffer, length);
 	Controller* controller = opened->controller;
 	if (op == kCycleCommands || op == kCycleShader) {

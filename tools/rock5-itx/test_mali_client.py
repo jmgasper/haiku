@@ -32,6 +32,7 @@ class MaliClientTest(unittest.TestCase):
                     UBSAN_OPTIONS='halt_on_error=1'))
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn('MALI_CSF_CLIENT_TEST_PASS', result.stdout)
+            self.assertIn('MALI_CSF_VM_TEST_PASS', result.stdout)
 
 
 if __name__ == '__main__':

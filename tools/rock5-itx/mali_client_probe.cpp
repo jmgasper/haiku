@@ -1,5 +1,5 @@
 /* Copyright 2026, Haiku, Inc. Distributed under the MIT License. */
-#include "CsfBuffer.h"
+#include "CsfVm.h"
 #include <OS.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -116,7 +116,7 @@ int main(int argc, char** argv)
 	ClientInfo baseline = Info(fd);
 	uint32_t baselineAreas = KernelBuffers();
 	CHECK(baselineAreas == baseline.globalBuffers);
-	CHECK(baseline.capabilities == kClientCpuBuffers && baseline.bufferCount == 0);
+	CHECK(baseline.capabilities == (kClientCpuBuffers | kClientVmMappings) && baseline.bufferCount == 0);
 	CHECK(baseline.maxBuffers == kMaxClientBuffers && baseline.maxBufferBytes == kMaxBufferBytes);
 	int other = open(kDevice, O_RDWR); CHECK(other >= 0);
 	int duplicate = dup(fd); CHECK(duplicate >= 0);

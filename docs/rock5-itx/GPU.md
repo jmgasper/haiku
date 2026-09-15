@@ -255,10 +255,42 @@ Evidence beneath `/mnt/HaikuWork`:
 - Independent eMMC files: `artifacts/emmc-file-readback/20260915T052320Z-278854`;
   reference regions: `artifacts/emmc-read-reference/20260915T052337Z-1013ab`.
 
-Mesa still needs persistent GPU VMs, groups, queues, tiler heaps and synchronization
-objects spanning many calls, with buffer references retained until queued work
-finishes. The existing GPU diagnostics still start and stop their own firmware
-arenas. Application GPU submission and Haiku rendering remain unimplemented.
+#### Persistent GPU address spaces
+
+The next development interface adds per-client VM creation, information,
+destruction and atomic batches of up to 64 map/unmap operations (`CsfVm.h`).
+Maps cover page-aligned buffer subranges in the lower half of the 48-bit GPU
+address space. Replacements and partial unmaps split ranges; adjacent compatible
+ranges coalesce. GPU permissions distinguish read-only executable, non-executable
+and uncached mappings. Writable executable mappings are rejected.
+
+Each successful update builds an immutable four-level page-table generation from
+scattered locked RAM, validates every physical page against the 40-bit limit and
+then replaces the current generation. Allocation, validation and output-copy
+failures preserve the previous generation. An optional generation check rejects
+updates made against stale state. These operations prepare tables; they do not
+activate an address space on the GPU.
+
+Mappings own references to their buffers independently of buffer handles. The
+kernel-only `ClientVmLease` pins a generation and all mapped buffers for future
+scheduled work, surviving VM destruction and client closure until explicitly
+released. Buffer counts and byte quotas include these resident allocations.
+Limits are 16 VMs per client, 64 live VMs globally, 256 mappings and 1 GiB mapped
+per VM, 1,024 table pages per generation, and 512 retained generations / 4,096
+table pages globally. CPU aliases can still outlive the final driver reference.
+
+Host tests independently decode the tables, compare 400 mapping batches with a
+page-level reference model, hold generations across updates and client closure,
+inject allocation/copy failures and exercise resident-buffer, mapping, VM,
+generation and table-page limits. The native probe checks partial unmapping,
+retention after handle removal, failed-update rollback and cleanup after normal
+and forced process exits, with independent kernel-area counts. Native
+qualification of this new layer is pending.
+
+Mesa still needs persistent groups, queues, tiler heaps and synchronization
+objects spanning many calls, with leases retained until queued work finishes.
+The existing GPU diagnostics still start and stop their own firmware arenas.
+Application GPU submission and Haiku rendering remain unimplemented.
 
 `panthor_kmod.c` covers buffer/VM operations, but `pan_csf.c` directly creates
 groups/heaps and submits work; `pan_fence.c` also calls DRM synchronization
@@ -644,8 +676,8 @@ remain open.
 
 ## Next milestones
 
-1. Extend the qualified client/CPU-buffer layer with GPU VM mappings, retained
-   buffer references, groups, heaps and synchronization, then run the checked
+1. Qualify the persistent GPU VM layer, then implement groups, heaps and
+   synchronization with retained buffer references and run the checked
    Mesa rendering workload through Haiku. The
    Linux Mesa reference is qualified. Regulator ownership, runtime power
    management and DVFS remain separate work.

@@ -7,6 +7,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <map>
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -27,6 +28,9 @@ static const uint32 B_PAGE_SIZE = 4096, B_ANY_ADDRESS = 0, B_FULL_LOCK = 1,
 static const team_id B_SYSTEM_TEAM = 1;
 
 #include "CsfClient.h"
+#include "CsfPageTable.h"
+
+static void memory_full_barrier() { std::atomic_thread_fence(std::memory_order_seq_cst); }
 
 struct mutex { std::mutex value; };
 #define MUTEX_INITIALIZER(name) {}
@@ -43,11 +47,15 @@ struct MutexLocker {
 	}
 	~MutexLocker() { assert(--sLockDepth == 0); lock.value.unlock(); }
 };
+static uint64 sNextRamPhysical = UINT64_C(0x182300000);
 struct Ram {
 	int fd;
 	size_t bytes;
+	uint64 physical;
 	explicit Ram(size_t size) : bytes(size)
 	{
+		physical = sNextRamPhysical;
+		sNextRamPhysical += bytes * 2 + 4096;
 		fd = memfd_create("mali-client-fixture", 0);
 		assert(fd >= 0 && ftruncate(fd, bytes) == 0);
 	}
@@ -100,7 +108,7 @@ static status_t get_memory_map(void* address, size_t bytes, physical_entry* entr
 		uintptr_t offset = (uintptr_t)address - (uintptr_t)area.address;
 		if (offset >= area.ram->bytes) continue;
 		assert(area.owner == B_SYSTEM_TEAM && !area.noncacheable && offset % 4096 == 0);
-		entry->address = UINT64_C(0x182300000) + offset * 2; // scattered, above 4 GiB
+		entry->address = area.ram->physical + offset * 2; // scattered, above 4 GiB
 		entry->size = sFailAllocation == 3 ? 4095 : 4096;
 		if (sFailAllocation == 4) entry->address++;
 		if (sFailAllocation == 5) entry->address = UINT64_C(1) << 40;
@@ -149,7 +157,20 @@ static status_t user_memcpy(void* out, const void* in, size_t bytes)
 	return B_OK;
 }
 
+static std::atomic<unsigned> sHeapCalls{0}, sFailHeap{0};
+static void* ClientMalloc(size_t bytes)
+{
+	return ++sHeapCalls == sFailHeap ? NULL : malloc(bytes);
+}
+static void* ClientCalloc(size_t count, size_t bytes)
+{
+	return ++sHeapCalls == sFailHeap ? NULL : calloc(count, bytes);
+}
+#define malloc ClientMalloc
+#define calloc ClientCalloc
 #include "client.inc"
+#undef malloc
+#undef calloc
 
 template<typename T> static status_t Call(void* client, uint32 op, T& value)
 {
@@ -159,6 +180,7 @@ template<typename T> static status_t Call(void* client, uint32 op, T& value)
 static void Empty()
 {
 	assert(sClients == 0 && sBuffers == 0 && sBufferBytes == 0 && sAreas.empty());
+	assert(sVms == 0 && sGenerations == 0 && sTablePages == 0 && sAccounts == 0);
 }
 static BufferCreate Create(void* client, uint64 bytes)
 {
@@ -181,13 +203,16 @@ static void Destroy(void* client, uint32 handle)
 	assert(Call(client, kDestroyBuffer, value) == B_ENTRY_NOT_FOUND);
 }
 
+#include "test_mali_vm.inc"
+
 int main()
 {
 	Empty();
 	void *a, *b;
 	assert(OpenClient(true, &a) == B_OK && OpenClient(true, &b) == B_OK && a != b);
 	ClientInfo info{}; info.version = 1;
-	assert(Call(a, kGetClientInfo, info) == B_OK && info.capabilities == kClientCpuBuffers);
+	assert(Call(a, kGetClientInfo, info) == B_OK
+		&& info.capabilities == (kClientCpuBuffers | kClientVmMappings));
 	assert(info.globalClients == 2 && info.globalBuffers == 0);
 	BufferCreate bad{}; bad.version = 1; bad.bytes = 4096;
 	for (size_t size : {size_t(0), sizeof(bad) - 1, sizeof(bad) + 1})
@@ -220,7 +245,8 @@ int main()
 	auto buffer = Create(a, 8193);
 	Client* actual = (Client*)a;
 	for (unsigned page = 0; page < 3; page++)
-		assert(actual->first->pages[page] == UINT64_C(0x182300000) + page * 8192);
+		assert(actual->first->pages[page]
+			== sAreas.at(actual->first->area).ram->physical + page * 8192);
 	BufferHandle handle{1, buffer.handle, 0};
 	assert(Call(b, kDestroyBuffer, handle) == B_ENTRY_NOT_FOUND);
 	BufferMap foreign{}; foreign.version = 1; foreign.handle = buffer.handle;
@@ -283,6 +309,7 @@ int main()
 	});
 	for (auto& thread : threads) thread.join();
 	Empty();
+	CheckVms();
 	sNextHandle = UINT32_MAX;
 	assert(OpenClient(true, &a) == B_OK);
 	assert(Create(a, 1).handle == UINT32_MAX);

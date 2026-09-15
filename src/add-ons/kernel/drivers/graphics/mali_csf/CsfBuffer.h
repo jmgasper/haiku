@@ -24,7 +24,7 @@ struct ClientInfo {
 	uint32_t version;
 	uint32_t capabilities;
 	uint32_t maxBuffers;
-	uint32_t bufferCount;
+	uint32_t bufferCount; // resident BOs, including those retained by GPU mappings/work
 	uint64_t maxBufferBytes;
 	uint64_t maxClientBytes;
 	uint64_t bufferBytes;
@@ -77,7 +77,8 @@ static_assert(sizeof(BufferMap) == 40, "map ABI");
 // descriptor inherited into another team cannot operate the original client.
 // Maps cover the whole buffer and are normal Haiku areas: delete_area() unmaps
 // them. They retain the RAM independently of handle destruction / fd close.
-// No GPU VM, queue, execution or synchronization capability is advertised yet.
+// GPU mappings also retain buffers independently of these handles. See CsfVm.h.
+// No queue, execution or synchronization capability is advertised yet.
 
 } // namespace MaliCSF
 #endif
