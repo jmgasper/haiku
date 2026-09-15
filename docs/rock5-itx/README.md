@@ -9,6 +9,15 @@ The [GitHub work items](TRACKING.md) split the roadmap into issues and milestone
 The current priority is [Mali-G610 GPU support](GPU.md), followed by remaining
 hardware. The owner has deferred further Ethernet driver work.
 
+The +209 image qualifies [cached GPU property queries](GPU.md#cached-gpu-properties)
+on two native boots: 86 checked queries, including 64 while GPU work is pending,
+with identical hardware and firmware values. Invalid requests, foreign/inherited
+handles and failed copyout are rejected without changing queue state or allocation
+counts. All earlier GPU regressions pass: 1,696 accepted submissions, 1,432 checked
+completions and eight application compute shaders. All 147 host checks, the full
+ARM64 build, both QEMU modes, both desktops, normal recovery and independent
+storage/image integrity pass. Mesa integration and hardware rendering remain next.
+
 The +207 image qualifies [native tiler heaps](GPU.md#native-tiler-heaps) on two
 ROCK boots. Each checks 5,159 GPU memory samples across five 2 MiB chunks,
 queued heap data across address reuse, HEAP_SET and normal/killed process cleanup.

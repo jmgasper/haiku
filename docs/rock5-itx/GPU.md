@@ -722,7 +722,7 @@ remain open.
 
 ## Cached GPU properties
 
-The next candidate adds `kGetQueueProperties` (`0x4d435346`), a 192-byte
+The qualified +209 image adds `kGetQueueProperties` (`0x4d435346`), a 192-byte
 versioned query on a client-owned queue. The runtime worker captures the GPU
 feature registers and validated firmware interface before accepting queues;
 queries copy that immutable snapshot without MMIO, allocations or submissions.
@@ -741,13 +741,63 @@ their MIT option. No guessed timestamp or cache-flush identifier is exposed.
 An independent host register inventory checks all 26 register reads, including
 the upper halves of four 64-bit fields. Runtime checks cover request boundaries,
 copy failures, ownership, concurrent pending-work queries, failed queues and
-retired handles across runtime restart. Native qualification of this candidate
-is pending. The +207 heap image remains the qualified GPU baseline.
+retired handles across runtime restart. All 147 host checks and the full ARM64
+build pass. Both QEMU modes pass two boots, absent-GPU rejection and normal
+reboot/shutdown; QEMU does not emulate this GPU.
+
+Two native ROCK boots each pass 43 checked queries, including 32 while the
+producer queue has 32 pending jobs and the dependent consumer has one. Every
+returned field matches within and between boots. Each boot rejects 14 request
+boundary/ownership/copyout cases, two inherited-client accesses and three
+retired queue/runtime queries. Duplicate descriptors retain access. Query
+boundaries leave queue, buffer and VM counts unchanged. Existing buffer, VM,
+queue, synchronization, heap and compute checks still pass: 1,696 accepted
+submissions, 1,432 checked completions and eight application compute shaders
+across the two boots. Runtime teardown is clean with no retained allocations;
+heap events/growth/declines remain zero. Both desktops, normal reboot/shutdown,
+recovery watchdog disarming and independent recovery-image/eMMC integrity pass.
+
+The recorded values include:
+
+| Property | Native result on both boots |
+| --- | --- |
+| GPU ID / revision / CSF ID | `a8670005` / `0` / `040a0412` |
+| Shader / tiler / L2 present masks; address spaces | `50005` / `1` / `1`; `ff` |
+| Core / L2 / tiler / memory / MMU features | `0` / `07120306` / `809` / `301` / `2830` |
+| Thread features; threads / workgroup / barrier maximum | `04010000`; 2048 / 1024 / 1024 |
+| Texture feature words | `c1ffff9e`, `0`, `0`, `0` |
+| Coherency / GPU features | `0` / `0` |
+| Firmware version / stream features; timer | `01050000` / `0007085f`; 24,000,000 Hz |
+
+The GPU identity, present masks, L2/memory/MMU values and CS register/slot
+counts agree with the previously recorded Linux GPU-query subset. Other raw
+fields are captured from the documented register offsets and checked for
+repeatability; the original Linux transcript did not print them. The desktop
+continues to use the EFI framebuffer. GPU timestamps, rendering, actual
+firmware OOM/growth and automatic fault recovery remain unqualified.
+
+Evidence under `/mnt/HaikuWork`:
+
+- Source `30f5d3768a732b54d40a717a9a39b8f786518996`; image `hrev60097+209`,
+  SHA-256 `5fea46dbb4562ed5f94edd0c8484672fe039b9c71316b37aa3296da9abea3849`.
+- Host/build and reproduction scripts:
+  `artifacts/mali-properties/20260915T104500Z-4a5ec8`.
+- Image manifest: `artifacts/mali-properties-image/20260915T105340Z-4d1710/manifest.json`.
+- EL1/EL2: `artifacts/qemu-shell/20260915T105437Z-b1ac4b` and
+  `artifacts/qemu-shell/20260915T105657Z-65330e`.
+- Native qualification: `artifacts/automated-mali-properties/20260915T105944Z-a32ed3/qualification.json`.
+- Serial, transcripts and desktop frames 007/019:
+  `artifacts/interactive/20260915T110007Z-6d37de`.
+- Independent Linux file/region readback:
+  `artifacts/emmc-file-readback/20260915T110754Z-8af9d8` and
+  `artifacts/emmc-read-reference/20260915T110945Z-670880`.
+  The same six previously recorded vendor recovery warning signatures recur;
+  `recovery-warnings-review.json` records the comparison without a causal claim.
 
 ## Next milestones
 
-1. Add non-disruptive native property queries and Mesa adaptation on the qualified
-   client, VM, queue, synchronization and tiler-heap layers, then run the checked
+1. Complete Mesa adaptation on the qualified native property, client, VM, queue,
+   synchronization and tiler-heap layers, then run the checked
    Mesa rendering workload through Haiku. Qualify actual firmware heap growth.
    The Linux Mesa reference is qualified.
    Extend fence integration and implement automatic fault/reset recovery.
