@@ -16,6 +16,10 @@ The +215 image adds [EGL windows](MESA-WINDOW.md), +217 adds normal
 stencil, blending and render-to-texture. All complete pixels, cleanup and
 recovery checks pass. Conformance, sustained rendering and native display
 control remain open.
+The +221 image also qualifies [graphics-process cleanup](MESA-LIFETIME.md):
+terminate a process after finished GPU work with its resources open, render
+again in the survivor, then verify fresh-context reuse and complete cleanup.
+Both native boots pass all 51,992 pixels, allocation baselines and recovery.
 The +198 and +200 images qualify persistent client buffers and GPU VM mappings.
 The +202 image activates those VMs for persistent application queues: two
 native boots accept 1,264 submissions and check 1,136 completions, including eight
@@ -805,7 +809,10 @@ Evidence under `/mnt/HaikuWork`:
 
 ## Next milestones
 
-1. Broaden application/API coverage and qualify killed graphics-process cleanup.
+1. Broaden application/API coverage and qualify termination during pending
+   graphics work. [Graphics-process cleanup](MESA-LIFETIME.md) now passes
+   termination after completed rendering, survivor redraw, fresh-context reuse
+   and full allocation baselines across two native boots.
    The [GLES pipeline fixture](MESA-PIPELINE.md) now passes texture upload and
    sampling, depth, stencil, additive blending, scissor and render-to-texture
    on two native boots: 155,976 pixels and sixty submissions pass.

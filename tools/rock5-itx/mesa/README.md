@@ -28,11 +28,13 @@ Complete RGBA readbacks, guard bytes and native allocation baselines are checked
 independently. All 155,976 native pixels and sixty submissions pass. This
 bounded fixture does not establish GLES conformance.
 
-The new graphics-process lifetime probe builds successfully; execution is
-pending. It keeps two independent processes' contexts open, terminates one
+The [graphics-process lifetime probe](../../../docs/rock5-itx/MESA-LIFETIME.md)
+passes both QEMU modes and two native boots on the +221 image. It keeps two
+independent processes' contexts open, terminates one
 after completed rendering, checks a new frame in the survivor, then checks
 normal cleanup and fresh-context reuse. Every returned pixel and guard is
-checked. It does not terminate pending GPU work or test automatic GPU reset.
+checked. All 51,992 native pixels, allocation baselines and recovery checks
+pass. It does not terminate pending GPU work or test automatic GPU reset.
 
 `sources.json` pins both original archives, six SDK packages, seven kernel ABI
 headers, host compiler helpers and every patch/probe/validator. The complete

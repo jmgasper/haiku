@@ -9,6 +9,14 @@ The [GitHub work items](TRACKING.md) split the roadmap into issues and milestone
 The current priority is [Mali-G610 GPU support](GPU.md), followed by remaining
 hardware. The owner has deferred further Ethernet driver work.
 
+The +221 USB image qualifies [graphics-process cleanup](MESA-LIFETIME.md)
+on two native boots. A process is terminated after completed rendering while
+its resources remain open; the survivor renders correctly and a fresh context
+works afterward. All 51,992 pixels, 1,024 guards and allocation baselines pass.
+Earlier GPU/window fixtures, both QEMU modes, normal reboot/shutdown, recovery
+and independent integrity checks pass. Termination during pending graphics
+work, sustained rendering and GPU fault/reset recovery remain open.
+
 The +219 USB image qualifies [six GLES pipeline operations](MESA-PIPELINE.md)
 on two native boots: texture upload/sampling, depth, stencil, blending, scissor
 and render-to-texture. All 155,976 pixels, 3,072 guards and sixty GPU submissions
