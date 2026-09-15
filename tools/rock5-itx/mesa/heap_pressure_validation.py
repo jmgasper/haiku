@@ -28,6 +28,7 @@ def validate(text, output=None, software=False):
         assert re.fullmatch(r'OpenGL ES 3\.\d+ Mesa 25\.3\.6', version)
     assert re.findall(r'^ROCK5_PRESSURE_CONTEXT_PASS cycle=(\d+) rounds=2 destroyed=1\s*$',
         text, re.M) == ['0', '1']
+    assert re.findall(r'^ROCK5_PRESSURE_VERTICES cycle=(\d+) vertices=98304 bytes=786432 explicit_buffer=1\s*$', text, re.M) == ['0', '1']
     pattern = (r'^ROCK5_PRESSURE_PIXELS_BEGIN cycle=(\d+) round=(\d+) quads=(\d+) '
         r'width=(\d+) height=(\d+) format=RGBA8 origin=lower-left\n(.*?)'
         r'^ROCK5_PRESSURE_PIXELS_END cycle=(\d+) round=(\d+) mismatches=(\d+) '

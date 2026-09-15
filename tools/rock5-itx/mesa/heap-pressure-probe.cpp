@@ -85,12 +85,8 @@ static int pressure_context(EGLDisplay display, unsigned cycle, int fd)
     CHECK(renderer && !strcmp(renderer, software ? "softpipe" : "Mali-G610 (Panfrost)"));
     CHECK(version && !strncmp(version, "OpenGL ES 3.", 12) && strstr(version, "Mesa 25.3.6"));
     GLuint vertex = shader(GL_VERTEX_SHADER,
-        "#version 300 es\n"
-        "const vec2 corners[6]=vec2[6](vec2(0,0),vec2(1,0),vec2(1,1),"
-        "vec2(0,0),vec2(1,1),vec2(0,1));\n"
-        "void main(){int q=gl_VertexID/6;"
-        "vec2 p=vec2(q%97,(q/97)%67)+corners[gl_VertexID%6];"
-        "gl_Position=vec4(p/vec2(97,67)*2.0-1.0,0,1);}\n");
+        "#version 300 es\nlayout(location=0) in vec2 point;\n"
+        "void main(){gl_Position=vec4(point/vec2(97,67)*2.0-1.0,0,1);}\n");
     GLuint fragment = shader(GL_FRAGMENT_SHADER,
         "#version 300 es\nprecision highp float;\nuniform vec4 colour;\n"
         "layout(location=0) out vec4 pixel;\nvoid main(){pixel=colour;}\n");
@@ -109,8 +105,29 @@ static int pressure_context(EGLDisplay display, unsigned cycle, int fd)
     glUseProgram(object);
     GLint colour_location = glGetUniformLocation(object, "colour");
     CHECK(colour_location >= 0);
-    GLuint vao, texture, fbo;
+    GLuint vao, vertex_buffer, texture, fbo;
     glGenVertexArrays(1, &vao); glBindVertexArray(vao);
+    // Explicit coordinates avoid the software interpreter's split-draw
+    // gl_VertexID limitation, retained with the first candidate's evidence.
+    const unsigned vertices = pressure_quads[1] * 6;
+    const size_t upload_bytes = vertices * 2 * sizeof(GLfloat);
+    GLfloat* points = (GLfloat*)malloc(upload_bytes);
+    CHECK(points != NULL);
+    const unsigned corners[6][2] = {{0,0},{1,0},{1,1},{0,0},{1,1},{0,1}};
+    for (unsigned i = 0; i < vertices; ++i) {
+        unsigned q = i / 6;
+        points[i * 2] = q % WIDTH + corners[i % 6][0];
+        points[i * 2 + 1] = (q / WIDTH) % HEIGHT + corners[i % 6][1];
+    }
+    glGenBuffers(1, &vertex_buffer); glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer);
+    glBufferData(GL_ARRAY_BUFFER, upload_bytes, points, GL_STATIC_DRAW);
+    free(points);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+    glEnableVertexAttribArray(0);
+    CHECK(glGetError() == GL_NO_ERROR);
+    printf("ROCK5_PRESSURE_VERTICES cycle=%u vertices=%u bytes=%zu explicit_buffer=1\n",
+        cycle, vertices, upload_bytes);
+
     glGenTextures(1, &texture); glBindTexture(GL_TEXTURE_2D, texture);
     glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, WIDTH, HEIGHT);
     texture_parameters();
@@ -134,6 +151,7 @@ static int pressure_context(EGLDisplay display, unsigned cycle, int fd)
     }
     glUseProgram(0); glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glDeleteFramebuffers(1, &fbo); glDeleteTextures(1, &texture);
+    glDeleteBuffers(1, &vertex_buffer);
     glDeleteVertexArrays(1, &vao); glDeleteProgram(object);
     CHECK(glGetError() == GL_NO_ERROR);
     CHECK(eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));

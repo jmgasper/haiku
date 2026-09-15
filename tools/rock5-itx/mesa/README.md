@@ -106,3 +106,8 @@ RGBA pixels and guards, actual native allocation growth, completed queues and
 full cleanup across two contexts. Firmware growth counters are checked in the
 native UART evidence as a separate gate. Native qualification is pending; this
 fixture does not establish sustained load, memory-limit failure or GPU reset.
+
+The pressure fixture uses an explicit 786,432-byte vertex buffer. Its first
+GL-generated vertex-ID variant exposed a softpipe split-draw limitation in
+QEMU; that candidate was not deployed. Its source and complete failed readback
+are retained. This workload does not qualify gl_VertexID across large draws.
