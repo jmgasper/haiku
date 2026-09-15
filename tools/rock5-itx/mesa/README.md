@@ -82,7 +82,7 @@ after patched-source and SDK preparation. Logs, commands, input receipts and
 failures remain in the output directory. This reconstructs pinned sources and
 configuration; build-path/debug information can change binary hashes.
 
-The package manifest lists twenty-one assets for `/boot/home/mesa-trial`. The `run`
+The package manifest lists twenty-three assets for `/boot/home/mesa-trial`. The `run`
 launcher uses Haiku's `LIBRARY_PATH` and a private GLVND vendor file. Its probe
 accepts `--native`, `--software` and `--absent-device`. Native mode expects
 `/dev/graphics/mali_csf/0` and the separately supplied, licensed firmware at
@@ -132,3 +132,14 @@ passes both QEMU modes and two native boots: 36 actual refused requests,
 36 incremental passes, 51,992 pixels, 1,024 guards, 24 completed submissions,
 full cleanup and recovery/integrity. This limits the tiler heap only; sustained
 load, system-memory exhaustion and automatic GPU reset remain unqualified.
+
+`run-sustained --software` and `run-sustained --native` are a new candidate for
+continuous drawing in retained contexts: one permits heap growth, the next
+fixes one chunk. Native mode requires at least sixty seconds of accumulated
+draw/fence/readback time and 1,024 frames per context, with bounded frame and
+wall-time limits. Software mode uses 32 frames per context. Each actual RGBA
+readback is encoded losslessly as runs and independently expanded and checked
+by `sustained_validation.py`, together with guards, timing, native heap
+observations, incremental-pass counters, completed queues and cleanup. The
+probe compiles; full QEMU/native qualification is pending. This does not claim
+GPU utilization, thermal limits, concurrency, conformance or reset recovery.
