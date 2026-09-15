@@ -21,6 +21,12 @@ emulate this GPU. The shader and its complete descriptor/command allocation
 match the separately qualified Linux reference. Hardware rendering and Mesa
 integration are next. The desktop still uses the EFI framebuffer.
 
+A separate Linux Mesa/Panfrost reference now renders four checked images on
+the board across two contexts. Every pixel matches; buffer, VM, group, heap
+and synchronization-object counts balance. Both emulated boot modes, native
+recovery and independent storage/image integrity pass. The next Haiku work is
+the persistent userspace interface needed to run that rendering workload.
+
 The Samsung 950 Pro now has a full-capacity Haiku development installation:
 a 512 MiB EFI partition and a 238 GiB BFS volume. Native Installer copying,
 package and EFI hashes, filesystem checks and large-file readback after normal

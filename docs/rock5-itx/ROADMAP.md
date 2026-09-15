@@ -19,7 +19,10 @@ native power/identity/reset/IRQ cycles, firmware and application page tables,
 and four compute-shader submissions plus four CS memory-store regressions on
 two +195 Haiku boots. Complete data matches the Linux reference, and group,
 MCU and address-space cleanup passes. Hardware rendering and Mesa integration
-are next.
+are next. A Linux Mesa/Panfrost reference now passes four complete checked
+RGBA8 images over two contexts, with balanced GPU object lifetimes and normal
+recovery. Implement Haiku's persistent userspace objects and synchronization
+to run that same workload.
 
 ## 0 — Build and lab foundation
 

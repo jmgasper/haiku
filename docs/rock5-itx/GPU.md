@@ -5,7 +5,8 @@ is deferred. The working EFI framebuffer supplies a desktop, while native
 display control and GPU rendering remain separate milestones. Haiku now boots
 the Mali firmware and passes four compute-shader submissions plus four CS
 memory-store regressions across two +195 native boots. Complete data matches
-the Linux reference. Accelerated rendering and Mesa integration remain pending.
+the Linux reference. A separate Linux Mesa/Panfrost reference now renders four
+checked images on the board. Haiku rendering and Mesa integration remain pending.
 
 ## Reference and integration route
 
@@ -126,6 +127,95 @@ discarding a successful read and issuing a second one.
 | Shader SHA-256 | `9ef33d01429d1954b6eebadd6258ac91103c3a12edb96319872f662f579fb09f` |
 | Complete 4 KiB code SHA-256 | `dcc72b3bb9448e0acda21fa9dfe6052e83856460608b57c114552d1f1aa0d669` |
 | Linux image manifest | `/mnt/HaikuWork/artifacts/efi-media/20260915T032602Z-deaa36/linux-shader-ram-reference.json` |
+
+## Mesa rendering reference
+
+Mesa 25.3.6 and libdrm 2.4.123 now build for AArch64 Linux with only the Panfrost
+Gallium driver. The native shader tools are built separately with LLVM 18.1.3;
+LLVM is not a dependency of the target libraries. Source archives, package
+versions and checksums, build options, generated tools and every runtime ELF
+are recorded. The [Panfrost build instructions](https://docs.mesa3d.org/drivers/panfrost.html)
+describe this separation of native compiler tools from the cross build.
+
+Linux 6.18.52 boots the complete runtime from its built-in RAM filesystem.
+The probe selects the EGL device whose DRM node answers as Panthor with GPU
+ID `a8670005` and shader mask `50005`. It reports `Mali-G610 (Panfrost)` and
+`OpenGL ES 3.1 Mesa 25.3.6`. There is no software Gallium driver in this build.
+
+Each of two separately initialized EGL/context lifecycles creates an RGBA8
+texture framebuffer. A GLSL vertex shader positions two overlapping rectangles,
+each made of two triangles; a fragment shader writes uniform colors. Two frames
+per context change the geometry and palette. All four full 64-by-64 RGBA images
+match the independent pixel oracle: 16,384 pixels, 65,536 pixel bytes and 512
+CPU readback guard bytes. The decoded PNGs were also inspected. The oracle
+rejects 28 altered or incomplete host fixtures; those fixtures are explicitly
+marked synthetic and are not native evidence.
+
+The probe counts the actual DRM ioctl calls from itself and the Mesa/libdrm
+libraries. All 22 observed request types return without errors. The counters
+show matching creation/destruction of two VMs, two groups, two tiler heaps,
+36 buffer objects and 12 synchronization objects. There are ten group-submit
+calls, 72 VM-bind calls and 66 CPU-mapping-offset queries. These count requests,
+not the number of elements in request arrays. Six handle-to-FD and six
+FD-to-handle conversions, ten binary waits, 74 timeline waits and eight
+synchronization transfers also succeed. This does not qualify cross-process
+buffer sharing, process termination during work, or GPU fault recovery.
+
+`PAN_MESA_DEBUG=sync` makes Mesa wait for each submitted job and check faults.
+Consequently all four application fence waits already see a signaled fence;
+their 5.5–9.1 microsecond intervals are not rendering benchmarks. GPU physical
+addresses were not recorded. This test does not exercise display scanout,
+native Haiku rendering, API conformance or sustained performance.
+
+The initial EL1 and EL2 QEMU boots caught an image-recipe error: the ELF
+interpreter had mode `0444`, so the dynamic probe failed with `EACCES`.
+Giving that interpreter execute permission fixes both modes. The original
+image and both failed logs remain preserved; no native attempt used it.
+The corrected QEMU boots load the target Mesa libraries and correctly report
+the absent Mali GPU.
+
+The native run renders all four frames, destroys both contexts and reboots
+normally to ROOBI. The watchdog disarms; independent complete boot/recovery
+image hashes, eMMC filesystem/files and three reference regions pass. ROOBI
+again logs its vendor VOP2 power-domain timeout and display IOMMU message;
+matching messages occur in three preceding recovery captures. That separate
+display issue is recorded in `recovery-display-review.json`. The used image
+was archived locally, reverified and removed from the NanoKVM, restoring
+430,768,128 bytes of free space.
+
+| Rendering reference evidence | Location or value |
+| --- | --- |
+| Qualified native trial | `/mnt/HaikuWork/artifacts/native-linux-mesa-reference/20260915T043315Z-087ca7/qualification.json` |
+| Source, dependencies, build recipes and oracle | `/mnt/HaikuWork/artifacts/mali-render-reference/20260915T041113Z-a45ace` |
+| Complete runtime/build snapshots | `/mnt/HaikuWork/artifacts/linux-mesa-reference-build/20260915T043102Z-ab66ee/build.json` |
+| Image manifest | `/mnt/HaikuWork/artifacts/efi-media/20260915T043103Z-a355b0/linux-mesa-ram-reference.json` |
+| Image SHA-256 | `3c0def89e5f3fc9a04d4236cf7d4fa43f06124f90fdcd9ecd6395b125124d742` |
+| EL2 / EL1 QEMU | `artifacts/qemu-linux-mesa-reference/20260915T043150Z-15aeca` / `20260915T043150Z-d0a6c1` |
+| Full readbacks and PNGs | `artifacts/native-linux-mesa-reference/20260915T043315Z-087ca7/frames` |
+| Initial image failure review | `artifacts/mali-render-reference/20260915T041113Z-a45ace/first-qemu-failure-review.json` |
+
+### Haiku userspace interface work
+
+The next implementation must support Mesa's persistent object lifetimes.
+The current Haiku `Open` returns the shared
+controller, `Close`/`Free` do no client cleanup, and each diagnostic starts and
+stops its own firmware arena. Mesa needs client-owned buffers, persistent VMs,
+groups, queues, tiler heaps and synchronization objects spanning many calls.
+It also needs CPU mappings and retained storage until queued work completes.
+
+`panthor_kmod.c` covers buffer/VM operations, but `pan_csf.c` directly creates
+groups/heaps and submits work; `pan_fence.c` also calls DRM synchronization
+functions. Adapting `pan_kmod_ops` alone is insufficient. The observed FD
+conversions must be covered even for this offscreen workload; external sharing
+needs separate tests. Query/capability results must describe implemented
+behavior, and unsupported operations must remain explicit.
+
+Haiku's ioctl wrapper supplies a zero length when the fourth argument is
+omitted, and its area-based mappings differ from Linux DRM mmap offsets.
+The userspace adapter must translate both operations deliberately. The Haiku
+EGL frontend currently calls `sw_screen_create`; selecting a Panfrost screen
+and supporting its presentation path are additional integration work. The
+pinned source inventory is `mesa-abi-inventory.json` in the reference stage.
 
 ## Firmware component
 
@@ -497,9 +587,10 @@ remain open.
 
 ## Next milestones
 
-1. Implement the selected Mesa CSF kernel operations and an offscreen rendered
-   image. Regulator ownership, runtime power management and DVFS remain
-   separate work.
+1. Implement the Mesa buffer, mapping, VM, group, heap and synchronization
+   operations, then run the checked rendering workload through Haiku. The
+   Linux Mesa reference is qualified. Regulator ownership, runtime power
+   management and DVFS remain separate work.
 2. Integrate Panfrost with Haiku EGL/OpenGL and window output; qualify pixels,
    multiple contexts, process exit, reset, sustained work and conformance.
 3. Implement native VOP2/HDMI modes/hotplug and additional display routes,

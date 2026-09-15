@@ -35,6 +35,17 @@ omitted a compute-resource request and timed out; the corrected stream passes,
 and the failed trial and its successful recovery remain recorded.
 The visible desktop continues to use the EFI framebuffer.
 
+The Linux Mesa 25.3.6/Panfrost rendering reference is now qualified: two contexts
+render four full 64-by-64 RGBA8 images, and all 16,384 pixels and 512 readback
+guard bytes match. All 22 observed DRM request types return without errors;
+creation/destruction counts balance for VMs, groups, heaps, buffers and
+synchronization objects. Both QEMU boot modes, normal native reboot/recovery
+and independent eMMC/image integrity pass. The initial image's non-executable
+ELF interpreter was caught and corrected in QEMU before hardware deployment.
+[GPU.md](GPU.md#mesa-rendering-reference) records the results and the Haiku
+userspace interface work that remains. This is Linux rendering evidence;
+Haiku rendering is still pending.
+
 A read-only Linux check on 15 September reconfirms both Ethernet links: the
 SFP-connected `enP3p49s0` negotiates 2,500 Mbit/s full duplex and `enP4p65s0`
 negotiates 1,000 Mbit/s full duplex. Both have carrier and zero receive/transmit
