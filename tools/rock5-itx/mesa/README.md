@@ -143,3 +143,11 @@ by `sustained_validation.py`, together with guards, timing, native heap
 observations, incremental-pass counters, completed queues and cleanup. The
 probe compiles; full QEMU/native qualification is pending. This does not claim
 GPU utilization, thermal limits, concurrency, conformance or reset recovery.
+
+The first +229 candidate passed both two-boot QEMU modes, but the NanoKVM
+stopped responding and restarted during the first native sustained context.
+All 5,368 complete captured frames matched; required duration and cleanup were
+not reached. Its source, binaries and partial output are preserved. The next
+candidate line-buffers stdout, reducing the many small writes used to encode
+each frame while retaining every output byte and newline flush. The exact
+controller-reset cause remains unresolved; native qualification is still open.

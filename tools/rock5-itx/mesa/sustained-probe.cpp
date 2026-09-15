@@ -258,6 +258,12 @@ static int pressure_run(const char* mode)
 
 int main(int argc, char** argv)
 {
-    setbuf(stdout, NULL); setbuf(stderr, NULL);
+    // Keep each frame's many hexadecimal fragments in one line-buffered write.
+    // The output bytes and per-frame flush remain unchanged, while a sustained
+    // run avoids sending hundreds of tiny writes for each readback record.
+    static char output_buffer[65536];
+    if (setvbuf(stdout, output_buffer, _IOLBF, sizeof(output_buffer)) != 0)
+        return 1;
+    setbuf(stderr, NULL);
     return argc == 2 && pressure_run(argv[1]) ? 0 : 1;
 }
