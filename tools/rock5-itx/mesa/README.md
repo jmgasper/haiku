@@ -181,10 +181,14 @@ the hierarchy. Both QEMU modes and both native captures now unmount cleanly;
 normal reboot/shutdown and recovery pass. The earlier assertion and failed
 native trials remain preserved.
 
-The candidate `run-concurrency --native` fixture synchronizes two independent
-graphics processes over 64 rounds. It checks actual draw/fence/readback interval
-overlap in at least 32 rounds, every RGBA8 pixel and guard byte, normal queue
-completion, survivor rendering and a fresh process after allocation cleanup.
-`--software` runs eight paired rounds without requiring timing overlap. The
-barrier wait and output encoding are outside measured rendering intervals.
-This fixture has not yet been qualified on the board.
+The [concurrent graphics fixture](../../../docs/rock5-itx/MESA-CONCURRENCY.md)
+passes on the +234 native image: two independent processes render over 64
+synchronized rounds on each of two boots. All 128 actual rendering intervals
+overlap, all 260 full RGBA8 frames and guard regions pass, and all 532 GPU
+submissions complete. Normal retirement, survivor rendering, fresh-process
+reuse and full allocation cleanup pass. Both QEMU modes and all earlier
+bounded graphics regressions pass. The first controller outage remains
+recorded. `graphics_capture.py` reuses the qualified RAM collection protocol
+for all seven graphics fixtures; the transfer implementation is unchanged.
+Termination during pending graphics work and GPU fault/reset recovery remain
+open.

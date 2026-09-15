@@ -7,6 +7,15 @@ firmware supports it.
 Current priority is [Mali-G610 GPU acceleration](GPU.md); further Ethernet
 driver work is deferred at the owner's request.
 
+The +234 USB image qualifies [concurrent graphics applications](MESA-CONCURRENCY.md)
+on two native boots. All 128 paired draw rounds overlap; all 260 frames,
+1,689,740 pixels, 33,280 guards and 532 submissions pass. Normal process
+retirement, survivor rendering, fresh-process reuse and allocation cleanup
+pass. Both QEMU modes, earlier graphics regressions, normal recovery and
+independent integrity checks pass. Each graphics fixture logs to RAM before
+its checked transfer. Pending-work termination, GPU fault/reset recovery and
+native display control remain open.
+
 The +232 USB image qualifies [sustained GPU rendering](MESA-SUSTAINED.md)
 on two native boots. Four retained contexts each complete at least sixty
 seconds of measured rendering with stable tiler-heap use. All 91,648 frames,
@@ -14,7 +23,7 @@ seconds of measured rendering with stable tiler-heap use. All 91,648 frames,
 heaps complete 147,196 incremental passes. Earlier graphics fixtures, both
 QEMU modes, normal reboot/shutdown, recovery and independent integrity checks
 pass. Full logs are captured in RAM and retrieved with checked, paced transfers.
-Concurrent workloads, GPU fault/reset recovery and native display control
+Pending-work termination, GPU fault/reset recovery and native display control
 remain open.
 
 The +227 USB image qualifies [fixed tiler heaps and incremental rendering](MESA-HEAP-LIMIT.md)
