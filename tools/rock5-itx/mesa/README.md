@@ -193,7 +193,8 @@ for all seven graphics fixtures; the transfer implementation is unchanged.
 Termination during pending graphics work and GPU fault/reset recovery remain
 open.
 
-The pending-work fixture is a candidate awaiting qualification. `run-pending`
+The [pending-work fixture](../../../docs/rock5-itx/MESA-PENDING.md) qualifies
+two +236 native boots. `run-pending`
 calibrates a bounded integer fragment shader using complete pixel readback,
 repeats the last checked workload and reports a zero-time fence result. The
 parent terminates that worker, verifies survivor rendering, normal cleanup and

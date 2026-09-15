@@ -7,6 +7,14 @@ firmware supports it.
 Current priority is [Mali-G610 GPU acceleration](GPU.md); further Ethernet
 driver work is deferred at the owner's request.
 
+The +236 USB image qualifies [termination during pending graphics work](MESA-PENDING.md)
+on two native boots. Both a fence timeout and the driver's actual close-time
+queue state establish unfinished work. Survivor rendering, fresh-process reuse
+and allocation cleanup pass; all fourteen completed frames, 90,986 pixels and
+1,792 guards match. Earlier graphics regressions, both QEMU modes, normal
+recovery and independent integrity checks pass. Active work can complete while
+close waits; immediate preemption and GPU fault/reset recovery remain open.
+
 The +234 USB image qualifies [concurrent graphics applications](MESA-CONCURRENCY.md)
 on two native boots. All 128 paired draw rounds overlap; all 260 frames,
 1,689,740 pixels, 33,280 guards and 532 submissions pass. Normal process

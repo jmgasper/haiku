@@ -55,7 +55,7 @@
     ]
   },
   "sdk_haiku_revision": "7908c0f07a8d3bbed99f6140c642cf30920b3232",
-  "qualified_runtime_revision": "hrev60097+234",
+  "qualified_runtime_revision": "hrev60097+236",
   "sdk_packages": [
     {
       "name": "haiku.hpkg",
@@ -173,5 +173,5 @@
   "heap_limit_probe_scope": "Qualified +227: four fixed one-chunk contexts, 36 actual native allocation refusals, 36 Mesa incremental passes, all 51992 RGBA pixels/1024 guards, 24 completed submissions, cleanup and recovery/integrity. Sustained/reset and system-RAM exhaustion remain open.",
   "sustained_probe_scope": "Qualified protocol 2 on two +232 native boots: four retained contexts, each >=60 seconds measured render, >=20 seconds and 1024 frames of observed heap stability, lossless actual RGBA/guards and complete queues/cleanup. 91648 frames, 595620352 pixels, 183304 submissions, 147196 incremental passes. RAM capture and existing staged transfers verified; earlier failures preserved. No concurrency, conformance, thermal/DVFS or automatic reset qualification.",
   "concurrency_probe_scope": "Qualified +234 on two native boots: two processes complete 64 synchronized rounds per boot, all128 actual application draw/fence/readback intervals overlap; 260frames/1689740pixels/33280guards/532completed submissions. Normal process retirement, survivor draw, fresh-process reuse and allocation restoration pass. All seven graphics fixtures use verified RAM capture and existing staged transfers; first NanoKVM outage preserved. No parallel GPU execution, pending-work termination, conformance, thermal/DVFS, reset or native display qualification.",
-  "pending_probe_scope": "Candidate: bounded fragment shader calibration, unfinished fence, parent termination, real pending-at-close UART state, survivor and fresh-process rendering, complete pixels and cleanup. Not yet qualified."
+  "pending_probe_scope": "Qualified +236 on two native boots: finite integer shader, unfinished GLES fence and actual pending command at client close; survivor and fresh-process rendering, 14 checked frames/90986 pixels/1792 guards, 42 accepted submissions, full allocation restoration. Both QEMU modes, earlier regressions, normal recovery and independent integrity pass. No immediate preemption, GPU fault/reset, conformance or native-display qualification."
 }
