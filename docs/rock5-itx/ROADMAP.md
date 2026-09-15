@@ -15,10 +15,10 @@ the underlying buses permit it. No calendar estimates imply guaranteed support.
 
 Current owner priority: phase 7 GPU support, then remaining hardware. Further
 Ethernet driver development is deferred. [GPU.md](GPU.md) records qualified
-native power/identity/reset/IRQ cycles, GPU page tables and MCU firmware
-startup/ping/stop on two +190 boots. A native Linux reference also passes four
-checked CSF memory operations. Haiku command submission is next, followed by
-hardware rendering and Mesa integration.
+native power/identity/reset/IRQ cycles, firmware and application page tables,
+and four CSF memory-store submissions on two +193 Haiku boots. Complete data
+matches the Linux reference, and group/MCU/address-space cleanup passes.
+Shader execution is next, followed by hardware rendering and Mesa integration.
 
 ## 0 — Build and lab foundation
 

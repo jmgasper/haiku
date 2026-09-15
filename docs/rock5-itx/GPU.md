@@ -3,8 +3,9 @@
 GPU acceleration is the owner's current priority; further Ethernet driver work
 is deferred. The working EFI framebuffer supplies a desktop, while native
 display control and GPU rendering remain separate milestones. Haiku now boots
-the Mali firmware and completes its ping handshake on two +190 native boots.
-Command-stream submission and accelerated rendering remain pending.
+the Mali firmware and passes four CSF memory-store submissions across two +193
+native boots. The complete data matches the Linux reference. Shader execution,
+accelerated rendering and Mesa integration remain pending.
 
 ## Reference and integration route
 
@@ -333,12 +334,77 @@ all three eMMC reference-region hashes pass. This accepts the bounded firmware
 lifecycle. It does not qualify shader execution, rendering, persistent contexts
 or the separate open installed-SSD/page-aging failures.
 
+## Native command submission
+
+The +193 `rock5-itx-edk2-v1.1-gpu-commands` profile adds
+`rock5_mali_firmware_probe --commands /boot/home/mali_csffw.bin`.
+The root-only diagnostic submits the two 256-byte streams already qualified
+on Linux. It preserves the previous firmware ioctl and 1,128-byte ABI and uses
+one bounded kernel-owned queue. Mesa still needs a persistent application API.
+
+`CsfCommandMemory.h` adds a separate application address space and driver-owned
+MCU workspace. Its separate allocation plan checks overlap with actual firmware
+regions. The initialized
+firmware reports 25,600-byte normal and protected suspension buffers, both
+within the diagnostic's separate 1 MiB reservations. The queue interface uses
+another 8 KiB of MCU memory. AS0 now needs ten table pages and 738 payload pages,
+totaling 3,063,808 bytes. Application AS1 uses six table pages and the following
+buffers, totaling 106,496 bytes including tables:
+
+| Buffer | GPU virtual address | Bytes | GPU mapping |
+| --- | --- | --- | --- |
+| Two command streams | `0x100000000` | 4,096 | Read-only, cached |
+| Checked data and guards | `0x100002000` | 8,192 | Read/write, cached, non-executable |
+| Queue ring | `0x100400000` | 65,536 | Read/write, uncached, non-executable |
+| Completion objects | `0x100800000` | 4,096 | Read/write, uncached, non-executable |
+
+One private system-team arena backs both address spaces. The CPU mapping is
+Normal Non-cacheable. All holes remain unmapped. Both native allocations were
+below 4 GiB physically. GPU virtual addresses above 4 GiB pass; native DMA with
+physical addresses above 4 GiB remains untested. Host tests walk every descriptor at low,
+above-4-GiB and upper-40-bit physical bases, checking permissions and bounds.
+
+After firmware boot and ping, `CsfCommands.h` configures core allocation and
+the reference progress/poweroff timers. It starts an empty group and queue,
+then records a fresh zero-valued completion object and every initial data word
+before exposing each submission. The queue wrapper flushes caches, calls the
+reference stream, waits for outstanding work, updates a 64-bit completion object
+and executes an error barrier. Acceptance requires the completion value, ring
+extract position, fresh group interrupt and firmware synchronization event.
+Actual job IRQ 124 captures both global and group events. MMU fault reporting
+now covers AS0 and AS1 while distinguishing their normal completion bits.
+
+Both rounds pass on both native boots. Each changes exactly eight words and
+preserves all 2,040 guards, including stores on either side of a page boundary.
+The final 8 KiB data hashes match Linux's corresponding reference rounds:
+`13cbe2b3e83ba07adb5af5001bfb89fb5aab5e3c23f8d310150caff3f4b5a4fe`
+and `655ea711afc75548899ed630b95b22d56f655c79a094ea2e907e6a074403baa7`.
+The independent decoder also checks the entire command, ring, completion and
+queue-interface allocations. Its 101 altered/incomplete-evidence cases fail
+as expected. The 116,200-byte diagnostic output is emitted in bounded chunks;
+missing, duplicate and reordered chunks are rejected.
+
+Cleanup terminates the group, requests a firmware halt, stops the MCU, flushes
+and unmaps both address spaces, removes IRQ handlers and restores platform
+state. Both boots report command flags `1ff`, firmware flags `ff`, zero result
+and cleanup errors, and no GPU/MMU/stream fault. Any failed hardware cycle retains
+the entire combined arena and disables further cycles until recovery. Host
+tests cover missing fences/IRQs/sync events, stale completion, wrong extract
+position, guard corruption, queue faults, timeouts, stopped clocks and failed
+termination/halt/flush/unmap. All 138 host checks, the ARM64 build and both
+two-boot QEMU modes pass; QEMU validates packaging and absent-GPU rejection.
+
+Both native desktops, 129,024 instruction-alias checks per boot, all 33 component
+and ten file hashes, identical FDT captures, normal reboot/shutdown and automatic
+ROOBI recovery pass. The watchdog disarms, and independent recovery-image,
+eMMC filesystem/files and all three reference-region hashes pass. No shader,
+rendering, performance comparison or installed-SSD requalification is claimed.
+
 ## Next milestones
 
-1. Implement Haiku group/queue setup, owned queue memory, an application GPU
-   address space, completion and cleanup using the decoded streams that now
-   pass on the pinned Linux reference. Firmware initializes group suspension
-   sizes at runtime; do not treat the initial binary's zero fields as requirements.
+1. Establish a checked shader-execution reference on Linux, then execute the
+   same shader through Haiku's qualified queue and application address space.
+   Validate complete output buffers and retain the memory-store regression.
 2. Implement the selected Mesa CSF kernel operations and an offscreen rendered
    image. Regulator ownership, runtime power management and DVFS remain
    separate work.
@@ -391,6 +457,15 @@ images stay beneath `/mnt/HaikuWork`; firmware binaries are not committed.
 
 Qualified native component evidence:
 
+- +193 application mappings, queue/group lifecycle and four memory-store submissions:
+  `artifacts/automated-mali-command/20260915T024219Z-51e818/qualification.json`.
+  Source `545441b08bdc7b6a7baea799f71beb9a30bdb247`, image SHA-256
+  `472fd3008e046298fe5c73a5fa72c4f822b959617c67299a56034d61ad750cfa`.
+  Image manifest: `artifacts/mali-command-image/20260915T023625Z-2196b3/manifest.json`.
+  EL2/EL1 QEMU: `artifacts/qemu-shell/20260915T023834Z-98eca2` and
+  `artifacts/qemu-shell/20260915T023834Z-b267e4` respectively.
+  Source snapshots, host checks, decoder and synthetic negative controls:
+  `artifacts/mali-haiku-commands/20260915T023152Z-6e8727`.
 - +190 firmware memory, MCU startup, ping and cleanup:
   `artifacts/automated-mali-firmware-start/20260915T011253Z-d90588/qualification.json`.
   Source `343a34d461fb950fb686ff4d398fb5e3b14a5487`, image SHA-256
