@@ -138,6 +138,17 @@ public:
 		changed.Wait(&sRuntimeLock, B_RELATIVE_TIMEOUT, 10000);
 		work.type = kQueueWorkIdle;
 	}
+	HeapGrowthResult PrepareHeap(unsigned slot, uint64 context, uint32 vtStart,
+		uint32 vtEnd, uint32 fragEnd, HeapGrowth& growth)
+	{
+		MutexLocker locker(sRuntimeLock);
+		if (slot >= kMaxRuntimeQueues || !queues[slot].used) return kHeapGrowthInvalid;
+		status_t status = PrepareClientHeapGrowth(queues[slot].activeLease, context,
+			vtStart, vtEnd, fragEnd, growth);
+		return status == B_OK ? kHeapGrowthOK : status == B_NO_MEMORY ? kHeapGrowthNoMemory : kHeapGrowthInvalid;
+	}
+	bool CommitHeap(HeapGrowth& growth) { return CommitClientHeapGrowth(growth) == B_OK; }
+	void AbortHeap(HeapGrowth& growth) { AbortClientHeapGrowth(growth); }
 	void Activated(const QueueWork& work)
 	{
 		MutexLocker locker(sRuntimeLock);
@@ -193,6 +204,8 @@ public:
 			status, engine.Error(), runtime->firmware.result, runtime->firmware.cleanupResult,
 			runtime->firmware.flags, engine.StreamFault(), engine.StreamFatal(),
 			engine.FaultAddress(), retained);
+		dprintf("mali_csf: heap events=%u grown=%u declined=%u\n",
+			engine.HeapEvents(), engine.HeapGrowths(), engine.HeapDeclines());
 		{
 			MutexLocker locker(sRuntimeLock);
 			runtime->error = status;

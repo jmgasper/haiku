@@ -514,7 +514,8 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 	status_t access = AccessClient(opened->client);
 	if (access != B_OK)
 		return access;
-	if ((op >= kGetClientInfo && op <= kGetBufferInfo) || (op >= kCreateVm && op <= kBindVm))
+	if ((op >= kGetClientInfo && op <= kGetBufferInfo) || (op >= kCreateVm && op <= kBindVm)
+		|| (op >= kCreateHeap && op <= kGetHeapInfo))
 		return ControlClient(opened->client, op, buffer, length);
 	if (op >= kCreateSync && op <= kTransferSync)
 		return ControlSync(opened->synchronization, op, buffer, length);

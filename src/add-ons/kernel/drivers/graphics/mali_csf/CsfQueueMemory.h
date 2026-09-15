@@ -24,9 +24,10 @@ inline bool PlanRuntimeFirmware(FirmwareMemory& memory, const FirmwareImage& ima
 	return memory.Plan(image, workspace, 3);
 }
 
-// A queue's root owns only its upper-half kernel subtree. Its lower 256 entries
-// point into a leased immutable application VM generation. Never replace those
-// entries while this root is active; the scheduler must quiesce and unmap first.
+// A queue owns upper entry256 for its ring/completion. The lower256 entries and
+// heap entry257 borrow a leased VM generation. Never replace borrowed entries
+// while this root is active; the scheduler must quiesce and unmap first. Heap
+// growth only adds private leaf entries under an acknowledged hardware AS lock.
 class QueueMemory {
 public:
 	size_t RequiredBytes() const { return kBytes; }
@@ -58,11 +59,12 @@ public:
 			return false;
 		for (unsigned i = 0; i < 512; i++) {
 			uint64_t value = root[i];
-			if (value != 0 && (i >= 256 || (value & 3) != 3
+			if (value != 0 && ((i >= 256 && i != kHeapRootIndex) || (value & 3) != 3
 				|| (value & ~UINT64_C(0xfffffff003)) != 0))
 				return false;
 		}
 		memcpy(fData, root, 256 * sizeof(uint64_t));
+		((uint64_t*)fData)[kHeapRootIndex] = root[kHeapRootIndex];
 		return true;
 	}
 	uint64_t RootPhysical() const { return fPhysical; }

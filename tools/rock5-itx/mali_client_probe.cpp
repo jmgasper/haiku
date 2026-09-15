@@ -116,7 +116,7 @@ int main(int argc, char** argv)
 	ClientInfo baseline = Info(fd);
 	uint32_t baselineAreas = KernelBuffers();
 	CHECK(baselineAreas == baseline.globalBuffers);
-	CHECK(baseline.capabilities == (kClientCpuBuffers | kClientVmMappings | kClientQueues | kClientSynchronization) && baseline.bufferCount == 0);
+	CHECK(baseline.capabilities == (kClientCpuBuffers | kClientVmMappings | kClientQueues | kClientSynchronization | kClientHeaps) && baseline.bufferCount == 0);
 	CHECK(baseline.maxBuffers == kMaxClientBuffers && baseline.maxBufferBytes == kMaxBufferBytes);
 	int other = open(kDevice, O_RDWR); CHECK(other >= 0);
 	int duplicate = dup(fd); CHECK(duplicate >= 0);

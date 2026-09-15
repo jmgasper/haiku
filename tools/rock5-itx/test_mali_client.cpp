@@ -69,7 +69,7 @@ struct Area {
 };
 static std::map<int, Area> sAreas;
 static int sNextArea = 10;
-static unsigned sFailAllocation, sCopies, sFailCopy;
+static unsigned sFailAllocation, sCopies, sFailCopy, sAreaCalls, sFailArea;
 static bool sFailClone;
 struct virtual_address_restrictions { uint32 address_specification; };
 struct physical_address_restrictions { uint64 low_address, high_address; };
@@ -96,7 +96,7 @@ static area_id create_area_etc(team_id team, const char*, size_t bytes, uint32 w
 	assert(flags == 0 && guard == 0 && virt->address_specification == B_ANY_ADDRESS);
 	assert(phys->low_address == 0 && phys->high_address == 0);
 	assert(bytes > 0 && bytes % 4096 == 0);
-	if (sFailAllocation == 1) return B_NO_MEMORY;
+	if (++sAreaCalls == sFailArea || sFailAllocation == 1) return B_NO_MEMORY;
 	return AddArea(std::make_shared<Ram>(bytes), team, false, address);
 }
 static status_t get_memory_map(void* address, size_t bytes, physical_entry* entry, int count)
@@ -181,6 +181,7 @@ static void Empty()
 {
 	assert(sClients == 0 && sBuffers == 0 && sBufferBytes == 0 && sAreas.empty());
 	assert(sVms == 0 && sGenerations == 0 && sTablePages == 0 && sAccounts == 0);
+	assert(sHeaps == 0 && sHeapChunks == 0 && sHeapTablePages == 0 && sHeapGenerations == 0 && sHeapBytes == 0);
 }
 static BufferCreate Create(void* client, uint64 bytes)
 {
@@ -204,15 +205,17 @@ static void Destroy(void* client, uint32 handle)
 }
 
 #include "test_mali_vm.inc"
+#include "test_mali_heaps.inc"
 
 int main()
 {
+	CheckHeaps();
 	Empty();
 	void *a, *b;
 	assert(OpenClient(true, &a) == B_OK && OpenClient(true, &b) == B_OK && a != b);
 	ClientInfo info{}; info.version = 1;
 	assert(Call(a, kGetClientInfo, info) == B_OK
-		&& info.capabilities == (kClientCpuBuffers | kClientVmMappings | kClientQueues | kClientSynchronization));
+		&& info.capabilities == (kClientCpuBuffers | kClientVmMappings | kClientQueues | kClientSynchronization | kClientHeaps));
 	assert(info.globalClients == 2 && info.globalBuffers == 0);
 	BufferCreate bad{}; bad.version = 1; bad.bytes = 4096;
 	for (size_t size : {size_t(0), sizeof(bad) - 1, sizeof(bad) + 1})

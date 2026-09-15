@@ -3,6 +3,8 @@
 #define MALI_CSF_CLIENT_H
 
 #include "CsfQueue.h"
+#include "CsfHeap.h"
+#include "CsfHeapGrowth.h"
 
 namespace MaliCSF {
 status_t OpenClient(bool writable, void** cookie);
@@ -28,5 +30,9 @@ void ReleaseClientVm(ClientVmLease& lease);
 // adjacent mappings, but reject holes and addresses outside the user VA range.
 const uint64_t* ClientVmRoot(const ClientVmLease& lease);
 bool ClientVmRange(const ClientVmLease& lease, uint64_t address, uint64_t bytes);
+status_t PrepareClientHeapGrowth(const ClientVmLease& lease, uint64_t context,
+	uint32_t vtStart, uint32_t vtEnd, uint32_t fragEnd, HeapGrowth& growth);
+status_t CommitClientHeapGrowth(HeapGrowth& growth);
+void AbortClientHeapGrowth(HeapGrowth& growth);
 }
 #endif

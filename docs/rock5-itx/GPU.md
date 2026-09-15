@@ -975,3 +975,42 @@ Evidence under `/mnt/HaikuWork`:
 - `artifacts/interactive/20260915T084321Z-21c6f6` for UART, transcripts and frames.
 - `artifacts/emmc-file-readback/20260915T085212Z-db73eb` and
   `artifacts/emmc-read-reference/20260915T085722Z-334ced` for independent Linux checks.
+
+## Tiler heap candidate
+
+The candidate adds native VM-owned tiler heap create/destroy/query operations.
+Each heap has a private zeroed context page and GPU RW/NX chunks with the Linux
+Panthor initial list format. Chunk sizes are page aligned from 128 KiB to 8 MiB,
+with up to 64 chunks per heap and 128 resident heaps per client/VM. Context and
+chunk bytes are bounded at 256 MiB per client and 512 MiB globally; page tables
+share the existing global table quota. Pending allocations and retired objects
+remain charged until their references are released.
+
+Heap membership belongs to immutable VM generations. Upper root entry 257 holds
+private heap mappings, distinct from queue entry 256 and user mappings. Creation,
+destruction and copyout rollback preserve queued roots, including when a later
+generation reuses a heap virtual address. The CPU initializes each opaque context
+before exposure and does not modify it afterward.
+
+The firmware OOM path validates the exact context address and render-pass
+counters. It prepares allocations without changing exposed PTEs, then takes the
+hardware address-space lock, publishes new entries, flushes GPU caches and waits
+for unlock completion before replying. Memory pressure returns a zero chunk so
+firmware can wait, reclaim or invoke Mesa's exception handler. Post-publication
+failure retains the heap under the existing recovery rule. Automatic GPU reset
+is still pending.
+
+All 145 host checks pass. The production client fixture independently walks
+scattered physical page tables and covers full initial chunk/context contents,
+copyout/allocation rollback, mapping generations, address reuse, 64-chunk growth,
+pending-growth abort and quotas retaining memory after client closure. Eight
+firmware/MMU model cases check successful growth, zero-memory replies, invalid
+requests and lock/commit/flush/unlock failures; published memory survives failed
+completion. The ARM64 driver and extended native probe compile. Full image,
+QEMU and native qualification are pending; +204 remains the qualified baseline.
+
+The native probe is intended to read 5,159 samples across five 2 MiB chunks,
+check descriptor/header/data guards, execute HEAP_SET, retain queued heap data
+across address reuse and clean up heaps after normal and killed child exits.
+Actual firmware OOM on hardware, Mesa rendering and display acceleration require
+further evidence. Host OOM injection does not establish native rendering.

@@ -25,6 +25,7 @@ class MaliQueuesTest(unittest.TestCase):
                     UBSAN_OPTIONS='halt_on_error=1'))
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn('MALI_CSF_QUEUES_TEST_PASS', result.stdout)
+            self.assertIn('MALI_CSF_HEAP_ENGINE_TEST_PASS', result.stdout)
 
 
 if __name__ == '__main__':

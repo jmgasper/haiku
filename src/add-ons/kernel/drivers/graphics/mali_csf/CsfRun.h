@@ -149,6 +149,21 @@ FirmwareAsCommand(IO& io, uint32_t command, unsigned as = 0)
 
 template<typename IO>
 bool
+FlushLockedFirmwareCaches(IO& io)
+{
+	io.WriteGpu(kGpuClear, 1u << 17);
+	if ((io.ReadGpu(kGpuRaw) & (1u << 17)) != 0)
+		return false;
+	io.WriteGpu(kGpuCommand, 0x3304); // L2 and load/store clean + invalidate.
+	bool completed = WaitFirmware(io, 100000, [&]() {
+		return (io.ReadGpu(kGpuRaw) & (1u << 17)) != 0;
+	});
+	io.WriteGpu(kGpuClear, 1u << 17);
+	return completed;
+}
+
+template<typename IO>
+bool
 FlushFirmware(IO& io, unsigned as = 0)
 {
 	if (as > 1)
@@ -158,14 +173,7 @@ FlushFirmware(IO& io, unsigned as = 0)
 	WriteGpu64(io, 0x2410 + as * 0x40, 47);
 	if (!FirmwareAsCommand(io, 2, as))
 		return false;
-	io.WriteGpu(kGpuClear, 1u << 17);
-	if ((io.ReadGpu(kGpuRaw) & (1u << 17)) != 0)
-		return false;
-	io.WriteGpu(kGpuCommand, 0x3304); // L2 and load/store clean + invalidate.
-	bool completed = WaitFirmware(io, 100000, [&]() {
-		return (io.ReadGpu(kGpuRaw) & (1u << 17)) != 0;
-	});
-	io.WriteGpu(kGpuClear, 1u << 17);
+	bool completed = FlushLockedFirmwareCaches(io);
 	// Attempt unlock even when completion was lost; retain both failures.
 	bool unlocked = FirmwareAsCommand(io, 3, as);
 	return completed && unlocked;

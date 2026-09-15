@@ -3,6 +3,7 @@
 #define MALI_CSF_QUEUE_H
 
 #include "CsfVm.h"
+#include "CsfHeap.h"
 #include "CsfSync.h"
 
 namespace MaliCSF {

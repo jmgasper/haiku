@@ -180,6 +180,7 @@ struct Context {
 };
 
 #include "mali_sync_probe.inc"
+#include "mali_heap_probe.inc"
 
 int main(int argc, char** argv)
 {
@@ -188,7 +189,7 @@ int main(int argc, char** argv)
 	if (fd < 0 && errno == ENOENT) { puts("ROCK5_MALI_QUEUE_NO_DEVICE"); return 77; }
 	CHECK(fd >= 0 && argc == 2);
 	auto baseline = Buffers(fd); auto baselineVms = Vms(fd);
-	CHECK(baseline.capabilities == (kClientCpuBuffers | kClientVmMappings | kClientQueues | kClientSynchronization));
+	CHECK(baseline.capabilities == (kClientCpuBuffers | kClientVmMappings | kClientQueues | kClientSynchronization | kClientHeaps));
 	CHECK(Areas("Mali CSF firmware DMA") == 0 && Areas("Mali CSF queue DMA") == 0);
 	Context a(fd, 0x61b256ad, argv[1]), b(fd, 0x9852da31, NULL);
 	a.Store(0, true); b.Store(0, true); a.Store(1); a.Replace(); a.Store(2); b.Store(1);
@@ -270,6 +271,7 @@ int main(int argc, char** argv)
 	CHECK(Areas("Mali CSF queue DMA") == liveAreas);
 	printf("ROCK5_MALI_QUEUE_EXIT_PASS normal=1 killed=1 pending_at_ready=%u,%u leaked=0\n", pending[0], pending[1]);
 	RunNativeSynchronization(fd);
+	RunNativeHeaps(fd);
 	a.Store(700); b.Store(700); a.Finish(); b.Finish();
 	after = Buffers(fd); afterVms = Vms(fd);
 	CHECK(after.globalBuffers == baseline.globalBuffers && after.globalClients == baseline.globalClients);

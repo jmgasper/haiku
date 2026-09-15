@@ -23,6 +23,12 @@ static const uint32 kMaxGlobalVms = 64;
 static const uint32 kMaxGlobalGenerations = 512;
 static const uint32 kMaxGlobalTablePages = 4096;
 static uint32 sVms, sGenerations, sTablePages, sAccounts;
+static const uint32 kMaxGlobalHeaps = 256;
+static const uint64 kMaxGlobalHeapBytes = UINT64_C(512) << 20;
+static uint32 sHeaps, sHeapChunks, sHeapTablePages, sHeapGenerations;
+static uint64 sHeapBytes;
+static const uint64 kHeapPageAttributes = (UINT64_C(3) << 53) | 0x747;
+	// GPU cached, outer/inner shareable, read/write, NX; CPU initialization is NC.
 
 struct ClientMemory {
 	area_id area;
@@ -37,6 +43,8 @@ struct ClientAccount {
 	uint32 references;
 	uint32 buffers;
 	uint64 bytes;
+	uint32 heaps;
+	uint64 heapBytes;
 };
 
 struct ClientBuffer : ClientMemory {
@@ -54,6 +62,28 @@ struct ClientMapping {
 	uint32 flags;
 };
 
+struct ClientHeap;
+struct ClientHeapChunk {
+	ClientHeapChunk* next;
+	ClientHeap* heap;
+	ClientMemory data;
+	ClientMemory tables;
+	uint64 address;
+	uint32 newLeaves;
+	uint32 leafIndices[5]; // an unaligned 8 MiB range can occupy five 2 MiB leaves
+};
+
+struct ClientHeap {
+	uint32 references, handle, slot;
+	uint32 chunkSize, initialChunks, maxChunks, targetInFlight, chunkCount;
+	uint64 firstChunkAddress;
+	ClientAccount* account;
+	ClientMemory base; // L2 table, context L3 table, private context page
+	uint64* leaves[512];
+	ClientHeapChunk* chunks;
+	ClientHeapChunk* pending;
+};
+
 struct ClientGeneration {
 	uint32 references;
 	uint32 count;
@@ -62,6 +92,8 @@ struct ClientGeneration {
 	uint64 mappedBytes;
 	ClientMemory tables;
 	ClientMapping* mappings;
+	ClientMemory heapTable;
+	ClientHeap* heaps[kMaxVmHeaps];
 };
 
 struct ClientVm {
@@ -175,12 +207,159 @@ ReleaseBuffer(ClientBuffer* buffer)
 }
 
 static void
+DeleteHeapChunk(ClientHeapChunk* chunk)
+{
+	ClientHeap* heap = chunk->heap;
+	heap->account->heapBytes -= heap->chunkSize;
+	sHeapBytes -= heap->chunkSize;
+	sHeapChunks--;
+	sTablePages -= chunk->newLeaves;
+	sHeapTablePages -= chunk->newLeaves;
+	DeleteMemory(chunk->data);
+	DeleteMemory(chunk->tables);
+	free(chunk);
+}
+
+static void
+ReleaseHeap(ClientHeap* heap)
+{
+	if (--heap->references != 0) return;
+	// A prepared transaction owns a reference, so pending cannot reach here.
+	while (heap->chunks != NULL) {
+		ClientHeapChunk* chunk = heap->chunks;
+		heap->chunks = chunk->next;
+		DeleteHeapChunk(chunk);
+	}
+	heap->account->heaps--;
+	heap->account->heapBytes -= B_PAGE_SIZE;
+	sHeaps--;
+	sHeapBytes -= B_PAGE_SIZE;
+	sTablePages -= 2;
+	sHeapTablePages -= 2;
+	ReleaseAccount(heap->account);
+	DeleteMemory(heap->base);
+	free(heap);
+}
+
+// No exposed PTE or old chunk is changed until CommitHeapChunk(). Reservations
+// count immediately, including while the worker is waiting for the hardware AS
+// lock. Existing generations retain each heap's stable L2/leaf-table ownership.
+static status_t
+PrepareHeapChunk(ClientHeap* heap, bool initial, ClientHeapChunk** result)
+{
+	if (heap->pending != NULL) return B_BUSY;
+	if (heap->chunkCount >= heap->maxChunks
+		|| heap->chunkSize > kMaxClientHeapBytes - heap->account->heapBytes
+		|| heap->chunkSize > kMaxGlobalHeapBytes - sHeapBytes)
+		return B_NO_MEMORY;
+	uint64 offset = kHeapChunksOffset + uint64(heap->chunkCount) * heap->chunkSize;
+	unsigned first = offset >> 21, last = (offset + heap->chunkSize - 1) >> 21;
+	if (last >= 512 || last - first >= 5) return B_BAD_VALUE;
+	ClientHeapChunk* chunk = (ClientHeapChunk*)calloc(1, sizeof(ClientHeapChunk));
+	if (chunk == NULL) return B_NO_MEMORY;
+	chunk->data.area = chunk->tables.area = -1;
+	chunk->heap = heap;
+	chunk->address = kHeapBase + heap->slot * kHeapSlotBytes + offset;
+	for (unsigned i = first; i <= last; i++)
+		if (heap->leaves[i] == NULL) chunk->leafIndices[chunk->newLeaves++] = i;
+	status_t status = chunk->newLeaves > kMaxGlobalTablePages - sTablePages
+		? B_NO_MEMORY : B_OK;
+	if (status == B_OK)
+		status = AllocateMemory("Mali CSF heap chunk", heap->chunkSize, chunk->data);
+	if (status == B_OK && chunk->newLeaves != 0)
+		status = AllocateMemory("Mali CSF heap page tables", chunk->newLeaves * B_PAGE_SIZE, chunk->tables);
+	if (status != B_OK) {
+		DeleteMemory(chunk->data); DeleteMemory(chunk->tables); free(chunk);
+		return status;
+	}
+	memset(chunk->data.address, 0, chunk->data.bytes);
+	if (chunk->tables.address != NULL)
+		memset(chunk->tables.address, 0, chunk->tables.bytes);
+	// Linux panthor_heap.c (MIT option): a 64-byte header, with only the first
+	// u64 set. All 56 other bytes are MBZ. Growth starts a fresh one-chunk list.
+	if (initial && heap->chunks != NULL)
+		*(uint64*)chunk->data.address = heap->chunks->address | (heap->chunkSize >> 12);
+	heap->account->heapBytes += heap->chunkSize;
+	sHeapBytes += heap->chunkSize;
+	sHeapChunks++;
+	sTablePages += chunk->newLeaves;
+	sHeapTablePages += chunk->newLeaves;
+	heap->pending = chunk;
+	*result = chunk;
+	return B_OK;
+}
+
+static void
+CommitHeapChunk(ClientHeapChunk* chunk)
+{
+	ClientHeap* heap = chunk->heap;
+	for (unsigned i = 0; i < chunk->newLeaves; i++)
+		heap->leaves[chunk->leafIndices[i]] = (uint64*)((uint8*)chunk->tables.address + i * B_PAGE_SIZE);
+	for (size_t i = 0; i < chunk->data.bytes / B_PAGE_SIZE; i++) {
+		uint64 address = chunk->address + i * B_PAGE_SIZE;
+		heap->leaves[(address >> 21) & 511][(address >> 12) & 511]
+			= chunk->data.pages[i] | kHeapPageAttributes;
+	}
+	memory_full_barrier();
+	for (unsigned i = 0; i < chunk->newLeaves; i++)
+		((uint64*)heap->base.address)[chunk->leafIndices[i]] = chunk->tables.pages[i] | 3;
+	memory_full_barrier();
+	chunk->next = heap->chunks;
+	heap->chunks = chunk;
+	heap->chunkCount++;
+	heap->pending = NULL;
+}
+
+static status_t
+NewHeap(ClientAccount* account, const HeapCreate& request, uint32 slot, ClientHeap** result)
+{
+	uint64 bytes = B_PAGE_SIZE + uint64(request.initialChunks) * request.chunkSize;
+	if (sNextHandle == 0 || account->heaps >= kMaxVmHeaps || sHeaps >= kMaxGlobalHeaps
+		|| bytes > kMaxClientHeapBytes - account->heapBytes
+		|| bytes > kMaxGlobalHeapBytes - sHeapBytes || sTablePages > kMaxGlobalTablePages - 2)
+		return B_NO_MEMORY;
+	ClientHeap* heap = (ClientHeap*)calloc(1, sizeof(ClientHeap));
+	if (heap == NULL) return B_NO_MEMORY;
+	status_t status = AllocateMemory("Mali CSF heap context", 3 * B_PAGE_SIZE, heap->base);
+	if (status != B_OK) { free(heap); return status; }
+	memset(heap->base.address, 0, heap->base.bytes);
+	heap->leaves[0] = (uint64*)((uint8*)heap->base.address + B_PAGE_SIZE);
+	heap->leaves[0][0] = heap->base.pages[2] | kHeapPageAttributes;
+	((uint64*)heap->base.address)[0] = heap->base.pages[1] | 3;
+	heap->references = 1;
+	heap->handle = sNextHandle++;
+	heap->slot = slot;
+	heap->chunkSize = request.chunkSize;
+	heap->initialChunks = request.initialChunks;
+	heap->maxChunks = request.maxChunks;
+	heap->targetInFlight = request.targetInFlight;
+	heap->account = account;
+	account->references++; account->heaps++; account->heapBytes += B_PAGE_SIZE;
+	sHeaps++; sHeapBytes += B_PAGE_SIZE; sTablePages += 2; sHeapTablePages += 2;
+	for (unsigned i = 0; status == B_OK && i < request.initialChunks; i++) {
+		ClientHeapChunk* chunk = NULL;
+		status = PrepareHeapChunk(heap, true, &chunk);
+		if (status == B_OK) CommitHeapChunk(chunk);
+	}
+	if (status != B_OK) { ReleaseHeap(heap); return status; }
+	heap->firstChunkAddress = heap->chunks->address;
+	*result = heap;
+	return B_OK;
+}
+
+static void
 ReleaseGeneration(ClientGeneration* generation)
 {
 	if (--generation->references != 0)
 		return;
 	for (uint32 i = 0; i < generation->count; i++)
 		ReleaseBuffer(generation->mappings[i].buffer);
+	for (unsigned i = 0; i < kMaxVmHeaps; i++)
+		if (generation->heaps[i] != NULL) ReleaseHeap(generation->heaps[i]);
+	if (generation->heapTable.area >= B_OK) {
+		sHeapGenerations--; sHeapTablePages--; sTablePages--;
+		DeleteMemory(generation->heapTable);
+	}
 	sTablePages -= generation->tables.bytes / B_PAGE_SIZE;
 	sGenerations--;
 	DeleteMemory(generation->tables);
@@ -190,8 +369,13 @@ ReleaseGeneration(ClientGeneration* generation)
 
 static status_t
 CreateGeneration(const ClientMapping* mappings, uint32 count, uint64 limit,
-	uint64 number, ClientGeneration** result)
+	uint64 number, ClientGeneration** result, ClientHeap* const* heaps = NULL)
 {
+	bool hasHeaps = false;
+	if (heaps != NULL) {
+		for (unsigned i = 0; i < kMaxVmHeaps; i++)
+			hasHeaps |= heaps[i] != NULL;
+	}
 	PageTableRegion* regions = NULL;
 	if (count != 0) {
 		regions = (PageTableRegion*)malloc(count * sizeof(PageTableRegion));
@@ -205,7 +389,7 @@ CreateGeneration(const ClientMapping* mappings, uint32 count, uint64 limit,
 	}
 	unsigned pages = GpuPageTable::CountPages(regions, count, limit);
 	if (pages == 0 || sGenerations == kMaxGlobalGenerations
-		|| pages > kMaxGlobalTablePages - sTablePages) {
+		|| pages + unsigned(hasHeaps) > kMaxGlobalTablePages - sTablePages) {
 		free(regions);
 		return pages == 0 ? B_BAD_VALUE : B_NO_MEMORY;
 	}
@@ -214,6 +398,7 @@ CreateGeneration(const ClientMapping* mappings, uint32 count, uint64 limit,
 		free(regions);
 		return B_NO_MEMORY;
 	}
+	generation->heapTable.area = -1;
 	if (count != 0) {
 		generation->mappings = (ClientMapping*)malloc(count * sizeof(ClientMapping));
 		if (generation->mappings == NULL) {
@@ -230,7 +415,19 @@ CreateGeneration(const ClientMapping* mappings, uint32 count, uint64 limit,
 		status = B_BAD_VALUE;
 	}
 	free(regions);
+	if (status == B_OK && hasHeaps) {
+		status = AllocateMemory("Mali CSF heap membership table", B_PAGE_SIZE, generation->heapTable);
+		if (status == B_OK) {
+			memset(generation->heapTable.address, 0, B_PAGE_SIZE);
+			for (unsigned i = 0; i < kMaxVmHeaps; i++) {
+				if (heaps[i] != NULL)
+					((uint64*)generation->heapTable.address)[i] = heaps[i]->base.pages[0] | 3;
+			}
+			((uint64*)generation->tables.address)[kHeapRootIndex] = generation->heapTable.pages[0] | 3;
+		}
+	}
 	if (status != B_OK) {
+		DeleteMemory(generation->heapTable);
 		DeleteMemory(generation->tables);
 		free(generation->mappings);
 		free(generation);
@@ -245,6 +442,13 @@ CreateGeneration(const ClientMapping* mappings, uint32 count, uint64 limit,
 	for (uint32 i = 0; i < count; i++) {
 		generation->mappings[i].buffer->references++;
 		generation->mappedBytes += mappings[i].bytes;
+	}
+	if (hasHeaps) {
+		sHeapGenerations++; sHeapTablePages++; sTablePages++;
+		for (unsigned i = 0; i < kMaxVmHeaps; i++) {
+			generation->heaps[i] = heaps[i];
+			if (heaps[i] != NULL) heaps[i]->references++;
+		}
 	}
 	sGenerations++;
 	sTablePages += pages;
@@ -549,7 +753,7 @@ BindVm(Client* client, void* user, size_t length)
 	}
 	ClientGeneration* candidate = NULL;
 	if (status == B_OK) {
-		status = CreateGeneration(current, count, old->userLimit, old->number + 1, &candidate);
+		status = CreateGeneration(current, count, old->userLimit, old->number + 1, &candidate, old->heaps);
 	}
 	free(scratch);
 	free(operations);
@@ -636,6 +840,157 @@ MaliCSF::ClientVmRange(const ClientVmLease& lease, uint64 address, uint64 bytes)
 }
 
 status_t
+MaliCSF::PrepareClientHeapGrowth(const ClientVmLease& lease, uint64 context,
+	uint32 vtStart, uint32 vtEnd, uint32 fragEnd, HeapGrowth& growth)
+{
+	MutexLocker locker(sClientLock);
+	const ClientGeneration* generation = (const ClientGeneration*)lease.state;
+	if (generation == NULL || growth.state != NULL || growth.address != 0
+		|| growth.bytes != 0 || growth.encodedChunk != 0 || context < kHeapBase
+		|| context - kHeapBase >= kMaxVmHeaps * kHeapSlotBytes
+		|| (context - kHeapBase) % kHeapSlotBytes != 0
+		|| fragEnd > vtEnd || vtEnd >= vtStart)
+		return B_BAD_VALUE;
+	ClientHeap* heap = generation->heaps[(context - kHeapBase) / kHeapSlotBytes];
+	if (heap == NULL) return B_ENTRY_NOT_FOUND;
+	if (vtStart - fragEnd > heap->targetInFlight) return B_NO_MEMORY;
+	ClientHeapChunk* chunk = NULL;
+	status_t status = PrepareHeapChunk(heap, false, &chunk);
+	if (status != B_OK) return status;
+	heap->references++;
+	growth = {chunk, chunk->address, heap->chunkSize, chunk->address | (heap->chunkSize >> 12)};
+	return B_OK;
+}
+
+status_t
+MaliCSF::CommitClientHeapGrowth(HeapGrowth& growth)
+{
+	MutexLocker locker(sClientLock);
+	ClientHeapChunk* chunk = (ClientHeapChunk*)growth.state;
+	if (chunk == NULL || chunk->heap->pending != chunk || chunk->address != growth.address
+		|| chunk->heap->chunkSize != growth.bytes
+		|| growth.encodedChunk != (chunk->address | (chunk->heap->chunkSize >> 12)))
+		return B_BAD_VALUE;
+	ClientHeap* heap = chunk->heap;
+	CommitHeapChunk(chunk);
+	growth = {};
+	ReleaseHeap(heap);
+	return B_OK;
+}
+
+void
+MaliCSF::AbortClientHeapGrowth(HeapGrowth& growth)
+{
+	MutexLocker locker(sClientLock);
+	ClientHeapChunk* chunk = (ClientHeapChunk*)growth.state;
+	if (chunk != NULL) {
+		ClientHeap* heap = chunk->heap;
+		heap->pending = NULL;
+		DeleteHeapChunk(chunk);
+		ReleaseHeap(heap);
+	}
+	growth = {};
+}
+
+static status_t
+ControlHeaps(Client* client, uint32 op, void* user, size_t length)
+{
+	if (op == kGetHeapInfo) {
+		HeapInfo request;
+		status_t status = ReadRequest(user, length, request);
+		if (status != B_OK) return status;
+		if (request.reserved != 0 || request.reserved2 != 0
+			|| ((request.vm == 0) != (request.handle == 0))) return B_BAD_VALUE;
+		HeapInfo info = {};
+		info.version = kClientVersion; info.vm = request.vm; info.handle = request.handle;
+		if (request.vm != 0) {
+			ClientVm* vm = *FindVm(client, request.vm);
+			if (vm == NULL) return B_ENTRY_NOT_FOUND;
+			ClientHeap* heap = NULL;
+			for (unsigned i = 0; i < kMaxVmHeaps; i++) {
+				ClientHeap* entry = vm->current->heaps[i];
+				if (entry != NULL && entry->handle == request.handle) { heap = entry; break; }
+			}
+			if (heap == NULL) return B_ENTRY_NOT_FOUND;
+			info.contextAddress = kHeapBase + heap->slot * kHeapSlotBytes;
+			info.firstChunkAddress = heap->firstChunkAddress;
+			info.bytes = B_PAGE_SIZE + uint64(heap->chunkCount) * heap->chunkSize;
+			info.chunkSize = heap->chunkSize; info.initialChunks = heap->initialChunks;
+			info.maxChunks = heap->maxChunks; info.chunkCount = heap->chunkCount;
+			info.targetInFlight = heap->targetInFlight; info.slot = heap->slot;
+			info.generation = vm->current->number;
+		}
+		info.clientHeaps = client->account->heaps; info.globalHeaps = sHeaps;
+		info.clientBytes = client->account->heapBytes; info.globalBytes = sHeapBytes;
+		info.globalChunks = sHeapChunks; info.globalTablePages = sHeapTablePages;
+		info.globalHeapGenerations = sHeapGenerations;
+		return user_memcpy(user, &info, sizeof(info));
+	}
+	if (!client->writable) return B_NOT_ALLOWED;
+	if (op == kCreateHeap) {
+		HeapCreate request;
+		status_t status = ReadRequest(user, length, request);
+		if (status != B_OK) return status;
+		if (request.flags != 0 || request.handle != 0 || request.contextAddress != 0
+			|| request.firstChunkAddress != 0 || request.generation != 0 || request.reserved != 0
+			|| request.initialChunks == 0 || request.initialChunks > request.maxChunks
+			|| request.maxChunks > kMaxHeapChunks || (request.chunkSize & 4095) != 0
+			|| request.chunkSize < 128 * 1024 || request.chunkSize > 8 * 1024 * 1024)
+			return B_BAD_VALUE;
+		ClientVm* vm = *FindVm(client, request.vm);
+		if (vm == NULL) return B_ENTRY_NOT_FOUND;
+		ClientGeneration* old = vm->current;
+		if (old->number == UINT64_MAX) return B_NO_MEMORY;
+		unsigned slot = 0;
+		while (slot < kMaxVmHeaps && old->heaps[slot] != NULL) slot++;
+		if (slot == kMaxVmHeaps) return B_NO_MEMORY;
+		ClientHeap* heap = NULL;
+		status = NewHeap(client->account, request, slot, &heap);
+		if (status != B_OK) return status;
+		ClientHeap* members[kMaxVmHeaps];
+		memcpy(members, old->heaps, sizeof(members)); members[slot] = heap;
+		ClientGeneration* candidate = NULL;
+		status = CreateGeneration(old->mappings, old->count, old->userLimit,
+			old->number + 1, &candidate, members);
+		if (status == B_OK) {
+			request.handle = heap->handle; request.contextAddress = kHeapBase + slot * kHeapSlotBytes;
+			request.firstChunkAddress = heap->firstChunkAddress; request.generation = candidate->number;
+			status = user_memcpy(user, &request, sizeof(request));
+		}
+		ReleaseHeap(heap);
+		if (status != B_OK) {
+			if (candidate != NULL) ReleaseGeneration(candidate);
+			return status;
+		}
+		vm->current = candidate; ReleaseGeneration(old);
+		return B_OK;
+	}
+	if (op != kDestroyHeap) return B_DEV_INVALID_IOCTL;
+	HeapHandle request;
+	status_t status = ReadRequest(user, length, request);
+	if (status != B_OK) return status;
+	if (request.reserved != 0 || request.reserved2 != 0 || request.generation != 0) return B_BAD_VALUE;
+	ClientVm* vm = *FindVm(client, request.vm);
+	if (vm == NULL) return B_ENTRY_NOT_FOUND;
+	ClientGeneration* old = vm->current;
+	unsigned slot = 0;
+	while (slot < kMaxVmHeaps && (old->heaps[slot] == NULL || old->heaps[slot]->handle != request.handle)) slot++;
+	if (slot == kMaxVmHeaps) return B_ENTRY_NOT_FOUND;
+	if (old->number == UINT64_MAX) return B_NO_MEMORY;
+	ClientHeap* members[kMaxVmHeaps];
+	memcpy(members, old->heaps, sizeof(members)); members[slot] = NULL;
+	ClientGeneration* candidate = NULL;
+	status = CreateGeneration(old->mappings, old->count, old->userLimit,
+		old->number + 1, &candidate, members);
+	if (status != B_OK) return status;
+	request.generation = candidate->number;
+	status = user_memcpy(user, &request, sizeof(request));
+	if (status != B_OK) { ReleaseGeneration(candidate); return status; }
+	vm->current = candidate; ReleaseGeneration(old);
+	return B_OK;
+}
+
+status_t
 MaliCSF::ControlClient(void* cookie, uint32 op, void* user, size_t length)
 {
 	MutexLocker locker(sClientLock);
@@ -643,6 +998,8 @@ MaliCSF::ControlClient(void* cookie, uint32 op, void* user, size_t length)
 	status_t status = CheckAccess(client);
 	if (status != B_OK)
 		return status;
+	if (op >= kCreateHeap && op <= kGetHeapInfo)
+		return ControlHeaps(client, op, user, length);
 	if (op == kGetClientInfo) {
 		ClientInfo request;
 		status = ReadRequest(user, length, request);
@@ -652,7 +1009,7 @@ MaliCSF::ControlClient(void* cookie, uint32 op, void* user, size_t length)
 			return B_BAD_VALUE;
 		ClientInfo info = {};
 		info.version = kClientVersion;
-		info.capabilities = client->writable ? kClientCpuBuffers | kClientVmMappings | kClientQueues | kClientSynchronization : 0;
+		info.capabilities = client->writable ? kClientCpuBuffers | kClientVmMappings | kClientQueues | kClientSynchronization | kClientHeaps : 0;
 		info.maxBuffers = kMaxClientBuffers;
 		info.maxBufferBytes = kMaxBufferBytes;
 		info.maxClientBytes = kMaxClientBufferBytes;
@@ -682,7 +1039,7 @@ MaliCSF::ControlClient(void* cookie, uint32 op, void* user, size_t length)
 			info.generation = current->number;
 			info.mappedBytes = current->mappedBytes;
 			info.mappings = current->count;
-			info.tablePages = current->tables.bytes / B_PAGE_SIZE;
+			info.tablePages = (current->tables.bytes + current->heapTable.bytes) / B_PAGE_SIZE;
 		}
 		info.clientVms = client->vms;
 		info.globalVms = sVms;

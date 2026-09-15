@@ -33,6 +33,7 @@ class MaliClientTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn('MALI_CSF_CLIENT_TEST_PASS', result.stdout)
             self.assertIn('MALI_CSF_VM_TEST_PASS', result.stdout)
+            self.assertIn('MALI_CSF_HEAPS_TEST_PASS', result.stdout)
 
 
 if __name__ == '__main__':

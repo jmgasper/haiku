@@ -4,6 +4,7 @@
 
 #include "CsfRun.h"
 #include "CsfQueueMemory.h"
+#include "CsfHeapGrowth.h"
 
 namespace MaliCSF {
 
@@ -52,6 +53,9 @@ public:
 	uint32_t StreamFault() const { return fStreamFault; }
 	uint32_t StreamFatal() const { return fStreamFatal; }
 	uint64_t FaultAddress() const { return fFaultAddress; }
+	uint32_t HeapEvents() const { return fHeapEvents; }
+	uint32_t HeapGrowths() const { return fHeapGrowths; }
+	uint32_t HeapDeclines() const { return fHeapDeclines; }
 
 	template<typename IO>
 	bool Run(IO& io, FirmwareMemory& memory, FirmwareRunInfo& firmware)
@@ -167,6 +171,44 @@ private:
 		io.RingFirmwareDoorbell();
 	}
 	template<typename IO> bool Faulted(IO& io) { return fFault || io.FirmwareFaulted(); }
+	// panthor_sched.c/panthor_mmu.c (MIT option): an OOM reply publishes a new
+	// chunk, or zero so firmware can wait/reclaim/run the userspace exception
+	// handler. The only hardware worker holds the active VM lease throughout.
+	template<typename IO> bool HeapOom(IO& io)
+	{
+		fHeapEvents++;
+		if (fActive < 0 || !fMapped) return false;
+		HeapGrowth growth = {};
+		HeapGrowthResult result = fFeed.PrepareHeap(fActive, ReadInterface64(fStreamOut, 208),
+			fStreamOut[48], fStreamOut[49], fStreamOut[51], growth);
+		uint64_t chunk = 0;
+		if (result == kHeapGrowthOK) {
+			chunk = growth.encodedChunk;
+			WriteGpu64(io, 0x2450, 47); // AS1: lock the whole 48-bit address space
+			if (!FirmwareAsCommand(io, 2, 1)) {
+				fFeed.AbortHeap(growth); return false;
+			}
+			bool committed = fFeed.CommitHeap(growth);
+			io.MemoryBarrier();
+			bool flushed = committed && FlushLockedFirmwareCaches(io);
+			bool unlocked = FirmwareAsCommand(io, 3, 1);
+			// Commit transferred all allocations into the leased heap. Even if
+			// flush/unlock fails, abort is empty and cleanup retains those pages.
+			if (!committed || !flushed || !unlocked) {
+				fFeed.AbortHeap(growth); return false;
+			}
+			fHeapGrowths++;
+		} else {
+			fFeed.AbortHeap(growth);
+			if (result != kHeapGrowthNoMemory) return false;
+			fHeapDeclines++;
+		}
+		WriteInterface64(fStreamIn, 32, chunk);
+		WriteInterface64(fStreamIn, 40, chunk);
+		fStreamIn[0] = (fStreamIn[0] & ~(1u << 26)) | (fStreamOut[0] & (1u << 26));
+		Ring(io, true);
+		return true;
+	}
 	template<typename IO> void Poll(IO& io)
 	{
 		io.MemoryBarrier();
@@ -186,8 +228,10 @@ private:
 			fStreamFatal = fStreamOut[33];
 			if (fStreamFault == 0) fFaultAddress = ReadInterface64(fStreamOut, 144);
 		}
-		if ((events & (1u << 31)) != 0 || streamEvents != 0 || (irqs & ~1u) != 0
+		if ((events & (1u << 31)) != 0 || (streamEvents & ~(1u << 26)) != 0 || (irqs & ~1u) != 0
 			|| fStreamFault != 0 || fStreamFatal != 0)
+			fFault = true;
+		if (!fFault && (streamEvents & (1u << 26)) != 0 && !HeapOom(io))
 			fFault = true;
 		fGroupIn[0] = (fGroupIn[0] & ~0xb0000000u) | (ack & 0xb0000000u);
 		if (events != 0 || irqs != 0) Ring(io, false);
@@ -350,6 +394,7 @@ private:
 	QueueEngineError fError = kQueueEngineOK;
 	uint32_t fStreamFault = 0, fStreamFatal = 0;
 	uint64_t fFaultAddress = 0;
+	uint32_t fHeapEvents = 0, fHeapGrowths = 0, fHeapDeclines = 0;
 };
 
 } // namespace MaliCSF

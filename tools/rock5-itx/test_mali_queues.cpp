@@ -38,6 +38,15 @@ static void PrivateMemory()
 		((uint64_t*)user.data)[256] = 0x1003;
 		assert(!memory.SetUserRoot((uint64_t*)user.data));
 		((uint64_t*)user.data)[256] = 0;
+		((uint64_t*)user.data)[257] = UINT64_C(0x182304003);
+		assert(memory.SetUserRoot((uint64_t*)user.data));
+		assert(((uint64_t*)arena.data)[257] == UINT64_C(0x182304003));
+		assert(((uint64_t*)arena.data)[256] == upper[0]);
+		((uint64_t*)user.data)[258] = 0x1003;
+		assert(!memory.SetUserRoot((uint64_t*)user.data));
+		((uint64_t*)user.data)[258] = ((uint64_t*)user.data)[257] = 0;
+		assert(memory.SetUserRoot((uint64_t*)user.data));
+		assert(memcmp(arena.data + 2048, upper, sizeof(upper)) == 0);
 		assert(!memory.SetUserRoot(NULL) && !memory.SetUserRoot((uint64_t*)(user.data + 8)));
 	}
 	assert(!memory.Build(NULL, arena.size, 0x1000));
@@ -368,6 +377,10 @@ struct TestFeed {
 			generation == 2 ? 0 : n * 8, queue.submitted, generation == 0 ? 1u : 2u,
 			memory.Root(), &queue.memory, &memory};
 	}
+	HeapGrowthResult PrepareHeap(unsigned, uint64_t, uint32_t, uint32_t, uint32_t, HeapGrowth&)
+	{ assert(false); return kHeapGrowthInvalid; }
+	bool CommitHeap(HeapGrowth&) { assert(false); return false; }
+	void AbortHeap(HeapGrowth&) { assert(false); }
 	void Activated(const QueueWork& work)
 	{
 		assert(io.userMapped && !io.groupRunning && io.currentRoot == work.memory->RootPhysical());
@@ -395,11 +408,14 @@ struct TestFeed {
 	}
 };
 
+#include "test_mali_heap_engine.inc"
+
 #ifndef MALI_QUEUE_MODEL_ONLY
 int main()
 {
 	setvbuf(stdout, NULL, _IONBF, 0);
 	PrivateMemory();
+	CheckHeapEngine();
 	auto bytes = container({{0x800000, 4096, 13}, {0x4000000, 65536, 0xc000001b}});
 	FirmwareImage image;
 	assert(image.Init(bytes.data(), bytes.size()) == FIRMWARE_OK);

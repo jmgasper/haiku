@@ -316,7 +316,8 @@ static status_t AccessClient(void* cookie) { assert(cookie == &sFirmwareRequests
 static status_t ControlClient(void* cookie, uint32 op, void*, size_t)
 {
     assert(cookie == &sFirmwareRequests
-        && ((op >= kGetClientInfo && op <= kGetBufferInfo) || (op >= kCreateVm && op <= kBindVm)));
+        && ((op >= kGetClientInfo && op <= kGetBufferInfo) || (op >= kCreateVm && op <= kBindVm)
+            || (op >= kCreateHeap && op <= kGetHeapInfo)));
     return B_NOT_SUPPORTED;
 }
 
@@ -512,6 +513,9 @@ main()
 	assert(Control(&opened, kGetResources + 127, &copy, sizeof(copy)) == B_DEV_INVALID_IOCTL);
 	assert(Control(&opened, kGetClientInfo, NULL, 0) == B_NOT_SUPPORTED);
 	assert(Control(&opened, kBindVm, NULL, 0) == B_NOT_SUPPORTED);
+	assert(Control(&opened, kCreateHeap, NULL, 0) == B_NOT_SUPPORTED);
+	assert(Control(&opened, kDestroyHeap, NULL, 0) == B_NOT_SUPPORTED);
+	assert(Control(&opened, kGetHeapInfo, NULL, 0) == B_NOT_SUPPORTED);
 	assert(sMapAttempts == 0);
 	copy.boardCompatible[16] = 'x';
 	assert(!ResourcesMatch(copy));
