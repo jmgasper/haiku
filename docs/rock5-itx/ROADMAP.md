@@ -25,9 +25,11 @@ scope, build recipe and retained first failure. The +215 image also qualifies
 independently captured screen pixels pass across two native boots, including
 resizing and retirement. All 36 window submissions complete; build/QEMU,
 recovery and integrity checks pass. Presentation uses a CPU bitmap copy.
-Normal OpenGL Kit applications, conformance, sustained rendering, actual
-firmware OOM/growth, automatic GPU fault recovery and native display integration
-remain open.
+The +217 image adds [normal OpenGL Kit rendering](MESA-GLVIEW.md): two live
+BGLViews, desktop OpenGL 3.1, complete GL/screen pixels, resizing and retirement
+pass across two native boots, with all 104 submissions completed. General
+application compatibility, conformance, sustained rendering, actual firmware
+OOM/growth, automatic GPU fault recovery and native display integration remain open.
 
 ## 0 — Build and lab foundation
 

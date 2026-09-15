@@ -9,7 +9,8 @@ guard bytes pass. The renderer is `Mali-G610 (Panfrost)` and the reported API is
 
 This is the original offscreen qualification. The later +215 image also
 qualifies [EGL window rendering with CPU bitmap presentation](MESA-WINDOW.md).
-The desktop still uses the EFI framebuffer. Normal OpenGL Kit applications,
+The +217 image qualifies a [normal OpenGL Kit fixture](MESA-GLVIEW.md).
+The desktop still uses the EFI framebuffer. General application compatibility,
 native VOP2/HDMI control, conformance, sustained rendering, GPU timestamps,
 firmware heap OOM/growth and automatic GPU fault/reset recovery remain unqualified.
 

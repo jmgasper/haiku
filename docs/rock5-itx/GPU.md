@@ -800,11 +800,11 @@ Evidence under `/mnt/HaikuWork`:
 
 ## Next milestones
 
-1. Qualify normal OpenGL Kit/BGLView applications, multiple live views and
-   normal/killed application cleanup. [EGL window rendering](MESA-WINDOW.md)
-   now passes complete bitmap/screen pixels, resizing and context retirement
-   across two native boots. Presentation uses a CPU copy; [offscreen rendering](MESA.md)
-   is also qualified.
+1. Broaden application/API coverage and qualify killed graphics-process cleanup.
+   [Normal OpenGL Kit rendering](MESA-GLVIEW.md) now passes two live BGLViews,
+   desktop OpenGL 3.1, complete GL/screen pixels, resizing and normal retirement
+   across two native boots. [EGL windows](MESA-WINDOW.md) and [offscreen rendering](MESA.md)
+   are also qualified. Presentation still uses a CPU copy.
 2. Qualify sustained work, conformance, actual firmware heap growth and automatic
    fault/reset recovery. Extend fence integration where needed. Regulator
    ownership, runtime power management and DVFS remain separate work.

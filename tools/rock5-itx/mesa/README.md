@@ -9,13 +9,15 @@ The current source also qualifies [EGL window rendering](../../../docs/rock5-itx
 native GPU textures are copied into Haiku window bitmaps. Its probe checks
 complete bitmap/screen pixels, dimensions, resizing and retirement across two
 native boots. The accepted window and offscreen images are pinned in those
-documents; normal OpenGL Kit application qualification remains separate.
+documents. A [normal OpenGL Kit fixture](../../../docs/rock5-itx/MESA-GLVIEW.md)
+also passes on two native boots with desktop OpenGL 3.1.
 
-The next candidate adds a normal BGLView/desktop OpenGL probe with two live
+The BGLView/desktop OpenGL probe checks two live
 views, alternating draws, resizes, recursive GL locking, full GL/screen pixel
 readback and allocation cleanup. Its libglvnd patch checks the displayed bitmap
-under the same renderer mutex used by bitmap replacement. This candidate is
-not yet qualified in QEMU or on the board.
+under the same renderer mutex used by bitmap replacement. Both QEMU modes and
+the exact native image pinned in MESA-GLVIEW.md pass. This does not qualify
+general application compatibility or replace the normal system OpenGL packages.
 
 `sources.json` pins both original archives, six SDK packages, seven kernel ABI
 headers, host compiler helpers and every patch/probe/validator. The complete
@@ -66,9 +68,8 @@ a real Haiku window and checks all pixels in both its bitmap and a screen
 capture over two contexts and six view resizes. `window_validation.py` checks
 the returned data independently and writes actual bitmap/screen PNGs. CPU
 bitmap presentation does not accelerate app_server or implement native display
-modes. Direct OpenGL Kit/BGLView application qualification remains separate.
-`run-glview --software` and `run-glview --native` run the new OpenGL Kit
-candidate, checked independently by `glview_validation.py`.
+modes. `run-glview --software` and `run-glview --native` run the OpenGL Kit
+fixture, checked independently by `glview_validation.py`.
 
 `render_validation.py` independently compares complete readbacks with integer
 pixel-region oracles and can write actual RGBA/PNG artifacts.

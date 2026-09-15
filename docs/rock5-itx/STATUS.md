@@ -7,6 +7,16 @@ firmware supports it.
 Current priority is [Mali-G610 GPU acceleration](GPU.md); further Ethernet
 driver work is deferred at the owner's request.
 
+The +217 USB image qualifies [normal OpenGL Kit rendering](MESA-GLVIEW.md)
+on two native boots: two live BGLView instances, desktop OpenGL 3.1, alternating
+draws, resizing and context retirement. All 32 frames, 168,960 GL pixels,
+168,960 screen pixels and 4,096 guards pass; all 104 submissions complete and
+allocation counts return to baseline. Previous GPU regressions, both QEMU modes,
+normal reboot/shutdown, recovery and independent integrity checks also pass.
+This is a bounded application fixture using private libraries and CPU bitmap
+presentation. General compatibility, sustained rendering and GPU fault recovery
+remain open.
+
 The +215 USB image qualifies [native GPU rendering in EGL windows](MESA-WINDOW.md)
 on two boots. All 16 frames, 84,480 bitmap pixels and 84,480 independently
 captured screen pixels pass, including resizing and context retirement. All
@@ -14,7 +24,7 @@ captured screen pixels pass, including resizing and context retirement. All
 previous offscreen/kernel GPU regressions pass. Both QEMU modes, normal
 reboot/shutdown, recovery and independent storage/image integrity pass. The GPU
 renders the content and the CPU copies it into Haiku's existing display path.
-Normal OpenGL Kit application compatibility and native display control remain
+General OpenGL application compatibility and native display control remain
 open. The failed first native attempt and its rectangle correction are retained.
 
 The +210 USB image qualifies [native Mesa/Panfrost rendering](MESA.md) on two

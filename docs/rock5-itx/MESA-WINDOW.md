@@ -10,7 +10,8 @@ GPU allocation counts return to baseline after each context.
 The GPU renders the content; a CPU copy presents it through Haiku's existing
 bitmap/display path. The desktop still uses the EFI framebuffer. This does not
 qualify an accelerated app_server, native VOP2/HDMI modes or general OpenGL
-application compatibility. Normal OpenGL Kit/BGLView applications, sustained
+application compatibility. A later +217 [OpenGL Kit fixture](MESA-GLVIEW.md)
+qualifies two live BGLViews and desktop OpenGL rendering. Sustained
 load, conformance, firmware heap growth, timestamps and GPU fault/reset
 recovery remain separate work.
 
