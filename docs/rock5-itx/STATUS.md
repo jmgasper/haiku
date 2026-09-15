@@ -5,27 +5,21 @@ support. No hardware row in the roadmap is accepted merely because Linux or
 firmware supports it.
 
 Current priority is [Mali-G610 GPU acceleration](GPU.md); further Ethernet
-driver work is deferred at the owner's request. The first firmware container
-component and native resource interface pass host tests, ARM64 build,
-both QEMU modes and two native boots with the official image. Reviewed desktops,
-normal reboot/shutdown and independent recovery/eMMC integrity pass. A separate
-RAM-only Linux 6.18.52 reference now initializes
-Mali-G610 firmware and passes GPU queries and empty-VM lifecycle checks, normal
-reboot and independent recovery/storage integrity. The +182 Haiku diagnostic
-also passes read-only clock/power observations on two boots, with full recovery
-and independent integrity checks. It confirms a powered-down GPU and the
-firmware-described 702 MHz SPLL source selected without division. The +184
-power/identity/off diagnostic passes all 131 host checks, ARM64 build, both
-two-boot QEMU modes and two native boots. Native static GPU values match Linux,
-and all ten platform registers return to their initial values after each cycle.
-Reviewed desktops, normal reboot/shutdown, recovery and independent complete
-recovery-image/eMMC integrity pass. Reset and interrupt delivery are next;
-Haiku GPU firmware execution and accelerated rendering remain pending.
-The +186 reset/IRQ implementation passes 132 host checks, build and both QEMU
-modes, but its first native boot panicked during device discovery before the
-GPU tests. Recovery and independent integrity passed. Investigation reproduced
-an [ARM64 instruction-cache alias defect](ARM64-ICACHE.md); its correction and
-native reset qualification are in progress.
+driver work is deferred at the owner's request. The +187 USB image passes all
+133 host checks, ARM64 build, both two-boot QEMU modes and two native boots.
+Native firmware preparation, resource admission and power/identity cycles pass.
+Each boot also completes a GPU soft reset with one actual completion interrupt
+on CPU 0, followed by handler teardown, clear interrupt state and restoration
+of all ten checked platform registers. Both desktops, normal reboot/shutdown,
+automatic recovery and independent recovery-image/eMMC integrity pass.
+
+The same image passes 129,024 instruction-alias checks on all eight CPUs per
+native boot. It corrects a reproduced [ARM64 instruction-cache alias defect](ARM64-ICACHE.md)
+found while investigating the earlier +186 startup panic. That exact failed
+boot remains recorded; the cache defect was reproduced independently on Linux.
+A separate RAM-only Linux 6.18.52 reference initializes Mali-G610 firmware and
+passes GPU queries and empty-VM lifecycle checks. GPU memory mapping and
+firmware execution are next in Haiku; accelerated rendering remains pending.
 
 Latest qualified installed result: `+156` passes two boot, integrity,
 network and normal-reboot cycles, with independent Linux eMMC verification.
@@ -53,7 +47,7 @@ See [ARM64-PAGE-AGING.md](ARM64-PAGE-AGING.md) and
 
 | Area | Evidence and state |
 | --- | --- |
-| Repository | `jmgasper/haiku`, `rock5-itx` branch; upstream base `855b5d0e3126c86acc84d09f8e859272019bbbc2` |
+| Repository | `jmgasper/haiku`; GPU work on `rock5-mali-csf`, based on `rock5-itx`; upstream base `855b5d0e3126c86acc84d09f8e859272019bbbc2` |
 | Build tools | Haiku GCC 13.3.0 cross-compiler and binutils built successfully; buildtools `8375c2dbeaf109c520798cb234d57f0895463201` |
 | ARM64 image and QEMU | Current clean 336 MiB `@minimum-mmc` image passes first login at both EL1 and EL2 with 4 virtual CPUs and 2 GiB RAM; a basic Tracker/Deskbar desktop was inspected during phase 0 |
 | ARM64 address-space reuse | The +174 USB image reserves ASID zero for the empty user table and passes 280 live-child private-page checks over four migration rounds on all eight CPUs on each of two boots, deliberate-corruption cleanup and subsequent reuse. All 119 host checks, full two-boot EL1/EL2 QEMU gates, sixteen checked network streams, profiler/storage/desktop checks, normal reboot and automatic recovery with independent Linux readback pass. The host model reproduces the old retained translation; no old native stale read is claimed. See [ARM64-ASID.md](ARM64-ASID.md); the SSD remains +156. |
@@ -61,7 +55,7 @@ See [ARM64-PAGE-AGING.md](ARM64-PAGE-AGING.md) and
 | NanoKVM | PCIe model, application 2.4.3 and base image v1.4.0; staged downloads passed before/after native reboot, but simultaneous USB/Ethernet relay still causes outages; the latest outage did not recover through the hardware watchdog |
 | Remote controls | HDMI capture, keyboard, reset, full off/on and controller availability through target power-off tested |
 | Virtual storage | Raw USB image verified byte-for-byte from ROOBI; selected image survives reset and target power cycle |
-| Automated controls | One hundred and thirty-one host checks pass locally, including production Mali firmware decoding, FDT resource admission, read-only platform observation and bounded GPU power/identity/restoration, verified system-off/media-switch ordering and failure-preserving session recovery, production ARM64 ASID reservation/recycling and independent cross-CPU TLB invalidation/completion checks, cached private packet DMA ownership/cache-barrier and allocator-policy checks, recovery-media protection from late guest writes, production 64-bit image add/remove notification delivery, message capacity and unaligned scalar decoding, production PCIe training transitions, profile changes and bounded failures, concurrent MMC file/flush evidence and guard-corruption rejection, serialized cache-command busy completion and cache capability/state validation, DMA lower-address request/device-end bounds, SDHCI completion-publication ordering, MMC width sequencing and corrupt EXT_CSD rejection, MMC fixture rediscovery after device renumbering, independent MMC FAT file persistence and guard-corruption rejection, RK3588 eMMC resource/clock admission, ARM64 SDMA allocation/cleanup, MMC reset after an unsupported SD probe, production MMC/SDHCI register decoding, geometry, flush, bounded I/O and partial-initialization failures, shared-IRQ ownership, MMC backing-file corruption rejection, ARM64 AHCI request/DMA and controller lifecycle failure cases, two-disk persistence-oracle rejection, IPv6 prefix ranking and streams and production NDP source/link selection, the production Realtek receive routine with malformed lengths/fragments/ring wrap, actual ARM64 copy alignment/protected-page checks, checked network streams and corruption/truncation rejection, GIC MBI firmware/register admission and MSI vector allocation/reuse, onboard PCI host resource/profile rejection and root-link rejection, native-input dependency preflight, strict BFS report parsing, SSH controller-input isolation, explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
+| Automated controls | One hundred and thirty-three host checks pass locally, including mixed-CPU instruction-cache alias synchronization, bounded GPU reset/IRQ delivery and concurrent handler removal, production Mali firmware decoding, FDT resource admission, read-only platform observation and bounded GPU power/identity/restoration, verified system-off/media-switch ordering and failure-preserving session recovery, production ARM64 ASID reservation/recycling and independent cross-CPU TLB invalidation/completion checks, cached private packet DMA ownership/cache-barrier and allocator-policy checks, recovery-media protection from late guest writes, production 64-bit image add/remove notification delivery, message capacity and unaligned scalar decoding, production PCIe training transitions, profile changes and bounded failures, concurrent MMC file/flush evidence and guard-corruption rejection, serialized cache-command busy completion and cache capability/state validation, DMA lower-address request/device-end bounds, SDHCI completion-publication ordering, MMC width sequencing and corrupt EXT_CSD rejection, MMC fixture rediscovery after device renumbering, independent MMC FAT file persistence and guard-corruption rejection, RK3588 eMMC resource/clock admission, ARM64 SDMA allocation/cleanup, MMC reset after an unsupported SD probe, production MMC/SDHCI register decoding, geometry, flush, bounded I/O and partial-initialization failures, shared-IRQ ownership, MMC backing-file corruption rejection, ARM64 AHCI request/DMA and controller lifecycle failure cases, two-disk persistence-oracle rejection, IPv6 prefix ranking and streams and production NDP source/link selection, the production Realtek receive routine with malformed lengths/fragments/ring wrap, actual ARM64 copy alignment/protected-page checks, checked network streams and corruption/truncation rejection, GIC MBI firmware/register admission and MSI vector allocation/reuse, onboard PCI host resource/profile rejection and root-link rejection, native-input dependency preflight, strict BFS report parsing, SSH controller-input isolation, explicit SSD-session USB reset interlocks, bounded concurrent storage writes and corruption detection, NVMe trim interval boundaries, the firmware PCIe profile, NVMe sector guards, ARM64 cache-line decoding, RNDIS packet bounds, native interrupt decoding, EFI device-path matching, capture transport, baud transitions and staged file verification/failure paths; build, QEMU and real NanoKVM deployment/recovery have been exercised |
 | Recovery OS | ROOBI / Debian 11, kernel `5.10.110-33-rockchip`; SSH works independently of virtual media. Recovery now attaches its boot image read-only to prevent late Haiku writes from corrupting the replacement LUN. Automatic recovery after four native boots retained the complete original image hash and passed independent eMMC integrity; the earlier failed writable-media recovery is retained in [RECOVERY-MEDIA.md](RECOVERY-MEDIA.md). |
 | Boot firmware | Board-specific EDK2 v1.1 installed in SPI; native EFI diagnostic completed; current Haiku profile uses mainline DT only; original eMMC boot firmware backed up and cleared |
 | Native Haiku on ROCK | All eight CPUs start; Tracker/Deskbar, NanoKVM input, RNDIS DHCP and authenticated USB shell work. The 238 GiB SSD runs hrev60097+156 and passes two installed boot/data/network/eMMC/normal-reboot cycles. Its first boot handled an actual SATA training transition before AHCI attachment. NVMe has passed ITS1 MSI-X, filesystem TRIM and large-file persistence; a short locked 8 GiB memory check also passed. The earlier startup stall, intermittent USB control failures, sustained acceptance and remaining hardware stay open. |

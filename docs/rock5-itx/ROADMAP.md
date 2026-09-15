@@ -14,8 +14,9 @@ Dependencies are phase numbers; work within a phase can be split further when
 the underlying buses permit it. No calendar estimates imply guaranteed support.
 
 Current owner priority: phase 7 GPU support, then remaining hardware. Further
-Ethernet driver development is deferred. [GPU.md](GPU.md) records the first
-firmware component and the dependencies leading to hardware rendering.
+Ethernet driver development is deferred. [GPU.md](GPU.md) records qualified
+native power/identity/reset/IRQ cycles and the firmware component. GPU memory
+mapping and MCU firmware execution are next, followed by hardware rendering.
 
 ## 0 — Build and lab foundation
 

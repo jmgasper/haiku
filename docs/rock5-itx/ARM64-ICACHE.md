@@ -47,8 +47,14 @@ The old routine passes PIPT and fails both mixed cases, including a PIPT
 emitter. The correction passes all three cases with ASan/UBSan.
 `rock5_cache_probe` now also tests eight executable clones of a writable area,
 with alternating writer cores, unchanged mappings between rounds, per-core
-execution checks and cleanup. ARM64 build, both QEMU modes and native
-qualification of the correction are pending.
+execution checks and cleanup. All 133 host checks, the ARM64 build and both
+two-boot QEMU modes pass for +187. Each native boot passes 129,024 alias checks
+on all eight CPUs with zero mismatches, taking 4,671 and 5,159 microseconds.
+The original same-address probe also passes. GPU identity/reset/IRQ checks,
+both reviewed desktops, normal reboot/shutdown, recovery and independent
+recovery-image/eMMC integrity pass. The exact +186 panic was not deterministically
+reproduced; the earlier SSD page-aging and EL1 profiled-fault results still
+require their own qualification.
 
 ## Sources and local evidence
 
@@ -66,3 +72,9 @@ qualification of the correction are pending.
   `artifacts/arm64-icache-alias/20260914T234133Z-f8fce3` under `/mnt/HaikuWork`.
   The statically linked Linux probe SHA-256 is
   `e0c82e8cd650adb0422653069c3d6e539379027510a2b5c26db0ac4a78c92131`.
+- Qualified +187 source `bd41527b86d458cd291fb9cd23b91dbd3a23c379`:
+  `artifacts/automated-mali-reset/20260914T235509Z-59b6a7/qualification.json`.
+  Image SHA-256
+  `9d4fbc5068737d69c17412671941ca7923feff4c865e59616ef30217fc52d4da`.
+  QEMU results: `artifacts/qemu-shell/20260914T235228Z-7f6ecd` (EL2) and
+  `artifacts/qemu-shell/20260914T235228Z-a3f6eb` (EL1).

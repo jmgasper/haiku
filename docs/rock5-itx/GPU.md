@@ -208,22 +208,33 @@ and both QEMU modes pass for +186. Its first native boot panicked in device
 discovery before the shell or either GPU diagnostic ran; automatic recovery
 and independent recovery-image/eMMC integrity passed. Investigation reproduced
 an [ARM64 instruction-cache alias defect](ARM64-ICACHE.md) on the actual CPU.
-Its correction is being validated before another native reset trial. The exact
-boot failure remains retained, and native GPU reset qualification is pending.
+The exact boot failure remains retained.
+
+The +187 image, including that cache correction, passes all 133 host checks,
+the ARM64 build, both two-boot QEMU modes and two native boots. Each native
+boot passes 129,024 instruction-alias checks before the GPU diagnostics.
+Both soft resets produce exactly one GPU completion interrupt on CPU 0, with
+masked/raw status `0x100`. The handlers run 15 and 9 microseconds after the
+respective diagnostic start timestamps; these are not isolated hardware-latency
+measurements. The inherited raw reset bit is cleared before each new command,
+and final raw/masked status is zero. MCU/core-ready/transition fields and job/MMU
+masks are zero before and after. All ten checked clock/power registers return
+to their initial values. Normal reboot/shutdown, reviewed desktops, all 33
+component and ten file hashes, identical FDT captures, automatic recovery and
+independent complete recovery-image/eMMC integrity pass. This qualifies the
+bounded reset/IRQ lifecycle; no GPU firmware execution or rendering occurred.
 
 ## Next milestones
 
-1. Extend the qualified power/identity cycle with reset and interrupt delivery,
-   retaining bounded completion and teardown. Regulator ownership, runtime
-   power management and DVFS remain separate work.
-2. Implement GPU page tables, backing-memory lifetime and cache operations.
+1. Implement GPU page tables, backing-memory lifetime and cache operations.
    Load the validated regions and verify the MCU boot handshake, interface
-   version, timeout cleanup and normal reboot.
-3. Implement the selected Mesa CSF kernel operations. Run a checked GPU memory
+   version, timeout cleanup and normal reboot. Regulator ownership, runtime
+   power management and DVFS remain separate work.
+2. Implement the selected Mesa CSF kernel operations. Run a checked GPU memory
    operation, then an offscreen rendered image.
-4. Integrate Panfrost with Haiku EGL/OpenGL and window output; qualify pixels,
+3. Integrate Panfrost with Haiku EGL/OpenGL and window output; qualify pixels,
    multiple contexts, process exit, reset, sustained work and conformance.
-5. Implement native VOP2/HDMI modes/hotplug and additional display routes,
+4. Implement native VOP2/HDMI modes/hotplug and additional display routes,
    followed by other board hardware.
 
 ## Sources and evidence
@@ -258,6 +269,11 @@ privileged inventory, source hashes and host evidence are under
 images stay beneath `/mnt/HaikuWork`; firmware binaries are not committed.
 
 Qualified native component evidence:
+
+- +187 reset/interrupt and instruction aliases:
+  `artifacts/automated-mali-reset/20260914T235509Z-59b6a7/qualification.json`.
+  Source `bd41527b86d458cd291fb9cd23b91dbd3a23c379`, image SHA-256
+  `9d4fbc5068737d69c17412671941ca7923feff4c865e59616ef30217fc52d4da`.
 
 - +179 firmware preparation:
   `artifacts/automated-mali-firmware/20260914T211726Z-fe9d49/qualification.json`.

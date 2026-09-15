@@ -7,20 +7,17 @@ driver support are tracked separately in [STATUS.md](STATUS.md) and the
 The [GitHub work items](TRACKING.md) split the roadmap into issues and milestones.
 
 The current priority is [Mali-G610 GPU support](GPU.md), followed by remaining
-hardware. The owner has deferred further Ethernet driver work. The first GPU
-component validates and prepares firmware memory regions. A RAM-only Linux
-reference now initializes the actual GPU and firmware. Haiku's resource
-interface and firmware preparation pass two native boots, reviewed desktops,
-normal shutdown/recovery and independent storage integrity. Read-only native
-clock/power observations establish the powered-down GPU's inherited clock
-setting. The +184 diagnostic also passes two native power/identity/off cycles:
-static GPU features match Linux, all checked clock/power registers are restored,
-and recovery/storage integrity passes. Reset and interrupt delivery are next;
-Haiku GPU firmware execution and accelerated rendering remain pending.
-The first reset image passed build/QEMU but hit a native startup fault before
-the GPU tests. A reproduced [ARM64 instruction-cache alias defect](ARM64-ICACHE.md)
-is being corrected before another reset trial; automatic recovery and storage
-integrity checks passed.
+hardware. The owner has deferred further Ethernet driver work. The +187 image
+passes firmware preparation, resource discovery, power/identity cycles and GPU
+soft reset with actual completion interrupts on two native boots. Interrupt
+teardown and all checked clock/power registers are restored after each cycle.
+Both desktops, normal reboot/shutdown, automatic recovery and independent
+recovery-image/eMMC integrity pass. The image also qualifies an
+[ARM64 instruction-cache alias correction](ARM64-ICACHE.md), following a
+retained startup failure in the earlier reset image. All 133 host checks,
+the ARM64 build and both QEMU modes pass. A separate RAM-only Linux reference
+initializes the actual GPU firmware. GPU memory mapping and firmware execution
+are next in Haiku; accelerated rendering remains pending.
 
 The Samsung 950 Pro now has a full-capacity Haiku development installation:
 a 512 MiB EFI partition and a 238 GiB BFS volume. Native Installer copying,
@@ -104,8 +101,9 @@ The ordinary driver profile defaults to read-only access. The reference,
 retained failures and tested scope are in [MMC.md](MMC.md).
 
 This fork uses AI-assisted development at its owner's request. Upstream Haiku
-does not accept AI-assisted contributions. The `rock5-itx` branch contains this
-work; `master` is retained as an upstream baseline. There is no upstream PR.
+does not accept AI-assisted contributions. Board work uses `rock5-itx` and its topic
+branches; current GPU work is on `rock5-mali-csf`. `master` is retained as an
+upstream baseline. There is no upstream PR.
 
 ## Workspace
 
