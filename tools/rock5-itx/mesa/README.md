@@ -19,12 +19,14 @@ under the same renderer mutex used by bitmap replacement. Both QEMU modes and
 the exact native image pinned in MESA-GLVIEW.md pass. This does not qualify
 general application compatibility or replace the normal system OpenGL packages.
 
-The new GLES pipeline probe builds successfully; execution is pending. It
+The [GLES pipeline probe](../../../docs/rock5-itx/MESA-PIPELINE.md) passes both
+QEMU modes and two native boots on the +219 image. It
 checks six operations in each of two contexts at 97 by 67 pixels: padded
 texture upload and sampling, depth rejection, stencil masking, additive
 blending, scissor clipping and reflected sampling of a GPU-rendered texture.
 Complete RGBA readbacks, guard bytes and native allocation baselines are checked
-independently. This bounded fixture does not establish GLES conformance.
+independently. All 155,976 native pixels and sixty submissions pass. This
+bounded fixture does not establish GLES conformance.
 
 `sources.json` pins both original archives, six SDK packages, seven kernel ABI
 headers, host compiler helpers and every patch/probe/validator. The complete

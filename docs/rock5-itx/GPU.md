@@ -9,8 +9,13 @@ the Linux reference. A separate Linux Mesa/Panfrost reference now renders four
 checked images on the board. The +210 image now runs the same workload through
 [native Haiku Mesa/Panfrost](MESA.md): all 32,768 pixels across two boots match
 Linux, all 32 Mesa submissions complete, and allocations return to baseline.
-Pbuffer/EGL lifetime checks, previous GPU regressions and recovery pass. Window
-output, conformance, sustained rendering and native display control remain open.
+Pbuffer/EGL lifetime checks, previous GPU regressions and recovery pass.
+The +215 image adds [EGL windows](MESA-WINDOW.md), +217 adds normal
+[OpenGL Kit views](MESA-GLVIEW.md), and +219 qualifies six
+[GLES pipeline operations](MESA-PIPELINE.md), including textures, depth,
+stencil, blending and render-to-texture. All complete pixels, cleanup and
+recovery checks pass. Conformance, sustained rendering and native display
+control remain open.
 The +198 and +200 images qualify persistent client buffers and GPU VM mappings.
 The +202 image activates those VMs for persistent application queues: two
 native boots accept 1,264 submissions and check 1,136 completions, including eight
@@ -801,6 +806,9 @@ Evidence under `/mnt/HaikuWork`:
 ## Next milestones
 
 1. Broaden application/API coverage and qualify killed graphics-process cleanup.
+   The [GLES pipeline fixture](MESA-PIPELINE.md) now passes texture upload and
+   sampling, depth, stencil, additive blending, scissor and render-to-texture
+   on two native boots: 155,976 pixels and sixty submissions pass.
    [Normal OpenGL Kit rendering](MESA-GLVIEW.md) now passes two live BGLViews,
    desktop OpenGL 3.1, complete GL/screen pixels, resizing and normal retirement
    across two native boots. [EGL windows](MESA-WINDOW.md) and [offscreen rendering](MESA.md)

@@ -55,7 +55,7 @@
     ]
   },
   "sdk_haiku_revision": "7908c0f07a8d3bbed99f6140c642cf30920b3232",
-  "qualified_runtime_revision": "hrev60097+217",
+  "qualified_runtime_revision": "hrev60097+219",
   "sdk_packages": [
     {
       "name": "haiku.hpkg",
@@ -146,5 +146,5 @@
     "precomp-compiler": "system",
     "spirv-tools": "disabled"
   },
-  "pipeline_probe_scope": "Two GLES contexts, six 97x67 complete RGBA cases each: padded texture upload/nearest sampling, depth, stencil, additive blending, scissor, reflected render-to-texture. Software and native execution pending."
+  "pipeline_probe_scope": "Two GLES contexts, six 97x67 complete RGBA cases each: padded texture upload/nearest sampling, depth, stencil, additive blending, scissor, reflected render-to-texture. Both QEMU modes and two native boots qualified; no conformance or sustained-load claim."
 }

@@ -25,6 +25,14 @@ scope, build recipe and retained first failure. The +215 image also qualifies
 independently captured screen pixels pass across two native boots, including
 resizing and retirement. All 36 window submissions complete; build/QEMU,
 recovery and integrity checks pass. Presentation uses a CPU bitmap copy.
+The +219 USB image qualifies [six GLES pipeline operations](MESA-PIPELINE.md)
+on two native boots: texture upload/sampling, depth, stencil, blending, scissor
+and render-to-texture. All 155,976 pixels, 3,072 guards and sixty GPU submissions
+pass, with allocations restored after each context. Both QEMU modes, earlier
+GPU/window fixtures, normal reboot/shutdown, recovery and independent storage
+integrity pass. Conformance, sustained work, graphics-process termination and
+GPU fault recovery remain open.
+
 The +217 image adds [normal OpenGL Kit rendering](MESA-GLVIEW.md): two live
 BGLViews, desktop OpenGL 3.1, complete GL/screen pixels, resizing and retirement
 pass across two native boots, with all 104 submissions completed. General
