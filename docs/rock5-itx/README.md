@@ -30,8 +30,16 @@ Its first client/CPU-buffer layer now passes on the +198 image: per-open handles
 shared CPU mappings, fork, mappings surviving handle/descriptor closure and normal
 and killed process cleanup. Both native boots retain the compute regression and
 pass normal recovery and independent storage checks. All 141 host checks, the
-ARM64 build and both QEMU modes pass. GPU VM mappings and application submission
-remain next; [GPU.md](GPU.md#haiku-userspace-interface-work) records the tested scope.
+ARM64 build and both QEMU modes pass.
+
+The +200 image extends this with persistent GPU VM objects and atomic mapping
+updates. Both native boots pass partial unmaps, failed-update rollback, buffers
+retained after handle removal and normal/killed process cleanup, with independent
+kernel-area counts. All 142 host checks, the ARM64 build, both QEMU modes, the
+previous compute regressions and recovery/integrity checks pass. These operations
+prepare GPU page tables; activation for application work is still next. Persistent
+firmware, groups, queues, heaps and synchronization are needed before Mesa can
+render through Haiku. [GPU.md](GPU.md#persistent-gpu-address-spaces) records the scope.
 
 The Samsung 950 Pro now has a full-capacity Haiku development installation:
 a 512 MiB EFI partition and a 238 GiB BFS volume. Native Installer copying,

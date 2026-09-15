@@ -217,7 +217,7 @@ to the VM system and are outside those handle counters. There are at most 128
 buffer handles per client and 64 open clients.
 
 The development interface requires root, `O_RDWR` and the existing explicit
-shader firmware profile. Its only advertised capability is CPU buffers. All 141
+shader firmware profile. At +198 its only advertised capability is CPU buffers. All 141
 host checks pass, including production allocation/handle/copyout cleanup, shared
 mapping lifetime, limits and concurrent clients. The ARM64 build and both two-boot
 QEMU modes pass. QEMU tests ordinary cached RAM clones/fork and correctly rejects
@@ -257,7 +257,7 @@ Evidence beneath `/mnt/HaikuWork`:
 
 #### Persistent GPU address spaces
 
-The next development interface adds per-client VM creation, information,
+The +200 development interface adds per-client VM creation, information,
 destruction and atomic batches of up to 64 map/unmap operations (`CsfVm.h`).
 Maps cover page-aligned buffer subranges in the lower half of the 48-bit GPU
 address space. Replacements and partial unmaps split ranges; adjacent compatible
@@ -284,8 +284,47 @@ page-level reference model, hold generations across updates and client closure,
 inject allocation/copy failures and exercise resident-buffer, mapping, VM,
 generation and table-page limits. The native probe checks partial unmapping,
 retention after handle removal, failed-update rollback and cleanup after normal
-and forced process exits, with independent kernel-area counts. Native
-qualification of this new layer is pending.
+and forced process exits, with independent kernel-area counts. All 142 host
+checks, the ARM64 build and both two-boot QEMU modes pass. QEMU verifies packaging
+and absent-device rejection; it does not emulate Mali VM allocation or execution.
+
+Two native +200 boots qualify the software VM lifecycle. A mapping crossing a
+512 GiB boundary creates seven table pages. Replacing its middle produces three
+ranges; partial unmaps release only the buffers no longer referenced. An invalid
+second operation rolls back the entire batch. A readable but non-writable request
+area forces the final copyout to fail after table construction; generation and
+allocation counts stay unchanged. Both buffers remain resident after handle
+removal until their mappings are removed. A CPU alias remains intact after the
+last driver reference is released.
+
+On each boot four child teams create 12 VMs and 48 buffers, then remove all
+buffer handles while leaving the GPU mappings alive. The 12 table areas contain
+120 pages. Two children exit normally and two receive SIGKILL. Driver counters
+and independently enumerated buffer/table areas return to their baseline.
+This native test submits no GPU work; retention of an actual in-flight GPU root
+still needs qualification when the submission runtime is implemented.
+
+Both boots retain the previous CPU-buffer, CS memory-store and compute-shader
+regressions, 129,024 instruction-alias checks, 35 component and ten file hashes,
+unchanged FDTs and inspected desktops. Normal reboot, verified shutdown before
+media replacement, automatic recovery, watchdog disarming and independent
+recovery-image/eMMC integrity pass. The recovery's vendor display, DMA-controller
+and Bluetooth warnings also occur in the prior +198 recovery; their root causes
+and native support remain open.
+
+Source `0d021d4f18c21e6947a526420fdccf5d21d173d4`, image `hrev60097+200`, SHA-256
+`44888d2bf8fc02805eb8e1298eb4e52ceef5e922e254504b1e161b42d5b64dcb`.
+Evidence beneath `/mnt/HaikuWork`:
+
+- Build: `artifacts/build-20260915T060548Z.log`; host checks and source snapshots:
+  `artifacts/mali-client-vm/20260915T054424Z-369fef`.
+- Image: `artifacts/mali-vm-image/20260915T060632Z-dbb3ea/manifest.json`.
+- QEMU: `artifacts/qemu-shell/20260915T060713Z-eeac8e` (EL2) and
+  `20260915T060713Z-e5fb57` (EL1), each with `mali-vm-result.json`.
+- Native: `artifacts/automated-mali-vm/20260915T061005Z-0d4afd/qualification.json`;
+  transcripts and UART: `artifacts/interactive/20260915T061016Z-a25491`.
+- Independent eMMC files: `artifacts/emmc-file-readback/20260915T061759Z-985402`;
+  reference regions: `artifacts/emmc-read-reference/20260915T061855Z-5b3b95`.
 
 Mesa still needs persistent groups, queues, tiler heaps and synchronization
 objects spanning many calls, with leases retained until queued work finishes.
@@ -676,8 +715,9 @@ remain open.
 
 ## Next milestones
 
-1. Qualify the persistent GPU VM layer, then implement groups, heaps and
-   synchronization with retained buffer references and run the checked
+1. Build on the qualified software GPU VM layer: implement persistent firmware,
+   groups, heaps and synchronization, retain roots through hardware completion,
+   and run the checked
    Mesa rendering workload through Haiku. The
    Linux Mesa reference is qualified. Regulator ownership, runtime power
    management and DVFS remain separate work.

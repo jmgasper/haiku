@@ -24,8 +24,12 @@ RGBA8 images over two contexts, with balanced GPU object lifetimes and normal
 recovery. Implement Haiku's persistent userspace objects and synchronization
 to run that same workload. The first client/CPU-buffer layer now passes on two
 +198 native boots, including aliases, fork, mappings surviving handle/descriptor
-close and normal/killed process cleanup. GPU VM mappings, buffer retention during
-queued work, groups, heaps and synchronization remain next.
+close and normal/killed process cleanup. The +200 software GPU VM layer now passes
+two native boots: transactional mapping updates, partial unmaps, buffer retention
+after handle removal and cleanup of 12 child VMs/48 buffers per boot. All 142 host
+checks, both QEMU modes, compute regressions and recovery/integrity pass. Activate
+these VMs through persistent firmware, groups, queues, heaps and synchronization,
+then qualify memory retention during queued work and Mesa rendering.
 
 ## 0 — Build and lab foundation
 
