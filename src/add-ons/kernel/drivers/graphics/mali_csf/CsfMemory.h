@@ -10,6 +10,14 @@
 
 namespace MaliCSF {
 
+// Driver-owned, non-executable MCU workspace, separate from file sections.
+struct FirmwareWorkspace {
+	uint32_t address;
+	uint32_t bytes;
+	bool cached;
+};
+static const unsigned kMaxFirmwareWorkspaces = 3;
+
 // RK3588's MCU allocates in the low 4 GiB of a 48-bit input address space.
 // Its MMU still starts at level 0. Physical outputs are limited to 40 bits.
 // This builder owns no allocation and performs no cache or hardware operation.
@@ -17,16 +25,36 @@ namespace MaliCSF {
 class FirmwareMemory {
 public:
 	FirmwareMemory() { Clear(); }
-	bool Plan(const FirmwareImage& image)
+	bool Plan(const FirmwareImage& image, const FirmwareWorkspace* workspace = NULL,
+		unsigned workspaceCount = 0)
 	{
 		Clear();
 		if (image.Info().sectionCount == 0
-			|| image.Info().sectionCount > kMaxFirmwareSections)
+			|| image.Info().sectionCount > kMaxFirmwareSections
+			|| workspaceCount > kMaxFirmwareWorkspaces
+			|| (workspaceCount != 0 && workspace == NULL))
 			return false;
-		for (uint32_t i = 0; i < image.Info().sectionCount; i++) {
-			FirmwareSection section;
-			if (image.GetSection(i, section) != FIRMWARE_OK
-				|| section.memorySize == 0 || (section.memorySize & 4095) != 0
+		fRegionCount = image.Info().sectionCount + workspaceCount;
+		for (uint32_t i = 0; i < fRegionCount; i++) {
+			MappedRegion section = {};
+			if (i < image.Info().sectionCount) {
+				FirmwareSection file;
+				if (image.GetSection(i, file) != FIRMWARE_OK) {
+					Clear();
+					return false;
+				}
+				section = {file.virtualAddress, file.memorySize, file.flags};
+			} else {
+				const FirmwareWorkspace& region = workspace[i - image.Info().sectionCount];
+				if (region.address < 0x04000000
+					|| uint64_t(region.address) + region.bytes > 0x08000000) {
+					Clear();
+					return false;
+				}
+				section = {region.address, region.bytes,
+					SECTION_READ | SECTION_WRITE | (region.cached ? 8u : 24u)};
+			}
+			if (section.memorySize == 0 || (section.memorySize & 4095) != 0
 				|| (section.virtualAddress & 4095) != 0
 				|| uint64_t(section.virtualAddress) + section.memorySize > (UINT64_C(1) << 32)
 				|| (section.flags & SECTION_READ) == 0
@@ -35,6 +63,15 @@ public:
 					== (SECTION_WRITE | SECTION_EXECUTE)) {
 				Clear();
 				return false;
+			}
+			for (uint32_t j = 0; j < i; j++) {
+				if (uint64_t(section.virtualAddress) < uint64_t(fSections[j].virtualAddress)
+						+ fSections[j].memorySize
+					&& uint64_t(fSections[j].virtualAddress) < uint64_t(section.virtualAddress)
+						+ section.memorySize) {
+					Clear();
+					return false;
+				}
 			}
 			fSections[i] = section;
 			fOffsets[i] = fPayloadBytes;
@@ -77,11 +114,16 @@ public:
 	uint32_t SharedAddress() const { return fImage == NULL ? 0 : fSections[fShared].virtualAddress; }
 	size_t SharedBytes() const { return fImage == NULL ? 0 : fSections[fShared].memorySize; }
 	void* SharedData() const { return fData == NULL ? NULL : fData + fTablePages * 4096 + fOffsets[fShared]; }
+	void* WorkspaceData(unsigned index) const
+	{
+		return fData == NULL || index >= fRegionCount - fImage->Info().sectionCount
+			? NULL : fData + fTablePages * 4096 + fOffsets[fImage->Info().sectionCount + index];
+	}
+	void InvalidateMapping() { fData = NULL; fPhysical = 0; }
 
 	bool Build(void* data, size_t bytes, uint64_t physical)
 	{
-		fData = NULL;
-		fPhysical = 0;
+		InvalidateMapping();
 		const size_t required = RequiredBytes();
 		if (required == 0 || data == NULL || (uintptr_t(data) & 4095) != 0
 			|| bytes < required || (physical & 4095) != 0
@@ -108,8 +150,8 @@ public:
 				uint64_t* leaves = (uint64_t*)(arena + next++ * 4096);
 				for (unsigned page = 0; page < 512; page++) {
 					uint64_t address = (uint64_t(chunk) << 21) + page * 4096;
-					for (uint32_t i = 0; i < fImage->Info().sectionCount; i++) {
-						const FirmwareSection& section = fSections[i];
+					for (uint32_t i = 0; i < fRegionCount; i++) {
+						const MappedRegion& section = fSections[i];
 						if (address < section.virtualAddress
 							|| address - section.virtualAddress >= section.memorySize)
 							continue;
@@ -146,6 +188,7 @@ public:
 	static uint64_t TranslationConfig() { return UINT64_C(0x420001c6); }
 
 private:
+	struct MappedRegion { uint32_t virtualAddress, memorySize, flags; };
 	void Clear()
 	{
 		fImage = NULL;
@@ -153,6 +196,7 @@ private:
 		fPhysical = 0;
 		fPayloadBytes = 0;
 		fTablePages = 0;
+		fRegionCount = 0;
 		fShared = kMaxFirmwareSections;
 		memset(fChunks, 0, sizeof(fChunks));
 	}
@@ -163,9 +207,10 @@ private:
 	size_t fPayloadBytes;
 	uint32_t fTablePages;
 	uint32_t fShared;
+	uint32_t fRegionCount;
 	uint8_t fChunks[256];
-	FirmwareSection fSections[kMaxFirmwareSections];
-	size_t fOffsets[kMaxFirmwareSections];
+	MappedRegion fSections[kMaxFirmwareSections + kMaxFirmwareWorkspaces];
+	size_t fOffsets[kMaxFirmwareSections + kMaxFirmwareWorkspaces];
 };
 
 } // namespace MaliCSF

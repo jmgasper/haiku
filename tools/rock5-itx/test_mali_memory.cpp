@@ -53,7 +53,7 @@ struct Guarded {
 // builder for translations. Also catch orphan/duplicate tables and mappings.
 static void decode(const uint8_t* arena, uint64_t physical, size_t tableBytes,
 	uint64_t table, unsigned level, uint64_t prefix, std::set<uint64_t>& visited,
-	std::map<uint64_t, uint64_t>& mappings)
+	std::map<uint64_t, uint64_t>& mappings, uint64_t limit = UINT64_C(0x100000000))
 {
 	assert((table & 4095) == 0 && table >= physical && table - physical < tableBytes);
 	assert(visited.insert(table).second);
@@ -64,12 +64,12 @@ static void decode(const uint8_t* arena, uint64_t physical, size_t tableBytes,
 		assert((value & 3) == 3);
 		uint64_t address = prefix | (uint64_t(i) << (39 - level * 9));
 		if (level == 3) {
-			assert(address < UINT64_C(0x100000000));
+			assert(address < limit);
 			assert(mappings.emplace(address, value).second);
 		} else {
 			assert((value & ~UINT64_C(0xfffffff003)) == 0);
 			decode(arena, physical, tableBytes, value & UINT64_C(0xfffffff000),
-				level + 1, address, visited, mappings);
+				level + 1, address, visited, mappings, limit);
 		}
 	}
 }

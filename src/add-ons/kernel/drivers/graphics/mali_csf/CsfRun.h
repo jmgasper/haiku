@@ -45,7 +45,9 @@ enum FirmwareRunResult {
 	kFirmwareUnmapFailed,
 	kFirmwareL2OffFailed,
 	kFirmwareFinalStateFailed,
-	kFirmwarePowerFailed
+	kFirmwarePowerFailed,
+	kFirmwareOperationFailed,
+	kFirmwareOperationCleanupFailed
 };
 
 struct FirmwareCapture {
@@ -134,22 +136,27 @@ WriteGpu64(IO& io, uint32_t offset, uint64_t value)
 
 template<typename IO>
 bool
-FirmwareAsCommand(IO& io, uint32_t command)
+FirmwareAsCommand(IO& io, uint32_t command, unsigned as = 0)
 {
-	if (!WaitFirmware(io, 100000, [&]() { return (io.ReadGpu(0x2428) & 1) == 0; }))
+	if (as > 1)
 		return false;
-	io.WriteGpu(0x2418, command);
-	return WaitFirmware(io, 100000, [&]() { return (io.ReadGpu(0x2428) & 1) == 0; });
+	uint32_t offset = as * 0x40;
+	if (!WaitFirmware(io, 100000, [&]() { return (io.ReadGpu(0x2428 + offset) & 1) == 0; }))
+		return false;
+	io.WriteGpu(0x2418 + offset, command);
+	return WaitFirmware(io, 100000, [&]() { return (io.ReadGpu(0x2428 + offset) & 1) == 0; });
 }
 
 template<typename IO>
 bool
-FlushFirmware(IO& io)
+FlushFirmware(IO& io, unsigned as = 0)
 {
+	if (as > 1)
+		return false;
 	// Lock the full 48-bit input range. CSF uses a GPU cache command and an
 	// explicit AS unlock, rather than the legacy AS FLUSH_MEM command.
-	WriteGpu64(io, 0x2410, 47);
-	if (!FirmwareAsCommand(io, 2))
+	WriteGpu64(io, 0x2410 + as * 0x40, 47);
+	if (!FirmwareAsCommand(io, 2, as))
 		return false;
 	io.WriteGpu(kGpuClear, 1u << 17);
 	if ((io.ReadGpu(kGpuRaw) & (1u << 17)) != 0)
@@ -160,7 +167,7 @@ FlushFirmware(IO& io)
 	});
 	io.WriteGpu(kGpuClear, 1u << 17);
 	// Attempt unlock even when completion was lost; retain both failures.
-	bool unlocked = FirmwareAsCommand(io, 3);
+	bool unlocked = FirmwareAsCommand(io, 3, as);
 	return completed && unlocked;
 }
 
@@ -173,9 +180,16 @@ FirmwareEventMatches(const FirmwareCapture& event, int64_t start, int64_t end)
 		&& event.whenMicros >= start && event.whenMicros <= end;
 }
 
-template<typename IO>
+struct NoFirmwareOperation {
+	template<typename IO> bool Run(IO&, FirmwareMemory&, FirmwareRunInfo&) { return true; }
+	template<typename IO> bool BeforeStop(IO&) { return true; }
+	template<typename IO> bool Cleanup(IO&, bool) { return true; }
+	uint32_t CompletedAddressSpaces() const { return kMmuAs0Completed; }
+};
+
+template<typename IO, typename Operation>
 void
-RunFirmwarePowered(IO& io, FirmwareMemory& memory, FirmwareRunInfo& info)
+RunFirmwarePowered(IO& io, FirmwareMemory& memory, FirmwareRunInfo& info, Operation& operation)
 {
 	info.cleanupResult = kFirmwareRunOK;
 	info.reset.version = kResetVersion;
@@ -280,18 +294,23 @@ RunFirmwarePowered(IO& io, FirmwareMemory& memory, FirmwareRunInfo& info)
 			break;
 		}
 		info.flags |= kFirmwarePingObserved;
-		info.result = kFirmwareRunOK;
+		info.result = operation.Run(io, memory, info)
+			? kFirmwareRunOK : kFirmwareOperationFailed;
 	} while (false);
 
 	// Keep memory, MMIO and handler cookies alive through stop, flush, AS
 	// removal and IRQ teardown. The outer power cycle runs only afterwards.
 	bool stopped = true;
 	if (mcuRequested) {
+		if (!operation.BeforeStop(io))
+			info.cleanupResult = kFirmwareOperationCleanupFailed;
 		io.WriteGpu(0x700, 0);
 		stopped = WaitFirmware(io, 100000, [&]() { return io.ReadGpu(0x704) == 0; });
 		if (!stopped)
 			info.cleanupResult = kFirmwareStopFailed;
 	}
+	if (!operation.Cleanup(io, stopped))
+		info.cleanupResult = kFirmwareOperationCleanupFailed;
 	if (asExposed && stopped) {
 		if (!FlushFirmware(io))
 			info.cleanupResult = kFirmwareFlushFailed;
@@ -329,22 +348,22 @@ RunFirmwarePowered(IO& io, FirmwareMemory& memory, FirmwareRunInfo& info)
 		info.result = kFirmwareFault;
 	if (info.cleanupResult == kFirmwareRunOK
 		&& (!ResetIdleMatches(info.after) || info.jobRawAfter != 0
-			|| (info.mmuRawAfter & ~kMmuAs0Completed) != 0
+			|| (info.mmuRawAfter & ~operation.CompletedAddressSpaces()) != 0
 			|| (info.asStatusAfter & 1) != 0))
 		info.cleanupResult = kFirmwareFinalStateFailed;
 	if (info.cleanupResult == kFirmwareRunOK)
 		info.flags |= kFirmwareCleaned;
 }
 
-template<typename IO>
+template<typename IO, typename Operation>
 void
-CycleFirmware(IO& io, FirmwareMemory& memory, FirmwareRunInfo& info)
+CycleFirmware(IO& io, FirmwareMemory& memory, FirmwareRunInfo& info, Operation& operation)
 {
 	info.result = kFirmwareRunNotAttempted;
 	info.cleanupResult = kFirmwareRunNotAttempted;
 	info.startedMicros = io.Now();
 	CycleIdentity(io, info.power, [&]() {
-		RunFirmwarePowered(io, memory, info);
+		RunFirmwarePowered(io, memory, info, operation);
 		return info.result == kFirmwareRunOK && info.cleanupResult == kFirmwareRunOK;
 	});
 	if (info.result == kFirmwareRunNotAttempted)
@@ -355,6 +374,14 @@ CycleFirmware(IO& io, FirmwareMemory& memory, FirmwareRunInfo& info)
 		|| (info.flags & kFirmwarePowerRestored) == 0)
 		info.flags |= kFirmwareNeedsRecovery;
 	info.finishedMicros = io.Now();
+}
+
+template<typename IO>
+void
+CycleFirmware(IO& io, FirmwareMemory& memory, FirmwareRunInfo& info)
+{
+	NoFirmwareOperation operation;
+	CycleFirmware(io, memory, info, operation);
 }
 
 } // namespace MaliCSF

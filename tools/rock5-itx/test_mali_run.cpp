@@ -174,6 +174,7 @@ struct FirmwareModel : ResetModel {
 	}
 };
 
+#ifndef MALI_RUN_MODEL_ONLY
 int main()
 {
 	setvbuf(stdout, NULL, _IONBF, 0);
@@ -221,3 +222,4 @@ int main()
 		&& (info.flags & kFirmwarePowerRestored) == 0);
 	puts("MALI_CSF_RUN_TEST_PASS");
 }
+#endif

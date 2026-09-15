@@ -15,6 +15,7 @@
 #endif
 
 #include "CsfRun.h"
+#include "CsfCommands.h"
 #include "CsfDevice.h"
 
 using namespace MaliCSF;
@@ -56,8 +57,9 @@ MakeFirmwareRamNoncacheable(area_id area, void* address, phys_addr_t physical, s
 	return B_OK;
 }
 
+template<typename Memory>
 static area_id
-AllocateFirmwareMemory(FirmwareMemory& memory)
+AllocateFirmwareMemory(Memory& memory)
 {
 	void* address = NULL;
 	virtual_address_restrictions virtualRestrictions = {};
@@ -92,6 +94,7 @@ AllocateFirmwareMemory(FirmwareMemory& memory)
 
 class FirmwareHardware : public ResetHardware {
 public:
+	explicit FirmwareHardware(bool commands = false) : fCommands(commands) {}
 	~FirmwareHardware() { StopFirmwareHandlers(); }
 	status_t Init(const ResourceInfo& resources)
 	{
@@ -124,6 +127,16 @@ public:
 		ResetHardware::UnmapGpu();
 	}
 	void MemoryBarrier() { memory_full_barrier(); }
+	uint32 TimerRate()
+	{
+#if defined(__aarch64__)
+		uint64 rate;
+		asm volatile("mrs %0, cntfrq_el0" : "=r"(rate));
+		return rate <= UINT32_MAX ? uint32(rate) : 0;
+#else
+		return 0;
+#endif
+	}
 	void RingFirmwareDoorbell() { WritePlatformRegister(fDoorbell, 0, 1); }
 	bool InstallFirmwareHandlers()
 	{
@@ -139,7 +152,7 @@ public:
 	{
 		InterruptsSpinLocker locker(fLock);
 		// An unhandled old job/MMU event is a failed admission, never a boot.
-		if (ReadGpu(0x1000) != 0 || (ReadGpu(0x2000) & ~kMmuAs0Completed) != 0
+		if (ReadGpu(0x1000) != 0 || (ReadGpu(0x2000) & ~(Mask(1) << 16)) != 0
 			|| (ReadGpu(kGpuRaw) & 3) != 0)
 			return false;
 		for (unsigned i = 0; i < 3; i++) {
@@ -153,13 +166,29 @@ public:
 	}
 	bool ArmFirmwareJob()
 	{
+		return ArmJob(kGlobalInterrupt, false);
+	}
+	bool ArmCommandJob()
+	{
+		return fCommands && ArmJob(kGlobalInterrupt | 1, true);
+	}
+	uint32 CommandJobCount()
+	{
+		InterruptsSpinLocker locker(fLock);
+		return fGroupJobs;
+	}
+	bool ArmJob(uint32 mask, bool continuous)
+	{
 		InterruptsSpinLocker locker(fLock);
 		if (ReadGpu(0x1000) != 0 || ReadGpu(0x1008) != 0)
 			return false;
 		fInterrupts[0].capture = {};
 		fInterrupts[0].armed = true;
-		WriteGpu(0x1008, kGlobalInterrupt);
-		return ReadGpu(0x1008) == kGlobalInterrupt;
+		fJobMask = mask;
+		fContinuousJobs = continuous;
+		fGroupJobs = 0;
+		WriteGpu(0x1008, mask);
+		return ReadGpu(0x1008) == mask;
 	}
 	FirmwareCapture ReadFirmwareCapture(unsigned index)
 	{
@@ -173,10 +202,11 @@ public:
 				capture.raw = raw;
 				capture.cpu = -1;
 				capture.whenMicros = system_time();
-				capture.deviceStatus = ReadGpu(index == 1 ? 0x241c : 0x3c);
-				capture.address = ReadGpu64(*this, index == 1 ? 0x2420 : 0x40);
+				uint32 base = FaultBase(raw);
+				capture.deviceStatus = ReadGpu(index == 1 ? base + 0x1c : 0x3c);
+				capture.address = ReadGpu64(*this, index == 1 ? base + 0x20 : 0x40);
 				if (index == 1)
-					capture.extra = ReadGpu64(*this, 0x2438);
+					capture.extra = ReadGpu64(*this, base + 0x38);
 			}
 		}
 		return capture;
@@ -219,7 +249,15 @@ private:
 		FirmwareCapture capture;
 	};
 	static uint32 MaskOffset(unsigned i) { return i == 0 ? 0x1008 : i == 1 ? 0x2008 : kGpuMask; }
-	static uint32 Mask(unsigned i) { return i == 0 ? kGlobalInterrupt : i == 1 ? 1 : 3; }
+	uint32 Mask(unsigned i) const { return i == 0 ? fJobMask : i == 1 ? (fCommands ? 3 : 1) : 3; }
+	static uint32 FaultBase(uint32 raw)
+	{
+		for (unsigned as = 0; as < 16; as++) {
+			if ((raw & (1u << as)) != 0)
+				return 0x2400 + as * 0x40;
+		}
+		return 0x2400;
+	}
 	static int32 Interrupt(void* cookie)
 	{
 		InterruptSource& source = *(InterruptSource*)cookie;
@@ -233,21 +271,27 @@ private:
 			return B_UNHANDLED_INTERRUPT;
 		FirmwareCapture& capture = source.capture;
 		capture.count++;
-		capture.status = status;
-		capture.raw = io.ReadGpu(mask - 8);
+		capture.status |= status;
+		capture.raw |= io.ReadGpu(mask - 8);
 		capture.cpu = smp_get_current_cpu();
 		capture.whenMicros = system_time();
 		if (source.index == 1) {
-			capture.deviceStatus = io.ReadGpu(0x241c);
-			capture.address = ReadGpu64(io, 0x2420);
-			capture.extra = ReadGpu64(io, 0x2438);
+			uint32 base = FaultBase(capture.raw);
+			capture.deviceStatus = io.ReadGpu(base + 0x1c);
+			capture.address = ReadGpu64(io, base + 0x20);
+			capture.extra = ReadGpu64(io, base + 0x38);
 		} else if (source.index == 2) {
 			capture.deviceStatus = io.ReadGpu(0x3c);
 			capture.address = ReadGpu64(io, 0x40);
 		}
-		io.WriteGpu(mask, 0);
-		io.WriteGpu(mask - 4, status & Mask(source.index));
-		source.armed = false;
+		if (source.index == 0 && io.fContinuousJobs) {
+			if ((status & 1) != 0)
+				io.fGroupJobs++;
+		} else {
+			io.WriteGpu(mask, 0);
+			source.armed = false;
+		}
+		io.WriteGpu(mask - 4, status & io.Mask(source.index));
 		return B_HANDLED_INTERRUPT;
 	}
 	spinlock fLock = B_SPINLOCK_INITIALIZER;
@@ -255,6 +299,10 @@ private:
 	uint64 fGpuBase = 0;
 	AreaDeleter fDoorbellArea;
 	volatile uint32* fDoorbell = NULL;
+	bool fCommands = false;
+	bool fContinuousJobs = false;
+	uint32 fJobMask = kGlobalInterrupt;
+	uint32 fGroupJobs = 0;
 };
 
 status_t
@@ -324,4 +372,80 @@ RunFirmwareRequest(const ResourceInfo& resources, void* buffer, size_t length,
 	if (status != B_OK)
 		return status;
 	return user_memcpy(buffer, &info, sizeof(info));
+}
+
+status_t
+RunCommandRequest(const ResourceInfo& resources, void* buffer, size_t length,
+	bool& needsRecovery)
+{
+	if (geteuid() != 0)
+		return B_NOT_ALLOWED;
+	if (buffer == NULL)
+		return B_BAD_ADDRESS;
+	if (length < sizeof(CommandRunInfo) || length - sizeof(CommandRunInfo) > kMaxFirmwareBytes)
+		return B_BAD_VALUE;
+	uint32 header[2];
+	status_t status = user_memcpy(header, buffer, sizeof(header));
+	if (status != B_OK)
+		return status;
+	if (header[0] != kCommandRunVersion || header[1] < 20
+		|| header[1] != length - sizeof(CommandRunInfo))
+		return B_BAD_VALUE;
+	void* file = malloc(header[1]);
+	CommandRunInfo* info = (CommandRunInfo*)calloc(1, sizeof(CommandRunInfo));
+	if (file == NULL || info == NULL) {
+		free(file); free(info);
+		return B_NO_MEMORY;
+	}
+	status = user_memcpy(file, (uint8*)buffer + sizeof(CommandRunInfo), header[1]);
+	FirmwareImage image;
+	CommandMemory memory;
+	if (status == B_OK && (image.Init(file, header[1]) != FIRMWARE_OK
+		|| image.Info().versionHash != 0x01050000 || !memory.Plan(image)))
+		status = B_BAD_DATA;
+	area_id area = status == B_OK ? AllocateFirmwareMemory(memory) : status;
+	if (area < B_OK) {
+		free(file); free(info);
+		return area;
+	}
+	info->version = kCommandRunVersion;
+	info->firmwareBytes = header[1];
+	info->result = info->cleanupResult = kCommandNotAttempted;
+	info->rootPhysical = memory.RootPhysical();
+	info->userTablePages = CommandMemory::kUserTablePages;
+	info->userBytes = CommandMemory::kUserBytes;
+	info->arenaBytes = memory.RequiredBytes();
+	FirmwareRunInfo& firmware = info->firmware;
+	firmware.version = kFirmwareRunVersion;
+	firmware.firmwareBytes = header[1];
+	firmware.flags = kFirmwareAllocated;
+	firmware.tablePages = memory.Firmware().TablePages();
+	firmware.allocationBytes = memory.Firmware().RequiredBytes();
+	firmware.rootPhysical = memory.Firmware().RootPhysical();
+	firmware.translationConfig = FirmwareMemory::TranslationConfig();
+	firmware.memoryAttributes = FirmwareMemory::MemoryAttributes();
+	FirmwareHardware hardware(true);
+	status = hardware.Init(resources);
+	if (status == B_OK) {
+		CommandOperation operation(memory, *info);
+		CycleFirmware(hardware, memory.Firmware(), firmware, operation);
+	}
+	bool releasable = (firmware.flags & kFirmwareNeedsRecovery) == 0
+		&& ((firmware.flags & kFirmwareAddressSpace) == 0
+			|| ((firmware.flags & (kFirmwareCleaned | kFirmwarePowerRestored))
+				== (kFirmwareCleaned | kFirmwarePowerRestored)))
+		&& ((info->flags & kCommandMapped) == 0 || (info->flags & kCommandUnmapped) != 0);
+	if (!releasable || delete_area(area) != B_OK)
+		firmware.flags |= kFirmwareMemoryRetained | kFirmwareNeedsRecovery;
+	needsRecovery = (firmware.flags & kFirmwareNeedsRecovery) != 0;
+	free(file);
+	dprintf("mali_csf: commands result=%u cleanup=%u flags=%#x rounds=%u"
+		" fw=%u cleanup=%u flags=%#x root=%#" B_PRIx64 " events=%#x\n",
+		info->result, info->cleanupResult, info->flags, info->roundsCompleted,
+		firmware.result, firmware.cleanupResult, firmware.flags, info->rootPhysical,
+		info->groupEvents);
+	if (status == B_OK)
+		status = user_memcpy(buffer, info, sizeof(*info));
+	free(info);
+	return status;
 }

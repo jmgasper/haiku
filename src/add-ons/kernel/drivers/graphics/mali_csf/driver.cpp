@@ -15,6 +15,7 @@
 
 #include "CsfReset.h"
 #include "CsfRun.h"
+#include "CsfCommands.h"
 #include "CsfDevice.h"
 
 
@@ -32,6 +33,7 @@ struct Controller {
 	bool identityEnabled;
 	bool resetEnabled;
 	bool firmwareEnabled;
+	bool commandsEnabled;
 	bool identityNeedsRecovery;
 };
 
@@ -393,12 +395,14 @@ InitDriver(device_node* node, void** cookie)
 	void* settings = load_driver_settings("mali_csf");
 	if (valid && settings != NULL) {
 		const char* profile = get_driver_parameter(settings, "firmware_profile", "", "");
-		bool firmware = strcmp(profile, "rock5-itx-edk2-v1.1-gpu-firmware") == 0;
+		bool commands = strcmp(profile, "rock5-itx-edk2-v1.1-gpu-commands") == 0;
+		bool firmware = commands || strcmp(profile, "rock5-itx-edk2-v1.1-gpu-firmware") == 0;
 		bool reset = firmware || strcmp(profile, "rock5-itx-edk2-v1.1-gpu-reset") == 0;
 		controller->identityEnabled = (reset || strcmp(profile, "rock5-itx-edk2-v1.1-gpu-identity") == 0)
 			&& ReadIdentityProfile(parent, controller->resources);
 		controller->resetEnabled = reset && controller->identityEnabled;
 		controller->firmwareEnabled = firmware && controller->identityEnabled;
+		controller->commandsEnabled = commands && controller->identityEnabled;
 	}
 	if (settings != NULL)
 		unload_driver_settings(settings);
@@ -462,6 +466,16 @@ Write(void*, off_t, const void*, size_t* size)
 static status_t
 Control(void* cookie, uint32 op, void* buffer, size_t length)
 {
+	if (op == kCycleCommands) {
+		Controller* controller = (Controller*)cookie;
+		MutexLocker locker(sHardwareLock);
+		if (!controller->commandsEnabled)
+			return B_NOT_ALLOWED;
+		if (controller->identityNeedsRecovery || FirmwareMemoryRetained())
+			return B_BUSY;
+		return RunCommandRequest(controller->resources, buffer, length,
+			controller->identityNeedsRecovery);
+	}
 	if (op == kCycleFirmware) {
 		Controller* controller = (Controller*)cookie;
 		MutexLocker locker(sHardwareLock);

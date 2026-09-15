@@ -1,5 +1,6 @@
 /* Copyright 2026, Haiku, Inc. Distributed under the MIT License. */
 #include "CsfRun.h"
+#include "CsfCommands.h"
 #include <assert.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -202,6 +203,30 @@ int main()
 	assert(RunFirmwareRequest(resources(), packet.data(), packet.size() - 1, recovery) == B_BAD_VALUE);
 	assert(RunFirmwareRequest({}, packet.data(), packet.size(), recovery) == B_NOT_SUPPORTED);
 	assert(sAreas.empty() && !recovery);
+	CommandMemory commands;
+	assert(commands.Plan(image));
+	int combined = AllocateFirmwareMemory(commands);
+	assert(combined >= 0 && FirmwareMemoryRetained());
+	assert(commands.Firmware().RootPhysical() == sPhysical);
+	assert(commands.RootPhysical() == sPhysical + commands.Firmware().RequiredBytes());
+	assert(sAreas.at(combined).mapping->size == commands.RequiredBytes());
+	delete_area(combined);
+	sUid = 5;
+	assert(RunCommandRequest(resources(), NULL, 0, recovery) == B_NOT_ALLOWED);
+	sUid = 0;
+	assert(RunCommandRequest(resources(), NULL, sizeof(CommandRunInfo), recovery) == B_BAD_ADDRESS);
+	vector<uint8_t> commandPacket(sizeof(CommandRunInfo) + bytes.size(), 0);
+	put(commandPacket, 0, 1); put(commandPacket, 4, bytes.size());
+	memcpy(commandPacket.data() + sizeof(CommandRunInfo), bytes.data(), bytes.size());
+	assert(RunCommandRequest(resources(), commandPacket.data(), sizeof(CommandRunInfo) - 1, recovery) == B_BAD_VALUE);
+	assert(RunCommandRequest(resources(), commandPacket.data(), commandPacket.size() - 1, recovery) == B_BAD_VALUE);
+	assert(RunCommandRequest({}, commandPacket.data(), commandPacket.size(), recovery) == B_NOT_SUPPORTED);
+	assert(sAreas.empty() && !recovery);
+	put(commandPacket, 0, 2);
+	assert(RunCommandRequest({}, commandPacket.data(), commandPacket.size(), recovery) == B_BAD_VALUE);
+	put(commandPacket, 0, 1); commandPacket[sizeof(CommandRunInfo)] ^= 1;
+	assert(RunCommandRequest({}, commandPacket.data(), commandPacket.size(), recovery) == B_BAD_DATA);
+	assert(sAreas.empty() && !recovery);
 	for (unsigned failure = 1; failure <= 4; failure++) {
 		sFailMap = failure; sMaps = 0;
 		{ FirmwareHardware io;
@@ -264,5 +289,40 @@ int main()
 		}
 		assert(sAreas.empty());
 	}
+	sInstalls = sInstallFailure = 0;
+	sPauseCpu = false;
+	{ FirmwareHardware io(true);
+		assert(io.Init(resources()) == B_OK && io.MapGpu() && io.InstallFirmwareHandlers());
+		sGpu[0x2000 / 4] = 3u << 16;
+		assert(io.ArmFirmwareInterrupts() && sGpu[0x2008 / 4] == 3);
+		sGpu[0x1000 / 4] = sGpu[0x100c / 4] = 0x80000000;
+		assert(Invoke(124) == B_HANDLED_INTERRUPT);
+		sGpu[0x1000 / 4] = sGpu[0x100c / 4] = 0;
+		assert(io.ArmCommandJob());
+		for (unsigned i = 0; i < 100; i++) {
+			uint32_t status = i & 1 ? 1 : 0x80000000;
+			sGpu[0x1000 / 4] = sGpu[0x100c / 4] = status;
+			assert(Invoke(124) == B_HANDLED_INTERRUPT);
+			assert(sGpu[0x1008 / 4] == 0x80000001 && sGpu[0x1004 / 4] == status);
+			sGpu[0x1000 / 4] = sGpu[0x100c / 4] = 0;
+			assert(Invoke(124) == B_UNHANDLED_INTERRUPT);
+		}
+		assert(io.CommandJobCount() == 50 && io.ReadFirmwareCapture(0).count == 100);
+		assert(io.ReadFirmwareCapture(0).raw == 0x80000001);
+		sGpu[0x2000 / 4] |= 2; sGpu[0x200c / 4] = 2;
+		sGpu[0x245c / 4] = 0x123; sGpu[0x2460 / 4] = 0x12345678;
+		sGpu[0x2464 / 4] = 5; sGpu[0x2478 / 4] = 0x98765432;
+		auto polled = io.ReadFirmwareCapture(1);
+		assert(polled.count == 0 && polled.deviceStatus == 0x123 && polled.address == UINT64_C(0x512345678));
+		assert(Invoke(125) == B_HANDLED_INTERRUPT);
+		auto fault = io.ReadFirmwareCapture(1);
+		assert(fault.count == 1 && fault.status == 2 && fault.deviceStatus == 0x123);
+		assert(fault.address == UINT64_C(0x512345678) && fault.extra == 0x98765432);
+		assert(io.FirmwareFaulted());
+		io.StopFirmwareHandlers();
+		assert(sHandlers.empty() && sGpu[0x1008 / 4] == 0);
+		io.UnmapGpu();
+	}
+	assert(sAreas.empty());
 	puts("MALI_CSF_DEVICE_TEST_PASS");
 }

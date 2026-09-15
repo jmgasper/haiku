@@ -25,15 +25,29 @@ struct InterfaceInfo {
 	uint32_t outputOffset;
 };
 
+struct QueueInterfaceInfo {
+	uint32_t features;
+	uint32_t suspendBytes;
+	uint32_t protectedBytes;
+	uint32_t groupInputOffset;
+	uint32_t groupOutputOffset;
+	uint32_t streamInputOffset;
+	uint32_t streamOutputOffset;
+	uint32_t reserved;
+};
+
 // A snapshot of the CSF 1.5 interface layout used by the admitted firmware.
 // All offsets/sizes are ABI facts from the MIT option of Linux 6.18.52's
 // panthor_fw.h. Do not dereference a firmware-supplied pointer on the CPU.
 // This checks every control/input/output interval, including mutual overlap,
 // before the caller may write the global input. No GPU job is configured.
 inline bool
-InspectInterface(const void* data, size_t bytes, uint32_t base, InterfaceInfo& info)
+InspectInterface(const void* data, size_t bytes, uint32_t base, InterfaceInfo& info,
+	QueueInterfaceInfo* queueInfo = NULL)
 {
 	info = {};
+	if (queueInfo != NULL)
+		*queueInfo = {};
 	if (data == NULL || (uintptr_t(data) & 7) != 0 || bytes < 32
 		|| uint64_t(base) + bytes > (UINT64_C(1) << 32))
 		return false;
@@ -57,6 +71,7 @@ InspectInterface(const void* data, size_t bytes, uint32_t base, InterfaceInfo& i
 	if (!claim(0, 32, 4))
 		return false;
 	InterfaceInfo result = {};
+	QueueInterfaceInfo queue = {};
 	result.version = words[0];
 	result.features = words[1];
 	result.groupCount = words[4];
@@ -85,6 +100,11 @@ InspectInterface(const void* data, size_t bytes, uint32_t base, InterfaceInfo& i
 			groupFeatures = features;
 			suspendBytes = suspend;
 			protectedBytes = protectedSize;
+			queue.features = features;
+			queue.suspendBytes = suspend;
+			queue.protectedBytes = protectedSize;
+			queue.groupInputOffset = control[1] - base;
+			queue.groupOutputOffset = control[2] - base;
 			result.streamCount = streams;
 			result.streamStride = stride;
 		} else if (features != groupFeatures || suspend != suspendBytes
@@ -102,6 +122,8 @@ InspectInterface(const void* data, size_t bytes, uint32_t base, InterfaceInfo& i
 				result.streamFeatures = streamFeatures;
 				result.workRegisters = (streamFeatures & 255) + 1;
 				result.scoreboards = (streamFeatures >> 8) & 255;
+				queue.streamInputOffset = slot[1] - base;
+				queue.streamOutputOffset = slot[2] - base;
 				if (result.workRegisters != 96 || result.scoreboards != 8)
 					return false;
 			} else if (streamFeatures != result.streamFeatures)
@@ -109,6 +131,8 @@ InspectInterface(const void* data, size_t bytes, uint32_t base, InterfaceInfo& i
 		}
 	}
 	info = result;
+	if (queueInfo != NULL)
+		*queueInfo = queue;
 	return true;
 }
 

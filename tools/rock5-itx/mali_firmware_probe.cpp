@@ -5,6 +5,7 @@
 
 #include "CsfFirmware.h"
 #include "CsfRun.h"
+#include "CsfCommands.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -85,13 +86,75 @@ RunFirmware(const void* data, size_t bytes)
 	return ok;
 }
 
+static bool
+RunCommands(const void* data, size_t bytes)
+{
+	using namespace MaliCSF;
+	int fd = open("/dev/graphics/mali_csf/0", O_RDONLY);
+	if (fd < 0) { perror("open Mali command interface"); return false; }
+	size_t requestBytes = sizeof(CommandRunInfo) + bytes;
+	CommandRunInfo* request = (CommandRunInfo*)calloc(1, requestBytes);
+	if (request == NULL) { close(fd); return false; }
+	request->version = kCommandRunVersion;
+	request->firmwareBytes = bytes;
+	memcpy((uint8_t*)request + sizeof(*request), data, bytes);
+	if (ioctl(fd, kCycleCommands, request, sizeof(*request) - 1) == 0 || errno != EINVAL
+		|| ioctl(fd, kCycleCommands, NULL, requestBytes) == 0 || errno != EFAULT) {
+		fprintf(stderr, "Malformed command request was not rejected\n");
+		free(request); close(fd); return false;
+	}
+	if (ioctl(fd, kCycleCommands, request, requestBytes) != 0) {
+		perror("Mali command cycle"); free(request); close(fd); return false;
+	}
+	close(fd);
+	const CommandRunInfo& info = *request;
+	printf("ROCK5_MALI_COMMAND_RUN version=%" PRIu32 " result=%" PRIu32
+		" cleanup=%" PRIu32 " flags=%08" PRIx32 " rounds=%" PRIu32
+		" bytes=%" PRIu32 " root=%016" PRIx64 " fw_result=%" PRIu32
+		" fw_cleanup=%" PRIu32 " fw_flags=%08" PRIx32 "\n", info.version,
+		info.result, info.cleanupResult, info.flags, info.roundsCompleted,
+		info.arenaBytes, info.rootPhysical, info.firmware.result,
+		info.firmware.cleanupResult, info.firmware.flags);
+	// Full fixed ABI and every buffer, in bounded lines for reliable capture.
+	// The host decoder must reject missing, duplicate or reordered chunks.
+	for (size_t offset = 0; offset < sizeof(info); offset += 256) {
+		size_t size = sizeof(info) - offset;
+		if (size > 256) size = 256;
+		printf("ROCK5_MALI_COMMAND_ABI total=%zu offset=%zu hex=", sizeof(info), offset);
+		for (size_t n = 0; n < size; n++) printf("%02x", ((const uint8_t*)&info)[offset + n]);
+		putchar('\n');
+	}
+	bool ok = info.version == kCommandRunVersion && info.firmwareBytes == bytes
+		&& info.result == kCommandOK && info.cleanupResult == kCommandOK
+		&& info.flags == 511 && info.roundsCompleted == 2
+		&& info.firmware.result == kFirmwareRunOK && info.firmware.cleanupResult == kFirmwareRunOK
+		&& info.firmware.flags == 255 && info.asStatusAfter == 0 && info.asConfigAfter == 1
+		&& info.haltStatus == 2 && info.streamFault == 0 && info.streamFatal == 0;
+	for (unsigned r = 0; r < 2; r++) {
+		const CommandRoundInfo& round = info.rounds[r];
+		ok = ok && round.sequenceBefore == 0 && round.sequenceAfter == 1
+			&& round.status == 0 && round.irqAfter > round.irqBefore
+			&& round.syncAfter > round.syncBefore && round.mismatches == 0
+			&& round.extract == (r + 1) * 128 && round.insert == round.extract
+			&& round.finishedMicros >= round.startedMicros
+			&& round.finishedMicros - round.startedMicros <= 5000000;
+	}
+	free(request);
+	if (ok)
+		puts("ROCK5_MALI_COMMAND_CYCLE_PASS submissions=2 checked_words=4096 restored=1 rendered=0");
+	else
+		fprintf(stderr, "Mali command cycle failed; retain evidence and recover the board\n");
+	return ok;
+}
+
 
 int
 main(int argc, char** argv)
 {
 	bool start = argc == 3 && strcmp(argv[1], "--start") == 0;
-	if (argc != 2 && !start) {
-		fprintf(stderr, "usage: %s [--start] mali_csffw.bin\n", argv[0]);
+	bool commands = argc == 3 && strcmp(argv[1], "--commands") == 0;
+	if (argc != 2 && !start && !commands) {
+		fprintf(stderr, "usage: %s [--start|--commands] mali_csffw.bin\n", argv[0]);
 		return 2;
 	}
 	FILE* file = fopen(argv[argc - 1], "rb");
@@ -159,7 +222,7 @@ main(int argc, char** argv)
 		free(copy);
 	}
 	puts("ROCK5_MALI_FIRMWARE_CONTAINER_PASS gpu_started=0");
-	bool ok = !start || RunFirmware(data, size);
+	bool ok = commands ? RunCommands(data, size) : !start || RunFirmware(data, size);
 	free(data);
 	return ok ? 0 : 1;
 }

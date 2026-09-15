@@ -1,5 +1,6 @@
 #include "CsfReset.h"
 #include "CsfRun.h"
+#include "CsfCommands.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -296,6 +297,14 @@ static status_t RunFirmwareRequest(const ResourceInfo&, void*, size_t, bool& rec
 {
 	assert(sLockDepth == 1);
 	sFirmwareRequests++;
+	recovery = true;
+	return B_OK;
+}
+static unsigned sCommandRequests;
+static status_t RunCommandRequest(const ResourceInfo&, void*, size_t, bool& recovery)
+{
+	assert(sLockDepth == 1);
+	sCommandRequests++;
 	recovery = true;
 	return B_OK;
 }
@@ -616,6 +625,17 @@ main()
 	assert(sFirmwareRequests == 1 && controller.identityNeedsRecovery);
 	assert(Control(&controller, kCycleFirmware, NULL, 0) == B_BUSY);
 	assert(sFirmwareRequests == 1);
+	controller.identityNeedsRecovery = false;
+	assert(Control(&controller, kCycleCommands, NULL, 0) == B_NOT_ALLOWED);
+	controller.commandsEnabled = true;
+	sFirmwareRetained = true;
+	assert(Control(&controller, kCycleCommands, NULL, 0) == B_BUSY && sCommandRequests == 0);
+	sFirmwareRetained = false;
+	assert(Control(&controller, kCycleCommands, NULL, 0) == B_OK);
+	assert(sCommandRequests == 1 && controller.identityNeedsRecovery);
+	assert(Control(&controller, kCycleCommands, NULL, 0) == B_BUSY);
+	assert(Control(&controller, kCycleFirmware, NULL, 0) == B_BUSY);
+	assert(sCommandRequests == 1 && sFirmwareRequests == 1);
 
 	size_t page = sysconf(_SC_PAGESIZE);
 	uint8_t* memory = (uint8_t*)mmap(NULL, 2 * page, PROT_READ | PROT_WRITE,

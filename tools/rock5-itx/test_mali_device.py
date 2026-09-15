@@ -12,7 +12,7 @@ class MaliDeviceTest(unittest.TestCase):
         code = (source / 'CsfDevice.cpp').read_text()
         code = code[code.index('using namespace MaliCSF;'):]
         begin = code.index('static status_t\nMakeFirmwareRamNoncacheable')
-        end = code.index('static area_id\nAllocateFirmwareMemory', begin)
+        end = code.index('template<typename Memory>\nstatic area_id\nAllocateFirmwareMemory', begin)
         # Only CPU memory-type/cache instructions are supplied by the fixture.
         # Allocation limits, copying, cleanup, request and IRQ code are production.
         code = code[:begin] + code[end:]

@@ -5,5 +5,7 @@
 bool FirmwareMemoryRetained();
 status_t RunFirmwareRequest(const MaliCSF::ResourceInfo& resources, void* buffer,
 	size_t length, bool& needsRecovery);
+status_t RunCommandRequest(const MaliCSF::ResourceInfo& resources, void* buffer,
+	size_t length, bool& needsRecovery);
 
 #endif
