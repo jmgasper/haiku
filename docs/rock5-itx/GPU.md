@@ -3,9 +3,9 @@
 GPU acceleration is the owner's current priority; further Ethernet driver work
 is deferred. The working EFI framebuffer supplies a desktop, while native
 display control and GPU rendering remain separate milestones. Haiku now boots
-the Mali firmware and passes four CSF memory-store submissions across two +193
-native boots. The complete data matches the Linux reference. Shader execution,
-accelerated rendering and Mesa integration remain pending.
+the Mali firmware and passes four compute-shader submissions plus four CS
+memory-store regressions across two +195 native boots. Complete data matches
+the Linux reference. Accelerated rendering and Mesa integration remain pending.
 
 ## Reference and integration route
 
@@ -54,7 +54,8 @@ hit QEMU's own `regime_is_user` assertion before init. That failed emulator
 configuration remains recorded; the Cortex-A76 repeat matches the board's large
 core model. The native run records no GPU/MMU fault, reboots normally to ROOBI,
 disarms the watchdog, and passes independent complete boot/recovery-image and
-eMMC integrity checks. This is the reference for Haiku's next queue implementation.
+eMMC integrity checks. This supplies the reference for Haiku's qualified queue
+implementation below.
 
 EDK2's mainline tree uses `rockchip,rk3588-mali` / `arm,mali-valhall-csf`.
 The actual Haiku device tree was captured on two +179 boots and is identical:
@@ -71,6 +72,60 @@ DRM buffer objects, virtual mappings, synchronization objects, groups, queues
 and tiler heaps; some CSF operations are outside the common backend abstraction.
 The ABI assessment must include those direct calls. Enabling a Mesa build
 option alone cannot provide Haiku GPU support.
+
+## Compute shader reference
+
+The Linux 6.18.52 RAM reference now passes four compute-shader submissions
+across two separately created VM/group lifecycles. A 216-byte, 27-instruction
+Valhall program loads a 64-bit data address and eight values from FAU uniforms,
+stores those values at the existing guarded offsets, waits after each store,
+and terminates. Mesa 25.3.6's assembler and generated disassembler reproduce
+the same assembly. Its architecture-10 packer produces both dispatch streams,
+the shader-program descriptor and the local-storage descriptor.
+
+The entire read-only, executable 4 KiB allocation contains two 256-byte command
+streams, one shared shader, descriptors and separate uniforms for each round.
+Each dispatch explicitly requests a compute resource and launches one workgroup
+containing one invocation. There is no CS `STORE_MULTIPLE` instruction: the
+shader performs all eight data writes. The program uses neither a resource
+table nor thread-local or workgroup memory. Endpoint completion, cache cleaning
+and a wait precede the kernel's completion fence.
+
+The independent decoder checks every byte of that allocation, including its
+padding, and rejects 4,102 altered code variants. Twenty-four altered evidence
+cases are also rejected. The compiled CPU oracle agrees on all 16,384 initial
+and expected values. These host checks are separate from native execution.
+
+On the board, every fresh fence first times out as unsignaled, then completes
+after submission. All four complete initial and final 8 KiB data buffers match:
+eight changed words and 2,040 unchanged guards per submission. The complete
+4 KiB code allocation is unchanged. Group/fatal/VM state stays clear, and
+group destruction, unbinding, CPU unmapping, object closing and VM destruction
+pass. The two cycle-zero output hashes match the earlier CS memory-store
+reference. Logged submit/wait intervals are 1.00–1.39 ms; they are not a rendering
+benchmark. GPU virtual addresses exceed 4 GiB; physical addresses were not measured.
+
+Both QEMU boot modes, normal RAM-root reboot, watchdog disarming and independent
+boot-image, recovery-image and eMMC integrity checks pass. The used image was
+archived locally and removed from the NanoKVM after verification. No rendering
+or display acceleration is claimed by this compute test.
+
+The first shader attempt omitted the compute-resource request and its first
+submission timed out. Adding the request emitted by Mesa's `csf_init_batch`
+allowed all four submissions to pass with the same shader binary. The failed
+image, serial capture and recovery evidence remain preserved. Its controller
+incorrectly described the failure as GPU initialization; GPU/CSF queries had
+passed. The corrected controller also saves one checked pre-boot ID instead of
+discarding a successful read and issuing a second one.
+
+| Shader reference evidence | Location or value |
+| --- | --- |
+| Qualified Linux trial | `/mnt/HaikuWork/artifacts/native-linux-shader-reference/20260915T032912Z-477f93/qualification.json` |
+| Source, generator and oracle | `/mnt/HaikuWork/artifacts/mali-shader-reference/20260915T032340Z-304bcf` |
+| Failed first trial and review | `/mnt/HaikuWork/artifacts/native-linux-shader-reference/20260915T031925Z-de6738/failure-review.json` |
+| Shader SHA-256 | `9ef33d01429d1954b6eebadd6258ac91103c3a12edb96319872f662f579fb09f` |
+| Complete 4 KiB code SHA-256 | `dcc72b3bb9448e0acda21fa9dfe6052e83856460608b57c114552d1f1aa0d669` |
+| Linux image manifest | `/mnt/HaikuWork/artifacts/efi-media/20260915T032602Z-deaa36/linux-shader-ram-reference.json` |
 
 ## Firmware component
 
@@ -400,17 +455,54 @@ ROOBI recovery pass. The watchdog disarms, and independent recovery-image,
 eMMC filesystem/files and all three reference-region hashes pass. No shader,
 rendering, performance comparison or installed-SSD requalification is claimed.
 
+## Native compute shader execution
+
+The +195 `rock5-itx-edk2-v1.1-gpu-shader` profile enables the fixed shader
+diagnostic while retaining the command-memory regression. The root-only
+`--shader` probe uses ioctl `0x4d435306`; its unchanged 116,200-byte response
+adds the shader-workload flag `512`, giving successful flags `3ff`. The older
+`--commands` path retains flags `1ff`, its ABI and its original workload.
+
+`CsfShader.h` constructs the same complete 4 KiB allocation as the qualified
+Linux reference. The driver replaces the default code before exposing any
+application GPU mapping. Page-table permissions, queue submission, fresh
+completion objects, interrupt handling and teardown use the qualified command
+implementation. The code allocation is GPU read-only and executable; the data
+allocation is writable and non-executable. This is a bounded privileged
+diagnostic, not a general userspace shader or buffer interface.
+
+Each of two native boots first passes two command-memory submissions, then
+starts a fresh firmware/queue cycle and passes two shader submissions. All
+initial/final data words, all guards and the complete code, ring, completion
+and queue-interface buffers pass the independent oracles. Shader output matches
+Linux cycle zero for both rounds. Fresh interrupts and completion objects pass;
+group termination, MCU halt/stop, both address-space removals and all ten checked
+platform-register restorations pass after both workloads. The shader's AS1
+roots are `0x0d741000` and `0x0e472000`: both are physically below 4 GiB.
+Virtual addresses above 4 GiB are qualified; high physical DMA is not.
+
+Shader waits take 329/222 microseconds on the first boot and 313/209 on the
+second. These bounded diagnostic timings are not comparable to Linux's logged
+ioctl intervals. The host encoder matches all 4,096 Linux-generated bytes;
+request/profile/retention checks and all 139 host tests pass. The shader oracle
+rejects 101 altered or incomplete ABI records. Both two-boot QEMU modes pass,
+including absence-of-GPU rejection for both command and shader operations.
+
+Both native desktops, 129,024 instruction-alias checks per boot, 33 component
+and ten file hashes, identical FDTs, normal reboot and verified shutdown before
+media replacement pass. ROOBI recovery, watchdog disarming and independent
+recovery-image/eMMC integrity also pass. The desktop still uses the EFI
+framebuffer. Rendering, Mesa integration and installed-SSD requalification
+remain open.
+
 ## Next milestones
 
-1. Establish a checked shader-execution reference on Linux, then execute the
-   same shader through Haiku's qualified queue and application address space.
-   Validate complete output buffers and retain the memory-store regression.
-2. Implement the selected Mesa CSF kernel operations and an offscreen rendered
+1. Implement the selected Mesa CSF kernel operations and an offscreen rendered
    image. Regulator ownership, runtime power management and DVFS remain
    separate work.
-3. Integrate Panfrost with Haiku EGL/OpenGL and window output; qualify pixels,
+2. Integrate Panfrost with Haiku EGL/OpenGL and window output; qualify pixels,
    multiple contexts, process exit, reset, sustained work and conformance.
-4. Implement native VOP2/HDMI modes/hotplug and additional display routes,
+3. Implement native VOP2/HDMI modes/hotplug and additional display routes,
    followed by other board hardware.
 
 ## Sources and evidence
@@ -457,6 +549,15 @@ images stay beneath `/mnt/HaikuWork`; firmware binaries are not committed.
 
 Qualified native component evidence:
 
+- +195 four compute-shader submissions and four command-memory regressions:
+  `artifacts/automated-mali-shader/20260915T034514Z-125b8d/qualification.json`.
+  Source `5060bcd6a594979725049db063f4677ab27463af`, image SHA-256
+  `cd74c3333be18ed1444ca9f19fe40b0426c18207073486ec36f0d642d26fc399`.
+  Image manifest: `artifacts/mali-shader-image/20260915T034126Z-b74930/manifest.json`.
+  EL2/EL1 QEMU: `artifacts/qemu-shell/20260915T034200Z-4aebda` and
+  `artifacts/qemu-shell/20260915T034200Z-2f70bc` respectively.
+  Source snapshots, host checks, both decoders and synthetic negative controls:
+  `artifacts/mali-haiku-shader/20260915T033414Z-f96c69`.
 - +193 application mappings, queue/group lifecycle and four memory-store submissions:
   `artifacts/automated-mali-command/20260915T024219Z-51e818/qualification.json`.
   Source `545441b08bdc7b6a7baea799f71beb9a30bdb247`, image SHA-256

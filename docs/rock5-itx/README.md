@@ -7,17 +7,19 @@ driver support are tracked separately in [STATUS.md](STATUS.md) and the
 The [GitHub work items](TRACKING.md) split the roadmap into issues and milestones.
 
 The current priority is [Mali-G610 GPU support](GPU.md), followed by remaining
-hardware. The owner has deferred further Ethernet driver work. The +193 image
-passes four Mali CSF memory-store submissions across two native Haiku boots.
+hardware. The owner has deferred further Ethernet driver work. The +195 image
+passes four compute-shader submissions and four CS memory-store regressions
+across two native Haiku boots.
 Haiku manages firmware and application page tables, group/queue setup, fresh
 completion objects and actual interrupts. Every data word and guard matches
 the Linux reference. Group termination, MCU halt/stop, cache flush, both
 address-space removals and platform restoration pass. Both desktops, normal
 reboot/shutdown, automatic recovery and independent recovery-image/eMMC integrity
 pass. The image retains the qualified [ARM64 instruction-cache alias correction](ARM64-ICACHE.md).
-All 138 host checks, the ARM64 build and both QEMU modes pass; QEMU does not
-emulate this GPU. Shader execution, hardware rendering and Mesa integration
-are next. The desktop still uses the EFI framebuffer.
+All 139 host checks, the ARM64 build and both QEMU modes pass; QEMU does not
+emulate this GPU. The shader and its complete descriptor/command allocation
+match the separately qualified Linux reference. Hardware rendering and Mesa
+integration are next. The desktop still uses the EFI framebuffer.
 
 The Samsung 950 Pro now has a full-capacity Haiku development installation:
 a 512 MiB EFI partition and a 238 GiB BFS volume. Native Installer copying,
