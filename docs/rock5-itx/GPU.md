@@ -18,15 +18,42 @@ controller and NPU; they do not prove Mali rendering. The installed
 enabling the GPU domain. Automatic recovery and independent storage checks
 passed; that vendor trial remains failed.
 
-A separate Linux 6.18.52 EFI image now boots from a built-in RAM filesystem on
+A separate Linux 6.18.52 EFI image boots from a built-in RAM filesystem on
 the actual board. Mainline Panthor initializes the Mali-G610 and official
 arch10.8 firmware, reports CSF interface 1.5.0, and passes GPU/interface queries
 and empty GPU-VM creation/destruction. The GPU ID is `a8670005`, MMU features
 `2830`, shader mask `50005`, with eight address spaces and eight CSF group slots.
 The test then reboots normally to ROOBI. Its boot image, recovery image and eMMC
-integrity checks pass, and the NanoKVM watchdog disarms. This proves a working
-firmware baseline; no GPU job submission or rendering was tested. Linux used
-temporary ignore-unused clock/regulator/power-domain settings for this reference.
+integrity checks pass, and the NanoKVM watchdog disarms. This established the
+initial firmware baseline; that image tested no GPU job submission or rendering.
+Linux used temporary ignore-unused clock/regulator/power-domain settings for
+this reference.
+
+The subsequent command reference passes four native CSF memory-store submissions
+across two separately created VM/group lifecycles. Mesa 25.3.6's architecture-10
+packer generates two 256-byte command streams. Each writes eight distinct values
+into an 8 KiB buffer, waits for stores, and cleans GPU caches. The command and
+data buffers use GPU virtual addresses above 4 GiB; their physical addresses were
+not sampled. CPU mappings use the Linux driver's noncoherent write-combining path.
+
+Before every submission, a fresh unsignaled fence must time out. After submission,
+the fence must complete within five seconds, group/fatal/VM status must remain
+clear, and every output word must match. An independent decoder checks the actual
+stream, all 2,048 initial and final data words, and the entire unchanged 4 KiB
+command allocation on each round. The eight changed words include both sides of
+a page boundary; all 2,040 guard words remain intact. Both cycles complete group
+destruction, unmapping, object closing and VM destruction successfully. No shader
+or rendering instruction is present.
+
+The reference's compiled CPU oracle matches 16,384 independently calculated
+values; 18 damaged streams and 22 altered evidence cases are rejected. Its ELF
+and RAM-image build pass. EL2 QEMU with the `max` CPU and EL1 with `cortex-a76`
+pass EFI/RAM-init checks; neither emulates Mali. The initial EL1 `max` attempt
+hit QEMU's own `regime_is_user` assertion before init. That failed emulator
+configuration remains recorded; the Cortex-A76 repeat matches the board's large
+core model. The native run records no GPU/MMU fault, reboots normally to ROOBI,
+disarms the watchdog, and passes independent complete boot/recovery-image and
+eMMC integrity checks. This is the reference for Haiku's next queue implementation.
 
 EDK2's mainline tree uses `rockchip,rk3588-mali` / `arm,mali-valhall-csf`.
 The actual Haiku device tree was captured on two +179 boots and is identical:
@@ -308,9 +335,10 @@ or the separate open installed-SSD/page-aging failures.
 
 ## Next milestones
 
-1. Establish a checked command-stream memory operation on the pinned Linux
-   reference, then implement Haiku group/queue setup, owned queue memory,
-   completion and cleanup using the same decoded stream.
+1. Implement Haiku group/queue setup, owned queue memory, an application GPU
+   address space, completion and cleanup using the decoded streams that now
+   pass on the pinned Linux reference. Firmware initializes group suspension
+   sizes at runtime; do not treat the initial binary's zero fields as requirements.
 2. Implement the selected Mesa CSF kernel operations and an offscreen rendered
    image. Regulator ownership, runtime power management and DVFS remain
    separate work.
@@ -340,6 +368,17 @@ or the separate open installed-SSD/page-aging failures.
   `artifacts/native-linux-gpu-reference/20260914T210244Z-af8ef5/qualification.json`.
   The 96 MiB EFI/RAM image SHA-256 is
   `2f1b2e90cb5706b0238fd40e523c2c38e3ea8876b4da24058fb99641423b1b69`.
+- Linux command submission reference:
+  `artifacts/native-linux-csf-reference/20260915T014927Z-76584c/qualification.json`.
+  Its 96 MiB image SHA-256 is
+  `caf10cdf64855276dd0e410b48463e73430bb28e34328beb7bd0ce6b00901768`.
+  Source/configuration/ELF snapshots:
+  `artifacts/linux-csf-reference-build/20260915T014621Z-8173e8/build.json`.
+  The generator, full decoder, host checks and implementation notes are in
+  `artifacts/mali-command-stream/20260915T013339Z-2aad56`.
+  EL2 QEMU: `artifacts/qemu-linux-csf-reference/20260915T014639Z-046ba1`;
+  EL1 Cortex-A76: `artifacts/qemu-linux-csf-reference/20260915T014818Z-673822`;
+  retained EL1 `max` failure: `artifacts/qemu-linux-csf-reference/20260915T014639Z-3ad517/failure-review.json`.
 - [Official arch10.8 firmware](https://gitlab.com/kernel-firmware/linux-firmware/-/blob/eeccccbe83daf22e1931e3557ba05b2c02427e4e/arm/mali/arch10.8/mali_csffw.bin),
   revision `eeccccbe83daf22e1931e3557ba05b2c02427e4e`, SHA-256
   `a27847ea11f8efb3136340c3ba8aab413ae25145eeb4a7f64ff5edd829a2405b`.

@@ -20,10 +20,13 @@ The same image passes 129,024 instruction-alias checks on all eight CPUs per
 native boot. It corrects a reproduced [ARM64 instruction-cache alias defect](ARM64-ICACHE.md)
 found while investigating the earlier +186 startup panic. That exact failed
 boot remains recorded; the cache defect was reproduced independently on Linux.
-A separate RAM-only Linux 6.18.52 reference initializes Mali-G610 firmware and
-passes GPU queries and empty-VM lifecycle checks. Command-stream submission and
-then hardware rendering are next in Haiku. Neither the firmware ping nor the
-EFI framebuffer desktop qualifies accelerated rendering.
+A separate RAM-only Linux 6.18.52 reference now passes four checked CSF memory
+operations across two GPU contexts, including fresh completion fences, complete
+buffer guards, cleanup, normal recovery and independent storage/image integrity.
+Its EL2 QEMU and EL1 Cortex-A76 boot gates pass; an earlier synthetic EL1 `max`
+CPU assertion remains recorded in [GPU.md](GPU.md). Command-stream submission
+and then hardware rendering are next in Haiku. Neither the firmware ping nor
+the EFI framebuffer desktop qualifies accelerated rendering.
 
 Latest qualified installed result: `+156` passes two boot, integrity,
 network and normal-reboot cycles, with independent Linux eMMC verification.

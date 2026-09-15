@@ -16,8 +16,10 @@ clock/power registers all pass. Both desktops, normal reboot/shutdown, automatic
 recovery and independent recovery-image/eMMC integrity pass. The image retains
 the qualified [ARM64 instruction-cache alias correction](ARM64-ICACHE.md).
 All 136 host checks, the ARM64 build and both QEMU modes pass; QEMU does not
-emulate this GPU. Command-stream submission and then hardware rendering are
-next. The desktop still uses the EFI framebuffer.
+emulate this GPU. A separate RAM-only Linux reference now passes four checked
+command-stream memory operations across two GPU contexts. Haiku command
+submission and then hardware rendering are next. The desktop still uses the
+EFI framebuffer.
 
 The Samsung 950 Pro now has a full-capacity Haiku development installation:
 a 512 MiB EFI partition and a 238 GiB BFS volume. Native Installer copying,
