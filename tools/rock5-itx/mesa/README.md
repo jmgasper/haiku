@@ -11,11 +11,17 @@ complete bitmap/screen pixels, dimensions, resizing and retirement across two
 native boots. The accepted window and offscreen images are pinned in those
 documents; normal OpenGL Kit application qualification remains separate.
 
+The next candidate adds a normal BGLView/desktop OpenGL probe with two live
+views, alternating draws, resizes, recursive GL locking, full GL/screen pixel
+readback and allocation cleanup. Its libglvnd patch checks the displayed bitmap
+under the same renderer mutex used by bitmap replacement. This candidate is
+not yet qualified in QEMU or on the board.
+
 `sources.json` pins both original archives, six SDK packages, seven kernel ABI
 headers, host compiler helpers and every patch/probe/validator. The complete
 Mesa patch includes the pinned HaikuPorts changes; do not apply those twice.
 For libglvnd, apply the pinned HaikuPorts patchset, then the sysroot and mutex
-patches. Original source licenses/notices remain in place. This fork's original
+patches, then the bitmap-lock patch. Original source licenses/notices remain in place. This fork's original
 bridge and test code is MIT licensed and AI-assisted at the owner's request.
 
 ## Reconstruct locally
@@ -48,7 +54,7 @@ after patched-source and SDK preparation. Logs, commands, input receipts and
 failures remain in the output directory. This reconstructs pinned sources and
 configuration; build-path/debug information can change binary hashes.
 
-The package manifest lists eleven assets for `/boot/home/mesa-trial`. The `run`
+The package manifest lists thirteen assets for `/boot/home/mesa-trial`. The `run`
 launcher uses Haiku's `LIBRARY_PATH` and a private GLVND vendor file. Its probe
 accepts `--native`, `--software` and `--absent-device`. Native mode expects
 `/dev/graphics/mali_csf/0` and the separately supplied, licensed firmware at
@@ -61,6 +67,8 @@ capture over two contexts and six view resizes. `window_validation.py` checks
 the returned data independently and writes actual bitmap/screen PNGs. CPU
 bitmap presentation does not accelerate app_server or implement native display
 modes. Direct OpenGL Kit/BGLView application qualification remains separate.
+`run-glview --software` and `run-glview --native` run the new OpenGL Kit
+candidate, checked independently by `glview_validation.py`.
 
 `render_validation.py` independently compares complete readbacks with integer
 pixel-region oracles and can write actual RGBA/PNG artifacts.

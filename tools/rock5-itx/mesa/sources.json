@@ -16,7 +16,8 @@
     "patches": [
       "libglvnd-1.7.0.patchset",
       "libglvnd-haiku-sysroot.patch",
-      "libglvnd-haiku-mutex.patch"
+      "libglvnd-haiku-mutex.patch",
+      "libglvnd-haiku-bitmap.patch"
     ]
   },
   "haikuports_revision": "50ed75230b0be025c78f99a47508d1825799677d",
@@ -100,7 +101,12 @@
     "vendor.json": "817464a10dd3e42ea9aa99bc38c28a98d41391e451c2e9442abbb824d29a2def",
     "run-window": "106f64d9e8909dca6947467e62d46838713538e09a5d51fd263c9b7c5aa7d152",
     "window-probe.cpp": "4b03f70cb388051efcba3e6c6bf4d172f0f931abe79f67c111ad9edd1e7c234c",
-    "window_validation.py": "2a645d2a90a82cb320be9c65caaec111956674c8dbf5b6d71f6fa78c32608f82"
+    "window_validation.py": "2a645d2a90a82cb320be9c65caaec111956674c8dbf5b6d71f6fa78c32608f82",
+    "glview-probe.cpp": "6be9b5156c1adc4d77ac729bd8bcbc94e233b2289e9154ba03fcd2cfbf793e57",
+    "native-observer.h": "18a3f0df2b06d3cc778cf8002d86afca2450f3da5509d4a80c757cb49af48502",
+    "glview_validation.py": "4d70f618a67ae12de24cc2000b05f318a09dc31a5dde9a1becca01da84715a35",
+    "run-glview": "30bbfde5c2ba04b5b5a09273badd49314a1adb25a9b2e8dc821361c37ba515f9",
+    "libglvnd-haiku-bitmap.patch": "e9b6c1d5301b952a536d66bdd2f2985b983d3adf45dbb6e2ef373b46ac1b81ff"
   },
   "host_helpers": {
     "vtn_bindgen2": "8f03a1c42332ec1494a89de73d9bdbe7bba91aeeb98c6c0cd2d6623eb276a167",

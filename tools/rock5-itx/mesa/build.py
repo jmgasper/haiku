@@ -189,6 +189,12 @@ def main():
             '-I' + str(abi), '-I' + str(mesa / 'src/gallium/winsys/sw/hgl'),
             HERE / 'window-probe.cpp', '-L' + str(glvnd_install / 'boot/system/lib'),
             '-lEGL', '-lGLESv2', '-lbe', '-o', window_probe], 'window-probe-compile')
+        glview_probe = root / 'rock5_haiku_glview_probe'
+        run([str(compiler_prefix) + 'g++', '--sysroot=' + str(sdk), '-std=c++17',
+            '-O2', '-g', '-Wall', '-Wextra', '-Werror', '-I' + str(headers / 'os/opengl'),
+            '-I' + str(abi), HERE / 'glview-probe.cpp',
+            '-L' + str(glvnd_install / 'boot/system/lib'), '-lGL', '-lEGL', '-lbe',
+            '-o', glview_probe], 'glview-probe-compile')
         package = root / 'package'
         package.mkdir()
         assets = []
@@ -198,7 +204,8 @@ def main():
             libraries.append(('lib/' + name + '.so.' + version.split('.')[0],
                 glvnd_install / 'boot/system/lib' / (name + '.so.' + version)))
         for name, source in libraries + [('rock5_haiku_mesa_probe', probe),
-                ('rock5_haiku_window_probe', window_probe)]:
+                ('rock5_haiku_window_probe', window_probe),
+                ('rock5_haiku_glview_probe', glview_probe)]:
             target = package / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
@@ -207,7 +214,8 @@ def main():
             assets.append(dict(source=str(target), guest='/boot/home/mesa-trial/' + name,
                 sha256=digest(target), bytes=target.stat().st_size, mode='755',
                 unstripped_source=str(source), unstripped_sha256=digest(source)))
-        for name, mode in [('run', '755'), ('run-window', '755'), ('vendor.json', '644')]:
+        for name, mode in [('run', '755'), ('run-window', '755'),
+                ('run-glview', '755'), ('vendor.json', '644')]:
             target = package / name
             shutil.copy2(HERE / name, target)
             assets.append(dict(source=str(target), guest='/boot/home/mesa-trial/' + name,
