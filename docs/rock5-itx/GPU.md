@@ -268,6 +268,16 @@ guard if failure precedes address-space activation. Recovery reboots reclaim it.
 bounded diagnostic does not yet supply persistent contexts, runtime power
 management, firmware scheduling or a display accelerant.
 
+The first +189 native attempt stopped before issuing `MCU_CONTROL`: it treated
+MMU raw bit 16 (`AS0 request complete`) as a fault. The recorded final MMU raw
+value is `00010000`, AS configuration is unmapped, and platform restoration
+succeeded. The arena was retained and emergency Linux recovery completed;
+independent recovery-image/eMMC checks pass. This trial remains failed, with
+no firmware execution. The correction distinguishes low-bit faults from AS0
+completion and records faults observed before IRQ arming. The native controller
+also preserves a failed diagnostic exit without ending the session, allowing
+its normal shutdown command to run before recovery.
+
 ## Next milestones
 
 1. Implement GPU page tables, backing-memory lifetime and cache operations.

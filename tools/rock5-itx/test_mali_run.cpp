@@ -69,6 +69,7 @@ struct FirmwareModel : ResetModel {
 			if (fault != L2OffFailure) { l2On = false; regs[0x160] = 0; }
 		} else if (offset == 0x2418) {
 			assert(l2On && !mcuRunning);
+			regs[0x2000] |= 1u << 16; // AS0 request completion is not a fault.
 			if (value == 2) asLocked = true;
 			else if (value == 3) asLocked = false;
 			else {
@@ -198,6 +199,7 @@ int main()
 		if (fault == RunNone) {
 			assert(info.result == 0 && info.cleanupResult == 0 && info.flags == 255);
 			assert(info.boot.count == 1 && info.ping.count == 1 && model.flushes == 2);
+			assert(info.mmuRawAfter == 65536);
 			assert(info.interface.version == 0x01050000 && info.interface.groupCount == 8);
 			assert(!model.asMapped && !model.l2On && !model.mcuRunning && !model.asLocked);
 		} else {

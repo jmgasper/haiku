@@ -15,6 +15,9 @@ static const uint32_t kCycleFirmware = 0x4d435304;
 static const uint32_t kFirmwareRunVersion = 1;
 static const uint32_t kGlobalInterrupt = 1u << 31;
 static const uint32_t kFirmwarePing = 1u << 8;
+// MMU IRQ low bits are faults; upper bits report AS request completion.
+static const uint32_t kMmuFaultBits = 0xffff;
+static const uint32_t kMmuAs0Completed = 1u << 16;
 static const uint32_t kFirmwareAllocated = 1;
 static const uint32_t kFirmwareAddressSpace = 2;
 static const uint32_t kFirmwareMcuCommand = 4;
@@ -322,10 +325,11 @@ RunFirmwarePowered(IO& io, FirmwareMemory& memory, FirmwareRunInfo& info)
 	info.asConfigAfter = ReadGpu64(io, 0x2430);
 	SnapshotReset(io, info.after);
 	if (info.gpuFault.count != 0 || info.mmuFault.count != 0
-		|| (info.after.raw & 3) != 0 || info.mmuRawAfter != 0)
+		|| (info.after.raw & 3) != 0 || (info.mmuRawAfter & kMmuFaultBits) != 0)
 		info.result = kFirmwareFault;
 	if (info.cleanupResult == kFirmwareRunOK
-		&& (!ResetIdleMatches(info.after) || info.jobRawAfter != 0 || info.mmuRawAfter != 0
+		&& (!ResetIdleMatches(info.after) || info.jobRawAfter != 0
+			|| (info.mmuRawAfter & ~kMmuAs0Completed) != 0
 			|| (info.asStatusAfter & 1) != 0))
 		info.cleanupResult = kFirmwareFinalStateFailed;
 	if (info.cleanupResult == kFirmwareRunOK)

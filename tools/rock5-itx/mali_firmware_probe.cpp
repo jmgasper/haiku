@@ -75,7 +75,7 @@ RunFirmware(const void* data, size_t bytes)
 		&& info.gpuFault.count == 0 && info.mmuFault.count == 0
 		&& info.power.result == kIdentityOK && info.power.restoreResult == kIdentityOK
 		&& info.power.flags == 7 && ResetIdleMatches(info.after)
-		&& info.jobRawAfter == 0 && info.mmuRawAfter == 0
+		&& info.jobRawAfter == 0 && (info.mmuRawAfter & ~kMmuAs0Completed) == 0
 		&& info.asStatusAfter == 0 && info.asConfigAfter == 1;
 	free(request);
 	if (ok)

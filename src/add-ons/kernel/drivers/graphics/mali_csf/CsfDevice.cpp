@@ -139,7 +139,8 @@ public:
 	{
 		InterruptsSpinLocker locker(fLock);
 		// An unhandled old job/MMU event is a failed admission, never a boot.
-		if (ReadGpu(0x1000) != 0 || ReadGpu(0x2000) != 0 || (ReadGpu(kGpuRaw) & 3) != 0)
+		if (ReadGpu(0x1000) != 0 || (ReadGpu(0x2000) & ~kMmuAs0Completed) != 0
+			|| (ReadGpu(kGpuRaw) & 3) != 0)
 			return false;
 		for (unsigned i = 0; i < 3; i++) {
 			fInterrupts[i].capture = {};
@@ -163,13 +164,28 @@ public:
 	FirmwareCapture ReadFirmwareCapture(unsigned index)
 	{
 		InterruptsSpinLocker locker(fLock);
-		return fInterrupts[index].capture;
+		FirmwareCapture capture = fInterrupts[index].capture;
+		if (index > 0 && capture.count == 0) {
+			uint32 raw = ReadGpu(index == 1 ? 0x2000 : kGpuRaw);
+			if ((raw & (index == 1 ? kMmuFaultBits : 3)) != 0) {
+				// Also preserve a fault that precedes IRQ arming. count=0 and
+				// cpu=-1 explicitly distinguish polling from IRQ delivery.
+				capture.raw = raw;
+				capture.cpu = -1;
+				capture.whenMicros = system_time();
+				capture.deviceStatus = ReadGpu(index == 1 ? 0x241c : 0x3c);
+				capture.address = ReadGpu64(*this, index == 1 ? 0x2420 : 0x40);
+				if (index == 1)
+					capture.extra = ReadGpu64(*this, 0x2438);
+			}
+		}
+		return capture;
 	}
 	bool FirmwareFaulted()
 	{
 		InterruptsSpinLocker locker(fLock);
 		return fInterrupts[1].capture.count != 0 || fInterrupts[2].capture.count != 0
-			|| ReadGpu(0x2000) != 0 || (ReadGpu(kGpuRaw) & 3) != 0;
+			|| (ReadGpu(0x2000) & kMmuFaultBits) != 0 || (ReadGpu(kGpuRaw) & 3) != 0;
 	}
 	void StopFirmwareHandlers()
 	{

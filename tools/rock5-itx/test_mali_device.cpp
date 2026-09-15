@@ -219,6 +219,17 @@ int main()
 			assert(io.InstallFirmwareHandlers() == (failure == 0));
 			if (!failure) {
 				for (int irq = 124; irq <= 126; irq++) assert(Invoke(irq) == B_UNHANDLED_INTERRUPT);
+				sGpu[0x2000 / 4] = 65536;
+				assert(!io.FirmwareFaulted());
+				assert(io.ReadFirmwareCapture(1).raw == 0);
+				sGpu[0x2000 / 4] |= 1;
+				sGpu[0x241c / 4] = 0x345;
+				sGpu[0x2420 / 4] = 0x12340000;
+				assert(io.FirmwareFaulted() && !io.ArmFirmwareInterrupts());
+				auto polled = io.ReadFirmwareCapture(1);
+				assert(polled.count == 0 && polled.cpu == -1 && polled.raw == 65537);
+				assert(polled.deviceStatus == 0x345 && polled.address == 0x12340000);
+				sGpu[0x2000 / 4] = 65536;
 				assert(io.ArmFirmwareInterrupts());
 				for (unsigned i = 0; i < 3; i++) {
 					unsigned raw = i == 0 ? 0x1000 : i == 1 ? 0x2000 : 0x20;
