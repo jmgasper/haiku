@@ -106,7 +106,10 @@
     "native-observer.h": "18a3f0df2b06d3cc778cf8002d86afca2450f3da5509d4a80c757cb49af48502",
     "glview_validation.py": "4d70f618a67ae12de24cc2000b05f318a09dc31a5dde9a1becca01da84715a35",
     "run-glview": "30bbfde5c2ba04b5b5a09273badd49314a1adb25a9b2e8dc821361c37ba515f9",
-    "libglvnd-haiku-bitmap.patch": "e9b6c1d5301b952a536d66bdd2f2985b983d3adf45dbb6e2ef373b46ac1b81ff"
+    "libglvnd-haiku-bitmap.patch": "e9b6c1d5301b952a536d66bdd2f2985b983d3adf45dbb6e2ef373b46ac1b81ff",
+    "pipeline-probe.cpp": "99a0bbf8906153a7de9e5377bff63ba3a072798a9ccc112c1e5954712d4a12f7",
+    "pipeline_validation.py": "5ba96500e9f3bc97283406813b3eab8fe0cddd8022d92c6ccd6dbd4a17410677",
+    "run-pipeline": "770551d0b5501a35f7b3d3b967a69ed147f303e1178f40ce4d7d9f02cfb01001"
   },
   "host_helpers": {
     "vtn_bindgen2": "8f03a1c42332ec1494a89de73d9bdbe7bba91aeeb98c6c0cd2d6623eb276a167",
@@ -142,5 +145,6 @@
     "mesa-clc": "system",
     "precomp-compiler": "system",
     "spirv-tools": "disabled"
-  }
+  },
+  "pipeline_probe_scope": "Two GLES contexts, six 97x67 complete RGBA cases each: padded texture upload/nearest sampling, depth, stencil, additive blending, scissor, reflected render-to-texture. Software and native execution pending."
 }

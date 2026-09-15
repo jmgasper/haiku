@@ -195,6 +195,12 @@ def main():
             '-I' + str(abi), HERE / 'glview-probe.cpp',
             '-L' + str(glvnd_install / 'boot/system/lib'), '-lGL', '-lEGL', '-lbe',
             '-o', glview_probe], 'glview-probe-compile')
+        pipeline_probe = root / 'rock5_haiku_pipeline_probe'
+        run([str(compiler_prefix) + 'g++', '--sysroot=' + str(sdk), '-std=c++17',
+            '-O2', '-g', '-Wall', '-Wextra', '-Werror', '-I' + str(headers / 'os/opengl'),
+            '-I' + str(abi), HERE / 'pipeline-probe.cpp',
+            '-L' + str(glvnd_install / 'boot/system/lib'), '-lEGL', '-lGLESv2',
+            '-o', pipeline_probe], 'pipeline-probe-compile')
         package = root / 'package'
         package.mkdir()
         assets = []
@@ -205,7 +211,8 @@ def main():
                 glvnd_install / 'boot/system/lib' / (name + '.so.' + version)))
         for name, source in libraries + [('rock5_haiku_mesa_probe', probe),
                 ('rock5_haiku_window_probe', window_probe),
-                ('rock5_haiku_glview_probe', glview_probe)]:
+                ('rock5_haiku_glview_probe', glview_probe),
+                ('rock5_haiku_pipeline_probe', pipeline_probe)]:
             target = package / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
@@ -215,7 +222,7 @@ def main():
                 sha256=digest(target), bytes=target.stat().st_size, mode='755',
                 unstripped_source=str(source), unstripped_sha256=digest(source)))
         for name, mode in [('run', '755'), ('run-window', '755'),
-                ('run-glview', '755'), ('vendor.json', '644')]:
+                ('run-glview', '755'), ('run-pipeline', '755'), ('vendor.json', '644')]:
             target = package / name
             shutil.copy2(HERE / name, target)
             assets.append(dict(source=str(target), guest='/boot/home/mesa-trial/' + name,

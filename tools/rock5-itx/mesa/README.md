@@ -19,6 +19,13 @@ under the same renderer mutex used by bitmap replacement. Both QEMU modes and
 the exact native image pinned in MESA-GLVIEW.md pass. This does not qualify
 general application compatibility or replace the normal system OpenGL packages.
 
+The new GLES pipeline probe builds successfully; execution is pending. It
+checks six operations in each of two contexts at 97 by 67 pixels: padded
+texture upload and sampling, depth rejection, stencil masking, additive
+blending, scissor clipping and reflected sampling of a GPU-rendered texture.
+Complete RGBA readbacks, guard bytes and native allocation baselines are checked
+independently. This bounded fixture does not establish GLES conformance.
+
 `sources.json` pins both original archives, six SDK packages, seven kernel ABI
 headers, host compiler helpers and every patch/probe/validator. The complete
 Mesa patch includes the pinned HaikuPorts changes; do not apply those twice.
@@ -56,7 +63,7 @@ after patched-source and SDK preparation. Logs, commands, input receipts and
 failures remain in the output directory. This reconstructs pinned sources and
 configuration; build-path/debug information can change binary hashes.
 
-The package manifest lists thirteen assets for `/boot/home/mesa-trial`. The `run`
+The package manifest lists fifteen assets for `/boot/home/mesa-trial`. The `run`
 launcher uses Haiku's `LIBRARY_PATH` and a private GLVND vendor file. Its probe
 accepts `--native`, `--software` and `--absent-device`. Native mode expects
 `/dev/graphics/mali_csf/0` and the separately supplied, licensed firmware at
@@ -70,6 +77,8 @@ the returned data independently and writes actual bitmap/screen PNGs. CPU
 bitmap presentation does not accelerate app_server or implement native display
 modes. `run-glview --software` and `run-glview --native` run the OpenGL Kit
 fixture, checked independently by `glview_validation.py`.
+`run-pipeline --software` and `run-pipeline --native` run the GLES pipeline
+fixture, checked independently by `pipeline_validation.py`.
 
 `render_validation.py` independently compares complete readbacks with integer
 pixel-region oracles and can write actual RGBA/PNG artifacts.
