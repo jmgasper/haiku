@@ -1006,8 +1006,23 @@ copyout/allocation rollback, mapping generations, address reuse, 64-chunk growth
 pending-growth abort and quotas retaining memory after client closure. Eight
 firmware/MMU model cases check successful growth, zero-memory replies, invalid
 requests and lock/commit/flush/unlock failures; published memory survives failed
-completion. The ARM64 driver and extended native probe compile. Full image,
-QEMU and native qualification are pending; +204 remains the qualified baseline.
+completion. The full +206 ARM64 image and both two-boot QEMU modes pass.
+The first native trial fails during the ninth 512-sample heap readback batch;
+the first eight batches and prior queue/synchronization cases pass. Its test
+incorrectly encodes a positive 32 KiB STORE_MULTIPLE offset in a signed 16-bit
+field, addressing before the readback buffer. An independent host command
+interpreter reproduces the failure. Rebasing the destination per batch passes
+33 interpreted programs, full readback guards and the exact original-error
+rejection. All 146 host checks pass with this correction; its full build, QEMU
+and native repeat are pending. The +204 image remains the qualified baseline.
+
+The failed +206 trial recovers after verified normal shutdown. Independent Linux
+checks preserve the eMMC filesystem, both test-file hashes and all three reference
+regions. Its raw evidence remains under
+`artifacts/automated-mali-heaps/20260915T094137Z-aaeaeb` and
+`artifacts/interactive/20260915T094144Z-58e3d0`. The readback-command reproduction
+and correction are recorded separately under
+`artifacts/mali-heaps/20260915T095409Z-019ef0`.
 
 The native probe is intended to read 5,159 samples across five 2 MiB chunks,
 check descriptor/header/data guards, execute HEAP_SET, retain queued heap data

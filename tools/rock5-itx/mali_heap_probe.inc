@@ -1,4 +1,5 @@
 /* Native heap checks, using the persistent queue and synchronization helpers. */
+#include "mali_heap_commands.h"
 static HeapInfo
 HeapState(int fd, uint32_t vm = 0, uint32_t handle = 0)
 {
@@ -39,25 +40,6 @@ HeapAreas()
 {
 	return Areas("Mali CSF heap context") + Areas("Mali CSF heap chunk")
 		+ Areas("Mali CSF heap page tables") + Areas("Mali CSF heap membership table");
-}
-struct HeapSample { uint64_t address, expected; };
-static const uint64_t kHeapReadbackAddress = UINT64_C(0x150000000);
-static unsigned
-HeapCopyProgram(uint64_t* code, const HeapSample* samples, unsigned first, unsigned count)
-{
-	CHECK(first + count <= 8192 && count <= 512);
-	unsigned n = 0;
-	code[n++] = UINT64_C(0x0300000000ff0000); // WAIT all
-	code[n++] = UINT64_C(0x1700000000000002); // load/store scoreboard 0
-	code[n++] = UINT64_C(0x0104000000000000) | kHeapReadbackAddress;
-	for (unsigned i = first; i < first + count; i++) {
-		code[n++] = UINT64_C(0x0100000000000000) | samples[i].address;
-		code[n++] = UINT64_C(0x1402000000030000); // LOAD r2:r3, [d0], mask3
-		code[n++] = UINT64_C(0x0300000000010000);
-		code[n++] = UINT64_C(0x1502040000030000) | (i * 8); // STORE r2:r3, [d4+offset]
-		code[n++] = UINT64_C(0x0300000000010000);
-	}
-	CHECK(n * 8 <= 32768); return n * 8;
 }
 static void
 RunNativeHeaps(int fd)
@@ -102,6 +84,7 @@ RunNativeHeaps(int fd)
 	while (copied < count) {
 		unsigned amount = count - copied < 512 ? count - copied : 512;
 		unsigned bytes = HeapCopyProgram((uint64_t*)context.stream.Data(), samples, copied, amount);
+		CHECK(bytes != 0);
 		context.Wait(context.Submit(kStreamAddress, bytes));
 		copied += amount; batches++;
 		for (unsigned i = 0; i < 8192; i++) CHECK(words[i] == (i < copied ? samples[i].expected : guard));
@@ -133,6 +116,7 @@ RunNativeHeaps(int fd)
 	for (unsigned i = 0; i < 32; i++) independent.Submit(longAddress, 1024 * 1024);
 	SubmitSync(independent, 0, 0, {}, {{gate, 0, 0}});
 	unsigned bytes = HeapCopyProgram((uint64_t*)context.stream.Data(), samples, 0, 1);
+	CHECK(bytes != 0);
 	SubmitSync(context, kStreamAddress, bytes, {{gate, 0, 0}}, {});
 	unsigned pending = Info(fd, independent.queue).pending; CHECK(pending > 0);
 	CHECK(Info(fd, context.queue).pending == 1);
@@ -143,6 +127,7 @@ RunNativeHeaps(int fd)
 	CHECK(Info(fd, context.queue).pending == 1 && words[0] == guard);
 	CHECK(HeapState(fd).globalHeaps == baseline.globalHeaps + 2);
 	bytes = HeapCopyProgram((uint64_t*)((uint8_t*)context.stream.Data() + 32768), samples, 1, 1);
+	CHECK(bytes != 0);
 	context.Submit(kStreamAddress + 32768, bytes);
 	context.Wait(context.sequence); independent.Wait(independent.sequence);
 	CHECK(words[0] == marker && words[1] == 0);
