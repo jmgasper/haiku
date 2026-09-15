@@ -158,6 +158,7 @@ static int Invoke(int irq)
 	return sHandlers.at(irq).first(sHandlers.at(irq).second);
 }
 
+#include "CsfDevice.h"
 #include "device.inc"
 
 static ResourceInfo resources()
@@ -213,19 +214,24 @@ int main()
 	delete_area(combined);
 	sUid = 5;
 	assert(RunCommandRequest(resources(), NULL, 0, recovery) == B_NOT_ALLOWED);
+	assert(RunCommandRequest(resources(), NULL, 0, recovery, true) == B_NOT_ALLOWED);
 	sUid = 0;
 	assert(RunCommandRequest(resources(), NULL, sizeof(CommandRunInfo), recovery) == B_BAD_ADDRESS);
+	assert(RunCommandRequest(resources(), NULL, sizeof(CommandRunInfo), recovery, true) == B_BAD_ADDRESS);
 	vector<uint8_t> commandPacket(sizeof(CommandRunInfo) + bytes.size(), 0);
 	put(commandPacket, 0, 1); put(commandPacket, 4, bytes.size());
 	memcpy(commandPacket.data() + sizeof(CommandRunInfo), bytes.data(), bytes.size());
 	assert(RunCommandRequest(resources(), commandPacket.data(), sizeof(CommandRunInfo) - 1, recovery) == B_BAD_VALUE);
 	assert(RunCommandRequest(resources(), commandPacket.data(), commandPacket.size() - 1, recovery) == B_BAD_VALUE);
+	assert(RunCommandRequest(resources(), commandPacket.data(), commandPacket.size() - 1, recovery, true) == B_BAD_VALUE);
 	assert(RunCommandRequest({}, commandPacket.data(), commandPacket.size(), recovery) == B_NOT_SUPPORTED);
+	assert(RunCommandRequest({}, commandPacket.data(), commandPacket.size(), recovery, true) == B_NOT_SUPPORTED);
 	assert(sAreas.empty() && !recovery);
 	put(commandPacket, 0, 2);
 	assert(RunCommandRequest({}, commandPacket.data(), commandPacket.size(), recovery) == B_BAD_VALUE);
 	put(commandPacket, 0, 1); commandPacket[sizeof(CommandRunInfo)] ^= 1;
 	assert(RunCommandRequest({}, commandPacket.data(), commandPacket.size(), recovery) == B_BAD_DATA);
+	assert(RunCommandRequest({}, commandPacket.data(), commandPacket.size(), recovery, true) == B_BAD_DATA);
 	assert(sAreas.empty() && !recovery);
 	for (unsigned failure = 1; failure <= 4; failure++) {
 		sFailMap = failure; sMaps = 0;

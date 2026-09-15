@@ -376,7 +376,7 @@ RunFirmwareRequest(const ResourceInfo& resources, void* buffer, size_t length,
 
 status_t
 RunCommandRequest(const ResourceInfo& resources, void* buffer, size_t length,
-	bool& needsRecovery)
+	bool& needsRecovery, bool shader)
 {
 	if (geteuid() != 0)
 		return B_NOT_ALLOWED;
@@ -411,6 +411,12 @@ RunCommandRequest(const ResourceInfo& resources, void* buffer, size_t length,
 	info->version = kCommandRunVersion;
 	info->firmwareBytes = header[1];
 	info->result = info->cleanupResult = kCommandNotAttempted;
+	if (shader) {
+		// No application GPU mapping exists yet. Replace the default command
+		// regression with the fixed Linux-matched shader and descriptors.
+		BuildStoreShader(memory.Code());
+		info->flags = kCommandShader;
+	}
 	info->rootPhysical = memory.RootPhysical();
 	info->userTablePages = CommandMemory::kUserTablePages;
 	info->userBytes = CommandMemory::kUserBytes;

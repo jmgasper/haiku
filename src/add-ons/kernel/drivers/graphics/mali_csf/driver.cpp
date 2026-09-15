@@ -34,6 +34,7 @@ struct Controller {
 	bool resetEnabled;
 	bool firmwareEnabled;
 	bool commandsEnabled;
+	bool shaderEnabled;
 	bool identityNeedsRecovery;
 };
 
@@ -395,7 +396,8 @@ InitDriver(device_node* node, void** cookie)
 	void* settings = load_driver_settings("mali_csf");
 	if (valid && settings != NULL) {
 		const char* profile = get_driver_parameter(settings, "firmware_profile", "", "");
-		bool commands = strcmp(profile, "rock5-itx-edk2-v1.1-gpu-commands") == 0;
+		bool shader = strcmp(profile, "rock5-itx-edk2-v1.1-gpu-shader") == 0;
+		bool commands = shader || strcmp(profile, "rock5-itx-edk2-v1.1-gpu-commands") == 0;
 		bool firmware = commands || strcmp(profile, "rock5-itx-edk2-v1.1-gpu-firmware") == 0;
 		bool reset = firmware || strcmp(profile, "rock5-itx-edk2-v1.1-gpu-reset") == 0;
 		controller->identityEnabled = (reset || strcmp(profile, "rock5-itx-edk2-v1.1-gpu-identity") == 0)
@@ -403,6 +405,7 @@ InitDriver(device_node* node, void** cookie)
 		controller->resetEnabled = reset && controller->identityEnabled;
 		controller->firmwareEnabled = firmware && controller->identityEnabled;
 		controller->commandsEnabled = commands && controller->identityEnabled;
+		controller->shaderEnabled = shader && controller->identityEnabled;
 	}
 	if (settings != NULL)
 		unload_driver_settings(settings);
@@ -466,15 +469,15 @@ Write(void*, off_t, const void*, size_t* size)
 static status_t
 Control(void* cookie, uint32 op, void* buffer, size_t length)
 {
-	if (op == kCycleCommands) {
+	if (op == kCycleCommands || op == kCycleShader) {
 		Controller* controller = (Controller*)cookie;
 		MutexLocker locker(sHardwareLock);
-		if (!controller->commandsEnabled)
+		if (op == kCycleShader ? !controller->shaderEnabled : !controller->commandsEnabled)
 			return B_NOT_ALLOWED;
 		if (controller->identityNeedsRecovery || FirmwareMemoryRetained())
 			return B_BUSY;
 		return RunCommandRequest(controller->resources, buffer, length,
-			controller->identityNeedsRecovery);
+			controller->identityNeedsRecovery, op == kCycleShader);
 	}
 	if (op == kCycleFirmware) {
 		Controller* controller = (Controller*)cookie;

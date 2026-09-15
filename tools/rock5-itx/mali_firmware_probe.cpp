@@ -87,9 +87,11 @@ RunFirmware(const void* data, size_t bytes)
 }
 
 static bool
-RunCommands(const void* data, size_t bytes)
+RunCommands(const void* data, size_t bytes, bool shader)
 {
 	using namespace MaliCSF;
+	uint32_t operation = shader ? kCycleShader : kCycleCommands;
+	const char* workload = shader ? "SHADER" : "COMMAND";
 	int fd = open("/dev/graphics/mali_csf/0", O_RDONLY);
 	if (fd < 0) { perror("open Mali command interface"); return false; }
 	size_t requestBytes = sizeof(CommandRunInfo) + bytes;
@@ -98,20 +100,20 @@ RunCommands(const void* data, size_t bytes)
 	request->version = kCommandRunVersion;
 	request->firmwareBytes = bytes;
 	memcpy((uint8_t*)request + sizeof(*request), data, bytes);
-	if (ioctl(fd, kCycleCommands, request, sizeof(*request) - 1) == 0 || errno != EINVAL
-		|| ioctl(fd, kCycleCommands, NULL, requestBytes) == 0 || errno != EFAULT) {
+	if (ioctl(fd, operation, request, sizeof(*request) - 1) == 0 || errno != EINVAL
+		|| ioctl(fd, operation, NULL, requestBytes) == 0 || errno != EFAULT) {
 		fprintf(stderr, "Malformed command request was not rejected\n");
 		free(request); close(fd); return false;
 	}
-	if (ioctl(fd, kCycleCommands, request, requestBytes) != 0) {
+	if (ioctl(fd, operation, request, requestBytes) != 0) {
 		perror("Mali command cycle"); free(request); close(fd); return false;
 	}
 	close(fd);
 	const CommandRunInfo& info = *request;
-	printf("ROCK5_MALI_COMMAND_RUN version=%" PRIu32 " result=%" PRIu32
+	printf("ROCK5_MALI_%s_RUN version=%" PRIu32 " result=%" PRIu32
 		" cleanup=%" PRIu32 " flags=%08" PRIx32 " rounds=%" PRIu32
 		" bytes=%" PRIu32 " root=%016" PRIx64 " fw_result=%" PRIu32
-		" fw_cleanup=%" PRIu32 " fw_flags=%08" PRIx32 "\n", info.version,
+		" fw_cleanup=%" PRIu32 " fw_flags=%08" PRIx32 "\n", workload, info.version,
 		info.result, info.cleanupResult, info.flags, info.roundsCompleted,
 		info.arenaBytes, info.rootPhysical, info.firmware.result,
 		info.firmware.cleanupResult, info.firmware.flags);
@@ -120,13 +122,13 @@ RunCommands(const void* data, size_t bytes)
 	for (size_t offset = 0; offset < sizeof(info); offset += 256) {
 		size_t size = sizeof(info) - offset;
 		if (size > 256) size = 256;
-		printf("ROCK5_MALI_COMMAND_ABI total=%zu offset=%zu hex=", sizeof(info), offset);
+		printf("ROCK5_MALI_%s_ABI total=%zu offset=%zu hex=", workload, sizeof(info), offset);
 		for (size_t n = 0; n < size; n++) printf("%02x", ((const uint8_t*)&info)[offset + n]);
 		putchar('\n');
 	}
 	bool ok = info.version == kCommandRunVersion && info.firmwareBytes == bytes
 		&& info.result == kCommandOK && info.cleanupResult == kCommandOK
-		&& info.flags == 511 && info.roundsCompleted == 2
+		&& info.flags == (511 | (shader ? kCommandShader : 0)) && info.roundsCompleted == 2
 		&& info.firmware.result == kFirmwareRunOK && info.firmware.cleanupResult == kFirmwareRunOK
 		&& info.firmware.flags == 255 && info.asStatusAfter == 0 && info.asConfigAfter == 1
 		&& info.haltStatus == 2 && info.streamFault == 0 && info.streamFatal == 0;
@@ -141,7 +143,9 @@ RunCommands(const void* data, size_t bytes)
 	}
 	free(request);
 	if (ok)
-		puts("ROCK5_MALI_COMMAND_CYCLE_PASS submissions=2 checked_words=4096 restored=1 rendered=0");
+		puts(shader
+			? "ROCK5_MALI_SHADER_CYCLE_PASS submissions=2 checked_words=4096 restored=1 shader_executed=1 rendered=0"
+			: "ROCK5_MALI_COMMAND_CYCLE_PASS submissions=2 checked_words=4096 restored=1 rendered=0");
 	else
 		fprintf(stderr, "Mali command cycle failed; retain evidence and recover the board\n");
 	return ok;
@@ -153,8 +157,9 @@ main(int argc, char** argv)
 {
 	bool start = argc == 3 && strcmp(argv[1], "--start") == 0;
 	bool commands = argc == 3 && strcmp(argv[1], "--commands") == 0;
-	if (argc != 2 && !start && !commands) {
-		fprintf(stderr, "usage: %s [--start|--commands] mali_csffw.bin\n", argv[0]);
+	bool shader = argc == 3 && strcmp(argv[1], "--shader") == 0;
+	if (argc != 2 && !start && !commands && !shader) {
+		fprintf(stderr, "usage: %s [--start|--commands|--shader] mali_csffw.bin\n", argv[0]);
 		return 2;
 	}
 	FILE* file = fopen(argv[argc - 1], "rb");
@@ -222,7 +227,7 @@ main(int argc, char** argv)
 		free(copy);
 	}
 	puts("ROCK5_MALI_FIRMWARE_CONTAINER_PASS gpu_started=0");
-	bool ok = commands ? RunCommands(data, size) : !start || RunFirmware(data, size);
+	bool ok = commands || shader ? RunCommands(data, size, shader) : !start || RunFirmware(data, size);
 	free(data);
 	return ok ? 0 : 1;
 }

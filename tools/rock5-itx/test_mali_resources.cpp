@@ -301,10 +301,12 @@ static status_t RunFirmwareRequest(const ResourceInfo&, void*, size_t, bool& rec
 	return B_OK;
 }
 static unsigned sCommandRequests;
-static status_t RunCommandRequest(const ResourceInfo&, void*, size_t, bool& recovery)
+static unsigned sShaderRequests;
+static status_t RunCommandRequest(const ResourceInfo&, void*, size_t, bool& recovery, bool shader)
 {
 	assert(sLockDepth == 1);
 	sCommandRequests++;
+	sShaderRequests += shader;
 	recovery = true;
 	return B_OK;
 }
@@ -636,6 +638,20 @@ main()
 	assert(Control(&controller, kCycleCommands, NULL, 0) == B_BUSY);
 	assert(Control(&controller, kCycleFirmware, NULL, 0) == B_BUSY);
 	assert(sCommandRequests == 1 && sFirmwareRequests == 1);
+	controller.identityNeedsRecovery = false;
+	assert(Control(&controller, kCycleShader, NULL, 0) == B_NOT_ALLOWED);
+	assert(sCommandRequests == 1 && sShaderRequests == 0);
+	controller.shaderEnabled = true;
+	sFirmwareRetained = true;
+	assert(Control(&controller, kCycleShader, NULL, 0) == B_BUSY);
+	assert(sCommandRequests == 1 && sShaderRequests == 0);
+	sFirmwareRetained = false;
+	assert(Control(&controller, kCycleShader, NULL, 0) == B_OK);
+	assert(sCommandRequests == 2 && sShaderRequests == 1 && controller.identityNeedsRecovery);
+	assert(Control(&controller, kCycleShader, NULL, 0) == B_BUSY);
+	assert(Control(&controller, kCycleCommands, NULL, 0) == B_BUSY);
+	assert(Control(&controller, kCycleFirmware, NULL, 0) == B_BUSY);
+	assert(sCommandRequests == 2 && sShaderRequests == 1 && sFirmwareRequests == 1);
 
 	size_t page = sysconf(_SC_PAGESIZE);
 	uint8_t* memory = (uint8_t*)mmap(NULL, 2 * page, PROT_READ | PROT_WRITE,

@@ -4,10 +4,12 @@
 
 #include "CsfRun.h"
 #include "CsfCommandMemory.h"
+#include "CsfShader.h"
 
 namespace MaliCSF {
 
 static const uint32_t kCycleCommands = 0x4d435305;
+static const uint32_t kCycleShader = 0x4d435306;
 static const uint32_t kCommandRunVersion = 1;
 static const uint32_t kCommandConfigured = 1;
 static const uint32_t kCommandMapped = 2;
@@ -18,6 +20,7 @@ static const uint32_t kCommandTerminated = 32;
 static const uint32_t kCommandHalted = 64;
 static const uint32_t kCommandUnmapped = 128;
 static const uint32_t kCommandSnapshot = 256;
+static const uint32_t kCommandShader = 512;
 
 enum CommandResult {
 	kCommandOK = 0, kCommandNotAttempted, kCommandInterfaceFailed,
