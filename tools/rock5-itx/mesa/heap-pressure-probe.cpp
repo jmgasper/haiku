@@ -3,6 +3,19 @@
 #include "pipeline-probe.cpp"
 #undef main
 
+// The growth fixture remains the default. The separate limit executable
+// selects a fixed one-chunk heap and firmware incremental-rendering diagnostics.
+#ifndef ROCK5_HEAP_LIMIT
+#define ROCK5_HEAP_LIMIT 0
+#endif
+#if ROCK5_HEAP_LIMIT
+#define ROCK5_HEAP_PREFIX "ROCK5_LIMIT"
+static const unsigned heap_chunk_limit = 1;
+#else
+#define ROCK5_HEAP_PREFIX "ROCK5_PRESSURE"
+static const unsigned heap_chunk_limit = 32;
+#endif
+
 static const unsigned pressure_quads[] = {8192, 16384};
 static const unsigned pressure_colours[] = {1, 2, 4, 6};
 
@@ -11,14 +24,15 @@ static int heap_state(int fd, unsigned cycle, unsigned phase)
     if (software) return 1;
     Snapshot value{};
     CHECK(snapshot(fd, &value));
-    printf("ROCK5_PRESSURE_HEAP cycle=%u phase=%u clients=%u heaps=%u chunks=%u bytes=%llu\n",
+    printf(ROCK5_HEAP_PREFIX "_HEAP cycle=%u phase=%u clients=%u heaps=%u chunks=%u bytes=%llu\n",
         cycle, phase, value.buffers.globalClients, value.heaps.globalHeaps,
         value.heaps.globalChunks, (unsigned long long)value.heaps.globalBytes);
     CHECK(value.buffers.globalClients == 2 && value.heaps.globalHeaps == 1);
-    CHECK(value.heaps.globalChunks >= 1 && value.heaps.globalChunks <= 32);
+    CHECK(value.heaps.globalChunks >= 1 && value.heaps.globalChunks <= heap_chunk_limit);
     CHECK(value.heaps.globalBytes == 4096ull + value.heaps.globalChunks * 262144ull);
     // Initial allocation is not evidence of firmware-requested growth.
-    CHECK(phase == 0 ? value.heaps.globalChunks == 1 : value.heaps.globalChunks > 1);
+    CHECK((ROCK5_HEAP_LIMIT || phase == 0)
+        ? value.heaps.globalChunks == 1 : value.heaps.globalChunks > 1);
     return 1;
 }
 
@@ -47,7 +61,7 @@ static int pressure_readback(unsigned cycle, unsigned round, bigtime_t start)
     }
     for (unsigned i = 0; i < GUARD; ++i)
         guards += data[i] != canary || data[GUARD + PIXEL_BYTES + i] != canary;
-    printf("ROCK5_PRESSURE_PIXELS_BEGIN cycle=%u round=%u quads=%u width=%u height=%u format=RGBA8 origin=lower-left\n",
+    printf(ROCK5_HEAP_PREFIX "_PIXELS_BEGIN cycle=%u round=%u quads=%u width=%u height=%u format=RGBA8 origin=lower-left\n",
         cycle, round, pressure_quads[round], WIDTH, HEIGHT);
     printf("guard_before="); dump(data, GUARD); printf("\n");
     for (unsigned y = 0; y < HEIGHT; ++y) {
@@ -55,7 +69,7 @@ static int pressure_readback(unsigned cycle, unsigned round, bigtime_t start)
         dump(data + GUARD + y * WIDTH * 4, WIDTH * 4); printf("\n");
     }
     printf("guard_after="); dump(data + GUARD + PIXEL_BYTES, GUARD); printf("\n");
-    printf("ROCK5_PRESSURE_PIXELS_END cycle=%u round=%u mismatches=%u guard_errors=%u wait=%04x render_us=%lld\n",
+    printf(ROCK5_HEAP_PREFIX "_PIXELS_END cycle=%u round=%u mismatches=%u guard_errors=%u wait=%04x render_us=%lld\n",
         cycle, round, errors, guards, wait, (long long)elapsed);
     CHECK(errors == 0 && guards == 0);
     return 1;
@@ -80,7 +94,7 @@ static int pressure_context(EGLDisplay display, unsigned cycle, int fd)
     CHECK(surface != EGL_NO_SURFACE && eglMakeCurrent(display, surface, surface, context));
     const char* renderer = (const char*)glGetString(GL_RENDERER);
     const char* version = (const char*)glGetString(GL_VERSION);
-    printf("ROCK5_PRESSURE_GL cycle=%u renderer=%s version=%s\n", cycle,
+    printf(ROCK5_HEAP_PREFIX "_GL cycle=%u renderer=%s version=%s\n", cycle,
         renderer ? renderer : "NULL", version ? version : "NULL");
     CHECK(renderer && !strcmp(renderer, software ? "softpipe" : "Mali-G610 (Panfrost)"));
     CHECK(version && !strncmp(version, "OpenGL ES 3.", 12) && strstr(version, "Mesa 25.3.6"));
@@ -98,7 +112,7 @@ static int pressure_context(EGLDisplay display, unsigned cycle, int fd)
     if (!linked) {
         char log[4096];
         glGetProgramInfoLog(object, sizeof(log), NULL, log);
-        fprintf(stderr, "ROCK5_PRESSURE_LINK_FAILURE %s\n", log);
+        fprintf(stderr, ROCK5_HEAP_PREFIX "_LINK_FAILURE %s\n", log);
     }
     glDeleteShader(vertex); glDeleteShader(fragment);
     CHECK(linked);
@@ -125,7 +139,7 @@ static int pressure_context(EGLDisplay display, unsigned cycle, int fd)
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, NULL);
     glEnableVertexAttribArray(0);
     CHECK(glGetError() == GL_NO_ERROR);
-    printf("ROCK5_PRESSURE_VERTICES cycle=%u vertices=%u bytes=%zu explicit_buffer=1\n",
+    printf(ROCK5_HEAP_PREFIX "_VERTICES cycle=%u vertices=%u bytes=%zu explicit_buffer=1\n",
         cycle, vertices, upload_bytes);
 
     glGenTextures(1, &texture); glBindTexture(GL_TEXTURE_2D, texture);
@@ -157,7 +171,7 @@ static int pressure_context(EGLDisplay display, unsigned cycle, int fd)
     CHECK(eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));
     CHECK(eglDestroySurface(display, surface)); CHECK(eglDestroyContext(display, context));
     CHECK(eglTerminate(display)); CHECK(eglReleaseThread());
-    printf("ROCK5_PRESSURE_CONTEXT_PASS cycle=%u rounds=2 destroyed=1\n", cycle);
+    printf(ROCK5_HEAP_PREFIX "_CONTEXT_PASS cycle=%u rounds=2 destroyed=1\n", cycle);
     return 1;
 }
 
@@ -170,7 +184,7 @@ static int pressure_run(const char* mode)
     CHECK(unsetenv("MESA_LOADER_DRIVER_OVERRIDE") == 0);
     CHECK(setenv("pan_csf_chunk_size", "262144", 1) == 0);
     CHECK(setenv("pan_csf_initial_chunks", "1", 1) == 0);
-    CHECK(setenv("pan_csf_max_chunks", "32", 1) == 0);
+    CHECK(setenv("pan_csf_max_chunks", ROCK5_HEAP_LIMIT ? "1" : "32", 1) == 0);
     if (software) {
         CHECK(unsetenv("HAIKU_CSF_DEVICE") == 0);
         CHECK(setenv("LIBGL_ALWAYS_SOFTWARE", "1", 1) == 0);
@@ -182,7 +196,9 @@ static int pressure_run(const char* mode)
         CHECK(unsetenv("LIBGL_ALWAYS_SOFTWARE") == 0);
         CHECK(unsetenv("GALLIUM_DRIVER") == 0);
     }
-    printf("ROCK5_PRESSURE_READY version=1 mode=%s chunk_size=262144 initial_chunks=1 max_chunks=32\n", mode);
+    if (ROCK5_HEAP_LIMIT && !software)
+        CHECK(setenv("PAN_MESA_DEBUG", "perf,sync", 1) == 0);
+    printf(ROCK5_HEAP_PREFIX "_READY version=1 mode=%s chunk_size=262144 initial_chunks=1 max_chunks=%u\n", mode, heap_chunk_limit);
     auto get_display = (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
     CHECK(get_display);
     int fd = -1;
@@ -201,7 +217,7 @@ static int pressure_run(const char* mode)
         if (!software) CHECK(snapshot(fd, &after) && same_snapshot(before, after, cycle));
     }
     if (fd >= 0) CHECK(close(fd) == 0);
-    printf("ROCK5_PRESSURE_PASS contexts=2 frames=4 pixels=25996 guard_bytes=512 software=%u\n", software);
+    printf(ROCK5_HEAP_PREFIX "_PASS contexts=2 frames=4 pixels=25996 guard_bytes=512 software=%u\n", software);
     return 1;
 }
 

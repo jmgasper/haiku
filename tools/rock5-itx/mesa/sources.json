@@ -113,10 +113,13 @@
     "lifetime-probe.cpp": "fa30f2ccac9ed85e0e0ccea4894c585289889f15fa0e6e314878a29507390ea0",
     "lifetime_validation.py": "8f0afb8f0be546ba84d7bac0a7734d9a4d4eddff6df39ec1702c9f8c92bc86cc",
     "run-lifetime": "9ca9e8357180762c864a023b084855c34ab6b6a4ece1c94bfbbdf0f7defed409",
-    "heap-pressure-probe.cpp": "7c1731fc6ec8a8b9a53aa9a6734ebaf565d853660fe9bde8f8f69850ef9c4073",
-    "heap_pressure_validation.py": "4eea46addf5bc806c4a252cf2db5d69e26891cee223d6bd7591481480f6d5e7b",
+    "heap-pressure-probe.cpp": "aedadaceab6cd7394f03b07194653e5a7f0b51751645ed01503c1fc6e94584e5",
+    "heap_pressure_validation.py": "10dcb465bd8b8b153ae7a7dbfc9cbf7c6b5b02b19b409948b1ebbf2ff3f3b067",
     "run-heap-pressure": "058662b783c92a87a01ab6796d685a06233e88397b87a018775d235dfc3e26ae",
-    "build.py": "3bf072eb5dabb96a29c0719d6978f6441a84c107addf7245408a827fb6d52c29"
+    "build.py": "55bd2d4d259598672a9af249186dfd0b5b9f219f94ec95f563a25985153987d3",
+    "heap-limit-probe.cpp": "b2d33d95c99c074b5dc757dd293f84a93b49c32daf62bd73bb38e68e349585a2",
+    "heap_limit_validation.py": "48063c97a2ea6fb539b830a548a3f286385bc2f97f219c1c817dd2ba5360e7f3",
+    "run-heap-limit": "2738aa58cc844423eb59affe127bf1fb54705d0830aaa3a6a33552233070de85"
   },
   "host_helpers": {
     "vtn_bindgen2": "8f03a1c42332ec1494a89de73d9bdbe7bba91aeeb98c6c0cd2d6623eb276a167",
@@ -155,5 +158,6 @@
   },
   "pipeline_probe_scope": "Two GLES contexts, six 97x67 complete RGBA cases each: padded texture upload/nearest sampling, depth, stencil, additive blending, scissor, reflected render-to-texture. Both QEMU modes and two native boots qualified; no conformance or sustained-load claim.",
   "lifetime_probe_scope": "Three separate processes; SIGKILL after checked rendering with resources live, survivor redraw, normal cleanup and fresh-context reuse. Both QEMU modes and two native boots qualified; no pending-job kill, reset or sustained-load claim.",
-  "heap_pressure_probe_scope": "Qualified +224: explicit vertex buffer, four native contexts, 24 actual firmware growths, complete RGBA/guards/queues, cleanup, normal reboot/shutdown and recovery/integrity; refused allocations, incremental rendering and sustained/reset paths remain open."
+  "heap_pressure_probe_scope": "Qualified +224: explicit vertex buffer, four native contexts, 24 actual firmware growths, complete RGBA/guards/queues, cleanup, normal reboot/shutdown and recovery/integrity; refused allocations, incremental rendering and sustained/reset paths remain open.",
+  "heap_limit_probe_scope": "Candidate: two fixed one-chunk contexts, complete RGBA/guards, actual native allocation refusals and Mesa incremental-rendering counters, queues and cleanup; native qualification pending."
 }

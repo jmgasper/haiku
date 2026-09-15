@@ -73,7 +73,7 @@ after patched-source and SDK preparation. Logs, commands, input receipts and
 failures remain in the output directory. This reconstructs pinned sources and
 configuration; build-path/debug information can change binary hashes.
 
-The package manifest lists nineteen assets for `/boot/home/mesa-trial`. The `run`
+The package manifest lists twenty-one assets for `/boot/home/mesa-trial`. The `run`
 launcher uses Haiku's `LIBRARY_PATH` and a private GLVND vendor file. Its probe
 accepts `--native`, `--software` and `--absent-device`. Native mode expects
 `/dev/graphics/mali_csf/0` and the separately supplied, licensed firmware at
@@ -113,3 +113,9 @@ The pressure fixture uses an explicit 786,432-byte vertex buffer. Its first
 GL-generated vertex-ID variant exposed a softpipe split-draw limitation in
 QEMU; that candidate was not deployed. Its source and complete failed readback
 are retained. This workload does not qualify gl_VertexID across large draws.
+
+`run-heap-limit --software` and `run-heap-limit --native` use the same explicit
+geometry with a fixed single 256 KiB chunk. Native mode enables Mesa perf/sync
+diagnostics and requires actual incremental-rendering counters, constant heap
+size, full pixels/guards, completed queues and cleanup. Firmware refusal counts
+are checked separately on UART. This new fixture is pending qualification.
