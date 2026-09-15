@@ -58,10 +58,17 @@ public:
         CHECK(Window()->Lock());
         ResizeTo(width - 1, height - 1);
         Window()->Unlock();
-        uint32_t actual_width, actual_height;
-        GetSize(actual_width, actual_height);
-        CHECK(actual_width == width && actual_height == height);
-        return 1;
+        // BView::_ResizeBy posts B_VIEW_RESIZED to the window looper.
+        uint32_t actual_width = 0, actual_height = 0;
+        bigtime_t deadline = system_time() + 5000000;
+        while (system_time() < deadline) {
+            GetSize(actual_width, actual_height);
+            if (actual_width == width && actual_height == height) return 1;
+            snooze(1000);
+        }
+        fprintf(stderr, "ROCK5_WINDOW_RESIZE_TIMEOUT expected=%ux%u actual=%ux%u\n",
+            width,height,actual_width,actual_height);
+        CHECK(false);
     }
 
     int WaitDrawn()
