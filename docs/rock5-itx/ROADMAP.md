@@ -15,24 +15,16 @@ the underlying buses permit it. No calendar estimates imply guaranteed support.
 
 Current owner priority: phase 7 GPU support, then remaining hardware. Further
 Ethernet driver development is deferred. [GPU.md](GPU.md) records qualified
-native power/identity/reset/IRQ cycles, firmware and application page tables,
-and four compute-shader submissions plus four CS memory-store regressions on
-two +195 Haiku boots. Complete data matches the Linux reference, and group,
-MCU and address-space cleanup passes. Hardware rendering and Mesa integration
-are next. A Linux Mesa/Panfrost reference now passes four complete checked
-RGBA8 images over two contexts, with balanced GPU object lifetimes and normal
-recovery. Implement Haiku's persistent userspace objects and synchronization
-to run that same workload. The first client/CPU-buffer layer now passes on two
-+198 native boots, including aliases, fork, mappings surviving handle/descriptor
-close and normal/killed process cleanup. The +200 software GPU VM layer now passes
-two native boots: transactional mapping updates, partial unmaps, buffer retention
-after handle removal and cleanup of 12 child VMs/48 buffers per boot. All 142 host
-checks, both QEMU modes, compute regressions and recovery/integrity pass. The +202
-runtime now activates application VMs through persistent queues: two native boots
-accept 1,264 submissions, check 1,136 completions and eight compute shaders, and
-pass context state, ring wrap, queued VM replacement and process cleanup. All 144
-host checks, the build, both QEMU modes and recovery/integrity pass. Heap management,
-shared synchronization objects, Mesa rendering and GPU-hang recovery remain open.
+native power/reset/IRQ, firmware, client buffers, GPU VMs and persistent queues.
+The +204 image adds shared binary/timeline synchronization, snapshot descriptors
+and queue dependencies. Two native boots accept 1,474 submissions, explicitly
+check 1,338 completions and run eight compute shaders, including cross-context
+GPU data and normal/killed process cleanup. All 145 host checks, the full build,
+both QEMU modes, both desktops, recovery and independent storage/image integrity
+pass. A separately qualified Linux Mesa/Panfrost reference renders four checked
+RGBA8 images over two contexts. Tiler heaps and Mesa adaptation are next to run
+that workload through Haiku. Hardware rendering, automatic GPU-hang recovery,
+accelerated window output and native display integration remain open.
 
 ## 0 — Build and lab foundation
 

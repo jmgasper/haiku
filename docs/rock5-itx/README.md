@@ -9,14 +9,15 @@ The [GitHub work items](TRACKING.md) split the roadmap into issues and milestone
 The current priority is [Mali-G610 GPU support](GPU.md), followed by remaining
 hardware. The owner has deferred further Ethernet driver work.
 
-The +202 image qualifies [persistent application GPU queues](GPU.md#persistent-application-gpu-queues)
-on two native boots: 1,264 accepted submissions, 1,136 explicitly checked
-completions and eight compute shader runs. Context/register preservation, ring
-wraparound, queued VM replacement and normal/killed process cleanup pass, with
-kernel allocation counts restored. All 144 host checks, the full ARM64 build,
-both two-boot QEMU modes, prior regressions, both desktops, normal recovery and
-independent storage/image integrity pass. Heap management and synchronization
-are next for Mesa rendering; the desktop still uses the EFI framebuffer.
+The +204 image qualifies [shared GPU synchronization](GPU.md#shared-gpu-synchronization)
+on two native boots. Binary/timeline fences, shared and snapshot descriptors,
+cross-context GPU data dependencies, out-of-order completion and normal/killed
+process cleanup pass. Together with the persistent-queue regressions, the tests
+accept 1,474 submissions, explicitly check 1,338 completions and run eight compute
+shaders. Driver and kernel allocation counts return to baseline. All 145 host
+checks, the full ARM64 build, both two-boot QEMU modes, both desktops, normal
+recovery and independent storage/image integrity pass. Tiler heaps and Mesa
+adaptation are next; the desktop still uses the EFI framebuffer.
 
 The +195 image
 passes four compute-shader submissions and four CS memory-store regressions
@@ -48,9 +49,9 @@ updates. Both native boots pass partial unmaps, failed-update rollback, buffers
 retained after handle removal and normal/killed process cleanup, with independent
 kernel-area counts. All 142 host checks, the ARM64 build, both QEMU modes, the
 previous compute regressions and recovery/integrity checks pass. These operations
-prepare GPU page tables; activation for application work is still next. Persistent
-firmware, groups, queues, heaps and synchronization are needed before Mesa can
-render through Haiku. [GPU.md](GPU.md#persistent-gpu-address-spaces) records the scope.
+prepare GPU page tables; the later +202 queue runtime activates them, and +204
+adds shared synchronization. Tiler heaps and Mesa adaptation are still needed
+for Haiku rendering. [GPU.md](GPU.md#persistent-gpu-address-spaces) records the scope.
 
 The Samsung 950 Pro now has a full-capacity Haiku development installation:
 a 512 MiB EFI partition and a 238 GiB BFS volume. Native Installer copying,

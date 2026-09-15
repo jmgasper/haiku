@@ -8,10 +8,12 @@ memory-store regressions across two +195 native boots. Complete data matches
 the Linux reference. A separate Linux Mesa/Panfrost reference now renders four
 checked images on the board. Haiku rendering and Mesa integration remain pending.
 The +198 and +200 images qualify persistent client buffers and GPU VM mappings.
-The +202 image now activates those VMs for persistent application queues: two
+The +202 image activates those VMs for persistent application queues: two
 native boots accept 1,264 submissions and check 1,136 completions, including eight
 compute shaders. Queue/context state, VM replacement, process cleanup and recovery
-pass. Heap management, synchronization and Mesa rendering are next.
+pass. The +204 image adds shared binary/timeline fences and queue dependencies,
+with 210 further submissions across two native boots: 202 checked completions
+and eight expected cancellations. Tiler heaps and Mesa rendering are next.
 
 ## Reference and integration route
 
@@ -717,12 +719,11 @@ remain open.
 
 ## Next milestones
 
-1. Build on the qualified software GPU VM layer: implement persistent firmware,
-   groups, heaps and synchronization, retain roots through hardware completion,
-   and run the checked
-   Mesa rendering workload through Haiku. The
-   Linux Mesa reference is qualified. Regulator ownership, runtime power
-   management and DVFS remain separate work.
+1. Add tiler heap management and Mesa adaptation on the qualified client,
+   VM, persistent-queue and shared-synchronization layers, then run the checked
+   Mesa rendering workload through Haiku. The Linux Mesa reference is qualified.
+   Extend fence integration and implement automatic fault/reset recovery.
+   Regulator ownership, runtime power management and DVFS remain separate work.
 2. Integrate Panfrost with Haiku EGL/OpenGL and window output; qualify pixels,
    multiple contexts, process exit, reset, sustained work and conformance.
 3. Implement native VOP2/HDMI modes/hotplug and additional display routes,
@@ -874,9 +875,9 @@ reboot/shutdown, automatic Linux recovery, independent eMMC file/filesystem/regi
 checks and recovery-image integrity pass. Existing vendor Linux display/DMA/
 Bluetooth/old-Panfrost recovery messages are recorded against the +200 evidence;
 this trial establishes neither their cause nor support for those devices.
-The visible desktop still uses the EFI framebuffer. Heap management, shared
-synchronization objects, Mesa adaptation, rendering and display integration remain
-open. The installed SSD's qualification is unchanged.
+The visible desktop still uses the EFI framebuffer. The later +204 image adds
+shared synchronization; heap management, Mesa adaptation, rendering and display
+integration remain open. The installed SSD's qualification is unchanged.
 
 Source: `7eda1093697490b12895fa1056f3ef2048cb22e2` (`hrev60097+202`). Image SHA-256:
 `1d81744daa32943ffc822781e79640132ea2be7a1af0926210b2881669dfda6f`.
@@ -893,9 +894,9 @@ Evidence under `/mnt/HaikuWork`:
 - `artifacts/emmc-file-readback/20260915T074111Z-da0931` and
   `artifacts/emmc-read-reference/20260915T074121Z-9f751b` for independent Linux checks.
 
-## Shared synchronization candidate
+## Shared GPU synchronization
 
-The next candidate adds per-open native binary/timeline synchronization handles,
+The +204 image qualifies per-open native binary/timeline synchronization handles,
 shared-object and snapshot-fence descriptors, atomic wait/signal submission
 batches and cancellation propagation. Binary replacement preserves previously
 captured fences; increasing timeline points include prior work. Wait-any,
@@ -919,8 +920,58 @@ active DMA memory under the existing recovery rule. Automatic GPU reset is pendi
 All 145 host checks pass, including the production synchronization implementation,
 descriptor publication/module release, timeline DAGs, concurrent waits, allocation
 and copyout rollback, actual runtime scheduling, cancellation and retained failures.
-The ARM64 kernel/driver and extended queue probe compile. Full image, QEMU and
-native qualification are pending; +202 remains the qualified baseline. The native
-probe will exercise shared GPU data, out-of-order timeline completion, snapshot
-reuse, normal/killed child cleanup and descriptor import after final device close.
-Mesa rendering, tiler heaps and the remaining GPU integration are still pending.
+The full ARM64 build and both two-boot QEMU modes pass. QEMU validates packaging,
+kernel regressions and absent-GPU behavior; it does not emulate Mali execution.
+
+Each of two native boots passes 128 CPU timeline points, wait-for-submit and
+wait-available publication followed immediately by reset, binary replacement and
+fence transfer. A consumer queue loads an actual GPU-produced word from another
+context's buffer, stores it in its own buffer and preserves all 4,093 guards.
+Blocked producer work remains pending while independent work completes. Timeline
+point 20's job completes before point 10, but its fence remains pending until the
+older work finishes. Snapshot fences retain their captured work across reset and
+CPU signaling.
+
+Two child teams per boot leave blocked GPU work: one exits normally and one is
+killed. Their parent dependencies report cancellation without executing their
+commands, preserving all 2,048 guards. Shared and snapshot descriptors survive
+the last GPU descriptor close, duplication, reopening and import, followed by
+reset/reuse. Driver counters and independently enumerated kernel areas return to
+baseline. Native evidence establishes descriptor lifetime across final device
+close; actual kernel module unloading was not observed. Module release ordering
+is checked by the production-descriptor host fixture.
+
+The new synchronization cases accept 210 submissions across the two boots,
+check 202 completions and verify eight cancellations. The retained queue cases
+accept 1,264 submissions and check 1,136 completions, including eight compute
+shaders. Combined totals are 1,474 accepted submissions and 1,338 explicitly
+checked completions; child work canceled during closure is not counted as a
+checked completion. The earlier firmware/command/compute, buffer, VM and
+129,024 instruction-alias checks per boot also pass. Both runtime shutdowns
+report successful engine/firmware cleanup, restored platform state, no GPU fault
+and no retained DMA allocations.
+
+Both desktops, 36 component and ten file hashes, identical FDTs, normal reboot,
+verified shutdown before media replacement, watchdog disarming and automatic
+Linux recovery pass. Linux independently verifies the eMMC files, complete FAT
+fixture and three reference regions; the recovery-image hash is unchanged.
+Six existing vendor Linux display/DMA/Bluetooth/old-Panfrost warning signatures
+recur in the prior +202 recovery; no cause or repair is inferred. The desktop
+continues to use the EFI framebuffer. Tiler heaps, Mesa rendering, poll/select
+and inter-driver fence integration, automatic GPU reset and native display
+support remain pending.
+
+Source: `cb87c65fcd8bff2e6b24e9e082b469727fe7e2c9` (`hrev60097+204`). Image SHA-256:
+`2fccfd6be0ce3a3719c34bcb47128c99fbc1b60e6d5cd45613f1f02c8cd3a6dc`.
+Evidence under `/mnt/HaikuWork`:
+
+- `artifacts/mali-sync/20260915T075656Z-7fc037/host-checks.log`, design and source snapshots.
+- `artifacts/build-20260915T083651Z.log` and
+  `artifacts/mali-sync-image/20260915T083828Z-551e2c/manifest.json`.
+- EL1: `artifacts/qemu-shell/20260915T083952Z-189546/mali-sync-result.json`;
+  EL2: `artifacts/qemu-shell/20260915T083952Z-342f01/mali-sync-result.json`.
+- `artifacts/automated-mali-sync/20260915T084304Z-6944c1/qualification.json`,
+  desktop reviews and `recovery-warnings-review.json`.
+- `artifacts/interactive/20260915T084321Z-21c6f6` for UART, transcripts and frames.
+- `artifacts/emmc-file-readback/20260915T085212Z-db73eb` and
+  `artifacts/emmc-read-reference/20260915T085722Z-334ced` for independent Linux checks.
