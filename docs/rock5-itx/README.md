@@ -9,20 +9,30 @@ The [GitHub work items](TRACKING.md) split the roadmap into issues and milestone
 The current priority is [Mali-G610 GPU support](GPU.md), followed by remaining
 hardware. The owner has deferred further Ethernet driver work.
 
+The +232 USB image qualifies [sustained GPU rendering](MESA-SUSTAINED.md)
+on two native boots. Four retained contexts each complete at least sixty
+seconds of measured rendering with stable tiler-heap use. All 91,648 frames,
+595,620,352 pixels, 11,730,944 guard bytes and 183,304 submissions pass; fixed
+heaps complete 147,196 incremental passes. Earlier graphics fixtures, both
+QEMU modes, normal reboot/shutdown, recovery and independent integrity checks
+pass. Full logs are captured in RAM and retrieved with checked, paced transfers.
+Concurrent workloads, GPU fault/reset recovery and native display control
+remain open.
+
 The +227 USB image qualifies [fixed tiler heaps and incremental rendering](MESA-HEAP-LIMIT.md)
 on two native boots. Mesa completes 36 incremental passes after 36 requests
 for more heap memory are refused. All 51,992 pixels, 1,024 guards, 24 submissions
 and allocation baselines pass. Earlier graphics tests, both QEMU modes, normal
 reboot/shutdown, recovery and independent integrity checks pass. The OpenGL Kit
-fixture now waits for completed window updates before screen capture. Sustained
-rendering, GPU fault/reset recovery and native display control remain open.
+fixture now waits for completed window updates before screen capture. GPU
+fault/reset recovery and native display control remain open.
 
 The +224 USB image qualifies [firmware tiler heap growth](MESA-HEAP-PRESSURE.md)
 on two native boots. Four contexts each grow from one chunk to four, then
 seven; all 24 firmware requests receive memory. All 51,992 pixels, 1,024 guards,
 24 submissions and allocation baselines pass. Previous graphics regressions,
 both QEMU modes, normal reboot/shutdown, recovery and independent integrity
-checks pass. Sustained workloads and GPU fault/reset recovery remain open.
+checks pass. GPU fault/reset recovery remains open.
 
 The +221 USB image qualifies [graphics-process cleanup](MESA-LIFETIME.md)
 on two native boots. A process is terminated after completed rendering while
@@ -30,14 +40,14 @@ its resources remain open; the survivor renders correctly and a fresh context
 works afterward. All 51,992 pixels, 1,024 guards and allocation baselines pass.
 Earlier GPU/window fixtures, both QEMU modes, normal reboot/shutdown, recovery
 and independent integrity checks pass. Termination during pending graphics
-work, sustained rendering and GPU fault/reset recovery remain open.
+work and GPU fault/reset recovery remain open.
 
 The +219 USB image qualifies [six GLES pipeline operations](MESA-PIPELINE.md)
 on two native boots: texture upload/sampling, depth, stencil, blending, scissor
 and render-to-texture. All 155,976 pixels, 3,072 guards and sixty GPU submissions
 pass, with allocations restored after each context. Both QEMU modes, earlier
 GPU/window fixtures, normal reboot/shutdown, recovery and independent storage
-integrity pass. Conformance, sustained work, graphics-process termination and
+integrity pass. Conformance, termination during pending graphics work and
 GPU fault recovery remain open.
 
 The +217 USB image qualifies [normal OpenGL Kit rendering](MESA-GLVIEW.md)
@@ -47,7 +57,7 @@ draws, resizing and context retirement. All 32 frames, 168,960 GL pixels,
 allocation counts return to baseline. Previous GPU regressions, both QEMU modes,
 normal reboot/shutdown, recovery and independent integrity checks also pass.
 This is a bounded application fixture using private libraries and CPU bitmap
-presentation. General compatibility, sustained rendering and GPU fault recovery
+presentation. General compatibility and GPU fault recovery
 remain open.
 
 The +215 USB image qualifies [native GPU rendering in EGL windows](MESA-WINDOW.md)

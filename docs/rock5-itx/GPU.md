@@ -14,8 +14,7 @@ The +215 image adds [EGL windows](MESA-WINDOW.md), +217 adds normal
 [OpenGL Kit views](MESA-GLVIEW.md), and +219 qualifies six
 [GLES pipeline operations](MESA-PIPELINE.md), including textures, depth,
 stencil, blending and render-to-texture. All complete pixels, cleanup and
-recovery checks pass. Conformance, sustained rendering and native display
-control remain open.
+recovery checks pass. Conformance and native display control remain open.
 The +221 image also qualifies [graphics-process cleanup](MESA-LIFETIME.md):
 terminate a process after finished GPU work with its resources open, render
 again in the survivor, then verify fresh-context reuse and complete cleanup.
@@ -35,7 +34,17 @@ cleanup, all prior regressions and recovery/integrity checks pass. Refused
 allocations and incremental rendering are now qualified by the
 [+227 fixed-heap image](MESA-HEAP-LIMIT.md): 36 actual refusals, 36 incremental
 passes and all 51,992 pixels across two native boots pass, with full cleanup,
-recovery and integrity. Sustained work and fault recovery remain open.
+recovery and integrity. Fault recovery remains open.
+
+The +232 USB image qualifies [sustained GPU rendering](MESA-SUSTAINED.md)
+on two native boots. Four retained contexts each complete at least sixty
+seconds of measured rendering with stable tiler-heap use. All 91,648 frames,
+595,620,352 pixels, 11,730,944 guard bytes and 183,304 submissions pass; fixed
+heaps complete 147,196 incremental passes. Earlier graphics fixtures, both
+QEMU modes, normal reboot/shutdown, recovery and independent integrity checks
+pass. Full logs are captured in RAM and retrieved with checked, paced transfers.
+Concurrent workloads, GPU fault/reset recovery and native display control
+remain open.
 
 ## Reference and integration route
 

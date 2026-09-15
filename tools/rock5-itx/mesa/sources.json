@@ -55,7 +55,7 @@
     ]
   },
   "sdk_haiku_revision": "7908c0f07a8d3bbed99f6140c642cf30920b3232",
-  "qualified_runtime_revision": "hrev60097+227",
+  "qualified_runtime_revision": "hrev60097+232",
   "sdk_packages": [
     {
       "name": "haiku.hpkg",
@@ -122,7 +122,8 @@
     "run-heap-limit": "2738aa58cc844423eb59affe127bf1fb54705d0830aaa3a6a33552233070de85",
     "sustained-probe.cpp": "1c41e8e41a2c5311dc5c968d3657243e09a7dd037df8988d33cc06aab4500a78",
     "sustained_validation.py": "7f7bc8cc592beb5549235ad7248da9a1591aea09b30edb4b76dc0fbc16571115",
-    "run-sustained": "51bed6840b4da8a4ffc8baeb6b1dcc1d154f0184439d3c58143f0a48d0ee1179"
+    "run-sustained": "51bed6840b4da8a4ffc8baeb6b1dcc1d154f0184439d3c58143f0a48d0ee1179",
+    "sustained_capture.py": "785921da63847a127da08d9f6ab96d039dad9feb300df155d01b699152800081"
   },
   "host_helpers": {
     "vtn_bindgen2": "8f03a1c42332ec1494a89de73d9bdbe7bba91aeeb98c6c0cd2d6623eb276a167",
@@ -163,5 +164,5 @@
   "lifetime_probe_scope": "Three separate processes; SIGKILL after checked rendering with resources live, survivor redraw, normal cleanup and fresh-context reuse. Both QEMU modes and two native boots qualified; no pending-job kill, reset or sustained-load claim.",
   "heap_pressure_probe_scope": "Qualified +224: explicit vertex buffer, four native contexts, 24 actual firmware growths, complete RGBA/guards/queues, cleanup, normal reboot/shutdown and recovery/integrity; sustained/reset paths remain open; +227 separately qualifies refused allocations and incremental rendering.",
   "heap_limit_probe_scope": "Qualified +227: four fixed one-chunk contexts, 36 actual native allocation refusals, 36 Mesa incremental passes, all 51992 RGBA pixels/1024 guards, 24 completed submissions, cleanup and recovery/integrity. Sustained/reset and system-RAM exhaustion remain open.",
-  "sustained_probe_scope": "Candidate protocol2: two retained contexts, growth then fixed-heap; >=60seconds measured render and1024frames, samples every128frames, >=20seconds and1024frames stable heap tail, complete actual lossless RGBA/guards/queues/cleanup. Software32frames; prior+229controller restart and+230two-frame warmup assumption failures preserved; qualification pending."
+  "sustained_probe_scope": "Qualified protocol 2 on two +232 native boots: four retained contexts, each >=60 seconds measured render, >=20 seconds and 1024 frames of observed heap stability, lossless actual RGBA/guards and complete queues/cleanup. 91648 frames, 595620352 pixels, 183304 submissions, 147196 incremental passes. RAM capture and existing staged transfers verified; earlier failures preserved. No concurrency, conformance, thermal/DVFS or automatic reset qualification."
 }

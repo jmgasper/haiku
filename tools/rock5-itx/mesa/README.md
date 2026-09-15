@@ -130,10 +130,10 @@ size, full pixels/guards, completed queues and cleanup. Firmware refusal counts
 are checked separately on UART. The [qualified +227 image](../../../docs/rock5-itx/MESA-HEAP-LIMIT.md)
 passes both QEMU modes and two native boots: 36 actual refused requests,
 36 incremental passes, 51,992 pixels, 1,024 guards, 24 completed submissions,
-full cleanup and recovery/integrity. This limits the tiler heap only; sustained
-load, system-memory exhaustion and automatic GPU reset remain unqualified.
+full cleanup and recovery/integrity. This limits the tiler heap only;
+system-memory exhaustion and automatic GPU reset remain unqualified.
 
-`run-sustained --software` and `run-sustained --native` are a new candidate for
+`run-sustained --software` and `run-sustained --native` qualify
 continuous drawing in retained contexts: one permits heap growth, the next
 fixes one chunk. Native mode requires at least sixty seconds of accumulated
 draw/fence/readback time and 1,024 frames per context, with bounded frame and
@@ -141,8 +141,10 @@ wall-time limits. Software mode uses 32 frames per context. Each actual RGBA
 readback is encoded losslessly as runs and independently expanded and checked
 by `sustained_validation.py`, together with guards, timing, native heap
 observations, incremental-pass counters, completed queues and cleanup. The
-probe compiles; full QEMU/native qualification is pending. This does not claim
-GPU utilization, thermal limits, concurrency, conformance or reset recovery.
+[+232 image](../../../docs/rock5-itx/MESA-SUSTAINED.md) passes both QEMU modes and
+two native boots: 91,648 frames, 595,620,352 pixels, 11,730,944 guards, 183,304
+completed submissions and 147,196 incremental passes. This does not claim GPU
+utilization, thermal limits, concurrency, conformance or reset recovery.
 
 The first +229 candidate passed both two-boot QEMU modes, but the NanoKVM
 stopped responding and restarted during the first native sustained context.
@@ -150,7 +152,7 @@ All 5,368 complete captured frames matched; required duration and cleanup were
 not reached. Its source, binaries and partial output are preserved. The next
 candidate line-buffers stdout, reducing the many small writes used to encode
 each frame while retaining every output byte and newline flush. The exact
-controller-reset cause remains unresolved; native qualification is still open.
+controller-reset cause remains unresolved; this trial remains incomplete.
 
 The buffered +230 attempt kept the NanoKVM responsive and rendered 26,511
 correct frames over 60.001278 seconds of measured work, but rejected a heap
@@ -163,3 +165,18 @@ and 1,024 frames without further growth, in addition to the one-minute workload.
 New growth extends observation within the original frame/wall limits. The fixed
 policy still requires one chunk throughout. The host checks sample order, sizes
 and timestamps against actual frame timing; all cleanup checks remain required.
+
+The +231 streamed trial completed its growing context but lost NanoKVM during
+the fixed context. `sustained_capture.py` now builds a wrapper that saves full
+stdout/stderr to a dedicated Haiku RAM filesystem, then splits the log into
+at most sixteen 8 MiB pieces. Existing staged downloads run at 256 KiB/s after
+GPU work finishes. Guest, NanoKVM and host piece hashes and the complete log
+hash must agree before the unchanged rendering validator runs. Twelve damaged
+capture cases are rejected; the actual QEMU captures and eleven native pieces
+pass. The frozen controller and receipts are linked in MESA-SUSTAINED.md.
+
+That wrapper first exposed a RAM filesystem unmount assertion in QEMU. The
++232 Haiku change releases its published root vnode reference before deleting
+the hierarchy. Both QEMU modes and both native captures now unmount cleanly;
+normal reboot/shutdown and recovery pass. The earlier assertion and failed
+native trials remain preserved.
