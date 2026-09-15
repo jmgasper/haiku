@@ -225,6 +225,12 @@ def main():
             '-I' + str(abi), HERE / 'sustained-probe.cpp',
             '-L' + str(glvnd_install / 'boot/system/lib'), '-lEGL', '-lGLESv2',
             '-o', sustained_probe], 'sustained-probe-compile')
+        concurrency_probe = root / 'rock5_haiku_concurrency_probe'
+        run([str(compiler_prefix) + 'g++', '--sysroot=' + str(sdk), '-std=c++17',
+            '-O2', '-g', '-Wall', '-Wextra', '-Werror', '-I' + str(headers / 'os/opengl'),
+            '-I' + str(abi), HERE / 'concurrency-probe.cpp',
+            '-L' + str(glvnd_install / 'boot/system/lib'), '-lEGL', '-lGLESv2',
+            '-o', concurrency_probe], 'concurrency-probe-compile')
         package = root / 'package'
         package.mkdir()
         assets = []
@@ -240,7 +246,8 @@ def main():
                 ('rock5_haiku_lifetime_probe', lifetime_probe),
                 ('rock5_haiku_heap_pressure_probe', heap_pressure_probe),
                 ('rock5_haiku_heap_limit_probe', heap_limit_probe),
-                ('rock5_haiku_sustained_probe', sustained_probe)]:
+                ('rock5_haiku_sustained_probe', sustained_probe),
+                ('rock5_haiku_concurrency_probe', concurrency_probe)]:
             target = package / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
@@ -250,7 +257,7 @@ def main():
                 sha256=digest(target), bytes=target.stat().st_size, mode='755',
                 unstripped_source=str(source), unstripped_sha256=digest(source)))
         for name, mode in [('run', '755'), ('run-window', '755'),
-                ('run-glview', '755'), ('run-pipeline', '755'), ('run-lifetime', '755'), ('run-heap-pressure', '755'), ('run-heap-limit', '755'), ('run-sustained', '755'),
+                ('run-glview', '755'), ('run-pipeline', '755'), ('run-lifetime', '755'), ('run-heap-pressure', '755'), ('run-heap-limit', '755'), ('run-sustained', '755'), ('run-concurrency', '755'),
                 ('vendor.json', '644')]:
             target = package / name
             shutil.copy2(HERE / name, target)

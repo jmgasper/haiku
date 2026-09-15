@@ -180,3 +180,11 @@ That wrapper first exposed a RAM filesystem unmount assertion in QEMU. The
 the hierarchy. Both QEMU modes and both native captures now unmount cleanly;
 normal reboot/shutdown and recovery pass. The earlier assertion and failed
 native trials remain preserved.
+
+The candidate `run-concurrency --native` fixture synchronizes two independent
+graphics processes over 64 rounds. It checks actual draw/fence/readback interval
+overlap in at least 32 rounds, every RGBA8 pixel and guard byte, normal queue
+completion, survivor rendering and a fresh process after allocation cleanup.
+`--software` runs eight paired rounds without requiring timing overlap. The
+barrier wait and output encoding are outside measured rendering intervals.
+This fixture has not yet been qualified on the board.
