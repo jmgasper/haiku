@@ -7,7 +7,18 @@ driver support are tracked separately in [STATUS.md](STATUS.md) and the
 The [GitHub work items](TRACKING.md) split the roadmap into issues and milestones.
 
 The current priority is [Mali-G610 GPU support](GPU.md), followed by remaining
-hardware. The owner has deferred further Ethernet driver work. The +195 image
+hardware. The owner has deferred further Ethernet driver work.
+
+The +202 image qualifies [persistent application GPU queues](GPU.md#persistent-application-gpu-queues)
+on two native boots: 1,264 accepted submissions, 1,136 explicitly checked
+completions and eight compute shader runs. Context/register preservation, ring
+wraparound, queued VM replacement and normal/killed process cleanup pass, with
+kernel allocation counts restored. All 144 host checks, the full ARM64 build,
+both two-boot QEMU modes, prior regressions, both desktops, normal recovery and
+independent storage/image integrity pass. Heap management and synchronization
+are next for Mesa rendering; the desktop still uses the EFI framebuffer.
+
+The +195 image
 passes four compute-shader submissions and four CS memory-store regressions
 across two native Haiku boots.
 Haiku manages firmware and application page tables, group/queue setup, fresh

@@ -27,9 +27,12 @@ to run that same workload. The first client/CPU-buffer layer now passes on two
 close and normal/killed process cleanup. The +200 software GPU VM layer now passes
 two native boots: transactional mapping updates, partial unmaps, buffer retention
 after handle removal and cleanup of 12 child VMs/48 buffers per boot. All 142 host
-checks, both QEMU modes, compute regressions and recovery/integrity pass. Activate
-these VMs through persistent firmware, groups, queues, heaps and synchronization,
-then qualify memory retention during queued work and Mesa rendering.
+checks, both QEMU modes, compute regressions and recovery/integrity pass. The +202
+runtime now activates application VMs through persistent queues: two native boots
+accept 1,264 submissions, check 1,136 completions and eight compute shaders, and
+pass context state, ring wrap, queued VM replacement and process cleanup. All 144
+host checks, the build, both QEMU modes and recovery/integrity pass. Heap management,
+shared synchronization objects, Mesa rendering and GPU-hang recovery remain open.
 
 ## 0 — Build and lab foundation
 

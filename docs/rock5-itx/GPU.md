@@ -7,9 +7,11 @@ the Mali firmware and passes four compute-shader submissions plus four CS
 memory-store regressions across two +195 native boots. Complete data matches
 the Linux reference. A separate Linux Mesa/Panfrost reference now renders four
 checked images on the board. Haiku rendering and Mesa integration remain pending.
-The +198 image also qualifies persistent client-owned buffers and CPU mappings
-across two native boots, including process teardown, while retaining the shader
-regression. GPU VM mappings and application submission are next.
+The +198 and +200 images qualify persistent client buffers and GPU VM mappings.
+The +202 image now activates those VMs for persistent application queues: two
+native boots accept 1,264 submissions and check 1,136 completions, including eight
+compute shaders. Queue/context state, VM replacement, process cleanup and recovery
+pass. Heap management, synchronization and Mesa rendering are next.
 
 ## Reference and integration route
 
@@ -824,34 +826,69 @@ Qualified native component evidence:
   `7ce1024f8642f4375bea77d460ab4ce6da58f9c480efabd913c8581621a4772d`.
   EL2 and EL1 QEMU evidence: `artifacts/qemu-shell/20260914T224018Z-24475c`
   and `artifacts/qemu-shell/20260914T224018Z-efa455` respectively.
-## Persistent application execution candidate
 
-The next candidate adds a persistent kernel worker and per-client queue
+## Persistent application GPU queues
+
+The +202 image qualifies a persistent kernel worker and per-client queue
 create, submit, wait, query and destroy operations. It schedules up to eight
 queues through physical CSG0/AS1, suspending and resuming each queue's command
-state. Every accepted submission retains an immutable VM generation. Each
-queue has a private upper-half page-table subtree, command ring and completion
-page; changing the borrowed application root requires suspension, cache
-maintenance and acknowledged address-space removal first.
+state. Native tests use five contexts per boot; the eight-queue limit is also
+checked by the host fixture. Every accepted submission retains an immutable
+VM generation. Each queue has a private upper-half page-table subtree, 64 KiB
+command ring and completion page. Changing the borrowed application root
+requires suspension, cache maintenance and acknowledged address-space removal.
 
-Submission and completion waits do not hold the hardware control lock. The
-last queue close joins the worker after firmware and platform teardown. An
-uncertain hardware cycle retains its DMA allocations and VM leases until
-reboot. Automatic recovery from a GPU hang is not implemented by this change.
-The interface remains restricted by the existing experimental driver profile.
+Across two native boots, the application probe accepts 1,264 submissions and
+explicitly checks 1,136 completions, including eight compute shader runs. Both
+contexts preserve CS register 80 across calls, switches, VM changes and compute.
+Each boot advances the main ring to 67,456 bytes, past its first wrap, with
+matching insert/extract pointers, 1,058 observed interrupts and 527 synchronization
+events at the recorded checkpoint. All application data words and guards match.
+Thirty-two queued calls retain their original VM generation through a mapping
+replacement; stale-generation submissions are rejected.
 
-All 144 host checks pass. The independent scheduling model interprets 526
-submissions, follows installed physical page tables, checks register state
-across context and generation changes, wraps the 64 KiB ring and injects 23
-failure cases. The production runtime fixture exercises allocation/copyout
-rollback, queue limits, interrupted/timed-out waits, concurrent close, worker
-joining and failed-cycle retention. The ARM64 driver and native application
-probe compile. These results do not establish native GPU support for the new
-interface; image, QEMU and board qualification are pending.
+Two child processes per boot each report 32 pending submissions before normal
+exit and SIGKILL. They remove public buffer and VM handles before exiting.
+Queued work retains the required memory, cleanup returns driver counts and
+independently enumerated kernel areas to baseline, and the parent queues execute
+again. Child submissions may be canceled during close, so they are included in
+the accepted count but not the explicitly checked completion count.
 
-The native probe submits through application-owned buffers and VMs, including
-variable CS streams, four compute shaders, queued VM replacement, normal and
-killed process cleanup. Heap management, shared synchronization objects,
-Mesa adaptation, hardware rendering and display integration remain subsequent
-work. Evidence for this candidate is staged under
-`artifacts/mali-runtime/20260915T063420Z-2b85f0`.
+Submission and completion waits do not hold the hardware control lock. The last
+queue close joins the worker after firmware and platform teardown. Both native
+cycles report successful firmware cleanup and restoration with no GPU/stream
+fault. An uncertain hardware cycle retains its DMA allocations and VM leases
+until reboot; this failure path is tested with host fault injection. Automatic
+GPU-hang recovery remains unqualified. The API retains the existing experimental
+profile and privileged-open restrictions.
+
+All 144 host checks, the full ARM64 image build and both two-boot QEMU modes pass.
+The independent scheduling model interprets 526 submissions, walks installed
+physical page tables and injects 22 failure cases. The production runtime fixture
+covers allocation/copyout rollback, queue limits, interrupted/timed-out waits,
+concurrent close, worker joining and failed-cycle retention. QEMU checks packaging
+and absent-GPU behavior; it does not emulate Mali execution.
+
+Both native desktops, previous CPU-buffer/VM/command/compute regressions, normal
+reboot/shutdown, automatic Linux recovery, independent eMMC file/filesystem/region
+checks and recovery-image integrity pass. Existing vendor Linux display/DMA/
+Bluetooth/old-Panfrost recovery messages are recorded against the +200 evidence;
+this trial establishes neither their cause nor support for those devices.
+The visible desktop still uses the EFI framebuffer. Heap management, shared
+synchronization objects, Mesa adaptation, rendering and display integration remain
+open. The installed SSD's qualification is unchanged.
+
+Source: `7eda1093697490b12895fa1056f3ef2048cb22e2` (`hrev60097+202`). Image SHA-256:
+`1d81744daa32943ffc822781e79640132ea2be7a1af0926210b2881669dfda6f`.
+Evidence under `/mnt/HaikuWork`:
+
+- `artifacts/mali-runtime/20260915T063420Z-2b85f0/host-checks.log` and source snapshots.
+- `artifacts/build-20260915T072612Z.log` and
+  `artifacts/mali-runtime-image/20260915T072853Z-85613a/manifest.json`.
+- EL1: `artifacts/qemu-shell/20260915T073000Z-40905a/mali-runtime-result.json`;
+  EL2: `artifacts/qemu-shell/20260915T073000Z-8ffdac/mali-runtime-result.json`.
+- `artifacts/automated-mali-runtime/20260915T073324Z-d55bae/qualification.json`,
+  desktop reviews and `recovery-warnings-review.json`.
+- `artifacts/interactive/20260915T073332Z-760ef1` for UART, transcripts and frames.
+- `artifacts/emmc-file-readback/20260915T074111Z-da0931` and
+  `artifacts/emmc-read-reference/20260915T074121Z-9f751b` for independent Linux checks.
