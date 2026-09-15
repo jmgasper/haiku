@@ -100,16 +100,6 @@ static_assert(sizeof(CommandRunInfo) == 116200, "Command run ABI changed");
 static_assert(offsetof(CommandRunInfo, firmware) == 240, "Embedded firmware ABI moved");
 static_assert(offsetof(CommandRunInfo, rounds) == 1368, "Command buffers ABI moved");
 
-inline uint64_t ReadInterface64(const volatile uint32_t* words, unsigned byteOffset)
-{
-	return *(const volatile uint64_t*)(words + byteOffset / 4);
-}
-
-inline void WriteInterface64(volatile uint32_t* words, unsigned byteOffset, uint64_t value)
-{
-	*(volatile uint64_t*)(words + byteOffset / 4) = value;
-}
-
 // Uses the CSF 1.5 layout checked by InspectInterface and Linux 6.18.52's
 // panthor_fw/sched handshake (MIT option). A single thread owns shared-input
 // writes; no atomic RMW is used on the ARM64 Normal-NC shared mapping.

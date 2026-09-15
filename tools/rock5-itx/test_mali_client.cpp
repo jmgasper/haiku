@@ -212,7 +212,7 @@ int main()
 	assert(OpenClient(true, &a) == B_OK && OpenClient(true, &b) == B_OK && a != b);
 	ClientInfo info{}; info.version = 1;
 	assert(Call(a, kGetClientInfo, info) == B_OK
-		&& info.capabilities == (kClientCpuBuffers | kClientVmMappings));
+		&& info.capabilities == (kClientCpuBuffers | kClientVmMappings | kClientQueues));
 	assert(info.globalClients == 2 && info.globalBuffers == 0);
 	BufferCreate bad{}; bad.version = 1; bad.bytes = 4096;
 	for (size_t size : {size_t(0), sizeof(bad) - 1, sizeof(bad) + 1})

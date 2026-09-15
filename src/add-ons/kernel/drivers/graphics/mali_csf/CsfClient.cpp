@@ -606,6 +606,35 @@ MaliCSF::ReleaseClientVm(ClientVmLease& lease)
 	memset(&lease, 0, sizeof(lease));
 }
 
+const uint64*
+MaliCSF::ClientVmRoot(const ClientVmLease& lease)
+{
+	const ClientGeneration* generation = (const ClientGeneration*)lease.state;
+	return generation == NULL ? NULL : (const uint64*)generation->tables.address;
+}
+
+bool
+MaliCSF::ClientVmRange(const ClientVmLease& lease, uint64 address, uint64 bytes)
+{
+	const ClientGeneration* generation = (const ClientGeneration*)lease.state;
+	if (generation == NULL || bytes == 0 || address >= generation->userLimit
+		|| bytes > generation->userLimit - address)
+		return false;
+	for (uint32 i = 0; i < generation->count; i++) {
+		const ClientMapping& map = generation->mappings[i];
+		uint64 end = map.address + map.bytes;
+		if (address >= end)
+			continue;
+		if (address < map.address)
+			return false;
+		if (bytes <= end - address)
+			return true;
+		bytes -= end - address;
+		address = end;
+	}
+	return false;
+}
+
 status_t
 MaliCSF::ControlClient(void* cookie, uint32 op, void* user, size_t length)
 {
@@ -623,7 +652,7 @@ MaliCSF::ControlClient(void* cookie, uint32 op, void* user, size_t length)
 			return B_BAD_VALUE;
 		ClientInfo info = {};
 		info.version = kClientVersion;
-		info.capabilities = client->writable ? kClientCpuBuffers | kClientVmMappings : 0;
+		info.capabilities = client->writable ? kClientCpuBuffers | kClientVmMappings | kClientQueues : 0;
 		info.maxBuffers = kMaxClientBuffers;
 		info.maxBufferBytes = kMaxBufferBytes;
 		info.maxClientBytes = kMaxClientBufferBytes;

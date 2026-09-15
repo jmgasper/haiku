@@ -108,6 +108,13 @@ static void CheckVms()
 	assert(AcquireClientVm(a, vm.handle, 2, original) == B_BAD_VALUE);
 	auto before = Contents(original);
 	assert(before.size() == 4);
+	assert(ClientVmRoot(original) != NULL);
+	assert(ClientVmRange(original, map.address, map.bytes));
+	assert(ClientVmRange(original, map.address + 3, map.bytes - 3));
+	assert(!ClientVmRange(original, map.address - 1, 2));
+	assert(!ClientVmRange(original, map.address, map.bytes + 1));
+	assert(!ClientVmRange(original, map.address, 0));
+	assert(!ClientVmRange(original, UINT64_MAX - 7, 16));
 	assert((before.at(map.address) & UINT64_C(0xfffffff000))
 		== sAreas.at(view.area).ram->physical + 8192);
 	ClientVmLease stale{};
@@ -171,6 +178,8 @@ static void CheckVms()
 	ClientVmLease last{};
 	assert(AcquireClientVm(a, vm.handle, 0, last) == B_OK);
 	assert(Contents(last).size() == 2 && Contents(original) == before);
+	assert(ClientVmRange(last, map.address + 1, 8191)); // two buffers/permissions
+	assert(!ClientVmRange(last, map.address + 4096, 8192)); // the second page is a hole
 	DestroyVm(a, vm.handle); DestroyVm(b, otherVm.handle);
 	CloseClient(a); CloseClient(a); FreeClient(a); FreeClient(b);
 	assert(sClients == 0 && sVms == 0 && sAccounts == 1 && sBuffers == 2 && sGenerations == 2);
@@ -178,6 +187,7 @@ static void CheckVms()
 	ReleaseClientVm(last);
 	assert(last.state == NULL && last.rootPhysical == 0 && sBuffers == 1 && sGenerations == 1);
 	ReleaseClientVm(original); ReleaseClientVm(original);
+	assert(ClientVmRoot(original) == NULL && !ClientVmRange(original, 0, 1));
 	assert(sAccounts == 0 && sBuffers == 0 && sGenerations == 0 && sAreas.size() == 1);
 	for (size_t i = 0; i < view.bytes; i++) assert(((uint8*)(uintptr_t)view.address)[i] == 0x71);
 	delete_area(view.area); Empty();

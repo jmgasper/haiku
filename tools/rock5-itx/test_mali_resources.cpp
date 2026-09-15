@@ -1,7 +1,7 @@
 #include "CsfReset.h"
 #include "CsfRun.h"
 #include "CsfCommands.h"
-#include "CsfVm.h"
+#include "CsfQueue.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -318,6 +318,15 @@ static status_t ControlClient(void* cookie, uint32 op, void*, size_t)
     assert(cookie == &sFirmwareRequests
         && ((op >= kGetClientInfo && op <= kGetBufferInfo) || (op >= kCreateVm && op <= kBindVm)));
     return B_NOT_SUPPORTED;
+}
+
+static unsigned sQueueRequests;
+static status_t ControlQueues(const ResourceInfo&, void* cookie, uint32 op, void*, size_t, bool&)
+{
+	assert(cookie == &sFirmwareRequests && op >= kCreateQueue && op <= kGetQueueInfo);
+	assert(sLockDepth == unsigned(op == kCreateQueue || op == kDestroyQueue));
+	sQueueRequests++;
+	return B_OK;
 }
 
 #include "driver.inc"
@@ -678,5 +687,22 @@ main()
 	assert(StringIndex("core\0bad", 8, "core") == -1);
 	assert(StringIndex("core\0core", 10, "core") == -1);
 	assert(munmap(memory, 2 * page) == 0);
+	controller.identityNeedsRecovery = false;
+	controller.shaderEnabled = false;
+	assert(Control(&opened, kCreateQueue, NULL, 0) == B_NOT_ALLOWED);
+	controller.shaderEnabled = true;
+	for (uint32 op = kCreateQueue; op <= kGetQueueInfo; op++)
+		assert(Control(&opened, op, NULL, 0) == B_OK);
+	assert(sQueueRequests == 5 && sLockDepth == 0);
+	controller.identityNeedsRecovery = true;
+	assert(Control(&opened, kCreateQueue, NULL, 0) == B_BUSY && sQueueRequests == 5);
+	assert(Control(&opened, kGetQueueInfo, NULL, 0) == B_OK);
+	assert(Control(&opened, kDestroyQueue, NULL, 0) == B_OK);
+	controller.identityNeedsRecovery = false;
+	sFirmwareRetained = true;
+	IdentityInfo runtimeIdentity{}; ResetInfo runtimeReset{};
+	assert(Control(&opened, kCycleIdentity, &runtimeIdentity, sizeof(runtimeIdentity)) == B_BUSY);
+	assert(Control(&opened, kCycleReset, &runtimeReset, sizeof(runtimeReset)) == B_BUSY);
+	sFirmwareRetained = false;
 	puts("MALI_CSF_RESOURCES_TEST_PASS");
 }

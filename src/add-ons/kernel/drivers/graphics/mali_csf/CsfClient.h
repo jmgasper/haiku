@@ -2,7 +2,7 @@
 #ifndef MALI_CSF_CLIENT_H
 #define MALI_CSF_CLIENT_H
 
-#include "CsfVm.h"
+#include "CsfQueue.h"
 
 namespace MaliCSF {
 status_t OpenClient(bool writable, void** cookie);
@@ -23,5 +23,10 @@ struct ClientVmLease {
 status_t AcquireClientVm(void* cookie, uint32 handle, uint64_t expectedGeneration,
 	ClientVmLease& lease);
 void ReleaseClientVm(ClientVmLease& lease);
+// The caller must own the lease for the whole access. Neither helper activates
+// hardware or changes ownership. Range checks permit command streams crossing
+// adjacent mappings, but reject holes and addresses outside the user VA range.
+const uint64_t* ClientVmRoot(const ClientVmLease& lease);
+bool ClientVmRange(const ClientVmLease& lease, uint64_t address, uint64_t bytes);
 }
 #endif

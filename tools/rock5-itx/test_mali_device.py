@@ -9,7 +9,8 @@ class MaliDeviceTest(unittest.TestCase):
     def test_kernel_allocation_ioctl_and_interrupt_lifetime(self):
         directory = Path(__file__).resolve().parent
         source = directory.parents[1] / 'src/add-ons/kernel/drivers/graphics/mali_csf'
-        code = (source / 'CsfDevice.cpp').read_text()
+        code = (source / 'CsfDevice.cpp').read_text().replace(
+            '#include "CsfDmaMemory.h"', (source / 'CsfDmaMemory.h').read_text())
         code = code[code.index('using namespace MaliCSF;'):]
         begin = code.index('static status_t\nMakeFirmwareRamNoncacheable')
         end = code.index('template<typename Memory>\nstatic area_id\nAllocateFirmwareMemory', begin)

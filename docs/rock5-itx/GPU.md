@@ -824,3 +824,34 @@ Qualified native component evidence:
   `7ce1024f8642f4375bea77d460ab4ce6da58f9c480efabd913c8581621a4772d`.
   EL2 and EL1 QEMU evidence: `artifacts/qemu-shell/20260914T224018Z-24475c`
   and `artifacts/qemu-shell/20260914T224018Z-efa455` respectively.
+## Persistent application execution candidate
+
+The next candidate adds a persistent kernel worker and per-client queue
+create, submit, wait, query and destroy operations. It schedules up to eight
+queues through physical CSG0/AS1, suspending and resuming each queue's command
+state. Every accepted submission retains an immutable VM generation. Each
+queue has a private upper-half page-table subtree, command ring and completion
+page; changing the borrowed application root requires suspension, cache
+maintenance and acknowledged address-space removal first.
+
+Submission and completion waits do not hold the hardware control lock. The
+last queue close joins the worker after firmware and platform teardown. An
+uncertain hardware cycle retains its DMA allocations and VM leases until
+reboot. Automatic recovery from a GPU hang is not implemented by this change.
+The interface remains restricted by the existing experimental driver profile.
+
+All 144 host checks pass. The independent scheduling model interprets 526
+submissions, follows installed physical page tables, checks register state
+across context and generation changes, wraps the 64 KiB ring and injects 23
+failure cases. The production runtime fixture exercises allocation/copyout
+rollback, queue limits, interrupted/timed-out waits, concurrent close, worker
+joining and failed-cycle retention. The ARM64 driver and native application
+probe compile. These results do not establish native GPU support for the new
+interface; image, QEMU and board qualification are pending.
+
+The native probe submits through application-owned buffers and VMs, including
+variable CS streams, four compute shaders, queued VM replacement, normal and
+killed process cleanup. Heap management, shared synchronization objects,
+Mesa adaptation, hardware rendering and display integration remain subsequent
+work. Evidence for this candidate is staged under
+`artifacts/mali-runtime/20260915T063420Z-2b85f0`.

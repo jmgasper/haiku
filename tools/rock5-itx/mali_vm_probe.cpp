@@ -1,5 +1,5 @@
 /* Copyright 2026, Haiku, Inc. Distributed under the MIT License. */
-#include "CsfVm.h"
+#include "CsfQueue.h"
 #include <OS.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -101,7 +101,7 @@ int main()
 	CHECK(fd >= 0);
 	auto baseline = Info(fd); auto baselineBuffers = Buffers(fd);
 	CHECK(baseline.clientVms == 0 && baselineBuffers.bufferCount == 0);
-	CHECK(baselineBuffers.capabilities == (kClientCpuBuffers | kClientVmMappings));
+	CHECK(baselineBuffers.capabilities == (kClientCpuBuffers | kClientVmMappings | kClientQueues));
 	unsigned baselineAreas = KernelAreas("Mali CSF VM page tables");
 	unsigned baselineBufferAreas = KernelAreas("Mali CSF client buffer");
 	CHECK(baselineAreas == baseline.globalGenerations && baselineBufferAreas == baselineBuffers.globalBuffers);

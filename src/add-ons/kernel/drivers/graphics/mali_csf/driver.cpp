@@ -19,6 +19,7 @@
 #include "CsfCommands.h"
 #include "CsfDevice.h"
 #include "CsfClient.h"
+#include "CsfRuntime.h"
 
 
 using namespace MaliCSF;
@@ -437,7 +438,10 @@ static status_t InitDevice(void* driver, void** device) { *device = driver; retu
 static void UninitDevice(void*) {}
 static status_t Close(void* cookie)
 {
-	CloseClient(((OpenHandle*)cookie)->client);
+	OpenHandle* opened = (OpenHandle*)cookie;
+	MutexLocker locker(sHardwareLock);
+	CloseQueues(opened->client, opened->controller->identityNeedsRecovery);
+	CloseClient(opened->client);
 	return B_OK;
 }
 static status_t Free(void* cookie)
@@ -505,6 +509,21 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 	if ((op >= kGetClientInfo && op <= kGetBufferInfo) || (op >= kCreateVm && op <= kBindVm))
 		return ControlClient(opened->client, op, buffer, length);
 	Controller* controller = opened->controller;
+	if (op >= kCreateQueue && op <= kGetQueueInfo) {
+		if (!controller->shaderEnabled)
+			return B_NOT_ALLOWED;
+		if (op == kCreateQueue || op == kDestroyQueue) {
+			MutexLocker locker(sHardwareLock);
+			if (op == kCreateQueue && controller->identityNeedsRecovery)
+				return B_BUSY;
+			return ControlQueues(controller->resources, opened->client, op, buffer,
+				length, controller->identityNeedsRecovery);
+		}
+		// A waiting application must not prevent another thread from closing
+		// queues. These operations never modify controller recovery state.
+		bool ignored = false;
+		return ControlQueues(controller->resources, opened->client, op, buffer, length, ignored);
+	}
 	if (op == kCycleCommands || op == kCycleShader) {
 		MutexLocker locker(sHardwareLock);
 		if (op == kCycleShader ? !controller->shaderEnabled : !controller->commandsEnabled)
@@ -531,7 +550,7 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 		MutexLocker locker(sHardwareLock);
 		if (!controller->resetEnabled)
 			return B_NOT_ALLOWED;
-		if (controller->identityNeedsRecovery)
+		if (controller->identityNeedsRecovery || FirmwareMemoryRetained())
 			return B_BUSY;
 		ResetHardware hardware;
 		status_t status = hardware.Init(controller->resources);
@@ -554,7 +573,7 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 		MutexLocker locker(sHardwareLock);
 		if (!controller->identityEnabled)
 			return B_NOT_ALLOWED;
-		if (controller->identityNeedsRecovery)
+		if (controller->identityNeedsRecovery || FirmwareMemoryRetained())
 			return B_BUSY;
 		IdentityHardware hardware;
 		status_t status = hardware.Init(controller->resources);

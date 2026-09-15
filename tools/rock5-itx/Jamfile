@@ -14,6 +14,7 @@ SimpleTest rock5_mali_firmware_probe : mali_firmware_probe.cpp CsfFirmware.cpp ;
 SimpleTest rock5_mali_resource_probe : mali_resource_probe.cpp ;
 SimpleTest rock5_mali_client_probe : mali_client_probe.cpp ;
 SimpleTest rock5_mali_vm_probe : mali_vm_probe.cpp ;
+SimpleTest rock5_mali_queue_probe : mali_queue_probe.cpp ;
 SEARCH on [ FGristFiles CsfFirmware.cpp ]
 	= [ FDirName $(HAIKU_TOP) src add-ons kernel drivers graphics mali_csf ] ;
 SimpleTest rock5_cache_probe : cache_probe.cpp ;

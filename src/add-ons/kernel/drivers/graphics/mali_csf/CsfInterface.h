@@ -10,6 +10,18 @@
 
 namespace MaliCSF {
 
+// Firmware interface fields are naturally aligned. Use a single 64-bit
+// access so a concurrently updated sequence cannot be read in two halves.
+inline uint64_t ReadInterface64(const volatile uint32_t* words, unsigned byteOffset)
+{
+	return *(const volatile uint64_t*)(words + byteOffset / 4);
+}
+
+inline void WriteInterface64(volatile uint32_t* words, unsigned byteOffset, uint64_t value)
+{
+	*(volatile uint64_t*)(words + byteOffset / 4) = value;
+}
+
 struct InterfaceInfo {
 	uint32_t version;
 	uint32_t features;

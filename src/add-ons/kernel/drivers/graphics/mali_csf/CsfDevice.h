@@ -2,6 +2,8 @@
 #ifndef MALI_CSF_DEVICE_H
 #define MALI_CSF_DEVICE_H
 
+#include "CsfResources.h"
+
 bool FirmwareMemoryRetained();
 status_t RunFirmwareRequest(const MaliCSF::ResourceInfo& resources, void* buffer,
 	size_t length, bool& needsRecovery);
