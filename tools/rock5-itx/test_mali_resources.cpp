@@ -1,6 +1,7 @@
 #include "CsfReset.h"
 #include "CsfRun.h"
 #include "CsfCommands.h"
+#include "CsfBuffer.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -311,6 +312,13 @@ static status_t RunCommandRequest(const ResourceInfo&, void*, size_t, bool& reco
 	return B_OK;
 }
 
+static status_t AccessClient(void* cookie) { assert(cookie == &sFirmwareRequests); return B_OK; }
+static status_t ControlClient(void* cookie, uint32 op, void*, size_t)
+{
+    assert(cookie == &sFirmwareRequests && op >= kGetClientInfo && op <= kGetBufferInfo);
+    return B_NOT_SUPPORTED;
+}
+
 #include "driver.inc"
 
 static void
@@ -477,29 +485,31 @@ main()
 	Prepare(); // Also asserts that parent-node references were released on failure.
 	Controller controller{};
 	controller.resources = good;
+	OpenHandle opened{&controller, &sFirmwareRequests};
 	ResourceInfo copy;
-	assert(Control(&controller, kGetResources, &copy, sizeof(copy)) == B_OK);
+	assert(Control(&opened, kGetResources, &copy, sizeof(copy)) == B_OK);
 	assert(memcmp(&copy, &good, sizeof(good)) == 0);
-	assert(Control(&controller, kGetResources, NULL, sizeof(copy)) == B_BAD_ADDRESS);
-	assert(Control(&controller, kGetResources, &copy, sizeof(copy) - 1) == B_BAD_VALUE);
-	assert(Control(&controller, kGetResources, &copy, sizeof(copy) + 1) == B_BAD_VALUE);
-	assert(Control(&controller, kGetResources + 127, &copy, sizeof(copy)) == B_DEV_INVALID_IOCTL);
+	assert(Control(&opened, kGetResources, NULL, sizeof(copy)) == B_BAD_ADDRESS);
+	assert(Control(&opened, kGetResources, &copy, sizeof(copy) - 1) == B_BAD_VALUE);
+	assert(Control(&opened, kGetResources, &copy, sizeof(copy) + 1) == B_BAD_VALUE);
+	assert(Control(&opened, kGetResources + 127, &copy, sizeof(copy)) == B_DEV_INVALID_IOCTL);
+	assert(Control(&opened, kGetClientInfo, NULL, 0) == B_NOT_SUPPORTED);
 	assert(sMapAttempts == 0);
 	copy.boardCompatible[16] = 'x';
 	assert(!ResourcesMatch(copy));
 
 	PlatformSnapshot snapshot;
-	assert(Control(&controller, kGetPlatformSnapshot, &snapshot, sizeof(snapshot) - 1) == B_BAD_VALUE);
-	assert(Control(&controller, kGetPlatformSnapshot, &snapshot, sizeof(snapshot) + 1) == B_BAD_VALUE);
-	assert(Control(&controller, kGetPlatformSnapshot, NULL, sizeof(snapshot)) == B_BAD_ADDRESS);
+	assert(Control(&opened, kGetPlatformSnapshot, &snapshot, sizeof(snapshot) - 1) == B_BAD_VALUE);
+	assert(Control(&opened, kGetPlatformSnapshot, &snapshot, sizeof(snapshot) + 1) == B_BAD_VALUE);
+	assert(Control(&opened, kGetPlatformSnapshot, NULL, sizeof(snapshot)) == B_BAD_ADDRESS);
 	controller.resources.clockBase += B_PAGE_SIZE;
-	assert(Control(&controller, kGetPlatformSnapshot, &snapshot, sizeof(snapshot)) == B_NOT_SUPPORTED);
+	assert(Control(&opened, kGetPlatformSnapshot, &snapshot, sizeof(snapshot)) == B_NOT_SUPPORTED);
 	assert(sMapAttempts == 0);
 	controller.resources = good;
 	for (unsigned failure : {1u, 2u}) {
 		sMapAttempts = 0; sFailMap = failure;
 		memset(&snapshot, 0xa5, sizeof(snapshot));
-		assert(Control(&controller, kGetPlatformSnapshot, &snapshot, sizeof(snapshot)) == B_NO_MEMORY);
+		assert(Control(&opened, kGetPlatformSnapshot, &snapshot, sizeof(snapshot)) == B_NO_MEMORY);
 		assert(sAreas.empty() && sMapAttempts == failure);
 		for (unsigned char byte : std::vector<unsigned char>((unsigned char*)&snapshot,
 				(unsigned char*)&snapshot + sizeof(snapshot))) assert(byte == 0xa5);
@@ -507,7 +517,7 @@ main()
 	sFailMap = 0;
 	for (int sample = 0; sample < 3; sample++) {
 		sMapAttempts = 0;
-		assert(Control(&controller, kGetPlatformSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
+		assert(Control(&opened, kGetPlatformSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
 		assert(sAreas.empty() && sMapAttempts == 2);
 		assert(snapshot.version == 1 && snapshot.flags == 1);
 		assert(snapshot.startedMicros == 1 + 2 * sample && snapshot.finishedMicros == 2 + 2 * sample);
@@ -521,24 +531,24 @@ main()
 	}
 	IdentityInfo identity;
 	sMapAttempts = 0;
-	assert(Control(&controller, kCycleIdentity, &identity, sizeof(identity)) == B_NOT_ALLOWED);
+	assert(Control(&opened, kCycleIdentity, &identity, sizeof(identity)) == B_NOT_ALLOWED);
 	controller.identityEnabled = true;
 	controller.identityNeedsRecovery = true;
-	assert(Control(&controller, kCycleIdentity, &identity, sizeof(identity)) == B_BUSY);
-	assert(Control(&controller, kCycleIdentity, &identity, sizeof(identity) - 1) == B_BAD_VALUE);
-	assert(Control(&controller, kCycleIdentity, NULL, sizeof(identity)) == B_BAD_ADDRESS);
+	assert(Control(&opened, kCycleIdentity, &identity, sizeof(identity)) == B_BUSY);
+	assert(Control(&opened, kCycleIdentity, &identity, sizeof(identity) - 1) == B_BAD_VALUE);
+	assert(Control(&opened, kCycleIdentity, NULL, sizeof(identity)) == B_BAD_ADDRESS);
 	assert(sMapAttempts == 0 && sLockDepth == 0);
 	controller.identityNeedsRecovery = false;
 	sAllowWritable = true;
 	for (unsigned failure : {1u, 2u}) {
 		sMapAttempts = 0; sFailMap = failure;
-		assert(Control(&controller, kCycleIdentity, &identity, sizeof(identity)) == B_NO_MEMORY);
+		assert(Control(&opened, kCycleIdentity, &identity, sizeof(identity)) == B_NO_MEMORY);
 		assert(sMapAttempts == failure && sAreas.empty() && sLockDepth == 0);
 	}
 	sMapAttempts = sFailMap = 0;
 	// The protected MMIO fixture has an unexpected initial state. No production
 	// write may occur, even though the profile enabled the diagnostic ioctl.
-	assert(Control(&controller, kCycleIdentity, &identity, sizeof(identity)) == B_OK);
+	assert(Control(&opened, kCycleIdentity, &identity, sizeof(identity)) == B_OK);
 	assert(identity.result == kInitialStateMismatch && identity.flags == 0);
 	assert(!controller.identityNeedsRecovery && sAreas.empty() && sLockDepth == 0);
 	for (unsigned failure : {0u, 3u}) {
@@ -559,22 +569,22 @@ main()
 
 	ResetInfo reset;
 	sMapAttempts = 0;
-	assert(Control(&controller, kCycleReset, &reset, sizeof(reset)) == B_NOT_ALLOWED);
+	assert(Control(&opened, kCycleReset, &reset, sizeof(reset)) == B_NOT_ALLOWED);
 	controller.resetEnabled = true;
 	controller.identityNeedsRecovery = true;
-	assert(Control(&controller, kCycleReset, &reset, sizeof(reset)) == B_BUSY);
-	assert(Control(&controller, kCycleReset, &reset, sizeof(reset) - 1) == B_BAD_VALUE);
-	assert(Control(&controller, kCycleReset, &reset, sizeof(reset) + 1) == B_BAD_VALUE);
-	assert(Control(&controller, kCycleReset, NULL, sizeof(reset)) == B_BAD_ADDRESS);
+	assert(Control(&opened, kCycleReset, &reset, sizeof(reset)) == B_BUSY);
+	assert(Control(&opened, kCycleReset, &reset, sizeof(reset) - 1) == B_BAD_VALUE);
+	assert(Control(&opened, kCycleReset, &reset, sizeof(reset) + 1) == B_BAD_VALUE);
+	assert(Control(&opened, kCycleReset, NULL, sizeof(reset)) == B_BAD_ADDRESS);
 	assert(sMapAttempts == 0);
 	controller.identityNeedsRecovery = false;
 	for (unsigned failure : {1u, 2u}) {
 		sMapAttempts = 0; sFailMap = failure;
-		assert(Control(&controller, kCycleReset, &reset, sizeof(reset)) == B_NO_MEMORY);
+		assert(Control(&opened, kCycleReset, &reset, sizeof(reset)) == B_NO_MEMORY);
 		assert(sMapAttempts == failure && sAreas.empty());
 	}
 	sMapAttempts = sFailMap = 0;
-	assert(Control(&controller, kCycleReset, &reset, sizeof(reset)) == B_OK);
+	assert(Control(&opened, kCycleReset, &reset, sizeof(reset)) == B_OK);
 	assert(reset.result == kResetPowerCycleFailed && controller.identityNeedsRecovery);
 	assert(sAreas.empty() && !sInstalled && !sRemoved);
 	for (unsigned failure : {0u, 3u}) {
@@ -618,39 +628,39 @@ main()
 	assert(sAreas.empty() && sLockDepth == 0);
 
 	controller.identityNeedsRecovery = false;
-	assert(Control(&controller, kCycleFirmware, NULL, 0) == B_NOT_ALLOWED);
+	assert(Control(&opened, kCycleFirmware, NULL, 0) == B_NOT_ALLOWED);
 	controller.firmwareEnabled = true;
 	sFirmwareRetained = true;
-	assert(Control(&controller, kCycleFirmware, NULL, 0) == B_BUSY);
+	assert(Control(&opened, kCycleFirmware, NULL, 0) == B_BUSY);
 	sFirmwareRetained = false;
-	assert(Control(&controller, kCycleFirmware, NULL, 0) == B_OK);
+	assert(Control(&opened, kCycleFirmware, NULL, 0) == B_OK);
 	assert(sFirmwareRequests == 1 && controller.identityNeedsRecovery);
-	assert(Control(&controller, kCycleFirmware, NULL, 0) == B_BUSY);
+	assert(Control(&opened, kCycleFirmware, NULL, 0) == B_BUSY);
 	assert(sFirmwareRequests == 1);
 	controller.identityNeedsRecovery = false;
-	assert(Control(&controller, kCycleCommands, NULL, 0) == B_NOT_ALLOWED);
+	assert(Control(&opened, kCycleCommands, NULL, 0) == B_NOT_ALLOWED);
 	controller.commandsEnabled = true;
 	sFirmwareRetained = true;
-	assert(Control(&controller, kCycleCommands, NULL, 0) == B_BUSY && sCommandRequests == 0);
+	assert(Control(&opened, kCycleCommands, NULL, 0) == B_BUSY && sCommandRequests == 0);
 	sFirmwareRetained = false;
-	assert(Control(&controller, kCycleCommands, NULL, 0) == B_OK);
+	assert(Control(&opened, kCycleCommands, NULL, 0) == B_OK);
 	assert(sCommandRequests == 1 && controller.identityNeedsRecovery);
-	assert(Control(&controller, kCycleCommands, NULL, 0) == B_BUSY);
-	assert(Control(&controller, kCycleFirmware, NULL, 0) == B_BUSY);
+	assert(Control(&opened, kCycleCommands, NULL, 0) == B_BUSY);
+	assert(Control(&opened, kCycleFirmware, NULL, 0) == B_BUSY);
 	assert(sCommandRequests == 1 && sFirmwareRequests == 1);
 	controller.identityNeedsRecovery = false;
-	assert(Control(&controller, kCycleShader, NULL, 0) == B_NOT_ALLOWED);
+	assert(Control(&opened, kCycleShader, NULL, 0) == B_NOT_ALLOWED);
 	assert(sCommandRequests == 1 && sShaderRequests == 0);
 	controller.shaderEnabled = true;
 	sFirmwareRetained = true;
-	assert(Control(&controller, kCycleShader, NULL, 0) == B_BUSY);
+	assert(Control(&opened, kCycleShader, NULL, 0) == B_BUSY);
 	assert(sCommandRequests == 1 && sShaderRequests == 0);
 	sFirmwareRetained = false;
-	assert(Control(&controller, kCycleShader, NULL, 0) == B_OK);
+	assert(Control(&opened, kCycleShader, NULL, 0) == B_OK);
 	assert(sCommandRequests == 2 && sShaderRequests == 1 && controller.identityNeedsRecovery);
-	assert(Control(&controller, kCycleShader, NULL, 0) == B_BUSY);
-	assert(Control(&controller, kCycleCommands, NULL, 0) == B_BUSY);
-	assert(Control(&controller, kCycleFirmware, NULL, 0) == B_BUSY);
+	assert(Control(&opened, kCycleShader, NULL, 0) == B_BUSY);
+	assert(Control(&opened, kCycleCommands, NULL, 0) == B_BUSY);
+	assert(Control(&opened, kCycleFirmware, NULL, 0) == B_BUSY);
 	assert(sCommandRequests == 2 && sShaderRequests == 1 && sFirmwareRequests == 1);
 
 	size_t page = sysconf(_SC_PAGESIZE);

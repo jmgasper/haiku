@@ -12,11 +12,13 @@
 #include <util/AutoLock.h>
 #include <fcntl.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #include "CsfReset.h"
 #include "CsfRun.h"
 #include "CsfCommands.h"
 #include "CsfDevice.h"
+#include "CsfClient.h"
 
 
 using namespace MaliCSF;
@@ -36,6 +38,11 @@ struct Controller {
 	bool commandsEnabled;
 	bool shaderEnabled;
 	bool identityNeedsRecovery;
+};
+
+struct OpenHandle {
+	Controller* controller;
+	void* client;
 };
 
 
@@ -428,8 +435,17 @@ InitDriver(device_node* node, void** cookie)
 static void UninitDriver(void* cookie) { free(cookie); }
 static status_t InitDevice(void* driver, void** device) { *device = driver; return B_OK; }
 static void UninitDevice(void*) {}
-static status_t Close(void*) { return B_OK; }
-static status_t Free(void*) { return B_OK; }
+static status_t Close(void* cookie)
+{
+	CloseClient(((OpenHandle*)cookie)->client);
+	return B_OK;
+}
+static status_t Free(void* cookie)
+{
+	FreeClient(((OpenHandle*)cookie)->client);
+	free(cookie);
+	return B_OK;
+}
 
 
 static status_t
@@ -443,9 +459,22 @@ PublishDevices(void* cookie)
 static status_t
 Open(void* cookie, const char*, int mode, void** handle)
 {
-	if ((mode & O_ACCMODE) != O_RDONLY)
+	Controller* controller = (Controller*)cookie;
+	int access = mode & O_ACCMODE;
+	if (access != O_RDONLY && access != O_RDWR)
 		return B_NOT_ALLOWED;
-	*handle = cookie;
+	if (access == O_RDWR && (!controller->shaderEnabled || geteuid() != 0))
+		return B_NOT_ALLOWED;
+	OpenHandle* opened = (OpenHandle*)calloc(1, sizeof(OpenHandle));
+	if (opened == NULL)
+		return B_NO_MEMORY;
+	status_t status = OpenClient(access == O_RDWR, &opened->client);
+	if (status != B_OK) {
+		free(opened);
+		return status;
+	}
+	opened->controller = controller;
+	*handle = opened;
 	return B_OK;
 }
 
@@ -469,8 +498,14 @@ Write(void*, off_t, const void*, size_t* size)
 static status_t
 Control(void* cookie, uint32 op, void* buffer, size_t length)
 {
+	OpenHandle* opened = (OpenHandle*)cookie;
+	status_t access = AccessClient(opened->client);
+	if (access != B_OK)
+		return access;
+	if (op >= kGetClientInfo && op <= kGetBufferInfo)
+		return ControlClient(opened->client, op, buffer, length);
+	Controller* controller = opened->controller;
 	if (op == kCycleCommands || op == kCycleShader) {
-		Controller* controller = (Controller*)cookie;
 		MutexLocker locker(sHardwareLock);
 		if (op == kCycleShader ? !controller->shaderEnabled : !controller->commandsEnabled)
 			return B_NOT_ALLOWED;
@@ -480,7 +515,6 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 			controller->identityNeedsRecovery, op == kCycleShader);
 	}
 	if (op == kCycleFirmware) {
-		Controller* controller = (Controller*)cookie;
 		MutexLocker locker(sHardwareLock);
 		if (!controller->firmwareEnabled)
 			return B_NOT_ALLOWED;
@@ -494,7 +528,6 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 			return B_BAD_VALUE;
 		if (buffer == NULL)
 			return B_BAD_ADDRESS;
-		Controller* controller = (Controller*)cookie;
 		MutexLocker locker(sHardwareLock);
 		if (!controller->resetEnabled)
 			return B_NOT_ALLOWED;
@@ -518,7 +551,6 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 			return B_BAD_VALUE;
 		if (buffer == NULL)
 			return B_BAD_ADDRESS;
-		Controller* controller = (Controller*)cookie;
 		MutexLocker locker(sHardwareLock);
 		if (!controller->identityEnabled)
 			return B_NOT_ALLOWED;
@@ -542,7 +574,7 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 			return B_BAD_ADDRESS;
 		MutexLocker locker(sHardwareLock);
 		PlatformSnapshot snapshot;
-		status_t status = ReadPlatform(((Controller*)cookie)->resources, snapshot);
+		status_t status = ReadPlatform(controller->resources, snapshot);
 		if (status != B_OK)
 			return status;
 		return user_memcpy(buffer, &snapshot, sizeof(snapshot));
@@ -551,7 +583,7 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 		return B_DEV_INVALID_IOCTL;
 	if (length != sizeof(ResourceInfo))
 		return B_BAD_VALUE;
-	return user_memcpy(buffer, &((Controller*)cookie)->resources, sizeof(ResourceInfo));
+	return user_memcpy(buffer, &controller->resources, sizeof(ResourceInfo));
 }
 
 

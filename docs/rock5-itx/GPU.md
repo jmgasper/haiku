@@ -196,12 +196,34 @@ was archived locally, reverified and removed from the NanoKVM, restoring
 
 ### Haiku userspace interface work
 
-The next implementation must support Mesa's persistent object lifetimes.
-The current Haiku `Open` returns the shared
-controller, `Close`/`Free` do no client cleanup, and each diagnostic starts and
-stops its own firmware arena. Mesa needs client-owned buffers, persistent VMs,
-groups, queues, tiler heaps and synchronization objects spanning many calls.
-It also needs CPU mappings and retained storage until queued work completes.
+The first persistent client/buffer implementation is now a candidate. Each open
+owns a client and buffer handles. The native ABI supports allocation, information,
+whole-buffer CPU mappings and handle destruction. Handles are never reused during
+a module lifetime, duplicate descriptors share their client, and inherited
+descriptors cannot operate another team's client. Close/process teardown releases
+kernel-owned buffers; mapped CPU areas independently retain the backing RAM.
+Allocation or map copyout failures roll back their new objects.
+
+Buffers use scattered, locked RAM with every physical page checked against the
+GPU's 40-bit limit. Cached allocator clearing is evicted before installing
+Normal-NC CPU mappings. RAM area clones and fork copies now preserve the source
+memory type. The host fixture reproduces the old clone failure and passes after
+the correction. A 64 MiB per-buffer, 256 MiB per-client and 512 MiB global limit
+bounds kernel-owned allocations; CPU areas surviving handle destruction belong
+to the VM system and are outside those handle counters. There are at most 128
+buffer handles per client and 64 open clients.
+
+The development interface requires root, `O_RDWR` and the existing explicit
+shader firmware profile. Its only advertised capability is CPU buffers. All 141
+host checks pass, including production allocation/handle/copyout cleanup, shared
+mapping lifetime, limits and concurrent clients. Build, QEMU and native acceptance
+of this candidate are pending. The native probe covers ordinary RAM clones,
+buffer aliases, fork, descriptor/handle closure and normal/killed process cleanup.
+
+Mesa still needs persistent GPU VMs, groups, queues, tiler heaps and synchronization
+objects spanning many calls, with buffer references retained until queued work
+finishes. The existing GPU diagnostics still start and stop their own firmware
+arenas. Application GPU submission and Haiku rendering remain unimplemented.
 
 `panthor_kmod.c` covers buffer/VM operations, but `pan_csf.c` directly creates
 groups/heaps and submits work; `pan_fence.c` also calls DRM synchronization
