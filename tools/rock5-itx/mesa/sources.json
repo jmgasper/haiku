@@ -88,9 +88,9 @@
     }
   ],
   "bundle_files": {
-    "mesa-haiku-native.patch": "4adce6906672523137cf3f07892cb301fd7729d23d03352e1adc18ddedb6b8da",
+    "mesa-haiku-native.patch": "76e28df00a499906cada1c0d2c12cd2f8ba00cc0f2c096584ddde75a6419000b",
     "libglvnd-haiku-sysroot.patch": "16c8c1110172bed628a6160bd86b2f4e36cb408a59bdbe59d133f7f812732d13",
-    "mesa-native-source-manifest.json": "86426e96c046e2df6e10f0dd4704c1ff50eea4a65bc2e47d9d0f2325d2683f3d",
+    "mesa-native-source-manifest.json": "7f8a195ee4cbdd409df0ffadcaaec760ac3f865cab6f67ec78db281916d0e7b8",
     "libglvnd-haiku-mutex.patch": "96f0fa776fa8b3c6425e26981e6e4cbca7fc33f31eb8f8e58bad730891de6035",
     "native_render_validation.py": "709c02edeacce5f66b27f1863d2f26d8bbbe7e1edc932b75ac812562910c1880",
     "render_validation.py": "460d5ab54cf289fe1e84ed3cbe8d8522f453260b889b9b1e86fee074f3843c5b",

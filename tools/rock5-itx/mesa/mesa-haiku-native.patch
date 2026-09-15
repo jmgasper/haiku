@@ -33,9 +33,11 @@
  
  #include "eglconfig.h"
  #include "eglcontext.h"
-@@ -44,10 +45,14 @@
+@@ -43,11 +44,16 @@
+ #include "pipe/p_context.h"
  #include "pipe/p_defines.h"
  #include "state_tracker/st_context.h"
++#include "util/box.h"
  #include "util/u_atomic.h"
 +#include "util/u_inlines.h"
  #include "mesa/glapi/glapi/glapi.h"
@@ -48,7 +50,7 @@
  
  #include <Bitmap.h>
  
-@@ -68,6 +73,7 @@
+@@ -68,6 +74,7 @@
  
  struct haiku_egl_display {
     int ref_count;
@@ -56,7 +58,7 @@
     struct hgl_display *disp;
  };
  
-@@ -86,6 +92,52 @@
+@@ -86,6 +93,53 @@
     struct pipe_fence_handle *throttle_fence;
  };
  
@@ -73,7 +75,7 @@
 +{
 +   if (!pipe || !buffer->winsysContext || !texture || texture->width0 == 0 ||
 +       texture->height0 == 0 || texture->width0 > INT32_MAX ||
-+       texture->height0 > INT16_MAX || texture->format != PIPE_FORMAT_BGRA8888_UNORM)
++       texture->format != PIPE_FORMAT_BGRA8888_UNORM)
 +      return false;
 +
 +   const unsigned width = texture->width0, height = texture->height0;
@@ -85,7 +87,8 @@
 +   }
 +
 +   const size_t row_bytes = size_t(width) * 4;
-+   struct pipe_box box = {0, 0, 0, int(width), int16_t(height), 1};
++   struct pipe_box box;
++   u_box_2d(0, 0, width, height, &box);
 +   struct pipe_transfer *transfer = NULL;
 +   const uint8_t *pixels = static_cast<const uint8_t *>(
 +      pipe->texture_map(pipe, texture, 0, PIPE_MAP_READ, &box, &transfer));
@@ -109,7 +112,7 @@
  // #pragma mark EGLSurface
  
  // Called via eglCreateWindowSurface(), drv->CreateWindowSurface().
-@@ -93,6 +145,10 @@
+@@ -93,6 +147,10 @@
  haiku_create_window_surface(_EGLDisplay *disp, _EGLConfig *conf,
                              void *native_window, const EGLint *attrib_list)
  {
@@ -120,7 +123,7 @@
     printf("haiku_create_window_surface\n");
     struct haiku_egl_display *hgl_dpy = haiku_egl_display(disp);
  
-@@ -108,7 +164,7 @@
+@@ -108,7 +166,7 @@
     }
  
     struct st_visual visual;
@@ -129,7 +132,7 @@
  
     wgl_surf->fb =
        hgl_create_st_framebuffer(hgl_dpy->disp, &visual, native_window);
-@@ -117,6 +173,13 @@
+@@ -117,6 +175,13 @@
        return NULL;
     }
  
@@ -143,7 +146,7 @@
     // Unset and delete previously set bitmap if any.
     delete ((BitmapHook *)native_window)->SetBitmap(NULL);
  
-@@ -150,7 +213,7 @@
+@@ -150,7 +215,7 @@
     }
  
     struct st_visual visual;
@@ -152,7 +155,7 @@
  
     wgl_surf->fb = hgl_create_st_framebuffer(hgl_dpy->disp, &visual, NULL);
     if (!wgl_surf->fb) {
-@@ -168,8 +231,9 @@
+@@ -168,8 +233,9 @@
  static EGLBoolean
  haiku_destroy_surface(_EGLDisplay *disp, _EGLSurface *surf)
  {
@@ -163,7 +166,7 @@
        struct haiku_egl_surface *hgl_surf = haiku_egl_surface(surf);
        struct pipe_screen *screen = hgl_dpy->disp->fscreen->screen;
        screen->fence_reference(screen, &hgl_surf->throttle_fence, NULL);
-@@ -177,8 +241,11 @@
+@@ -177,8 +243,11 @@
        // Unset bitmap to release ownership. Bitmap will be deleted later
        // when destroying framebuffer.
        BitmapHook *bitmapHook = (BitmapHook*)hgl_surf->fb->winsysContext;
@@ -177,7 +180,7 @@
  
        hgl_destroy_st_framebuffer(hgl_surf->fb);
        free(surf);
-@@ -189,9 +256,19 @@
+@@ -189,9 +258,19 @@
  static void
  update_size(struct hgl_buffer *buffer)
  {
@@ -197,7 +200,7 @@
        buffer->newWidth = newWidth;
        buffer->newHeight = newHeight;
        p_atomic_inc(&buffer->base.stamp);
-@@ -199,8 +276,25 @@
+@@ -199,8 +278,25 @@
  }
  
  static EGLBoolean
@@ -223,7 +226,7 @@
     struct haiku_egl_display *hgl_dpy = haiku_egl_display(disp);
     struct haiku_egl_surface *hgl_surf = haiku_egl_surface(surf);
     struct haiku_egl_context *hgl_ctx = haiku_egl_context(surf->CurrentContext);
-@@ -210,6 +304,8 @@
+@@ -210,6 +306,8 @@
     struct st_context *st = hgl_ctx->ctx->st;
     struct pipe_screen *screen = hgl_dpy->disp->fscreen->screen;
  
@@ -232,7 +235,7 @@
     struct hgl_buffer *buffer = hgl_surf->fb;
     auto &frontBuffer = buffer->textures[ST_ATTACHMENT_FRONT_LEFT];
     auto &backBuffer = buffer->textures[ST_ATTACHMENT_BACK_LEFT];
-@@ -217,8 +313,6 @@
+@@ -217,8 +315,6 @@
     // Inform ST of a flush if double buffering is used
     if (backBuffer != NULL)
        st->pipe->flush_resource(st->pipe, backBuffer);
@@ -241,7 +244,7 @@
  
     struct pipe_fence_handle *new_fence = NULL;
     st_context_flush(st, ST_FLUSH_FRONT, &new_fence, NULL, NULL);
-@@ -231,8 +325,13 @@
+@@ -231,8 +327,13 @@
  
     // flush back buffer and swap buffers if double buffering is used
     if (backBuffer != NULL) {
@@ -257,7 +260,7 @@
        std::swap(frontBuffer, backBuffer);
        p_atomic_inc(&buffer->base.stamp);
     }
-@@ -273,20 +372,22 @@
+@@ -273,20 +374,22 @@
     conf->base.ConfigID = 1;
     conf->base.BindToTextureRGB = EGL_FALSE;
     conf->base.BindToTextureRGBA = EGL_FALSE;
@@ -288,7 +291,7 @@
  
     TRACE("Config configuated\n");
     if (!_eglValidateConfig(&conf->base, EGL_FALSE)) {
-@@ -321,12 +422,14 @@
+@@ -321,12 +424,14 @@
     if (!p_atomic_dec_zero(&hgl_dpy->ref_count))
        return;
  
@@ -303,7 +306,7 @@
  }
  
  static EGLBoolean
-@@ -342,20 +445,55 @@
+@@ -342,20 +447,55 @@
     hgl_dpy->ref_count = 1;
     disp->DriverData = (void *)hgl_dpy;
  
@@ -367,7 +370,7 @@
  
     /* Report back to EGL the bitmask of priorities supported */
     disp->Extensions.IMG_context_priority =
-@@ -364,17 +502,12 @@
+@@ -364,17 +504,12 @@
        disp->Extensions.IMG_context_priority &
        (1 << __EGL_CONTEXT_PRIORITY_REALTIME_BIT);
  
@@ -390,7 +393,7 @@
  
     return EGL_TRUE;
  }
-@@ -386,7 +519,7 @@
+@@ -386,7 +521,7 @@
     struct haiku_egl_display *hgl_dpy = haiku_egl_display(disp);
  
     if (hgl_dpy) {
@@ -399,7 +402,7 @@
        return EGL_TRUE;
     }
  
-@@ -414,6 +547,8 @@
+@@ -414,6 +549,8 @@
  static EGLBoolean
  haiku_terminate(_EGLDisplay *disp)
  {
@@ -408,7 +411,7 @@
     haiku_display_destroy(disp);
     return EGL_TRUE;
  }
-@@ -428,8 +563,9 @@
+@@ -428,8 +565,9 @@
  
     struct haiku_egl_display *hgl_dpy = haiku_egl_display(disp);
  
@@ -420,7 +423,7 @@
  
     struct haiku_egl_context *context =
        (struct haiku_egl_context *)calloc(1, sizeof(*context));
-@@ -441,11 +577,56 @@
+@@ -441,11 +579,56 @@
     if (!_eglInitContext(&context->base, disp, conf, share_list, attrib_list))
        goto cleanup;
  
@@ -481,7 +484,7 @@
  
     return &context->base;
  
-@@ -488,23 +669,61 @@
+@@ -488,23 +671,61 @@
        return EGL_TRUE;
     }
  
@@ -557,7 +560,7 @@
  
     return EGL_TRUE;
  }
-@@ -519,5 +738,6 @@
+@@ -519,5 +740,6 @@
     .CreatePixmapSurface = haiku_create_pixmap_surface,
     .CreatePbufferSurface = haiku_create_pbuffer_surface,
     .DestroySurface = haiku_destroy_surface,
