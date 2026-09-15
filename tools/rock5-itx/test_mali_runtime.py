@@ -22,9 +22,9 @@ class MaliRuntimeTest(unittest.TestCase):
         begin = code.index('static status_t\nMakeFirmwareRamNoncacheable')
         end = code.index('template<typename Memory>\nstatic area_id\nAllocateFirmwareMemory', begin)
         code = code[:begin] + code[end:]
-        cycle = 'CycleFirmware(runtime->hardware, runtime->memory, runtime->firmware, engine);'
+        cycle = 'CycleFirmware(runtime->hardware, runtime->memory, runtime->firmware, engine, &recovery);'
         self.assertEqual(code.count(cycle), 1)
-        code = code.replace(cycle, 'DriveRuntime(runtime, runtime->firmware);')
+        code = code.replace(cycle, 'DriveRuntime(runtime, runtime->firmware, recovery);')
         with tempfile.TemporaryDirectory(prefix='mali-runtime-') as temporary:
             root = Path(temporary)
             prepare_sync_fixture(root, directory.parents[1])

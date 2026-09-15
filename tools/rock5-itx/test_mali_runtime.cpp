@@ -179,10 +179,12 @@ struct FirmwareHardware {
 	status_t Init(const ResourceInfo&) { return sFailHardware ? B_IO_ERROR : B_OK; }
 };
 class Runtime;
-static void DriveRuntime(Runtime*, FirmwareRunInfo&);
+static void DriveRuntime(Runtime*, FirmwareRunInfo&, FirmwareRecovery&);
 #include "runtime.inc"
 
 static std::atomic<bool> sHoldJob{false}, sFailJob{false}, sFailBoot{false};
+static std::atomic<bool> sRecoverJob{false}, sHoldRecovery{false};
+static std::atomic<unsigned> sEnteredRecovery{0};
 static std::atomic<unsigned> sEnteredJob{0}, sHardwareCycles{0};
 static GpuProperties FixtureProperties(unsigned cycle)
 {
@@ -197,7 +199,7 @@ static GpuProperties FixtureProperties(unsigned cycle)
 	result.userVaLimit = UINT64_C(1) << 47;
 	return result;
 }
-static void DriveRuntime(Runtime* runtime, FirmwareRunInfo& info)
+static void DriveRuntime(Runtime* runtime, FirmwareRunInfo& info, FirmwareRecovery& recovery)
 {
 	sHardwareCycles++;
 	if (sFailBoot) { info.flags |= kFirmwareNeedsRecovery; return; }
@@ -214,6 +216,19 @@ static void DriveRuntime(Runtime* runtime, FirmwareRunInfo& info)
 		if (sFailJob) { info.flags |= kFirmwareNeedsRecovery; return; }
 		assert(work.memory->SetUserRoot(work.root));
 		if (work.generation != progress[work.slot].generation) runtime->Activated(work);
+		if (sRecoverJob) {
+			recovery.StopAdmission();
+			sEnteredRecovery++;
+			while (sHoldRecovery) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			// Separate reset/AS/power fixtures prove this hardware outcome. The
+			// production runtime must still fail work and retain all leases until
+			// this model explicitly reports quiescence and full restoration.
+			info.result = kFirmwareOperationFailed;
+			info.cleanupResult = kFirmwareOperationCleanupFailed;
+			info.flags |= kFirmwareRecovered | kFirmwarePowerRestored;
+			recovery.attempted = recovery.quiescent = recovery.recovered = true;
+			return;
+		}
 		auto& value = progress[work.slot];
 		value.generation = work.generation; value.completed = work.sequence;
 		value.insert += 128; value.extract = value.insert; value.interrupts++; value.syncEvents++;
@@ -419,6 +434,67 @@ SynchronizedRuntime()
 	CloseVm(client); Clean(0);
 }
 
+static void
+RecoveredRuntime()
+{
+	Client first{NewGeneration(1)}, second{NewGeneration(1)}, fresh{NewGeneration(1)};
+	void* sync = SyncOpen(); bool recovery = false;
+	uint32 a = 0, b = 0, c = 0;
+	assert(Create(first, a, true, recovery) == B_OK);
+	assert(Create(second, b, false, recovery) == B_OK);
+	for (auto entry : {std::make_pair(&first, a), std::make_pair(&second, b)}) {
+		auto job = Submit(*entry.first, entry.second);
+		assert(Wait(*entry.first, entry.second, job.sequence).result == B_OK);
+	}
+	uint32 current = SyncMake(sync), queued = SyncMake(sync), affected = SyncMake(sync);
+	uint64 sequence;
+	sHoldJob = sHoldRecovery = sRecoverJob = true;
+	unsigned before = sEnteredJob, recoveries = sEnteredRecovery;
+	assert(SubmitSynchronized(first, sync, a, {}, {{current, 0, 1}}, sequence) == B_OK);
+	AwaitJob(before);
+	assert(SubmitSynchronized(first, sync, a, {}, {{queued, 0, 1}}, sequence) == B_OK);
+	assert(SubmitSynchronized(second, sync, b, {}, {{affected, 0, 1}}, sequence) == B_OK);
+	int snapshots[] = {SyncExport(sync, current, true), SyncExport(sync, queued, true),
+		SyncExport(sync, affected, true)};
+	sHoldJob = false;
+	bigtime_t deadline = system_time() + 1000000;
+	while (sEnteredRecovery == recoveries && system_time() < deadline)
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	assert(sEnteredRecovery == recoveries + 1);
+	assert(Info(first, a).state == kQueueFailed && Info(second, b).state == kQueueFailed);
+	QueueSubmit rejected{1, b, 0, 0, 0, 0, 0, 0};
+	assert(Call(second, kSubmitQueue, rejected, recovery) == B_IO_ERROR);
+	assert(Create(fresh, c, false, recovery) == B_BUSY && !recovery);
+	for (int fd : snapshots) assert(SyncFdWait(fd) == B_TIMED_OUT);
+	unsigned areas = sAreas.size();
+	CloseVm(first);
+	std::atomic<bool> closed{false};
+	std::thread closer([&]() { CloseQueues(&first, recovery); closed = true; });
+	std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	assert(!closed && sAreas.size() == areas && sGenerations.size() == 3);
+	sHoldRecovery = false;
+	closer.join();
+	assert(closed && !recovery && sRuntime != NULL && sRuntime->live == 1);
+	assert(sRuntime->finished && !sRuntime->retained && sRuntime->thread == -1);
+	assert(sGenerations.size() == 2 && sAreas.size() == areas - 1);
+	assert(Wait(second, b, sequence).result == B_IO_ERROR);
+	assert(Info(second, b).failedSequence == 2 && Info(second, b).completed == 1);
+	for (int fd : snapshots) {
+		status_t status;
+		assert(SyncFdWait(fd, &status) == B_OK && status == B_IO_ERROR);
+		SyncCloseFd(fd);
+	}
+	assert(Create(fresh, c, false, recovery) == B_BUSY);
+	CloseVm(second); CloseQueues(&second, recovery); Clean(1);
+	sRecoverJob = false;
+	assert(Create(fresh, c, true, recovery) == B_OK && c > a && c > b && !recovery);
+	QueryRetired(fresh, a, recovery); QueryRetired(fresh, b, recovery);
+	auto job = Submit(fresh, c);
+	assert(Wait(fresh, c, job.sequence).result == B_OK);
+	Destroy(fresh, c); CloseVm(fresh); Clean(0);
+	FreeSyncClient(sync); SyncBalanced();
+}
+
 int main()
 {
 	setvbuf(stdout, NULL, _IONBF, 0);
@@ -556,5 +632,6 @@ int main()
 	DropSimulatedRetainedRuntime(); sFailBoot = false; recovery = false; Clean(1);
 	CloseVm(other); Clean(0);
 	SynchronizedRuntime();
+	RecoveredRuntime();
 	puts("MALI_CSF_RUNTIME_TEST_PASS");
 }

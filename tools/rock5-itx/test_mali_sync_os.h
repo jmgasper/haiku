@@ -32,6 +32,7 @@ static const uint32 B_SYSTEM_TEAM = 1, B_CONTIGUOUS = 3,
 #define B_PRId32 PRId32
 #define B_PRIu32 PRIu32
 #define B_PRIu64 PRIu64
+#define B_PRId64 PRId64
 #define B_PRIx64 PRIx64
 #define ASSERT(x) assert(x)
 

@@ -28,6 +28,7 @@ static const uint32_t kFirmwareCleaned = 64;
 static const uint32_t kFirmwarePowerRestored = 128;
 static const uint32_t kFirmwareMemoryRetained = 256;
 static const uint32_t kFirmwareNeedsRecovery = 512;
+static const uint32_t kFirmwareRecovered = 1024;
 
 enum FirmwareRunResult {
 	kFirmwareRunOK = 0,
@@ -188,6 +189,117 @@ FirmwareEventMatches(const FirmwareCapture& event, int64_t start, int64_t end)
 		&& event.whenMicros >= start && event.whenMicros <= end;
 }
 
+// Kernel-private recovery evidence. No pointers or additional structure enter
+// the firmware diagnostic ABI. Only the persistent scheduler opts into this.
+struct FirmwareRecovery {
+	void (*stopAdmission)(void*);
+	void* cookie;
+	bool admissionStopped = false;
+	bool attempted = false;
+	bool quiescent = false;
+	bool recovered = false;
+	uint32_t result = kFirmwareRunNotAttempted;
+	ResetInfo reset = {};
+	ResetSnapshot after = {};
+	uint32_t jobRaw = 0;
+	uint32_t mmuRaw = 0;
+	uint32_t transitionHigh[3] = {};
+	struct AddressSpace {
+		uint64_t table;
+		uint64_t attributes;
+		uint64_t config;
+		uint32_t status;
+	} spaces[2] = {};
+
+	FirmwareRecovery(void (*stop)(void*), void* data) : stopAdmission(stop), cookie(data) {}
+	void StopAdmission()
+	{
+		if (!admissionStopped) {
+			admissionStopped = true;
+			stopAdmission(cookie);
+		}
+	}
+};
+
+template<typename IO>
+void
+RecoverFirmware(IO& io, FirmwareRecovery& recovery)
+{
+	// Linux 6.18.52 Panthor (MIT option): stop/synchronize the scheduler and
+	// firmware/MMU IRQs before soft reset; a stuck AS need not stop beforehand.
+	// Require actual reset completion here, including its final idle snapshot.
+	// All firmware, queue and VM allocations remain owned throughout recovery.
+	recovery.StopAdmission();
+	recovery.attempted = true;
+	recovery.reset.version = kResetVersion;
+	recovery.reset.interrupt = 126;
+	ResetGpu(io, recovery.reset, true);
+	recovery.result = kFirmwareResetFailed;
+	if (recovery.reset.result == kResetOK && recovery.reset.cleanupResult == kResetOK) {
+		do {
+			recovery.result = kFirmwareFinalStateFailed;
+			if (io.ReadGpu(0x204) != 0 || io.ReadGpu(0x214) != 0 || io.ReadGpu(0x224) != 0)
+				break;
+			// Reuse the qualified noncoherent L2/AS teardown sequence. Explicitly
+			// remove AS0 and AS1 instead of assuming their register reset values.
+			recovery.result = kFirmwareL2Failed;
+			if (ReadGpu64(io, 0x220) != 0) break;
+			io.WriteGpu(0x304, 31);
+			if (io.ReadGpu(0x304) != 31) break;
+			WriteGpu64(io, 0x1a0, 1);
+			if (!WaitFirmware(io, 20000, [&]() {
+				return ReadGpu64(io, 0x160) == 1 && ReadGpu64(io, 0x220) == 0;
+			})) break;
+			bool unmapped = true;
+			for (unsigned as = 0; as < 2; as++) {
+				recovery.result = kFirmwareFlushFailed;
+				if (!FlushFirmware(io, as)) { unmapped = false; break; }
+				uint32_t offset = as * 0x40;
+				WriteGpu64(io, 0x2400 + offset, 0);
+				WriteGpu64(io, 0x2408 + offset, 0);
+				WriteGpu64(io, 0x2430 + offset, 1);
+				recovery.result = kFirmwareUnmapFailed;
+				if (!FirmwareAsCommand(io, 1, as)
+					|| ReadGpu64(io, 0x2400 + offset) != 0
+					|| ReadGpu64(io, 0x2408 + offset) != 0
+					|| ReadGpu64(io, 0x2430 + offset) != 1) {
+					unmapped = false; break;
+				}
+			}
+			if (!unmapped) break;
+			recovery.result = kFirmwareL2OffFailed;
+			if (ReadGpu64(io, 0x220) != 0) break;
+			WriteGpu64(io, 0x1e0, 1);
+			if (!WaitFirmware(io, 20000, [&]() {
+				return ReadGpu64(io, 0x160) == 0 && ReadGpu64(io, 0x220) == 0;
+			})) break;
+			recovery.result = kFirmwareRunOK;
+		} while (false);
+	}
+	SnapshotReset(io, recovery.after);
+	recovery.jobRaw = io.ReadGpu(0x1000);
+	recovery.mmuRaw = io.ReadGpu(0x2000);
+	bool clean = ResetIdleMatches(recovery.after) && recovery.jobRaw == 0
+		&& (recovery.mmuRaw & ~(3u << 16)) == 0;
+	for (unsigned i = 0; i < 3; i++) {
+		recovery.transitionHigh[i] = io.ReadGpu(0x204 + i * 0x10);
+		clean &= recovery.transitionHigh[i] == 0;
+	}
+	for (unsigned as = 0; as < 2; as++) {
+		uint32_t offset = as * 0x40;
+		FirmwareRecovery::AddressSpace& space = recovery.spaces[as];
+		space.table = ReadGpu64(io, 0x2400 + offset);
+		space.attributes = ReadGpu64(io, 0x2408 + offset);
+		space.config = ReadGpu64(io, 0x2430 + offset);
+		space.status = io.ReadGpu(0x2428 + offset);
+		clean &= space.table == 0 && space.attributes == 0 && space.config == 1
+			&& (space.status & 1) == 0;
+	}
+	if (recovery.result == kFirmwareRunOK && !clean)
+		recovery.result = kFirmwareFinalStateFailed;
+	recovery.quiescent = recovery.result == kFirmwareRunOK;
+}
+
 struct NoFirmwareOperation {
 	template<typename IO> bool Run(IO&, FirmwareMemory&, FirmwareRunInfo&) { return true; }
 	template<typename IO> bool BeforeStop(IO&) { return true; }
@@ -197,7 +309,8 @@ struct NoFirmwareOperation {
 
 template<typename IO, typename Operation>
 void
-RunFirmwarePowered(IO& io, FirmwareMemory& memory, FirmwareRunInfo& info, Operation& operation)
+RunFirmwarePowered(IO& io, FirmwareMemory& memory, FirmwareRunInfo& info, Operation& operation,
+	FirmwareRecovery* recovery = NULL)
 {
 	info.cleanupResult = kFirmwareRunOK;
 	info.reset.version = kResetVersion;
@@ -210,6 +323,7 @@ RunFirmwarePowered(IO& io, FirmwareMemory& memory, FirmwareRunInfo& info, Operat
 	bool l2Requested = false;
 	bool asExposed = false;
 	bool mcuRequested = false;
+	bool operationStarted = false;
 	if (!io.InstallFirmwareHandlers()) {
 		info.result = kFirmwareHandlerFailed;
 		io.StopFirmwareHandlers();
@@ -302,9 +416,12 @@ RunFirmwarePowered(IO& io, FirmwareMemory& memory, FirmwareRunInfo& info, Operat
 			break;
 		}
 		info.flags |= kFirmwarePingObserved;
+		operationStarted = true;
 		info.result = operation.Run(io, memory, info)
 			? kFirmwareRunOK : kFirmwareOperationFailed;
 	} while (false);
+	if (recovery != NULL && operationStarted && info.result != kFirmwareRunOK)
+		recovery->StopAdmission();
 
 	// Keep memory, MMIO and handler cookies alive through stop, flush, AS
 	// removal and IRQ teardown. The outer power cycle runs only afterwards.
@@ -361,25 +478,36 @@ RunFirmwarePowered(IO& io, FirmwareMemory& memory, FirmwareRunInfo& info, Operat
 		info.cleanupResult = kFirmwareFinalStateFailed;
 	if (info.cleanupResult == kFirmwareRunOK)
 		info.flags |= kFirmwareCleaned;
+	if (recovery != NULL && operationStarted
+		&& (info.result != kFirmwareRunOK || info.cleanupResult != kFirmwareRunOK))
+		RecoverFirmware(io, *recovery);
 }
 
 template<typename IO, typename Operation>
 void
-CycleFirmware(IO& io, FirmwareMemory& memory, FirmwareRunInfo& info, Operation& operation)
+CycleFirmware(IO& io, FirmwareMemory& memory, FirmwareRunInfo& info, Operation& operation,
+	FirmwareRecovery* recovery = NULL)
 {
 	info.result = kFirmwareRunNotAttempted;
 	info.cleanupResult = kFirmwareRunNotAttempted;
 	info.startedMicros = io.Now();
 	CycleIdentity(io, info.power, [&]() {
-		RunFirmwarePowered(io, memory, info, operation);
+		RunFirmwarePowered(io, memory, info, operation, recovery);
 		return info.result == kFirmwareRunOK && info.cleanupResult == kFirmwareRunOK;
 	});
 	if (info.result == kFirmwareRunNotAttempted)
 		info.result = kFirmwarePowerFailed;
 	if ((info.power.flags & kIdentityRestored) != 0)
 		info.flags |= kFirmwarePowerRestored;
-	if (info.result != kFirmwareRunOK || info.cleanupResult != kFirmwareRunOK
-		|| (info.flags & kFirmwarePowerRestored) == 0)
+	if (recovery != NULL && recovery->quiescent
+		&& (info.flags & kFirmwarePowerRestored) != 0
+		&& (info.power.flags & kIdentityNeedsRecovery) == 0) {
+		recovery->recovered = true;
+		info.flags |= kFirmwareRecovered;
+	}
+	if ((info.flags & kFirmwareRecovered) == 0
+		&& (info.result != kFirmwareRunOK || info.cleanupResult != kFirmwareRunOK
+			|| (info.flags & kFirmwarePowerRestored) == 0))
 		info.flags |= kFirmwareNeedsRecovery;
 	info.finishedMicros = io.Now();
 }

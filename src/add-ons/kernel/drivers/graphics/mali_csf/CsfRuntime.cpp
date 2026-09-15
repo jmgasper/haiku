@@ -77,7 +77,7 @@ public:
 	}
 	~Runtime()
 	{
-		// Failed hardware cycles retain the global owner and never get here.
+		// Hardware cycles that could not recover retain the global owner.
 		for (unsigned i = 0; i < kMaxRuntimeQueues; i++) {
 			QueueSlot& queue = queues[i];
 			while (queue.first != NULL) {
@@ -180,24 +180,48 @@ public:
 	void Destroyed(unsigned slot)
 	{
 		MutexLocker locker(sRuntimeLock);
+		RetireQueue(slot);
+	}
+	// sRuntimeLock held, and the engine has detached this queue or the failed
+	// runtime has finished a verified recovery. Never call for retained DMA.
+	void RetireQueue(unsigned slot)
+	{
 		QueueSlot& queue = queues[slot];
 		while (queue.first != NULL) {
 			QueueJob* job = queue.first; queue.first = job->next; DeleteJob(job);
 		}
+		DeleteJob(queue.current);
 		ReleaseClientVm(queue.activeLease);
 		delete_area(queue.area);
 		queue = QueueSlot();
 		live--;
 		changed.NotifyAll();
 	}
+	static void StopAdmission(void* data)
+	{
+		Runtime* runtime = (Runtime*)data;
+		MutexLocker locker(sRuntimeLock);
+		runtime->error = B_IO_ERROR;
+		for (unsigned i = 0; i < kMaxRuntimeQueues; i++) {
+			const QueueSlot& queue = runtime->queues[i];
+			if (!queue.used) continue;
+			dprintf("mali_csf: recovery queue handle=%" B_PRIu32 " submitted=%" B_PRIu64
+				" completed=%" B_PRIu64 " current=%" B_PRIu64 " pending=%" B_PRIu32 "\n",
+				queue.handle, queue.submitted, queue.completed,
+				queue.current != NULL ? queue.current->sequence : uint64(0), queue.pending);
+		}
+		runtime->changed.NotifyAll();
+	}
 	static int32 Worker(void* data)
 	{
 		Runtime* runtime = (Runtime*)data;
 		status_t status = runtime->hardware.Init(runtime->resources);
 		QueueEngine<Runtime> engine(*runtime);
+		FirmwareRecovery recovery(StopAdmission, runtime);
 		if (status == B_OK)
-			CycleFirmware(runtime->hardware, runtime->memory, runtime->firmware, engine);
-		bool retained = (runtime->firmware.flags & kFirmwareNeedsRecovery) != 0 || engine.Mapped();
+			CycleFirmware(runtime->hardware, runtime->memory, runtime->firmware, engine, &recovery);
+		bool retained = (runtime->firmware.flags & kFirmwareNeedsRecovery) != 0
+			|| (engine.Mapped() && !recovery.recovered);
 		if (status == B_OK && (retained || !runtime->ready || engine.Error() != 0
 			|| runtime->firmware.result != 0 || runtime->firmware.cleanupResult != 0)) status = B_IO_ERROR;
 		dprintf("mali_csf: runtime status=%" B_PRId32 " engine=%u fw=%u/%u flags=%#x"
@@ -207,6 +231,36 @@ public:
 			engine.FaultAddress(), retained);
 		dprintf("mali_csf: heap events=%u grown=%u declined=%u\n",
 			engine.HeapEvents(), engine.HeapGrowths(), engine.HeapDeclines());
+		if (recovery.attempted) {
+			dprintf("mali_csf: recovery result=%u reset=%u/%u flags=%#x irq=%u/%#x/%#x"
+				" quiescent=%u restored=%u recovered=%u job=%#x mmu=%#x\n",
+				recovery.result, recovery.reset.result, recovery.reset.cleanupResult,
+				recovery.reset.flags, recovery.reset.capture.count, recovery.reset.capture.status,
+				recovery.reset.capture.raw, recovery.quiescent,
+				(runtime->firmware.flags & kFirmwarePowerRestored) != 0,
+				recovery.recovered, recovery.jobRaw, recovery.mmuRaw);
+			dprintf("mali_csf: recovery time start=%" B_PRId64 " irq=%" B_PRId64
+				" end=%" B_PRId64 " cpu=%" B_PRId32 " power=%u/%u/%#x\n",
+				recovery.reset.startedMicros, recovery.reset.capture.whenMicros,
+				recovery.reset.finishedMicros, recovery.reset.capture.cpu,
+				runtime->firmware.power.result, runtime->firmware.power.restoreResult,
+				runtime->firmware.power.flags);
+			const ResetSnapshot& idle = recovery.after;
+			dprintf("mali_csf: recovery idle mask=%#x raw=%#x irq=%#x status=%#x mcu=%#x"
+				" job_mask=%#x mmu_mask=%#x shader=%#x/%#x tiler=%#x/%#x l2=%#x/%#x"
+				" transition=%#x/%#x/%#x high=%#x/%#x/%#x\n",
+				idle.mask, idle.raw, idle.interruptStatus, idle.status, idle.mcu,
+				idle.jobMask, idle.mmuMask, idle.shaderReady[0], idle.shaderReady[1],
+				idle.tilerReady[0], idle.tilerReady[1], idle.l2Ready[0], idle.l2Ready[1],
+				idle.shaderTransition, idle.tilerTransition, idle.l2Transition,
+				recovery.transitionHigh[0], recovery.transitionHigh[1], recovery.transitionHigh[2]);
+			for (unsigned as = 0; as < 2; as++) {
+				const FirmwareRecovery::AddressSpace& space = recovery.spaces[as];
+				dprintf("mali_csf: recovery AS%u table=%#" B_PRIx64 " attributes=%#" B_PRIx64
+					" config=%#" B_PRIx64 " status=%#x\n", as, space.table,
+					space.attributes, space.config, space.status);
+			}
+		}
 		{
 			MutexLocker locker(sRuntimeLock);
 			runtime->error = status;
@@ -477,8 +531,10 @@ DestroyQueues(Runtime* runtime, void* client, uint32 handle, bool& needsRecovery
 			for (unsigned i = 0; i < kMaxRuntimeQueues; i++) {
 				QueueSlot& queue = runtime->queues[i];
 				if (!queue.used || queue.client != client || !queue.destroy) continue;
-				if (runtime->finished) queue.client = NULL; // retain RAM, retire client identity
-				else waiting = true;
+				if (runtime->finished) {
+					if (runtime->retained) queue.client = NULL;
+					else runtime->RetireQueue(i);
+				} else waiting = true;
 			}
 			if (!waiting) break;
 			runtime->changed.Wait(&sRuntimeLock);

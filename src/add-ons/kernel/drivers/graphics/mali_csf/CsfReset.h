@@ -189,13 +189,20 @@ ResetCaptureMatches(const ResetCapture& capture, int64_t start)
 
 template<typename IO>
 void
-ResetGpu(IO& io, ResetInfo& info)
+ResetGpu(IO& io, ResetInfo& info, bool activeRecovery = false)
 {
 	info.startedMicros = io.Now();
 	info.cleanupResult = kResetOK;
 	SnapshotReset(io, info.before);
 	info.after = info.before;
-	if (info.startedMicros < 0 || !ResetIdleMatches(info.before)) {
+	// Active recovery is private to the scheduler. Its firmware handlers must
+	// have been synchronously removed before this independent reset handler is
+	// installed. The standalone diagnostic still requires the full idle state.
+	bool admitted = activeRecovery
+		? info.before.mask == 0 && info.before.interruptStatus == 0
+			&& info.before.jobMask == 0 && info.before.mmuMask == 0
+		: ResetIdleMatches(info.before);
+	if (info.startedMicros < 0 || !admitted) {
 		info.result = info.startedMicros < 0 ? kResetClockFailed : kResetInitialStateMismatch;
 		info.finishedMicros = io.Now();
 		return;

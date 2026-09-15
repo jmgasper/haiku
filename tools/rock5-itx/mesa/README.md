@@ -202,3 +202,19 @@ a fresh process. Native acceptance additionally requires the worker's queue
 handle in the driver's pending-at-close diagnostic captured on the same boot's
 UART. QEMU checks the software pixels and process lifecycle only. This case
 does not claim immediate preemption or automatic recovery from GPU faults.
+# Fault recovery candidate
+
+`run-recovery --native` exercises a deliberate invalid CS instruction on two
+native queue clients, checks three error fences and failed queue state, then
+closes both clients and verifies the full allocation baseline. It starts a
+fresh native store queue and runs the existing complete GLES pipeline fixture
+without rebooting Haiku. `--software` requires the native device to be absent
+and tests only the launcher and subsequent software rendering.
+
+The kernel candidate stops new submissions, performs a bounded soft reset,
+explicitly removes AS0/AS1, verifies the final GPU state and restores the
+qualified platform configuration. Failed recovery retains memory. Original
+rendering errors remain errors; all affected queues must close before a fresh
+runtime starts. This candidate has host model coverage but no native
+qualification yet. Innocent-context preservation, general hang recovery and
+native display control remain open.
