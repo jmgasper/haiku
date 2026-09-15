@@ -4,6 +4,12 @@ import render_validation
 
 def validate(text, output=None):
     result=render_validation.validate(text,output,software=False)
+    result.update(native_evidence(text))
+    return result
+
+
+def native_evidence(text):
+    result={}
     properties=re.findall(r'^HAIKU_MESA_NATIVE_GPU handle=(\d+) id=([0-9a-f]+) shader=([0-9a-f]+) firmware=([0-9a-f]+) csf=([0-9a-f]+) registers=(\d+) reserved=(\d+)\s*$',text,re.M)
     assert len(properties)==2
     for handle,gpu,shader,firmware,csf,registers,reserved in properties:

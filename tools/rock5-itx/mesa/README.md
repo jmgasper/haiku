@@ -5,6 +5,11 @@ CSF kernel ABI. It has passed offscreen GLES rendering on two native ROCK boots;
 [MESA.md](../../../docs/rock5-itx/MESA.md) records exact evidence and limits.
 It is not an upstream Mesa/Haiku release or a system package replacement.
 
+The current source adds an EGL window presentation candidate: native GPU
+textures are copied into Haiku window bitmaps. Its probe checks complete
+bitmap/screen pixels, dimensions, resizing and retirement. Native window
+qualification is pending; the accepted offscreen image is pinned in MESA.md.
+
 `sources.json` pins both original archives, six SDK packages, seven kernel ABI
 headers, host compiler helpers and every patch/probe/validator. The complete
 Mesa patch includes the pinned HaikuPorts changes; do not apply those twice.
@@ -42,13 +47,19 @@ after patched-source and SDK preparation. Logs, commands, input receipts and
 failures remain in the output directory. This reconstructs pinned sources and
 configuration; build-path/debug information can change binary hashes.
 
-The package manifest lists nine assets for `/boot/home/mesa-trial`. The `run`
+The package manifest lists eleven assets for `/boot/home/mesa-trial`. The `run`
 launcher uses Haiku's `LIBRARY_PATH` and a private GLVND vendor file. Its probe
 accepts `--native`, `--software` and `--absent-device`. Native mode expects
 `/dev/graphics/mali_csf/0` and the separately supplied, licensed firmware at
 `/boot/home/mali_csffw.bin`. Software mode is the explicit QEMU fixture.
 Neither a build result nor software rendering qualifies a native candidate:
 run the full Haiku build, both QEMU modes, native cycles and recovery checks.
+`run-window --software` and `run-window --native` run the window probe. It opens
+a real Haiku window and checks all pixels in both its bitmap and a screen
+capture over two contexts and six view resizes. `window_validation.py` checks
+the returned data independently and writes actual bitmap/screen PNGs. CPU
+bitmap presentation does not accelerate app_server or implement native display
+modes. Direct OpenGL Kit/BGLView application qualification remains separate.
 
 `render_validation.py` independently compares complete readbacks with integer
 pixel-region oracles and can write actual RGBA/PNG artifacts.

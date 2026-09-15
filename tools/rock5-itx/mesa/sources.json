@@ -88,16 +88,19 @@
     }
   ],
   "bundle_files": {
-    "mesa-haiku-native.patch": "2332313ecc274f6b1b88dbfe10f74fc82bf1b6c8c36fe2c92420d057a1911422",
+    "mesa-haiku-native.patch": "4228d2fa5660cfaa4e6fa5dc7bc984d61698e79679dc1851618c4f972779ce23",
     "libglvnd-haiku-sysroot.patch": "16c8c1110172bed628a6160bd86b2f4e36cb408a59bdbe59d133f7f812732d13",
-    "mesa-native-source-manifest.json": "b7dc775ea456dbc35e07c8b6bf39503dcedd6ca71d69a8614233d8d88fd956d3",
+    "mesa-native-source-manifest.json": "0474b929345a59a746594c5e8eb78e84553cc1a85fe179caa16ec00cea3e5b41",
     "libglvnd-haiku-mutex.patch": "96f0fa776fa8b3c6425e26981e6e4cbca7fc33f31eb8f8e58bad730891de6035",
-    "native_render_validation.py": "ff5548c2552826fa7ce9bd124eb1a68590038736c32935639c68c3f77be42f6b",
+    "native_render_validation.py": "709c02edeacce5f66b27f1863d2f26d8bbbe7e1edc932b75ac812562910c1880",
     "render_validation.py": "460d5ab54cf289fe1e84ed3cbe8d8522f453260b889b9b1e86fee074f3843c5b",
     "libglvnd-1.7.0.patchset": "a2b593754f479d72395f148fa650c21d79ab75e0d7b62602d3f196f056708da5",
     "render-probe.cpp": "a574a94b9c1d39567253110d22a46c9307c935a1ce816d5d87196928e8669120",
     "run": "67d90f5cf1f89ffdc393e6e487f6b5b4eea67b696b98362846b547f27b855fe6",
-    "vendor.json": "817464a10dd3e42ea9aa99bc38c28a98d41391e451c2e9442abbb824d29a2def"
+    "vendor.json": "817464a10dd3e42ea9aa99bc38c28a98d41391e451c2e9442abbb824d29a2def",
+    "run-window": "106f64d9e8909dca6947467e62d46838713538e09a5d51fd263c9b7c5aa7d152",
+    "window-probe.cpp": "c8b423097ca167e887b5bb9a029ca089bb95dc185150654f99c6d94306cb6524",
+    "window_validation.py": "2a645d2a90a82cb320be9c65caaec111956674c8dbf5b6d71f6fa78c32608f82"
   },
   "host_helpers": {
     "vtn_bindgen2": "8f03a1c42332ec1494a89de73d9bdbe7bba91aeeb98c6c0cd2d6623eb276a167",

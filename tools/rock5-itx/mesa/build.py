@@ -183,6 +183,12 @@ def main():
             '-I' + str(abi), HERE / 'render-probe.cpp',
             '-L' + str(glvnd_install / 'boot/system/lib'), '-lEGL', '-lGLESv2', '-o', probe],
             'probe-compile')
+        window_probe = root / 'rock5_haiku_window_probe'
+        run([str(compiler_prefix) + 'g++', '--sysroot=' + str(sdk), '-std=c++17',
+            '-O2', '-g', '-Wall', '-Wextra', '-Werror', '-I' + str(headers / 'os/opengl'),
+            '-I' + str(abi), '-I' + str(mesa / 'src/gallium/winsys/sw/hgl'),
+            HERE / 'window-probe.cpp', '-L' + str(glvnd_install / 'boot/system/lib'),
+            '-lEGL', '-lGLESv2', '-lbe', '-o', window_probe], 'window-probe-compile')
         package = root / 'package'
         package.mkdir()
         assets = []
@@ -191,7 +197,8 @@ def main():
                 ('libGLdispatch', '0.0.0'), ('libOpenGL', '0.0.0'), ('libGL', '1.0.0')]:
             libraries.append(('lib/' + name + '.so.' + version.split('.')[0],
                 glvnd_install / 'boot/system/lib' / (name + '.so.' + version)))
-        for name, source in libraries + [('rock5_haiku_mesa_probe', probe)]:
+        for name, source in libraries + [('rock5_haiku_mesa_probe', probe),
+                ('rock5_haiku_window_probe', window_probe)]:
             target = package / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
@@ -200,7 +207,7 @@ def main():
             assets.append(dict(source=str(target), guest='/boot/home/mesa-trial/' + name,
                 sha256=digest(target), bytes=target.stat().st_size, mode='755',
                 unstripped_source=str(source), unstripped_sha256=digest(source)))
-        for name, mode in [('run', '755'), ('vendor.json', '644')]:
+        for name, mode in [('run', '755'), ('run-window', '755'), ('vendor.json', '644')]:
             target = package / name
             shutil.copy2(HERE / name, target)
             assets.append(dict(source=str(target), guest='/boot/home/mesa-trial/' + name,

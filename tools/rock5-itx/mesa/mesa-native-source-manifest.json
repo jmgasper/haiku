@@ -13,7 +13,7 @@
     {
       "path": "src/egl/drivers/haiku/egl_haiku.cpp",
       "before": "f2954e784119151ecfd8590f7a414be858d7a3ee25af4c90183dac8d8c9808b5",
-      "after": "0a66d5f7dc92a4bf44db86ac1fdc9ff74a33c4d66789ad0c53ea9b68c6319495"
+      "after": "7fa2306ad9f74b44ab0d34d8fc1f95159373fb896e77babb7c699a9fe92dc50c"
     },
     {
       "path": "src/egl/meson.build",
@@ -93,12 +93,12 @@
     {
       "path": "src/gallium/frontends/hgl/hgl.c",
       "before": "bfd5c6a157d959c4f71b0ab82b1b78077d71787be315175175e60b05638bbc98",
-      "after": "a84ba7649ca0b579dafb9f31cd3b4a8b4648533259dd03d15a7437281374c750"
+      "after": "e2a4d4712a0b09a33815b0bd00a08e6a7c0e7e4dd6c871cbbb24cbaf7029a6d3"
     },
     {
       "path": "src/gallium/frontends/hgl/hgl_context.h",
       "before": "f039973ba0c85e4be2b1ed25ba6b6ded370fa735b105d74884da0de14ae3a7c9",
-      "after": "cfecb6f0059bf5ab5beae0e741dee207c3ebc1c5542960bd145ceecbe2261ab4"
+      "after": "233a6f9c96d70f179fc46a21f0a984b9c2b313de46fa5224016b416e819d8e3b"
     },
     {
       "path": "src/gallium/winsys/panfrost/drm/meson.build",
@@ -216,7 +216,7 @@
       "after": "0e62a91ce65378918e1cea06bd65361d9e2630e3118277a4c48e5b1605930f14"
     }
   ],
-  "patch_sha256": "2332313ecc274f6b1b88dbfe10f74fc82bf1b6c8c36fe2c92420d057a1911422",
+  "patch_sha256": "4228d2fa5660cfaa4e6fa5dc7bc984d61698e79679dc1851618c4f972779ce23",
   "pristine_tar_sha256": "59217efeac3b64e7ced958324b9db7494f1e0741aeb22d780276514cc1b8f206",
   "includes": "Pinned HaikuPorts changes, native CSF backend and Haiku EGL/HGL fixes"
 }
