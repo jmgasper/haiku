@@ -720,6 +720,30 @@ recovery-image/eMMC integrity also pass. The desktop still uses the EFI
 framebuffer. Rendering, Mesa integration and installed-SSD requalification
 remain open.
 
+## Cached GPU properties
+
+The next candidate adds `kGetQueueProperties` (`0x4d435346`), a 192-byte
+versioned query on a client-owned queue. The runtime worker captures the GPU
+feature registers and validated firmware interface before accepting queues;
+queries copy that immutable snapshot without MMIO, allocations or submissions.
+Client capability bit 32 advertises the query. Metadata remains available for
+an owned failed queue; `QueueInfo` reports its current health. Retired and
+foreign handles fail.
+
+The result distinguishes hardware/firmware slot counts from the driver's eight
+software queues and 64 pending jobs per queue. It reports 96 working registers
+with the last four reserved by the kernel wrapper, and the lower 47-bit user VA
+limit. The firmware timer frequency is not a GPU timestamp/coherency guarantee.
+Raw thread, texture, cache, tiler and memory feature values come from the
+registers defined by Linux 6.18.52's `panthor_regs.h` and `panthor_hw.c` under
+their MIT option. No guessed timestamp or cache-flush identifier is exposed.
+
+An independent host register inventory checks all 26 register reads, including
+the upper halves of four 64-bit fields. Runtime checks cover request boundaries,
+copy failures, ownership, concurrent pending-work queries, failed queues and
+retired handles across runtime restart. Native qualification of this candidate
+is pending. The +207 heap image remains the qualified GPU baseline.
+
 ## Next milestones
 
 1. Add non-disruptive native property queries and Mesa adaptation on the qualified

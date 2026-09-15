@@ -1009,7 +1009,7 @@ MaliCSF::ControlClient(void* cookie, uint32 op, void* user, size_t length)
 			return B_BAD_VALUE;
 		ClientInfo info = {};
 		info.version = kClientVersion;
-		info.capabilities = client->writable ? kClientCpuBuffers | kClientVmMappings | kClientQueues | kClientSynchronization | kClientHeaps : 0;
+		info.capabilities = client->writable ? kClientCpuBuffers | kClientVmMappings | kClientQueues | kClientSynchronization | kClientHeaps | kClientProperties : 0;
 		info.maxBuffers = kMaxClientBuffers;
 		info.maxBufferBytes = kMaxBufferBytes;
 		info.maxClientBytes = kMaxClientBufferBytes;

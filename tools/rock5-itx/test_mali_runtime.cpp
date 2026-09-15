@@ -184,11 +184,24 @@ static void DriveRuntime(Runtime*, FirmwareRunInfo&);
 
 static std::atomic<bool> sHoldJob{false}, sFailJob{false}, sFailBoot{false};
 static std::atomic<unsigned> sEnteredJob{0}, sHardwareCycles{0};
+static GpuProperties FixtureProperties(unsigned cycle)
+{
+	GpuProperties result{};
+	// Deliberately distinct runtime epochs, so stale or zero-filled snapshots
+	// cannot pass. The separate register oracle tests actual capture.
+	result.gpuId = 0xa8670005; result.csfId = 0x040a0412;
+	result.gpuRevision = cycle; result.shaderPresent = UINT64_C(0x102345678);
+	result.textureFeatures[3] = 0x983cb62f;
+	result.workRegisters = 96; result.reservedRegisters = 4;
+	result.firmwareVersion = 0x01050000; result.firmwareTimerHz = 24000000;
+	result.userVaLimit = UINT64_C(1) << 47;
+	return result;
+}
 static void DriveRuntime(Runtime* runtime, FirmwareRunInfo& info)
 {
 	sHardwareCycles++;
 	if (sFailBoot) { info.flags |= kFirmwareNeedsRecovery; return; }
-	runtime->Ready({});
+	runtime->Ready({}, FixtureProperties(sHardwareCycles));
 	QueueProgress progress[8]{};
 	for (;;) {
 		QueueWork work{}; runtime->Next(work);
@@ -271,6 +284,54 @@ static void DropSimulatedRetainedRuntime()
 	Runtime* runtime = sRuntime;
 	assert(runtime != NULL && runtime->retained && runtime->finished && runtime->thread == -1);
 	assert(runtime->references == 1); sRuntime = NULL; PutRuntime(runtime);
+}
+
+static void CheckProperties(Client& client, uint32 handle)
+{
+	bool recovery = false;
+	QueueProperties request{}; request.version = 1; request.handle = handle;
+	memset(&request.gpu, 0x95, sizeof(request.gpu)); // output must be replaced
+	assert(Call(client, kGetQueueProperties, request, recovery) == B_OK && !recovery);
+	GpuProperties expected = FixtureProperties(sHardwareCycles);
+	assert(request.version == 1 && request.handle == handle && request.flags == 0
+		&& request.reserved == 0 && request.reserved2[0] == 0 && request.reserved2[1] == 0);
+	assert(memcmp(&request.gpu, &expected, sizeof(expected)) == 0);
+}
+
+static void PropertyBoundaries(Client& client, Client& other, uint32 handle)
+{
+	unsigned allocations = sAllocationCalls, cycles = sHardwareCycles;
+	auto before = Info(client, handle);
+	bool recovery = false;
+	QueueProperties clean{}; clean.version = 1; clean.handle = handle;
+	for (unsigned field = 0; field < 5; field++) {
+		auto bad = clean;
+		if (field == 0) bad.version = 2;
+		if (field == 1) bad.flags = 1;
+		if (field == 2) bad.reserved = 1;
+		if (field == 3) bad.reserved2[0] = 1;
+		if (field == 4) bad.reserved2[1] = UINT64_MAX;
+		assert(Call(client, kGetQueueProperties, bad, recovery) == B_BAD_VALUE);
+	}
+	for (size_t size : {size_t(0), sizeof(clean) - 1, sizeof(clean) + 1})
+		assert(ControlQueues({}, &client, kGetQueueProperties, &clean, size, recovery) == B_BAD_VALUE);
+	assert(ControlQueues({}, &client, kGetQueueProperties, NULL, sizeof(clean), recovery) == B_BAD_ADDRESS);
+	assert(Call(other, kGetQueueProperties, clean, recovery) == B_ENTRY_NOT_FOUND);
+	for (unsigned fail = 1; fail <= 2; fail++) {
+		sFailCopy = sCopies + fail;
+		assert(Call(client, kGetQueueProperties, clean, recovery) == B_BAD_ADDRESS);
+		sFailCopy = 0;
+	}
+	CheckProperties(client, handle);
+	auto after = Info(client, handle);
+	assert(memcmp(&before, &after, sizeof(before)) == 0);
+	assert(sAllocationCalls == allocations && sHardwareCycles == cycles && !recovery);
+}
+
+static void QueryRetired(Client& client, uint32 handle, bool& recovery)
+{
+	QueueProperties request{}; request.version = 1; request.handle = handle;
+	assert(Call(client, kGetQueueProperties, request, recovery) == B_ENTRY_NOT_FOUND);
 }
 
 static status_t
@@ -392,6 +453,7 @@ int main()
 	QueueInfo invalid{}; invalid.version = 1; invalid.handle = handle;
 	assert(Call(other, kGetQueueInfo, invalid, recovery) == B_ENTRY_NOT_FOUND);
 	assert(Info(client, handle).state == kQueueReady);
+	PropertyBoundaries(client, other, handle);
 	QueueSubmit bad{}; bad.version = 1; bad.handle = handle;
 	bad.streamAddress = 0x100000000; bad.streamBytes = 8;
 	sCopies = 0; sFailCopy = 2;
@@ -406,6 +468,16 @@ int main()
 	sHoldJob = true; unsigned before = sEnteredJob;
 	auto job = Submit(client, handle); AwaitJob(before);
 	assert(job.sequence == 1 && job.generation == 1 && client.generation->references == 3);
+	// Four concurrent readers while the worker is held inside an actual queued
+	// job. No extra allocation, firmware cycle, submission or completion.
+	unsigned queryAllocations = sAllocationCalls;
+	std::thread readers[4];
+	for (auto& reader : readers) reader = std::thread([&]() {
+		for (unsigned i = 0; i < 64; i++) CheckProperties(client, handle);
+	});
+	for (auto& reader : readers) reader.join();
+	assert(sAllocationCalls == queryAllocations && sHardwareCycles == cycles);
+	assert(Info(client, handle).submitted == 1 && Info(client, handle).completed == 0);
 	QueueWait wait{}; wait.version = 1; wait.handle = handle; wait.sequence = 1;
 	assert(Call(client, kWaitQueue, wait, recovery) == B_TIMED_OUT);
 	wait.timeoutMicros = 1000;
@@ -422,6 +494,7 @@ int main()
 	assert(Wait(client, handle, 2).result == B_OK);
 	assert(sGenerations.size() == 2 && client.generation->references == 2);
 	assert(Info(client, handle).activeGeneration == 2);
+	CheckProperties(client, handle);
 
 	// Queued jobs retain the original snapshot, and timed-out waits leave it
 	// untouched. Closing the VM prevents new submissions, but not old work.
@@ -438,6 +511,7 @@ int main()
 	assert(!closed);
 	sHoldJob = false; closer.join();
 	assert(closed && !recovery); Clean(1);
+	QueryRetired(client, handle, recovery);
 
 	// Two API users may wait and close concurrently; no worker outlives the
 	// final close, and a stale handle never becomes a subsequently reused slot.
@@ -457,6 +531,8 @@ int main()
 	sHoldJob = false; waiter.join(); closeAgain.join();
 	assert(waitStatus == B_OK || waitStatus == B_ENTRY_NOT_FOUND); Clean(2);
 	assert(Create(client, handle, true, recovery) == B_OK && handle != stale);
+	QueryRetired(client, stale, recovery);
+	CheckProperties(client, handle);
 	invalid.handle = stale;
 	assert(Call(client, kGetQueueInfo, invalid, recovery) == B_ENTRY_NOT_FOUND);
 	Destroy(client, handle); Clean(2);
@@ -467,7 +543,9 @@ int main()
 	sFailJob = true; job = Submit(client, handle);
 	assert(Wait(client, handle, job.sequence).result == B_IO_ERROR);
 	assert(Info(client, handle).state == kQueueFailed);
+	CheckProperties(client, handle); // metadata is not a health indicator
 	CloseVm(client); CloseQueues(&client, recovery);
+	QueryRetired(client, handle, recovery);
 	assert(recovery && !sAreas.empty() && sThreads.empty() && sGenerations.size() == 2);
 	assert(Create(other, excess, true, recovery) == B_BAD_VALUE);
 	DropSimulatedRetainedRuntime(); sFailJob = false; recovery = false; Clean(1);

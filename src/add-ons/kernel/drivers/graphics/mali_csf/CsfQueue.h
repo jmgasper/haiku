@@ -5,6 +5,7 @@
 #include "CsfVm.h"
 #include "CsfHeap.h"
 #include "CsfSync.h"
+#include "CsfProperties.h"
 
 namespace MaliCSF {
 

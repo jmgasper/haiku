@@ -325,7 +325,7 @@ static unsigned sQueueRequests;
 static status_t ControlQueues(const ResourceInfo&, void* cookie, uint32 op, void*, size_t, bool&, void* syncClient = NULL)
 {
 	assert(syncClient == NULL || syncClient == &sFirmwareRequests);
-	assert(cookie == &sFirmwareRequests && op >= kCreateQueue && op <= kSubmitQueueSync);
+	assert(cookie == &sFirmwareRequests && op >= kCreateQueue && op <= kGetQueueProperties);
 	assert(sLockDepth == unsigned(op == kCreateQueue || op == kDestroyQueue));
 	sQueueRequests++;
 	return B_OK;
@@ -702,11 +702,11 @@ main()
 	controller.shaderEnabled = false;
 	assert(Control(&opened, kCreateQueue, NULL, 0) == B_NOT_ALLOWED);
 	controller.shaderEnabled = true;
-	for (uint32 op = kCreateQueue; op <= kSubmitQueueSync; op++)
+	for (uint32 op = kCreateQueue; op <= kGetQueueProperties; op++)
 		assert(Control(&opened, op, NULL, 0) == B_OK);
-	assert(sQueueRequests == 6 && sLockDepth == 0);
+	assert(sQueueRequests == 7 && sLockDepth == 0);
 	controller.identityNeedsRecovery = true;
-	assert(Control(&opened, kCreateQueue, NULL, 0) == B_BUSY && sQueueRequests == 6);
+	assert(Control(&opened, kCreateQueue, NULL, 0) == B_BUSY && sQueueRequests == 7);
 	assert(Control(&opened, kGetQueueInfo, NULL, 0) == B_OK);
 	assert(Control(&opened, kDestroyQueue, NULL, 0) == B_OK);
 	controller.identityNeedsRecovery = false;

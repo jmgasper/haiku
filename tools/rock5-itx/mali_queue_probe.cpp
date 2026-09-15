@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <initializer_list>
+#include <inttypes.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -179,6 +180,7 @@ struct Context {
 	}
 };
 
+#include "mali_property_probe.inc"
 #include "mali_sync_probe.inc"
 #include "mali_heap_probe.inc"
 
@@ -189,15 +191,20 @@ int main(int argc, char** argv)
 	if (fd < 0 && errno == ENOENT) { puts("ROCK5_MALI_QUEUE_NO_DEVICE"); return 77; }
 	CHECK(fd >= 0 && argc == 2);
 	auto baseline = Buffers(fd); auto baselineVms = Vms(fd);
-	CHECK(baseline.capabilities == (kClientCpuBuffers | kClientVmMappings | kClientQueues | kClientSynchronization | kClientHeaps));
+	CHECK(baseline.capabilities == (kClientCpuBuffers | kClientVmMappings | kClientQueues | kClientSynchronization | kClientHeaps | kClientProperties));
 	CHECK(Areas("Mali CSF firmware DMA") == 0 && Areas("Mali CSF queue DMA") == 0);
+	RetiredProperties(fd, 0);
 	Context a(fd, 0x61b256ad, argv[1]), b(fd, 0x9852da31, NULL);
+	StartPropertyChecks(fd, a.queue, b.queue);
 	a.Store(0, true); b.Store(0, true); a.Store(1); a.Replace(); a.Store(2); b.Store(1);
 	CHECK(Info(fd, a.queue).activeGeneration == a.generation);
 	puts("ROCK5_MALI_QUEUE_CONTEXT_PASS contexts=2 vm_changes=1 persistent_register=80");
 	for (unsigned i = 0; i < 520; i++) {
 		a.Store(10 + i);
-		if ((i + 1) % 128 == 0) printf("ROCK5_MALI_QUEUE_PROGRESS stores=%u\n", i + 1);
+		if ((i + 1) % 128 == 0) {
+			CheckCachedProperties(fd, a.queue);
+			printf("ROCK5_MALI_QUEUE_PROGRESS stores=%u\n", i + 1);
+		}
 	}
 	a.Compute(0); b.Compute(0); a.Compute(1); b.Compute(1);
 	a.Store(600); b.Store(600); a.Wait(a.Submit(0, 0));
@@ -209,6 +216,7 @@ int main(int argc, char** argv)
 	printf("ROCK5_MALI_QUEUE_EXECUTION_PASS a=%" B_PRIu64 " b=%" B_PRIu64
 		" insert=%" B_PRIu64 " extract=%" B_PRIu64 " shaders=4 empty=1 interrupts=%u sync=%u suspends=%u resumes=%u\n",
 		ai.completed, bi.completed, ai.insert, ai.extract, ai.interrupts, ai.syncEvents, ai.suspends, ai.resumes);
+	CheckCachedProperties(fd, b.queue);
 	// Preserve the exact immutable generation of already submitted work across
 	// a mapping update. The old target stays inspectable through its CPU alias.
 	Context retained(fd, 0x153790ab, NULL);
@@ -243,6 +251,9 @@ int main(int argc, char** argv)
 			close(ready[i][0]); close(control[i][1]);
 			QueueInfo inherited{}; inherited.version = 1; inherited.handle = a.queue;
 			CHECK(Call(fd, kGetQueueInfo, inherited) != 0 && errno == EPERM);
+			QueueProperties properties{}; properties.version = 1; properties.handle = a.queue;
+			CHECK(Call(fd, kGetQueueProperties, properties) != 0 && errno == EPERM);
+			puts("ROCK5_MALI_PROPERTIES_INHERITED_REJECTED");
 			int childFd = open(kDevice, O_RDWR); CHECK(childFd >= 0);
 			Context context(childFd, 0x16734acd + i, NULL);
 			// A long stream of valid NOPs leaves time to observe pending work.
@@ -272,7 +283,10 @@ int main(int argc, char** argv)
 	printf("ROCK5_MALI_QUEUE_EXIT_PASS normal=1 killed=1 pending_at_ready=%u,%u leaked=0\n", pending[0], pending[1]);
 	RunNativeSynchronization(fd);
 	RunNativeHeaps(fd);
-	a.Store(700); b.Store(700); a.Finish(); b.Finish();
+	a.Store(700); b.Store(700);
+	CheckCachedProperties(fd, a.queue); CheckCachedProperties(fd, b.queue);
+	a.Finish(); RetiredProperties(fd, a.queue);
+	b.Finish(); RetiredProperties(fd, b.queue);
 	after = Buffers(fd); afterVms = Vms(fd);
 	CHECK(after.globalBuffers == baseline.globalBuffers && after.globalClients == baseline.globalClients);
 	CHECK(afterVms.globalVms == baselineVms.globalVms && afterVms.globalGenerations == baselineVms.globalGenerations
@@ -280,6 +294,8 @@ int main(int argc, char** argv)
 	CHECK(Areas("Mali CSF queue DMA") == 0 && Areas("Mali CSF firmware DMA") == 0);
 	CHECK(Areas("Mali CSF VM page tables") == baselineVms.globalGenerations);
 	CHECK(Areas("Mali CSF client buffer") == baseline.globalBuffers);
+	CHECK(sPropertyQueries == 43);
+	puts("ROCK5_MALI_PROPERTIES_PASS queries=43 retired=3 inherited=2 cached=1 timestamp_guarantee=0");
 	SyncKeepalive keep = KeepSyncAcrossClose(fd);
 	CHECK(close(fd) == 0);
 	CheckSyncAcrossClose(keep);

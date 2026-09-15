@@ -90,10 +90,11 @@ public:
 		if (area >= B_OK) delete_area(area);
 		free(file);
 	}
-	void Ready(const InterfaceInfo& value)
+	void Ready(const InterfaceInfo& value, const GpuProperties& gpu)
 	{
 		MutexLocker locker(sRuntimeLock);
 		interface = value;
+		properties = gpu;
 		ready = true;
 		changed.NotifyAll();
 	}
@@ -231,6 +232,7 @@ public:
 	FirmwareMemory memory;
 	FirmwareRunInfo firmware = {};
 	InterfaceInfo interface = {};
+	GpuProperties properties = {};
 	void* file = NULL;
 	area_id area = -1;
 	thread_id thread = -1;
@@ -617,6 +619,19 @@ ControlQueues(const ResourceInfo& resources, void* client, uint32 op, void* user
 		}
 		DestroyQueues(runtime, client, request.handle, needsRecovery);
 		return needsRecovery ? B_IO_ERROR : B_OK;
+	}
+	if (op == kGetQueueProperties) {
+		QueueProperties request;
+		status_t status = ReadQueueRequest(user, length, request);
+		if (status != B_OK) return status;
+		if (request.flags != 0 || request.reserved != 0
+			|| request.reserved2[0] != 0 || request.reserved2[1] != 0) return B_BAD_VALUE;
+		MutexLocker locker(sRuntimeLock);
+		if (FindQueue(runtime, client, request.handle) < 0) return B_ENTRY_NOT_FOUND;
+		QueueProperties result = {};
+		result.version = kClientVersion; result.handle = request.handle;
+		result.gpu = runtime->properties;
+		return user_memcpy(user, &result, sizeof(result));
 	}
 	if (op != kGetQueueInfo) return B_DEV_INVALID_IOCTL;
 	QueueInfo request;

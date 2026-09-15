@@ -5,6 +5,7 @@
 #include "CsfRun.h"
 #include "CsfQueueMemory.h"
 #include "CsfHeapGrowth.h"
+#include "CsfPropertyCapture.h"
 
 namespace MaliCSF {
 
@@ -78,8 +79,9 @@ public:
 		fStreamOut = shared + fInterface.streamOutputOffset / 4;
 		fError = kQueueEngineConfig;
 		uint32_t timer = io.TimerRate();
-		fShaderMask = ReadGpu64(io, 0x100);
-		fTilerMask = ReadGpu64(io, 0x110);
+		GpuProperties properties = CaptureGpuProperties(io, global, fInterface, timer);
+		fShaderMask = properties.shaderPresent;
+		fTilerMask = properties.tilerPresent;
 		if (timer == 0 || timer > 1000000000 || fShaderMask == 0 || fTilerMask == 0
 			|| fTilerMask > 0xffffffff || (fGroupOut[0] & 7) != 0
 			|| (fStreamOut[0] & 7) != 0 || !io.ArmCommandJob())
@@ -97,7 +99,7 @@ public:
 		}) || io.FirmwareFaulted())
 			return false;
 		fError = kQueueEngineOK;
-		fFeed.Ready(global);
+		fFeed.Ready(global, properties);
 		for (;;) {
 			Poll(io);
 			if (Faulted(io)) { fError = kQueueEngineFault; return false; }

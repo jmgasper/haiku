@@ -343,9 +343,13 @@ struct TestFeed {
 		for (unsigned i = 0; i < 520; i++) jobs.push_back({0, 1});
 		jobs.push_back({0, 2}); // ordered completion without application commands
 	}
-	void Ready(const InterfaceInfo& info)
+	void Ready(const InterfaceInfo& info, const GpuProperties& properties)
 	{
-		assert(info.version == 0x01050000 && io.configured && !ready); ready = true;
+		assert(info.version == 0x01050000 && io.configured && !ready);
+		assert(properties.firmwareVersion == info.version && properties.workRegisters == 96
+			&& properties.scoreboards == 8 && properties.reservedRegisters == 4
+			&& properties.shaderPresent == 0x50005 && properties.tilerPresent == 1
+			&& properties.firmwareTimerHz == io.TimerRate()); ready = true;
 	}
 	void Next(QueueWork& work)
 	{

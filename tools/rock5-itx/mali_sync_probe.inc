@@ -169,6 +169,7 @@ RunNativeSynchronization(int fd)
 	unsigned pending = Info(fd, producer.queue).pending;
 	CHECK(pending > 0 && checkpoint.submitted == 30 && checkpoint.completed == 0);
 	CHECK(Info(fd, consumer.queue).completed == 0 && Info(fd, consumer.queue).pending == 1);
+	CheckPendingProperties(fd, producer.queue, consumer.queue);
 	CHECK(WaitSync(fd, timeline, 20, kSyncWaitAvailable, 0) == 0);
 	CHECK(WaitSync(fd, timeline, 20, 0, 0) != 0 && errno == ETIMEDOUT);
 	int twenty = ExportSync(fd, timeline, true, 15), thirty = ExportSync(fd, timeline, true, 30);
