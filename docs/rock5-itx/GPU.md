@@ -2,8 +2,9 @@
 
 GPU acceleration is the owner's current priority; further Ethernet driver work
 is deferred. The working EFI framebuffer supplies a desktop, while native
-display control and GPU rendering remain separate milestones. No accelerated
-Haiku rendering or GPU firmware boot is claimed yet.
+display control and GPU rendering remain separate milestones. Haiku now boots
+the Mali firmware and completes its ping handshake on two +190 native boots.
+Command-stream submission and accelerated rendering remain pending.
 
 ## Reference and integration route
 
@@ -224,13 +225,14 @@ component and ten file hashes, identical FDT captures, automatic recovery and
 independent complete recovery-image/eMMC integrity pass. This qualifies the
 bounded reset/IRQ lifecycle; no GPU firmware execution or rendering occurred.
 
-## Firmware startup implementation (not yet native-qualified)
+## Firmware startup and native qualification
 
 The opt-in `rock5-itx-edk2-v1.1-gpu-firmware` profile adds
 `rock5_mali_firmware_probe --start /boot/home/mali_csffw.bin`. Its root-only
 request copies the bounded firmware bytes into kernel-owned memory before
 parsing. The existing CPU-only probe mode and identity/reset interfaces remain
-available. This implementation has not yet executed firmware on the board.
+available. The +190 implementation passes the native startup and stop cycle
+on both tested boots.
 
 `CsfMemory.h` independently constructs a four-level ARM64 stage-1 table for
 48-bit input addresses, MCU allocations below 4 GiB and physical addresses below
@@ -278,14 +280,40 @@ completion and records faults observed before IRQ arming. The native controller
 also preserves a failed diagnostic exit without ending the session, allowing
 its normal shutdown command to run before recovery.
 
+The corrected +190 image passes all 136 host checks, the ARM64 build and both
+two-boot QEMU modes. QEMU checks firmware preparation, cached-code aliases,
+component integrity and absent-GPU rejection; it does not execute Mali firmware.
+On the actual board, both boots allocate the expected nine page-table pages
+and 224 payload pages, activate AS0 and receive one startup interrupt followed
+by one ping interrupt on job IRQ 124. Each capture reports CPU 0 and masked/raw
+status `80000000`. Firmware interface 1.5.0 exposes eight groups, eight streams
+per group, 96 registers and eight scoreboards. The ping request and acknowledgment
+both reach `00000100`. No GPU or MMU fault is recorded.
+
+The complete power/start/ping/stop/restore cycles take 1,881 and 1,879 microseconds;
+these include software and platform operations, not isolated GPU latency.
+Both return result/cleanup zero and flags `ff`. Final AS configuration is unmapped,
+MCU/core state and interrupt masks are idle, and all ten platform registers
+return to their starting values. Final MMU raw `00010000` is the normal AS0
+completion event; its interrupt remains disabled. The complete 1,128-byte results
+are decoded independently, with 51 altered-evidence rejection cases.
+
+Both boots also pass reset/identity diagnostics, 129,024 instruction-alias checks,
+33 component and ten file hashes, identical FDT captures and reviewed desktops.
+Normal reboot, verified shutdown, automatic Linux recovery, disarmed watchdog,
+the complete original recovery-image hash, eMMC FAT/filesystem/file hashes and
+all three eMMC reference-region hashes pass. This accepts the bounded firmware
+lifecycle. It does not qualify shader execution, rendering, persistent contexts
+or the separate open installed-SSD/page-aging failures.
+
 ## Next milestones
 
-1. Implement GPU page tables, backing-memory lifetime and cache operations.
-   Load the validated regions and verify the MCU boot handshake, interface
-   version, timeout cleanup and normal reboot. Regulator ownership, runtime
-   power management and DVFS remain separate work.
-2. Implement the selected Mesa CSF kernel operations. Run a checked GPU memory
-   operation, then an offscreen rendered image.
+1. Establish a checked command-stream memory operation on the pinned Linux
+   reference, then implement Haiku group/queue setup, owned queue memory,
+   completion and cleanup using the same decoded stream.
+2. Implement the selected Mesa CSF kernel operations and an offscreen rendered
+   image. Regulator ownership, runtime power management and DVFS remain
+   separate work.
 3. Integrate Panfrost with Haiku EGL/OpenGL and window output; qualify pixels,
    multiple contexts, process exit, reset, sustained work and conformance.
 4. Implement native VOP2/HDMI modes/hotplug and additional display routes,
@@ -324,6 +352,14 @@ images stay beneath `/mnt/HaikuWork`; firmware binaries are not committed.
 
 Qualified native component evidence:
 
+- +190 firmware memory, MCU startup, ping and cleanup:
+  `artifacts/automated-mali-firmware-start/20260915T011253Z-d90588/qualification.json`.
+  Source `343a34d461fb950fb686ff4d398fb5e3b14a5487`, image SHA-256
+  `8471e2a041445c62a86469128cfe78968f0b854e34be126f8c78e88c68128145`.
+  EL2/EL1 QEMU: `artifacts/qemu-shell/20260915T010929Z-bdc32a` and
+  `artifacts/qemu-shell/20260915T010929Z-6aba82` respectively.
+  The initial +189 failure is retained in
+  `artifacts/automated-mali-firmware-start/20260915T005401Z-27722e/failure-review.json`.
 - +187 reset/interrupt and instruction aliases:
   `artifacts/automated-mali-reset/20260914T235509Z-59b6a7/qualification.json`.
   Source `bd41527b86d458cd291fb9cd23b91dbd3a23c379`, image SHA-256

@@ -15,8 +15,9 @@ the underlying buses permit it. No calendar estimates imply guaranteed support.
 
 Current owner priority: phase 7 GPU support, then remaining hardware. Further
 Ethernet driver development is deferred. [GPU.md](GPU.md) records qualified
-native power/identity/reset/IRQ cycles and the firmware component. GPU memory
-mapping and MCU firmware execution are next, followed by hardware rendering.
+native power/identity/reset/IRQ cycles, GPU page tables and MCU firmware
+startup/ping/stop on two +190 boots. Command-stream submission is next, followed
+by hardware rendering and Mesa integration.
 
 ## 0 — Build and lab foundation
 
