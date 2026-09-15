@@ -151,3 +151,15 @@ not reached. Its source, binaries and partial output are preserved. The next
 candidate line-buffers stdout, reducing the many small writes used to encode
 each frame while retaining every output byte and newline flush. The exact
 controller-reset cause remains unresolved; native qualification is still open.
+
+The buffered +230 attempt kept the NanoKVM responsive and rendered 26,511
+correct frames over 60.001278 seconds of measured work, but rejected a heap
+that grew from seven chunks after two frames to eight by the end. Normal
+shutdown, recovery and independent storage checks passed; the native trial
+remains incomplete. Neither Mesa nor the kernel growth policy promises that
+two frames establish a final heap size. Protocol version 2 therefore samples
+the heap every 128 frames and requires at least 20 seconds of measured rendering
+and 1,024 frames without further growth, in addition to the one-minute workload.
+New growth extends observation within the original frame/wall limits. The fixed
+policy still requires one chunk throughout. The host checks sample order, sizes
+and timestamps against actual frame timing; all cleanup checks remain required.

@@ -7,11 +7,15 @@
 #define ROCK5_HEAP_PREFIX "ROCK5_SUSTAIN"
 static unsigned heap_chunk_limit = 32;
 static unsigned warm_heap_chunks;
+static unsigned observed_heap_chunks, last_heap_change_frame;
+static bigtime_t last_heap_change_us;
 static unsigned frame_counts[2];
 static bigtime_t render_times[2], wall_times[2];
 static const unsigned software_frames = 32, native_min_frames = 1024;
 static const unsigned max_frames = 65536;
 static const bigtime_t min_render_us = 60000000, max_wall_us = 180000000;
+static const unsigned heap_sample_frames = 128, min_stable_frames = 1024;
+static const bigtime_t min_stable_render_us = 20000000;
 
 static const unsigned pressure_quads[] = {8192, 16384};
 static const unsigned pressure_colours[] = {1, 2, 4, 6};
@@ -31,7 +35,28 @@ static int heap_state(int fd, unsigned cycle, unsigned phase)
     CHECK((cycle == 1 || phase == 0)
         ? value.heaps.globalChunks == 1 : value.heaps.globalChunks > 1);
     if (phase == 1) warm_heap_chunks = value.heaps.globalChunks;
-    if (phase == 2) CHECK(value.heaps.globalChunks == warm_heap_chunks);
+    if (phase == 2) CHECK(value.heaps.globalChunks == observed_heap_chunks
+        && value.heaps.globalChunks >= warm_heap_chunks);
+    return 1;
+}
+
+static int heap_progress(int fd, unsigned cycle, unsigned frames, bigtime_t elapsed)
+{
+    Snapshot value{};
+    CHECK(!software && snapshot(fd, &value));
+    unsigned chunks = value.heaps.globalChunks;
+    printf("ROCK5_SUSTAIN_HEAP_PROGRESS cycle=%u frames=%u render_us=%lld clients=%u heaps=%u chunks=%u bytes=%llu\n",
+        cycle, frames, (long long)elapsed, value.buffers.globalClients,
+        value.heaps.globalHeaps, chunks, (unsigned long long)value.heaps.globalBytes);
+    CHECK(value.buffers.globalClients == 2 && value.heaps.globalHeaps == 1);
+    CHECK(chunks >= observed_heap_chunks && chunks <= heap_chunk_limit);
+    CHECK(value.heaps.globalBytes == 4096ull + chunks * 262144ull);
+    if (cycle == 1) CHECK(chunks == 1);
+    if (chunks != observed_heap_chunks) {
+        observed_heap_chunks = chunks;
+        last_heap_change_frame = frames;
+        last_heap_change_us = elapsed;
+    }
     return 1;
 }
 
@@ -163,9 +188,11 @@ static int pressure_context(EGLDisplay display, unsigned cycle, int fd)
     const unsigned frame_limit = software ? software_frames : max_frames;
     bigtime_t accumulated = 0;
     unsigned frames = 0;
-    printf("ROCK5_SUSTAIN_CONTEXT_BEGIN cycle=%u max_chunks=%u min_frames=%u max_frames=%u min_render_us=%lld max_wall_us=%lld\n",
+    printf("ROCK5_SUSTAIN_CONTEXT_BEGIN cycle=%u max_chunks=%u min_frames=%u max_frames=%u min_render_us=%lld max_wall_us=%lld stable_render_us=%lld stable_frames=%u sample_frames=%u\n",
         cycle, heap_chunk_limit, software ? software_frames : native_min_frames,
-        frame_limit, (long long)(software ? 0 : min_render_us), (long long)max_wall_us);
+        frame_limit, (long long)(software ? 0 : min_render_us), (long long)max_wall_us,
+        (long long)(software ? 0 : min_stable_render_us),
+        software ? 0 : min_stable_frames, software ? 0 : heap_sample_frames);
     for (; frames < frame_limit;) {
         CHECK(system_time() - beginning < max_wall_us);
         unsigned colour = pressure_colours[(cycle + frames) % 4];
@@ -178,9 +205,19 @@ static int pressure_context(EGLDisplay display, unsigned cycle, int fd)
         CHECK(pressure_readback(cycle, frames, start, &elapsed));
         accumulated += elapsed;
         ++frames;
-        if (frames == 2) CHECK(heap_state(fd, cycle, 1));
-        if (!software && frames >= native_min_frames && accumulated >= min_render_us)
-            break;
+        if (frames == 2) {
+            CHECK(heap_state(fd, cycle, 1));
+            observed_heap_chunks = warm_heap_chunks;
+            last_heap_change_frame = frames;
+            last_heap_change_us = accumulated;
+        }
+        if (!software && frames % heap_sample_frames == 0) {
+            CHECK(heap_progress(fd, cycle, frames, accumulated));
+            if (frames >= native_min_frames && accumulated >= min_render_us
+                && frames - last_heap_change_frame >= min_stable_frames
+                && accumulated - last_heap_change_us >= min_stable_render_us)
+                break;
+        }
     }
     frame_counts[cycle] = frames;
     render_times[cycle] = accumulated;
@@ -188,6 +225,8 @@ static int pressure_context(EGLDisplay display, unsigned cycle, int fd)
     CHECK(wall_times[cycle] >= accumulated && wall_times[cycle] < max_wall_us);
     CHECK(software ? frames == software_frames
         : frames >= native_min_frames && accumulated >= min_render_us);
+    CHECK(software || (frames - last_heap_change_frame >= min_stable_frames
+        && accumulated - last_heap_change_us >= min_stable_render_us));
     CHECK(heap_state(fd, cycle, 2));
     glUseProgram(0); glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glDeleteFramebuffers(1, &fbo); glDeleteTextures(1, &texture);
@@ -226,7 +265,7 @@ static int pressure_run(const char* mode)
     }
     CHECK(software ? unsetenv("PAN_MESA_DEBUG") == 0
         : setenv("PAN_MESA_DEBUG", "perf,sync", 1) == 0);
-    printf("ROCK5_SUSTAIN_READY version=1 mode=%s chunk_size=262144 initial_chunks=1 encoding=rgba-rle\n", mode);
+    printf("ROCK5_SUSTAIN_READY version=2 mode=%s chunk_size=262144 initial_chunks=1 encoding=rgba-rle\n", mode);
     auto get_display = (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
     CHECK(get_display);
     int fd = -1;
@@ -242,6 +281,9 @@ static int pressure_run(const char* mode)
     for (unsigned cycle = 0; cycle < 2; ++cycle) {
         heap_chunk_limit = cycle ? 1 : 32;
         warm_heap_chunks = 0;
+        observed_heap_chunks = 0;
+        last_heap_change_frame = 0;
+        last_heap_change_us = 0;
         CHECK(setenv("pan_csf_max_chunks", cycle ? "1" : "32", 1) == 0);
         EGLDisplay display = get_display(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
         CHECK(display != EGL_NO_DISPLAY && pressure_context(display, cycle, fd));

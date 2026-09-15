@@ -40,7 +40,7 @@ def decode_runs(encoded):
 def validate(text, output=None, software=False):
     tag = 'ROCK5_SUSTAIN'
     mode = '--software' if software else '--native'
-    assert text.count(tag+'_READY version=1 mode='+mode+
+    assert text.count(tag+'_READY version=2 mode='+mode+
         ' chunk_size=262144 initial_chunks=1 encoding=rgba-rle') == 1
     for forbidden in ('ROCK5_PIPELINE_FAILURE', 'ROCK5_PIPELINE_SHADER_FAILURE',
             'ROCK5_SUSTAIN_LINK_FAILURE', 'ROCK5_MESA_FAILURE', 'PANIC:',
@@ -57,7 +57,8 @@ def validate(text, output=None, software=False):
     assert vertices == ['0', '1']
     beginnings = list(re.finditer(r'^ROCK5_SUSTAIN_CONTEXT_BEGIN cycle=(\d+) '
         r'max_chunks=(\d+) min_frames=(\d+) max_frames=(\d+) min_render_us=(\d+) '
-        r'max_wall_us=(\d+)\s*$', text, re.M))
+        r'max_wall_us=(\d+) stable_render_us=(\d+) stable_frames=(\d+) '
+        r'sample_frames=(\d+)\s*$', text, re.M))
     endings = list(re.finditer(r'^ROCK5_SUSTAIN_CONTEXT_PASS cycle=(\d+) '
         r'frames=(\d+) pixels=(\d+) guard_bytes=(\d+) render_us=(\d+) wall_us=(\d+) '
         r'destroyed=1\s*$', text, re.M))
@@ -77,7 +78,9 @@ def validate(text, output=None, software=False):
         expected_maximum = 1 if cycle else 32
         assert tuple(map(int, begin.groups())) == (cycle, expected_maximum,
             32 if software else 1024, 32 if software else 65536,
-            0 if software else 60000000, 180000000)
+            0 if software else 60000000, 180000000,
+            0 if software else 20000000, 0 if software else 1024,
+            0 if software else 128)
         ec, count, pixels, guards, elapsed, wall = map(int, end.groups())
         assert ec == cycle and 0 <= elapsed <= wall < 180000000
         assert (count == 32) if software else (1024 <= count <= 65536 and elapsed >= 60000000)
@@ -89,6 +92,7 @@ def validate(text, output=None, software=False):
         incremental = 0
         previous = 0
         samples = []
+        cumulative_times = []
         aggregate = hashlib.sha256()
         metadata = (root/f'cycle-{cycle}.frames.jsonl').open('w') if root else None
         try:
@@ -121,6 +125,7 @@ def validate(text, output=None, software=False):
                 previous = match.end()
                 incremental += passes
                 durations += duration
+                cumulative_times.append(durations)
                 if metadata:
                     metadata.write(json.dumps(dict(cycle=cycle, frame=frame,
                         quads=int(quads), pixels=PIXELS, guard_bytes=128,
@@ -130,16 +135,50 @@ def validate(text, output=None, software=False):
                 metadata.close()
         assert durations == elapsed
         assert not re.search(r'Incremental rendering was triggered ', body[previous:])
+        progress = list(re.finditer(r'^ROCK5_SUSTAIN_HEAP_PROGRESS cycle=(\d+) '
+            r'frames=(\d+) render_us=(\d+) clients=(\d+) heaps=(\d+) '
+            r'chunks=(\d+) bytes=(\d+)\s*$', body, re.M))
+        assert len(progress) == body.count(tag+'_HEAP_PROGRESS ')
+        heap_history = []
+        last_change_frame, last_change_us = 2, cumulative_times[1]
+        if software:
+            assert not progress
+        else:
+            assert count % 128 == 0 and len(progress) == count // 128
+            warm = re.findall(r'^ROCK5_SUSTAIN_HEAP cycle='+str(cycle)+
+                r' phase=1 clients=2 heaps=1 chunks=(\d+) bytes=(\d+)\s*$', body, re.M)
+            assert len(warm) == 1
+            previous_chunks = int(warm[0][0])
+            for index, observation in enumerate(progress, 1):
+                c, f, timestamp, clients, heaps, chunks, size = map(int, observation.groups())
+                assert c == cycle and f == index * 128
+                assert timestamp == cumulative_times[f-1]
+                assert matches[f-1].end() <= observation.start()
+                if f < count:
+                    assert observation.end() <= matches[f].start()
+                assert clients == 2 and heaps == 1
+                assert previous_chunks <= chunks <= expected_maximum
+                assert size == 4096 + chunks * 262144
+                if chunks != previous_chunks:
+                    last_change_frame, last_change_us = f, timestamp
+                previous_chunks = chunks
+                heap_history.append(dict(frames=f, render_us=timestamp, chunks=chunks, bytes=size))
+            assert count - last_change_frame >= 1024
+            assert elapsed - last_change_us >= 20000000
         value = dict(cycle=cycle, max_chunks=expected_maximum, frames=count,
             pixels=pixels, guard_bytes=guards, render_us=elapsed, wall_us=wall,
             aggregate_sha256=aggregate.hexdigest(), first_four_rgba_sha256=samples,
             incremental_passes=incremental)
+        if not software:
+            value.update(heap_progress=heap_history, stable_frames=count-last_change_frame,
+                stable_render_us=elapsed-last_change_us)
         if root:
             value['frame_metadata'] = str(root/f'cycle-{cycle}.frames.jsonl')
         cycles.append(value)
         frame_count += count
         incremental_total += incremental
     assert text.count(tag+'_FRAME ') == frame_count
+    assert text.count(tag+'_HEAP_PROGRESS ') == sum(len(c.get('heap_progress', [])) for c in cycles)
     total = re.findall(r'^ROCK5_SUSTAIN_PASS contexts=2 frames=(\d+) pixels=(\d+) '
         r'guard_bytes=(\d+) render_us=(\d+) software=(\d+)\s*$', text, re.M)
     assert len(total) == text.count(tag+'_PASS ') == 1
@@ -172,7 +211,8 @@ def validate(text, output=None, software=False):
         assert 1 <= chunks <= (1 if cycle else 32) and size == 4096 + chunks * 262144
         assert (chunks == 1) if cycle or phase == 0 else (chunks > 1)
         if phase == 2:
-            assert chunks == states[-1]['chunks']
+            assert chunks >= states[-1]['chunks']
+            assert chunks == cycles[cycle]['heap_progress'][-1]['chunks']
         states.append(dict(cycle=cycle, phase=phase, chunks=chunks, bytes=size))
     result.update(heap_states=states, grown_chunks=states[2]['chunks']-1)
     return result
