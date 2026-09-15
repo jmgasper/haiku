@@ -20,6 +20,7 @@
 #include "CsfDevice.h"
 #include "CsfClient.h"
 #include "CsfRuntime.h"
+#include "CsfSynchronization.h"
 
 
 using namespace MaliCSF;
@@ -44,6 +45,7 @@ struct Controller {
 struct OpenHandle {
 	Controller* controller;
 	void* client;
+	void* synchronization;
 };
 
 
@@ -441,11 +443,13 @@ static status_t Close(void* cookie)
 	OpenHandle* opened = (OpenHandle*)cookie;
 	MutexLocker locker(sHardwareLock);
 	CloseQueues(opened->client, opened->controller->identityNeedsRecovery);
+	CloseSyncClient(opened->synchronization);
 	CloseClient(opened->client);
 	return B_OK;
 }
 static status_t Free(void* cookie)
 {
+	FreeSyncClient(((OpenHandle*)cookie)->synchronization);
 	FreeClient(((OpenHandle*)cookie)->client);
 	free(cookie);
 	return B_OK;
@@ -478,6 +482,10 @@ Open(void* cookie, const char*, int mode, void** handle)
 		return status;
 	}
 	opened->controller = controller;
+	status = OpenSyncClient(access == O_RDWR, &opened->synchronization);
+	if (status != B_OK) {
+		FreeClient(opened->client); free(opened); return status;
+	}
 	*handle = opened;
 	return B_OK;
 }
@@ -508,8 +516,10 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 		return access;
 	if ((op >= kGetClientInfo && op <= kGetBufferInfo) || (op >= kCreateVm && op <= kBindVm))
 		return ControlClient(opened->client, op, buffer, length);
+	if (op >= kCreateSync && op <= kTransferSync)
+		return ControlSync(opened->synchronization, op, buffer, length);
 	Controller* controller = opened->controller;
-	if (op >= kCreateQueue && op <= kGetQueueInfo) {
+	if (op >= kCreateQueue && op <= kSubmitQueueSync) {
 		if (!controller->shaderEnabled)
 			return B_NOT_ALLOWED;
 		if (op == kCreateQueue || op == kDestroyQueue) {
@@ -522,7 +532,8 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 		// A waiting application must not prevent another thread from closing
 		// queues. These operations never modify controller recovery state.
 		bool ignored = false;
-		return ControlQueues(controller->resources, opened->client, op, buffer, length, ignored);
+		return ControlQueues(controller->resources, opened->client, op, buffer, length,
+			ignored, opened->synchronization);
 	}
 	if (op == kCycleCommands || op == kCycleShader) {
 		MutexLocker locker(sHardwareLock);

@@ -78,7 +78,7 @@ static_assert(sizeof(BufferMap) == 40, "map ABI");
 // Maps cover the whole buffer and are normal Haiku areas: delete_area() unmaps
 // them. They retain the RAM independently of handle destruction / fd close.
 // GPU mappings also retain buffers independently of these handles. See CsfVm.h.
-// No queue, execution or synchronization capability is advertised yet.
+// Queue and synchronization operations are defined in CsfQueue.h/CsfSync.h.
 
 } // namespace MaliCSF
 #endif

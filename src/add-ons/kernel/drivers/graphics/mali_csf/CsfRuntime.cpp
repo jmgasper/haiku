@@ -17,6 +17,7 @@
 #include "CsfDevice.h"
 #include "CsfQueueEngine.h"
 #include "CsfRuntime.h"
+#include "CsfSynchronization.h"
 
 using namespace MaliCSF;
 
@@ -32,6 +33,7 @@ struct QueueJob {
 	uint64 address;
 	uint32 bytes;
 	uint64 sequence;
+	SyncSubmission synchronization;
 };
 
 struct QueueSlot {
@@ -50,12 +52,15 @@ struct QueueSlot {
 	uint64 submitted = 0;
 	uint64 completed = 0;
 	uint32 pending = 0;
+	status_t error = B_OK;
+	uint64 failedSequence = 0;
 };
 
 static void
 DeleteJob(QueueJob* job)
 {
 	if (job == NULL) return;
+	FinishSyncSubmission(job->synchronization, B_CANCELED);
 	ReleaseClientVm(job->lease);
 	free(job);
 }
@@ -105,6 +110,18 @@ public:
 			QueueSlot& queue = queues[i];
 			if (!queue.used || queue.first == NULL) continue;
 			QueueJob* job = queue.first;
+			status_t dependency = ReadySyncSubmission(job->synchronization);
+			if (dependency == B_WOULD_BLOCK) continue;
+			if (dependency != B_OK) {
+				queue.error = dependency; queue.failedSequence = job->sequence;
+				while (queue.first != NULL) {
+					job = queue.first; queue.first = job->next;
+					FinishSyncSubmission(job->synchronization, dependency); DeleteJob(job);
+				}
+				queue.last = NULL; queue.pending = 0;
+				changed.NotifyAll();
+				continue;
+			}
 			queue.first = job->next;
 			if (queue.first == NULL) queue.last = NULL;
 			job->next = NULL;
@@ -142,6 +159,7 @@ public:
 		QueueSlot& queue = queues[work.slot];
 		queue.progress = progress;
 		queue.completed = work.sequence;
+		FinishSyncSubmission(queue.current->synchronization, B_OK);
 		DeleteJob(queue.current);
 		queue.current = NULL;
 		queue.pending--;
@@ -168,7 +186,8 @@ public:
 		if (status == B_OK)
 			CycleFirmware(runtime->hardware, runtime->memory, runtime->firmware, engine);
 		bool retained = (runtime->firmware.flags & kFirmwareNeedsRecovery) != 0 || engine.Mapped();
-		if (status == B_OK && (retained || !runtime->ready)) status = B_IO_ERROR;
+		if (status == B_OK && (retained || !runtime->ready || engine.Error() != 0
+			|| runtime->firmware.result != 0 || runtime->firmware.cleanupResult != 0)) status = B_IO_ERROR;
 		dprintf("mali_csf: runtime status=%" B_PRId32 " engine=%u fw=%u/%u flags=%#x"
 			" fault=%#x fatal=%#x address=%#" B_PRIx64 " retained=%u\n",
 			status, engine.Error(), runtime->firmware.result, runtime->firmware.cleanupResult,
@@ -179,6 +198,14 @@ public:
 			runtime->error = status;
 			runtime->retained = retained;
 			runtime->finished = true;
+			if (status != B_OK) {
+				for (unsigned i = 0; i < kMaxRuntimeQueues; i++) {
+					QueueSlot& queue = runtime->queues[i];
+					if (queue.current != NULL) FinishSyncSubmission(queue.current->synchronization, status);
+					for (QueueJob* job = queue.first; job != NULL; job = job->next)
+						FinishSyncSubmission(job->synchronization, status);
+				}
+			}
 			runtime->changed.NotifyAll();
 		}
 		PutRuntime(runtime);
@@ -447,10 +474,24 @@ CloseQueues(void* client, bool& needsRecovery)
 }
 
 static status_t
-SubmitQueue(Runtime* runtime, void* client, void* user, size_t length)
+SubmitQueue(Runtime* runtime, void* client, void* user, size_t length, bool synchronized,
+	void* syncClient)
 {
-	QueueSubmit request;
-	status_t status = ReadQueueRequest(user, length, request);
+	QueueSubmitSync extended = {};
+	QueueSubmit& request = extended.queue;
+	SyncPoint points[2 * kMaxSyncPoints];
+	status_t status;
+	if (synchronized) {
+		if (length < sizeof(extended)) return B_BAD_VALUE;
+		status = user == NULL ? B_BAD_ADDRESS : user_memcpy(&extended, user, sizeof(extended));
+		if (status != B_OK) return status;
+		if (request.version != kClientVersion || extended.reserved != 0
+			|| extended.waitCount > kMaxSyncPoints || extended.signalCount > kMaxSyncPoints
+			|| length != sizeof(extended) + (extended.waitCount + extended.signalCount) * sizeof(SyncPoint))
+			return B_BAD_VALUE;
+		uint32 count = extended.waitCount + extended.signalCount;
+		if (count != 0) status = user_memcpy(points, (uint8*)user + sizeof(extended), count * sizeof(SyncPoint));
+	} else status = ReadQueueRequest(user, length, request);
 	if (status != B_OK) return status;
 	if (request.flags != 0 || request.reserved != 0 || request.sequence != 0
 		|| (request.streamAddress & 7) != 0 || (request.streamBytes & 7) != 0
@@ -478,13 +519,22 @@ SubmitQueue(Runtime* runtime, void* client, void* user, size_t length)
 		else {
 			QueueSlot& queue = runtime->queues[slot];
 			if (runtime->error != B_OK || runtime->finished) status = B_IO_ERROR;
+			else if (queue.error != B_OK) status = queue.error;
 			else if (queue.destroy) status = B_CANCELED;
 			else if (queue.pending == kMaxQueueJobs) status = B_BUSY;
 			else if (queue.submitted + 1 >= UINT64_MAX / 128) status = B_NO_MEMORY;
 			else {
 				request.sequence = queue.submitted + 1;
 				request.generation = job->lease.generation;
-				status = user_memcpy(user, &request, sizeof(request));
+				if (synchronized) status = PrepareSyncSubmission(syncClient, points,
+					extended.waitCount, extended.signalCount, job->synchronization);
+				if (status == B_OK) {
+					status = user_memcpy(user, &request, sizeof(request));
+					if (synchronized) {
+						if (status == B_OK) CommitSyncSubmission(job->synchronization);
+						else AbortSyncSubmission(job->synchronization);
+					}
+				}
 				if (status == B_OK) {
 					job->sequence = request.sequence;
 					if (queue.last != NULL) queue.last->next = job;
@@ -519,10 +569,10 @@ WaitQueue(Runtime* runtime, void* client, void* user, size_t length)
 		if (slot < 0) return B_ENTRY_NOT_FOUND;
 		QueueSlot& queue = runtime->queues[slot];
 		if (request.sequence > queue.submitted) return B_BAD_VALUE;
-		if (queue.completed >= request.sequence || runtime->error != B_OK || queue.destroy) {
+		if (queue.completed >= request.sequence || runtime->error != B_OK || queue.error != B_OK || queue.destroy) {
 			request.completed = queue.completed;
 			request.result = queue.completed >= request.sequence ? B_OK
-				: runtime->error != B_OK ? runtime->error : B_CANCELED;
+				: runtime->error != B_OK ? runtime->error : queue.error != B_OK ? queue.error : B_CANCELED;
 			return user_memcpy(user, &request, sizeof(request));
 		}
 		if (request.timeoutMicros == 0) return B_TIMED_OUT;
@@ -534,13 +584,14 @@ WaitQueue(Runtime* runtime, void* client, void* user, size_t length)
 
 status_t
 ControlQueues(const ResourceInfo& resources, void* client, uint32 op, void* user,
-	size_t length, bool& needsRecovery)
+	size_t length, bool& needsRecovery, void* syncClient)
 {
 	if (op == kCreateQueue) return CreateQueue(resources, client, user, length, needsRecovery);
 	RuntimeReference reference;
 	Runtime* runtime = reference.value;
 	if (runtime == NULL) return B_ENTRY_NOT_FOUND;
-	if (op == kSubmitQueue) return SubmitQueue(runtime, client, user, length);
+	if (op == kSubmitQueue || op == kSubmitQueueSync)
+		return SubmitQueue(runtime, client, user, length, op == kSubmitQueueSync, syncClient);
 	if (op == kWaitQueue) return WaitQueue(runtime, client, user, length);
 	if (op == kDestroyQueue) {
 		QueueHandle request;
@@ -565,15 +616,16 @@ ControlQueues(const ResourceInfo& resources, void* client, uint32 op, void* user
 	const QueueSlot& queue = runtime->queues[slot];
 	QueueInfo info = {};
 	info.version = kClientVersion; info.handle = queue.handle; info.vm = queue.vm;
-	info.state = runtime->error != B_OK ? kQueueFailed : queue.destroy ? kQueueStopping
+	info.state = runtime->error != B_OK || queue.error != B_OK ? kQueueFailed : queue.destroy ? kQueueStopping
 		: queue.current != NULL ? kQueueRunning : kQueueReady;
-	info.error = runtime->error;
+	info.error = runtime->error != B_OK ? runtime->error : queue.error;
 	info.pending = queue.pending;
 	info.submitted = queue.submitted;
 	info.completed = queue.completed;
 	info.activeGeneration = queue.progress.generation;
 	info.insert = queue.progress.insert; info.extract = queue.progress.extract;
-	info.failedSequence = runtime->error != B_OK ? queue.completed + 1 : 0;
+	info.failedSequence = queue.failedSequence != 0 ? queue.failedSequence
+		: runtime->error != B_OK && queue.completed < queue.submitted ? queue.completed + 1 : 0;
 	info.interrupts = queue.progress.interrupts; info.syncEvents = queue.progress.syncEvents;
 	info.suspends = queue.progress.suspends; info.resumes = queue.progress.resumes;
 	return user_memcpy(user, &info, sizeof(info));

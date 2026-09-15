@@ -321,12 +321,19 @@ static status_t ControlClient(void* cookie, uint32 op, void*, size_t)
 }
 
 static unsigned sQueueRequests;
-static status_t ControlQueues(const ResourceInfo&, void* cookie, uint32 op, void*, size_t, bool&)
+static status_t ControlQueues(const ResourceInfo&, void* cookie, uint32 op, void*, size_t, bool&, void* syncClient = NULL)
 {
-	assert(cookie == &sFirmwareRequests && op >= kCreateQueue && op <= kGetQueueInfo);
+	assert(syncClient == NULL || syncClient == &sFirmwareRequests);
+	assert(cookie == &sFirmwareRequests && op >= kCreateQueue && op <= kSubmitQueueSync);
 	assert(sLockDepth == unsigned(op == kCreateQueue || op == kDestroyQueue));
 	sQueueRequests++;
 	return B_OK;
+}
+
+static status_t ControlSync(void* cookie, uint32 op, void*, size_t)
+{
+	assert(cookie == &sFirmwareRequests && op >= kCreateSync && op <= kTransferSync);
+	assert(sLockDepth == 0); return B_OK;
 }
 
 #include "driver.inc"
@@ -495,7 +502,7 @@ main()
 	Prepare(); // Also asserts that parent-node references were released on failure.
 	Controller controller{};
 	controller.resources = good;
-	OpenHandle opened{&controller, &sFirmwareRequests};
+	OpenHandle opened{&controller, &sFirmwareRequests, &sFirmwareRequests};
 	ResourceInfo copy;
 	assert(Control(&opened, kGetResources, &copy, sizeof(copy)) == B_OK);
 	assert(memcmp(&copy, &good, sizeof(good)) == 0);
@@ -691,15 +698,17 @@ main()
 	controller.shaderEnabled = false;
 	assert(Control(&opened, kCreateQueue, NULL, 0) == B_NOT_ALLOWED);
 	controller.shaderEnabled = true;
-	for (uint32 op = kCreateQueue; op <= kGetQueueInfo; op++)
+	for (uint32 op = kCreateQueue; op <= kSubmitQueueSync; op++)
 		assert(Control(&opened, op, NULL, 0) == B_OK);
-	assert(sQueueRequests == 5 && sLockDepth == 0);
+	assert(sQueueRequests == 6 && sLockDepth == 0);
 	controller.identityNeedsRecovery = true;
-	assert(Control(&opened, kCreateQueue, NULL, 0) == B_BUSY && sQueueRequests == 5);
+	assert(Control(&opened, kCreateQueue, NULL, 0) == B_BUSY && sQueueRequests == 6);
 	assert(Control(&opened, kGetQueueInfo, NULL, 0) == B_OK);
 	assert(Control(&opened, kDestroyQueue, NULL, 0) == B_OK);
 	controller.identityNeedsRecovery = false;
 	sFirmwareRetained = true;
+	for (uint32 op = kCreateSync; op <= kTransferSync; op++)
+		assert(Control(&opened, op, NULL, 0) == B_OK);
 	IdentityInfo runtimeIdentity{}; ResetInfo runtimeReset{};
 	assert(Control(&opened, kCycleIdentity, &runtimeIdentity, sizeof(runtimeIdentity)) == B_BUSY);
 	assert(Control(&opened, kCycleReset, &runtimeReset, sizeof(runtimeReset)) == B_BUSY);

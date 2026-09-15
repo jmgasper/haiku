@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from mali_sync_fixture import prepare_sync_fixture
 
 
 class MaliRuntimeTest(unittest.TestCase):
@@ -26,6 +27,7 @@ class MaliRuntimeTest(unittest.TestCase):
         code = code.replace(cycle, 'DriveRuntime(runtime, runtime->firmware);')
         with tempfile.TemporaryDirectory(prefix='mali-runtime-') as temporary:
             root = Path(temporary)
+            prepare_sync_fixture(root, directory.parents[1])
             (root / 'runtime.inc').write_text(code)
             binary = root / 'runtime-test'
             built = subprocess.run([

@@ -3,6 +3,7 @@
 #define MALI_CSF_QUEUE_H
 
 #include "CsfVm.h"
+#include "CsfSync.h"
 
 namespace MaliCSF {
 
@@ -11,6 +12,7 @@ static const uint32_t kDestroyQueue = 0x4d435341;
 static const uint32_t kSubmitQueue = 0x4d435342;
 static const uint32_t kWaitQueue = 0x4d435343;
 static const uint32_t kGetQueueInfo = 0x4d435344;
+static const uint32_t kSubmitQueueSync = 0x4d435345;
 static const uint32_t kClientQueues = 4;
 static const uint32_t kMaxRuntimeQueues = 8;
 static const uint32_t kMaxQueueJobs = 64;
@@ -55,6 +57,15 @@ struct QueueSubmit {
 	uint64_t reserved;
 };
 
+// Followed by waitCount input SyncPoints, then signalCount output SyncPoints.
+// Inputs capture existing fences before outputs are replaced. A missing input
+// fence rejects the whole submission. Outputs signal on completion or cancel.
+struct QueueSubmitSync {
+	QueueSubmit queue;
+	uint32_t waitCount, signalCount;
+	uint64_t reserved;
+};
+
 // timeoutMicros=-1 waits indefinitely, zero polls. An interrupted/timed-out
 // wait leaves the job intact. On success, result contains the job status.
 struct QueueWait {
@@ -90,6 +101,7 @@ struct QueueInfo {
 static_assert(sizeof(QueueCreate) == 48, "queue create ABI");
 static_assert(sizeof(QueueHandle) == 16, "queue handle ABI");
 static_assert(sizeof(QueueSubmit) == 48, "queue submit ABI");
+static_assert(sizeof(QueueSubmitSync) == 64, "synchronized queue submit ABI");
 static_assert(sizeof(QueueWait) == 40, "queue wait ABI");
 static_assert(sizeof(QueueInfo) == 96, "queue info ABI");
 

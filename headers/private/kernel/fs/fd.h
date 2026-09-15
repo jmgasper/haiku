@@ -19,6 +19,7 @@ struct file_descriptor;
 struct io_context;
 struct selectsync;
 struct select_info;
+struct module_info;
 
 struct fd_ops {
 	status_t	(*fd_close)(struct file_descriptor *);
@@ -64,6 +65,9 @@ struct file_descriptor {
 	void	*cookie;
 	int32	open_mode;
 	off_t	pos;
+	// Optional owner of anonymous fd_ops. The kernel releases this reference
+	// after the final callback returns, so a driver cannot unload on its stack.
+	struct module_info *module;
 };
 
 
@@ -76,6 +80,13 @@ extern struct file_descriptor *alloc_fd(void);
 extern int new_fd_etc(struct io_context *, struct file_descriptor *,
 	int firstIndex);
 extern int new_fd(struct io_context *, struct file_descriptor *);
+extern int new_fd_flags(struct io_context *, struct file_descriptor *, int flags);
+// Copy out the number while holding the table lock, before publication. A
+// failed copy publishes nothing and leaves descriptor ownership with caller.
+extern int new_fd_user(struct io_context *, struct file_descriptor *, int flags,
+	int *userFD);
+// Call before publication. On success the descriptor owns the module reference.
+extern status_t fd_hold_module(struct file_descriptor *, const char *name);
 extern struct file_descriptor *get_fd(const struct io_context *, int);
 extern struct file_descriptor *get_open_fd(const struct io_context *, int);
 extern void close_fd(struct io_context *context,

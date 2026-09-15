@@ -892,3 +892,35 @@ Evidence under `/mnt/HaikuWork`:
 - `artifacts/interactive/20260915T073332Z-760ef1` for UART, transcripts and frames.
 - `artifacts/emmc-file-readback/20260915T074111Z-da0931` and
   `artifacts/emmc-read-reference/20260915T074121Z-9f751b` for independent Linux checks.
+
+## Shared synchronization candidate
+
+The next candidate adds per-open native binary/timeline synchronization handles,
+shared-object and snapshot-fence descriptors, atomic wait/signal submission
+batches and cancellation propagation. Binary replacement preserves previously
+captured fences; increasing timeline points include prior work. Wait-any,
+wait-all, availability, submission arrival, timeouts and interruption are explicit.
+Publication captures waiting fences before another update can replace them.
+Completed history is pruned; object, fence, depth and wait quotas bound allocations.
+
+Anonymous descriptors hold their driver module until the kernel returns from the
+final callback. Descriptor numbers and close-on-exec flags are published together,
+after successful copyout. Shared descriptors survive device closure and support
+duplication, inheritance and import by another client. Snapshot descriptors retain
+the selected submission. They currently provide import and an explicit wait ioctl;
+poll/select and synchronization with other GPU drivers are not implemented.
+
+Queue dependencies are captured before output fences are replaced. Failed copyout
+publishes neither work nor fences. A blocked queue permits other queues to run;
+failed dependencies cancel that queue's pending work, with independently reported
+errors. Hardware failure signals outstanding fences while retaining potentially
+active DMA memory under the existing recovery rule. Automatic GPU reset is pending.
+
+All 145 host checks pass, including the production synchronization implementation,
+descriptor publication/module release, timeline DAGs, concurrent waits, allocation
+and copyout rollback, actual runtime scheduling, cancellation and retained failures.
+The ARM64 kernel/driver and extended queue probe compile. Full image, QEMU and
+native qualification are pending; +202 remains the qualified baseline. The native
+probe will exercise shared GPU data, out-of-order timeline completion, snapshot
+reuse, normal/killed child cleanup and descriptor import after final device close.
+Mesa rendering, tiler heaps and the remaining GPU integration are still pending.

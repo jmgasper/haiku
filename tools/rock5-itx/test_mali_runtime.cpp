@@ -12,67 +12,17 @@
 #include "test_mali_memory.cpp"
 #undef main
 
-using int32 = int32_t;
-using uint8 = uint8_t;
-using uint32 = uint32_t;
-using uint64 = uint64_t;
-using status_t = int32_t;
-using area_id = int32_t;
-using thread_id = int32_t;
-using phys_addr_t = uint64_t;
-using bigtime_t = int64_t;
-static const int B_OK = 0, B_NOT_SUPPORTED = -1, B_BAD_VALUE = -2, B_BAD_DATA = -3,
-	B_BAD_ADDRESS = -4, B_NO_MEMORY = -5, B_NOT_ALLOWED = -6, B_ENTRY_NOT_FOUND = -7,
-	B_BUSY = -8, B_DEV_INVALID_IOCTL = -9, B_CANCELED = -10, B_IO_ERROR = -11,
-	B_TIMED_OUT = -12, B_INTERRUPTED = -13, B_NORMAL_PRIORITY = 10;
-static const uint32 B_SYSTEM_TEAM = 1, B_CONTIGUOUS = 3,
-	B_KERNEL_READ_AREA = 4, B_KERNEL_WRITE_AREA = 8,
-	B_RELATIVE_TIMEOUT = 1, B_ABSOLUTE_TIMEOUT = 2, B_CAN_INTERRUPT = 4;
-#define B_PRId32 PRId32
-#define B_PRIx64 PRIx64
+#include "test_mali_sync_os.h"
 #include "CsfClient.h"
 #include "CsfDevice.h"
-
-static bigtime_t system_time()
-{
-	return std::chrono::duration_cast<std::chrono::microseconds>(
-		std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-static void memory_full_barrier() { std::atomic_thread_fence(std::memory_order_seq_cst); }
-static void KernelPrint(const char*, ...) {}
-#define dprintf KernelPrint
-struct mutex { std::mutex value; };
-#define MUTEX_INITIALIZER(name) {}
-struct MutexLocker {
-	mutex& lock;
-	explicit MutexLocker(mutex& value) : lock(value) { lock.value.lock(); }
-	~MutexLocker() { lock.value.unlock(); }
-};
-static std::atomic<bool> sInterruptWait{false};
-struct ConditionVariable {
-	std::condition_variable changed;
-	void Init(const void*, const char*) {}
-	void NotifyAll() { changed.notify_all(); }
-	status_t Wait(mutex* mutex, uint32 flags = 0, bigtime_t timeout = 0)
-	{
-		if ((flags & B_CAN_INTERRUPT) && sInterruptWait.exchange(false)) return B_INTERRUPTED;
-		std::unique_lock<std::mutex> lock(mutex->value, std::adopt_lock);
-		status_t status = B_OK;
-		if (flags & (B_RELATIVE_TIMEOUT | B_ABSOLUTE_TIMEOUT)) {
-			bigtime_t remaining = (flags & B_ABSOLUTE_TIMEOUT) ? timeout - system_time() : timeout;
-			if (changed.wait_for(lock, std::chrono::microseconds(remaining)) == std::cv_status::timeout)
-				status = B_TIMED_OUT;
-		} else changed.wait(lock);
-		lock.release(); return status;
-	}
-};
+#include "CsfRuntime.h"
 
 struct Area { std::unique_ptr<Guarded> memory; uint64 physical; std::string name; };
 static std::mutex sAreaLock;
 static std::map<area_id, Area> sAreas;
 static area_id sNextArea = 1;
 static uint64 sNextPhysical = UINT64_C(0x280000000);
-static std::atomic<unsigned> sAllocationCalls{0}, sFailAllocation{0}, sCopies{0}, sFailCopy{0};
+static std::atomic<unsigned> sAllocationCalls{0}, sFailAllocation{0};
 struct virtual_address_restrictions { uint64 unused; };
 struct physical_address_restrictions { uint64 low_address, high_address; };
 struct physical_entry { uint64 address; size_t size; };
@@ -119,11 +69,8 @@ bool FirmwareMemoryRetained()
 	for (auto& pair : sAreas) if (pair.second.name == "Mali CSF firmware DMA") return true;
 	return false;
 }
-static status_t user_memcpy(void* output, const void* input, size_t bytes)
-{
-	if (++sCopies == sFailCopy || output == NULL || input == NULL) return B_BAD_ADDRESS;
-	memcpy(output, input, bytes); return B_OK;
-}
+#include "test_mali_sync_kernel.inc"
+#include "test_mali_sync_calls.inc"
 
 struct Thread {
 	int32 (*entry)(void*);
@@ -326,6 +273,91 @@ static void DropSimulatedRetainedRuntime()
 	assert(runtime->references == 1); sRuntime = NULL; PutRuntime(runtime);
 }
 
+static status_t
+SubmitSynchronized(Client& client, void* sync, uint32 queue,
+	std::initializer_list<SyncPoint> waits, std::initializer_list<SyncPoint> signals,
+	uint64& sequence)
+{
+	std::vector<uint8> bytes(sizeof(QueueSubmitSync) + (waits.size() + signals.size()) * sizeof(SyncPoint));
+	auto* request = (QueueSubmitSync*)bytes.data();
+	request->queue = {1, queue, 0, 0x100000000, 48, 0, 0, 0};
+	request->waitCount = waits.size(); request->signalCount = signals.size();
+	auto* points = (SyncPoint*)(request + 1);
+	for (const auto& point : waits) *points++ = point;
+	for (const auto& point : signals) *points++ = point;
+	bool recovery = false;
+	status_t status = ControlQueues({}, &client, kSubmitQueueSync, request, bytes.size(), recovery, sync);
+	assert(!recovery); sequence = request->queue.sequence; return status;
+}
+
+static void
+SynchronizedRuntime()
+{
+	Client client{NewGeneration(1)};
+	void* sync = SyncOpen(); bool recovery = false;
+	uint32 a = 0, b = 0;
+	assert(Create(client, a, true, recovery) == B_OK && Create(client, b, false, recovery) == B_OK);
+	uint32 gate = SyncMake(sync), output = SyncMake(sync), independent = SyncMake(sync);
+	SyncSubmission gateJob = SyncEnqueue(sync, {}, {{gate, 0, 0}});
+	uint64 sequence;
+	unsigned before = sEnteredJob;
+	assert(SubmitSynchronized(client, sync, a, {{gate, 0, 0}}, {{output, 0, 10}}, sequence) == B_OK
+		&& sequence == 1);
+	assert(SubmitSynchronized(client, sync, a, {{output, 0, 10}}, {{output, 0, 20}}, sequence) == B_OK
+		&& sequence == 2);
+	int snapshot = SyncExport(sync, output, true, 10);
+	assert(SubmitSynchronized(client, sync, b, {}, {{independent, 0, 1}}, sequence) == B_OK);
+	assert(Wait(client, b, sequence).result == B_OK);
+	assert(sEnteredJob == before + 1 && Info(client, a).pending == 2 && Info(client, a).completed == 0);
+	assert(SyncFdWait(snapshot) == B_TIMED_OUT);
+	// Replacing the handle cannot redirect already queued dependencies.
+	assert(SyncUpdate(sync, kResetSync, {{output, 0, 0}}) == B_OK);
+	assert(SyncUpdate(sync, kSignalSync, {{output, 0, 0}}) == B_OK);
+	FinishSyncSubmission(gateJob, B_OK);
+	assert(Wait(client, a, 2).result == B_OK && SyncFdWait(snapshot) == B_OK);
+	SyncCloseFd(snapshot);
+	uint32 rollback = SyncMake(sync);
+	sFailCopy = sCopies + 3;
+	assert(SubmitSynchronized(client, sync, a, {}, {{rollback, 0, 1}}, sequence) == B_BAD_ADDRESS);
+	sFailCopy = 0;
+	assert(Info(client, a).submitted == 2 && SyncQuery(sync, rollback).flags == 0);
+	assert(SubmitSynchronized(client, sync, a, {{rollback, 0, 0}}, {{output, 0, 1}}, sequence) == B_BAD_VALUE);
+	assert(Info(client, a).submitted == 2);
+	Destroy(client, a); Destroy(client, b); Clean(1);
+	// Cancellation of a producer propagates through dependent queues without
+	// executing their commands or stopping an unrelated queue.
+	assert(Create(client, a, true, recovery) == B_OK && Create(client, b, false, recovery) == B_OK);
+	uint32 c = 0; assert(Create(client, c, false, recovery) == B_OK);
+	gateJob = SyncEnqueue(sync, {}, {{gate, 0, 0}});
+	before = sEnteredJob;
+	assert(SubmitSynchronized(client, sync, a, {{gate, 0, 0}}, {{output, 0, 0}}, sequence) == B_OK);
+	assert(SubmitSynchronized(client, sync, b, {{output, 0, 0}}, {{independent, 0, 2}}, sequence) == B_OK);
+	snapshot = SyncExport(sync, independent, true);
+	Destroy(client, a);
+	assert(Wait(client, b, sequence).result == B_CANCELED);
+	assert(Info(client, b).state == kQueueFailed && Info(client, b).failedSequence == 1);
+	assert(Info(client, b).pending == 0 && sEnteredJob == before);
+	status_t result; assert(SyncFdWait(snapshot, &result) == B_OK && result == B_CANCELED);
+	QueueSubmit rejected{1, b, 0, 0, 0, 0, 0, 0};
+	assert(Call(client, kSubmitQueue, rejected, recovery) == B_CANCELED);
+	auto good = Submit(client, c); assert(Wait(client, c, good.sequence).result == B_OK);
+	FinishSyncSubmission(gateJob, B_OK);
+	Destroy(client, b); Destroy(client, c); SyncCloseFd(snapshot); Clean(1);
+	// Hardware failure signals queued output fences even when DMA leases must
+	// be retained until reboot. Snapshot FDs can still report that error.
+	assert(Create(client, a, true, recovery) == B_OK);
+	sHoldJob = true; before = sEnteredJob;
+	assert(SubmitSynchronized(client, sync, a, {}, {{output, 0, 0}}, sequence) == B_OK); AwaitJob(before);
+	assert(SubmitSynchronized(client, sync, a, {}, {{independent, 0, 3}}, sequence) == B_OK);
+	snapshot = SyncExport(sync, independent, true); sFailJob = true; sHoldJob = false;
+	assert(Wait(client, a, sequence).result == B_IO_ERROR);
+	assert(SyncFdWait(snapshot, &result) == B_OK && result == B_IO_ERROR);
+	CloseQueues(&client, recovery); assert(recovery);
+	FreeSyncClient(sync); SyncCloseFd(snapshot); SyncBalanced();
+	DropSimulatedRetainedRuntime(); sFailJob = false;
+	CloseVm(client); Clean(0);
+}
+
 int main()
 {
 	setvbuf(stdout, NULL, _IONBF, 0);
@@ -445,5 +477,6 @@ int main()
 	assert(!sAreas.empty() && sThreads.empty() && other.generation->references == 1);
 	DropSimulatedRetainedRuntime(); sFailBoot = false; recovery = false; Clean(1);
 	CloseVm(other); Clean(0);
+	SynchronizedRuntime();
 	puts("MALI_CSF_RUNTIME_TEST_PASS");
 }
