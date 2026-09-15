@@ -73,7 +73,7 @@ after patched-source and SDK preparation. Logs, commands, input receipts and
 failures remain in the output directory. This reconstructs pinned sources and
 configuration; build-path/debug information can change binary hashes.
 
-The package manifest lists seventeen assets for `/boot/home/mesa-trial`. The `run`
+The package manifest lists nineteen assets for `/boot/home/mesa-trial`. The `run`
 launcher uses Haiku's `LIBRARY_PATH` and a private GLVND vendor file. Its probe
 accepts `--native`, `--software` and `--absent-device`. Native mode expects
 `/dev/graphics/mali_csf/0` and the separately supplied, licensed firmware at
@@ -98,3 +98,11 @@ pixel-region oracles and can write actual RGBA/PNG artifacts.
 accepted/completed queues, expected runtime joins and allocation baselines.
 Frozen build, controller, host-fixture and qualification scripts for the first
 passing image remain with the evidence linked in MESA.md.
+
+`run-heap-pressure --software` and `run-heap-pressure --native` exercise a
+bounded geometry workload with 256 KiB tiler chunks, one initial chunk and a
+32-chunk limit. The independent `heap_pressure_validation.py` requires all
+RGBA pixels and guards, actual native allocation growth, completed queues and
+full cleanup across two contexts. Firmware growth counters are checked in the
+native UART evidence as a separate gate. Native qualification is pending; this
+fixture does not establish sustained load, memory-limit failure or GPU reset.
