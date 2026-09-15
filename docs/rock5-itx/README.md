@@ -9,15 +9,18 @@ The [GitHub work items](TRACKING.md) split the roadmap into issues and milestone
 The current priority is [Mali-G610 GPU support](GPU.md), followed by remaining
 hardware. The owner has deferred further Ethernet driver work.
 
-The +204 image qualifies [shared GPU synchronization](GPU.md#shared-gpu-synchronization)
-on two native boots. Binary/timeline fences, shared and snapshot descriptors,
-cross-context GPU data dependencies, out-of-order completion and normal/killed
-process cleanup pass. Together with the persistent-queue regressions, the tests
-accept 1,474 submissions, explicitly check 1,338 completions and run eight compute
-shaders. Driver and kernel allocation counts return to baseline. All 145 host
-checks, the full ARM64 build, both two-boot QEMU modes, both desktops, normal
-recovery and independent storage/image integrity pass. Tiler heaps and Mesa
-adaptation are next; the desktop still uses the EFI framebuffer.
+The +207 image qualifies [native tiler heaps](GPU.md#native-tiler-heaps) on two
+ROCK boots. Each checks 5,159 GPU memory samples across five 2 MiB chunks,
+queued heap data across address reuse, HEAP_SET and normal/killed process cleanup.
+All earlier buffer, VM, queue, compute and synchronization regressions pass:
+1,696 accepted submissions, 1,432 checked completions and eight application
+compute shaders across both boots. Driver and kernel allocation counts return
+to baseline. All 146 host checks, the full ARM64 build, both QEMU modes, both
+desktops, normal recovery and independent storage/image integrity pass. The
+failed +206 command encoding and an initial +207 EL2 USB timeout remain recorded;
+the corrected native trial and unchanged-image EL2 repeat pass. Mesa adaptation
+and rendering are next. The desktop still uses the EFI framebuffer; native
+firmware OOM/growth and automatic GPU reset remain unqualified.
 
 The +195 image
 passes four compute-shader submissions and four CS memory-store regressions

@@ -13,7 +13,10 @@ native boots accept 1,264 submissions and check 1,136 completions, including eig
 compute shaders. Queue/context state, VM replacement, process cleanup and recovery
 pass. The +204 image adds shared binary/timeline fences and queue dependencies,
 with 210 further submissions across two native boots: 202 checked completions
-and eight expected cancellations. Tiler heaps and Mesa rendering are next.
+and eight expected cancellations. The +207 image qualifies native tiler heaps,
+including GPU data readback, queued address reuse and process cleanup. Across both
+boots all regressions accept 1,696 submissions and check 1,432 completions. Mesa
+adaptation and rendering are next; real firmware OOM/growth is still unqualified.
 
 ## Reference and integration route
 
@@ -719,9 +722,10 @@ remain open.
 
 ## Next milestones
 
-1. Add tiler heap management and Mesa adaptation on the qualified client,
-   VM, persistent-queue and shared-synchronization layers, then run the checked
-   Mesa rendering workload through Haiku. The Linux Mesa reference is qualified.
+1. Add non-disruptive native property queries and Mesa adaptation on the qualified
+   client, VM, queue, synchronization and tiler-heap layers, then run the checked
+   Mesa rendering workload through Haiku. Qualify actual firmware heap growth.
+   The Linux Mesa reference is qualified.
    Extend fence integration and implement automatic fault/reset recovery.
    Regulator ownership, runtime power management and DVFS remain separate work.
 2. Integrate Panfrost with Haiku EGL/OpenGL and window output; qualify pixels,
@@ -976,9 +980,9 @@ Evidence under `/mnt/HaikuWork`:
 - `artifacts/emmc-file-readback/20260915T085212Z-db73eb` and
   `artifacts/emmc-read-reference/20260915T085722Z-334ced` for independent Linux checks.
 
-## Tiler heap candidate
+## Native tiler heaps
 
-The candidate adds native VM-owned tiler heap create/destroy/query operations.
+The +207 image qualifies VM-owned tiler heap create/destroy/query operations.
 Each heap has a private zeroed context page and GPU RW/NX chunks with the Linux
 Panthor initial list format. Chunk sizes are page aligned from 128 KiB to 8 MiB,
 with up to 64 chunks per heap and 128 resident heaps per client/VM. Context and
@@ -1013,8 +1017,11 @@ incorrectly encodes a positive 32 KiB STORE_MULTIPLE offset in a signed 16-bit
 field, addressing before the readback buffer. An independent host command
 interpreter reproduces the failure. Rebasing the destination per batch passes
 33 interpreted programs, full readback guards and the exact original-error
-rejection. All 146 host checks pass with this correction; its full build, QEMU
-and native repeat are pending. The +204 image remains the qualified baseline.
+rejection. All 146 host checks, the full +207 ARM64 build and both two-boot QEMU
+modes pass. The initial EL2 run reaches userspace after reboot but times out in
+USB control before its shell marker. An unchanged-image EL2 repeat passes;
+concurrency is not established as the cause. The raw failed run and review
+remain alongside the accepted evidence.
 
 The failed +206 trial recovers after verified normal shutdown. Independent Linux
 checks preserve the eMMC filesystem, both test-file hashes and all three reference
@@ -1024,8 +1031,53 @@ regions. Its raw evidence remains under
 and correction are recorded separately under
 `artifacts/mali-heaps/20260915T095409Z-019ef0`.
 
-The native probe is intended to read 5,159 samples across five 2 MiB chunks,
-check descriptor/header/data guards, execute HEAP_SET, retain queued heap data
-across address reuse and clean up heaps after normal and killed child exits.
-Actual firmware OOM on hardware, Mesa rendering and display acceleration require
-further evidence. Host OOM injection does not establish native rendering.
+Both native boots pass 5,159 GPU-read samples across five 2 MiB chunks, including
+the opaque context before HEAP_SET, all 64-byte chunk headers and both ends of
+every one of 2,560 pages. All 3,033 remaining readback words stay unchanged across
+11 batches. The readback helper rebases each batch so every signed offset stays
+within range; the test checks earlier samples and untouched guards after each
+batch, including the original 32 KiB failure boundary.
+
+HEAP_SET executes, and the GPU writes a marker into private heap data. A queued
+reader waits on an independent producer while the CPU removes the heap and
+creates a new one at the same virtual address. The pending old job reads the
+marker; the later job reads zero from the new allocation, preserving all 8,190
+remaining guards. The old allocation remains resident until its queued reference
+is released. Two child teams each leave two heaps in pending GPU work; one exits
+normally and the other is killed. Driver counters and independently enumerated
+kernel areas return to baseline.
+
+Per boot the new heap scope accepts 111 jobs and checks 47 completions across
+four contexts and six created heaps. Together with all prior buffer, VM, queue
+and synchronization cases, both boots accept 1,696 submissions, explicitly check
+1,432 completions and execute eight application compute shaders. Final device-FD
+closure, reopening and synchronization import also pass. Both runtime teardowns
+report engine/firmware success, restored platform state, no faults and no retained
+DMA allocations. The firmware heap-event counters are zero: this workload does
+not exercise actual firmware OOM or growth.
+
+Both desktop reviews, 36 component and ten file hashes, identical FDTs, normal
+reboot, verified shutdown before media replacement, watchdog disarming and
+ROOBI recovery pass. Linux independently verifies the complete FAT fixture, both
+test-file hashes, all three eMMC reference regions and the recovery image. The
+six recorded vendor recovery warning signatures also appear in +204. Actual
+firmware OOM/growth, Mesa rendering, automatic GPU reset and display acceleration
+remain unqualified. The desktop uses the EFI framebuffer.
+
+Source: `7908c0f07a8d3bbed99f6140c642cf30920b3232` (`hrev60097+207`). Image SHA-256:
+`75172ccb7199de6249607f2fbc799ccff8982e068c34569d4bc375024be1b34e`.
+Evidence under `/mnt/HaikuWork`:
+
+- `artifacts/mali-heaps/20260915T090452Z-9b10dd` for the original implementation,
+  host heap/MMU tests and failed +206 trial review.
+- `artifacts/mali-heaps/20260915T095409Z-019ef0` for the signed-offset reproduction,
+  146 passing host checks, source snapshots and initial EL2 failure review.
+- `artifacts/build-20260915T095625Z.log` and
+  `artifacts/mali-heaps-image/20260915T095724Z-c130b8/manifest.json`.
+- EL1: `artifacts/qemu-shell/20260915T095805Z-e81f32/mali-heaps-result.json`;
+  EL2: `artifacts/qemu-shell/20260915T100339Z-55c4ad/mali-heaps-result.json`.
+- `artifacts/automated-mali-heaps/20260915T100638Z-7b4617/qualification.json`,
+  desktop reviews and recorded recovery warnings.
+- `artifacts/interactive/20260915T100655Z-f7f3f2` for UART, transcripts and frames.
+- `artifacts/emmc-file-readback/20260915T101457Z-0ecfe9` and
+  `artifacts/emmc-read-reference/20260915T101545Z-76e740` for independent Linux checks.
