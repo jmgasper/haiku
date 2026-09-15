@@ -24,9 +24,9 @@ GL readback passed, but the screen capture contained the white view background.
 The revised probe requests a full update on the window thread, waits for
 UpdateIfNeeded and then Sync before taking its single screen capture. Sync
 inside Draw runs before the window's AS_END_UPDATE publishes the front buffer.
-Every pixel and guard check remains required. This synchronization revision is
-a candidate pending fresh QEMU and native qualification; the failed +226 image,
-source, binaries and actual readback remain preserved with its local evidence.
+Every pixel and guard check remains required. This synchronization revision
+passes both QEMU modes and two native +227 boots; the failed +226 image, source,
+binaries and actual readback remain preserved with its local evidence.
 
 The [GLES pipeline probe](../../../docs/rock5-itx/MESA-PIPELINE.md) passes both
 QEMU modes and two native boots on the +219 image. It
@@ -127,4 +127,8 @@ are retained. This workload does not qualify gl_VertexID across large draws.
 geometry with a fixed single 256 KiB chunk. Native mode enables Mesa perf/sync
 diagnostics and requires actual incremental-rendering counters, constant heap
 size, full pixels/guards, completed queues and cleanup. Firmware refusal counts
-are checked separately on UART. This new fixture is pending qualification.
+are checked separately on UART. The [qualified +227 image](../../../docs/rock5-itx/MESA-HEAP-LIMIT.md)
+passes both QEMU modes and two native boots: 36 actual refused requests,
+36 incremental passes, 51,992 pixels, 1,024 guards, 24 completed submissions,
+full cleanup and recovery/integrity. This limits the tiler heap only; sustained
+load, system-memory exhaustion and automatic GPU reset remain unqualified.

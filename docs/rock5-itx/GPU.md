@@ -32,7 +32,10 @@ boots all regressions accept 1,696 submissions and check 1,432 completions.
 The +224 image qualifies [actual firmware-requested heap growth](MESA-HEAP-PRESSURE.md):
 24 extensions across four native contexts, complete pixels and allocation
 cleanup, all prior regressions and recovery/integrity checks pass. Refused
-allocations, incremental rendering, sustained work and fault recovery remain open.
+allocations and incremental rendering are now qualified by the
+[+227 fixed-heap image](MESA-HEAP-LIMIT.md): 36 actual refusals, 36 incremental
+passes and all 51,992 pixels across two native boots pass, with full cleanup,
+recovery and integrity. Sustained work and fault recovery remain open.
 
 ## Reference and integration route
 

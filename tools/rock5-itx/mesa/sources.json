@@ -55,7 +55,7 @@
     ]
   },
   "sdk_haiku_revision": "7908c0f07a8d3bbed99f6140c642cf30920b3232",
-  "qualified_runtime_revision": "hrev60097+224",
+  "qualified_runtime_revision": "hrev60097+227",
   "sdk_packages": [
     {
       "name": "haiku.hpkg",
@@ -158,6 +158,6 @@
   },
   "pipeline_probe_scope": "Two GLES contexts, six 97x67 complete RGBA cases each: padded texture upload/nearest sampling, depth, stencil, additive blending, scissor, reflected render-to-texture. Both QEMU modes and two native boots qualified; no conformance or sustained-load claim.",
   "lifetime_probe_scope": "Three separate processes; SIGKILL after checked rendering with resources live, survivor redraw, normal cleanup and fresh-context reuse. Both QEMU modes and two native boots qualified; no pending-job kill, reset or sustained-load claim.",
-  "heap_pressure_probe_scope": "Qualified +224: explicit vertex buffer, four native contexts, 24 actual firmware growths, complete RGBA/guards/queues, cleanup, normal reboot/shutdown and recovery/integrity; refused allocations, incremental rendering and sustained/reset paths remain open.",
-  "heap_limit_probe_scope": "Candidate: two fixed one-chunk contexts, complete RGBA/guards, actual native allocation refusals and Mesa incremental-rendering counters, queues and cleanup; native qualification pending."
+  "heap_pressure_probe_scope": "Qualified +224: explicit vertex buffer, four native contexts, 24 actual firmware growths, complete RGBA/guards/queues, cleanup, normal reboot/shutdown and recovery/integrity; sustained/reset paths remain open; +227 separately qualifies refused allocations and incremental rendering.",
+  "heap_limit_probe_scope": "Qualified +227: four fixed one-chunk contexts, 36 actual native allocation refusals, 36 Mesa incremental passes, all 51992 RGBA pixels/1024 guards, 24 completed submissions, cleanup and recovery/integrity. Sustained/reset and system-RAM exhaustion remain open."
 }

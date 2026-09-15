@@ -25,13 +25,20 @@ scope, build recipe and retained first failure. The +215 image also qualifies
 independently captured screen pixels pass across two native boots, including
 resizing and retirement. All 36 window submissions complete; build/QEMU,
 recovery and integrity checks pass. Presentation uses a CPU bitmap copy.
+The +227 USB image qualifies [fixed tiler heaps and incremental rendering](MESA-HEAP-LIMIT.md)
+on two native boots. Mesa completes 36 incremental passes after 36 requests
+for more heap memory are refused. All 51,992 pixels, 1,024 guards, 24 submissions
+and allocation baselines pass. Earlier graphics tests, both QEMU modes, normal
+reboot/shutdown, recovery and independent integrity checks pass. The OpenGL Kit
+fixture now waits for completed window updates before screen capture. Sustained
+rendering, GPU fault/reset recovery and native display control remain open.
+
 The +224 USB image qualifies [firmware tiler heap growth](MESA-HEAP-PRESSURE.md)
 on two native boots. Four contexts each grow from one chunk to four, then
 seven; all 24 firmware requests receive memory. All 51,992 pixels, 1,024 guards,
 24 submissions and allocation baselines pass. Previous graphics regressions,
 both QEMU modes, normal reboot/shutdown, recovery and independent integrity
-checks pass. Refused allocations, incremental rendering, sustained workloads
-and GPU fault/reset recovery remain open.
+checks pass. Sustained workloads and GPU fault/reset recovery remain open.
 
 The +221 USB image qualifies [graphics-process cleanup](MESA-LIFETIME.md)
 on two native boots. A process is terminated after completed rendering while
