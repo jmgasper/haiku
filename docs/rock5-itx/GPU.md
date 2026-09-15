@@ -6,7 +6,11 @@ display control and GPU rendering remain separate milestones. Haiku now boots
 the Mali firmware and passes four compute-shader submissions plus four CS
 memory-store regressions across two +195 native boots. Complete data matches
 the Linux reference. A separate Linux Mesa/Panfrost reference now renders four
-checked images on the board. Haiku rendering and Mesa integration remain pending.
+checked images on the board. The +210 image now runs the same workload through
+[native Haiku Mesa/Panfrost](MESA.md): all 32,768 pixels across two boots match
+Linux, all 32 Mesa submissions complete, and allocations return to baseline.
+Pbuffer/EGL lifetime checks, previous GPU regressions and recovery pass. Window
+output, conformance, sustained rendering and native display control remain open.
 The +198 and +200 images qualify persistent client buffers and GPU VM mappings.
 The +202 image activates those VMs for persistent application queues: two
 native boots accept 1,264 submissions and check 1,136 completions, including eight
@@ -15,8 +19,8 @@ pass. The +204 image adds shared binary/timeline fences and queue dependencies,
 with 210 further submissions across two native boots: 202 checked completions
 and eight expected cancellations. The +207 image qualifies native tiler heaps,
 including GPU data readback, queued address reuse and process cleanup. Across both
-boots all regressions accept 1,696 submissions and check 1,432 completions. Mesa
-adaptation and rendering are next; real firmware OOM/growth is still unqualified.
+boots all regressions accept 1,696 submissions and check 1,432 completions.
+Real firmware OOM/growth remains unqualified.
 
 ## Reference and integration route
 
@@ -78,7 +82,7 @@ v1.12; the public v1.11 schematic alone does not validate new regulator or
 wiring assumptions. Do not read a powered-off GPU speculatively.
 
 Mesa 25.3.6 has a Haiku EGL frontend and a Panfrost kernel-backend layer.
-The current Haiku frontend selects software rendering. The Panthor path uses
+The original Haiku frontend selects software rendering. The Panthor path uses
 DRM buffer objects, virtual mappings, synchronization objects, groups, queues
 and tiler heaps; some CSF operations are outside the common backend abstraction.
 The ABI assessment must include those direct calls. Enabling a Mesa build
@@ -796,14 +800,12 @@ Evidence under `/mnt/HaikuWork`:
 
 ## Next milestones
 
-1. Complete Mesa adaptation on the qualified native property, client, VM, queue,
-   synchronization and tiler-heap layers, then run the checked
-   Mesa rendering workload through Haiku. Qualify actual firmware heap growth.
-   The Linux Mesa reference is qualified.
-   Extend fence integration and implement automatic fault/reset recovery.
-   Regulator ownership, runtime power management and DVFS remain separate work.
-2. Integrate Panfrost with Haiku EGL/OpenGL and window output; qualify pixels,
-   multiple contexts, process exit, reset, sustained work and conformance.
+1. Present native Panfrost rendering through Haiku EGL/OpenGL windows; qualify
+   complete pixels, resize, multiple contexts and normal/killed process cleanup.
+   Offscreen rendering is qualified in [MESA.md](MESA.md).
+2. Qualify sustained work, conformance, actual firmware heap growth and automatic
+   fault/reset recovery. Extend fence integration where needed. Regulator
+   ownership, runtime power management and DVFS remain separate work.
 3. Implement native VOP2/HDMI modes/hotplug and additional display routes,
    followed by other board hardware.
 

@@ -16,17 +16,13 @@ the underlying buses permit it. No calendar estimates imply guaranteed support.
 Current owner priority: phase 7 GPU support, then remaining hardware. Further
 Ethernet driver development is deferred. [GPU.md](GPU.md) records qualified
 native power/reset/IRQ, firmware, client buffers, GPU VMs and persistent queues.
-The +209 image adds cached native GPU properties to the qualified client, VM,
-queue, synchronization and tiler-heap layers. Two native boots pass 86 property
-queries, including 64 during pending work, with identical raw hardware/firmware
-values and unchanged queue/allocation state. All GPU regressions accept 1,696
-submissions, check 1,432 completions and run eight application compute shaders.
-All 147 host checks, the full build, both QEMU modes, both desktops, recovery and
-independent storage/image integrity pass. Earlier failed trials remain recorded.
-A separate Linux Mesa/Panfrost reference renders four checked RGBA8 images over
-two contexts. Mesa adaptation is next to run that workload through Haiku.
-Hardware rendering, actual firmware OOM/growth, automatic GPU-hang recovery,
-accelerated window output and native display integration remain open.
+The +210 image runs Mesa/Panfrost on that native interface. Across two boots,
+all 32,768 rendered pixels match Linux and all 32 Mesa submissions complete.
+Allocation baselines, previous GPU regressions, both QEMU modes, recovery and
+independent storage/image checks pass. [MESA.md](MESA.md) records the tested
+scope, build recipe and retained first failure. Accelerated window output,
+conformance, sustained rendering, actual firmware OOM/growth, automatic GPU
+fault recovery and native display integration remain open.
 
 ## 0 — Build and lab foundation
 

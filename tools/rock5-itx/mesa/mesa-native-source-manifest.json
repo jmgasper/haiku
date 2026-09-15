@@ -1,0 +1,222 @@
+{
+  "changes": [
+    {
+      "path": "include/drm-uapi/drm.h",
+      "before": "6b80aff056e2ac2e126e5144a3ce2c750292edb4d080d4689ac487dc17e4dae8",
+      "after": "a72877d0e919384c5b52bf5fdfec7ce6e40905a964d6d1e82191efd9a557dc42"
+    },
+    {
+      "path": "include/renderdoc_app.h",
+      "before": "e5bd7ac1d07870d703e57c4a4e31b2e6bf980aa201fffa4a4f10b41ae1c23b72",
+      "after": "68f8a21c39153b4d4120c3cb06c9a066b88a168c33c434566ca2542376afa21f"
+    },
+    {
+      "path": "src/egl/drivers/haiku/egl_haiku.cpp",
+      "before": "f2954e784119151ecfd8590f7a414be858d7a3ee25af4c90183dac8d8c9808b5",
+      "after": "0a66d5f7dc92a4bf44db86ac1fdc9ff74a33c4d66789ad0c53ea9b68c6319495"
+    },
+    {
+      "path": "src/egl/meson.build",
+      "before": "887d5ab2cafa35704d9e8aee43e798df66c75dd8ace401aa7f43ae4210d61957",
+      "after": "8b3875592bbbc8d6c22ed4ad769bb0017ad8a5193920d8b5baa0a88d0fd49b22"
+    },
+    {
+      "path": "src/gallium/drivers/panfrost/meson.build",
+      "before": "960c54c371ac2a668075725c42a175fb61d39303e1f3cb0a8982afe3a064b63a",
+      "after": "98e632510ec5c55bf8758771ee465518bc7909e04efe904447e7547dc8170dce"
+    },
+    {
+      "path": "src/gallium/drivers/panfrost/pan_bo.c",
+      "before": "97a107943f75530de72f88580e869670e6bb9a7cb923450c3d3966f767214480",
+      "after": "1d704b523925393298751b94748fed8ccec6726ac15b12d9f06ace2193144ad3"
+    },
+    {
+      "path": "src/gallium/drivers/panfrost/pan_context.c",
+      "before": "42245a9956ec6ada589321b6b2a6b63f29238fb42d5bf299279ce87d95795615",
+      "after": "d9407da56473707bbce684f8d1e37acdd4cbe63169aeadda82871f92aca090f1"
+    },
+    {
+      "path": "src/gallium/drivers/panfrost/pan_context.h",
+      "before": "0f43f50be03ecae3e5fdffd55843db3ce8c666100585ad58b841fd5bf52eaf3b",
+      "after": "cca53a893d9b8dc748a42a3a9eaae1645326b2fdf86b78398c9552d8be319c37"
+    },
+    {
+      "path": "src/gallium/drivers/panfrost/pan_csf.c",
+      "before": "299f937b8f6047988916fed1a747bf23398d04aaeea553c61c93fc15f04f7abd",
+      "after": "98a25bb7a86647e24a46a2a22656a18bc75345e94d0eae6163032b1456d5b815"
+    },
+    {
+      "path": "src/gallium/drivers/panfrost/pan_device.c",
+      "before": "21608d0b43acc5725ca35e5cffd83530228e203a6e18154f677d5c4a1b717eb3",
+      "after": "5e43f7c0a922dc834aa6f64d3c2cb6984e04d0c3c485201c6810d6ed6885372c"
+    },
+    {
+      "path": "src/gallium/drivers/panfrost/pan_device.h",
+      "before": "35892ba82438b4c5a6345d0f6c7565683dbad6e7becbec52a8010cfdd9a047fd",
+      "after": "7f463db23305af411aafb7b4be1befcddcdf22682edc282c26a8ba4fec8f31d0"
+    },
+    {
+      "path": "src/gallium/drivers/panfrost/pan_fence.c",
+      "before": "699c815152720fdcbbae76629b8ede845d694bc29401a1bd8c13724bc0adb309",
+      "after": "af0f3c221acdd0614703ceb2291974df03ccf2897913f714b70c5bbdbdb4e9fb"
+    },
+    {
+      "path": "src/gallium/drivers/panfrost/pan_haiku.c",
+      "before": null,
+      "after": "668029af4b337e4b8f4ddbc551fcb47a805a88250f3d7ef2ef8468e035b588a9"
+    },
+    {
+      "path": "src/gallium/drivers/panfrost/pan_jm.c",
+      "before": "9c67c5c21eb4c347fd8e04278a7f5cd13adc1ca4b6d99328a92089a2a8535ce8",
+      "after": "a2d8c7b7e35e2f1cfb6ec8e0f2dd8a5c8929923a8017a8453c120054231c709e"
+    },
+    {
+      "path": "src/gallium/drivers/panfrost/pan_public.h",
+      "before": "38f95d3eaec6b1430f2889b651f3507520ef271381d10f5915af76aec6e90bb8",
+      "after": "7487a3426e367bb97b5b0aa5d845b6fc3feb549da7bd5eb3c906a1c4e476bda4"
+    },
+    {
+      "path": "src/gallium/drivers/panfrost/pan_resource.c",
+      "before": "c502f5933e24f4874a5adb42d7f4be9a3237cbddf13b12d408ddcc20c0ca275a",
+      "after": "b27c93bb41d63f11ee8dad17453968912e8f4f6aeb480f930143a7bfb7f681cc"
+    },
+    {
+      "path": "src/gallium/drivers/panfrost/pan_screen.c",
+      "before": "044627dfa337f9318eaef2bff853d01e4259a5549f12d34dd566b19cad5d77bd",
+      "after": "0556639cc0b71469eed8c8a95a06a96c792043f6b6fe131512908e1df3f7147f"
+    },
+    {
+      "path": "src/gallium/drivers/panfrost/pan_screen.h",
+      "before": "3d5737cd58681815751a39f4090b0457cb1ba74f4076eac7cf8ecbaa969211c7",
+      "after": "896b3661bb7830cc47910bd7be3bef7e06a9ad11ae42e4f1fa01543de00f088c"
+    },
+    {
+      "path": "src/gallium/frontends/hgl/hgl.c",
+      "before": "bfd5c6a157d959c4f71b0ab82b1b78077d71787be315175175e60b05638bbc98",
+      "after": "a84ba7649ca0b579dafb9f31cd3b4a8b4648533259dd03d15a7437281374c750"
+    },
+    {
+      "path": "src/gallium/frontends/hgl/hgl_context.h",
+      "before": "f039973ba0c85e4be2b1ed25ba6b6ded370fa735b105d74884da0de14ae3a7c9",
+      "after": "cfecb6f0059bf5ab5beae0e741dee207c3ebc1c5542960bd145ceecbe2261ab4"
+    },
+    {
+      "path": "src/gallium/winsys/panfrost/drm/meson.build",
+      "before": "83287d404bea06e932ca6e6bbcc1b3d4bafcbf7e42910f9773c9d1041f5f5ddc",
+      "after": "1b1225ea05e36888bbaede60974f22f71b867531ad784df8f44953024af10fb7"
+    },
+    {
+      "path": "src/panfrost/lib/kmod/haiku-abi/CsfBuffer.h",
+      "before": null,
+      "after": "485aeaa03901a5b15c114c8f3afb7c2dc02974459ad4c8dac9ae4eec18a7dd96"
+    },
+    {
+      "path": "src/panfrost/lib/kmod/haiku-abi/CsfFirmware.h",
+      "before": null,
+      "after": "0729fa389616b7815fd91a8ad35a712ea030378d272558ec2ee94021f2cbe6a7"
+    },
+    {
+      "path": "src/panfrost/lib/kmod/haiku-abi/CsfHeap.h",
+      "before": null,
+      "after": "b05e48020a4e657c4d8a4cb04ce5e6ef28faabbb7a83082b26bc777e6c66315f"
+    },
+    {
+      "path": "src/panfrost/lib/kmod/haiku-abi/CsfProperties.h",
+      "before": null,
+      "after": "70c8a5a2a46edad05413ed56d96e2bdabb61782a0981747c0e857d026adb0342"
+    },
+    {
+      "path": "src/panfrost/lib/kmod/haiku-abi/CsfQueue.h",
+      "before": null,
+      "after": "3587f188b9bc13cbe13aaad0e945f681945cb01acad7c722bdcbe68742aa486c"
+    },
+    {
+      "path": "src/panfrost/lib/kmod/haiku-abi/CsfSync.h",
+      "before": null,
+      "after": "e5021e83cd2f679a80b2f528706d8d7c2c9bf3efb29a2f0eda8b99b5a53f58a3"
+    },
+    {
+      "path": "src/panfrost/lib/kmod/haiku-abi/CsfVm.h",
+      "before": null,
+      "after": "e5331fef6fb17dfc47add5ec8c17bddcdb4196829aed8b54727f2c145ae6d90e"
+    },
+    {
+      "path": "src/panfrost/lib/kmod/haiku_csf_native.cpp",
+      "before": null,
+      "after": "be298910b0bf97870cd3d5308c6adccf394017797293d8f4dd7e972f9c0decd3"
+    },
+    {
+      "path": "src/panfrost/lib/kmod/haiku_csf_native.h",
+      "before": null,
+      "after": "496d1731971f0097b4213828cb6f2c95d101941a711b5faf332c4d06d62918e5"
+    },
+    {
+      "path": "src/panfrost/lib/kmod/haiku_csf_sync.cpp",
+      "before": null,
+      "after": "e361b2874b521fb28afd02b0873444f0ca3a40cb8acb6182acb7efbc76c69905"
+    },
+    {
+      "path": "src/panfrost/lib/kmod/haiku_csf_sync.h",
+      "before": null,
+      "after": "70a51698e66fc9a28631cad66e197d128548df5f0c798458bb828a354849ec76"
+    },
+    {
+      "path": "src/panfrost/lib/kmod/haiku_kmod.c",
+      "before": null,
+      "after": "cc4f3bb3d365da54601d07883c91fcee903e6f5a01ec6e9a26cc7c6bdc337ec1"
+    },
+    {
+      "path": "src/panfrost/lib/kmod/haiku_kmod.h",
+      "before": null,
+      "after": "9505ad57c2bd29b5c05c0aeb534999199c33d6bc3203cc2fa4348c4cd9ebfb03"
+    },
+    {
+      "path": "src/panfrost/lib/kmod/meson.build",
+      "before": "e518c3643126f660390129f423a9adae8604797cbc022e636e6a7b8f8513db56",
+      "after": "12e32b4a83355d28f50aa310986aabab2f80711b9e36e27260d7195fa1047170"
+    },
+    {
+      "path": "src/panfrost/lib/kmod/pan_csf_kmod.h",
+      "before": null,
+      "after": "133767482f5496b003de5e5a76a02603b850b57df5d8159850e8f4028011d6bd"
+    },
+    {
+      "path": "src/panfrost/lib/kmod/pan_kmod.c",
+      "before": "186d1e8b36b201351a9e34d093bcf3821e879f508c01f310861addce4e1e37ef",
+      "after": "d180c5063bb26c6e75b6b3195a48e609926f8304650c6b9cf50c804e05b9a2e1"
+    },
+    {
+      "path": "src/panfrost/lib/kmod/pan_kmod.h",
+      "before": "adbeb4773dc7c07394f6b5592ad53c7aad5c02df1aeb4a3eb612e8c0994cb9d4",
+      "after": "cf16541f136d8d411c4b0272a98e6630a86a9bc60cd9ce77f55fc9225ca39d3a"
+    },
+    {
+      "path": "src/panfrost/lib/kmod/pan_kmod_backend.h",
+      "before": "b10c120c0c563efedfaa85f829683e5f7da45bee5faaf607534a294143acc8ad",
+      "after": "6b31abba91de4ddcb989dec026fcecb5ad1fe9469b47d108aad235ddeb9e729b"
+    },
+    {
+      "path": "src/panfrost/lib/kmod/pan_sync.h",
+      "before": null,
+      "after": "29e67ca183f87766bb64500d5e5a95fa2b58233fb7e306949d799d5ba79cae84"
+    },
+    {
+      "path": "src/panfrost/lib/kmod/panfrost_kmod.c",
+      "before": "28c52cfc49aa00b79616764b5b24a03eb6564feb81d283731465f1f82252f306",
+      "after": "4e342b4394e0429b2afbaccc4534f5bd8f6b868ee16c6620d59fafe040282028"
+    },
+    {
+      "path": "src/panfrost/lib/kmod/panthor_kmod.c",
+      "before": "47b2fc15d84a0efefb6b6babc1afa7979526c26b0a17ac6db249d7648c589a34",
+      "after": "7dfd8516f46f347ecffc05f25408cc14dda3d249215bafee7bb21570b46024e4"
+    },
+    {
+      "path": "src/panfrost/meson.build",
+      "before": "9bfb12b41383ba6b4806c49d5564853dfc067908e952ea6aa9116c3a0ba25492",
+      "after": "0e62a91ce65378918e1cea06bd65361d9e2630e3118277a4c48e5b1605930f14"
+    }
+  ],
+  "patch_sha256": "2332313ecc274f6b1b88dbfe10f74fc82bf1b6c8c36fe2c92420d057a1911422",
+  "pristine_tar_sha256": "59217efeac3b64e7ced958324b9db7494f1e0741aeb22d780276514cc1b8f206",
+  "includes": "Pinned HaikuPorts changes, native CSF backend and Haiku EGL/HGL fixes"
+}

@@ -1,0 +1,137 @@
+{
+  "mesa": {
+    "version": "25.3.6",
+    "archive": "mesa-25.3.6.tar.xz",
+    "sha256": "59217efeac3b64e7ced958324b9db7494f1e0741aeb22d780276514cc1b8f206",
+    "source_dir": "mesa-25.3.6",
+    "patches": [
+      "mesa-haiku-native.patch"
+    ]
+  },
+  "libglvnd": {
+    "version": "1.7.0",
+    "archive": "libglvnd-v1.7.0.tar.gz",
+    "sha256": "2b6e15b06aafb4c0b6e2348124808cbd9b291c647299eaaba2e3202f51ff2f3d",
+    "source_dir": "libglvnd-v1.7.0",
+    "patches": [
+      "libglvnd-1.7.0.patchset",
+      "libglvnd-haiku-sysroot.patch",
+      "libglvnd-haiku-mutex.patch"
+    ]
+  },
+  "haikuports_revision": "50ed75230b0be025c78f99a47508d1825799677d",
+  "native_abi": {
+    "revision": "30f5d3768a732b54d40a717a9a39b8f786518996",
+    "files": [
+      {
+        "name": "CsfBuffer.h",
+        "sha256": "485aeaa03901a5b15c114c8f3afb7c2dc02974459ad4c8dac9ae4eec18a7dd96"
+      },
+      {
+        "name": "CsfVm.h",
+        "sha256": "e5331fef6fb17dfc47add5ec8c17bddcdb4196829aed8b54727f2c145ae6d90e"
+      },
+      {
+        "name": "CsfHeap.h",
+        "sha256": "b05e48020a4e657c4d8a4cb04ce5e6ef28faabbb7a83082b26bc777e6c66315f"
+      },
+      {
+        "name": "CsfQueue.h",
+        "sha256": "3587f188b9bc13cbe13aaad0e945f681945cb01acad7c722bdcbe68742aa486c"
+      },
+      {
+        "name": "CsfProperties.h",
+        "sha256": "70c8a5a2a46edad05413ed56d96e2bdabb61782a0981747c0e857d026adb0342"
+      },
+      {
+        "name": "CsfSync.h",
+        "sha256": "e5021e83cd2f679a80b2f528706d8d7c2c9bf3efb29a2f0eda8b99b5a53f58a3"
+      },
+      {
+        "name": "CsfFirmware.h",
+        "sha256": "0729fa389616b7815fd91a8ad35a712ea030378d272558ec2ee94021f2cbe6a7"
+      }
+    ]
+  },
+  "sdk_haiku_revision": "7908c0f07a8d3bbed99f6140c642cf30920b3232",
+  "qualified_runtime_revision": "02838b66da391328d7fd61858ff51d190a8de618",
+  "sdk_packages": [
+    {
+      "name": "haiku.hpkg",
+      "sha256": "6f4657ff4cd50c8e86657d5ac2a792bbac6e5748ad66fae218347ffa49f416d6",
+      "info": "haiku r1~beta6_hrev60097_207-1"
+    },
+    {
+      "name": "haiku_devel.hpkg",
+      "sha256": "94e25723a08c2e7ffa3eacbeddc991dff8c434726b5776e7eef4413259dd6c09",
+      "info": "haiku_devel r1~beta6_hrev60097_207-1"
+    },
+    {
+      "name": "gcc_syslibs-13.3.0_2026_03_29_bootstrap-1-arm64.hpkg",
+      "sha256": "d8aad73b29b4c1a588923254be62aa09652cdd76bb03d9e1585c778f6a5d77fc",
+      "info": "gcc_syslibs 13.3.0_2026_03_29_bootstrap-1"
+    },
+    {
+      "name": "gcc_syslibs_devel-13.3.0_2026_03_29_bootstrap-1-arm64.hpkg",
+      "sha256": "559cff3b2eaedb67358e88fb2be88043969b172accb1b7acc796c51653ade9ed",
+      "info": "gcc_syslibs_devel 13.3.0_2026_03_29_bootstrap-1"
+    },
+    {
+      "name": "zlib-1.2.13_bootstrap-1-arm64.hpkg",
+      "sha256": "99a575733f1648fb26856356f10538098975e1c2ed2a489d0f682d2d95e46b49",
+      "info": "zlib 1.2.13_bootstrap-1"
+    },
+    {
+      "name": "zlib_devel-1.2.13_bootstrap-1-arm64.hpkg",
+      "sha256": "91ad453a53e07b4cad45aa545ec197eaa06e9a6a79f72c41f1b0797f6b3932bc",
+      "info": "zlib_devel 1.2.13_bootstrap-1"
+    }
+  ],
+  "bundle_files": {
+    "mesa-haiku-native.patch": "2332313ecc274f6b1b88dbfe10f74fc82bf1b6c8c36fe2c92420d057a1911422",
+    "libglvnd-haiku-sysroot.patch": "16c8c1110172bed628a6160bd86b2f4e36cb408a59bdbe59d133f7f812732d13",
+    "mesa-native-source-manifest.json": "b7dc775ea456dbc35e07c8b6bf39503dcedd6ca71d69a8614233d8d88fd956d3",
+    "libglvnd-haiku-mutex.patch": "96f0fa776fa8b3c6425e26981e6e4cbca7fc33f31eb8f8e58bad730891de6035",
+    "native_render_validation.py": "ff5548c2552826fa7ce9bd124eb1a68590038736c32935639c68c3f77be42f6b",
+    "render_validation.py": "460d5ab54cf289fe1e84ed3cbe8d8522f453260b889b9b1e86fee074f3843c5b",
+    "libglvnd-1.7.0.patchset": "a2b593754f479d72395f148fa650c21d79ab75e0d7b62602d3f196f056708da5",
+    "render-probe.cpp": "a574a94b9c1d39567253110d22a46c9307c935a1ce816d5d87196928e8669120",
+    "run": "67d90f5cf1f89ffdc393e6e487f6b5b4eea67b696b98362846b547f27b855fe6",
+    "vendor.json": "817464a10dd3e42ea9aa99bc38c28a98d41391e451c2e9442abbb824d29a2def"
+  },
+  "host_helpers": {
+    "vtn_bindgen2": "8f03a1c42332ec1494a89de73d9bdbe7bba91aeeb98c6c0cd2d6623eb276a167",
+    "panfrost_compile": "4a0325883cfc99e2b92df459b3e73b0120421248f6605af99f07ac4ae4571c29",
+    "mesa_clc": "26be73da1df281af12c0130940707ccf6e5e3bc1bd245e9818ef3a32004c2fae"
+  },
+  "mesa_options": {
+    "platforms": [
+      "haiku"
+    ],
+    "expat": "disabled",
+    "gallium-drivers": [
+      "panfrost",
+      "softpipe"
+    ],
+    "gallium-va": "disabled",
+    "vulkan-drivers": [],
+    "shader-cache": "disabled",
+    "gles1": "disabled",
+    "gles2": "enabled",
+    "opengl": true,
+    "gbm": "disabled",
+    "glx": "disabled",
+    "egl": "enabled",
+    "glvnd": "enabled",
+    "llvm": "disabled",
+    "valgrind": "disabled",
+    "build-tests": false,
+    "tools": [],
+    "zstd": "disabled",
+    "zlib": "disabled",
+    "xmlconfig": "disabled",
+    "mesa-clc": "system",
+    "precomp-compiler": "system",
+    "spirv-tools": "disabled"
+  }
+}

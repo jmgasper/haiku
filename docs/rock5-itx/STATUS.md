@@ -7,6 +7,17 @@ firmware supports it.
 Current priority is [Mali-G610 GPU acceleration](GPU.md); further Ethernet
 driver work is deferred at the owner's request.
 
+The +210 USB image qualifies [native Mesa/Panfrost rendering](MESA.md) on two
+Haiku boots: four full RGBA8 images over two contexts per boot, with all 32,768
+pixels matching the Linux reference byte for byte. Mesa completes all 32 GPU
+submissions and allocation counts return to baseline. Pbuffer rendering,
+EGL termination/reinitialization, previous GPU regressions, both QEMU modes,
+normal reboot/shutdown, recovery and independent storage/image integrity pass.
+The complete Mesa/GLVND port and reconstruction recipe are saved in this fork.
+The failed first attempt and its mutex correction remain recorded. Window
+presentation, conformance, sustained rendering, native display control and
+GPU fault recovery remain open; the desktop still uses the EFI framebuffer.
+
 The +209 image qualifies [cached GPU property queries](GPU.md#cached-gpu-properties)
 on two native boots: 86 checked queries, including 64 while GPU work is pending,
 with identical hardware and firmware values. Invalid requests, foreign/inherited
@@ -14,7 +25,7 @@ handles and failed copyout are rejected without changing queue state or allocati
 counts. All earlier GPU regressions pass: 1,696 accepted submissions, 1,432 checked
 completions and eight application compute shaders. All 147 host checks, the full
 ARM64 build, both QEMU modes, both desktops, normal recovery and independent
-storage/image integrity pass. Mesa integration and hardware rendering remain next.
+storage/image integrity pass. These interfaces support the later +210 Mesa port.
 
 The +207 image qualifies [native tiler heaps](GPU.md#native-tiler-heaps) on two
 ROCK boots. Each checks 5,159 GPU memory samples across five 2 MiB chunks,
