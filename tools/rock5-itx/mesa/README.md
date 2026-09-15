@@ -5,10 +5,11 @@ CSF kernel ABI. It has passed offscreen GLES rendering on two native ROCK boots;
 [MESA.md](../../../docs/rock5-itx/MESA.md) records exact evidence and limits.
 It is not an upstream Mesa/Haiku release or a system package replacement.
 
-The current source adds an EGL window presentation candidate: native GPU
-textures are copied into Haiku window bitmaps. Its probe checks complete
-bitmap/screen pixels, dimensions, resizing and retirement. Native window
-qualification is pending; the accepted offscreen image is pinned in MESA.md.
+The current source also qualifies [EGL window rendering](../../../docs/rock5-itx/MESA-WINDOW.md):
+native GPU textures are copied into Haiku window bitmaps. Its probe checks
+complete bitmap/screen pixels, dimensions, resizing and retirement across two
+native boots. The accepted window and offscreen images are pinned in those
+documents; normal OpenGL Kit application qualification remains separate.
 
 `sources.json` pins both original archives, six SDK packages, seven kernel ABI
 headers, host compiler helpers and every patch/probe/validator. The complete

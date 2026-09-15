@@ -54,7 +54,7 @@
     ]
   },
   "sdk_haiku_revision": "7908c0f07a8d3bbed99f6140c642cf30920b3232",
-  "qualified_runtime_revision": "02838b66da391328d7fd61858ff51d190a8de618",
+  "qualified_runtime_revision": "hrev60097+215",
   "sdk_packages": [
     {
       "name": "haiku.hpkg",

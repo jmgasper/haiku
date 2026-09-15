@@ -7,10 +7,11 @@ the independently qualified Linux reference byte for byte; all 1,024 readback
 guard bytes pass. The renderer is `Mali-G610 (Panfrost)` and the reported API is
 `OpenGL ES 3.1 Mesa 25.3.6`.
 
-This is offscreen rendering. The desktop still uses the EFI framebuffer.
-Accelerated window presentation, native VOP2/HDMI control, conformance,
-sustained rendering, GPU timestamps, firmware heap OOM/growth and automatic
-GPU fault/reset recovery remain unqualified.
+This is the original offscreen qualification. The later +215 image also
+qualifies [EGL window rendering with CPU bitmap presentation](MESA-WINDOW.md).
+The desktop still uses the EFI framebuffer. Normal OpenGL Kit applications,
+native VOP2/HDMI control, conformance, sustained rendering, GPU timestamps,
+firmware heap OOM/growth and automatic GPU fault/reset recovery remain unqualified.
 
 ## Changes
 

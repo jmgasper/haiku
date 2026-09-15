@@ -20,9 +20,14 @@ The +210 image runs Mesa/Panfrost on that native interface. Across two boots,
 all 32,768 rendered pixels match Linux and all 32 Mesa submissions complete.
 Allocation baselines, previous GPU regressions, both QEMU modes, recovery and
 independent storage/image checks pass. [MESA.md](MESA.md) records the tested
-scope, build recipe and retained first failure. Accelerated window output,
-conformance, sustained rendering, actual firmware OOM/growth, automatic GPU
-fault recovery and native display integration remain open.
+scope, build recipe and retained first failure. The +215 image also qualifies
+[EGL window rendering](MESA-WINDOW.md): all 84,480 bitmap pixels and 84,480
+independently captured screen pixels pass across two native boots, including
+resizing and retirement. All 36 window submissions complete; build/QEMU,
+recovery and integrity checks pass. Presentation uses a CPU bitmap copy.
+Normal OpenGL Kit applications, conformance, sustained rendering, actual
+firmware OOM/growth, automatic GPU fault recovery and native display integration
+remain open.
 
 ## 0 — Build and lab foundation
 

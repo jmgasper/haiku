@@ -800,9 +800,11 @@ Evidence under `/mnt/HaikuWork`:
 
 ## Next milestones
 
-1. Present native Panfrost rendering through Haiku EGL/OpenGL windows; qualify
-   complete pixels, resize, multiple contexts and normal/killed process cleanup.
-   Offscreen rendering is qualified in [MESA.md](MESA.md).
+1. Qualify normal OpenGL Kit/BGLView applications, multiple live views and
+   normal/killed application cleanup. [EGL window rendering](MESA-WINDOW.md)
+   now passes complete bitmap/screen pixels, resizing and context retirement
+   across two native boots. Presentation uses a CPU copy; [offscreen rendering](MESA.md)
+   is also qualified.
 2. Qualify sustained work, conformance, actual firmware heap growth and automatic
    fault/reset recovery. Extend fence integration where needed. Regulator
    ownership, runtime power management and DVFS remain separate work.

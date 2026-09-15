@@ -9,6 +9,16 @@ The [GitHub work items](TRACKING.md) split the roadmap into issues and milestone
 The current priority is [Mali-G610 GPU support](GPU.md), followed by remaining
 hardware. The owner has deferred further Ethernet driver work.
 
+The +215 USB image qualifies [native GPU rendering in EGL windows](MESA-WINDOW.md)
+on two boots. All 16 frames, 84,480 bitmap pixels and 84,480 independently
+captured screen pixels pass, including resizing and context retirement. All
+36 window submissions complete, allocation counts return to baseline, and the
+previous offscreen/kernel GPU regressions pass. Both QEMU modes, normal
+reboot/shutdown, recovery and independent storage/image integrity pass. The GPU
+renders the content and the CPU copies it into Haiku's existing display path.
+Normal OpenGL Kit application compatibility and native display control remain
+open. The failed first native attempt and its rectangle correction are retained.
+
 The +210 USB image qualifies [native Mesa/Panfrost rendering](MESA.md) on two
 Haiku boots: four full RGBA8 images over two contexts per boot, with all 32,768
 pixels matching the Linux reference byte for byte. Mesa completes all 32 GPU
@@ -16,9 +26,9 @@ submissions and allocation counts return to baseline. Pbuffer rendering,
 EGL termination/reinitialization, previous GPU regressions, both QEMU modes,
 normal reboot/shutdown, recovery and independent storage/image integrity pass.
 The complete Mesa/GLVND port and reconstruction recipe are saved in this fork.
-The failed first attempt and its mutex correction remain recorded. Window
-presentation, conformance, sustained rendering, native display control and
-GPU fault recovery remain open; the desktop still uses the EFI framebuffer.
+The failed first attempt and its mutex correction remain recorded. Conformance,
+sustained rendering, native display control and GPU fault recovery remain open;
+the desktop still uses the EFI framebuffer.
 
 The +209 image qualifies [cached GPU property queries](GPU.md#cached-gpu-properties)
 on two native boots: 86 checked queries, including 64 while GPU work is pending,
