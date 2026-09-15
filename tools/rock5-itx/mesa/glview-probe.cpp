@@ -3,6 +3,8 @@
 #include <EGL/egl.h>
 #include <GLView.h>
 #include <Autolock.h>
+#include <Message.h>
+#include <Messenger.h>
 #include <Screen.h>
 #include <StringView.h>
 #include <atomic>
@@ -20,6 +22,7 @@
 using namespace MaliCSF;
 
 static bool software;
+static constexpr uint32 kVerifyScreen = 0x52355343;
 static int failure(const char* what, int line)
 {
     fprintf(stderr, "ROCK5_GLVIEW_FAILURE line=%d operation=%s errno=%d\n",
@@ -100,8 +103,27 @@ public:
     void Draw(BRect update) override
     {
         BGLView::Draw(update);
-        Sync();
         ++fDraws;
+    }
+    void MessageReceived(BMessage* message) override
+    {
+        if (message->what != kVerifyScreen) {
+            BGLView::MessageReceived(message);
+            return;
+        }
+        int32 cycle,view,frame,width,height;
+        int passed=0;
+        if (message->FindInt32("cycle",&cycle)==B_OK
+                && message->FindInt32("view",&view)==B_OK
+                && message->FindInt32("frame",&frame)==B_OK
+                && message->FindInt32("width",&width)==B_OK
+                && message->FindInt32("height",&height)==B_OK
+                && cycle>=0 && cycle<2 && view>=0 && view<2
+                && frame>=0 && frame<4 && width>0 && height>0)
+            passed=CaptureScreen(cycle,view,frame,width,height);
+        BMessage reply(B_REPLY);
+        reply.AddInt32("passed",passed);
+        message->SendReply(&reply);
     }
     void FrameResized(float width, float height) override
     {
@@ -133,14 +155,34 @@ public:
     }
     int VerifyScreen(unsigned cycle,unsigned view,unsigned frame,unsigned width,unsigned height)
     {
-        CHECK(Window()->Lock());
+        BMessage request(kVerifyScreen),reply;
+        CHECK(request.AddInt32("cycle",cycle)==B_OK);
+        CHECK(request.AddInt32("view",view)==B_OK);
+        CHECK(request.AddInt32("frame",frame)==B_OK);
+        CHECK(request.AddInt32("width",width)==B_OK);
+        CHECK(request.AddInt32("height",height)==B_OK);
+        CHECK(BMessenger(this).SendMessage(&request,&reply,5000000,5000000)==B_OK);
+        int32 passed=0;
+        CHECK(reply.FindInt32("passed",&passed)==B_OK && passed==1);
+        return 1;
+    }
+private:
+    int CaptureScreen(unsigned cycle,unsigned view,unsigned frame,unsigned width,unsigned height)
+    {
+        CHECK(find_thread(nullptr)==Window()->Thread());
         uint64_t before=fDraws.load();
         Invalidate();
-        BRect bounds=Bounds(); ConvertToScreen(&bounds);
-        Window()->Unlock();
-        bigtime_t deadline=system_time()+5000000;
-        while (fDraws.load()==before && system_time()<deadline) snooze(1000);
+        // UpdateIfNeeded must run on the window thread. Its completed update
+        // dispatch emits AS_END_UPDATE, which publishes the back buffer.
+        // Sync inside Draw is too early: BScreen reads the front buffer.
+        Window()->UpdateIfNeeded();
+        Window()->Sync();
         CHECK(fDraws.load()>before);
+        CHECK(Bounds().IntegerWidth()+1==int32(width)
+            && Bounds().IntegerHeight()+1==int32(height));
+        printf("ROCK5_GLVIEW_PRESENT cycle=%u view=%u frame=%u update_complete=1 capture_count=1\n",
+            cycle,view,frame);
+        BRect bounds=Bounds(); ConvertToScreen(&bounds);
         BScreen screen(Window());
         CHECK(screen.IsValid());
         BBitmap copy(BRect(0,0,width-1,height-1),0,B_RGB32);
@@ -152,7 +194,6 @@ public:
             cycle,view,frame,int(bounds.left),int(bounds.top),width,height);
         return 1;
     }
-private:
     BLocker fSizeLock;
     unsigned fWidth,fHeight;
     std::atomic<uint64_t> fDraws;

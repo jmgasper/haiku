@@ -19,6 +19,15 @@ under the same renderer mutex used by bitmap replacement. Both QEMU modes and
 the exact native image pinned in MESA-GLVIEW.md pass. This does not qualify
 general application compatibility or replace the normal system OpenGL packages.
 
+The later +226 QEMU run exposed an observation race in that fixture: its final
+GL readback passed, but the screen capture contained the white view background.
+The revised probe requests a full update on the window thread, waits for
+UpdateIfNeeded and then Sync before taking its single screen capture. Sync
+inside Draw runs before the window's AS_END_UPDATE publishes the front buffer.
+Every pixel and guard check remains required. This synchronization revision is
+a candidate pending fresh QEMU and native qualification; the failed +226 image,
+source, binaries and actual readback remain preserved with its local evidence.
+
 The [GLES pipeline probe](../../../docs/rock5-itx/MESA-PIPELINE.md) passes both
 QEMU modes and two native boots on the +219 image. It
 checks six operations in each of two contexts at 97 by 67 pixels: padded

@@ -49,6 +49,9 @@ def validate(text, output=None, software=False):
         assert re.fullmatch(r'\d+\.\d+.*Mesa 25\.3\.6',version)
     assert contexts[0][2] != contexts[1][2] and contexts[2][2] != contexts[3][2]
     wanted = [(c,(f+t)%2,f) for c in range(2) for f in range(4) for t in range(2)]
+    presentations = re.findall(r'^ROCK5_GLVIEW_PRESENT cycle=(\d+) view=(\d+) '
+        r'frame=(\d+) update_complete=1 capture_count=1\s*$', text, re.M)
+    assert [tuple(map(int,row)) for row in presentations] == wanted
     pattern = (r'^ROCK5_GLVIEW_PIXELS_BEGIN kind=(gl|screen) cycle=(\d+) view=(\d+) '
         r'frame=(\d+) width=(\d+) height=(\d+) stride=(\d+) format=(RGBA8|BGRX8) '
         r'origin=(lower-left|upper-left)\n(.*?)'
@@ -106,6 +109,7 @@ def validate(text, output=None, software=False):
         assert x+w<=1920 and y+h<=1080
     result=dict(status='pass',software=software,cycles=2,contexts=4,frames=frames,
         gl_pixels=84480,screen_pixels=84480,guard_bytes=2048,recursive_locks=True,
+        completed_window_updates=True,screen_captures=16,
         distinct_live_contexts=True,renderer=contexts[0][3],version=contexts[0][4])
     if not software:
         result.update(native_render_validation.native_evidence(text))
