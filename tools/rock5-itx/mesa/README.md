@@ -104,8 +104,10 @@ bounded geometry workload with 256 KiB tiler chunks, one initial chunk and a
 32-chunk limit. The independent `heap_pressure_validation.py` requires all
 RGBA pixels and guards, actual native allocation growth, completed queues and
 full cleanup across two contexts. Firmware growth counters are checked in the
-native UART evidence as a separate gate. Native qualification is pending; this
-fixture does not establish sustained load, memory-limit failure or GPU reset.
+native UART evidence as a separate gate. The [qualified +224 image](../../../docs/rock5-itx/MESA-HEAP-PRESSURE.md) passes
+both QEMU modes and two native boots: 24 actual growth requests, 51,992 pixels,
+1,024 guards, 24 submissions, complete cleanup and recovery/integrity checks.
+This fixture does not establish sustained load, memory-limit failure or GPU reset.
 
 The pressure fixture uses an explicit 786,432-byte vertex buffer. Its first
 GL-generated vertex-ID variant exposed a softpipe split-draw limitation in

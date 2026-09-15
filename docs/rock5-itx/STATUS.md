@@ -7,6 +7,14 @@ firmware supports it.
 Current priority is [Mali-G610 GPU acceleration](GPU.md); further Ethernet
 driver work is deferred at the owner's request.
 
+The +224 USB image qualifies [firmware tiler heap growth](MESA-HEAP-PRESSURE.md)
+on two native boots. Four contexts each grow from one chunk to four, then
+seven; all 24 firmware requests receive memory. All 51,992 pixels, 1,024 guards,
+24 submissions and allocation baselines pass. Previous graphics regressions,
+both QEMU modes, normal reboot/shutdown, recovery and independent integrity
+checks pass. Refused allocations, incremental rendering, sustained workloads
+and GPU fault/reset recovery remain open.
+
 The +221 USB image qualifies [graphics-process cleanup](MESA-LIFETIME.md)
 on two native boots. A process is terminated after completed rendering while
 its resources remain open; the survivor renders correctly and a fresh context

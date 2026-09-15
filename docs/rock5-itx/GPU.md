@@ -29,7 +29,10 @@ with 210 further submissions across two native boots: 202 checked completions
 and eight expected cancellations. The +207 image qualifies native tiler heaps,
 including GPU data readback, queued address reuse and process cleanup. Across both
 boots all regressions accept 1,696 submissions and check 1,432 completions.
-Real firmware OOM/growth remains unqualified.
+The +224 image qualifies [actual firmware-requested heap growth](MESA-HEAP-PRESSURE.md):
+24 extensions across four native contexts, complete pixels and allocation
+cleanup, all prior regressions and recovery/integrity checks pass. Refused
+allocations, incremental rendering, sustained work and fault recovery remain open.
 
 ## Reference and integration route
 

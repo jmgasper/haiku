@@ -9,6 +9,14 @@ The [GitHub work items](TRACKING.md) split the roadmap into issues and milestone
 The current priority is [Mali-G610 GPU support](GPU.md), followed by remaining
 hardware. The owner has deferred further Ethernet driver work.
 
+The +224 USB image qualifies [firmware tiler heap growth](MESA-HEAP-PRESSURE.md)
+on two native boots. Four contexts each grow from one chunk to four, then
+seven; all 24 firmware requests receive memory. All 51,992 pixels, 1,024 guards,
+24 submissions and allocation baselines pass. Previous graphics regressions,
+both QEMU modes, normal reboot/shutdown, recovery and independent integrity
+checks pass. Refused allocations, incremental rendering, sustained workloads
+and GPU fault/reset recovery remain open.
+
 The +221 USB image qualifies [graphics-process cleanup](MESA-LIFETIME.md)
 on two native boots. A process is terminated after completed rendering while
 its resources remain open; the survivor renders correctly and a fresh context

@@ -25,6 +25,14 @@ scope, build recipe and retained first failure. The +215 image also qualifies
 independently captured screen pixels pass across two native boots, including
 resizing and retirement. All 36 window submissions complete; build/QEMU,
 recovery and integrity checks pass. Presentation uses a CPU bitmap copy.
+The +224 USB image qualifies [firmware tiler heap growth](MESA-HEAP-PRESSURE.md)
+on two native boots. Four contexts each grow from one chunk to four, then
+seven; all 24 firmware requests receive memory. All 51,992 pixels, 1,024 guards,
+24 submissions and allocation baselines pass. Previous graphics regressions,
+both QEMU modes, normal reboot/shutdown, recovery and independent integrity
+checks pass. Refused allocations, incremental rendering, sustained workloads
+and GPU fault/reset recovery remain open.
+
 The +221 USB image qualifies [graphics-process cleanup](MESA-LIFETIME.md)
 on two native boots. A process is terminated after completed rendering while
 its resources remain open; the survivor renders correctly and a fresh context
