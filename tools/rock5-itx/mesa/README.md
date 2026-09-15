@@ -82,7 +82,7 @@ after patched-source and SDK preparation. Logs, commands, input receipts and
 failures remain in the output directory. This reconstructs pinned sources and
 configuration; build-path/debug information can change binary hashes.
 
-The package manifest lists twenty-three assets for `/boot/home/mesa-trial`. The `run`
+The package manifest lists twenty-seven assets for `/boot/home/mesa-trial`. The `run`
 launcher uses Haiku's `LIBRARY_PATH` and a private GLVND vendor file. Its probe
 accepts `--native`, `--software` and `--absent-device`. Native mode expects
 `/dev/graphics/mali_csf/0` and the separately supplied, licensed firmware at
@@ -192,3 +192,12 @@ recorded. `graphics_capture.py` reuses the qualified RAM collection protocol
 for all seven graphics fixtures; the transfer implementation is unchanged.
 Termination during pending graphics work and GPU fault/reset recovery remain
 open.
+
+The pending-work fixture is a candidate awaiting qualification. `run-pending`
+calibrates a bounded integer fragment shader using complete pixel readback,
+repeats the last checked workload and reports a zero-time fence result. The
+parent terminates that worker, verifies survivor rendering, normal cleanup and
+a fresh process. Native acceptance additionally requires the worker's queue
+handle in the driver's pending-at-close diagnostic captured on the same boot's
+UART. QEMU checks the software pixels and process lifecycle only. This case
+does not claim immediate preemption or automatic recovery from GPU faults.

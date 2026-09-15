@@ -456,8 +456,20 @@ DestroyQueues(Runtime* runtime, void* client, uint32 handle, bool& needsRecovery
 		MutexLocker locker(sRuntimeLock);
 		for (unsigned i = 0; i < kMaxRuntimeQueues; i++) {
 			QueueSlot& queue = runtime->queues[i];
-			if (queue.used && queue.client == client && (handle == 0 || queue.handle == handle))
+			if (queue.used && queue.client == client && (handle == 0 || queue.handle == handle)) {
+				// Record the actual close boundary, before the worker can retire
+				// this queue. A userspace fence observation alone can race completion.
+				if (handle == 0 && queue.pending != 0 && !queue.destroy) {
+					dprintf("mali_csf: close pending handle=%" B_PRIu32
+						" pending=%" B_PRIu32 " submitted=%" B_PRIu64
+						" completed=%" B_PRIu64 " current=%" B_PRIu64
+						" failed=%" B_PRIu64 " error=%" B_PRId32 "\n",
+						queue.handle, queue.pending, queue.submitted, queue.completed,
+						queue.current != NULL ? queue.current->sequence : uint64(0),
+						queue.failedSequence, queue.error);
+				}
 				queue.destroy = true;
+			}
 		}
 		runtime->changed.NotifyAll();
 		for (;;) {

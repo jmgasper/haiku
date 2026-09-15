@@ -10,6 +10,7 @@ FIXTURES = {
     'pressure': ('run-heap-pressure', 'ROCK5_PRESSURE_INVENTORY_EXIT'),
     'limit': ('run-heap-limit', 'ROCK5_LIMIT_INVENTORY_EXIT'),
     'concurrency': ('run-concurrency', 'ROCK5_CONCURRENT_INVENTORY_EXIT'),
+    'pending': ('run-pending', 'ROCK5_PENDING_INVENTORY_EXIT'),
 }
 
 def script(kind, software=False):

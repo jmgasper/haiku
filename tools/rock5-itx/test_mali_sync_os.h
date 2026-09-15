@@ -30,6 +30,8 @@ static const uint32 B_SYSTEM_TEAM = 1, B_CONTIGUOUS = 3,
 	B_KERNEL_READ_AREA = 4, B_KERNEL_WRITE_AREA = 8,
 	B_RELATIVE_TIMEOUT = 1, B_ABSOLUTE_TIMEOUT = 2, B_CAN_INTERRUPT = 4;
 #define B_PRId32 PRId32
+#define B_PRIu32 PRIu32
+#define B_PRIu64 PRIu64
 #define B_PRIx64 PRIx64
 #define ASSERT(x) assert(x)
 
