@@ -1,11 +1,11 @@
 # Tested status
 
-Updated 2026-09-16 (Australia/Hobart). This page distinguishes lab readiness from native Haiku
+Updated 2026-09-17 (Australia/Hobart). This page distinguishes lab readiness from native Haiku
 support. No hardware row in the roadmap is accepted merely because Linux or
 firmware supports it.
 
-Current priority is [Mali-G610 GPU acceleration](GPU.md); further Ethernet
-driver work is deferred at the owner's request.
+Current scope is [Mali-G610 GPU acceleration](GPU.md) only; network stack changes
+and other hardware development are deferred at the owner's request.
 
 The +252 [GLTeapot candidate](MESA-APPLICATION.md) passes its application checks
 on one native boot: two normal launches, all menu confirmations, 1,386 completed
@@ -16,16 +16,15 @@ this candidate remains unqualified. Normal recovery, independent storage checks
 and preservation of the failed trial pass. The +250 and +247 failures remain
 recorded.
 
-The +254 diagnostic traces confirm that all four immediate-mode input edge
-flags are present, but the last transformed vertex loses its flag in the six
-unclipped line/point cases. A follow-up using the same image with shader logging
-captures the expected edge-flag instruction. Its culling case changes from empty
-to a complete outline, while the other 62 images remain identical. This
-logging-sensitive result is not an accepted fix. Both diagnostic runs recover
-normally and pass independent storage checks; their complete evidence and used
-images are preserved. The next bounded trace records CPU shader inputs/outputs
-and buffer bindings to locate the corruption. [MESA-APPLICATION.md](MESA-APPLICATION.md)
-records the diagnostic scope and evidence.
+The +255 diagnostic isolates stale CPU vertex-shader execution: correct new
+inputs produce the previous shader's outputs. The shared interpreter caches
+expanded instructions by token address, but shader deletion leaves that address
+bound. A deterministic address-reuse regression fails four checks before the
+proposed fix and passes all ten under ASan/UBSan after clearing the retired
+binding. Native validation of the fix is pending. All diagnostic trials recover
+normally and pass independent integrity checks; their original evidence and used
+images are preserved. [MESA-APPLICATION.md](MESA-APPLICATION.md) records the
+cause, regression and remaining validation.
 
 The +243 USB image qualifies [reset notification for live Mesa contexts](MESA-LOSS.md)
 on two native boots. Both shared contexts receive one loss notification, ignore

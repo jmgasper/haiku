@@ -94,6 +94,43 @@ original validators, controllers and failed results remain unchanged.
 - Latest recovery boot: `9497ae0b-ec17-4fa7-9197-36dd3717630e`;
   NanoKVM boot `2597fc80-b134-4c61-9241-c7231d552eb2` remains unchanged.
 
+## +255 shader lifetime diagnosis and proposed fix
+
+A third diagnostic adds bounded logs around the actual CPU vertex interpreter.
+It captures correct fetched inputs, but the wrong outputs before clipping. In
+both contexts, case 29 writes clip distances `-0.25, 1.25, 1.25, -0.25`. Case 30,
+whose shader should write four edge flags of 1.0, instead reproduces those exact
+clip distances. The original fourteen pixel failures remain unchanged.
+
+Mesa's `draw_vs_exec.c` shares one TGSI interpreter between vertex shaders.
+Preparation compares the token pointer with the interpreter's cached pointer.
+Deletion previously freed those tokens without clearing the cache. If the
+allocator reuses the address, preparation skips loading the new instructions.
+The proposed fix unbinds the interpreter before freeing its currently cached
+tokens. Deleting an inactive shader leaves the active binding intact.
+
+The new `shader-token-lifetime-test.c` runs real Mesa draw/TGSI code with only
+the token allocator controlled to guarantee address reuse. It checks eight
+alternating shader lifetimes and two draws surrounding inactive-shader deletion.
+The original code fails four of ten checks; the fix passes all ten under
+ASan/UBSan, with ten allocations/releases and eight exact address reuses.
+`test-shader-token-lifetime.py` records source/library hashes and commands.
+Native execution of the fix is still pending; this is not qualification.
+
+The +255 trace library retains the +254 kernel. Its fresh Mesa reconstruction,
+both QEMU modes and native CPU layout fixture pass. Native recovery, independent
+integrity checks and preservation of the used image pass; 256 candidate source
+files are verified. Both the actual diagnostic sheet and desktop were reviewed.
+
+- Trace source: `6d0a9aa12253a224f0ca77e6744ef9f21d36641c`.
+- Trace image SHA-256:
+  `1d33bd2f20146fb7e0a58e099e9b5ad8d0e418693d37a1e4a3085ddad79b6a51`.
+- Native evidence: `artifacts/automated-mali-polygon-vs-trace/20260916T125251Z-9a195a`.
+- Host before/after regression: `artifacts/mali-shader-token-lifetime/20260916T130123Z/host-test`.
+- Used-image archive: `artifacts/nanokvm-image-archive/20260916T130701Z-7f70f0`;
+  SHA-256 `2dea2d6501293aeb4fcf04d82eae0d3c1b58bac2b5c8db9034903e17eaa43da0`.
+- Recovery boot: `9330e48e-fb33-4fed-8204-3fe968515351`.
+
 ## Earlier +250 topology and logging trial
 
 The +250 candidate enables the experimental CPU polygon geometry path while

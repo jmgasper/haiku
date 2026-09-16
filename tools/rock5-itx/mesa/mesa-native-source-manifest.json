@@ -21,6 +21,11 @@
       "after": "8b3875592bbbc8d6c22ed4ad769bb0017ad8a5193920d8b5baa0a88d0fd49b22"
     },
     {
+      "path": "src/gallium/auxiliary/draw/draw_vs_exec.c",
+      "before": "31184fcdb95b006732e2bbc19a9ba7d18b4d6c3b49f82ca212ba8d7fdb5043f3",
+      "after": "53b3cec101fa52633cc4eabcca836e8528e90e97f8a0c236143a23d0237aee6f"
+    },
+    {
       "path": "src/gallium/drivers/panfrost/meson.build",
       "before": "960c54c371ac2a668075725c42a175fb61d39303e1f3cb0a8982afe3a064b63a",
       "after": "807e6f68e7a8b9f7ab433d8aee755102800daa832a8af60bbe12a01ec2c7d8a0"
@@ -246,7 +251,7 @@
       "after": "0e62a91ce65378918e1cea06bd65361d9e2630e3118277a4c48e5b1605930f14"
     }
   ],
-  "patch_sha256": "276ec76f607f25bc75a63f585c8652a5f0198de7f0b298d0edb5428e25a00d5a",
+  "patch_sha256": "42c60077c123516ebd9fd598a86138b75deb72f17d9b970bd9bdc7079b959fb7",
   "pristine_tar_sha256": "59217efeac3b64e7ced958324b9db7494f1e0741aeb22d780276514cc1b8f206",
   "includes": "Pinned HaikuPorts changes, native CSF backend and Haiku EGL/HGL fixes"
 }

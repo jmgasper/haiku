@@ -13,8 +13,8 @@ commit, image hash, firmware settings, raw logs and physical fixtures used.
 Dependencies are phase numbers; work within a phase can be split further when
 the underlying buses permit it. No calendar estimates imply guaranteed support.
 
-Current owner priority: phase 7 GPU support, then remaining hardware. Further
-Ethernet driver development is deferred. [GPU.md](GPU.md) records qualified
+Current owner scope: phase 7 GPU support only. Network stack changes and other
+hardware development are deferred. [GPU.md](GPU.md) records qualified
 native power/reset/IRQ, firmware, client buffers, GPU VMs and persistent queues.
 The +252 [GLTeapot candidate](MESA-APPLICATION.md) passes one boot of application
 checks with complete logs and a visibly correct quad wireframe. The expanded
@@ -22,9 +22,9 @@ polygon probe fails fourteen of 64 cases; immediate-mode boundaries, points and
 quad culling need correction before another qualification attempt. Normal
 recovery, independent storage checks and used-image preservation pass. Earlier
 failed candidates remain recorded.
-The +254 diagnostic captures correct input edge flags but a cleared final
-transformed flag. Culling changes with logging enabled, so it is still
-unqualified. CPU shader input/output and buffer-binding traces are next.
+The +255 diagnostic identifies stale CPU shader outputs after token allocation
+reuse. Clearing the retired interpreter binding passes a deterministic ten-check
+host regression; native verification of this fix is next.
 The +210 image runs Mesa/Panfrost on that native interface. Across two boots,
 all 32,768 rendered pixels match Linux and all 32 Mesa submissions complete.
 Allocation baselines, previous GPU regressions, both QEMU modes, recovery and

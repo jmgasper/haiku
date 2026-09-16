@@ -89,9 +89,9 @@
     }
   ],
   "bundle_files": {
-    "mesa-haiku-native.patch": "276ec76f607f25bc75a63f585c8652a5f0198de7f0b298d0edb5428e25a00d5a",
+    "mesa-haiku-native.patch": "42c60077c123516ebd9fd598a86138b75deb72f17d9b970bd9bdc7079b959fb7",
     "libglvnd-haiku-sysroot.patch": "16c8c1110172bed628a6160bd86b2f4e36cb408a59bdbe59d133f7f812732d13",
-    "mesa-native-source-manifest.json": "ca0c69a4836e533d56fc8f8f1897437e37bb4cdf20c9dd0b1abf7532eaf414b7",
+    "mesa-native-source-manifest.json": "4050679073cd2b45c7978f3ba9d98f193a05dd4cee865b5f8368e12ec2998172",
     "libglvnd-haiku-mutex.patch": "96f0fa776fa8b3c6425e26981e6e4cbca7fc33f31eb8f8e58bad730891de6035",
     "native_render_validation.py": "709c02edeacce5f66b27f1863d2f26d8bbbe7e1edc932b75ac812562910c1880",
     "render_validation.py": "460d5ab54cf289fe1e84ed3cbe8d8522f453260b889b9b1e86fee074f3843c5b",
@@ -181,7 +181,9 @@
     "polygon-geometry-test.c": "a63e7c72f72138ecd94cc2467036773aca3e69d246ee06ea5d0d07f1b2de7c76",
     "polygon-context-test-adapter.h": "6fb645d3beb0a8b47251c044528e04fc6b56f031cd8bcfed8ff3174d85e2a74e",
     "application_logging_validation.py": "86f48d3723ad3b63986c4344461db9e05b2486e4068566aa3807823acb38cadc",
-    "test-application-logging.py": "41328940166113aa3b305de290eda293a270879ef04ccc765db3aa63241c1625"
+    "test-application-logging.py": "41328940166113aa3b305de290eda293a270879ef04ccc765db3aa63241c1625",
+    "shader-token-lifetime-test.c": "939397ffd76ce94d9e1ec1615d818f1abdca70e5f7778ad60b08770adc24f8e3",
+    "test-shader-token-lifetime.py": "5ca3265efff1d53c19c0f4580ce4e6ecc81c38ec75e0902e5be5d4a1af1fcd5b"
   },
   "host_helpers": {
     "vtn_bindgen2": "8f03a1c42332ec1494a89de73d9bdbe7bba91aeeb98c6c0cd2d6623eb276a167",
