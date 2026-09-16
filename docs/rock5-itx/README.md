@@ -11,9 +11,11 @@ hardware. The owner has deferred further Ethernet driver work.
 
 The +247 [GLTeapot trial](MESA-APPLICATION.md) runs the unchanged application
 on the native GPU across two boots. Animation and normal cleanup work, but
-wireframe mode draws filled polygons. The trial remains unqualified, and that
-rendering discrepancy is the current investigation. Recovery and independent
-storage checks pass; the failed image and visual evidence are preserved.
+wireframe mode draws filled polygons. A separate two-boot diagnostic confirms
+correct OpenGL polygon state while native line/point modes still render filled
+triangles. The trial remains unqualified. An opt-in geometry fallback is under
+development; it has no native qualification. Recovery, independent storage
+checks and preservation of both used images are complete.
 
 The +243 USB image qualifies [reset notification for live Mesa contexts](MESA-LOSS.md)
 on two native boots. Both shared contexts receive one loss notification, ignore

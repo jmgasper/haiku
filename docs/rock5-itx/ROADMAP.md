@@ -18,7 +18,9 @@ Ethernet driver development is deferred. [GPU.md](GPU.md) records qualified
 native power/reset/IRQ, firmware, client buffers, GPU VMs and persistent queues.
 The later +247 [GLTeapot trial](MESA-APPLICATION.md) demonstrates native
 application animation and normal retirement, but fails visual wireframe checks
-on both boots. It remains unqualified while polygon-mode support is investigated.
+on both boots. A separate two-boot diagnostic confirms the native polygon-mode
+defect with correct API state. The application remains unqualified; an opt-in
+geometry fallback is under development and has no native qualification.
 The +210 image runs Mesa/Panfrost on that native interface. Across two boots,
 all 32,768 rendered pixels match Linux and all 32 Mesa submissions complete.
 Allocation baselines, previous GPU regressions, both QEMU modes, recovery and

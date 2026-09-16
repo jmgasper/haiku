@@ -47,15 +47,60 @@ framebuffer.
 The unchanged application calls `glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)`.
 The pinned Mesa 25.3.6 Panfrost command-stream source is byte-identical to the
 original archive, and its context and command-stream code contain no handling
-of `fill_front` or `fill_back`. This points to a missing base-renderer feature;
-a smaller diagnostic is being checked to establish the API state and exact
-pixel failure independently of the application.
+of `fill_front` or `fill_back`. A smaller diagnostic now confirms correct API
+state and the native pixel failure independently of the application.
 
 Simply converting triangle indices to lines would not cover face culling,
 clipping and different front/back polygon modes. GLTeapot enables culling by
 default. Mesa's existing software geometry pipeline is a possible route to
-preserving those semantics while retaining GPU rasterization. That integration
-has not yet been implemented or tested.
+preserving those semantics while retaining GPU rasterization. An opt-in
+experimental integration compiles in an isolated development tree. Execution
+tests are in progress; no candidate boot image or native qualification exists
+for the integration.
+
+## Independent polygon diagnostic
+
+The diagnostic adds only a probe and launcher to the unchanged +247 image.
+It requests desktop OpenGL, verifies the actual Mali-G610 renderer and queried
+front/back polygon modes, and checks complete 64×64 RGBA readbacks with guards.
+Each boot creates two contexts and runs sixteen cases per context, including
+indexed draws, culling, split front/back modes, edge flags, clipping and restored
+fill state.
+
+Both native boots give the same result: 16 control cases pass and 16 rendering
+cases fail per boot. Every queried polygon mode and GL-error check passes.
+Line and point requests nevertheless produce the same 1,152-pixel filled
+triangle, including all 64 checked interior pixels. Culling rejects the correct
+faces; the clipped line request produces a filled clipped polygon. All 64
+complete frames and 8,192 guard bytes are retained, with 32 byte-identical
+cross-boot frame comparisons. Both contact sheets and both HDMI desktops were
+actually reviewed. This confirms a rendering defect, not a successful feature.
+
+The software oracle passes all 128 frames across two EL1 and two EL2 QEMU
+boots; complete corresponding frames match across those four boots. The first
+EL2 attempt timed out during reboot and remains preserved. Two native attempts
+stopped before Haiku; another controller attempt interrupted startup with an
+early power action and produced no probe result. The successful controller waits
+for normal startup first and completed both boots without that power action.
+The earlier failures are retained and are not counted as rendering tests.
+
+- Original diagnostic image SHA-256:
+  `77b3241ca811628c76a4c39f476ade5477608bdb8b673c8f150e85c3f883ea79`.
+- Frozen probe, validation and procedure inputs:
+  `artifacts/mali-polygon-mode-fix/20260916T051919Z-c8b012`.
+- Native transcripts, all RGBA frames, visual reviews and recovery receipts:
+  `artifacts/automated-polygon-delayed-start-diagnostic/20260916T063024Z-36b904`.
+- Software EL1: `artifacts/qemu-shell/20260916T053657Z-5fc470`;
+  accepted EL2 repeat: `artifacts/qemu-shell/20260916T054645Z-9dc39b`.
+- Normal shutdown and recovery to ROOBI boot
+  `60cd3094-85f4-41ff-b5c3-3a1bdd73fe87` pass. Independent eMMC file, partition
+  and region readbacks match their references from that same recovery boot.
+- Used image archive: `artifacts/nanokvm-image-archive/20260916T065310Z-23f643`;
+  SHA-256 `f615eea8c2db6c6bf942d2bdebc6f9db1942ff4b009ae8154e5c97bc61e0353c`.
+  The exact remote copy was removed only after local preservation and matching
+  hashes, with the verified read-only recovery image still attached.
+
+## Earlier application preparation
 
 The earlier +245 software trial exposed a controller error: successful
 Haiku window-property replies need not contain an `error` field. The controller

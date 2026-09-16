@@ -11,8 +11,11 @@ The +247 [GLTeapot application trial](MESA-APPLICATION.md) renders and animates
 on two native boots, with four normal application exits and 9,738 completed
 GPU submissions. It remains unqualified: wireframe mode visibly draws filled
 polygons on both boots. Software QEMU renders wireframe correctly. The failed
-trial, normal recovery, matching storage readbacks and used image are preserved;
-polygon-mode support is under investigation.
+trial, normal recovery, matching storage readbacks and used image are preserved.
+A separate two-boot diagnostic confirms correct OpenGL state but filled output
+for line/point modes. Its 32 rendering failures and 32 control passes repeat
+identically, with all guards intact. Both used images are preserved. An opt-in
+geometry fallback is being developed and has no native qualification.
 
 The +243 USB image qualifies [reset notification for live Mesa contexts](MESA-LOSS.md)
 on two native boots. Both shared contexts receive one loss notification, ignore
