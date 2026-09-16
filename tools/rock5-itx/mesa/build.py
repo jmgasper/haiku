@@ -249,6 +249,12 @@ def main():
             '-I' + str(HERE.parents[2] / 'src/add-ons/kernel/drivers/graphics/mali_csf'),
             HERE / 'loss-probe.cpp', '-L' + str(glvnd_install / 'boot/system/lib'),
             '-lEGL', '-lGLESv2', '-o', loss_probe], 'loss-probe-compile')
+        polygon_probe = root / 'rock5_polygon_probe'
+        run([str(compiler_prefix) + 'g++', '--sysroot=' + str(sdk), '-std=c++17',
+            '-O2', '-g', '-Wall', '-Wextra', '-Werror',
+            '-I' + str(headers / 'os/opengl'), HERE / 'polygon-probe.cpp',
+            '-L' + str(glvnd_install / 'boot/system/lib'), '-lEGL', '-lOpenGL',
+            '-o', polygon_probe], 'polygon-probe-compile')
         package.mkdir()
         assets = []
         libraries = [('lib/libEGL_mesa.so.0', build / 'src/egl/libEGL_mesa.so.0.0.0')]
@@ -267,7 +273,8 @@ def main():
                 ('rock5_haiku_concurrency_probe', concurrency_probe),
                 ('rock5_haiku_pending_probe', pending_probe),
                 ('rock5_haiku_recovery_probe', recovery_probe),
-                ('rock5_haiku_loss_probe', loss_probe)]:
+                ('rock5_haiku_loss_probe', loss_probe),
+                ('rock5_polygon_probe', polygon_probe)]:
             target = package / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
@@ -278,7 +285,7 @@ def main():
                 unstripped_source=str(source), unstripped_sha256=digest(source)))
         for name, mode in [('run', '755'), ('run-window', '755'),
                 ('run-glview', '755'), ('run-pipeline', '755'), ('run-lifetime', '755'), ('run-heap-pressure', '755'), ('run-heap-limit', '755'), ('run-sustained', '755'), ('run-concurrency', '755'), ('run-pending', '755'),
-                ('run-recovery', '755'), ('run-loss', '755'), ('vendor.json', '644')]:
+                ('run-recovery', '755'), ('run-loss', '755'), ('run-polygon', '755'), ('vendor.json', '644')]:
             target = package / name
             shutil.copy2(HERE / name, target)
             assets.append(dict(source=str(target), guest='/boot/home/mesa-trial/' + name,

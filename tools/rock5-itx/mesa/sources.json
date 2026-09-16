@@ -55,7 +55,7 @@
     ]
   },
   "sdk_haiku_revision": "7908c0f07a8d3bbed99f6140c642cf30920b3232",
-  "qualified_runtime_revision": "hrev60097+243",
+  "qualified_runtime_revision": null,
   "sdk_packages": [
     {
       "name": "haiku.hpkg",
@@ -89,9 +89,9 @@
     }
   ],
   "bundle_files": {
-    "mesa-haiku-native.patch": "2d8a1444ac178c5e8a2b75d6e7635cfc6323cc315954fa038b2b3c575feb31d3",
+    "mesa-haiku-native.patch": "90c2b29ba3f4e9bc92072f55730a37a9cb009567ed15c8482aa826235bc4e343",
     "libglvnd-haiku-sysroot.patch": "16c8c1110172bed628a6160bd86b2f4e36cb408a59bdbe59d133f7f812732d13",
-    "mesa-native-source-manifest.json": "554a9d1a23be641cd25e530784793c16ca4e8ff9a90baf39ae625321337c69ca",
+    "mesa-native-source-manifest.json": "dc7d5a11669740a3df365ad8cdf454651865faf8d80d7184947b9bc5fc1f0acd",
     "libglvnd-haiku-mutex.patch": "96f0fa776fa8b3c6425e26981e6e4cbca7fc33f31eb8f8e58bad730891de6035",
     "native_render_validation.py": "709c02edeacce5f66b27f1863d2f26d8bbbe7e1edc932b75ac812562910c1880",
     "render_validation.py": "460d5ab54cf289fe1e84ed3cbe8d8522f453260b889b9b1e86fee074f3843c5b",
@@ -116,7 +116,7 @@
     "heap-pressure-probe.cpp": "aedadaceab6cd7394f03b07194653e5a7f0b51751645ed01503c1fc6e94584e5",
     "heap_pressure_validation.py": "10dcb465bd8b8b153ae7a7dbfc9cbf7c6b5b02b19b409948b1ebbf2ff3f3b067",
     "run-heap-pressure": "058662b783c92a87a01ab6796d685a06233e88397b87a018775d235dfc3e26ae",
-    "build.py": "338c65c1148958ee2771fdce75664ac5b2388df88f70297ea7d34963c6f41fcb",
+    "build.py": "8e5356ec726413e0a45d12257f463aca1ec35c8ae14bfac5b8081869d6579dd3",
     "heap-limit-probe.cpp": "b2d33d95c99c074b5dc757dd293f84a93b49c32daf62bd73bb38e68e349585a2",
     "heap_limit_validation.py": "48063c97a2ea6fb539b830a548a3f286385bc2f97f219c1c817dd2ba5360e7f3",
     "run-heap-limit": "2738aa58cc844423eb59affe127bf1fb54705d0830aaa3a6a33552233070de85",
@@ -127,7 +127,7 @@
     "concurrency-probe.cpp": "2f69b46e92d89dc8ea737a1b65b63c541e1b240ecd972031f9c4a7ed23d3c74e",
     "concurrency_validation.py": "54fc31f044fbd67f60305a1c613fd25e3cac907ac758638f179597eb391941d1",
     "run-concurrency": "cd539f9590dcccca034db8ef5c32cfb70312337b676c9bca06744d00f33fff20",
-    "graphics_capture.py": "6397de439029b8e87814c99300903d771607bb2c54d56fcaab16b8974cd1ca5a",
+    "graphics_capture.py": "e05f6273de9da05d0d809e51a91f4d7586e751d9cc67c79b9dad71bf5340230a",
     "pending-probe.cpp": "8b4e548ad2a12bff765a9cfc24101e323daa3f437126d74c956fc221bb83a92b",
     "pending_validation.py": "c98e7be3e639a9e279cdc0f0a50ba7142e7c63a968d01f4b8fb62b14e1547993",
     "run-pending": "8db43588e07626a073a240823d85a0a22a171d32372c0fad0e3937c88af261a1",
@@ -173,7 +173,13 @@
     "test-reset-status.py": "72974add7ad8f46cffabd1fee4876d58793bd1554e4f8efb45c800fd205c5ec6",
     "reset-status-test.c": "41a5dbf8c30e530662fcf3fff26e227411c8f9ace820a4bd85721bee38f0e197",
     "state-tracker-reset-test.c": "9d9d1921c4d365ae39406ddf503f68f3b93c97a69960160acd8085fdc7d75b8d",
-    "test-state-tracker-reset.py": "dd7f599f03f5717ea72ab672d7030f6b9f91051516fafaa01ba467913b41691b"
+    "test-state-tracker-reset.py": "dd7f599f03f5717ea72ab672d7030f6b9f91051516fafaa01ba467913b41691b",
+    "polygon-probe.cpp": "cecaa715600a00727e775204e40a9fe979ed6a3d4c9a8ad153ebbe27ffd3d4fb",
+    "polygon_validation.py": "ffdbfbc8bbda4a38f1dd33cca0f92b137b143ed8e71732070106b3d1a0c932f4",
+    "run-polygon": "45497a2dd00a10a84bf459d861f2f906083bde0100b3bb3cdba86dea1c9fbe17",
+    "test-polygon-geometry.py": "952382a00ad126087aca8288f47bb8c99e35788ee842b3d91b7bcb4faa43c91d",
+    "polygon-geometry-test.c": "f88fd96d13a3a404d115d08c2e8ed55bdb357729ea0f82f2ca8b78c4e9fed549",
+    "polygon-context-test-adapter.h": "6fb645d3beb0a8b47251c044528e04fc6b56f031cd8bcfed8ff3174d85e2a74e"
   },
   "host_helpers": {
     "vtn_bindgen2": "8f03a1c42332ec1494a89de73d9bdbe7bba91aeeb98c6c0cd2d6623eb276a167",
@@ -218,7 +224,8 @@
   "concurrency_probe_scope": "Qualified +234 on two native boots: two processes complete 64 synchronized rounds per boot, all128 actual application draw/fence/readback intervals overlap; 260frames/1689740pixels/33280guards/532completed submissions. Normal process retirement, survivor draw, fresh-process reuse and allocation restoration pass. All seven graphics fixtures use verified RAM capture and existing staged transfers; first NanoKVM outage preserved. No parallel GPU execution, pending-work termination, conformance, thermal/DVFS, reset or native display qualification.",
   "pending_probe_scope": "Qualified +236 on two native boots: finite integer shader, unfinished GLES fence and actual pending command at client close; survivor and fresh-process rendering, 14 checked frames/90986 pixels/1792 guards, 42 accepted submissions, full allocation restoration. Both QEMU modes, earlier regressions, normal recovery and independent integrity pass. No immediate preemption, GPU fault/reset, conformance or native-display qualification.",
   "recovery_probe_scope": "Qualified +238 on two native boots: invalid CS instruction, three affected raw jobs and B_IO_ERROR fences per boot, verified bounded reset/AS0-AS1 cleanup/platform restoration, full allocation restoration, fresh native stores and two fresh GLES contexts without Haiku reboot. All 155976 subsequent pixels/3072 guards, both QEMU modes, earlier regressions, normal recovery and independent integrity pass. The +243 loss fixture separately qualifies retained Mesa-context notification. Innocent-context preservation, generic hangs and native display remain open.",
-  "previous_qualified_runtime_revision": "hrev60097+238",
+  "previous_qualified_runtime_revision": "hrev60097+243",
   "required_runtime_revision": "hrev60097+240",
-  "loss_probe_scope": "Qualified +243 on two native boots: two live shared GLES contexts each receive one unknown-attribution reset notification after the finite raw command fault; ignored read/clear/sync calls report context loss and all 104496 readback bytes remain unchanged. Full display teardown and allocation restoration, fresh GLES pipeline without Haiku reboot, 28 before/fresh frames/181972 pixels/3584 guards, both QEMU modes, earlier regressions, normal recovery and independent integrity pass. +241 reset assertion and +242 cache-fixture failures remain preserved. No innocent-context preservation, arbitrary hang, conformance or native display claim."
+  "loss_probe_scope": "Qualified +243 on two native boots: two live shared GLES contexts each receive one unknown-attribution reset notification after the finite raw command fault; ignored read/clear/sync calls report context loss and all 104496 readback bytes remain unchanged. Full display teardown and allocation restoration, fresh GLES pipeline without Haiku reboot, 28 before/fresh frames/181972 pixels/3584 guards, both QEMU modes, earlier regressions, normal recovery and independent integrity pass. +241 reset assertion and +242 cache-fixture failures remain preserved. No innocent-context preservation, arbitrary hang, conformance or native display claim.",
+  "polygon_probe_scope": "Unqualified opt-in candidate: software vertex/geometry processing with native Panfrost rasterization. Direct draws and float32 varyings only; excluded shader resources/effects, transform feedback, front-face/primitive-ID inputs, integer/64-bit varyings, layered viewports, stippling, independent near/far clip, unscaled bias and zero-depth-scale offset. Actual-helper ASan/UBSan tests pass; QEMU/native candidates pending."
 }

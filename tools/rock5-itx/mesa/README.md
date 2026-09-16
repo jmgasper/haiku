@@ -5,6 +5,39 @@ CSF kernel ABI. It has passed offscreen GLES rendering on two native ROCK boots;
 [MESA.md](../../../docs/rock5-itx/MESA.md) records exact evidence and limits.
 It is not an upstream Mesa/Haiku release or a system package replacement.
 
+The current polygon-mode candidate is **unqualified on hardware**. It retains
+vertex/fragment NIR and lazily uses Mesa's CPU vertex/geometry pipeline for
+non-solid polygons, then uploads the resulting primitives for native GPU
+rasterization. `HAIKU_PAN_SW_POLYGON=1` enables it; the polygon and application
+native test launchers opt in explicitly. Other launchers retain the default.
+The earlier native application failure and independent diagnostic are recorded
+in [MESA-APPLICATION.md](../../../docs/rock5-itx/MESA-APPLICATION.md).
+
+This development path supports direct draws and float32 varyings. Vertex
+textures/images/SSBOs and writes, transform feedback, fragment front-face or
+primitive-ID inputs, integer/64-bit varyings, layered viewports, stippling,
+separate near/far clipping and unscaled polygon bias remain excluded. Zero
+depth-range scale with polygon offset is also excluded. Unsupported draws
+report an experimental-path failure; this is not general polygon conformance.
+
+`polygon-probe.cpp` checks full readbacks for sixteen polygon cases over two
+contexts. `polygon_validation.py` independently checks every returned pixel,
+state, guard and restored/equivalent image. Its original native run diagnoses
+the missing feature; successful software rendering does not qualify this new
+driver path. `test-polygon-geometry.py` instead executes the actual helper with
+real Mesa NIR/draw libraries and a checked memory-backed pipe adapter. The test
+covers geometry, resource/state restoration and map failures under ASan/UBSan;
+the adapter does not emulate Panfrost callbacks or GPU rasterization.
+
+For that host test, configure a separate native Mesa build from the patched
+source with `-Db_sanitize=address,undefined`, `-Dgallium-drivers=softpipe`,
+`-Dllvm=disabled` and the usual headless options. Build `libgallium.a`, `libnir.a`,
+`libcompiler.a` and their Mesa utility archives. With the lab environment loaded,
+run `python3 tools/rock5-itx/mesa/test-polygon-geometry.py --mesa-source SOURCE
+--host-build HOST_BUILD --output OUTPUT`; all three paths must be under
+`/mnt/HaikuWork`. Each attempt preserves its exact helper/adapter/test bytes,
+commands and execution output in a fresh directory.
+
 The current source also qualifies [EGL window rendering](../../../docs/rock5-itx/MESA-WINDOW.md):
 native GPU textures are copied into Haiku window bitmaps. Its probe checks
 complete bitmap/screen pixels, dimensions, resizing and retirement across two
@@ -82,7 +115,7 @@ after patched-source and SDK preparation. Logs, commands, input receipts and
 failures remain in the output directory. This reconstructs pinned sources and
 configuration; build-path/debug information can change binary hashes.
 
-The package manifest lists thirty-one assets for `/boot/home/mesa-trial`. The `run`
+The package manifest lists thirty-three assets for `/boot/home/mesa-trial`. The `run`
 launcher uses Haiku's `LIBRARY_PATH` and a private GLVND vendor file. Its probe
 accepts `--native`, `--software` and `--absent-device`. Native mode expects
 `/dev/graphics/mali_csf/0` and the separately supplied, licensed firmware at
