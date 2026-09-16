@@ -336,10 +336,70 @@ static void test_legacy_topologies(void)
    puts("POLYGON_CASE_legacy_quad_strip_polygon_fill_line_point_cull_clip_flat_restart_no_diagonals");
 }
 
+static void check_complete_square(struct fixture *f, bool points)
+{
+   check_vertices(f, points ? MESA_PRIM_POINTS : MESA_PRIM_LINES, points ? 4 : 8);
+   unsigned seen = 0;
+   for (unsigned i = 0; i < f->collected_count; i += points ? 1 : 2) {
+      const float *a = f->collected[i].pos;
+      CHECK(fabsf(a[0]) == .75f && fabsf(a[1]) == .75f);
+      unsigned edge;
+      if (points) {
+         edge = (a[0] > 0) + 2 * (a[1] > 0);
+      } else {
+         const float *b = f->collected[i + 1].pos;
+         CHECK(fabsf(b[0]) == .75f && fabsf(b[1]) == .75f);
+         CHECK((a[0] == b[0]) != (a[1] == b[1]));
+         edge = a[0] == b[0] ? (a[0] > 0 ? 1 : 3) : (a[1] > 0 ? 2 : 0);
+      }
+      CHECK(!(seen & (1u << edge)));
+      seen |= 1u << edge;
+   }
+   CHECK(seen == 15);
+}
+
+static void test_legacy_provoking_boundaries(void)
+{
+   unsigned combinations = 0;
+   for (unsigned edge = 0; edge < 2; ++edge)
+   for (unsigned first = 0; first < 2; ++first)
+   for (unsigned start = 0; start < 8; ++start)
+   for (unsigned mode = MESA_PRIM_QUADS; mode <= MESA_PRIM_POLYGON; ++mode) {
+      struct fixture *f = calloc(1, sizeof(*f)); CHECK(f); init_fixture(f);
+      set_shader(&f->vs, make_vs(edge ? SHADER_EDGE : 0));
+      f->original_rasterizer.flatshade_first = first;
+      struct vertex quad[4] = {
+         {{-.75f,-.75f,0,1}, {1,0,0,1}, {1}},
+         {{ .75f,-.75f,0,1}, {1,0,0,1}, {1}},
+         {{ .75f, .75f,0,1}, {1,0,0,1}, {1}},
+         {{-.75f, .75f,0,1}, {1,0,0,1}, {1}},
+      };
+      if (mode == MESA_PRIM_QUAD_STRIP) {
+         struct vertex tmp = quad[2]; quad[2] = quad[3]; quad[3] = tmp;
+      }
+      struct vertex data[12] = {0};
+      memcpy(data + start, quad, sizeof(quad)); bind_vertices(f, data, start + 4);
+      struct pipe_draw_info info = {.mode = mode, .instance_count = 1};
+      struct pipe_draw_start_count_bias draw = {.start = start, .count = 4};
+      fprintf(stderr, "PROVOKING_BOUNDARY edge=%u first=%u start=%u mode=%u\n",
+         edge, first, start, mode);
+      CHECK(run_draw(f, &info, &draw, 1)); check_complete_square(f, false);
+      f->original_rasterizer.fill_front = f->original_rasterizer.fill_back = PIPE_POLYGON_MODE_POINT;
+      CHECK(run_draw(f, &info, &draw, 1)); check_complete_square(f, true);
+      f->original_rasterizer.fill_front = f->original_rasterizer.fill_back = PIPE_POLYGON_MODE_LINE;
+      f->original_rasterizer.cull_face = PIPE_FACE_BACK;
+      CHECK(run_draw(f, &info, &draw, 1)); check_complete_square(f, false);
+      cleanup_fixture(f); free(f); ++combinations;
+   }
+   CHECK(combinations == 96);
+   puts("POLYGON_CASE provoking_boundaries combinations=96 draws=288");
+}
+
 int main(void)
 {
    glsl_type_singleton_init_or_ref();
    test_legacy_topologies();
+   test_legacy_provoking_boundaries();
    struct fixture *f = calloc(1, sizeof(*f)); CHECK(f); init_fixture(f); bind_vertices(f, triangle, 3);
    struct pipe_draw_info info = {.mode = MESA_PRIM_TRIANGLES, .instance_count = 1};
    struct pipe_draw_start_count_bias draw = {.count = 3};

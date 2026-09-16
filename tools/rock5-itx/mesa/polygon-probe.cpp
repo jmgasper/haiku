@@ -153,7 +153,8 @@ static bool draw_case(unsigned cycle, unsigned index)
     return passed;
 }
 
-static bool context_test(EGLDisplay display, EGLConfig config, unsigned cycle, bool software)
+static bool context_test(EGLDisplay display, EGLConfig config, unsigned cycle, bool software,
+    GLenum provoking)
 {
     const EGLint ca[] = {EGL_CONTEXT_MAJOR_VERSION, 2, EGL_CONTEXT_MINOR_VERSION, 1, EGL_NONE};
     const EGLint sa[] = {EGL_WIDTH,W,EGL_HEIGHT,H,EGL_NONE};
@@ -181,6 +182,17 @@ static bool context_test(EGLDisplay display, EGLConfig config, unsigned cycle, b
     glLineWidth(1); glPointSize(1); glClearColor(0,0,0,1);
     glPixelStorei(GL_PACK_ALIGNMENT,1);
     bool pass = identity && glGetError() == GL_NO_ERROR;
+    if (provoking) {
+        auto set_provoking = reinterpret_cast<PFNGLPROVOKINGVERTEXPROC>(
+            eglGetProcAddress("glProvokingVertex"));
+        GLint actual = 0;
+        if (set_provoking) set_provoking(provoking);
+        glGetIntegerv(GL_PROVOKING_VERTEX, &actual);
+        const GLenum error = glGetError();
+        std::printf("ROCK5_POLYGON_PROVOKING cycle=%u requested=%04x actual=%04x error=%04x\n",
+            cycle, provoking, actual, error);
+        pass &= set_provoking && GLenum(actual) == provoking && error == GL_NO_ERROR;
+    }
     unsigned passed = 0;
     for (unsigned i = 0; i < sizeof(cases)/sizeof(cases[0]); ++i) passed += draw_case(cycle,i);
     pass &= passed == sizeof(cases)/sizeof(cases[0]);
@@ -198,7 +210,14 @@ static bool context_test(EGLDisplay display, EGLConfig config, unsigned cycle, b
 
 int main(int argc, char** argv)
 {
-    if (argc != 2 || (std::strcmp(argv[1],"--software") && std::strcmp(argv[1],"--native"))) return 2;
+    if ((argc != 2 && argc != 3)
+        || (std::strcmp(argv[1],"--software") && std::strcmp(argv[1],"--native"))) return 2;
+    GLenum provoking = 0;
+    if (argc == 3) {
+        if (!std::strcmp(argv[2], "--first-provoking")) provoking = GL_FIRST_VERTEX_CONVENTION;
+        else if (!std::strcmp(argv[2], "--last-provoking")) provoking = GL_LAST_VERTEX_CONVENTION;
+        else return 2;
+    }
     const bool software = !std::strcmp(argv[1],"--software");
     unsetenv("MESA_GL_VERSION_OVERRIDE"); unsetenv("MESA_GLES_VERSION_OVERRIDE");
     unsetenv("MESA_EXTENSION_OVERRIDE");
@@ -228,7 +247,7 @@ int main(int argc, char** argv)
     EGLConfig config; EGLint count=0;
     if (!eglChooseConfig(display,attributes,&config,1,&count) || count != 1) { eglTerminate(display); return 4; }
     bool pass = true;
-    for (unsigned i=0; i<2; ++i) pass &= context_test(display,config,i,software);
+    for (unsigned i=0; i<2; ++i) pass &= context_test(display,config,i,software,provoking);
     pass &= eglTerminate(display);
     pass &= eglReleaseThread();
     std::printf("ROCK5_POLYGON_RESULT contexts=2 cases=%zu pass=%u\n",2*sizeof(cases)/sizeof(cases[0]),pass);

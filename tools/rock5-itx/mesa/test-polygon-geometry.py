@@ -23,6 +23,8 @@ assert all(p.is_relative_to(work) and p != work for p in (source, build, root))
 run = root / datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
 run.mkdir(parents=True)
 inputs = [source / 'src/gallium/drivers/panfrost' / name for name in ('pan_sw_polygon.c', 'pan_sw_polygon.h')]
+inputs += [source / 'src/gallium/auxiliary/draw' / name for name in
+           ('draw_decompose_tmp.h', 'draw_pipe.c', 'draw_vs_exec.c')]
 inputs += [here / name for name in ('polygon-context-test-adapter.h', 'polygon-geometry-test.c')]
 inputs += [Path(__file__).resolve()]
 frozen = []
@@ -75,6 +77,11 @@ libraries = [
     'src/util/libmesa_util_clflush.a', 'src/util/libmesa_util_clflushopt.a',
     'src/util/libmesa_util_simd.a',
 ]
+record['libraries'] = []
+for name in libraries:
+    with (build / name).open('rb') as stream:
+        record['libraries'].append(dict(path=str(build / name),
+            sha256=hashlib.file_digest(stream, 'sha256').hexdigest()))
 execute(['c++', '-fsanitize=address,undefined', '-g', '-o', str(run / 'polygon-test'),
          str(run / 'polygon-test.o'), str(run / 'pan_sw_polygon.o'),
          '-Wl,--start-group', *libraries, '-Wl,--end-group', '-lm', '-lpthread', '-ldl'], 'link.log')
@@ -82,6 +89,9 @@ execute([str(run / 'polygon-test')], 'execution.log')
 assert 'POLYGON_HELPER_PASS' in (run / 'execution.log').read_text()
 for row in frozen:
     assert hashlib.sha256(Path(row['source']).read_bytes()).hexdigest() == row['sha256']
+for row in record['libraries']:
+    with Path(row['path']).open('rb') as stream:
+        assert hashlib.file_digest(stream, 'sha256').hexdigest() == row['sha256']
 record.update(status='pass', exit_status=0)
 (run / 'result.json').write_text(json.dumps(record, indent=2) + '\n')
 (root / 'latest-host-test.json').write_text(json.dumps(record, indent=2) + '\n')

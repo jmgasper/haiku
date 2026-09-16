@@ -89,9 +89,9 @@
     }
   ],
   "bundle_files": {
-    "mesa-haiku-native.patch": "42c60077c123516ebd9fd598a86138b75deb72f17d9b970bd9bdc7079b959fb7",
+    "mesa-haiku-native.patch": "8b17cf2429bbbd1a6bd1d61e42ac350411e949dd171184daa77500c3951df57a",
     "libglvnd-haiku-sysroot.patch": "16c8c1110172bed628a6160bd86b2f4e36cb408a59bdbe59d133f7f812732d13",
-    "mesa-native-source-manifest.json": "4050679073cd2b45c7978f3ba9d98f193a05dd4cee865b5f8368e12ec2998172",
+    "mesa-native-source-manifest.json": "7972b6626275e2edcfd934900c3c318fd1efb844a9d4e159bf4d209cb7b1deec",
     "libglvnd-haiku-mutex.patch": "96f0fa776fa8b3c6425e26981e6e4cbca7fc33f31eb8f8e58bad730891de6035",
     "native_render_validation.py": "709c02edeacce5f66b27f1863d2f26d8bbbe7e1edc932b75ac812562910c1880",
     "render_validation.py": "460d5ab54cf289fe1e84ed3cbe8d8522f453260b889b9b1e86fee074f3843c5b",
@@ -174,11 +174,11 @@
     "reset-status-test.c": "41a5dbf8c30e530662fcf3fff26e227411c8f9ace820a4bd85721bee38f0e197",
     "state-tracker-reset-test.c": "9d9d1921c4d365ae39406ddf503f68f3b93c97a69960160acd8085fdc7d75b8d",
     "test-state-tracker-reset.py": "dd7f599f03f5717ea72ab672d7030f6b9f91051516fafaa01ba467913b41691b",
-    "polygon-probe.cpp": "64842a8857419637c6449480661e781e6e74b600747513878c9ccbc51399065f",
-    "polygon_validation.py": "0a24041f3e3ef9684f723d9a00f7010a1f8c5e68105eceefb3e42b7255f71b58",
-    "run-polygon": "45497a2dd00a10a84bf459d861f2f906083bde0100b3bb3cdba86dea1c9fbe17",
-    "test-polygon-geometry.py": "952382a00ad126087aca8288f47bb8c99e35788ee842b3d91b7bcb4faa43c91d",
-    "polygon-geometry-test.c": "a63e7c72f72138ecd94cc2467036773aca3e69d246ee06ea5d0d07f1b2de7c76",
+    "polygon-probe.cpp": "9c1f93480fd5b197136334d255306b45df95194a51383bd934edb557d7cbaf1b",
+    "polygon_validation.py": "4dfb2fc989e416a705ffaf8a07b4c50baed049210dcded785a58b5c183bcc1e6",
+    "run-polygon": "fb3a3462b8db7d54f5e38d619d5047ffd0e6ab6c6da3992b1f9e7bbf223a430f",
+    "test-polygon-geometry.py": "def32c033a3b17a4488901a6d055b8863a9cc148bf056a1523d6b828e5110eed",
+    "polygon-geometry-test.c": "96bfaefc21e57b9942c372f6c53b7f50b56a4e86bac35d1307e02ea21c27689d",
     "polygon-context-test-adapter.h": "6fb645d3beb0a8b47251c044528e04fc6b56f031cd8bcfed8ff3174d85e2a74e",
     "application_logging_validation.py": "86f48d3723ad3b63986c4344461db9e05b2486e4068566aa3807823acb38cadc",
     "test-application-logging.py": "41328940166113aa3b305de290eda293a270879ef04ccc765db3aa63241c1625",
@@ -231,5 +231,5 @@
   "previous_qualified_runtime_revision": "hrev60097+243",
   "required_runtime_revision": "hrev60097+240",
   "loss_probe_scope": "Qualified +243 on two native boots: two live shared GLES contexts each receive one unknown-attribution reset notification after the finite raw command fault; ignored read/clear/sync calls report context loss and all 104496 readback bytes remain unchanged. Full display teardown and allocation restoration, fresh GLES pipeline without Haiku reboot, 28 before/fresh frames/181972 pixels/3584 guards, both QEMU modes, earlier regressions, normal recovery and independent integrity pass. +241 reset assertion and +242 cache-fixture failures remain preserved. No innocent-context preservation, arbitrary hang, conformance or native display claim.",
-  "polygon_probe_scope": "Unqualified opt-in candidate: software vertex/geometry processing with native Panfrost rasterization. Preserve original quad/quad-strip/polygon boundaries; these legacy modes use CPU geometry even when filled. Probe has 32 cases/context. Direct draws and float32 varyings only; excluded shader resources/effects, transform feedback, front-face/primitive-ID inputs, integer/64-bit varyings, layered viewports, stippling, independent near/far clip, unscaled bias and zero-depth-scale offset. Actual-helper ASan/UBSan tests pass; QEMU/native candidates pending."
+  "polygon_probe_scope": "Bounded opt-in CPU vertex/geometry processing with native Panfrost rasterization. Default GLTeapot and 32-case/context polygon fixture qualified on +256 Mesa with +254 Haiku. First/last-provoking extension and quad-strip edge correction are pending native validation. Preserve quad/quad-strip/polygon boundaries; direct draws and float32 varyings only. Shader resources/effects, transform feedback, front-face/primitive-ID inputs, integer/64-bit varyings, layered viewports, stippling, independent near/far clip, unscaled bias and zero-depth-scale offset remain excluded."
 }

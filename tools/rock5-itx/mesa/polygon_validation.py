@@ -20,7 +20,15 @@ KINDS = ('fill','line','fill','point','line','line','empty','empty','line',
 EXPECTED = (1,2,1,3,2,2,0,0,2,0,2,1,2,1,4,5,6,7,8,7,6,7,8,7,6,7,8,9,9,10,7,0)
 
 
-def validate(text, output=None, software=True, haiku=True, require_pass=True):
+def validate(text, output=None, software=True, haiku=True, require_pass=True, provoking=None):
+    assert provoking in (None, 'first', 'last')
+    settings = re.findall(r'^ROCK5_POLYGON_PROVOKING cycle=(\d+) requested=([0-9a-f]{4}) actual=([0-9a-f]{4}) error=([0-9a-f]{4})$', text, re.M)
+    assert len(settings) == text.count('ROCK5_POLYGON_PROVOKING ')
+    if provoking is None:
+        assert not settings
+    else:
+        expected = '8e4d' if provoking == 'first' else '8e4e'
+        assert settings == [(str(cycle), expected, expected, '0000') for cycle in range(2)]
     headers = re.findall(r'^ROCK5_POLYGON_GL cycle=(\d+) renderer=(.*?) version=(.*?)$', text, re.M)
     assert [int(x[0]) for x in headers] == [0,1]
     assert text.count('ROCK5_POLYGON_GL ') == 2
@@ -108,4 +116,5 @@ def validate(text, output=None, software=True, haiku=True, require_pass=True):
         assert passed, [c['name'] for c in checked if not c['pass_']]
     return dict(status='pass' if passed else 'rendering_failure',software=software,
         native_qualification=False,contexts=2,frames=64,pixels=262144,guard_bytes=8192,
-        passed=sum(c['pass_'] for c in checked),frames_checked=checked,renderers=headers)
+        passed=sum(c['pass_'] for c in checked),frames_checked=checked,renderers=headers,
+        provoking=provoking)

@@ -21,6 +21,11 @@
       "after": "8b3875592bbbc8d6c22ed4ad769bb0017ad8a5193920d8b5baa0a88d0fd49b22"
     },
     {
+      "path": "src/gallium/auxiliary/draw/draw_decompose_tmp.h",
+      "before": "e85852eeea663340a88e20f6c6db535df7e0958c47d03d206664f89625a33314",
+      "after": "623b612d34ac053b0415e7510894ce3ce0a4ecaa28dce9581e9aca4cc266148e"
+    },
+    {
       "path": "src/gallium/auxiliary/draw/draw_vs_exec.c",
       "before": "31184fcdb95b006732e2bbc19a9ba7d18b4d6c3b49f82ca212ba8d7fdb5043f3",
       "after": "53b3cec101fa52633cc4eabcca836e8528e90e97f8a0c236143a23d0237aee6f"
