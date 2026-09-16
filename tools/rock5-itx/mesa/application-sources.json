@@ -1,0 +1,45 @@
+{
+  "status": "application_candidate_unqualified",
+  "glu": {
+    "version": "9.0.3",
+    "archive": "glu-9.0.3.tar.xz",
+    "source_dir": "glu-9.0.3",
+    "url": "https://archive.mesa3d.org/glu/glu-9.0.3.tar.xz",
+    "bytes": 218968,
+    "sha256": "bd43fe12f374b1192eb15fe20e45ff456b9bc26ab57f0eee919f96ca0f8a330f"
+  },
+  "bundle_files": {
+    "build-application.py": "934ed0907fd97a04d2f909c2500350df7ad7931b6913f6fa2228b332f00213e1",
+    "application-probe.cpp": "733f0c65559270278b210d8f69ba74cd8efb62345b21f7a757f289ad5de062fa",
+    "application-frames.cpp": "958b95bfd9f760af8201f6a2369024542b176331c1c0d46d8724e230a8545e56",
+    "run-application": "7dbf868a4ad0f63833f33f78eadb049a6d2b22086b560aa3f0b1f77a1bc9184a",
+    "application_validation.py": "ba72b53cb8c95424a76e00ae6f3e6b7ccda6d7edb816252d3e68fe1df470548e",
+    "native-observer.h": "18a3f0df2b06d3cc778cf8002d86afca2450f3da5509d4a80c757cb49af48502",
+    "graphics_capture.py": "6397de439029b8e87814c99300903d771607bb2c54d56fcaab16b8974cd1ca5a"
+  },
+  "application_files": {
+    "src/apps/glteapot/FPS.cpp": "d5d9f082bbe1b62eb4e16387b09263e71fc9ec1f07526c8132c0267e4a36371b",
+    "src/apps/glteapot/FPS.h": "fdff2be1ee09af930dc7ff69b8fc0c49590fa4ee18cf62a1bb7be18c1edb2bf9",
+    "src/apps/glteapot/GLObject.cpp": "d0279e93b48cee70489e5055773d491feda009010558e64dc7c4ecf43d1db959",
+    "src/apps/glteapot/GLObject.h": "d896cb67acecf1e88cc1dad5a2b60238014d283620739218e84b07c2a598882c",
+    "src/apps/glteapot/GLTeapot.rdef": "d64bb181a3a2a7d057180e4eb6b0df58806bdab23db34b65a9c84c1169af0b91",
+    "src/apps/glteapot/Jamfile": "2dafd104e3c33aad9d2af9962ad7c25302c284b7dfb135b3e411ff28d5104e35",
+    "src/apps/glteapot/LICENSE": "9f9eaeb926e73494db789d07a16fa310d81b72a0831c86d42eb410b162b2d6ee",
+    "src/apps/glteapot/ObjectView.cpp": "1ed8a486e875096a2c1fa81d39ffd7da5c55a8b1cda434ea8c53d5eee37c592d",
+    "src/apps/glteapot/ObjectView.h": "291d3cd7648cc9d4d2349c04f8b1db9ef5aad9c2a715d95d8afab3b8d020b15d",
+    "src/apps/glteapot/Quaternion.h": "40a5b515efd9f83cab267cb793f597abf07a42dc1fb41d223f732b5412880724",
+    "src/apps/glteapot/README.GLTeapot": "ae23151c7760f604e585ce551fe5ae053f98f88fcbba3eedc2d7aa5d9f606b0f",
+    "src/apps/glteapot/ResScroll.h": "da206f0f8b18c6a02b39f49ac7917b7792ac19a1a07463e77a4bc1a8ae39e72c",
+    "src/apps/glteapot/TeapotApp.cpp": "af3c4000db6981b59efa8104a34968bc04234515e6a6f402d7144509938f6244",
+    "src/apps/glteapot/TeapotApp.h": "2675bdeaec01e5d79c5d9a48d08b3ea2cf7b795199c8ff1e16b76fd3122472aa",
+    "src/apps/glteapot/TeapotWindow.cpp": "77c9f5c31cef8cff578936354a86b7b00051db489c6efa7cae97e7215e7091e1",
+    "src/apps/glteapot/TeapotWindow.h": "7cb13d6dc3341a1c32d73fdef463d72926ff6bf713fa108b53a5a517b5aac046",
+    "src/apps/glteapot/Vector3.h": "c1150bf9a1fa74c180d48ed71767a0e981d51bceeb9e7d16e7e85d103a26b0cc",
+    "src/apps/glteapot/error.cpp": "66348738433ed9fac588617e1b20d08a92f0f99002a09e6144684151d5667982",
+    "src/apps/glteapot/error.h": "2c4c464cbe93af636431324b9da790464c9a0d4344b90c0b57059f5a73e5c090",
+    "src/apps/glteapot/glob.h": "c39d445189b122b73eb1f6bd096621c7f6e328b175a06f25c387d1e195cc21eb",
+    "src/apps/glteapot/teapot.h": "766ac63275c7408c06f5487ce40c7c39c21492930b23c85cee5d71a6b1f17584",
+    "src/apps/glteapot/util.h": "aa41b3e4fc915e3c2c4dbcb6d88f772ada02dc7c8689a3574330770933ed0d0f"
+  },
+  "scope": "Unchanged application/resources and GLU; two normal launches, scripted settings/resize, full screen-region captures and animation checks, native queue/cleanup evidence. Separate actual visual review required. No exact software/native animated pixel identity claim."
+}

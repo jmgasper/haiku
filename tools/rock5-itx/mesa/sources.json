@@ -127,7 +127,7 @@
     "concurrency-probe.cpp": "2f69b46e92d89dc8ea737a1b65b63c541e1b240ecd972031f9c4a7ed23d3c74e",
     "concurrency_validation.py": "54fc31f044fbd67f60305a1c613fd25e3cac907ac758638f179597eb391941d1",
     "run-concurrency": "cd539f9590dcccca034db8ef5c32cfb70312337b676c9bca06744d00f33fff20",
-    "graphics_capture.py": "86d545c49533df75b23da4e0cb775decd65f0f396fc971c3b7b04fb76caf9138",
+    "graphics_capture.py": "6397de439029b8e87814c99300903d771607bb2c54d56fcaab16b8974cd1ca5a",
     "pending-probe.cpp": "8b4e548ad2a12bff765a9cfc24101e323daa3f437126d74c956fc221bb83a92b",
     "pending_validation.py": "c98e7be3e639a9e279cdc0f0a50ba7142e7c63a968d01f4b8fb62b14e1547993",
     "run-pending": "8db43588e07626a073a240823d85a0a22a171d32372c0fad0e3937c88af261a1",

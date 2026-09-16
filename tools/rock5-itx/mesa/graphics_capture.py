@@ -13,6 +13,7 @@ FIXTURES = {
     'pending': ('run-pending', 'ROCK5_PENDING_INVENTORY_EXIT'),
     'recovery': ('run-recovery', 'ROCK5_RECOVERY_INVENTORY_EXIT'),
     'loss': ('run-loss', 'ROCK5_LOSS_INVENTORY_EXIT'),
+    'application': ('run-application', 'ROCK5_APPLICATION_INVENTORY_EXIT'),
 }
 
 def script(kind, software=False):
