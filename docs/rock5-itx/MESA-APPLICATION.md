@@ -1,4 +1,63 @@
-# GLTeapot application trial
+# GLTeapot and polygon qualification
+
+The +256 Mesa shader-lifetime fix on the retained +254 Haiku kernel passes two
+native boots. All 128 polygon frames, 524,288 pixels and 16,384 guard bytes pass.
+Each context records the expected 28 geometry draws, 24 batches and 155 vertices,
+with no failures. The two complete polygon transcripts are byte-identical. On
+each boot, the fourteen cases rejected by the +255 diagnostic are corrected;
+the other fifty images remain byte-identical to that failed baseline.
+
+GLTeapot completes four normal launches, all menu confirmations and all 32
+reviewed frames containing 2,014,208 pixels. All 8,732 GPU submissions complete
+and allocations return to baseline. Actual frame sheets and HDMI captures show
+the original quad wireframe, shaded and unlit rendering, perspective and resizing.
+Detailed CPU geometry and NIR logging are disabled during qualification.
+
+The deterministic CPU token-lifetime test also passes ten checks on each native
+boot. The earlier graphics suite passes, including windows, OpenGL Kit views,
+pipeline operations, process cleanup, heap growth/limits, concurrency, pending
+work cleanup, command-fault recovery and retained-context loss notification.
+Raw UART accounts for all 58 runtime and heap records across the two boots.
+
+The Mesa source is reconstructed from pinned inputs and fully rebuilt for ARM64.
+Only the Mesa EGL library changes among the existing image assets; the CPU test
+binary is added. All 37 kernel/system components retain their qualified +254
+bytes. Both QEMU EL1 and EL2 pass two boots, the CPU regression and the software
+graphics suite: 48 checked captures, 64 application frames and 256 polygon frames.
+The reconstructed-source host regression passes under ASan/UBSan. QEMU exercises
+software rendering; native Mali results come from the physical ROCK board.
+
+Normal reboot, shutdown, automatic ROOBI recovery, independent eMMC integrity
+checks and read-only recovery-image verification pass. NanoKVM's boot identity
+remains unchanged. The source/capture audit verifies 259 frozen files (135 Git
+sources), all 48 software captures and 112 shared-frame comparisons. The original
+final reviewer failed because a derived UART string retained CRLF line endings.
+A separate, recorded reviewer copy normalizes that derived text after raw-byte
+validation; all 58 expected records pass. Original logs, hashes, frozen controls
+and the failed review are preserved.
+
+- Mesa source: `8ad3c3394c07517b658397cf333c1faf002411ee` (+256).
+- Retained Haiku source: `6b08a84b31bd9c2a24113cc7d8ca5fb489e7a4ea`, hrev60097+254.
+- Original image SHA-256:
+  `3b20869f8750d5a4d05245b9103724b9bf2b1b98f5f74bdf7893670d1f00ae26`.
+- Native evidence: `artifacts/automated-mali-shader-token-lifetime/20260916T215335Z-2434cf`.
+- QEMU EL1: `artifacts/qemu-shell/20260916T213516Z-2c7b09`;
+  EL2: `artifacts/qemu-shell/20260916T214353Z-028d1c`.
+- Development/build evidence: `artifacts/mali-shader-token-lifetime/20260916T130123Z`.
+- Recovery boot: `0d4d0050-800e-4e34-b13b-f01c8909f282`.
+- Used-image archive: `artifacts/nanokvm-image-archive/20260916T222138Z-8cea83`;
+  SHA-256 `6ec69438f28a2141fb722c10eeaf5b141958d04e9b7e1f5574eda266189e4a37`.
+  The used image is independently hashed and preserved locally before removing
+  its exact detached remote copy; read-only recovery remains attached.
+
+This qualifies the bounded application and polygon fixture. The private Mesa
+installation still requires its launch environment and opt-in CPU geometry;
+rasterization runs on Mali. Broader OpenGL coverage, a separate first-provoking
+quad-strip boundary defect, default renderer integration and native display
+control remain open. The earlier failed candidates below retain their original
+results.
+
+## Earlier +252 topology trial
 
 The +252 candidate preserves quads, quad strips and polygon boundaries through
 the opt-in CPU geometry path, retaining native Mali rasterization. GLTeapot
@@ -68,7 +127,7 @@ images are unchanged. The frozen controller reports `incomplete` with
 is retained, not converted into qualification. Both actual diagnostic sheets
 and native desktop captures were visually reviewed.
 
-The native CPU input-processing fault remains unresolved. Independent checked
+At this stage the native CPU input-processing fault remained unresolved. Independent checked
 pipe-adapter fixtures pass 24 basic layout, 24 interleaved-buffer and 36 repeated
 state-transition checks under host ASan/UBSan. Two Haiku ARM64 QEMU runs using
 the actual +254 Mesa libraries pass 24 basic and 24 interleaved layout checks.
@@ -94,7 +153,7 @@ original validators, controllers and failed results remain unchanged.
 - Latest recovery boot: `9497ae0b-ec17-4fa7-9197-36dd3717630e`;
   NanoKVM boot `2597fc80-b134-4c61-9241-c7231d552eb2` remains unchanged.
 
-## +255 shader lifetime diagnosis and proposed fix
+## +255 shader lifetime diagnosis
 
 A third diagnostic adds bounded logs around the actual CPU vertex interpreter.
 It captures correct fetched inputs, but the wrong outputs before clipping. In
@@ -106,7 +165,7 @@ Mesa's `draw_vs_exec.c` shares one TGSI interpreter between vertex shaders.
 Preparation compares the token pointer with the interpreter's cached pointer.
 Deletion previously freed those tokens without clearing the cache. If the
 allocator reuses the address, preparation skips loading the new instructions.
-The proposed fix unbinds the interpreter before freeing its currently cached
+The +256 fix unbinds the interpreter before freeing its currently cached
 tokens. Deleting an inactive shader leaves the active binding intact.
 
 The new `shader-token-lifetime-test.c` runs real Mesa draw/TGSI code with only
@@ -115,7 +174,7 @@ alternating shader lifetimes and two draws surrounding inactive-shader deletion.
 The original code fails four of ten checks; the fix passes all ten under
 ASan/UBSan, with ten allocations/releases and eight exact address reuses.
 `test-shader-token-lifetime.py` records source/library hashes and commands.
-Native execution of the fix is still pending; this is not qualification.
+The +256 qualification above verifies the same test on both native boots.
 
 The +255 trace library retains the +254 kernel. Its fresh Mesa reconstruction,
 both QEMU modes and native CPU layout fixture pass. Native recovery, independent

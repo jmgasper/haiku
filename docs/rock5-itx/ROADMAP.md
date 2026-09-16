@@ -16,15 +16,15 @@ the underlying buses permit it. No calendar estimates imply guaranteed support.
 Current owner scope: phase 7 GPU support only. Network stack changes and other
 hardware development are deferred. [GPU.md](GPU.md) records qualified
 native power/reset/IRQ, firmware, client buffers, GPU VMs and persistent queues.
-The +252 [GLTeapot candidate](MESA-APPLICATION.md) passes one boot of application
-checks with complete logs and a visibly correct quad wireframe. The expanded
-polygon probe fails fourteen of 64 cases; immediate-mode boundaries, points and
-quad culling need correction before another qualification attempt. Normal
-recovery, independent storage checks and used-image preservation pass. Earlier
-failed candidates remain recorded.
-The +255 diagnostic identifies stale CPU shader outputs after token allocation
-reuse. Clearing the retired interpreter binding passes a deterministic ten-check
-host regression; native verification of this fix is next.
+The +256 Mesa fix on the retained +254 Haiku kernel qualifies the bounded
+[GLTeapot and polygon tests](MESA-APPLICATION.md) on two native boots: all 128
+polygon frames, four normal application launches, 32 reviewed application
+frames and 8,732 completed GPU submissions pass. Retiring cached CPU shader
+tokens fixes the earlier missing edges/points and quad culling. A deterministic
+address-reuse regression passes under ASan/UBSan and on both native boots.
+Earlier GPU tests, both QEMU modes, normal recovery and independent integrity
+checks pass. Broader API coverage, default renderer integration and native
+display control remain open; the CPU geometry path is still opt-in.
 The +210 image runs Mesa/Panfrost on that native interface. Across two boots,
 all 32,768 rendered pixels match Linux and all 32 Mesa submissions complete.
 Allocation baselines, previous GPU regressions, both QEMU modes, recovery and

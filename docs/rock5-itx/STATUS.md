@@ -7,24 +7,21 @@ firmware supports it.
 Current scope is [Mali-G610 GPU acceleration](GPU.md) only; network stack changes
 and other hardware development are deferred at the owner's request.
 
-The +252 [GLTeapot candidate](MESA-APPLICATION.md) passes its application checks
-on one native boot: two normal launches, all menu confirmations, 1,386 completed
-GPU submissions and sixteen reviewed frames. The wireframe shows the original
-quad mesh. The expanded polygon probe then fails fourteen of its 64 cases,
-including missing immediate-mode edges/points and incorrect quad culling, so
-this candidate remains unqualified. Normal recovery, independent storage checks
-and preservation of the failed trial pass. The +250 and +247 failures remain
-recorded.
+The +256 Mesa fix, on the retained +254 Haiku kernel, qualifies the bounded
+[GLTeapot and polygon tests](MESA-APPLICATION.md) on two native boots. All 128
+polygon frames pass, including complete immediate-mode boundaries, points and
+quad culling. Four normal GLTeapot launches produce 32 reviewed frames and
+8,732 completed GPU submissions with the correct quad wireframe. The earlier
+GPU suite, both QEMU modes, normal recovery and independent integrity checks
+pass. The private renderer still uses opt-in CPU geometry with Mali rasterization;
+broader application compatibility, system integration and native display control
+remain open.
 
-The +255 diagnostic isolates stale CPU vertex-shader execution: correct new
-inputs produce the previous shader's outputs. The shared interpreter caches
-expanded instructions by token address, but shader deletion leaves that address
-bound. A deterministic address-reuse regression fails four checks before the
-proposed fix and passes all ten under ASan/UBSan after clearing the retired
-binding. Native validation of the fix is pending. All diagnostic trials recover
-normally and pass independent integrity checks; their original evidence and used
-images are preserved. [MESA-APPLICATION.md](MESA-APPLICATION.md) records the
-cause, regression and remaining validation.
+The fix clears the CPU interpreter's cached binding before freeing shader
+tokens. A deterministic address-reuse test fails four checks before the fix,
+then passes all ten under ASan/UBSan and on each native boot. The +255 diagnostic
+established that new shader inputs were running against old instructions.
+Earlier failed candidates and their original evidence remain preserved.
 
 The +243 USB image qualifies [reset notification for live Mesa contexts](MESA-LOSS.md)
 on two native boots. Both shared contexts receive one loss notification, ignore

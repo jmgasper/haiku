@@ -1,7 +1,8 @@
 # Mali-G610 development
 
-GPU acceleration is the owner's current priority; further Ethernet driver work
-is deferred. The working EFI framebuffer supplies a desktop, while native
+GPU support is the owner's current scope; network stack changes and all other
+hardware development are deferred. The working EFI framebuffer supplies a
+desktop, while native
 display control and GPU rendering remain separate milestones. Haiku now boots
 the Mali firmware and passes four compute-shader submissions plus four CS
 memory-store regressions across two +195 native boots. Complete data matches
@@ -80,6 +81,16 @@ QEMU modes, normal reboot/shutdown, recovery and independent integrity checks
 pass. Full logs are captured in RAM and retrieved with checked, paced transfers.
 Pending-work termination, GPU fault/reset recovery and native display control
 remain open.
+
+The +256 Mesa fix on the retained +254 Haiku kernel qualifies the bounded
+[GLTeapot and polygon tests](MESA-APPLICATION.md) on two native boots. All 128
+polygon frames, four normal GLTeapot launches, 32 reviewed application frames
+and 8,732 completed GPU submissions pass. Retiring the shared CPU interpreter's
+cached shader binding fixes missing immediate-mode edges/points and quad culling.
+Earlier GPU regressions, both QEMU modes, normal recovery and independent
+integrity checks pass. The renderer remains private, with opt-in CPU polygon
+geometry and Mali rasterization; general OpenGL compatibility, system integration
+and native display control remain open.
 
 ## Reference and integration route
 
