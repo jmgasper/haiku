@@ -347,6 +347,49 @@ static void QueryRetired(Client& client, uint32 handle, bool& recovery)
 {
 	QueueProperties request{}; request.version = 1; request.handle = handle;
 	assert(Call(client, kGetQueueProperties, request, recovery) == B_ENTRY_NOT_FOUND);
+	QueueResetInfo reset{}; reset.version = 1; reset.handle = handle;
+	assert(Call(client, kGetQueueResetInfo, reset, recovery) == B_ENTRY_NOT_FOUND);
+}
+
+static void
+CheckResetInfo(Client& client, uint32 handle, uint32 state, status_t error)
+{
+	bool recovery = false;
+	QueueResetInfo info{}; info.version = 1; info.handle = handle;
+	assert(Call(client, kGetQueueResetInfo, info, recovery) == B_OK && !recovery);
+	assert(info.version == 1 && info.handle == handle && info.state == state
+		&& info.error == error && info.reserved[0] == 0 && info.reserved[1] == 0);
+}
+
+static void
+ResetInfoBoundaries(Client& client, Client& other, uint32 handle)
+{
+	unsigned allocations = sAllocationCalls, cycles = sHardwareCycles;
+	auto before = Info(client, handle);
+	bool recovery = false;
+	QueueResetInfo clean{}; clean.version = 1; clean.handle = handle;
+	for (unsigned field = 0; field < 5; field++) {
+		auto bad = clean;
+		if (field == 0) bad.version = 2;
+		if (field == 1) bad.state = 1;
+		if (field == 2) bad.error = B_IO_ERROR;
+		if (field == 3) bad.reserved[0] = 1;
+		if (field == 4) bad.reserved[1] = UINT64_MAX;
+		assert(Call(client, kGetQueueResetInfo, bad, recovery) == B_BAD_VALUE);
+	}
+	for (size_t size : {size_t(0), sizeof(clean) - 1, sizeof(clean) + 1})
+		assert(ControlQueues({}, &client, kGetQueueResetInfo, &clean, size, recovery) == B_BAD_VALUE);
+	assert(ControlQueues({}, &client, kGetQueueResetInfo, NULL, sizeof(clean), recovery) == B_BAD_ADDRESS);
+	assert(Call(other, kGetQueueResetInfo, clean, recovery) == B_ENTRY_NOT_FOUND);
+	for (unsigned fail = 1; fail <= 2; fail++) {
+		sFailCopy = sCopies + fail;
+		assert(Call(client, kGetQueueResetInfo, clean, recovery) == B_BAD_ADDRESS);
+		sFailCopy = 0;
+	}
+	CheckResetInfo(client, handle, kQueueResetNone, B_OK);
+	auto after = Info(client, handle);
+	assert(memcmp(&before, &after, sizeof(before)) == 0);
+	assert(sAllocationCalls == allocations && sHardwareCycles == cycles && !recovery);
 }
 
 static status_t
@@ -413,6 +456,8 @@ SynchronizedRuntime()
 	assert(Wait(client, b, sequence).result == B_CANCELED);
 	assert(Info(client, b).state == kQueueFailed && Info(client, b).failedSequence == 1);
 	assert(Info(client, b).pending == 0 && sEnteredJob == before);
+	CheckResetInfo(client, b, kQueueResetLocalError, B_CANCELED);
+	CheckResetInfo(client, c, kQueueResetNone, B_OK);
 	status_t result; assert(SyncFdWait(snapshot, &result) == B_OK && result == B_CANCELED);
 	QueueSubmit rejected{1, b, 0, 0, 0, 0, 0, 0};
 	assert(Call(client, kSubmitQueue, rejected, recovery) == B_CANCELED);
@@ -428,6 +473,7 @@ SynchronizedRuntime()
 	snapshot = SyncExport(sync, independent, true); sFailJob = true; sHoldJob = false;
 	assert(Wait(client, a, sequence).result == B_IO_ERROR);
 	assert(SyncFdWait(snapshot, &result) == B_OK && result == B_IO_ERROR);
+	CheckResetInfo(client, a, kQueueResetUnrecoverable, B_IO_ERROR);
 	CloseQueues(&client, recovery); assert(recovery);
 	FreeSyncClient(sync); SyncCloseFd(snapshot); SyncBalanced();
 	DropSimulatedRetainedRuntime(); sFailJob = false;
@@ -462,6 +508,12 @@ RecoveredRuntime()
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	assert(sEnteredRecovery == recoveries + 1);
 	assert(Info(first, a).state == kQueueFailed && Info(second, b).state == kQueueFailed);
+	unsigned queryAllocations = sAllocationCalls, queryCycles = sHardwareCycles;
+	for (unsigned i = 0; i < 64; i++) {
+		CheckResetInfo(first, a, kQueueResetPending, B_IO_ERROR);
+		CheckResetInfo(second, b, kQueueResetPending, B_IO_ERROR);
+	}
+	assert(sAllocationCalls == queryAllocations && sHardwareCycles == queryCycles);
 	QueueSubmit rejected{1, b, 0, 0, 0, 0, 0, 0};
 	assert(Call(second, kSubmitQueue, rejected, recovery) == B_IO_ERROR);
 	assert(Create(fresh, c, false, recovery) == B_BUSY && !recovery);
@@ -479,6 +531,7 @@ RecoveredRuntime()
 	assert(sGenerations.size() == 2 && sAreas.size() == areas - 1);
 	assert(Wait(second, b, sequence).result == B_IO_ERROR);
 	assert(Info(second, b).failedSequence == 2 && Info(second, b).completed == 1);
+	CheckResetInfo(second, b, kQueueResetQuiescent, B_IO_ERROR);
 	for (int fd : snapshots) {
 		status_t status;
 		assert(SyncFdWait(fd, &status) == B_OK && status == B_IO_ERROR);
@@ -488,6 +541,7 @@ RecoveredRuntime()
 	CloseVm(second); CloseQueues(&second, recovery); Clean(1);
 	sRecoverJob = false;
 	assert(Create(fresh, c, true, recovery) == B_OK && c > a && c > b && !recovery);
+	CheckResetInfo(fresh, c, kQueueResetNone, B_OK);
 	QueryRetired(fresh, a, recovery); QueryRetired(fresh, b, recovery);
 	auto job = Submit(fresh, c);
 	assert(Wait(fresh, c, job.sequence).result == B_OK);
@@ -530,6 +584,7 @@ int main()
 	assert(Call(other, kGetQueueInfo, invalid, recovery) == B_ENTRY_NOT_FOUND);
 	assert(Info(client, handle).state == kQueueReady);
 	PropertyBoundaries(client, other, handle);
+	ResetInfoBoundaries(client, other, handle);
 	QueueSubmit bad{}; bad.version = 1; bad.handle = handle;
 	bad.streamAddress = 0x100000000; bad.streamBytes = 8;
 	sCopies = 0; sFailCopy = 2;
@@ -549,7 +604,10 @@ int main()
 	unsigned queryAllocations = sAllocationCalls;
 	std::thread readers[4];
 	for (auto& reader : readers) reader = std::thread([&]() {
-		for (unsigned i = 0; i < 64; i++) CheckProperties(client, handle);
+		for (unsigned i = 0; i < 64; i++) {
+			CheckProperties(client, handle);
+			CheckResetInfo(client, handle, kQueueResetNone, B_OK);
+		}
 	});
 	for (auto& reader : readers) reader.join();
 	assert(sAllocationCalls == queryAllocations && sHardwareCycles == cycles);

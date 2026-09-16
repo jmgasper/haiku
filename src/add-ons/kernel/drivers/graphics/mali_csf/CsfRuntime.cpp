@@ -701,6 +701,26 @@ ControlQueues(const ResourceInfo& resources, void* client, uint32 op, void* user
 		result.gpu = runtime->properties;
 		return user_memcpy(user, &result, sizeof(result));
 	}
+	if (op == kGetQueueResetInfo) {
+		QueueResetInfo request;
+		status_t status = ReadQueueRequest(user, length, request);
+		if (status != B_OK) return status;
+		if (request.state != 0 || request.error != 0
+			|| request.reserved[0] != 0 || request.reserved[1] != 0) return B_BAD_VALUE;
+		MutexLocker locker(sRuntimeLock);
+		int slot = FindQueue(runtime, client, request.handle);
+		if (slot < 0) return B_ENTRY_NOT_FOUND;
+		QueueResetInfo result = {};
+		result.version = kClientVersion; result.handle = request.handle;
+		result.error = runtime->error != B_OK ? runtime->error : runtime->queues[slot].error;
+		if (runtime->error != B_OK) {
+			result.state = !runtime->finished ? kQueueResetPending
+				: runtime->retained ? kQueueResetUnrecoverable : kQueueResetQuiescent;
+		} else if (result.error != B_OK) {
+			result.state = kQueueResetLocalError;
+		}
+		return user_memcpy(user, &result, sizeof(result));
+	}
 	if (op != kGetQueueInfo) return B_DEV_INVALID_IOCTL;
 	QueueInfo request;
 	status_t status = ReadQueueRequest(user, length, request);

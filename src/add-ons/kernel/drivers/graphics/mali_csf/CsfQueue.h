@@ -15,6 +15,7 @@ static const uint32_t kSubmitQueue = 0x4d435342;
 static const uint32_t kWaitQueue = 0x4d435343;
 static const uint32_t kGetQueueInfo = 0x4d435344;
 static const uint32_t kSubmitQueueSync = 0x4d435345;
+static const uint32_t kGetQueueResetInfo = 0x4d435347;
 static const uint32_t kClientQueues = 4;
 static const uint32_t kMaxRuntimeQueues = 8;
 static const uint32_t kMaxQueueJobs = 64;
@@ -23,6 +24,25 @@ static const uint32_t kQueueReady = 1;
 static const uint32_t kQueueRunning = 2;
 static const uint32_t kQueueFailed = 3;
 static const uint32_t kQueueStopping = 4;
+
+static const uint32_t kQueueResetNone = 0;
+static const uint32_t kQueueResetLocalError = 1;
+static const uint32_t kQueueResetPending = 2;
+static const uint32_t kQueueResetQuiescent = 3;
+static const uint32_t kQueueResetUnrecoverable = 4;
+
+// Read-only state for an owned queue. state, error and reserved must be zero
+// on input. Pending means admission has stopped but device cleanup is still
+// running. Quiescent means the failed runtime has finished without retained
+// DMA memory; every affected queue must still close before a new runtime can
+// start. LocalError affects this queue without a global runtime reset.
+struct QueueResetInfo {
+	uint32_t version;
+	uint32_t handle;
+	uint32_t state;
+	int32_t error;
+	uint64_t reserved[2];
+};
 
 // Followed by firmwareBytes bytes for the first queue starting the runtime.
 // An already running runtime accepts firmwareBytes=0. Each queue owns a VM
@@ -106,6 +126,7 @@ static_assert(sizeof(QueueSubmit) == 48, "queue submit ABI");
 static_assert(sizeof(QueueSubmitSync) == 64, "synchronized queue submit ABI");
 static_assert(sizeof(QueueWait) == 40, "queue wait ABI");
 static_assert(sizeof(QueueInfo) == 96, "queue info ABI");
+static_assert(sizeof(QueueResetInfo) == 32, "queue reset info ABI");
 
 } // namespace MaliCSF
 #endif

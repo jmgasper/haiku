@@ -520,7 +520,7 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 	if (op >= kCreateSync && op <= kTransferSync)
 		return ControlSync(opened->synchronization, op, buffer, length);
 	Controller* controller = opened->controller;
-	if (op >= kCreateQueue && op <= kGetQueueProperties) {
+	if (op >= kCreateQueue && op <= kGetQueueResetInfo) {
 		if (!controller->shaderEnabled)
 			return B_NOT_ALLOWED;
 		if (op == kCreateQueue || op == kDestroyQueue) {
