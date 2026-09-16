@@ -91,6 +91,13 @@ def validate(text, output=None, software=False):
     runs = re.findall(r'^ROCK5_APPLICATION_RUN_BEGIN cycle=(\d+) mode=(\S+)\n(.*?)'
         r'^ROCK5_APPLICATION_RUN_EXIT cycle=(\d+) application=0 frames=0\s*$', text, re.M | re.S)
     assert [(int(c), m, int(end)) for c, m, body, end in runs] == [(0, mode, 0), (1, mode, 1)]
+    for marker, count in dict(STARTED=2, MENU=14, CAPTURE=16, ANIMATION=8,
+            CONTROLLER_PASS=2, PIXELS_BEGIN=16, PIXELS_END=16, FRAMES_PASS=2, PASS=1).items():
+        assert text.count('ROCK5_APPLICATION_' + marker + ' ') == count
+    for marker in ('HAIKU_MESA_NATIVE_', 'ROCK5_MESA_NATIVE_LIFETIME '):
+        assert text.count(marker) == sum(body.count(marker) for _, _, body, _ in runs)
+        if software:
+            assert marker not in text
     frames = []
     cycles = []
     teams = []
