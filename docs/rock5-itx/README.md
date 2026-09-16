@@ -9,6 +9,12 @@ The [GitHub work items](TRACKING.md) split the roadmap into issues and milestone
 The current priority is [Mali-G610 GPU support](GPU.md), followed by remaining
 hardware. The owner has deferred further Ethernet driver work.
 
+The +247 [GLTeapot trial](MESA-APPLICATION.md) runs the unchanged application
+on the native GPU across two boots. Animation and normal cleanup work, but
+wireframe mode draws filled polygons. The trial remains unqualified, and that
+rendering discrepancy is the current investigation. Recovery and independent
+storage checks pass; the failed image and visual evidence are preserved.
+
 The +243 USB image qualifies [reset notification for live Mesa contexts](MESA-LOSS.md)
 on two native boots. Both shared contexts receive one loss notification, ignore
 further rendering and close completely; fresh contexts then render without a

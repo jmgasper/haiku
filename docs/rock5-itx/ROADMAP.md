@@ -16,6 +16,9 @@ the underlying buses permit it. No calendar estimates imply guaranteed support.
 Current owner priority: phase 7 GPU support, then remaining hardware. Further
 Ethernet driver development is deferred. [GPU.md](GPU.md) records qualified
 native power/reset/IRQ, firmware, client buffers, GPU VMs and persistent queues.
+The later +247 [GLTeapot trial](MESA-APPLICATION.md) demonstrates native
+application animation and normal retirement, but fails visual wireframe checks
+on both boots. It remains unqualified while polygon-mode support is investigated.
 The +210 image runs Mesa/Panfrost on that native interface. Across two boots,
 all 32,768 rendered pixels match Linux and all 32 Mesa submissions complete.
 Allocation baselines, previous GPU regressions, both QEMU modes, recovery and
