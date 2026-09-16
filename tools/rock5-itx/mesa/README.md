@@ -222,10 +222,12 @@ and allocation checks, and fresh rendering without a Haiku reboot. Retained
 Mesa-context notification, innocent-context preservation, general hang recovery
 and native display control remain open.
 
-## Shared-context loss candidate
+## Shared-context loss notification
 
-The current package adds an unqualified context-loss path requiring the +240
-queue reset query. The last qualified package is the +238 image linked above.
+The [qualified +243 image](../../../docs/rock5-itx/MESA-LOSS.md) adds context-loss
+notification requiring the +240 queue reset query. Both native boots pass
+the shared-context loss, ignored readback, complete cleanup and fresh-rendering
+checks, together with both QEMU modes and recovery/integrity checks.
 Mesa polls each owned queue to distinguish pending recovery, quiescent cleanup
 and retained memory, reports unknown reset attribution, and leaves affected
 contexts available for application teardown. It does not attempt immediate
@@ -238,7 +240,7 @@ complete display teardown and fresh pipeline rendering. The software mode
 checks shared rendering and cleanup without injecting a reset. The host
 `test-reset-status.py --source PATCHED_MESA --baseline PREVIOUS_MESA` checks the
 actual reset functions and verifies that their non-Haiku implementation is
-unchanged. Native qualification and robustness conformance remain pending.
+unchanged. Robustness conformance remains open.
 
 The +241 native trial reached the deliberate command fault and verified GPU
 reset and cleanup, then failed the first application's reset-status assertion.
@@ -249,4 +251,13 @@ and cached again, producing a duplicate notification on the next query.
 during recovery, genuine callback notifications and unchanged non-Haiku code.
 The probe now prints both reset return values before asserting. The validator
 also recognizes the exact expected empty-runtime firmware probe; unexpected
-errors still fail. The correction requires a new build and native qualification.
+errors still fail. The +243 qualification includes the rebuilt +242 Mesa
+correction; the failed +241 trial remains preserved.
+
+The +242 candidate passed its first native boot but stopped at the second
+instruction-cache fixture: randomly placed aliases all shared the writer's
+address bit 12. +243 reserves eight consecutive pages, retaining every original
+cache comparison while making opposite-index coverage deterministic. Both
+native boots now complete all 129,024 comparisons. The +241 and +242 failures
+remain preserved; the compiled qualified source and package reuse proof are
+recorded in the +243 report above.

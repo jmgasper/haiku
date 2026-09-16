@@ -9,14 +9,23 @@ The [GitHub work items](TRACKING.md) split the roadmap into issues and milestone
 The current priority is [Mali-G610 GPU support](GPU.md), followed by remaining
 hardware. The owner has deferred further Ethernet driver work.
 
+The +243 USB image qualifies [reset notification for live Mesa contexts](MESA-LOSS.md)
+on two native boots. Both shared contexts receive one loss notification, ignore
+further rendering and close completely; fresh contexts then render without a
+Haiku reboot. All 181,972 before/fresh pixels, 3,584 guards and 104,496 ignored
+readback bytes pass. Both QEMU modes, earlier regressions, normal recovery and
+independent integrity checks pass. The earlier failed trials are preserved.
+General application compatibility, arbitrary hangs and native display control
+remain open.
+
 The +238 USB image qualifies [bounded GPU command-fault recovery](MESA-RECOVERY.md)
 on two native boots. Three affected jobs receive errors per boot; reset,
 address-space cleanup and platform restoration are verified. After all affected
 clients close, fresh native queues and Mesa contexts work without a Haiku
 reboot. All 155,976 subsequent pixels and 3,072 guards pass, together with
 earlier regressions, both QEMU modes, normal recovery and independent integrity
-checks. Reset notification for retained Mesa contexts, arbitrary hangs and
-native display control remain open.
+checks. The separate +243 fixture above qualifies retained Mesa-context
+notification; arbitrary hangs and native display control remain open.
 
 The +236 USB image qualifies [termination during pending graphics work](MESA-PENDING.md)
 on two native boots. Both a fence timeout and the driver's actual close-time
