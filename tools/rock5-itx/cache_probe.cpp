@@ -43,6 +43,19 @@ CheckAliases(uint32 cpus, unsigned rounds)
 		return false;
 	}
 	const unsigned aliasCount = 8, slots = 63;
+	// Reserve consecutive virtual pages so both values of the first cache
+	// index bit above the page offset are exercised on every run. Independent
+	// B_ANY_ADDRESS clones can all receive the same index by chance.
+	addr_t aliasBase = 0;
+	const size_t aliasBytes = aliasCount * B_PAGE_SIZE;
+	status_t reserved = _kern_reserve_address_range(&aliasBase,
+		B_ANY_ADDRESS, aliasBytes);
+	if (reserved != B_OK) {
+		fprintf(stderr, "Cannot reserve instruction aliases: %s\n", strerror(reserved));
+		delete_area(source);
+		return false;
+	}
+	printf("ROCK5_CACHE_ALIAS_RESERVED base=%p bytes=%zu\n", (void*)aliasBase, aliasBytes);
 	void* aliases[aliasCount] = {};
 	area_id areas[aliasCount];
 	unsigned created = 0;
@@ -50,7 +63,8 @@ CheckAliases(uint32 cpus, unsigned rounds)
 	bool differentIndex = false;
 	uint64 checked = 0, mismatches = 0;
 	for (; created < aliasCount; ++created) {
-		areas[created] = clone_area("instruction alias", &aliases[created], B_ANY_ADDRESS,
+		aliases[created] = (void*)(aliasBase + created * B_PAGE_SIZE);
+		areas[created] = clone_area("instruction alias", &aliases[created], B_EXACT_ADDRESS,
 			B_READ_AREA | B_EXECUTE_AREA, source);
 		if (areas[created] < B_OK) {
 			fprintf(stderr, "Cannot clone instruction alias: %s\n", strerror(areas[created]));
@@ -108,6 +122,7 @@ CheckAliases(uint32 cpus, unsigned rounds)
 	}
 	for (unsigned i = 0; i < created; ++i)
 		if (delete_area(areas[i]) != B_OK) passed = false;
+	if (_kern_unreserve_address_range(aliasBase, aliasBytes) != B_OK) passed = false;
 	if (delete_area(source) != B_OK) passed = false;
 	passed &= checked == uint64(cpus) * rounds * aliasCount * slots;
 	printf("ROCK5_CACHE_ALIAS_%s checked=%" B_PRIu64 " mismatches=%" B_PRIu64
