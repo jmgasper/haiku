@@ -82,7 +82,7 @@ after patched-source and SDK preparation. Logs, commands, input receipts and
 failures remain in the output directory. This reconstructs pinned sources and
 configuration; build-path/debug information can change binary hashes.
 
-The package manifest lists twenty-seven assets for `/boot/home/mesa-trial`. The `run`
+The package manifest lists twenty-nine assets for `/boot/home/mesa-trial`. The `run`
 launcher uses Haiku's `LIBRARY_PATH` and a private GLVND vendor file. Its probe
 accepts `--native`, `--software` and `--absent-device`. Native mode expects
 `/dev/graphics/mali_csf/0` and the separately supplied, licensed firmware at
@@ -202,7 +202,8 @@ a fresh process. Native acceptance additionally requires the worker's queue
 handle in the driver's pending-at-close diagnostic captured on the same boot's
 UART. QEMU checks the software pixels and process lifecycle only. This case
 does not claim immediate preemption or automatic recovery from GPU faults.
-# Fault recovery candidate
+
+## Bounded command-fault recovery
 
 `run-recovery --native` exercises a deliberate invalid CS instruction on two
 native queue clients, checks three error fences and failed queue state, then
@@ -211,10 +212,12 @@ fresh native store queue and runs the existing complete GLES pipeline fixture
 without rebooting Haiku. `--software` requires the native device to be absent
 and tests only the launcher and subsequent software rendering.
 
-The kernel candidate stops new submissions, performs a bounded soft reset,
+The kernel stops new submissions, performs a bounded soft reset,
 explicitly removes AS0/AS1, verifies the final GPU state and restores the
 qualified platform configuration. Failed recovery retains memory. Original
 rendering errors remain errors; all affected queues must close before a fresh
-runtime starts. This candidate has host model coverage but no native
-qualification yet. Innocent-context preservation, general hang recovery and
-native display control remain open.
+runtime starts. The [qualified +238 image](../../../docs/rock5-itx/MESA-RECOVERY.md)
+passes both QEMU modes, two native boots, all affected-job error fences, reset
+and allocation checks, and fresh rendering without a Haiku reboot. Retained
+Mesa-context notification, innocent-context preservation, general hang recovery
+and native display control remain open.

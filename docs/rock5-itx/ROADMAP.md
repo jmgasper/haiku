@@ -25,6 +25,15 @@ scope, build recipe and retained first failure. The +215 image also qualifies
 independently captured screen pixels pass across two native boots, including
 resizing and retirement. All 36 window submissions complete; build/QEMU,
 recovery and integrity checks pass. Presentation uses a CPU bitmap copy.
+The +238 USB image qualifies [bounded GPU command-fault recovery](MESA-RECOVERY.md)
+on two native boots. Three affected jobs receive errors per boot; reset,
+address-space cleanup and platform restoration are verified. After all affected
+clients close, fresh native queues and Mesa contexts work without a Haiku
+reboot. All 155,976 subsequent pixels and 3,072 guards pass, together with
+earlier regressions, both QEMU modes, normal recovery and independent integrity
+checks. Reset notification for retained Mesa contexts, arbitrary hangs and
+native display control remain open.
+
 The +236 USB image qualifies [termination during pending graphics work](MESA-PENDING.md)
 on two native boots. Both a fence timeout and the driver's actual close-time
 queue state establish unfinished work. Survivor rendering, fresh-process reuse
