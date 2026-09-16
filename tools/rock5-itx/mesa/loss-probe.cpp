@@ -134,6 +134,8 @@ static int32 Worker(void* argument)
     if (!software) {
         bigtime_t start = system_time();
         GLenum first = reset_status(), second = reset_status();
+        printf("ROCK5_LOSS_STATUS child=%u first=%04x second=%04x\n",
+            live.child, first, second);
         CHECK(first == GL_UNKNOWN_CONTEXT_RESET_KHR && second == GL_NO_ERROR);
         canary = 0xd0 + live.child; memset(bytes, canary, sizeof(bytes));
         glReadPixels(0, 0, WIDTH, HEIGHT, GL_RGBA, GL_UNSIGNED_BYTE, bytes + GUARD);

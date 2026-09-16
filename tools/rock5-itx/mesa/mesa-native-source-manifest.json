@@ -111,6 +111,11 @@
       "after": "1b1225ea05e36888bbaede60974f22f71b867531ad784df8f44953024af10fb7"
     },
     {
+      "path": "src/mesa/state_tracker/st_cb_flush.c",
+      "before": "e22d4e6841df7339b676b5ac6828f97dc8bef8ea5b33baf5072387eefd4b6b6c",
+      "after": "79721d4471f60657ac4442f8fbdc4c2f481dcd9a0914429f54c7d6f12996502d"
+    },
+    {
       "path": "src/panfrost/lib/kmod/haiku-abi/CsfBuffer.h",
       "before": null,
       "after": "485aeaa03901a5b15c114c8f3afb7c2dc02974459ad4c8dac9ae4eec18a7dd96"
@@ -221,7 +226,7 @@
       "after": "0e62a91ce65378918e1cea06bd65361d9e2630e3118277a4c48e5b1605930f14"
     }
   ],
-  "patch_sha256": "c302c993970de545e72e54c01fcb80a7e822524a129d322a8d397ca746af1534",
+  "patch_sha256": "2d8a1444ac178c5e8a2b75d6e7635cfc6323cc315954fa038b2b3c575feb31d3",
   "pristine_tar_sha256": "59217efeac3b64e7ced958324b9db7494f1e0741aeb22d780276514cc1b8f206",
   "includes": "Pinned HaikuPorts changes, native CSF backend and Haiku EGL/HGL fixes"
 }

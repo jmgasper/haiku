@@ -89,9 +89,9 @@
     }
   ],
   "bundle_files": {
-    "mesa-haiku-native.patch": "c302c993970de545e72e54c01fcb80a7e822524a129d322a8d397ca746af1534",
+    "mesa-haiku-native.patch": "2d8a1444ac178c5e8a2b75d6e7635cfc6323cc315954fa038b2b3c575feb31d3",
     "libglvnd-haiku-sysroot.patch": "16c8c1110172bed628a6160bd86b2f4e36cb408a59bdbe59d133f7f812732d13",
-    "mesa-native-source-manifest.json": "ffe8ae233f8a4edd1458e50712c90520ce5c7805dcdf457ecb6b910795907678",
+    "mesa-native-source-manifest.json": "554a9d1a23be641cd25e530784793c16ca4e8ff9a90baf39ae625321337c69ca",
     "libglvnd-haiku-mutex.patch": "96f0fa776fa8b3c6425e26981e6e4cbca7fc33f31eb8f8e58bad730891de6035",
     "native_render_validation.py": "709c02edeacce5f66b27f1863d2f26d8bbbe7e1edc932b75ac812562910c1880",
     "render_validation.py": "460d5ab54cf289fe1e84ed3cbe8d8522f453260b889b9b1e86fee074f3843c5b",
@@ -167,11 +167,13 @@
     "recovery-probe.cpp": "24f80cf95036b312dd4fbffeb62ded7162260f13b229f59d4cfc01d178f55118",
     "run-recovery": "d7cf790f778f14be5352ff24670c2706668da751b8db9ae2b0e32a709b34566e",
     "recovery_validation.py": "6931535c3a3e0379316589d59c8d0f0a409d17600ff649dbce8364daea2c464f",
-    "loss-probe.cpp": "6a16d0ee8596e486c36713e80dd6806b164c4f3422a09f63df702761fadbd20b",
-    "loss_validation.py": "7650efe63a1345c218b520496dceb3e55271b14e23cda8de5bd3577e3ca2bfa6",
+    "loss-probe.cpp": "df234318f93df23f20c01d6726775024af186c7fc87e8b8e5ee50ededad5315b",
+    "loss_validation.py": "e7e4fc7a52c5d90d69445e0c743081c30e18f8146d4aaa7eff3e49dd98587a6a",
     "run-loss": "6a33588bab9c92bdd751859e46ec087e474879101fbe1fe67f44e73c375d31e1",
     "test-reset-status.py": "72974add7ad8f46cffabd1fee4876d58793bd1554e4f8efb45c800fd205c5ec6",
-    "reset-status-test.c": "41a5dbf8c30e530662fcf3fff26e227411c8f9ace820a4bd85721bee38f0e197"
+    "reset-status-test.c": "41a5dbf8c30e530662fcf3fff26e227411c8f9ace820a4bd85721bee38f0e197",
+    "state-tracker-reset-test.c": "9d9d1921c4d365ae39406ddf503f68f3b93c97a69960160acd8085fdc7d75b8d",
+    "test-state-tracker-reset.py": "dd7f599f03f5717ea72ab672d7030f6b9f91051516fafaa01ba467913b41691b"
   },
   "host_helpers": {
     "vtn_bindgen2": "8f03a1c42332ec1494a89de73d9bdbe7bba91aeeb98c6c0cd2d6623eb276a167",
@@ -218,5 +220,5 @@
   "recovery_probe_scope": "Qualified +238 on two native boots: invalid CS instruction, three affected raw jobs and B_IO_ERROR fences per boot, verified bounded reset/AS0-AS1 cleanup/platform restoration, full allocation restoration, fresh native stores and two fresh GLES contexts without Haiku reboot. All 155976 subsequent pixels/3072 guards, both QEMU modes, earlier regressions, normal recovery and independent integrity pass. Retained Mesa-context notification, innocent-context preservation, generic hangs and native display remain open.",
   "previous_qualified_runtime_revision": "hrev60097+238",
   "required_runtime_revision": "hrev60097+240",
-  "loss_probe_scope": "Candidate, not natively qualified: two current shared GLES contexts request reset notification, one finite invalid CS instruction while both remain open, owned query distinguishes pending/quiescent/unrecoverable cleanup; both contexts report loss and ignored reads leave all bytes unchanged, then display teardown and fresh GLES pipeline. No innocent-context preservation, generic hang or conformance claim."
+  "loss_probe_scope": "Candidate, not natively qualified: two current shared GLES contexts request reset notification, one finite invalid CS instruction while both remain open, owned query distinguishes pending/quiescent/unrecoverable cleanup; both contexts report loss and ignored reads leave all bytes unchanged, then display teardown and fresh GLES pipeline. No innocent-context preservation, generic hang or conformance claim. Candidate corrects duplicate state-tracker reset delivery observed by the actual-function host reproducer after the failed +241 native trial; native qualification remains pending."
 }

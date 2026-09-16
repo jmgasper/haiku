@@ -9,7 +9,7 @@ from recovery_validation import IO_ERROR, one
 
 def validate(text, output=None, software=False):
     for forbidden in ('ROCK5_MALI_QUEUE_FAIL', 'ROCK5_LOSS_SHADER_ERROR',
-            'ROCK5_PIPELINE_FAILURE', 'HAIKU_MESA_NATIVE_ERROR', 'PANIC:',
+            'ROCK5_PIPELINE_FAILURE', 'PANIC:',
             'Kernel Debugging Land', 'DEBUGGER:', 'mutex->owner'):
         assert forbidden not in text
     marker = 'ROCK5_PIPELINE_READY version=1 mode='
@@ -65,10 +65,19 @@ def validate(text, output=None, software=False):
     if software:
         one('ROCK5_LOSS_SOFTWARE_SKIP_RESET', before)
         for marker in ('ROCK5_LOSS_ARMED', 'ROCK5_LOSS_NOTIFIED',
+                'ROCK5_LOSS_STATUS',
                 'ROCK5_LOSS_FAULT', 'HAIKU_MESA_NATIVE_', 'ROCK5_MESA_NATIVE_LIFETIME'):
             assert marker not in before
         return result
     assert 'ROCK5_LOSS_SOFTWARE_SKIP_RESET' not in before
+    # The normal empty-runtime join returns ENOENT before firmware is supplied.
+    # Match the exact qualified bootstrap probe; every other error is rejected.
+    errors = re.findall(r'^HAIKU_MESA_NATIVE_ERROR op=([0-9a-f]+) bytes=(\d+) '
+        r'result=(-?\d+) errno=(-?\d+)\s*$', before, re.M)
+    assert len(errors) == before.count('HAIKU_MESA_NATIVE_ERROR ') == 1
+    assert tuple(int(v, 16 if i == 0 else 10) for i, v in enumerate(errors[0])) \
+        == (0x4d435340, 48, -1, -2147483648 + 0x6000 + 3)
+    assert before.index('HAIKU_MESA_NATIVE_ERROR ') < before.index('HAIKU_MESA_NATIVE_GPU ')
     raw_queue = int(one(r'ROCK5_LOSS_ARMED handle=(\d+) sequence=34 instruction=ff00000000000000', before))
     assert int(one(r'ROCK5_LOSS_RESET_READY handle=(\d+) state=0 error=0', before)) == raw_queue
     assert int(one(r'ROCK5_LOSS_RAW_CLOSED handle=(\d+)', before)) == raw_queue
@@ -79,6 +88,8 @@ def validate(text, output=None, software=False):
     assert [tuple(map(int, p)) for p in pending] == ([(raw_queue, IO_ERROR)] if fault[2] == '1' else [])
     notifications = re.findall(r'^ROCK5_LOSS_NOTIFIED child=(\d+) first=8255 second=0000 read_error=0507 clear_error=0507 sync_error=0507 signaled=9119 unchanged=26124\s*$', before, re.M)
     assert notifications == ['0', '1']
+    statuses = re.findall(r'^ROCK5_LOSS_STATUS child=(\d+) first=8255 second=0000\s*$', before, re.M)
+    assert statuses == ['0', '1'] and before.count('ROCK5_LOSS_STATUS ') == 2
     for left, right in [('ROCK5_LOSS_READY child=1', 'ROCK5_LOSS_ARMED '),
             ('ROCK5_LOSS_ARMED ', 'ROCK5_LOSS_FAULT '),
             ('ROCK5_LOSS_FAULT ', 'ROCK5_LOSS_RAW_CLOSED '),

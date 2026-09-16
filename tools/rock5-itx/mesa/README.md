@@ -239,3 +239,14 @@ checks shared rendering and cleanup without injecting a reset. The host
 `test-reset-status.py --source PATCHED_MESA --baseline PREVIOUS_MESA` checks the
 actual reset functions and verifies that their non-Haiku implementation is
 unchanged. Native qualification and robustness conformance remain pending.
+
+The +241 native trial reached the deliberate command fault and verified GPU
+reset and cleanup, then failed the first application's reset-status assertion.
+It is retained as a failed trial. A host reproducer using the actual Mesa
+state-tracker functions found that a synchronously polled reset was returned
+and cached again, producing a duplicate notification on the next query.
+`test-state-tracker-reset.py` checks the candidate correction, repeated queries
+during recovery, genuine callback notifications and unchanged non-Haiku code.
+The probe now prints both reset return values before asserting. The validator
+also recognizes the exact expected empty-runtime firmware probe; unexpected
+errors still fail. The correction requires a new build and native qualification.
