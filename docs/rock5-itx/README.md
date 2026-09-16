@@ -9,13 +9,13 @@ The [GitHub work items](TRACKING.md) split the roadmap into issues and milestone
 The current priority is [Mali-G610 GPU support](GPU.md), followed by remaining
 hardware. The owner has deferred further Ethernet driver work.
 
-The +247 [GLTeapot trial](MESA-APPLICATION.md) runs the unchanged application
-on the native GPU across two boots. Animation and normal cleanup work, but
-wireframe mode draws filled polygons. A separate two-boot diagnostic confirms
-correct OpenGL polygon state while native line/point modes still render filled
-triangles. The trial remains unqualified. An opt-in geometry fallback is under
-development; it has no native qualification. Recovery, independent storage
-checks and preservation of both used images are complete.
+The +250 [GLTeapot candidate](MESA-APPLICATION.md) reaches one native boot
+with the opt-in polygon geometry path. Wireframe now appears, but extra diagonal
+edges remain, and the run stops on a missing menu-confirmation log record.
+It remains unqualified. Earlier graphics checks, two normal application exits,
+7,922 completed submissions, automatic recovery and independent storage checks
+pass. The complete failed transcript, sixteen images and used image are saved.
+The earlier +247 failure and separate polygon diagnostic are also preserved.
 
 The +243 USB image qualifies [reset notification for live Mesa contexts](MESA-LOSS.md)
 on two native boots. Both shared contexts receive one loss notification, ignore

@@ -1,5 +1,50 @@
 # GLTeapot application trial
 
+The +250 candidate enables the experimental CPU polygon geometry path while
+retaining native Mali rasterization. Its first native boot passes the earlier
+graphics checks and launches GLTeapot twice. Both processes exit normally;
+all 7,922 observed submissions complete and allocation snapshots return to
+baseline. **This candidate is not qualified.**
+
+The application validator rejects its transcript because the first launch lacks
+the `Filled polygons marked=1` confirmation: thirteen menu records are present
+where fourteen are required. No record was inserted or reconstructed to make
+it pass. The independent queue checks and all sixteen actual frame payloads
+remain available separately. Visual inspection shows a wireframe mesh,
+but with extra diagonal edges compared with the software-rendered quad-strip
+mesh. The polygon probe and second native boot were not reached.
+
+GLTeapot's checked-in source uses `GL_QUAD_STRIP`. Panfrost's Valhall capability
+mask omits both quads and quad strips, so Mesa converts them to triangles before
+the new geometry path receives them. The next prototype preserves those original
+boundaries. The missing complete menu line is consistent with concurrent writes
+from controller stdout and renderer stderr to the same regular file; the Haiku
+file-position update is not serialized in `common_user_io`. This cause remains
+an inference. Separate streams, combined only after process completion, are the
+planned logging correction.
+
+The full Haiku and reconstructed Mesa/application builds pass. Both QEMU modes
+pass two boots each; all 48 capture transfers are checked, all 64 application
+and 128 polygon frames are reviewed, and the geometry helper passes ASan/UBSan
+execution tests. These software results do not qualify the native candidate.
+Clean shutdown, automatic recovery and independent eMMC file/partition/region
+hashes pass after the failed run. The used USB image is preserved and its exact
+remote copy removed.
+
+- Source: `59cfb0ab963dbdc9a8fc5a48e860c47f0cd5155d`, hrev60097+250.
+- Original image SHA-256:
+  `50daa9904528fb05ba3bac528687ba31429ee07781343b4c3ca4e4c72ed807fc`.
+- Native evidence: `artifacts/automated-mali-polygon/20260916T074856Z-edf0f1`.
+  It includes the rejected original transcript, a source snapshot, independent
+  partial analysis and the actually reviewed sixteen-frame diagnostic sheet.
+- QEMU EL1: `artifacts/qemu-shell/20260916T072948Z-734011`;
+  EL2: `artifacts/qemu-shell/20260916T073856Z-5029e9`.
+- Recovery boot: `2d2c324c-983b-4970-9379-f4595ee3876d`.
+- Used-image archive: `artifacts/nanokvm-image-archive/20260916T080411Z-291265`;
+  SHA-256 `8cf152bf73620e26fd01a03cd41c98ccd7981b46e0c128149b3d2ba107fc49c7`.
+
+## Earlier +247 application trial
+
 The +247 USB image runs the unchanged GLTeapot application with the native
 Mali-G610 renderer. Across two native boots, four application processes
 animate, respond to scripted settings and resizing, and exit normally.
@@ -54,9 +99,8 @@ Simply converting triangle indices to lines would not cover face culling,
 clipping and different front/back polygon modes. GLTeapot enables culling by
 default. Mesa's existing software geometry pipeline is a possible route to
 preserving those semantics while retaining GPU rasterization. An opt-in
-experimental integration compiles in an isolated development tree. Execution
-tests are in progress; no candidate boot image or native qualification exists
-for the integration.
+experimental integration was built and tested as the +250 candidate above.
+It has no native qualification; the retained +247 evidence remains unchanged.
 
 ## Independent polygon diagnostic
 

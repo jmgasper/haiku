@@ -7,15 +7,13 @@ firmware supports it.
 Current priority is [Mali-G610 GPU acceleration](GPU.md); further Ethernet
 driver work is deferred at the owner's request.
 
-The +247 [GLTeapot application trial](MESA-APPLICATION.md) renders and animates
-on two native boots, with four normal application exits and 9,738 completed
-GPU submissions. It remains unqualified: wireframe mode visibly draws filled
-polygons on both boots. Software QEMU renders wireframe correctly. The failed
-trial, normal recovery, matching storage readbacks and used image are preserved.
-A separate two-boot diagnostic confirms correct OpenGL state but filled output
-for line/point modes. Its 32 rendering failures and 32 control passes repeat
-identically, with all guards intact. Both used images are preserved. An opt-in
-geometry fallback is being developed and has no native qualification.
+The +250 [GLTeapot candidate](MESA-APPLICATION.md) reaches one native boot
+with the opt-in polygon geometry path. Wireframe now appears, but extra diagonal
+edges remain, and the run stops on a missing menu-confirmation log record.
+It remains unqualified. Earlier graphics checks, two normal application exits,
+7,922 completed submissions, automatic recovery and independent storage checks
+pass. The complete failed transcript, sixteen images and used image are saved.
+The earlier +247 failure and separate polygon diagnostic are also preserved.
 
 The +243 USB image qualifies [reset notification for live Mesa contexts](MESA-LOSS.md)
 on two native boots. Both shared contexts receive one loss notification, ignore

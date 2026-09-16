@@ -16,11 +16,12 @@ the underlying buses permit it. No calendar estimates imply guaranteed support.
 Current owner priority: phase 7 GPU support, then remaining hardware. Further
 Ethernet driver development is deferred. [GPU.md](GPU.md) records qualified
 native power/reset/IRQ, firmware, client buffers, GPU VMs and persistent queues.
-The later +247 [GLTeapot trial](MESA-APPLICATION.md) demonstrates native
-application animation and normal retirement, but fails visual wireframe checks
-on both boots. A separate two-boot diagnostic confirms the native polygon-mode
-defect with correct API state. The application remains unqualified; an opt-in
-geometry fallback is under development and has no native qualification.
+The +250 [GLTeapot candidate](MESA-APPLICATION.md) produces wireframe on one
+native boot but remains unqualified: extra triangulation edges are visible, and
+one required menu-confirmation record is missing. Normal cleanup, recovery,
+independent storage checks and used-image preservation pass. Preserving original
+quad-strip boundaries and separating concurrent log streams are the next fixes.
+The +247 filled-wireframe failure and its independent diagnostic remain recorded.
 The +210 image runs Mesa/Panfrost on that native interface. Across two boots,
 all 32,768 rendered pixels match Linux and all 32 Mesa submissions complete.
 Allocation baselines, previous GPU regressions, both QEMU modes, recovery and
