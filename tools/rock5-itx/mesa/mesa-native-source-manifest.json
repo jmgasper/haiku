@@ -108,7 +108,7 @@
     {
       "path": "src/gallium/drivers/panfrost/pan_sw_polygon.c",
       "before": null,
-      "after": "2aefdaecef1053234b01e28d411ab765214a99d65db866281e59c30ba17f8e1d"
+      "after": "1dbe75897747d8d46aaaacf9e290845b8b715345e638260e8823027eefa9b77d"
     },
     {
       "path": "src/gallium/drivers/panfrost/pan_sw_polygon.h",
@@ -246,7 +246,7 @@
       "after": "0e62a91ce65378918e1cea06bd65361d9e2630e3118277a4c48e5b1605930f14"
     }
   ],
-  "patch_sha256": "864b67b2385e9eed02021ce1364dea488f577dc88a4189e777858fc043bdd16b",
+  "patch_sha256": "2cc35321e60c171605a821b3554746a40596f8a45b9acd98c374c5f8a0f6a33d",
   "pristine_tar_sha256": "59217efeac3b64e7ced958324b9db7494f1e0741aeb22d780276514cc1b8f206",
   "includes": "Pinned HaikuPorts changes, native CSF backend and Haiku EGL/HGL fixes"
 }

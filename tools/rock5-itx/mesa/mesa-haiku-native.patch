@@ -1450,7 +1450,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_sw_polygon.c b/src/gallium/drivers
 new file mode 100644
 --- /dev/null
 +++ b/src/gallium/drivers/panfrost/pan_sw_polygon.c
-@@ -0,0 +1,545 @@
+@@ -0,0 +1,632 @@
 +/* SPDX-License-Identifier: MIT
 + * Experimental software geometry with native Panfrost rasterization.
 + * Opt-in while shader/resource coverage and native rendering are qualified.
@@ -1461,6 +1461,7 @@ new file mode 100644
 +#include "draw/draw_context.h"
 +#include "draw/draw_fs.h"
 +#include "draw/draw_pipe.h"
++#include "draw/draw_private.h"
 +#include "draw/draw_vs.h"
 +#include "util/u_debug.h"
 +#include "util/u_inlines.h"
@@ -1475,6 +1476,7 @@ new file mode 100644
 +#define POLYGON_BATCH_VERTICES 2048
 +
 +DEBUG_GET_ONCE_BOOL_OPTION(haiku_sw_polygon, "HAIKU_PAN_SW_POLYGON", false)
++DEBUG_GET_ONCE_BOOL_OPTION(haiku_sw_polygon_trace, "HAIKU_PAN_SW_POLYGON_TRACE", false)
 +
 +bool
 +panfrost_sw_polygon_enabled(void)
@@ -1505,6 +1507,8 @@ new file mode 100644
 +   struct pipe_viewport_state viewport;
 +   bool failed;
 +   uint64_t draws, batches, emitted_vertices, failures;
++   bool trace_draw, trace_vertices, trace_shader_valid;
++   unsigned char trace_vs_sha1[20];
 +};
 +
 +static void
@@ -1553,6 +1557,23 @@ new file mode 100644
 +   struct panfrost_sw_polygon *sw = (struct panfrost_sw_polygon *)stage;
 +   if (sw->failed)
 +      return;
++   if (sw->trace_draw && !sw->trace_vertices) {
++      const struct draw_context *draw = sw->draw;
++      unsigned pos = draw_current_shader_position_output(draw);
++      unsigned edge = draw->vs.edgeflag_output;
++      fprintf(stderr, "HAIKU_PAN_GEOMETRY_VERTICES draw=%llu count=%u stride=%u pos=%u edge=%u\n",
++              (unsigned long long)sw->draws, draw->pipeline.vertex_count,
++              draw->pipeline.vertex_stride, pos, edge);
++      for (unsigned i = 0; draw->pipeline.verts && i < MIN2(draw->pipeline.vertex_count, 8); ++i) {
++         const struct vertex_header *v = (const void *)
++            ((const char *)draw->pipeline.verts + i * draw->pipeline.vertex_stride);
++         fprintf(stderr, "HAIKU_PAN_GEOMETRY_VERTEX draw=%llu vertex=%u edgeflag=%u clipmask=%u pos=%g,%g,%g,%g clip=%g,%g,%g,%g\n",
++                 (unsigned long long)sw->draws, i, v->edgeflag, v->clipmask,
++                 v->data[pos][0], v->data[pos][1], v->data[pos][2], v->data[pos][3],
++                 v->clip_pos[0], v->clip_pos[1], v->clip_pos[2], v->clip_pos[3]);
++      }
++      sw->trace_vertices = true;
++   }
 +   if (sw->mode != mode || sw->vertex_count + count > POLYGON_BATCH_VERTICES)
 +      emit_batch(sw);
 +   if (sw->failed)
@@ -1848,6 +1869,10 @@ new file mode 100644
 +   struct pipe_transfer *vb_maps[PIPE_MAX_ATTRIBS] = {0};
 +   struct pipe_transfer *cb_maps[PIPE_MAX_CONSTANT_BUFFERS] = {0};
 +   struct pipe_transfer *ib_map = NULL;
++   const void *vertex_maps[PIPE_MAX_ATTRIBS] = {0};
++   size_t vertex_map_sizes[PIPE_MAX_ATTRIBS] = {0};
++   const void *index_map = NULL;
++   size_t index_map_size = 0;
 +   struct pipe_vertex_buffer saved_buffers[PIPE_MAX_ATTRIBS] = {0};
 +   unsigned num_buffers = util_last_bit(ctx->vb_mask);
 +   void *saved_rasterizer = ctx->rasterizer;
@@ -1871,6 +1896,9 @@ new file mode 100644
 +
 +   ctx->sw_polygon_active = true;
 +   sw->draws++;
++   sw->trace_draw = debug_get_option_haiku_sw_polygon_trace() &&
++                    sw->draws <= 64 && num_draws == 1 && draws[0].count <= 4;
++   sw->trace_vertices = false;
 +   sw->failed = false;
 +   sw->vertex_count = 0;
 +   sw->viewport = ctx->pipe_viewport;
@@ -1899,6 +1927,8 @@ new file mode 100644
 +            goto cleanup;
 +      }
 +      draw_set_mapped_vertex_buffer(sw->draw, i, map, size);
++      vertex_maps[i] = map;
++      vertex_map_sizes[i] = size;
 +   }
 +   if (info->index_size) {
 +      const void *map;
@@ -1915,6 +1945,8 @@ new file mode 100644
 +      if (!map)
 +         goto cleanup;
 +      draw_set_indexes(sw->draw, map, info->index_size, size);
++      index_map = map;
++      index_map_size = size;
 +   } else {
 +      draw_set_indexes(sw->draw, NULL, 0, 0);
 +   }
@@ -1938,6 +1970,57 @@ new file mode 100644
 +      draw_set_mapped_constant_buffer(sw->draw, MESA_SHADER_VERTEX, i, map, size);
 +   }
 +
++   if (sw->trace_draw) {
++      fprintf(stderr, "HAIKU_PAN_GEOMETRY_INPUT draw=%llu mode=%u start=%u count=%u index_size=%u bias=%d front=%u back=%u cull=%u ccw=%u first=%u clip=%u elements=%u\n",
++              (unsigned long long)sw->draws, info->mode, draws[0].start,
++              draws[0].count, info->index_size, draws[0].index_bias,
++              rasterizer->fill_front, rasterizer->fill_back,
++              rasterizer->cull_face, rasterizer->front_ccw,
++              rasterizer->flatshade_first, rasterizer->clip_plane_enable, num_elements);
++      for (unsigned a = 0; a < num_elements; ++a) {
++         const struct pipe_vertex_element *e = &elements[a];
++         unsigned b = e->vertex_buffer_index;
++         fprintf(stderr, "HAIKU_PAN_GEOMETRY_ELEMENT draw=%llu element=%u buffer=%u offset=%u stride=%u format=%u divisor=%u\n",
++                 (unsigned long long)sw->draws, a, b, e->src_offset,
++                 e->src_stride, e->src_format, e->instance_divisor);
++         if (b >= num_buffers || !vertex_maps[b])
++            continue;
++         for (unsigned i = 0; i < draws[0].count; ++i) {
++            int64_t index = draws[0].start + i;
++            if (info->index_size) {
++               uint64_t index_offset = (uint64_t)index * info->index_size;
++               if (info->index_size > sizeof(uint32_t) || index_offset > index_map_size ||
++                   info->index_size > index_map_size - index_offset)
++                  continue;
++               uint32_t value = 0;
++               memcpy(&value, (const char *)index_map + index_offset,
++                      info->index_size);
++               index = (int64_t)value + draws[0].index_bias;
++            }
++            if (index < 0 || e->instance_divisor)
++               continue;
++            uint64_t offset = saved_buffers[b].buffer_offset + e->src_offset +
++                              (uint64_t)index * e->src_stride;
++            unsigned bytes = MIN2(util_format_get_blocksize(e->src_format), 16);
++            if (offset > vertex_map_sizes[b] || bytes > vertex_map_sizes[b] - offset)
++               continue;
++            const uint8_t *data = (const uint8_t *)vertex_maps[b] + offset;
++            fprintf(stderr, "HAIKU_PAN_GEOMETRY_ATTRIBUTE draw=%llu element=%u vertex=%u index=%lld bytes=",
++                    (unsigned long long)sw->draws, a, i, (long long)index);
++            for (unsigned j = 0; j < bytes; ++j)
++               fprintf(stderr, "%02x", data[j]);
++            fprintf(stderr, "\n");
++         }
++      }
++      if (!sw->trace_shader_valid || memcmp(sw->trace_vs_sha1, sw->vs_sha1, 20)) {
++         fprintf(stderr, "HAIKU_PAN_GEOMETRY_SHADER_BEGIN draw=%llu\n", (unsigned long long)sw->draws);
++         nir_print_shader(((struct panfrost_uncompiled_shader *)saved_vs)->sw_polygon_nir, stderr);
++         fprintf(stderr, "HAIKU_PAN_GEOMETRY_SHADER_END draw=%llu\n", (unsigned long long)sw->draws);
++         memcpy(sw->trace_vs_sha1, sw->vs_sha1, 20);
++         sw->trace_shader_valid = true;
++      }
++   }
++
 +   struct pipe_rasterizer_state native = *rasterizer;
 +   native.fill_front = native.fill_back = PIPE_POLYGON_MODE_FILL;
 +   native.cull_face = PIPE_FACE_NONE;
@@ -1954,6 +2037,10 @@ new file mode 100644
 +   draw_vbo(sw->draw, info, drawid_offset, NULL, draws, num_draws, 0);
 +   draw_flush(sw->draw);
 +   success = !sw->failed;
++   if (sw->trace_draw)
++      fprintf(stderr, "HAIKU_PAN_GEOMETRY_END draw=%llu batches=%llu vertices=%llu success=%u\n",
++              (unsigned long long)sw->draws, (unsigned long long)sw->batches,
++              (unsigned long long)sw->emitted_vertices, success);
 +
 +cleanup:
 +   sw->vertex_count = 0;
