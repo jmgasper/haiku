@@ -82,7 +82,7 @@ after patched-source and SDK preparation. Logs, commands, input receipts and
 failures remain in the output directory. This reconstructs pinned sources and
 configuration; build-path/debug information can change binary hashes.
 
-The package manifest lists twenty-nine assets for `/boot/home/mesa-trial`. The `run`
+The package manifest lists thirty-one assets for `/boot/home/mesa-trial`. The `run`
 launcher uses Haiku's `LIBRARY_PATH` and a private GLVND vendor file. Its probe
 accepts `--native`, `--software` and `--absent-device`. Native mode expects
 `/dev/graphics/mali_csf/0` and the separately supplied, licensed firmware at
@@ -221,3 +221,21 @@ passes both QEMU modes, two native boots, all affected-job error fences, reset
 and allocation checks, and fresh rendering without a Haiku reboot. Retained
 Mesa-context notification, innocent-context preservation, general hang recovery
 and native display control remain open.
+
+## Shared-context loss candidate
+
+The current package adds an unqualified context-loss path requiring the +240
+queue reset query. The last qualified package is the +238 image linked above.
+Mesa polls each owned queue to distinguish pending recovery, quiescent cleanup
+and retained memory, reports unknown reset attribution, and leaves affected
+contexts available for application teardown. It does not attempt immediate
+context recreation while other failed queues remain open.
+
+`run-loss --native` keeps two GLES contexts current on separate threads with
+shared program and buffer objects. It checks full images before a finite CS
+command fault, both reset notifications, unchanged readback memory after loss,
+complete display teardown and fresh pipeline rendering. The software mode
+checks shared rendering and cleanup without injecting a reset. The host
+`test-reset-status.py --source PATCHED_MESA --baseline PREVIOUS_MESA` checks the
+actual reset functions and verifies that their non-Haiku implementation is
+unchanged. Native qualification and robustness conformance remain pending.

@@ -13,7 +13,7 @@
     {
       "path": "src/egl/drivers/haiku/egl_haiku.cpp",
       "before": "f2954e784119151ecfd8590f7a414be858d7a3ee25af4c90183dac8d8c9808b5",
-      "after": "7c04b1a4bb76b79357e87483a058199afbae15271896af02283736307d215910"
+      "after": "ff7f2e10673027beace805164673f07dcdd8e7edda337a11cbb8ca6454161c57"
     },
     {
       "path": "src/egl/meson.build",
@@ -43,7 +43,12 @@
     {
       "path": "src/gallium/drivers/panfrost/pan_csf.c",
       "before": "299f937b8f6047988916fed1a747bf23398d04aaeea553c61c93fc15f04f7abd",
-      "after": "98a25bb7a86647e24a46a2a22656a18bc75345e94d0eae6163032b1456d5b815"
+      "after": "f075c8c37642a1e97465f947eb570c9240d2fd6dc4cc0b4e6608609a671f7c4c"
+    },
+    {
+      "path": "src/gallium/drivers/panfrost/pan_csf.h",
+      "before": "51948a35a0ed236c9f447d9a1f46d25a9e4f598978f9eb6a535bae1b4a2dd727",
+      "after": "1d55e31d1c2f4afd56556be59352133700fe1783edb9c87ff7fa76b79937a698"
     },
     {
       "path": "src/gallium/drivers/panfrost/pan_device.c",
@@ -128,7 +133,7 @@
     {
       "path": "src/panfrost/lib/kmod/haiku-abi/CsfQueue.h",
       "before": null,
-      "after": "3587f188b9bc13cbe13aaad0e945f681945cb01acad7c722bdcbe68742aa486c"
+      "after": "e70bb799b6c73f5853ccf8df2b90c71788a0b0aa7f10d993989d4058f81443c6"
     },
     {
       "path": "src/panfrost/lib/kmod/haiku-abi/CsfSync.h",
@@ -143,12 +148,12 @@
     {
       "path": "src/panfrost/lib/kmod/haiku_csf_native.cpp",
       "before": null,
-      "after": "be298910b0bf97870cd3d5308c6adccf394017797293d8f4dd7e972f9c0decd3"
+      "after": "82ab7dbaf597a45c26d8cae70523fdcfe77c6bf098098f2e31da20ad68c60e41"
     },
     {
       "path": "src/panfrost/lib/kmod/haiku_csf_native.h",
       "before": null,
-      "after": "496d1731971f0097b4213828cb6f2c95d101941a711b5faf332c4d06d62918e5"
+      "after": "7ca3a29475b2322b31b835a3a15cef73d5f1efe6a41d8926bab2a98f8eb6f300"
     },
     {
       "path": "src/panfrost/lib/kmod/haiku_csf_sync.cpp",
@@ -163,12 +168,12 @@
     {
       "path": "src/panfrost/lib/kmod/haiku_kmod.c",
       "before": null,
-      "after": "cc4f3bb3d365da54601d07883c91fcee903e6f5a01ec6e9a26cc7c6bdc337ec1"
+      "after": "cf84422b02fb74bb10bd574f1eedbc7d9cf450576c2e5a3c2a5a9eec5e9e541d"
     },
     {
       "path": "src/panfrost/lib/kmod/haiku_kmod.h",
       "before": null,
-      "after": "9505ad57c2bd29b5c05c0aeb534999199c33d6bc3203cc2fa4348c4cd9ebfb03"
+      "after": "a175f77b63d7634e647d92e267c234132326f1f60288c7a05e5e0c07a6e148ae"
     },
     {
       "path": "src/panfrost/lib/kmod/meson.build",
@@ -216,7 +221,7 @@
       "after": "0e62a91ce65378918e1cea06bd65361d9e2630e3118277a4c48e5b1605930f14"
     }
   ],
-  "patch_sha256": "76e28df00a499906cada1c0d2c12cd2f8ba00cc0f2c096584ddde75a6419000b",
+  "patch_sha256": "c302c993970de545e72e54c01fcb80a7e822524a129d322a8d397ca746af1534",
   "pristine_tar_sha256": "59217efeac3b64e7ced958324b9db7494f1e0741aeb22d780276514cc1b8f206",
   "includes": "Pinned HaikuPorts changes, native CSF backend and Haiku EGL/HGL fixes"
 }

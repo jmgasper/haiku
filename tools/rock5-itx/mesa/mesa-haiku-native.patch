@@ -1,3 +1,4 @@
+diff --git a/include/drm-uapi/drm.h b/include/drm-uapi/drm.h
 --- a/include/drm-uapi/drm.h
 +++ b/include/drm-uapi/drm.h
 @@ -44,7 +44,11 @@
@@ -12,6 +13,7 @@
  #include <sys/types.h>
  typedef int8_t   __s8;
  typedef uint8_t  __u8;
+diff --git a/include/renderdoc_app.h b/include/renderdoc_app.h
 --- a/include/renderdoc_app.h
 +++ b/include/renderdoc_app.h
 @@ -35,7 +35,7 @@
@@ -23,6 +25,7 @@
  #define RENDERDOC_CC
  #elif defined(__APPLE__)
  #define RENDERDOC_CC
+diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_haiku.cpp
 --- a/src/egl/drivers/haiku/egl_haiku.cpp
 +++ b/src/egl/drivers/haiku/egl_haiku.cpp
 @@ -28,6 +28,7 @@
@@ -370,7 +373,7 @@
  
     /* Report back to EGL the bitmask of priorities supported */
     disp->Extensions.IMG_context_priority =
-@@ -364,17 +504,12 @@
+@@ -364,17 +504,17 @@
        disp->Extensions.IMG_context_priority &
        (1 << __EGL_CONTEXT_PRIORITY_REALTIME_BIT);
  
@@ -385,6 +388,11 @@
 -   disp->Extensions.KHR_reusable_sync = EGL_TRUE;
 -
 -   haiku_add_configs_for_visuals(disp);
++   disp->Extensions.EXT_create_context_robustness =
++      hgl_dpy->disp->fscreen->screen->caps.device_reset_status_query &&
++      hgl_dpy->disp->fscreen->screen->caps.robust_buffer_access_behavior;
++   disp->RobustBufferAccess =
++      hgl_dpy->disp->fscreen->screen->caps.robust_buffer_access_behavior;
 +
 +   if (!disp->ClientAPIs || !haiku_add_configs_for_visuals(disp)) {
 +      haiku_display_destroy(disp);
@@ -393,7 +401,7 @@
  
     return EGL_TRUE;
  }
-@@ -386,7 +521,7 @@
+@@ -386,7 +526,7 @@
     struct haiku_egl_display *hgl_dpy = haiku_egl_display(disp);
  
     if (hgl_dpy) {
@@ -402,7 +410,7 @@
        return EGL_TRUE;
     }
  
-@@ -414,6 +549,8 @@
+@@ -414,6 +554,8 @@
  static EGLBoolean
  haiku_terminate(_EGLDisplay *disp)
  {
@@ -411,7 +419,7 @@
     haiku_display_destroy(disp);
     return EGL_TRUE;
  }
-@@ -428,8 +565,9 @@
+@@ -428,8 +570,9 @@
  
     struct haiku_egl_display *hgl_dpy = haiku_egl_display(disp);
  
@@ -423,7 +431,7 @@
  
     struct haiku_egl_context *context =
        (struct haiku_egl_context *)calloc(1, sizeof(*context));
-@@ -441,11 +579,56 @@
+@@ -441,11 +584,56 @@
     if (!_eglInitContext(&context->base, disp, conf, share_list, attrib_list))
        goto cleanup;
  
@@ -484,7 +492,7 @@
  
     return &context->base;
  
-@@ -488,23 +671,61 @@
+@@ -488,23 +676,61 @@
        return EGL_TRUE;
     }
  
@@ -560,13 +568,14 @@
  
     return EGL_TRUE;
  }
-@@ -519,5 +740,6 @@
+@@ -519,5 +745,6 @@
     .CreatePixmapSurface = haiku_create_pixmap_surface,
     .CreatePbufferSurface = haiku_create_pbuffer_surface,
     .DestroySurface = haiku_destroy_surface,
 +   .QuerySurface = haiku_query_surface,
     .SwapBuffers = haiku_swap_buffers,
  };
+diff --git a/src/egl/meson.build b/src/egl/meson.build
 --- a/src/egl/meson.build
 +++ b/src/egl/meson.build
 @@ -147,8 +147,8 @@
@@ -580,6 +589,7 @@
  elif with_platform_windows
    c_args_for_egl += [
      '-DEGLAPI=', '-DPUBLIC='
+diff --git a/src/gallium/drivers/panfrost/meson.build b/src/gallium/drivers/panfrost/meson.build
 --- a/src/gallium/drivers/panfrost/meson.build
 +++ b/src/gallium/drivers/panfrost/meson.build
 @@ -26,6 +26,10 @@
@@ -593,6 +603,7 @@
  
  panfrost_includes = [
    inc_gallium,
+diff --git a/src/gallium/drivers/panfrost/pan_bo.c b/src/gallium/drivers/panfrost/pan_bo.c
 --- a/src/gallium/drivers/panfrost/pan_bo.c
 +++ b/src/gallium/drivers/panfrost/pan_bo.c
 @@ -27,7 +27,7 @@
@@ -631,6 +642,7 @@
  }
  
  int
+diff --git a/src/gallium/drivers/panfrost/pan_context.c b/src/gallium/drivers/panfrost/pan_context.c
 --- a/src/gallium/drivers/panfrost/pan_context.c
 +++ b/src/gallium/drivers/panfrost/pan_context.c
 @@ -34,7 +34,9 @@
@@ -709,6 +721,7 @@
     assert(!ret);
  
     ctx->printf.bo =
+diff --git a/src/gallium/drivers/panfrost/pan_context.h b/src/gallium/drivers/panfrost/pan_context.h
 --- a/src/gallium/drivers/panfrost/pan_context.h
 +++ b/src/gallium/drivers/panfrost/pan_context.h
 @@ -238,6 +238,10 @@
@@ -722,6 +735,7 @@
  
     union {
        struct panfrost_csf_context csf;
+diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfrost/pan_csf.c
 --- a/src/gallium/drivers/panfrost/pan_csf.c
 +++ b/src/gallium/drivers/panfrost/pan_csf.c
 @@ -24,6 +24,7 @@
@@ -841,7 +855,48 @@
                               vm_sync_handle, vm_sync_signal_point, 0);
  }
  
-@@ -552,8 +563,7 @@
+@@ -543,17 +554,48 @@
+    }
+ }
+ 
++#ifdef __HAIKU__
++static enum pipe_reset_status
++csf_native_reset_status(struct panfrost_context *ctx)
++{
++   struct panfrost_device *dev = pan_device(ctx->base.screen);
++   struct pan_haiku_reset_info info;
++   if (haiku_kmod_group_get_reset_info(dev->kmod.dev, ctx->csf.group_handle,
++                                      &info))
++      return PIPE_UNKNOWN_CONTEXT_RESET;
++
++   if (info.state == PAN_HAIKU_RESET_NONE)
++      return PIPE_NO_RESET;
++
++   /* Attribution is unavailable. A completed reset is reported once, while
++    * pending or unrecoverable cleanup must not be reported as complete.
++    */
++   bool reported = ctx->csf.reset_reported;
++   ctx->csf.reset_reported = true;
++   if (info.state == PAN_HAIKU_RESET_PENDING ||
++       info.state == PAN_HAIKU_RESET_UNRECOVERABLE || !reported)
++      return PIPE_UNKNOWN_CONTEXT_RESET;
++   return PIPE_NO_RESET;
++}
++#endif
++
+ static void
+ csf_check_ctx_state_and_reinit(struct panfrost_context *ctx)
+ {
++#ifdef __HAIKU__
++   /* The native runtime and its device bootstrap queue stay failed until all
++    * affected contexts close. Keep the lost context for application cleanup;
++    * an immediate context reinitialization cannot repair this shared state.
++    */
++   update_reset_status(ctx, csf_native_reset_status(ctx));
++#else
+    struct panfrost_device *dev = pan_device(ctx->base.screen);
+    struct drm_panthor_group_get_state state = {
+       .group_handle = ctx->csf.group_handle,
     };
     int ret;
  
@@ -851,7 +906,15 @@
     if (ret) {
        update_reset_status(ctx, PIPE_UNKNOWN_CONTEXT_RESET);
        mesa_loge("DRM_IOCTL_PANTHOR_GROUP_GET_STATE failed (err=%d)", errno);
-@@ -604,7 +614,7 @@
+@@ -585,6 +627,7 @@
+ 
+    mesa_loge("Group became unusable, re-initializing context");
+    panfrost_context_reinit(ctx);
++#endif
+ }
+ 
+ static void
+@@ -604,7 +647,7 @@
     /* Wait so we can get errors reported back */
     if (wait) {
        int ret =
@@ -860,7 +923,7 @@
                                  &vm_sync_signal_point, 1, INT64_MAX, 0, NULL);
        assert(ret >= 0);
  
-@@ -658,7 +668,7 @@
+@@ -658,7 +701,7 @@
     uint32_t cs_size = cs_root_chunk_size(batch->csf.cs.builder);
     struct panfrost_context *ctx = batch->ctx;
     struct panfrost_device *dev = pan_device(ctx->base.screen);
@@ -869,7 +932,7 @@
     struct util_dynarray syncops;
  
     util_dynarray_init(&syncops, NULL);
-@@ -667,7 +677,7 @@
+@@ -667,7 +710,7 @@
     if (ret)
        goto out_free_syncops;
  
@@ -878,7 +941,7 @@
     uint64_t vm_sync_signal_point = vm_sync_cur_point + 1;
  
     struct drm_panthor_sync_op signalop = {
-@@ -687,7 +697,7 @@
+@@ -687,7 +730,7 @@
        util_dynarray_num_elements(&syncops, struct drm_panthor_sync_op));
     csf_prepare_gsubmit(ctx, &gsubmit, &qsubmit, 1);
     ret = csf_submit_gsubmit(ctx, &gsubmit);
@@ -887,7 +950,20 @@
                                 ret ? vm_sync_cur_point : vm_sync_signal_point);
  
     if (!ret) {
-@@ -1509,8 +1519,7 @@
+@@ -1479,6 +1522,12 @@
+ get_device_reset_status(struct pipe_context *pctx)
+ {
+    struct panfrost_context *ctx = pan_context(pctx);
++#ifdef __HAIKU__
++   /* A reset may occur while this context is idle. Poll the owned queue even
++    * if the application has not attempted another submission.
++    */
++   update_reset_status(ctx, csf_native_reset_status(ctx));
++#endif
+    enum pipe_reset_status reset_status = ctx->csf.reset_status;
+ 
+    /* Reset the status before returning. */
+@@ -1509,8 +1558,7 @@
     };
  
     int ret =
@@ -897,7 +973,7 @@
  
     if (ret)
        goto err_group_create;
-@@ -1530,8 +1539,7 @@
+@@ -1530,8 +1578,7 @@
        .max_chunks = pan_screen(ctx->base.screen)->csf_tiler_heap.max_chunks,
        .target_in_flight = 65535,
     };
@@ -907,7 +983,7 @@
  
     if (ret)
        goto err_tiler_heap;
-@@ -1577,7 +1585,7 @@
+@@ -1577,7 +1624,7 @@
        .capacity = panfrost_bo_size(cs_bo) / sizeof(uint64_t),
     };
     const struct drm_panthor_csif_info *csif_info =
@@ -916,7 +992,7 @@
     const struct cs_builder_conf bconf = {
        .nr_registers = csif_info->cs_reg_count,
        .nr_kernel_registers = MAX2(csif_info->unpreserved_cs_reg_count, 4),
-@@ -1627,7 +1635,7 @@
+@@ -1627,7 +1674,7 @@
        goto err_g_submit;
  
     /* Wait before freeing the buffer. */
@@ -925,7 +1001,7 @@
                          NULL);
     assert(!ret);
  
-@@ -1644,11 +1652,9 @@
+@@ -1644,11 +1691,9 @@
  err_tiler_heap_tmp_geom_bo:
     panfrost_bo_unreference(ctx->csf.heap.desc_bo);
  err_tiler_heap_desc_bo:
@@ -939,7 +1015,7 @@
  err_group_create:
     return -1;
  }
-@@ -1666,12 +1672,11 @@
+@@ -1666,12 +1711,11 @@
     int ret;
  
     /* Make sure all jobs are done before destroying the heap. */
@@ -954,7 +1030,7 @@
     assert(!ret);
  
     struct drm_panthor_group_destroy gd = {
-@@ -1679,8 +1684,7 @@
+@@ -1679,8 +1723,7 @@
     };
  
     ret =
@@ -964,6 +1040,20 @@
     assert(!ret);
  
     panfrost_bo_unreference(ctx->csf.tmp_geom_bo);
+diff --git a/src/gallium/drivers/panfrost/pan_csf.h b/src/gallium/drivers/panfrost/pan_csf.h
+--- a/src/gallium/drivers/panfrost/pan_csf.h
++++ b/src/gallium/drivers/panfrost/pan_csf.h
+@@ -88,6 +88,9 @@
+    } heap;
+ 
+    enum pipe_reset_status reset_status;
++#ifdef __HAIKU__
++   bool reset_reported;
++#endif
+ 
+    /* Temporary geometry buffer. Used as a FIFO by the tiler. */
+    struct panfrost_bo *tmp_geom_bo;
+diff --git a/src/gallium/drivers/panfrost/pan_device.c b/src/gallium/drivers/panfrost/pan_device.c
 --- a/src/gallium/drivers/panfrost/pan_device.c
 +++ b/src/gallium/drivers/panfrost/pan_device.c
 @@ -24,7 +24,7 @@
@@ -991,6 +1081,7 @@
     }
  
     if (dev->kmod.vm)
+diff --git a/src/gallium/drivers/panfrost/pan_device.h b/src/gallium/drivers/panfrost/pan_device.h
 --- a/src/gallium/drivers/panfrost/pan_device.h
 +++ b/src/gallium/drivers/panfrost/pan_device.h
 @@ -30,7 +30,7 @@
@@ -1002,6 +1093,7 @@
  #include "renderonly/renderonly.h"
  #include "util/bitset.h"
  #include "util/list.h"
+diff --git a/src/gallium/drivers/panfrost/pan_fence.c b/src/gallium/drivers/panfrost/pan_fence.c
 --- a/src/gallium/drivers/panfrost/pan_fence.c
 +++ b/src/gallium/drivers/panfrost/pan_fence.c
 @@ -42,7 +42,7 @@
@@ -1075,6 +1167,8 @@
     if (ret || fd == -1) {
        mesa_loge("export failed\n");
        return NULL;
+diff --git a/src/gallium/drivers/panfrost/pan_haiku.c b/src/gallium/drivers/panfrost/pan_haiku.c
+new file mode 100644
 --- /dev/null
 +++ b/src/gallium/drivers/panfrost/pan_haiku.c
 @@ -0,0 +1,23 @@
@@ -1101,6 +1195,7 @@
 +   driDestroyOptionInfo(&info);
 +   return screen;
 +}
+diff --git a/src/gallium/drivers/panfrost/pan_jm.c b/src/gallium/drivers/panfrost/pan_jm.c
 --- a/src/gallium/drivers/panfrost/pan_jm.c
 +++ b/src/gallium/drivers/panfrost/pan_jm.c
 @@ -105,7 +105,7 @@
@@ -1121,6 +1216,7 @@
                             0, NULL);
        if (ret)
           return errno;
+diff --git a/src/gallium/drivers/panfrost/pan_public.h b/src/gallium/drivers/panfrost/pan_public.h
 --- a/src/gallium/drivers/panfrost/pan_public.h
 +++ b/src/gallium/drivers/panfrost/pan_public.h
 @@ -32,6 +32,8 @@
@@ -1132,6 +1228,7 @@
  struct pipe_screen *
  panfrost_create_screen(int fd, const struct pipe_screen_config *config,
                         struct renderonly *ro);
+diff --git a/src/gallium/drivers/panfrost/pan_resource.c b/src/gallium/drivers/panfrost/pan_resource.c
 --- a/src/gallium/drivers/panfrost/pan_resource.c
 +++ b/src/gallium/drivers/panfrost/pan_resource.c
 @@ -32,7 +32,7 @@
@@ -1196,6 +1293,7 @@
  }
  
  static bool
+diff --git a/src/gallium/drivers/panfrost/pan_screen.c b/src/gallium/drivers/panfrost/pan_screen.c
 --- a/src/gallium/drivers/panfrost/pan_screen.c
 +++ b/src/gallium/drivers/panfrost/pan_screen.c
 @@ -887,7 +887,11 @@
@@ -1222,6 +1320,7 @@
  
     struct panfrost_device *dev = pan_device(&screen->base);
  
+diff --git a/src/gallium/drivers/panfrost/pan_screen.h b/src/gallium/drivers/panfrost/pan_screen.h
 --- a/src/gallium/drivers/panfrost/pan_screen.h
 +++ b/src/gallium/drivers/panfrost/pan_screen.h
 @@ -29,7 +29,7 @@
@@ -1233,6 +1332,7 @@
  #include "pipe/p_defines.h"
  #include "pipe/p_screen.h"
  #include "renderonly/renderonly.h"
+diff --git a/src/gallium/frontends/hgl/hgl.c b/src/gallium/frontends/hgl/hgl.c
 --- a/src/gallium/frontends/hgl/hgl.c
 +++ b/src/gallium/frontends/hgl/hgl.c
 @@ -65,8 +65,11 @@
@@ -1364,6 +1464,7 @@
  	display->fscreen->screen = screen;
  	display->fscreen->get_param = hgl_st_manager_get_param;
  	// display->fscreen->st_screen is used by llvmpipe
+diff --git a/src/gallium/frontends/hgl/hgl_context.h b/src/gallium/frontends/hgl/hgl_context.h
 --- a/src/gallium/frontends/hgl/hgl_context.h
 +++ b/src/gallium/frontends/hgl/hgl_context.h
 @@ -55,6 +55,9 @@
@@ -1387,6 +1488,7 @@
  void hgl_destroy_context(struct hgl_context* context);
  
  // hgl visual
+diff --git a/src/gallium/winsys/panfrost/drm/meson.build b/src/gallium/winsys/panfrost/drm/meson.build
 --- a/src/gallium/winsys/panfrost/drm/meson.build
 +++ b/src/gallium/winsys/panfrost/drm/meson.build
 @@ -1,3 +1,6 @@
@@ -1402,6 +1504,8 @@
  )
 +
 +endif
+diff --git a/src/panfrost/lib/kmod/haiku-abi/CsfBuffer.h b/src/panfrost/lib/kmod/haiku-abi/CsfBuffer.h
+new file mode 100644
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/haiku-abi/CsfBuffer.h
 @@ -0,0 +1,84 @@
@@ -1489,6 +1593,8 @@
 +
 +} // namespace MaliCSF
 +#endif
+diff --git a/src/panfrost/lib/kmod/haiku-abi/CsfFirmware.h b/src/panfrost/lib/kmod/haiku-abi/CsfFirmware.h
+new file mode 100644
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/haiku-abi/CsfFirmware.h
 @@ -0,0 +1,81 @@
@@ -1573,6 +1679,8 @@
 +} // namespace MaliCSF
 +
 +#endif // MALI_CSF_FIRMWARE_H
+diff --git a/src/panfrost/lib/kmod/haiku-abi/CsfHeap.h b/src/panfrost/lib/kmod/haiku-abi/CsfHeap.h
+new file mode 100644
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/haiku-abi/CsfHeap.h
 @@ -0,0 +1,54 @@
@@ -1630,6 +1738,8 @@
 +
 +} // namespace MaliCSF
 +#endif
+diff --git a/src/panfrost/lib/kmod/haiku-abi/CsfProperties.h b/src/panfrost/lib/kmod/haiku-abi/CsfProperties.h
+new file mode 100644
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/haiku-abi/CsfProperties.h
 @@ -0,0 +1,45 @@
@@ -1678,9 +1788,11 @@
 +
 +} // namespace MaliCSF
 +#endif
+diff --git a/src/panfrost/lib/kmod/haiku-abi/CsfQueue.h b/src/panfrost/lib/kmod/haiku-abi/CsfQueue.h
+new file mode 100644
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/haiku-abi/CsfQueue.h
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,132 @@
 +/* Copyright 2026, Haiku, Inc. Distributed under the MIT License. */
 +#ifndef MALI_CSF_QUEUE_H
 +#define MALI_CSF_QUEUE_H
@@ -1698,6 +1810,7 @@
 +static const uint32_t kWaitQueue = 0x4d435343;
 +static const uint32_t kGetQueueInfo = 0x4d435344;
 +static const uint32_t kSubmitQueueSync = 0x4d435345;
++static const uint32_t kGetQueueResetInfo = 0x4d435347;
 +static const uint32_t kClientQueues = 4;
 +static const uint32_t kMaxRuntimeQueues = 8;
 +static const uint32_t kMaxQueueJobs = 64;
@@ -1706,6 +1819,25 @@
 +static const uint32_t kQueueRunning = 2;
 +static const uint32_t kQueueFailed = 3;
 +static const uint32_t kQueueStopping = 4;
++
++static const uint32_t kQueueResetNone = 0;
++static const uint32_t kQueueResetLocalError = 1;
++static const uint32_t kQueueResetPending = 2;
++static const uint32_t kQueueResetQuiescent = 3;
++static const uint32_t kQueueResetUnrecoverable = 4;
++
++// Read-only state for an owned queue. state, error and reserved must be zero
++// on input. Pending means admission has stopped but device cleanup is still
++// running. Quiescent means the failed runtime has finished without retained
++// DMA memory; every affected queue must still close before a new runtime can
++// start. LocalError affects this queue without a global runtime reset.
++struct QueueResetInfo {
++	uint32_t version;
++	uint32_t handle;
++	uint32_t state;
++	int32_t error;
++	uint64_t reserved[2];
++};
 +
 +// Followed by firmwareBytes bytes for the first queue starting the runtime.
 +// An already running runtime accepts firmwareBytes=0. Each queue owns a VM
@@ -1789,9 +1921,12 @@
 +static_assert(sizeof(QueueSubmitSync) == 64, "synchronized queue submit ABI");
 +static_assert(sizeof(QueueWait) == 40, "queue wait ABI");
 +static_assert(sizeof(QueueInfo) == 96, "queue info ABI");
++static_assert(sizeof(QueueResetInfo) == 32, "queue reset info ABI");
 +
 +} // namespace MaliCSF
 +#endif
+diff --git a/src/panfrost/lib/kmod/haiku-abi/CsfSync.h b/src/panfrost/lib/kmod/haiku-abi/CsfSync.h
+new file mode 100644
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/haiku-abi/CsfSync.h
 @@ -0,0 +1,98 @@
@@ -1893,6 +2028,8 @@
 +static_assert(sizeof(SyncFileWait) == 32, "sync file wait ABI");
 +}
 +#endif
+diff --git a/src/panfrost/lib/kmod/haiku-abi/CsfVm.h b/src/panfrost/lib/kmod/haiku-abi/CsfVm.h
+new file mode 100644
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/haiku-abi/CsfVm.h
 @@ -0,0 +1,90 @@
@@ -1986,9 +2123,11 @@
 +
 +} // namespace MaliCSF
 +#endif
+diff --git a/src/panfrost/lib/kmod/haiku_csf_native.cpp b/src/panfrost/lib/kmod/haiku_csf_native.cpp
+new file mode 100644
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/haiku_csf_native.cpp
-@@ -0,0 +1,301 @@
+@@ -0,0 +1,327 @@
 +/* SPDX-License-Identifier: MIT */
 +#include "haiku_csf_native.h"
 +#include "CsfQueue.h"
@@ -2241,6 +2380,32 @@
 +   return 0;
 +}
 +
++static_assert(PAN_HAIKU_RESET_NONE == kQueueResetNone &&
++   PAN_HAIKU_RESET_LOCAL_ERROR == kQueueResetLocalError &&
++   PAN_HAIKU_RESET_PENDING == kQueueResetPending &&
++   PAN_HAIKU_RESET_QUIESCENT == kQueueResetQuiescent &&
++   PAN_HAIKU_RESET_UNRECOVERABLE == kQueueResetUnrecoverable, "native reset states");
++
++int pan_haiku_queue_reset_info(int fd, uint32_t queue, pan_haiku_reset_info* info)
++{
++   if (info == NULL) return Fail(EINVAL);
++   QueueResetInfo request{};
++   request.version = kClientVersion;
++   request.handle = queue;
++   if (Call(fd, kGetQueueResetInfo, request) != 0) return -1;
++   if (request.state > kQueueResetUnrecoverable
++       || (request.state == kQueueResetNone) != (request.error == B_OK))
++      return Fail(EIO);
++   *info = {request.state, request.error};
++   if (TraceEnabled()) {
++      int saved = errno;
++      fprintf(stderr, "HAIKU_MESA_NATIVE_RESET handle=%u state=%u error=%d\n",
++         queue, request.state, request.error);
++      errno = saved;
++   }
++   return 0;
++}
++
 +int pan_haiku_queue_submit(int fd, uint32_t queue, uint64_t generation,
 +   uint64_t address, uint32_t bytes, const pan_haiku_sync_point* waits,
 +   uint32_t waitCount, const pan_haiku_sync_point* signals, uint32_t signalCount,
@@ -2290,9 +2455,11 @@
 +   HeapHandle request{kClientVersion, vm, heap, 0, 0, 0};
 +   return Call(fd, kDestroyHeap, request);
 +}
+diff --git a/src/panfrost/lib/kmod/haiku_csf_native.h b/src/panfrost/lib/kmod/haiku_csf_native.h
+new file mode 100644
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/haiku_csf_native.h
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,102 @@
 +/* SPDX-License-Identifier: MIT */
 +#ifndef PAN_HAIKU_CSF_NATIVE_H
 +#define PAN_HAIKU_CSF_NATIVE_H
@@ -2340,6 +2507,15 @@
 +   int32_t error;
 +   uint64_t submitted, completed, failed_sequence;
 +};
++/* Process-local reset states translated from QueueResetInfo. */
++enum pan_haiku_reset_state {
++   PAN_HAIKU_RESET_NONE = 0,
++   PAN_HAIKU_RESET_LOCAL_ERROR = 1,
++   PAN_HAIKU_RESET_PENDING = 2,
++   PAN_HAIKU_RESET_QUIESCENT = 3,
++   PAN_HAIKU_RESET_UNRECOVERABLE = 4,
++};
++struct pan_haiku_reset_info { uint32_t state; int32_t error; };
 +struct pan_haiku_heap {
 +   uint32_t handle;
 +   uint64_t context_address, first_chunk_address;
@@ -2370,6 +2546,8 @@
 +   struct pan_haiku_properties *properties);
 +int pan_haiku_queue_info(int fd, uint32_t queue,
 +   struct pan_haiku_queue_state *state);
++int pan_haiku_queue_reset_info(int fd, uint32_t queue,
++   struct pan_haiku_reset_info *info);
 +int pan_haiku_queue_submit(int fd, uint32_t queue, uint64_t generation,
 +   uint64_t address, uint32_t bytes,
 +   const struct pan_haiku_sync_point *waits, uint32_t wait_count,
@@ -2384,6 +2562,8 @@
 +}
 +#endif
 +#endif
+diff --git a/src/panfrost/lib/kmod/haiku_csf_sync.cpp b/src/panfrost/lib/kmod/haiku_csf_sync.cpp
+new file mode 100644
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/haiku_csf_sync.cpp
 @@ -0,0 +1,120 @@
@@ -2507,6 +2687,8 @@
 +   SyncFd request{kClientVersion, handle, snapshotFd, kSyncSnapshotFd, point, 0};
 +   return Call(fd, kImportSync, request);
 +}
+diff --git a/src/panfrost/lib/kmod/haiku_csf_sync.h b/src/panfrost/lib/kmod/haiku_csf_sync.h
+new file mode 100644
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/haiku_csf_sync.h
 @@ -0,0 +1,47 @@
@@ -2557,9 +2739,11 @@
 +}
 +#endif
 +#endif
+diff --git a/src/panfrost/lib/kmod/haiku_kmod.c b/src/panfrost/lib/kmod/haiku_kmod.c
+new file mode 100644
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/haiku_kmod.c
-@@ -0,0 +1,577 @@
+@@ -0,0 +1,583 @@
 +/*
 + * Copyright © 2023 Collabora, Ltd. (Panfrost synchronization bookkeeping)
 + * SPDX-License-Identifier: MIT
@@ -3099,6 +3283,12 @@
 +   return 0;
 +}
 +
++int haiku_kmod_group_get_reset_info(struct pan_kmod_dev *base, uint32_t group,
++                                  struct pan_haiku_reset_info *info)
++{
++   return pan_haiku_queue_reset_info(base->fd, group, info);
++}
++
 +int haiku_kmod_heap_create(struct pan_kmod_dev *base, struct drm_panthor_tiler_heap_create *req)
 +{
 +   if (req->handle || req->tiler_heap_ctx_gpu_va || req->first_heap_chunk_gpu_va) return fail(EINVAL);
@@ -3137,15 +3327,18 @@
 +   .vm_create = haiku_vm_create, .vm_destroy = haiku_vm_destroy,
 +   .vm_bind = haiku_vm_bind, .vm_query_state = haiku_vm_state,
 +};
+diff --git a/src/panfrost/lib/kmod/haiku_kmod.h b/src/panfrost/lib/kmod/haiku_kmod.h
+new file mode 100644
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/haiku_kmod.h
-@@ -0,0 +1,26 @@
+@@ -0,0 +1,29 @@
 +/* SPDX-License-Identifier: MIT */
 +#pragma once
 +#include <stdbool.h>
 +#include <stdint.h>
 +#include <sys/types.h>
 +#include "drm-uapi/panthor_drm.h"
++#include "haiku_csf_native.h"
 +struct pan_kmod_dev;
 +struct pan_kmod_vm;
 +struct pan_kmod_bo;
@@ -3164,8 +3357,11 @@
 +int haiku_kmod_group_destroy(struct pan_kmod_dev *, struct drm_panthor_group_destroy *);
 +int haiku_kmod_group_submit(struct pan_kmod_dev *, struct drm_panthor_group_submit *);
 +int haiku_kmod_group_get_state(struct pan_kmod_dev *, struct drm_panthor_group_get_state *);
++int haiku_kmod_group_get_reset_info(struct pan_kmod_dev *, uint32_t,
++   struct pan_haiku_reset_info *);
 +int haiku_kmod_heap_create(struct pan_kmod_dev *, struct drm_panthor_tiler_heap_create *);
 +int haiku_kmod_heap_destroy(struct pan_kmod_dev *, struct drm_panthor_tiler_heap_destroy *);
+diff --git a/src/panfrost/lib/kmod/meson.build b/src/panfrost/lib/kmod/meson.build
 --- a/src/panfrost/lib/kmod/meson.build
 +++ b/src/panfrost/lib/kmod/meson.build
 @@ -3,14 +3,18 @@
@@ -3190,6 +3386,8 @@
    c_args : [no_override_init_args],
    gnu_symbol_visibility : 'hidden',
    dependencies: [dep_libdrm, idep_mesautil, idep_pan_packers, libpanfrost_model_dep],
+diff --git a/src/panfrost/lib/kmod/pan_csf_kmod.h b/src/panfrost/lib/kmod/pan_csf_kmod.h
+new file mode 100644
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/pan_csf_kmod.h
 @@ -0,0 +1,41 @@
@@ -3234,6 +3432,7 @@
 +static inline int pan_csf_heap_destroy(struct pan_kmod_dev *dev, struct drm_panthor_tiler_heap_destroy *req)
 +{ return pan_kmod_ioctl(dev->fd, DRM_IOCTL_PANTHOR_TILER_HEAP_DESTROY, req); }
 +#endif
+diff --git a/src/panfrost/lib/kmod/pan_kmod.c b/src/panfrost/lib/kmod/pan_kmod.c
 --- a/src/panfrost/lib/kmod/pan_kmod.c
 +++ b/src/panfrost/lib/kmod/pan_kmod.c
 @@ -5,12 +5,15 @@
@@ -3320,6 +3519,7 @@
 +#endif
 +}
 +
+diff --git a/src/panfrost/lib/kmod/pan_kmod.h b/src/panfrost/lib/kmod/pan_kmod.h
 --- a/src/panfrost/lib/kmod/pan_kmod.h
 +++ b/src/panfrost/lib/kmod/pan_kmod.h
 @@ -19,7 +19,10 @@
@@ -3428,6 +3628,7 @@
  }
  
  #if defined(__cplusplus)
+diff --git a/src/panfrost/lib/kmod/pan_kmod_backend.h b/src/panfrost/lib/kmod/pan_kmod_backend.h
 --- a/src/panfrost/lib/kmod/pan_kmod_backend.h
 +++ b/src/panfrost/lib/kmod/pan_kmod_backend.h
 @@ -12,14 +12,14 @@
@@ -3448,6 +3649,8 @@
     dev->fd = fd;
     dev->flags = flags;
     dev->ops = ops;
+diff --git a/src/panfrost/lib/kmod/pan_sync.h b/src/panfrost/lib/kmod/pan_sync.h
+new file mode 100644
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/pan_sync.h
 @@ -0,0 +1,45 @@
@@ -3496,6 +3699,7 @@
 +#define pan_sync_signal drmSyncobjSignal
 +#define pan_sync_timeline_signal drmSyncobjTimelineSignal
 +#endif
+diff --git a/src/panfrost/lib/kmod/panfrost_kmod.c b/src/panfrost/lib/kmod/panfrost_kmod.c
 --- a/src/panfrost/lib/kmod/panfrost_kmod.c
 +++ b/src/panfrost/lib/kmod/panfrost_kmod.c
 @@ -43,13 +43,13 @@
@@ -3516,6 +3720,7 @@
        return NULL;
     }
  
+diff --git a/src/panfrost/lib/kmod/panthor_kmod.c b/src/panfrost/lib/kmod/panthor_kmod.c
 --- a/src/panfrost/lib/kmod/panthor_kmod.c
 +++ b/src/panfrost/lib/kmod/panthor_kmod.c
 @@ -104,7 +104,7 @@
@@ -3554,6 +3759,7 @@
        query = (struct drm_panthor_dev_query){
           .type = DRM_PANTHOR_DEV_QUERY_GROUP_PRIORITIES_INFO,
           .size = sizeof(panthor_dev->props.group_priorities),
+diff --git a/src/panfrost/meson.build b/src/panfrost/meson.build
 --- a/src/panfrost/meson.build
 +++ b/src/panfrost/meson.build
 @@ -24,7 +24,9 @@
