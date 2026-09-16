@@ -12,10 +12,12 @@
     "build-application.py": "82732c16e144092132e2fa983e23bd4265c536c120fb8f35d854d586a6e07620",
     "application-probe.cpp": "46f887f4c0d5f9970400b1004293c72f614cbec3ac3f55c647392a7f95c6a07b",
     "application-frames.cpp": "958b95bfd9f760af8201f6a2369024542b176331c1c0d46d8724e230a8545e56",
-    "run-application": "2e352a8c453f916c85e11f8810ebc6093b39ed449d53f27f3af1c220fdb82184",
+    "run-application": "e8b827fc3d28efc292136d0124f516419ae4fbee3d2a3e03dcf58ae5a3304dc5",
     "application_validation.py": "000f67ba9ffd57ed3fe1894f477ebc2d516f6d148eecd486d62ed32929241668",
     "native-observer.h": "18a3f0df2b06d3cc778cf8002d86afca2450f3da5509d4a80c757cb49af48502",
-    "graphics_capture.py": "e05f6273de9da05d0d809e51a91f4d7586e751d9cc67c79b9dad71bf5340230a"
+    "graphics_capture.py": "e05f6273de9da05d0d809e51a91f4d7586e751d9cc67c79b9dad71bf5340230a",
+    "application_logging_validation.py": "86f48d3723ad3b63986c4344461db9e05b2486e4068566aa3807823acb38cadc",
+    "test-application-logging.py": "41328940166113aa3b305de290eda293a270879ef04ccc765db3aa63241c1625"
   },
   "application_files": {
     "src/apps/glteapot/FPS.cpp": "d5d9f082bbe1b62eb4e16387b09263e71fc9ec1f07526c8132c0267e4a36371b",
@@ -41,5 +43,5 @@
     "src/apps/glteapot/teapot.h": "766ac63275c7408c06f5487ce40c7c39c21492930b23c85cee5d71a6b1f17584",
     "src/apps/glteapot/util.h": "aa41b3e4fc915e3c2c4dbcb6d88f772ada02dc7c8689a3574330770933ed0d0f"
   },
-  "scope": "Unchanged application/resources and GLU; two normal launches, scripted settings/resize, full screen-region captures and animation checks, native queue/cleanup evidence. Separate actual visual review required. No exact software/native animated pixel identity claim. Current native launcher opts into the unqualified software-geometry polygon candidate."
+  "scope": "Unchanged application/resources and GLU; two normal launches, scripted settings/resize, full screen-region captures and animation checks, native queue/cleanup evidence. Separate actual visual review required. No exact software/native animated pixel identity claim. Current native launcher opts into the unqualified software-geometry polygon candidate. Preserve quad-strip boundaries; capture controller stdout and renderer stderr separately and concatenate original streams with byte counts and hashes after normal process completion. New candidate remains unqualified."
 }

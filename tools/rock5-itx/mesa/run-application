@@ -16,8 +16,22 @@ for rock5_application_cycle in 0 1; do
     mkdir "$rock5_application_frames"
     printf 'ROCK5_APPLICATION_RUN_BEGIN cycle=%s mode=%s\n' "$rock5_application_cycle" "$1"
     set +e
-    /boot/home/mesa-trial/rock5_haiku_application_probe "$1" /boot/home/mesa-trial/GLTeapot "$rock5_application_frames"
+    # Controller stdout and renderer stderr must not race for a regular-file
+    # offset. The probe waits for its application child before returning.
+    /boot/home/mesa-trial/rock5_haiku_application_probe "$1" /boot/home/mesa-trial/GLTeapot "$rock5_application_frames" \
+        > "$rock5_application_frames/controller.log" 2> "$rock5_application_frames/renderer.log"
     rock5_application_status=$?
+    set -e
+    for rock5_application_stream in controller renderer; do
+        rock5_application_log=$rock5_application_frames/$rock5_application_stream.log
+        rock5_application_log_bytes=$(wc -c < "$rock5_application_log")
+        rock5_application_log_sha=$(sha256sum "$rock5_application_log")
+        rock5_application_log_sha=${rock5_application_log_sha%% *}
+        printf 'ROCK5_APPLICATION_LOG_BEGIN stream=%s bytes=%d sha256=%s\n' "$rock5_application_stream" "$rock5_application_log_bytes" "$rock5_application_log_sha"
+        cat "$rock5_application_log"
+        printf 'ROCK5_APPLICATION_LOG_END stream=%s\n' "$rock5_application_stream"
+    done
+    set +e
     # Serialize available images even if the controller failed partway through.
     /boot/home/mesa-trial/rock5_application_frames "$rock5_application_frames"
     rock5_application_capture_status=$?
@@ -25,6 +39,7 @@ for rock5_application_cycle in 0 1; do
     printf 'ROCK5_APPLICATION_RUN_EXIT cycle=%s application=%s frames=%s\n' "$rock5_application_cycle" "$rock5_application_status" "$rock5_application_capture_status"
     [ "$rock5_application_status" -eq 0 ] && [ "$rock5_application_capture_status" -eq 0 ]
     rm "$rock5_application_frames"/phase[0-3]-sample[01].ppm
+    rm "$rock5_application_frames/controller.log" "$rock5_application_frames/renderer.log"
     rmdir "$rock5_application_frames"
 done
 echo ROCK5_APPLICATION_PASS processes=2 frames=16

@@ -10,6 +10,9 @@ vertex/fragment NIR and lazily uses Mesa's CPU vertex/geometry pipeline for
 non-solid polygons, then uploads the resulting primitives for native GPU
 rasterization. `HAIKU_PAN_SW_POLYGON=1` enables it; the polygon and application
 native test launchers opt in explicitly. Other launchers retain the default.
+The enabled path preserves original quad, quad-strip and polygon boundaries.
+Those legacy modes use CPU geometry processing even when filled, because
+advertising them otherwise would submit unsupported primitives to Valhall.
 The earlier native application failure and independent diagnostic are recorded
 in [MESA-APPLICATION.md](../../../docs/rock5-itx/MESA-APPLICATION.md).
 
@@ -20,7 +23,7 @@ separate near/far clipping and unscaled polygon bias remain excluded. Zero
 depth-range scale with polygon offset is also excluded. Unsupported draws
 report an experimental-path failure; this is not general polygon conformance.
 
-`polygon-probe.cpp` checks full readbacks for sixteen polygon cases over two
+`polygon-probe.cpp` checks full readbacks for thirty-two polygon cases over two
 contexts. `polygon_validation.py` independently checks every returned pixel,
 state, guard and restored/equivalent image. Its original native run diagnoses
 the missing feature; successful software rendering does not qualify this new
@@ -28,6 +31,13 @@ driver path. `test-polygon-geometry.py` instead executes the actual helper with
 real Mesa NIR/draw libraries and a checked memory-backed pipe adapter. The test
 covers geometry, resource/state restoration and map failures under ASan/UBSan;
 the adapter does not emulate Panfrost callbacks or GPU rasterization.
+
+The application launcher captures controller stdout and renderer stderr into
+separate RAM files. After the controller has waited for its application child,
+it emits both original streams with byte counts and SHA-256 hashes. The separate
+logging validator checks those boundaries and hashes alongside the unchanged
+application pixel, menu, queue and cleanup checks. Its synthetic tests do not
+establish that the next native run will pass.
 
 For that host test, configure a separate native Mesa build from the patched
 source with `-Db_sanitize=address,undefined`, `-Dgallium-drivers=softpipe`,

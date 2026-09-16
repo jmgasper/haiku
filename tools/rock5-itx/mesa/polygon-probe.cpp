@@ -15,6 +15,7 @@ struct Case {
     bool clockwise, indexed, edge_flag;
     unsigned expected; // 0 empty, 1 filled, 2 lines, 3 points
     bool clipped = false;
+    unsigned topology = 0; // triangle, quad, quad strip, polygon
 };
 static const Case cases[] = {
     {"fill", GL_FILL, GL_FILL, 0, false, false, true, 1},
@@ -33,6 +34,22 @@ static const Case cases[] = {
     {"final-fill", GL_FILL, GL_FILL, 0, false, true, true, 1},
     {"clipped-line", GL_LINE, GL_LINE, 0, false, false, true, 4, true},
     {"clipped-fill", GL_FILL, GL_FILL, 0, false, false, true, 5, true},
+    {"quad-fill", GL_FILL, GL_FILL, 0, false, false, true, 6, false, 1},
+    {"quad-line", GL_LINE, GL_LINE, 0, false, false, true, 7, false, 1},
+    {"quad-point", GL_POINT, GL_POINT, 0, false, false, true, 8, false, 1},
+    {"quad-line-indexed", GL_LINE, GL_LINE, 0, false, true, true, 7, false, 1},
+    {"strip-fill", GL_FILL, GL_FILL, 0, false, false, true, 6, false, 2},
+    {"strip-line", GL_LINE, GL_LINE, 0, false, false, true, 7, false, 2},
+    {"strip-point", GL_POINT, GL_POINT, 0, false, false, true, 8, false, 2},
+    {"strip-line-indexed", GL_LINE, GL_LINE, 0, false, true, true, 7, false, 2},
+    {"polygon-fill", GL_FILL, GL_FILL, 0, false, false, true, 6, false, 3},
+    {"polygon-line", GL_LINE, GL_LINE, 0, false, false, true, 7, false, 3},
+    {"polygon-point", GL_POINT, GL_POINT, 0, false, false, true, 8, false, 3},
+    {"polygon-clipped-line", GL_LINE, GL_LINE, 0, false, false, true, 9, true, 3},
+    {"quad-clipped-line", GL_LINE, GL_LINE, 0, false, false, true, 9, true, 1},
+    {"quad-clipped-fill", GL_FILL, GL_FILL, 0, false, false, true, 10, true, 1},
+    {"quad-cull-front", GL_LINE, GL_LINE, GL_BACK, false, false, true, 7, false, 1},
+    {"quad-cull-back", GL_LINE, GL_LINE, GL_BACK, true, false, true, 0, false, 1},
 };
 
 static void dump(const unsigned char* p, unsigned n)
@@ -57,18 +74,27 @@ static bool draw_case(unsigned cycle, unsigned index)
     if (c.clipped) glEnable(GL_CLIP_PLANE0); else glDisable(GL_CLIP_PLANE0);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glColor4f(1, 0, 0, 1);
-    const GLfloat v[][3] = {{-0.75f,-0.75f,0}, {0.75f,-0.75f,0}, {0,0.75f,0}};
-    const unsigned order[3] = {0, c.clockwise ? 2u : 1u, c.clockwise ? 1u : 2u};
+    const GLfloat triangle[][3] = {{-0.75f,-0.75f,0}, {0.75f,-0.75f,0}, {0,0.75f,0}};
+    const GLfloat quad[][3] = {{-.75f,-.75f,0}, {.75f,-.75f,0}, {.75f,.75f,0}, {-.75f,.75f,0}};
+    const GLfloat strip[][3] = {{-.75f,-.75f,0}, {.75f,-.75f,0}, {-.75f,.75f,0}, {.75f,.75f,0}};
+    const GLfloat (*v)[3] = c.topology == 0 ? triangle : c.topology == 2 ? strip : quad;
+    const GLenum primitives[] = {GL_TRIANGLES, GL_QUADS, GL_QUAD_STRIP, GL_POLYGON};
+    const unsigned vertices = c.topology ? 4 : 3;
+    unsigned order[4] = {};
+    for (unsigned i = 0; i < vertices; ++i)
+        order[i] = c.clockwise && i ? vertices - i : i;
     if (c.indexed) {
         // Nonzero start in the element array; extra elements must be ignored.
-        const GLushort indices[] = {2, 2, GLushort(order[0]), GLushort(order[1]), GLushort(order[2]), 1};
+        GLushort indices[7] = {2, 2};
+        for (unsigned i = 0; i < vertices; ++i) indices[i + 2] = order[i];
+        indices[vertices + 2] = 1;
         glEnableClientState(GL_VERTEX_ARRAY);
         glVertexPointer(3, GL_FLOAT, sizeof(v[0]), v);
-        glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_SHORT, indices + 2);
+        glDrawElements(primitives[c.topology], vertices, GL_UNSIGNED_SHORT, indices + 2);
         glDisableClientState(GL_VERTEX_ARRAY);
     } else {
-        glBegin(GL_TRIANGLES);
-        for (unsigned i = 0; i < 3; ++i) {
+        glBegin(primitives[c.topology]);
+        for (unsigned i = 0; i < vertices; ++i) {
             glEdgeFlag(i == 0 ? c.edge_flag : GL_TRUE);
             glVertex3fv(v[order[i]]);
         }
@@ -77,7 +103,7 @@ static bool draw_case(unsigned cycle, unsigned index)
     }
     glFinish();
     unsigned char data[GUARD + BYTES + GUARD];
-    const unsigned char canary = 0x80 + cycle * 16 + index;
+    const unsigned char canary = 0x80 + cycle * 32 + index;
     std::memset(data, canary, sizeof(data));
     glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, data + GUARD);
     const GLenum error = glGetError();
@@ -107,6 +133,11 @@ static bool draw_case(unsigned cycle, unsigned index)
             && edge >= 20 && clip_edge >= 10; break;
         case 5: pixels = coloured >= 1000 && coloured <= 1100 && interior == 64
             && clip_edge == 12; break;
+        case 6: pixels = coloured == 2304 && interior == 64; break;
+        case 7: pixels = coloured >= 180 && coloured <= 200 && interior == 0 && edge >= 20; break;
+        case 8: pixels = coloured >= 4 && coloured <= 36 && interior == 0 && edge == 0; break;
+        case 9: pixels = coloured >= 160 && coloured <= 190 && interior == 0 && edge >= 20 && clip_edge >= 10; break;
+        case 10: pixels = coloured == 1920 && interior == 64 && clip_edge == 12; break;
     }
     bool passed = pixels && other == 0 && guard_errors == 0 && error == GL_NO_ERROR
         && GLenum(mode[0]) == c.front && GLenum(mode[1]) == c.back;

@@ -655,14 +655,15 @@ diff --git a/src/gallium/drivers/panfrost/pan_cmdstream.c b/src/gallium/drivers/
  #include "pan_csf.h"
  #include "pan_fb_preload.h"
  #include "pan_format.h"
-@@ -3475,6 +3478,19 @@
+@@ -3475,6 +3478,20 @@
     if (!panfrost_render_condition_check(ctx))
        return;
  
 +#ifdef __HAIKU__
 +   if (!ctx->sw_polygon_active && panfrost_sw_polygon_enabled() &&
 +       u_reduced_prim(info->mode) == MESA_PRIM_TRIANGLES &&
-+       (ctx->rasterizer->base.fill_front != PIPE_POLYGON_MODE_FILL ||
++       (panfrost_sw_polygon_legacy_topology(info->mode) ||
++        ctx->rasterizer->base.fill_front != PIPE_POLYGON_MODE_FILL ||
 +        ctx->rasterizer->base.fill_back != PIPE_POLYGON_MODE_FILL)) {
 +      if (!panfrost_sw_polygon_draw(ctx, &ctx->rasterizer->base,
 +                                   ctx->vertex->num_elements, ctx->vertex->pipe,
@@ -1360,7 +1361,32 @@ diff --git a/src/gallium/drivers/panfrost/pan_resource.c b/src/gallium/drivers/p
 diff --git a/src/gallium/drivers/panfrost/pan_screen.c b/src/gallium/drivers/panfrost/pan_screen.c
 --- a/src/gallium/drivers/panfrost/pan_screen.c
 +++ b/src/gallium/drivers/panfrost/pan_screen.c
-@@ -887,7 +887,11 @@
+@@ -53,6 +53,9 @@
+ #include "pan_public.h"
+ #include "pan_resource.h"
+ #include "pan_screen.h"
++#ifdef __HAIKU__
++#include "pan_sw_polygon.h"
++#endif
+ #include "pan_shader.h"
+ #include "pan_util.h"
+ 
+@@ -882,12 +885,26 @@
+       modes &= ~BITFIELD_BIT(MESA_PRIM_QUADS);
+    }
+ 
++#ifdef __HAIKU__
++   /* The opt-in CPU geometry path accepts original polygon boundaries.
++    * Frontend triangulation loses the internal-edge distinction in line mode.
++    * All draws in these modes are routed through that path, including fill. */
++   if (panfrost_sw_polygon_enabled())
++      modes |= BITFIELD_BIT(MESA_PRIM_QUADS) |
++               BITFIELD_BIT(MESA_PRIM_QUAD_STRIP) |
++               BITFIELD_BIT(MESA_PRIM_POLYGON);
++#endif
++
+    caps->supported_prim_modes =
+    caps->supported_prim_modes_with_restart = modes;
  
     caps->image_store_formatted = true;
  
@@ -1372,7 +1398,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_screen.c b/src/gallium/drivers/pan
  
     caps->context_priority_mask =
        from_kmod_group_allow_priority_flags(
-@@ -998,8 +1002,10 @@
+@@ -998,8 +1015,10 @@
     /* Create the screen */
     struct panfrost_screen *screen = rzalloc(NULL, struct panfrost_screen);
  
@@ -1974,12 +2000,13 @@ diff --git a/src/gallium/drivers/panfrost/pan_sw_polygon.h b/src/gallium/drivers
 new file mode 100644
 --- /dev/null
 +++ b/src/gallium/drivers/panfrost/pan_sw_polygon.h
-@@ -0,0 +1,26 @@
+@@ -0,0 +1,37 @@
 +/* SPDX-License-Identifier: MIT */
 +#ifndef PAN_SW_POLYGON_H
 +#define PAN_SW_POLYGON_H
 +
 +#include "util/compiler.h"
++#include "compiler/shader_enums.h"
 +
 +struct panfrost_context;
 +struct pipe_draw_info;
@@ -1987,6 +2014,16 @@ new file mode 100644
 +struct pipe_draw_start_count_bias;
 +struct pipe_rasterizer_state;
 +struct pipe_vertex_element;
++
++/* Keep legacy polygon boundaries intact until the draw pipeline handles
++ * clipping, culling and edge flags. These modes must use it even when filled:
++ * advertising them would otherwise send unsupported primitives to Valhall. */
++static inline bool
++panfrost_sw_polygon_legacy_topology(enum mesa_prim mode)
++{
++   return mode == MESA_PRIM_QUADS || mode == MESA_PRIM_QUAD_STRIP ||
++          mode == MESA_PRIM_POLYGON;
++}
 +
 +bool panfrost_sw_polygon_enabled(void);
 +bool panfrost_sw_polygon_draw(struct panfrost_context *ctx,

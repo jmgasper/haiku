@@ -33,7 +33,7 @@
     {
       "path": "src/gallium/drivers/panfrost/pan_cmdstream.c",
       "before": "8585dcc79db57e0940f38acd23bbd097e04e0ada2b1c1155847108498d613f5f",
-      "after": "47966be9bd4850aeb05cc7fdb1d7c6012176020d1b328854f15377b8e163104d"
+      "after": "8b9de334db1116cb1f02db3315d99106b09a8b06c6a38815f034f9e9d30af40c"
     },
     {
       "path": "src/gallium/drivers/panfrost/pan_context.c",
@@ -93,7 +93,7 @@
     {
       "path": "src/gallium/drivers/panfrost/pan_screen.c",
       "before": "044627dfa337f9318eaef2bff853d01e4259a5549f12d34dd566b19cad5d77bd",
-      "after": "0556639cc0b71469eed8c8a95a06a96c792043f6b6fe131512908e1df3f7147f"
+      "after": "05cfa2a2f67b6020f8f869e4f1d1f8a98a561004d417c303021a878190b87915"
     },
     {
       "path": "src/gallium/drivers/panfrost/pan_screen.h",
@@ -113,7 +113,7 @@
     {
       "path": "src/gallium/drivers/panfrost/pan_sw_polygon.h",
       "before": null,
-      "after": "82138457d0075f3fee5fc2a4323b6d7e067ba94542222a8c71d2407d1de08b44"
+      "after": "e20b9a16251dc7d50ef6d5dc7a2774b6a2f692470b0e1baa3ec0726e865cb30c"
     },
     {
       "path": "src/gallium/frontends/hgl/hgl.c",
@@ -246,7 +246,7 @@
       "after": "0e62a91ce65378918e1cea06bd65361d9e2630e3118277a4c48e5b1605930f14"
     }
   ],
-  "patch_sha256": "90c2b29ba3f4e9bc92072f55730a37a9cb009567ed15c8482aa826235bc4e343",
+  "patch_sha256": "864b67b2385e9eed02021ce1364dea488f577dc88a4189e777858fc043bdd16b",
   "pristine_tar_sha256": "59217efeac3b64e7ced958324b9db7494f1e0741aeb22d780276514cc1b8f206",
   "includes": "Pinned HaikuPorts changes, native CSF backend and Haiku EGL/HGL fixes"
 }

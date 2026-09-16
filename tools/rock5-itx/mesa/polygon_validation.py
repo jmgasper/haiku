@@ -6,10 +6,18 @@ import re
 NAMES = ('fill', 'line', 'fill-restored', 'point', 'line-indexed',
     'line-cull-back-front', 'line-cull-back-back', 'line-cull-front-front',
     'line-cull-front-back', 'line-cull-all', 'split-front', 'split-back',
-    'line-edge-flag', 'final-fill', 'clipped-line', 'clipped-fill')
+    'line-edge-flag', 'final-fill', 'clipped-line', 'clipped-fill',
+    'quad-fill','quad-line','quad-point','quad-line-indexed',
+    'strip-fill','strip-line','strip-point','strip-line-indexed',
+    'polygon-fill','polygon-line','polygon-point','polygon-clipped-line',
+    'quad-clipped-line','quad-clipped-fill','quad-cull-front','quad-cull-back')
 KINDS = ('fill','line','fill','point','line','line','empty','empty','line',
-    'empty','line','fill','edge-flag','fill','clipped-line','clipped-fill')
-EXPECTED = (1,2,1,3,2,2,0,0,2,0,2,1,2,1,4,5)
+    'empty','line','fill','edge-flag','fill','clipped-line','clipped-fill',
+    'quad-fill','quad-line','quad-point','quad-line',
+    'quad-fill','quad-line','quad-point','quad-line',
+    'quad-fill','quad-line','quad-point','quad-clipped-line',
+    'quad-clipped-line','quad-clipped-fill','quad-line','empty')
+EXPECTED = (1,2,1,3,2,2,0,0,2,0,2,1,2,1,4,5,6,7,8,7,6,7,8,7,6,7,8,9,9,10,7,0)
 
 
 def validate(text, output=None, software=True, haiku=True, require_pass=True):
@@ -24,16 +32,16 @@ def validate(text, output=None, software=True, haiku=True, require_pass=True):
     if software:
         assert 'HAIKU_MESA_NATIVE_GPU' not in text
     frames = list(re.finditer(r'^ROCK5_POLYGON_PIXELS_BEGIN cycle=(\d+) case=(\d+) name=(\S+) width=64 height=64 format=RGBA8 origin=lower-left\n(.*?)^ROCK5_POLYGON_PIXELS_END (.*?)$', text, re.M | re.S))
-    assert len(frames) == text.count('ROCK5_POLYGON_PIXELS_BEGIN ') == text.count('ROCK5_POLYGON_PIXELS_END ') == 32
+    assert len(frames) == text.count('ROCK5_POLYGON_PIXELS_BEGIN ') == text.count('ROCK5_POLYGON_PIXELS_END ') == 64
     checked, pixels = [], {}
     if output is not None:
         output = Path(output); output.mkdir(parents=True, exist_ok=True)
     for i, frame in enumerate(frames):
-        cycle, case = divmod(i,16)
+        cycle, case = divmod(i,32)
         assert frame.group(1,2,3) == (str(cycle),str(case),NAMES[case])
         lines = frame[4].splitlines()
         assert len(lines) == 66
-        guard = bytes([0x80 + 16*cycle + case])*64
+        guard = bytes([0x80 + 32*cycle + case])*64
         assert lines[0] == 'guard_before=' + guard.hex()
         assert lines[-1] == 'guard_after=' + guard.hex()
         rgba = bytearray()
@@ -61,11 +69,16 @@ def validate(text, output=None, software=True, haiku=True, require_pass=True):
             'edge-flag': 70 <= count <= 160 and interior == 0 and edge == 0,
             'clipped-line': 100 <= count <= 220 and interior == 0 and edge >= 20 and clip >= 10,
             'clipped-fill': 1000 <= count <= 1100 and interior == 64 and clip == 12,
+            'quad-fill': count == 2304 and interior == 64,
+            'quad-line': 180 <= count <= 200 and interior == 0 and edge >= 20,
+            'quad-point': 4 <= count <= 36 and interior == 0 and edge == 0,
+            'quad-clipped-line': 160 <= count <= 190 and interior == 0 and edge >= 20 and clip >= 10,
+            'quad-clipped-fill': count == 1920 and interior == 64 and clip == 12,
         }[kind]
         fields = re.fullmatch(r'cycle=(\d+) case=(\d+) front=([0-9a-f]{4}) back=([0-9a-f]{4}) error=([0-9a-f]{4}) coloured=(\d+) other=(\d+) interior=(\d+) edge=(\d+) clip_edge=(\d+) guard_errors=(\d+) expected=(\d+) pass=([01])',frame[5])
         assert fields is not None
         assert (int(fields[1]),int(fields[2])) == (cycle,case)
-        front = 0x1b00 if case == 3 else 0x1b02 if case in (0,2,13,15) else 0x1b01
+        front = 0x1b00 if case in (3,18,22,26) else 0x1b02 if case in (0,2,13,15,16,20,24,29) else 0x1b01
         back = 0x1b02 if case in (10,11) else front
         state_ok = (int(fields[3],16),int(fields[4],16),int(fields[5],16)) == (front,back,0)
         assert tuple(map(int,fields.group(6,7,8,9,10,11,12))) == (count,other,interior,edge,clip,0,EXPECTED[case])
@@ -79,20 +92,20 @@ def validate(text, output=None, software=True, haiku=True, require_pass=True):
             path = output/f'cycle{cycle}-case{case:02d}.rgba'; path.write_bytes(rgba)
             row['rgba'] = str(path)
         checked.append(row)
-    endings = re.findall(r'^ROCK5_POLYGON_CONTEXT_END cycle=(\d+) cases=16 passed=(\d+) normal_cleanup=1 pass=([01])$',text,re.M)
+    endings = re.findall(r'^ROCK5_POLYGON_CONTEXT_END cycle=(\d+) cases=32 passed=(\d+) normal_cleanup=1 pass=([01])$',text,re.M)
     assert len(endings) == text.count('ROCK5_POLYGON_CONTEXT_END ') == 2
     for cycle, ending in enumerate(endings):
         count = sum(c['pass_'] for c in checked if c['cycle'] == cycle)
-        assert tuple(map(int,ending)) == (cycle,count,int(count == 16))
+        assert tuple(map(int,ending)) == (cycle,count,int(count == 32))
         # Restoration and equivalent paths must retain identical complete images.
         # Reversed line direction can legitimately change endpoint coverage.
-        for a,b in [(0,2),(0,13),(0,11),(1,4),(1,5),(1,10),(6,7),(6,9)]:
+        for a,b in [(0,2),(0,13),(0,11),(1,4),(1,5),(1,10),(6,7),(6,9),(16,20),(16,24),(17,19),(17,21),(17,23),(17,25),(17,30),(18,22),(18,26),(27,28),(6,31)]:
             assert pixels[cycle,a] == pixels[cycle,b], (cycle,a,b)
     passed = all(c['pass_'] for c in checked)
-    assert re.findall(r'^ROCK5_POLYGON_RESULT contexts=2 cases=32 pass=([01])$',text,re.M) == [str(int(passed))]
+    assert re.findall(r'^ROCK5_POLYGON_RESULT contexts=2 cases=64 pass=([01])$',text,re.M) == [str(int(passed))]
     assert text.count('ROCK5_POLYGON_RESULT ') == 1
     if require_pass:
         assert passed, [c['name'] for c in checked if not c['pass_']]
     return dict(status='pass' if passed else 'rendering_failure',software=software,
-        native_qualification=False,contexts=2,frames=32,pixels=131072,guard_bytes=4096,
+        native_qualification=False,contexts=2,frames=64,pixels=262144,guard_bytes=8192,
         passed=sum(c['pass_'] for c in checked),frames_checked=checked,renderers=headers)

@@ -89,9 +89,9 @@
     }
   ],
   "bundle_files": {
-    "mesa-haiku-native.patch": "90c2b29ba3f4e9bc92072f55730a37a9cb009567ed15c8482aa826235bc4e343",
+    "mesa-haiku-native.patch": "864b67b2385e9eed02021ce1364dea488f577dc88a4189e777858fc043bdd16b",
     "libglvnd-haiku-sysroot.patch": "16c8c1110172bed628a6160bd86b2f4e36cb408a59bdbe59d133f7f812732d13",
-    "mesa-native-source-manifest.json": "dc7d5a11669740a3df365ad8cdf454651865faf8d80d7184947b9bc5fc1f0acd",
+    "mesa-native-source-manifest.json": "131189ae1440da11ca278fb1a003be2c578c17152aee212112506d64f75cd691",
     "libglvnd-haiku-mutex.patch": "96f0fa776fa8b3c6425e26981e6e4cbca7fc33f31eb8f8e58bad730891de6035",
     "native_render_validation.py": "709c02edeacce5f66b27f1863d2f26d8bbbe7e1edc932b75ac812562910c1880",
     "render_validation.py": "460d5ab54cf289fe1e84ed3cbe8d8522f453260b889b9b1e86fee074f3843c5b",
@@ -174,12 +174,14 @@
     "reset-status-test.c": "41a5dbf8c30e530662fcf3fff26e227411c8f9ace820a4bd85721bee38f0e197",
     "state-tracker-reset-test.c": "9d9d1921c4d365ae39406ddf503f68f3b93c97a69960160acd8085fdc7d75b8d",
     "test-state-tracker-reset.py": "dd7f599f03f5717ea72ab672d7030f6b9f91051516fafaa01ba467913b41691b",
-    "polygon-probe.cpp": "cecaa715600a00727e775204e40a9fe979ed6a3d4c9a8ad153ebbe27ffd3d4fb",
-    "polygon_validation.py": "ffdbfbc8bbda4a38f1dd33cca0f92b137b143ed8e71732070106b3d1a0c932f4",
+    "polygon-probe.cpp": "64842a8857419637c6449480661e781e6e74b600747513878c9ccbc51399065f",
+    "polygon_validation.py": "0a24041f3e3ef9684f723d9a00f7010a1f8c5e68105eceefb3e42b7255f71b58",
     "run-polygon": "45497a2dd00a10a84bf459d861f2f906083bde0100b3bb3cdba86dea1c9fbe17",
     "test-polygon-geometry.py": "952382a00ad126087aca8288f47bb8c99e35788ee842b3d91b7bcb4faa43c91d",
-    "polygon-geometry-test.c": "f88fd96d13a3a404d115d08c2e8ed55bdb357729ea0f82f2ca8b78c4e9fed549",
-    "polygon-context-test-adapter.h": "6fb645d3beb0a8b47251c044528e04fc6b56f031cd8bcfed8ff3174d85e2a74e"
+    "polygon-geometry-test.c": "a63e7c72f72138ecd94cc2467036773aca3e69d246ee06ea5d0d07f1b2de7c76",
+    "polygon-context-test-adapter.h": "6fb645d3beb0a8b47251c044528e04fc6b56f031cd8bcfed8ff3174d85e2a74e",
+    "application_logging_validation.py": "86f48d3723ad3b63986c4344461db9e05b2486e4068566aa3807823acb38cadc",
+    "test-application-logging.py": "41328940166113aa3b305de290eda293a270879ef04ccc765db3aa63241c1625"
   },
   "host_helpers": {
     "vtn_bindgen2": "8f03a1c42332ec1494a89de73d9bdbe7bba91aeeb98c6c0cd2d6623eb276a167",
@@ -227,5 +229,5 @@
   "previous_qualified_runtime_revision": "hrev60097+243",
   "required_runtime_revision": "hrev60097+240",
   "loss_probe_scope": "Qualified +243 on two native boots: two live shared GLES contexts each receive one unknown-attribution reset notification after the finite raw command fault; ignored read/clear/sync calls report context loss and all 104496 readback bytes remain unchanged. Full display teardown and allocation restoration, fresh GLES pipeline without Haiku reboot, 28 before/fresh frames/181972 pixels/3584 guards, both QEMU modes, earlier regressions, normal recovery and independent integrity pass. +241 reset assertion and +242 cache-fixture failures remain preserved. No innocent-context preservation, arbitrary hang, conformance or native display claim.",
-  "polygon_probe_scope": "Unqualified opt-in candidate: software vertex/geometry processing with native Panfrost rasterization. Direct draws and float32 varyings only; excluded shader resources/effects, transform feedback, front-face/primitive-ID inputs, integer/64-bit varyings, layered viewports, stippling, independent near/far clip, unscaled bias and zero-depth-scale offset. Actual-helper ASan/UBSan tests pass; QEMU/native candidates pending."
+  "polygon_probe_scope": "Unqualified opt-in candidate: software vertex/geometry processing with native Panfrost rasterization. Preserve original quad/quad-strip/polygon boundaries; these legacy modes use CPU geometry even when filled. Probe has 32 cases/context. Direct draws and float32 varyings only; excluded shader resources/effects, transform feedback, front-face/primitive-ID inputs, integer/64-bit varyings, layered viewports, stippling, independent near/far clip, unscaled bias and zero-depth-scale offset. Actual-helper ASan/UBSan tests pass; QEMU/native candidates pending."
 }

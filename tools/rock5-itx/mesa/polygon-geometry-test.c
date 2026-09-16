@@ -276,9 +276,70 @@ static void check_vertices(struct fixture *f, enum mesa_prim mode, unsigned coun
       CHECK(f->collected[i].pos[3] > 0);
    }
 }
+static void check_rectangle_edges(struct fixture *f)
+{
+   CHECK(f->collected_count && f->collected_count % 2 == 0);
+   for (unsigned i = 0; i < f->collected_count; i += 2) {
+      struct collected *a = &f->collected[i], *b = &f->collected[i + 1];
+      CHECK(a->mode == MESA_PRIM_LINES && b->mode == MESA_PRIM_LINES);
+      CHECK(fabsf(a->pos[0] - b->pos[0]) < 0.000001f ||
+            fabsf(a->pos[1] - b->pos[1]) < 0.000001f);
+   }
+}
+
+static void test_legacy_topologies(void)
+{
+   struct fixture *f = calloc(1, sizeof(*f)); CHECK(f); init_fixture(f);
+   struct vertex quad[4] = {
+      {{-.75f,-.5f,0,1}, {1,0,0,1}, {1}},
+      {{ .75f,-.5f,0,1}, {0,1,0,1}, {1}},
+      {{ .75f, .5f,0,1}, {0,0,1,1}, {1}},
+      {{-.75f, .5f,0,1}, {1,1,0,1}, {1}},
+   };
+   struct vertex strip[4] = {quad[0],quad[1],quad[3],quad[2]};
+   struct pipe_draw_info info = {.instance_count = 1};
+   struct pipe_draw_start_count_bias draw = {.count = 4};
+   for (unsigned mode = MESA_PRIM_QUADS; mode <= MESA_PRIM_POLYGON; ++mode) {
+      CHECK(panfrost_sw_polygon_legacy_topology(mode));
+      info.mode = mode;
+      bind_vertices(f, mode == MESA_PRIM_QUAD_STRIP ? strip : quad, 4);
+      f->original_rasterizer.fill_front = f->original_rasterizer.fill_back = PIPE_POLYGON_MODE_LINE;
+      CHECK(run_draw(f, &info, &draw, 1)); check_vertices(f, MESA_PRIM_LINES, 8);
+      check_rectangle_edges(f);
+      f->original_rasterizer.fill_front = f->original_rasterizer.fill_back = PIPE_POLYGON_MODE_POINT;
+      CHECK(run_draw(f, &info, &draw, 1)); check_vertices(f, MESA_PRIM_POINTS, 4);
+      f->original_rasterizer.fill_front = f->original_rasterizer.fill_back = PIPE_POLYGON_MODE_FILL;
+      CHECK(run_draw(f, &info, &draw, 1)); check_vertices(f, MESA_PRIM_TRIANGLES, 6);
+      f->original_rasterizer.fill_front = f->original_rasterizer.fill_back = PIPE_POLYGON_MODE_LINE;
+      f->original_rasterizer.cull_face = PIPE_FACE_FRONT;
+      CHECK(run_draw(f, &info, &draw, 1)); check_vertices(f, MESA_PRIM_LINES, 0);
+      f->original_rasterizer.cull_face = PIPE_FACE_BACK;
+      CHECK(run_draw(f, &info, &draw, 1)); check_vertices(f, MESA_PRIM_LINES, 8);
+      check_rectangle_edges(f); f->original_rasterizer.cull_face = PIPE_FACE_NONE;
+      set_shader(&f->vs, make_vs(SHADER_CLIP)); f->original_rasterizer.clip_plane_enable = 1;
+      CHECK(run_draw(f, &info, &draw, 1)); check_rectangle_edges(f);
+      for (unsigned i = 0; i < f->collected_count; ++i) CHECK(f->collected[i].pos[0] >= -.250001f);
+      f->original_rasterizer.clip_plane_enable = 0; set_shader(&f->vs, make_vs(0));
+   }
+   CHECK(!panfrost_sw_polygon_legacy_topology(MESA_PRIM_TRIANGLES));
+   CHECK(!panfrost_sw_polygon_legacy_topology(MESA_PRIM_LINES));
+   info.mode = MESA_PRIM_QUADS; bind_vertices(f,quad,4);
+   f->original_rasterizer.flatshade = true;
+   CHECK(run_draw(f,&info,&draw,1)); check_vertices(f,MESA_PRIM_LINES,8);
+   for (unsigned i = 0; i < f->collected_count; ++i) CHECK(!memcmp(f->collected[i].color,quad[3].color,16));
+   f->original_rasterizer.flatshade = false;
+   uint16_t indices[] = {99,0,1,2,3,0xffff,0,1,2,3};
+   info.index_size=2; info.has_user_indices=true; info.index.user=indices;
+   info.primitive_restart=true; info.restart_index=0xffff;draw.start=1;draw.count=9;
+   CHECK(run_draw(f,&info,&draw,1)); check_vertices(f,MESA_PRIM_LINES,16);check_rectangle_edges(f);
+   cleanup_fixture(f);free(f);
+   puts("POLYGON_CASE_legacy_quad_strip_polygon_fill_line_point_cull_clip_flat_restart_no_diagonals");
+}
+
 int main(void)
 {
    glsl_type_singleton_init_or_ref();
+   test_legacy_topologies();
    struct fixture *f = calloc(1, sizeof(*f)); CHECK(f); init_fixture(f); bind_vertices(f, triangle, 3);
    struct pipe_draw_info info = {.mode = MESA_PRIM_TRIANGLES, .instance_count = 1};
    struct pipe_draw_start_count_bias draw = {.count = 3};
