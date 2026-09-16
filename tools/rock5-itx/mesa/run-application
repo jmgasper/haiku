@@ -7,6 +7,7 @@ export __EGL_VENDOR_LIBRARY_FILENAMES=/boot/home/mesa-trial/vendor.json
 rock5_application_ram=/boot/home/rock5-sustained-ram
 # The outer graphics-capture script creates output.log on its mounted RAM disk.
 [ -f "$rock5_application_ram/output.log" ]
+/boot/home/mesa-trial/rock5_haiku_application_probe --self-test
 for rock5_application_cycle in 0 1; do
     rock5_application_frames=$rock5_application_ram/application-$rock5_application_cycle
     [ ! -e "$rock5_application_frames" ]

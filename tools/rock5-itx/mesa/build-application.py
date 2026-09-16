@@ -134,12 +134,22 @@ def main():
         run([host_tools / 'xres', '-o', teapot, root / 'GLTeapot.rsrc'], 'teapot-embed')
         probe = root / 'rock5_haiku_application_probe'
         frames = root / 'rock5_application_frames'
-        for source, target, libraries in [('application-probe.cpp', probe, ['-lbe']),
+        # This cross compiler's LIBGCC_SPEC is unconditionally -lgcc, even with
+        # -shared-libgcc. Use the SDK's shared unwinder for C++ cleanup frames.
+        for source, target, libraries in [('application-probe.cpp', probe, ['-lbe', '-lgcc_s']),
                 ('application-frames.cpp', frames, [])]:
             run([compiler + 'g++', '--sysroot=' + str(sdk), '-std=gnu++17', '-O2',
                 '-g', '-Wall', '-Wextra', '-Werror',
                 '-I' + str(REPO / 'src/add-ons/kernel/drivers/graphics/mali_csf'),
                 HERE / source, *libraries, '-o', target], source + '-compile')
+        symbols = subprocess.check_output([compiler + 'readelf', '-Ws', probe], text=True)
+        dynamic = subprocess.check_output([compiler + 'readelf', '-d', probe], text=True)
+        unwind = [line for line in symbols.splitlines() if '_Unwind_' in line]
+        assert unwind and all(' UND ' in line for line in unwind), unwind
+        assert any('_Unwind_Resume@GCC_3.0' in line for line in unwind)
+        assert 'Shared library: [libgcc_s.so.1]' in dynamic
+        save(root / 'controller-unwinder.json', dict(status='shared_unwinder_linked',
+            symbols=unwind, runtime_executed=False))
         package = root / 'package'
         package.mkdir()
         assets = [dict(item) for item in base['assets']]

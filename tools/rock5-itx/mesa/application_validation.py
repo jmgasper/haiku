@@ -80,6 +80,10 @@ def validate(text, output=None, software=False):
             'Kernel Debugging Land', 'DEBUGGER:', 'mutex->owner', 'No EGL renderer'):
         assert marker not in text
     mode = '--software' if software else '--native'
+    assert re.findall(r'^ROCK5_APPLICATION_SELF_TEST_PASS accepted=4 rejected=7 cleanup=11$',
+        text, re.M) == ['ROCK5_APPLICATION_SELF_TEST_PASS accepted=4 rejected=7 cleanup=11']
+    assert text.count('ROCK5_APPLICATION_SELF_TEST_PASS ') == 1
+    assert text.index('ROCK5_APPLICATION_SELF_TEST_PASS ') < text.index('ROCK5_APPLICATION_RUN_BEGIN ')
     assert re.findall(r'^ROCK5_APPLICATION_PASS processes=2 frames=16$', text, re.M) == [
         'ROCK5_APPLICATION_PASS processes=2 frames=16']
     assert text.count('ROCK5_APPLICATION_RUN_BEGIN ') == 2
@@ -101,7 +105,7 @@ def validate(text, output=None, software=False):
         assert re.findall(r'^ROCK5_APPLICATION_MENU item=(.*?) marked=([01])$', body, re.M) == MENU
         capture = re.findall(r'^ROCK5_APPLICATION_CAPTURE phase=(\d+) sample=(\d+) '
             r'width=(\d+) height=(\d+) coloured=(\d+) dark=(\d+) chromatic=(\d+) '
-            r'white=(\d+) file=(\S+)$', body, re.M)
+            r'white=(\d+) yellow=(\d+) file=(\S+)$', body, re.M)
         blocks = re.findall(r'^ROCK5_APPLICATION_PIXELS_BEGIN phase=(\d+) sample=(\d+) '
             r'width=(\d+) height=(\d+) format=RGB8 origin=upper-left\n(.*?)'
             r'^ROCK5_APPLICATION_PIXELS_END phase=(\d+) sample=(\d+) pixels=(\d+)\s*$',
@@ -125,7 +129,7 @@ def validate(text, output=None, software=False):
             for y, line in enumerate(lines):
                 assert re.fullmatch(r'row=' + f'{y:03d}' + r' [0-9a-f]{' + str(width * 6) + '}', line)
                 rgb.extend(bytes.fromhex(line.split(' ', 1)[1]))
-            coloured = dark = chromatic = white = 0
+            coloured = dark = chromatic = white = yellow = 0
             for i in range(0, len(rgb), 3):
                 pixel = rgb[i:i + 3]
                 black = max(pixel) <= 8
@@ -133,18 +137,19 @@ def validate(text, output=None, software=False):
                 coloured += not black
                 chromatic += max(pixel) - min(pixel) > 8
                 white += min(pixel) >= 240
-            assert tuple(map(int, header[4:8])) == (coloured, dark, chromatic, white)
-            assert header[8] == f'/boot/home/rock5-sustained-ram/application-{cycle}/phase{phase}-sample{sample}.ppm'
+                yellow += pixel[0] >= 240 and pixel[1] >= 240 and pixel[2] <= 8
+            assert tuple(map(int, header[4:9])) == (coloured, dark, chromatic, white, yellow)
+            assert header[9] == f'/boot/home/rock5-sustained-ram/application-{cycle}/phase{phase}-sample{sample}.ppm'
             assert coloured >= 256 and dark >= width * height // 8
             if phase == 3:
-                assert white >= 256 and chromatic == 0
+                assert (white == coloured and chromatic == 0) or (yellow == coloured and chromatic == coloured)
             else:
                 assert chromatic >= 128
             pictures[phase, sample] = bytes(rgb)
             geometry[phase, sample] = (width, height)
             item = dict(cycle=cycle, phase=phase, sample=sample, width=width, height=height,
                 pixels=width * height, sha256=hashlib.sha256(rgb).hexdigest(),
-                foreground=coloured, dark=dark, chromatic=chromatic, white=white)
+                foreground=coloured, dark=dark, chromatic=chromatic, white=white, yellow=yellow)
             if output:
                 directory = Path(output)
                 directory.mkdir(parents=True, exist_ok=True)

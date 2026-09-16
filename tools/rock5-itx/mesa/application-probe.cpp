@@ -38,15 +38,84 @@ static void Require(bool condition, const char* what)
 #include "native-observer.h"
 #undef CHECK
 
+static void ValidateReply(uint32 operation, const BMessage& reply)
+{
+    Require(reply.what == B_REPLY, "scripting reply was not understood");
+    type_code type;
+    int32 count;
+    status_t info = reply.GetInfo("error", &type, &count);
+    // BWindow and BView omit error on successful reads. Setters and menu
+    // invocations acknowledge success explicitly; callers check result types.
+    if (operation == B_GET_PROPERTY && info == B_NAME_NOT_FOUND) return;
+    int32 error = B_ERROR;
+    Require(info == B_OK && type == B_INT32_TYPE && count == 1
+        && reply.FindInt32("error", &error) == B_OK && error == B_OK,
+        "scripting property failed");
+}
+
 static BMessage Request(const BMessenger& target, BMessage& request)
 {
     BMessage reply;
     Require(target.SendMessage(&request, &reply, kReplyTimeout, kReplyTimeout) == B_OK,
         "scripting reply timeout or transport failure");
-    int32 error = B_ERROR;
-    Require(reply.FindInt32("error", &error) == B_OK && error == B_OK,
-        "scripting property failed");
+    ValidateReply(request.what, reply);
     return reply;
+}
+
+static __attribute__((noinline)) void SelfTestReply(uint32 operation,
+    const BMessage& reply, bool& destroyed)
+{
+    struct Cleanup {
+        bool& destroyed;
+        ~Cleanup() { destroyed = true; }
+    } cleanup{destroyed};
+    BMessage copy(reply);
+    ValidateReply(operation, copy);
+}
+
+static int SelfTest()
+{
+    try {
+        unsigned accepted = 0, rejected = 0;
+        auto check = [&](uint32 operation, const BMessage& reply, bool valid) {
+            bool caught = false, destroyed = false;
+            try {
+                SelfTestReply(operation, reply, destroyed);
+            } catch (const std::runtime_error&) {
+                caught = true;
+            }
+            Require(destroyed && caught != valid, "scripting reply self-test");
+            if (valid) accepted++; else rejected++;
+        };
+        BMessage reply(B_REPLY);
+        check(B_GET_PROPERTY, reply, true);
+        check(B_SET_PROPERTY, reply, false);
+        check(B_EXECUTE_PROPERTY, reply, false);
+        Require(reply.AddInt32("error", B_OK) == B_OK, "self-test setup");
+        for (uint32 operation : {B_GET_PROPERTY, B_SET_PROPERTY, B_EXECUTE_PROPERTY})
+            check(operation, reply, true);
+        reply.what = B_MESSAGE_NOT_UNDERSTOOD;
+        check(B_GET_PROPERTY, reply, false);
+        reply.what = B_REPLY;
+        Require(reply.AddInt32("error", B_OK) == B_OK, "self-test setup");
+        check(B_GET_PROPERTY, reply, false);
+        reply.MakeEmpty();
+        Require(reply.AddInt32("error", B_ERROR) == B_OK, "self-test setup");
+        check(B_GET_PROPERTY, reply, false);
+        reply.MakeEmpty();
+        Require(reply.AddString("error", "0") == B_OK, "self-test setup");
+        check(B_GET_PROPERTY, reply, false);
+        reply.MakeEmpty();
+        reply.what = B_MESSAGE_NOT_UNDERSTOOD;
+        check(B_GET_PROPERTY, reply, false);
+        Require(accepted == 4 && rejected == 7, "self-test count");
+        printf("ROCK5_APPLICATION_SELF_TEST_PASS accepted=%u rejected=%u cleanup=11\n",
+            accepted, rejected);
+        return 0;
+    } catch (const std::exception& error) {
+        fprintf(stderr, "ROCK5_APPLICATION_FAILURE self_test=%s\n", error.what());
+        return 1;
+    }
 }
 
 static BRect Frame(const BMessenger& window)
@@ -125,7 +194,7 @@ static std::vector<unsigned char> Capture(const BMessenger& window,
     Require(bitmap.InitCheck() == B_OK && screen.ReadBitmap(&bitmap, false, &bounds) == B_OK,
         "screen capture failed");
     std::vector<unsigned char> rgb(width * height * 3);
-    unsigned coloured = 0, dark = 0, varied = 0, white = 0;
+    unsigned coloured = 0, dark = 0, varied = 0, white = 0, yellow = 0;
     for (unsigned y = 0; y < height; y++) {
         const unsigned char* row = static_cast<const unsigned char*>(bitmap.Bits()) + y * bitmap.BytesPerRow();
         for (unsigned x = 0; x < width; x++) {
@@ -137,14 +206,17 @@ static std::vector<unsigned char> Capture(const BMessenger& window,
             varied += std::max({pixel[0], pixel[1], pixel[2]})
                 - std::min({pixel[0], pixel[1], pixel[2]}) > 8;
             white += pixel[0] >= 240 && pixel[1] >= 240 && pixel[2] >= 240;
+            yellow += pixel[0] >= 240 && pixel[1] >= 240 && pixel[2] <= 8;
         }
     }
     Require(coloured >= 256 && dark >= width * height / 8,
         "captured view lacks the model or dark background");
-    // ObjectView initializes current colour to white. With lighting disabled,
-    // TriangleObject changes materials, not current colour: the model is white.
+    // ObjectView initializes current colour to white, but its FPS overlay can
+    // leave it yellow (GL_CURRENT_BIT is not saved). With lighting disabled,
+    // TriangleObject changes materials, not colour: accept either uniform fill.
     if (phase == 3)
-        Require(white >= 256 && varied == 0, "unlit model is not white");
+        Require((white == coloured && varied == 0)
+            || (yellow == coloured && varied == coloured), "unlit model is not uniform white or yellow");
     else
         Require(varied >= 128, "lit model lacks expected coloured shading");
     char path[1024];
@@ -155,8 +227,8 @@ static std::vector<unsigned char> Capture(const BMessenger& window,
     bool wrote = fprintf(output, "P6\n%u %u\n255\n", width, height) > 0
         && fwrite(rgb.data(), 1, rgb.size(), output) == rgb.size();
     Require(fclose(output) == 0 && wrote, "capture file write");
-    printf("ROCK5_APPLICATION_CAPTURE phase=%u sample=%u width=%u height=%u coloured=%u dark=%u chromatic=%u white=%u file=%s\n",
-        phase, sample, width, height, coloured, dark, varied, white, path);
+    printf("ROCK5_APPLICATION_CAPTURE phase=%u sample=%u width=%u height=%u coloured=%u dark=%u chromatic=%u white=%u yellow=%u file=%s\n",
+        phase, sample, width, height, coloured, dark, varied, white, yellow, path);
     captures++;
     return rgb;
 }
@@ -178,6 +250,7 @@ static void ObserveAnimation(const BMessenger& window, const char* directory, un
 int main(int argc, char** argv)
 {
     setbuf(stdout, nullptr);
+    if (argc == 2 && !strcmp(argv[1], "--self-test")) return SelfTest();
     if (argc != 4 || (strcmp(argv[1], "--native") && strcmp(argv[1], "--software"))) return 2;
     bool software = !strcmp(argv[1], "--software");
     int observer = -1;
