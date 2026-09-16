@@ -1,5 +1,56 @@
 # GLTeapot application trial
 
+The +252 candidate preserves quads, quad strips and polygon boundaries through
+the opt-in CPU geometry path, retaining native Mali rasterization. GLTeapot
+passes its original application validator on one native boot: two normal
+process exits, fourteen menu confirmations, all sixteen frames and 1,007,104
+pixels, 1,386 completed GPU submissions and restored allocation baselines.
+Actual contact-sheet review shows the quad wireframe without the earlier extra
+diagonals. Controller and renderer logs are separately captured, checked and
+combined after both processes exit. All four stream lengths and SHA-256 hashes
+pass. **The complete candidate remains unqualified.**
+
+The expanded polygon probe independently rejects the same image. Each context
+passes 25 of 32 cases. Immediate-mode quad/polygon lines lose their left edge;
+quad strips lose a closing edge; point mode produces three corners instead of
+four; and the front-facing quad culling case is empty. Indexed quad/strip
+outlines and filled controls pass. Both contexts repeat these failures. All
+64 complete RGBA images and 8,192 guard bytes are retained and the diagnostic
+sheet was actually reviewed. The unchanged validator rejects equivalent-image
+comparison `(0, 17, 19)`; the guest also reports failure. Geometry traces report
+28 draws, 23 batches and 138 vertices per context, below the predeclared 24
+batches and 155 vertices. No acceptance rule was changed for this run.
+
+The trial also reveals a controller expectation mismatch: the polygon probe
+creates two contexts in one retained EGLDisplay, producing one normal runtime
+teardown. Its controller expected two. The actual UART contains 29 runtimes,
+including two normal GLTeapot retirements and one normal polygon retirement.
+This remains separate from the confirmed pixel failure and must be resolved
+before another qualification attempt. The second native boot was not reached.
+
+The full Haiku and reconstructed Mesa/application builds pass. Both QEMU modes
+pass two boots each: 48 checked capture transfers, 64 reviewed application
+frames and 256 reviewed polygon frames. The real geometry helper passes its
+existing host ASan/UBSan checks, but those checks did not cover every failing
+native input. After the failed trial, normal shutdown, automatic Linux recovery,
+independent eMMC file/filesystem/partition/region checks, recovery-image hashing,
+source verification and used-image preservation all pass. The original failed
+controllers, sources and transcripts remain unchanged.
+
+- Source: `b0d84c5fac8155a19916c24f7df84403eda994b6`, hrev60097+252.
+- Original image SHA-256:
+  `0ea6826de5783b53caa7c1119a62701b8326f3e7addfb75288ccc4bfc63a25dd`.
+- Native evidence: `artifacts/automated-mali-polygon-topology/20260916T104428Z-562dbb`;
+  309 preserved source/input files plus the two original Linux reference binaries.
+- QEMU EL1: `artifacts/qemu-shell/20260916T102542Z-e0c40f`;
+  EL2: `artifacts/qemu-shell/20260916T103454Z-53ba9c`.
+- Recovery boot: `e8d4a05a-d1d5-4ffb-b27d-e22ad3d1fb6c`.
+- Used-image archive: `artifacts/nanokvm-image-archive/20260916T110321Z-477c2d`;
+  SHA-256 `f6e2a9027590ff381306d02d17e5c3d12c56376374c0602cbb88e5967075357b`.
+  The exact verified remote copy was removed; read-only recovery remains attached.
+
+## Earlier +250 topology and logging trial
+
 The +250 candidate enables the experimental CPU polygon geometry path while
 retaining native Mali rasterization. Its first native boot passes the earlier
 graphics checks and launches GLTeapot twice. Both processes exit normally;

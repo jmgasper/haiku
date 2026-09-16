@@ -7,13 +7,14 @@ firmware supports it.
 Current priority is [Mali-G610 GPU acceleration](GPU.md); further Ethernet
 driver work is deferred at the owner's request.
 
-The +250 [GLTeapot candidate](MESA-APPLICATION.md) reaches one native boot
-with the opt-in polygon geometry path. Wireframe now appears, but extra diagonal
-edges remain, and the run stops on a missing menu-confirmation log record.
-It remains unqualified. Earlier graphics checks, two normal application exits,
-7,922 completed submissions, automatic recovery and independent storage checks
-pass. The complete failed transcript, sixteen images and used image are saved.
-The earlier +247 failure and separate polygon diagnostic are also preserved.
+The +252 [GLTeapot candidate](MESA-APPLICATION.md) passes its application checks
+on one native boot: two normal launches, all menu confirmations, 1,386 completed
+GPU submissions and sixteen reviewed frames. The wireframe shows the original
+quad mesh. The expanded polygon probe then fails fourteen of its 64 cases,
+including missing immediate-mode edges/points and incorrect quad culling, so
+this candidate remains unqualified. Normal recovery, independent storage checks
+and preservation of the failed trial pass. The +250 and +247 failures remain
+recorded.
 
 The +243 USB image qualifies [reset notification for live Mesa contexts](MESA-LOSS.md)
 on two native boots. Both shared contexts receive one loss notification, ignore
