@@ -22,6 +22,9 @@ polygon probe fails fourteen of 64 cases; immediate-mode boundaries, points and
 quad culling need correction before another qualification attempt. Normal
 recovery, independent storage checks and used-image preservation pass. Earlier
 failed candidates remain recorded.
+The +254 diagnostic captures correct input edge flags but a cleared final
+transformed flag. Culling changes with logging enabled, so it is still
+unqualified. CPU shader input/output and buffer-binding traces are next.
 The +210 image runs Mesa/Panfrost on that native interface. Across two boots,
 all 32,768 rendered pixels match Linux and all 32 Mesa submissions complete.
 Allocation baselines, previous GPU regressions, both QEMU modes, recovery and

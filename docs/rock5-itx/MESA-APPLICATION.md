@@ -49,6 +49,51 @@ controllers, sources and transcripts remain unchanged.
   SHA-256 `f6e2a9027590ff381306d02d17e5c3d12c56376374c0602cbb88e5967075357b`.
   The exact verified remote copy was removed; read-only recovery remains attached.
 
+## +254 native polygon diagnostics
+
+Two bounded diagnostic boots use the same +254 image and graphics-library
+bytes. The first captures all 64 images byte-identical to the rejected +252
+trial. Its 56 geometry draws show correct input positions and all four input
+edge flags equal to 1.0. For immediate-mode unclipped quad, strip and polygon
+lines/points, the final transformed vertex instead has `edgeflag=0`; indexed
+and clipped controls retain their flags. The shader NIR is retained.
+
+The follow-up enables `NIR_DEBUG=tgsi` after a QEMU check confirms that this
+logging leaves all 64 software-rendered frames unchanged. Native execution
+captures 30 translated vertex shaders, including the expected instruction
+`MOV OUT[1].x, IN[1].xxxx`. The six missing-edge/point cases still fail in each
+context. Case 30 now produces a complete outline in both contexts; 62 of 64
+images are unchanged. The frozen controller reports `incomplete` with
+`quad-cull-front` because it expected the earlier image hashes. This deviation
+is retained, not converted into qualification. Both actual diagnostic sheets
+and native desktop captures were visually reviewed.
+
+The native CPU input-processing fault remains unresolved. Independent checked
+pipe-adapter fixtures pass 24 basic layout, 24 interleaved-buffer and 36 repeated
+state-transition checks under host ASan/UBSan. Two Haiku ARM64 QEMU runs using
+the actual +254 Mesa libraries pass 24 basic and 24 interleaved layout checks.
+These tests do not reproduce the failure or exercise native Panfrost callbacks.
+The next diagnostic adds bounded CPU shader input/output and buffer-binding
+logs only when the existing geometry trace option is enabled.
+
+Both native trials complete normal shutdown, automatic Linux recovery, four
+normal GPU runtime/heap retirements, independent eMMC file/partition/region
+hashes, source verification and used-image preservation. No kernel fault is
+observed. The source snapshots contain 343 and 345 files respectively. The
+original validators, controllers and failed results remain unchanged.
+
+- Source: `6b08a84b31bd9c2a24113cc7d8ca5fb489e7a4ea`, hrev60097+254.
+- Original image SHA-256:
+  `fa7c3761e580cc01438a2c234acebf6b7e3e7c1da81eaa7c95d25e916808c4bd`.
+- First diagnostic: `artifacts/automated-mali-polygon-trace/20260916T114812Z-8787b9`;
+  transcript SHA-256 `e13a98510a3cf74d7b358ef593cf2c7e2c1333c8e7e8ef6b11bf1cbee5368fea`.
+- Shader diagnostic: `artifacts/automated-mali-polygon-tgsi/20260916T122152Z-025763`;
+  transcript SHA-256 `888daf10bee24441c5244e3f54366944fe9e6809552392ca0e144b3a6be67b64`.
+- Used-image archives: `artifacts/nanokvm-image-archive/20260916T115832Z-3abcbf`
+  and `artifacts/nanokvm-image-archive/20260916T123355Z-0facfe`.
+- Latest recovery boot: `9497ae0b-ec17-4fa7-9197-36dd3717630e`;
+  NanoKVM boot `2597fc80-b134-4c61-9241-c7231d552eb2` remains unchanged.
+
 ## Earlier +250 topology and logging trial
 
 The +250 candidate enables the experimental CPU polygon geometry path while

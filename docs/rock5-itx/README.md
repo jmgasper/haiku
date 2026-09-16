@@ -18,6 +18,17 @@ this candidate remains unqualified. Normal recovery, independent storage checks
 and preservation of the failed trial pass. The +250 and +247 failures remain
 recorded.
 
+The +254 diagnostic traces confirm that all four immediate-mode input edge
+flags are present, but the last transformed vertex loses its flag in the six
+unclipped line/point cases. A follow-up using the same image with shader logging
+captures the expected edge-flag instruction. Its culling case changes from empty
+to a complete outline, while the other 62 images remain identical. This
+logging-sensitive result is not an accepted fix. Both diagnostic runs recover
+normally and pass independent storage checks; their complete evidence and used
+images are preserved. The next bounded trace records CPU shader inputs/outputs
+and buffer bindings to locate the corruption. [MESA-APPLICATION.md](MESA-APPLICATION.md)
+records the diagnostic scope and evidence.
+
 The +243 USB image qualifies [reset notification for live Mesa contexts](MESA-LOSS.md)
 on two native boots. Both shared contexts receive one loss notification, ignore
 further rendering and close completely; fresh contexts then render without a

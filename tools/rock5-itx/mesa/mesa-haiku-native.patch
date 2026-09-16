@@ -1450,7 +1450,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_sw_polygon.c b/src/gallium/drivers
 new file mode 100644
 --- /dev/null
 +++ b/src/gallium/drivers/panfrost/pan_sw_polygon.c
-@@ -0,0 +1,632 @@
+@@ -0,0 +1,692 @@
 +/* SPDX-License-Identifier: MIT
 + * Experimental software geometry with native Panfrost rasterization.
 + * Opt-in while shader/resource coverage and native rendering are qualified.
@@ -1509,7 +1509,57 @@ new file mode 100644
 +   uint64_t draws, batches, emitted_vertices, failures;
 +   bool trace_draw, trace_vertices, trace_shader_valid;
 +   unsigned char trace_vs_sha1[20];
++   void (*trace_run_linear)(struct draw_vertex_shader *, const float (*)[4],
++                           float (*)[4], const struct draw_buffer_info *,
++                           unsigned, unsigned, unsigned, const unsigned *);
 +};
++
++static void
++trace_vertex_attributes(struct panfrost_sw_polygon *sw, const char *phase,
++                        const float (*data)[4], unsigned count,
++                        unsigned stride, unsigned slots)
++{
++   for (unsigned v = 0; v < count; ++v) {
++      const float (*attributes)[4] = (const void *)
++         ((const char *)data + (size_t)v * stride);
++      for (unsigned a = 0; a < slots; ++a) {
++         uint32_t bits[4];
++         memcpy(bits, attributes[a], sizeof(bits));
++         fprintf(stderr, "HAIKU_PAN_GEOMETRY_VS_%s draw=%llu vertex=%u slot=%u bits=%08x,%08x,%08x,%08x\n",
++                 phase, (unsigned long long)sw->draws, v, a,
++                 bits[0], bits[1], bits[2], bits[3]);
++      }
++   }
++}
++
++static void
++trace_run_vertex_shader(struct draw_vertex_shader *shader,
++                         const float (*input)[4], float (*output)[4],
++                         const struct draw_buffer_info *constants,
++                         unsigned count, unsigned input_stride,
++                         unsigned output_stride, const unsigned *fetch_elts)
++{
++   struct panfrost_context *ctx = (void *)shader->draw->pipe;
++   struct panfrost_sw_polygon *sw = ctx->sw_polygon;
++   bool trace = sw->trace_draw && count <= 8 &&
++                shader->info.num_inputs <= PIPE_MAX_ATTRIBS &&
++                shader->info.num_outputs <= PIPE_MAX_ATTRIBS;
++   if (trace) {
++      fprintf(stderr, "HAIKU_PAN_GEOMETRY_VS_BEGIN draw=%llu count=%u input_stride=%u output_stride=%u inputs=%u outputs=%u\n",
++              (unsigned long long)sw->draws, count, input_stride, output_stride,
++              shader->info.num_inputs, shader->info.num_outputs);
++      trace_vertex_attributes(sw, "INPUT", input, count, input_stride,
++                              shader->info.num_inputs);
++   }
++   sw->trace_run_linear(shader, input, output, constants, count,
++                         input_stride, output_stride, fetch_elts);
++   if (trace) {
++      trace_vertex_attributes(sw, "OUTPUT", (const float (*)[4])output, count,
++                              output_stride, shader->info.num_outputs);
++      fprintf(stderr, "HAIKU_PAN_GEOMETRY_VS_END draw=%llu\n",
++              (unsigned long long)sw->draws);
++   }
++}
 +
 +static void
 +emit_batch(struct panfrost_sw_polygon *sw)
@@ -1743,6 +1793,10 @@ new file mode 100644
 +   sw->vs = draw_create_vertex_shader(sw->draw, &vs_state);
 +   if (!sw->vs)
 +      return false;
++   if (debug_get_option_haiku_sw_polygon_trace()) {
++      sw->trace_run_linear = sw->vs->run_linear;
++      sw->vs->run_linear = trace_run_vertex_shader;
++   }
 +   draw_bind_vertex_shader(sw->draw, sw->vs);
 +   draw_bind_fragment_shader(sw->draw, sw->fs);
 +
@@ -1971,6 +2025,12 @@ new file mode 100644
 +   }
 +
 +   if (sw->trace_draw) {
++      for (unsigned b = 0; b < num_buffers; ++b) {
++         fprintf(stderr, "HAIKU_PAN_GEOMETRY_BUFFER draw=%llu buffer=%u offset=%u bytes=%zu user=%u\n",
++                 (unsigned long long)sw->draws, b,
++                 saved_buffers[b].buffer_offset, vertex_map_sizes[b],
++                 saved_buffers[b].is_user_buffer);
++      }
 +      fprintf(stderr, "HAIKU_PAN_GEOMETRY_INPUT draw=%llu mode=%u start=%u count=%u index_size=%u bias=%d front=%u back=%u cull=%u ccw=%u first=%u clip=%u elements=%u\n",
 +              (unsigned long long)sw->draws, info->mode, draws[0].start,
 +              draws[0].count, info->index_size, draws[0].index_bias,
