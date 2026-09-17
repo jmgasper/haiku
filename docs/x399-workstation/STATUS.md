@@ -12,7 +12,7 @@ listed as verified is untested.
 | USB | all controllers and ports enumerate devices | all 5 xHCI controllers start after the PCI fix; NanoKVM device enumerates on the ASM2142; other ports need physical devices |
 | Audio | ALC1220 analog output, HDMI audio | AMD HDA and GP102 HDMI controllers attach (`/dev/audio/hmulti/hda/0,1`); playback untested |
 | Graphics | GTX 1080 Ti accelerated 2D/3D, 3-4 monitors | in progress: NVKMS modesetting works; the accelerant spans the desktop over all connected displays (verified with HDMI plus a forced DP-0, 2560x1080); 3D not working yet |
-| Sleep | S3 suspend and resume | not implemented in Haiku |
+| Sleep | S3 suspend and resume | kernel, CPUs, PCI, NVMe and GPU resume; USB, network, audio and screen redraw pending |
 
 ## Log
 
@@ -44,3 +44,13 @@ listed as verified is untested.
 - 2026-09-17: fixed an early-boot panic with on-screen debug output: 32 CPUs
   printing during application processor start-up made `dprintf` trip the
   spinlock deadlock detector.
+- 2026-09-17: ACPI S3 on x86_64. A real mode trampoline at 0x81000 resumes
+  the boot CPU, which restarts the other CPUs through INIT/SIPI and keeps the
+  TSC continuous. The PCI root driver restores configuration space and MSI-X
+  tables, `nvme_disk` resets its controller, and `nvidia_rm` suspends NVKMS and
+  the RM; the accelerant sets the mode again after resume. Verified by waking
+  with the power button: the syslog of the resumed session reaches the disk and
+  the display comes back, but its contents are not redrawn yet. Testing uses
+  `x86suspend s3 [flags]` (generic syscall `x86_suspend`). Later on the same
+  day the workstation stopped reacting to the NanoKVM power button and needs a
+  power-cycle at the wall.
