@@ -557,6 +557,16 @@ extern struct nvme_ctrlr * nvme_ctrlr_open(struct pci_device *pdev,
 extern int nvme_ctrlr_close(struct nvme_ctrlr *ctrlr);
 
 /**
+ * @brief Prepare the controller for power removal
+ */
+extern int nvme_ctrlr_suspend(struct nvme_ctrlr *ctrlr);
+
+/**
+ * @brief Reinitialize the controller after power was restored
+ */
+extern int nvme_ctrlr_resume(struct nvme_ctrlr *ctrlr);
+
+/**
  * @brief Get controller capabilities and features
  *
  * @param ctrlr	Controller handle

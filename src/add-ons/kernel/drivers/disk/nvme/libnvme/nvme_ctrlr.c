@@ -1032,6 +1032,33 @@ out:
 }
 
 /*
+ * Notify the controller that power will be removed.
+ */
+int nvme_ctrlr_suspend(struct nvme_ctrlr *ctrlr)
+{
+	pthread_mutex_lock(&ctrlr->lock);
+	nvme_ctrlr_shutdown(ctrlr);
+	pthread_mutex_unlock(&ctrlr->lock);
+
+	return 0;
+}
+
+/*
+ * Reinitialize the controller and its active queue pairs after power was
+ * restored.
+ */
+int nvme_ctrlr_resume(struct nvme_ctrlr *ctrlr)
+{
+	int ret;
+
+	pthread_mutex_lock(&ctrlr->lock);
+	ret = nvme_ctrlr_reset(ctrlr);
+	pthread_mutex_unlock(&ctrlr->lock);
+
+	return ret;
+}
+
+/*
  * Set a controller options.
  */
 static void nvme_ctrlr_set_opts(struct nvme_ctrlr *ctrlr,

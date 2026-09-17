@@ -121,6 +121,9 @@ typedef struct {
 
 	rw_lock					rounded_write_lock;
 
+	rw_lock					suspend_lock;
+		// read locked for every command, write locked while suspended
+
 	ConditionVariable		interrupt;
 	int32					polling;
 
@@ -176,6 +179,86 @@ nvme_disk_set_capacity(nvme_disk_driver_info* info, uint64 capacity,
 
 
 static int32 nvme_interrupt_handler(void* _info);
+
+
+static void
+nvme_disk_configure_features(nvme_disk_driver_info* info)
+{
+	if (info->ctrlr->feature_supported[NVME_FEAT_INTERRUPT_COALESCING]) {
+		uint32 microseconds = 16, threshold = 32;
+		nvme_ctrlr_set_feature(info->ctrlr, false, NVME_FEAT_INTERRUPT_COALESCING,
+			((microseconds / 100) << 8) | threshold, 0, 0, 0, 0, NULL, 0, NULL);
+	}
+
+	if (info->ctrlr->feature_supported[NVME_FEAT_AUTONOMOUS_POWER_STATE_TRANSITION]) {
+		// dump power states
+		struct nvme_ctrlr_data& cdata = info->ctrlr->cdata;
+		if (cdata.npss > 0 && cdata.npss < 31) {
+			TRACE_ALWAYS("\tpower states: %u\n", cdata.npss);
+			for (uint8 i = 0; i <= cdata.npss; i++) {
+				struct nvme_power_state	psd;
+				memcpy(&psd, &cdata.psd[i], sizeof(struct nvme_power_state));
+				TRACE_ALWAYS("\tps %u: mp:%fW %soperational enlat:%u exlat:%u rrt:%u rrl:%u\n",
+					i, psd.mp / (psd.mxps == 0 ? 100.0 : 10000.0),
+					psd.nops ? "non-" : "", psd.enlat, psd.exlat, psd.rrt, psd.rrl);
+				TRACE_ALWAYS("\trwt:%u rwl:%u idlp:%fW actp:%fW apw:%u\n", psd.rwt, psd.rwl,
+					psd.idlp / (psd.ips == 2 ? 100.0 : (psd.ips == 1 ? 10000.0 : 1.0)),
+					psd.actp / (psd.aps == 2 ? 100.0 : (psd.aps == 1 ? 10000.0 : 1.0)),
+					psd.apw);
+			}
+
+			uint32_t tableSize = 32 * sizeof(uint64);
+			uint64* table = (uint64*)malloc(tableSize);
+			memset(table, 0, tableSize);
+
+			// configure apst: the table is filled with two differents states which matches
+			// the behavior of the Linux driver, itself inspired by Intel/Windows drivers.
+			// a first state with a low latency power state and a second state with a higher
+			// latency power state. the feature is activated if at least one state is found.
+			uint64 target = 0;
+			bool firstStateSet = false;
+			bool secondStateSet = false;
+			for (uint8 i = cdata.npss; i > 0; i--) {
+				struct nvme_power_state	psd;
+				memcpy(&psd, &cdata.psd[i], sizeof(struct nvme_power_state));
+				if (psd.nops && psd.exlat <= 100000) {
+					uint32 totalLatency = psd.enlat + psd.exlat;
+					uint32 transitionTime = 0;
+					if (totalLatency < 100000 && !secondStateSet) {
+						secondStateSet = true;
+						transitionTime = 2000;
+					}
+					if (totalLatency < 15000 && secondStateSet && !firstStateSet) {
+						transitionTime = 100;
+						firstStateSet = true;
+					}
+					if (transitionTime > 0)
+						target = (i << 3) | (transitionTime << 8);
+				}
+				table[i - 1] = target;
+			}
+			TRACE_ALWAYS("\tautonomous power state transition table:\n");
+			for (int i = 0; i < 8; i++) {
+				// skip the rest if the four values are zero
+				if (table[i * 4] == 0 && table[i * 4 + 1] == 0 && table[i * 4 + 2] == 0
+					&& table[i * 4 + 3] == 0) {
+					break;
+				}
+				TRACE_ALWAYS("\t%" B_PRIx64 " %" B_PRIx64" %" B_PRIx64" %" B_PRIx64 "\n",
+					table[i * 4], table[i * 4 + 1], table[i * 4 + 2], table[i * 4 + 3]);
+			}
+			int err = nvme_ctrlr_set_feature(info->ctrlr, false,
+				NVME_FEAT_AUTONOMOUS_POWER_STATE_TRANSITION,
+				(firstStateSet || secondStateSet) ? 1 : 0, 0, 0, 0, 0, table, tableSize, NULL);
+			if (err != 0)
+				TRACE_ERROR("failed to set apst table!\n");
+			else
+				TRACE_ALWAYS("\t=> feature apst table set\n");
+
+			free(table);
+		}
+	}
+}
 
 
 static status_t
@@ -291,80 +374,7 @@ nvme_disk_init_device(void* _info, void** _cookie)
 	info->interrupt.Init(info, "nvme_disk interrupt");
 	install_io_interrupt_handler(irq, nvme_interrupt_handler, (void*)info, B_NO_HANDLED_INFO);
 
-	if (info->ctrlr->feature_supported[NVME_FEAT_INTERRUPT_COALESCING]) {
-		uint32 microseconds = 16, threshold = 32;
-		nvme_ctrlr_set_feature(info->ctrlr, false, NVME_FEAT_INTERRUPT_COALESCING,
-			((microseconds / 100) << 8) | threshold, 0, 0, 0, 0, NULL, 0, NULL);
-	}
-
-	if (info->ctrlr->feature_supported[NVME_FEAT_AUTONOMOUS_POWER_STATE_TRANSITION]) {
-		// dump power states
-		struct nvme_ctrlr_data& cdata = info->ctrlr->cdata;
-		if (cdata.npss > 0 && cdata.npss < 31) {
-			TRACE_ALWAYS("\tpower states: %u\n", cdata.npss);
-			for (uint8 i = 0; i <= cdata.npss; i++) {
-				struct nvme_power_state	psd;
-				memcpy(&psd, &cdata.psd[i], sizeof(struct nvme_power_state));
-				TRACE_ALWAYS("\tps %u: mp:%fW %soperational enlat:%u exlat:%u rrt:%u rrl:%u\n",
-					i, psd.mp / (psd.mxps == 0 ? 100.0 : 10000.0),
-					psd.nops ? "non-" : "", psd.enlat, psd.exlat, psd.rrt, psd.rrl);
-				TRACE_ALWAYS("\trwt:%u rwl:%u idlp:%fW actp:%fW apw:%u\n", psd.rwt, psd.rwl,
-					psd.idlp / (psd.ips == 2 ? 100.0 : (psd.ips == 1 ? 10000.0 : 1.0)),
-					psd.actp / (psd.aps == 2 ? 100.0 : (psd.aps == 1 ? 10000.0 : 1.0)),
-					psd.apw);
-			}
-
-			uint32_t tableSize = 32 * sizeof(uint64);
-			uint64* table = (uint64*)malloc(tableSize);
-			memset(table, 0, tableSize);
-
-			// configure apst: the table is filled with two differents states which matches
-			// the behavior of the Linux driver, itself inspired by Intel/Windows drivers.
-			// a first state with a low latency power state and a second state with a higher
-			// latency power state. the feature is activated if at least one state is found.
-			uint64 target = 0;
-			bool firstStateSet = false;
-			bool secondStateSet = false;
-			for (uint8 i = cdata.npss; i > 0; i--) {
-				struct nvme_power_state	psd;
-				memcpy(&psd, &cdata.psd[i], sizeof(struct nvme_power_state));
-				if (psd.nops && psd.exlat <= 100000) {
-					uint32 totalLatency = psd.enlat + psd.exlat;
-					uint32 transitionTime = 0;
-					if (totalLatency < 100000 && !secondStateSet) {
-						secondStateSet = true;
-						transitionTime = 2000;
-					}
-					if (totalLatency < 15000 && secondStateSet && !firstStateSet) {
-						transitionTime = 100;
-						firstStateSet = true;
-					}
-					if (transitionTime > 0)
-						target = (i << 3) | (transitionTime << 8);
-				}
-				table[i - 1] = target;
-			}
-			TRACE_ALWAYS("\tautonomous power state transition table:\n");
-			for (int i = 0; i < 8; i++) {
-				// skip the rest if the four values are zero
-				if (table[i * 4] == 0 && table[i * 4 + 1] == 0 && table[i * 4 + 2] == 0
-					&& table[i * 4 + 3] == 0) {
-					break;
-				}
-				TRACE_ALWAYS("\t%" B_PRIx64 " %" B_PRIx64" %" B_PRIx64" %" B_PRIx64 "\n",
-					table[i * 4], table[i * 4 + 1], table[i * 4 + 2], table[i * 4 + 3]);
-			}
-			int err = nvme_ctrlr_set_feature(info->ctrlr, false,
-				NVME_FEAT_AUTONOMOUS_POWER_STATE_TRANSITION,
-				(firstStateSet || secondStateSet) ? 1 : 0, 0, 0, 0, 0, table, tableSize, NULL);
-			if (err != 0)
-				TRACE_ERROR("failed to set apst table!\n");
-			else
-				TRACE_ALWAYS("\t=> feature apst table set\n");
-
-			free(table);
-		}
-	}
+	nvme_disk_configure_features(info);
 
 	// allocate qpairs
 	uint32 try_qpairs = cstat->io_qpairs;
@@ -427,6 +437,7 @@ nvme_disk_init_device(void* _info, void** _cookie)
 
 	// set up rounded-write lock
 	rw_lock_init(&info->rounded_write_lock, "nvme rounded writes");
+	rw_lock_init(&info->suspend_lock, "nvme suspend");
 
 	*_cookie = info;
 	return B_OK;
@@ -443,6 +454,7 @@ nvme_disk_uninit_device(void* _cookie)
 		nvme_interrupt_handler, (void*)info);
 
 	rw_lock_destroy(&info->rounded_write_lock);
+	rw_lock_destroy(&info->suspend_lock);
 
 	nvme_ns_close(info->ns);
 	nvme_ctrlr_close(info->ctrlr);
@@ -614,6 +626,7 @@ ior_next_sge(nvme_io_request* request, uint64_t* address, uint32_t* length)
 static status_t
 do_nvme_io_request(nvme_disk_driver_info* info, nvme_io_request* request)
 {
+	ReadLocker suspendLocker(info->suspend_lock);
 	request->status = EINPROGRESS;
 
 	qpair_info* qpinfo = get_qpair(info);
@@ -980,6 +993,7 @@ static status_t
 nvme_disk_flush(nvme_disk_driver_info* info)
 {
 	CALLED();
+	ReadLocker suspendLocker(info->suspend_lock);
 	status_t status = EINPROGRESS;
 
 	qpair_info* qpinfo = get_qpair(info);
@@ -1049,6 +1063,7 @@ nvme_disk_trim(nvme_disk_driver_info* info, fs_trim_data* trimData)
 		trimmingSize += length;
 	}
 
+	ReadLocker suspendLocker(info->suspend_lock);
 	status_t status = EINPROGRESS;
 	qpair_info* qpair = get_qpair(info);
 	if (nvme_ns_deallocate(info->ns, qpair->qpair, dsmRanges, trimData->range_count,
@@ -1210,6 +1225,40 @@ nvme_disk_uninit_driver(void* _cookie)
 
 
 static status_t
+nvme_disk_suspend(void* _cookie, int32 state)
+{
+	nvme_disk_driver_info* info = (nvme_disk_driver_info*)_cookie;
+	if (info->ctrlr == NULL)
+		return B_OK;
+
+	// Wait for pending commands; new ones are blocked until resumed.
+	rw_lock_write_lock(&info->suspend_lock);
+
+	nvme_ctrlr_suspend(info->ctrlr);
+	return B_OK;
+}
+
+
+static status_t
+nvme_disk_resume(void* _cookie)
+{
+	nvme_disk_driver_info* info = (nvme_disk_driver_info*)_cookie;
+	if (info->ctrlr == NULL)
+		return B_OK;
+
+	status_t status = B_OK;
+	if (nvme_ctrlr_resume(info->ctrlr) != 0) {
+		TRACE_ERROR("resuming the controller failed!\n");
+		status = B_IO_ERROR;
+	} else
+		nvme_disk_configure_features(info);
+
+	rw_lock_write_unlock(&info->suspend_lock);
+	return status;
+}
+
+
+static status_t
 nvme_disk_register_child_devices(void* _cookie)
 {
 	CALLED();
@@ -1277,6 +1326,8 @@ struct driver_module_info sNvmeDiskDriver = {
 	nvme_disk_register_child_devices,
 	NULL,	// rescan
 	NULL,	// removed
+	nvme_disk_suspend,
+	nvme_disk_resume,
 };
 
 module_info* modules[] = {
