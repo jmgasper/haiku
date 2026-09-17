@@ -63,6 +63,11 @@ struct PCIDev {
 	ht_mapping_info		ht_mapping;
 
 	pci_resource_range	bar[6];
+
+	// state saved while suspended
+	bool				config_saved;
+	uint32				saved_config[64];
+	uint32				saved_msix_table[32 * 4];
 };
 
 
@@ -156,6 +161,9 @@ public:
 
 			void			RefreshDeviceInfo();
 
+			void			SaveConfiguration();
+			void			RestoreConfiguration();
+
 			status_t		UpdateInterruptLine(uint8 domain, uint8 bus,
 								uint8 device, uint8 function,
 								uint8 newInterruptLineValue);
@@ -195,6 +203,9 @@ private:
 			void			_ReserveBARs(PCIBus *bus);
 			void			_AssignBARs(PCIBus *bus);
 			void			_RefreshDeviceInfo(PCIBus *bus);
+			void			_SaveConfiguration(PCIBus *bus);
+			void			_RestoreConfiguration(PCIBus *bus);
+			void			_RestoreDeviceConfiguration(PCIDev *device);
 
 			uint64			_BarSize(uint64 bits);
 			size_t			_GetBarInfo(PCIDev *dev, uint8 offset,

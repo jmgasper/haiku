@@ -8,6 +8,8 @@
 
 #include <debug.h>
 #include <string.h>
+
+#include <algorithm>
 #include <KernelExport.h>
 #include <util/kernel_cpp.h>
 #include <util/AutoLock.h>
@@ -2812,4 +2814,228 @@ PCIResourceWindow::_MergeResourcesAt(int lower, int upper)
 		resourceLower.size += resourceUpper.size;
 		fResources.Erase(upper);
 	}
+}
+
+
+//	#pragma mark - suspend and resume
+
+
+static inline uint8
+saved_config8(PCIDev *device, uint16 offset)
+{
+	return device->saved_config[offset / 4] >> ((offset % 4) * 8);
+}
+
+
+static inline uint16
+saved_config16(PCIDev *device, uint16 offset)
+{
+	return saved_config8(device, offset)
+		| ((uint16)saved_config8(device, offset + 1) << 8);
+}
+
+
+static inline uint32
+saved_config32(PCIDev *device, uint16 offset)
+{
+	return saved_config16(device, offset)
+		| ((uint32)saved_config16(device, offset + 2) << 16);
+}
+
+
+/*!	Finds a capability in the saved configuration space. */
+static uint8
+saved_capability(PCIDev *device, uint8 capabilityID)
+{
+	if ((saved_config16(device, PCI_status) & PCI_status_capabilities) == 0)
+		return 0;
+
+	uint8 headerType = saved_config8(device, PCI_header_type)
+		& PCI_header_type_mask;
+	uint8 offset = saved_config8(device, headerType == PCI_header_type_cardbus
+		? PCI_capabilities_ptr_2 : PCI_capabilities_ptr) & ~3;
+
+	for (int i = 0; offset != 0 && i < 48; i++) {
+		if (saved_config8(device, offset) == capabilityID)
+			return offset;
+		offset = saved_config8(device, offset + 1) & ~3;
+	}
+	return 0;
+}
+
+
+void
+PCI::SaveConfiguration()
+{
+	for (uint8 i = 0; i < fDomainCount; i++) {
+		if (fDomainData[i].bus != NULL)
+			_SaveConfiguration(fDomainData[i].bus);
+	}
+}
+
+
+void
+PCI::RestoreConfiguration()
+{
+	for (uint8 i = 0; i < fDomainCount; i++) {
+		if (fDomainData[i].bus != NULL)
+			_RestoreConfiguration(fDomainData[i].bus);
+	}
+}
+
+
+void
+PCI::_SaveConfiguration(PCIBus *bus)
+{
+	for (PCIDev *device = bus->child; device != NULL; device = device->next) {
+		for (uint16 i = 0; i < B_COUNT_OF(device->saved_config); i++)
+			device->saved_config[i] = ReadConfig(device, i * 4, 4);
+		device->config_saved = (device->saved_config[0] & 0xffff) != 0xffff;
+
+		msix_info *msix = &device->msix;
+		if (msix->configured_count > 0 && msix->table_address != 0) {
+			uint32 count = std::min(msix->configured_count, (uint32)32) * 4;
+			volatile uint32 *table = (uint32 *)msix->table_address;
+			for (uint32 i = 0; i < count; i++)
+				device->saved_msix_table[i] = table[i];
+		}
+
+		if (device->child != NULL)
+			_SaveConfiguration(device->child);
+	}
+}
+
+
+void
+PCI::_RestoreConfiguration(PCIBus *bus)
+{
+	for (PCIDev *device = bus->child; device != NULL; device = device->next) {
+		if (device->config_saved)
+			_RestoreDeviceConfiguration(device);
+
+		if (device->child != NULL)
+			_RestoreConfiguration(device->child);
+	}
+}
+
+
+void
+PCI::_RestoreDeviceConfiguration(PCIDev *device)
+{
+	// wait until the device responds again
+	for (int i = 0; i < 100; i++) {
+		if ((ReadConfig(device, PCI_vendor_id, 2) & 0xffff) != 0xffff)
+			break;
+		snooze(10000);
+	}
+
+	uint8 capability = saved_capability(device, PCI_cap_id_pm);
+	if (capability != 0) {
+		uint16 state = ReadConfig(device, capability + PCI_pm_status, 2);
+		if ((state & PCI_pm_mask) != PCI_pm_state_d0) {
+			WriteConfig(device, capability + PCI_pm_status, 2,
+				state & ~PCI_pm_mask);
+			snooze(10000);
+		}
+	}
+
+	uint16 command = saved_config16(device, PCI_command);
+	WriteConfig(device, PCI_command, 2, 0);
+
+	switch (saved_config8(device, PCI_header_type) & PCI_header_type_mask) {
+		case PCI_header_type_generic:
+			for (uint16 offset = PCI_base_registers; offset < PCI_cardbus_cis;
+					offset += 4) {
+				WriteConfig(device, offset, 4, saved_config32(device, offset));
+			}
+			WriteConfig(device, PCI_rom_base, 4,
+				saved_config32(device, PCI_rom_base));
+			break;
+
+		case PCI_header_type_PCI_to_PCI_bridge:
+			WriteConfig(device, PCI_primary_bus, 4,
+				saved_config32(device, PCI_primary_bus));
+			WriteConfig(device, PCI_io_base, 2,
+				saved_config16(device, PCI_io_base));
+			for (uint16 offset = PCI_memory_base; offset <= PCI_io_limit_upper16;
+					offset += 4) {
+				WriteConfig(device, offset, 4, saved_config32(device, offset));
+			}
+			WriteConfig(device, PCI_bridge_control, 2,
+				saved_config16(device, PCI_bridge_control));
+			break;
+	}
+
+	WriteConfig(device, PCI_line_size, 1,
+		saved_config8(device, PCI_line_size));
+	WriteConfig(device, PCI_latency, 1, saved_config8(device, PCI_latency));
+	WriteConfig(device, PCI_interrupt_line, 1,
+		saved_config8(device, PCI_interrupt_line));
+
+	capability = saved_capability(device, PCI_cap_id_pcie);
+	if (capability != 0) {
+		uint16 flags = saved_config16(device, capability + 2);
+		uint8 type = (flags >> 4) & 0xf;
+		WriteConfig(device, capability + 0x08, 2,
+			saved_config16(device, capability + 0x08));
+		WriteConfig(device, capability + 0x10, 2,
+			saved_config16(device, capability + 0x10) & ~(1 << 5));
+			// without the retrain link bit
+		if ((flags & (1 << 8)) != 0) {
+			WriteConfig(device, capability + 0x18, 2,
+				saved_config16(device, capability + 0x18));
+		}
+		if (type == 4 /* root port */) {
+			WriteConfig(device, capability + 0x1c, 2,
+				saved_config16(device, capability + 0x1c));
+		}
+		if ((flags & 0xf) >= 2) {
+			WriteConfig(device, capability + 0x28, 2,
+				saved_config16(device, capability + 0x28));
+			WriteConfig(device, capability + 0x30, 2,
+				saved_config16(device, capability + 0x30));
+		}
+	}
+
+	capability = saved_capability(device, PCI_cap_id_msi);
+	if (capability != 0) {
+		uint16 control = saved_config16(device, capability + PCI_msi_control);
+		uint8 offset = capability + PCI_msi_address;
+		WriteConfig(device, offset, 4, saved_config32(device, offset));
+		offset += 4;
+		if ((control & PCI_msi_control_64bit) != 0) {
+			WriteConfig(device, offset, 4, saved_config32(device, offset));
+			offset += 4;
+		}
+		WriteConfig(device, offset, 2, saved_config16(device, offset));
+		offset += 4;
+		if ((control & PCI_msi_control_vector) != 0)
+			WriteConfig(device, offset, 4, saved_config32(device, offset));
+		WriteConfig(device, capability + PCI_msi_control, 2, control);
+	}
+
+	uint8 msixCapability = saved_capability(device, PCI_cap_id_msix);
+	uint16 msixControl = 0;
+	if (msixCapability != 0) {
+		msixControl = saved_config16(device, msixCapability + PCI_msix_control);
+		WriteConfig(device, msixCapability + PCI_msix_control, 2,
+			msixControl | PCI_msix_control_function_mask);
+	}
+
+	WriteConfig(device, PCI_command, 2, command);
+
+	msix_info *msix = &device->msix;
+	if (msixCapability != 0) {
+		if (msix->configured_count > 0 && msix->table_address != 0
+			&& (command & PCI_command_memory) != 0) {
+			uint32 count = std::min(msix->configured_count, (uint32)32) * 4;
+			volatile uint32 *table = (uint32 *)msix->table_address;
+			for (uint32 i = 0; i < count; i++)
+				table[i] = device->saved_msix_table[i];
+		}
+		WriteConfig(device, msixCapability + PCI_msix_control, 2, msixControl);
+	}
+
+	// clear any errors reported while resuming
+	WriteConfig(device, PCI_status, 2, 0xffff);
 }
