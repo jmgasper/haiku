@@ -145,6 +145,7 @@ protected:
 
 	uint8 fStartBusNumber{};
 	uint8 fEndBusNumber{};
+	Vector<uint8> fRootBusNumbers;
 
 private:
 	friend class X86PCIControllerMethPcie;

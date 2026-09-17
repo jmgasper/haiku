@@ -131,6 +131,26 @@ ECAMPCIControllerACPI::AcpiCrsScanCallbackInt(acpi_resource *res)
 {
 	pci_resource_range range = {};
 
+	if (res->data.address.resource_type == 2 /*ACPI_BUS_NUMBER_RANGE*/) {
+		uint64 busNumber;
+		switch (res->type) {
+			case ACPI_RESOURCE_TYPE_ADDRESS16:
+				busNumber = res->data.address16.address.minimum;
+				break;
+			case ACPI_RESOURCE_TYPE_ADDRESS32:
+				busNumber = res->data.address32.address.minimum;
+				break;
+			case ACPI_RESOURCE_TYPE_ADDRESS64:
+				busNumber = res->data.address64.address.minimum;
+				break;
+			default:
+				return B_OK;
+		}
+		if (busNumber <= 0xff)
+			fRootBusNumbers.Add((uint8)busNumber);
+		return B_OK;
+	}
+
 	switch (res->type) {
 		case ACPI_RESOURCE_TYPE_ADDRESS16: {
 			const auto& address = res->data.address16;

@@ -41,6 +41,8 @@ public:
 
 	virtual status_t GetRange(uint32 index, pci_resource_range* range);
 
+	virtual status_t GetRootBus(uint32 index, uint8& bus);
+
 	virtual status_t Finalize() final;
 
 	status_t ReadIrq(
@@ -117,7 +119,11 @@ public:
 
 	status_t GetRange(uint32 index, pci_resource_range* range) final;
 
+	status_t GetRootBus(uint32 index, uint8& bus) final;
+
 private:
+	void _ReadAdditionalHostBridge(device_node* node);
+
 	ECAMPCIControllerACPI fECAMPCIController;
 	Vector<pci_resource_range> fResourceRanges;
 };

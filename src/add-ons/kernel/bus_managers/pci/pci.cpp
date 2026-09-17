@@ -612,6 +612,7 @@ PCI::InitBus(PCIBus *bus)
 	}
 
 	_DiscoverBus(bus);
+	_DiscoverAdditionalRootBuses(bus);
 	_ConfigureBridges(bus);
 	ClearDeviceStatus(bus, false);
 	_RefreshDeviceInfo(bus);
@@ -1357,6 +1358,66 @@ PCI::_DiscoverBus(PCIBus *bus)
 	}
 
 	recursed--;
+}
+
+
+bool
+PCI::_IsBusKnown(PCIBus *bus, uint8 busNumber)
+{
+	if (bus->bus == busNumber)
+		return true;
+
+	for (PCIDev *dev = bus->child; dev != NULL; dev = dev->next) {
+		if (dev->bus == busNumber)
+			return true;
+		if (dev->child != NULL && _IsBusKnown(dev->child, busNumber))
+			return true;
+	}
+
+	return false;
+}
+
+
+void
+PCI::_DiscoverAdditionalRootBuses(PCIBus *bus)
+{
+	domain_data *data = _GetDomainData(bus->domain);
+	if (data == NULL || data->controller->get_root_bus == NULL)
+		return;
+
+	for (uint32 index = 0;; index++) {
+		uint8 rootBus;
+		if (data->controller->get_root_bus(data->controller_cookie, index,
+				&rootBus) != B_OK) {
+			break;
+		}
+		if (_IsBusKnown(bus, rootBus))
+			continue;
+
+		dprintf("PCI: discovering additional root bus %u in domain %u\n",
+			rootBus, bus->domain);
+
+		// Devices of additional host bridges are attached to the domain's
+		// root bus, which also holds the resource windows of all bridges,
+		// but keep their own bus number for configuration access.
+		PCIBus rootBusInfo = {
+			.parent = NULL,
+			.child = NULL,
+			.domain = bus->domain,
+			.bus = rootBus,
+			.io_window = PCIResourceWindow(),
+			.memory_window = PCIResourceWindow(),
+		};
+		_FixupDevices(bus->domain, rootBus);
+		_DiscoverBus(&rootBusInfo);
+
+		PCIDev **tail = &bus->child;
+		while (*tail != NULL)
+			tail = &(*tail)->next;
+		*tail = rootBusInfo.child;
+		for (PCIDev *dev = rootBusInfo.child; dev != NULL; dev = dev->next)
+			dev->parent = bus;
+	}
 }
 
 

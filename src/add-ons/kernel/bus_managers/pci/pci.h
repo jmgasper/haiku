@@ -176,6 +176,8 @@ private:
 			void			_FixupDevices(uint8 domain, uint8 bus);
 
 			void			_DiscoverBus(PCIBus *bus);
+			void			_DiscoverAdditionalRootBuses(PCIBus *bus);
+			bool			_IsBusKnown(PCIBus *bus, uint8 busNumber);
 			void			_DiscoverDevice(PCIBus *bus, uint8 dev,
 								uint8 function);
 
