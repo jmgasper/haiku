@@ -28,11 +28,18 @@ typedef status_t (*device_manager_power_hook)(void* cookie, bool resume,
 	int32 state);
 
 status_t device_manager_add_power_hook(device_manager_power_hook hook,
-	void* cookie);
+	void* cookie, const char* name);
+void device_manager_set_suspend_verbose(bool verbose);
 status_t device_manager_remove_power_hook(device_manager_power_hook hook,
 	void* cookie);
-status_t device_manager_suspend(int32 state);
-status_t device_manager_resume(void);
+enum {
+	DEVICE_MANAGER_SKIP_POWER_HOOKS	= 0x01,
+	DEVICE_MANAGER_SKIP_DEVICE_TREE	= 0x02,
+		// debugging aids for narrowing down a driver that hangs
+};
+
+status_t device_manager_suspend(int32 state, uint32 flags);
+status_t device_manager_resume(uint32 flags);
 
 #ifdef __cplusplus
 }

@@ -141,6 +141,10 @@ AccelerantHWInterface::AccelerantHWInterface()
 	fAccReleaseOverlay(NULL),
 	fAccConfigureOverlay(NULL),
 
+	fAccWaitForDisplayRestore(NULL),
+	fDisplayRestoreThread(-1),
+	fQuitDisplayRestoreThread(false),
+
 	fModeCount(0),
 	fModeList(NULL),
 
@@ -409,6 +413,34 @@ AccelerantHWInterface::_SetupDefaultHooks()
 	fAccGetBrightness = (get_brightness)fAccelerantHook(B_GET_BRIGHTNESS, NULL);
 	fAccSetBrightness = (set_brightness)fAccelerantHook(B_SET_BRIGHTNESS, NULL);
 
+	// display state restoring (after suspend)
+	fAccWaitForDisplayRestore = (wait_for_display_restore)fAccelerantHook(
+		B_WAIT_FOR_DISPLAY_RESTORE, NULL);
+	if (fAccWaitForDisplayRestore != NULL && fDisplayRestoreThread < 0) {
+		fQuitDisplayRestoreThread = false;
+		fDisplayRestoreThread = spawn_thread(_DisplayRestoreThread,
+			"display restore", B_DISPLAY_PRIORITY, this);
+		if (fDisplayRestoreThread >= 0)
+			resume_thread(fDisplayRestoreThread);
+	}
+
+	return B_OK;
+}
+
+
+/*static*/ status_t
+AccelerantHWInterface::_DisplayRestoreThread(void* data)
+{
+	AccelerantHWInterface* interface = (AccelerantHWInterface*)data;
+
+	while (!interface->fQuitDisplayRestoreThread) {
+		if (interface->fAccWaitForDisplayRestore(500000) != B_OK)
+			continue;
+
+		// The screen contents were lost, have everything redrawn.
+		interface->_NotifyScreenChanged();
+	}
+
 	return B_OK;
 }
 
@@ -440,6 +472,13 @@ AccelerantHWInterface::_UpdateHooksAfterModeChange()
 status_t
 AccelerantHWInterface::Shutdown()
 {
+	if (fDisplayRestoreThread >= 0) {
+		fQuitDisplayRestoreThread = true;
+		status_t result;
+		wait_for_thread(fDisplayRestoreThread, &result);
+		fDisplayRestoreThread = -1;
+	}
+
 	if (fAccelerantHook != NULL) {
 		uninit_accelerant uninitAccelerant
 			= (uninit_accelerant)fAccelerantHook(B_UNINIT_ACCELERANT, NULL);

@@ -2900,6 +2900,19 @@ PCI::_SaveConfiguration(PCIBus *bus)
 				device->saved_msix_table[i] = table[i];
 		}
 
+		// Stop the device from asserting PME while the system sleeps: Haiku
+		// does not support waking from devices, and a device that keeps
+		// signalling wake-ups (a network card that was left in wake on LAN
+		// mode, for instance) wakes the machine again right away.
+		uint8 capability = saved_capability(device, PCI_cap_id_pm);
+		if (capability != 0) {
+			uint16 control = ReadConfig(device, capability + PCI_pm_status, 2);
+			if ((control & PCI_pm_status_pme_enable) != 0) {
+				WriteConfig(device, capability + PCI_pm_status, 2,
+					control & ~PCI_pm_status_pme_enable);
+			}
+		}
+
 		if (device->child != NULL)
 			_SaveConfiguration(device->child);
 	}
@@ -2995,6 +3008,14 @@ PCI::_RestoreDeviceConfiguration(PCIDev *device)
 			WriteConfig(device, capability + 0x30, 2,
 				saved_config16(device, capability + 0x30));
 		}
+	}
+
+	// On AMD systems MSI messages are only forwarded when the HyperTransport
+	// MSI mapping is enabled, and that is lost while sleeping.
+	ht_mapping_info *htMapping = &device->ht_mapping;
+	if (htMapping->ht_mapping_capable) {
+		WriteConfig(device, htMapping->capability_offset + PCI_ht_command, 2,
+			htMapping->control_value);
 	}
 
 	capability = saved_capability(device, PCI_cap_id_msi);

@@ -18,6 +18,8 @@
 
 #include <arch/x86/arch_suspend.h>
 
+#include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 
 #include <ACPI.h>
@@ -145,6 +147,33 @@ static mutex sSuspendLock = MUTEX_INITIALIZER("x86 suspend");
 
 
 static acpi_module_info* sACPI;
+
+
+/*!	Logs a step and waits afterwards, so that the syslog daemon can write the
+	log before a step that hangs.
+*/
+static void
+verbose_step(uint32 flags, const char* format, ...)
+{
+	if ((flags & X86_SUSPEND_VERBOSE) == 0)
+		return;
+
+	char buffer[128];
+	va_list args;
+	va_start(args, format);
+	vsnprintf(buffer, sizeof(buffer), format, args);
+	va_end(args);
+
+	INFO("%s\n", buffer);
+
+	if (!are_interrupts_enabled())
+		return;
+
+	// give the syslog daemon time to write the line, then flush it to disk,
+	// so that it survives if the next step hangs
+	snooze(300000);
+	_kern_sync();
+}
 
 
 static void
@@ -425,6 +454,11 @@ x86_suspend_enter_s3(const x86_suspend_s3_args* args)
 
 	sPowerOffCheckpoint = args->power_off_checkpoint;
 	sACPI = acpi;
+	device_manager_set_suspend_verbose((flags & X86_SUSPEND_VERBOSE) != 0);
+
+	// Write out everything while all CPUs are still running.
+	_kern_sync();
+	verbose_step(flags, "file systems synced");
 
 	// Move everything to the boot CPU.
 	bool wasEnabled[SMP_MAX_CPUS] = {};
@@ -433,33 +467,60 @@ x86_suspend_enter_s3(const x86_suspend_s3_args* args)
 	if (!wasEnabled[0])
 		cpu_set_enabled(0, true);
 	for (int32 cpu = 1; cpu < cpuCount; cpu++) {
-		if (wasEnabled[cpu])
+		if (wasEnabled[cpu]) {
+			verbose_step(flags, "disabling CPU %" B_PRId32, cpu);
 			cpu_set_enabled(cpu, false);
+		}
 	}
+	verbose_step(flags, "all application processors disabled");
 	while (smp_get_current_cpu() != 0)
 		thread_yield();
 	thread_pin_to_current_cpu(thread_get_current_thread());
+	verbose_step(flags, "running on the boot CPU");
 
-	_kern_sync();
+
+	uint32 deviceFlags = 0;
+	if ((flags & X86_SUSPEND_SKIP_POWER_HOOKS) != 0)
+		deviceFlags |= DEVICE_MANAGER_SKIP_POWER_HOOKS;
+	if ((flags & X86_SUSPEND_SKIP_DEVICE_TREE) != 0)
+		deviceFlags |= DEVICE_MANAGER_SKIP_DEVICE_TREE;
 
 	status_t status = B_OK;
 	if ((flags & X86_SUSPEND_SKIP_DEVICES) == 0)
-		status = device_manager_suspend(ACPI_POWER_STATE_SLEEP_S3);
+		status = device_manager_suspend(ACPI_POWER_STATE_SLEEP_S3, deviceFlags);
 
 	if (status == B_OK) {
+		verbose_step(flags, "devices suspended");
 		status = acpi->prepare_sleep_state(ACPI_POWER_STATE_SLEEP_S3,
 			(void (*)(void))(addr_t)kWakeupCodePage, 0);
 		if (status != B_OK)
 			INFO("preparing the sleep state failed: %s\n", strerror(status));
 	}
 
-	// park the application processors
+	if (status == B_OK)
+		verbose_step(flags, "sleep state prepared");
+
+	checkpoint(20);
+
+	// From here on the application processors are halted, so nothing that
+	// waits for them (an inter-processor call, for instance) may run: park
+	// them all at once with interrupts already disabled.
+	cpu_status state = disable_interrupts();
+
 	int32 parkedCount = 1;
 	if (status == B_OK) {
+		CPUSet parkSet;
 		for (int32 cpu = 1; cpu < cpuCount; cpu++) {
 			atomic_set(&sParked[cpu], 0);
-			call_single_cpu(cpu, &park_cpu, NULL);
-			if (wait_for_flag(&sParked[cpu], 1000000, true) != B_OK) {
+			parkSet.SetBit(cpu);
+		}
+
+		smp_multicast_ici_interrupts_disabled(0, parkSet,
+			SMP_MSG_CALL_FUNCTION, 0, 0, 0, (void*)&park_cpu,
+			SMP_MSG_FLAG_ASYNC);
+
+		for (int32 cpu = 1; cpu < cpuCount; cpu++) {
+			if (wait_for_flag(&sParked[cpu], 1000000, false) != B_OK) {
 				INFO("CPU %" B_PRId32 " did not park\n", cpu);
 				status = B_TIMED_OUT;
 				break;
@@ -468,7 +529,10 @@ x86_suspend_enter_s3(const x86_suspend_s3_args* args)
 		}
 	}
 
-	cpu_status state = disable_interrupts();
+	if (status == B_OK) {
+		verbose_step(flags, "application processors parked");
+		checkpoint(21);
+	}
 
 	bool resumed = false;
 	if (status == B_OK) {
@@ -502,8 +566,11 @@ x86_suspend_enter_s3(const x86_suspend_s3_args* args)
 	if (resumed)
 		checkpoint(3);
 
-	for (int32 cpu = 1; cpu < parkedCount; cpu++)
-		start_cpu(cpu);
+	int32 restartedCount = 0;
+	for (int32 cpu = 1; cpu < parkedCount; cpu++) {
+		if (start_cpu(cpu) == B_OK)
+			restartedCount++;
+	}
 	sAdjustTSC = false;
 
 	if (resumed) {
@@ -535,7 +602,12 @@ x86_suspend_enter_s3(const x86_suspend_s3_args* args)
 		checkpoint(10);
 
 	if ((flags & X86_SUSPEND_SKIP_DEVICES) == 0)
-		device_manager_resume();
+		device_manager_resume(deviceFlags);
+
+	if (resumed)
+		verbose_step(flags, "devices resumed");
+
+	device_manager_set_suspend_verbose(false);
 
 	if (resumed)
 		checkpoint(11);

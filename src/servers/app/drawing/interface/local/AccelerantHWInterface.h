@@ -111,6 +111,8 @@ private:
 			void				_SetSystemPalette();
 			void				_SetGrayscalePalette();
 
+	static	status_t			_DisplayRestoreThread(void* data);
+
 private:
 			int					fCardFD;
 			image_id			fAccelerantImage;
@@ -156,6 +158,10 @@ private:
 			allocate_overlay			fAccAllocateOverlay;
 			release_overlay				fAccReleaseOverlay;
 			configure_overlay			fAccConfigureOverlay;
+
+			wait_for_display_restore fAccWaitForDisplayRestore;
+			thread_id			fDisplayRestoreThread;
+			bool				fQuitDisplayRestoreThread;
 
 			frame_buffer_config	fFrameBufferConfig;
 			int					fModeCount;

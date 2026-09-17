@@ -12,6 +12,7 @@
 #include <sys/sockio.h>
 
 #include <Drivers.h>
+#include <kdevice_manager.h>
 #include <ether_driver.h>
 
 #include <compat/sys/haiku-module.h>
@@ -219,6 +220,16 @@ _fbsd_init_hardware()
 }
 
 
+static status_t
+power_hook(void* cookie, bool resume, int32 state)
+{
+	// Like FreeBSD, the device suspend and resume methods are called without
+	// the Giant lock; iflib takes the locks it needs itself.
+	suspend_resume_devices(resume);
+	return B_OK;
+}
+
+
 status_t
 _fbsd_init_drivers()
 {
@@ -278,8 +289,10 @@ _fbsd_init_drivers()
 
 	mtx_unlock(&Giant);
 
-	if (gDeviceCount > 0)
+	if (gDeviceCount > 0) {
+		device_manager_add_power_hook(power_hook, NULL, gDriverName);
 		return B_OK;
+	}
 
 	if (status == B_OK)
 		status = B_ERROR;
@@ -310,6 +323,8 @@ err2:
 status_t
 _fbsd_uninit_drivers()
 {
+	device_manager_remove_power_hook(power_hook, NULL);
+
 	for (int i = 0; i < gDeviceCount; i++)
 		device_delete_child(NULL, gDevices[i]->root_device);
 

@@ -514,16 +514,29 @@ bus_get_dma_tag(device_t dev)
 int
 bus_generic_suspend(device_t dev)
 {
-	UNIMPLEMENTED();
-	return B_ERROR;
+	device_t child = NULL;
+	while ((child = (device_t)list_get_next_item(&dev->children, child))
+			!= NULL) {
+		if (child->methods.device_suspend != NULL) {
+			int error = child->methods.device_suspend(child);
+			if (error != 0)
+				return error;
+		}
+	}
+	return 0;
 }
 
 
 int
 bus_generic_resume(device_t dev)
 {
-	UNIMPLEMENTED();
-	return B_ERROR;
+	device_t child = NULL;
+	while ((child = (device_t)list_get_next_item(&dev->children, child))
+			!= NULL) {
+		if (child->methods.device_resume != NULL)
+			child->methods.device_resume(child);
+	}
+	return 0;
 }
 
 

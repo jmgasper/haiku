@@ -6,6 +6,8 @@
 
 #include <kdevice_manager.h>
 
+#include <syscalls.h>
+
 #include <new>
 #include <stdio.h>
 #include <stdlib.h>
@@ -2451,6 +2453,34 @@ device_manager_get_lock()
 }
 
 
+static bool sSuspendVerbose;
+
+
+/*!	In verbose mode every step is logged and followed by a short pause, so
+	that the syslog daemon can write the log before a step that hangs.
+*/
+void
+device_manager_set_suspend_verbose(bool verbose)
+{
+	sSuspendVerbose = verbose;
+}
+
+
+static void
+suspend_step(const char* format, const char* name)
+{
+	if (!sSuspendVerbose)
+		return;
+
+	dprintf(format, name);
+
+	// give the syslog daemon time to write the line and flush it to disk, so
+	// that it survives if the next step hangs
+	snooze(300000);
+	_kern_sync();
+}
+
+
 static void
 suspend_node(device_node* node, int32 state)
 {
@@ -2464,6 +2494,8 @@ suspend_node(device_node* node, int32 state)
 	if (!node->IsInitialized() || driver == NULL || driver->suspend == NULL)
 		return;
 
+	suspend_step("device_manager: suspending %s\n", node->ModuleName());
+
 	status_t status = driver->suspend(node->DriverData(), state);
 	dprintf("device_manager: suspended %s: %s\n", node->ModuleName(),
 		strerror(status));
@@ -2476,6 +2508,8 @@ resume_node(device_node* node)
 	// resume parents before their children
 	driver_module_info* driver = node->DriverModule();
 	if (node->IsInitialized() && driver != NULL && driver->resume != NULL) {
+		suspend_step("device_manager: resuming %s\n", node->ModuleName());
+
 		status_t status = driver->resume(node->DriverData());
 		dprintf("device_manager: resumed %s: %s\n", node->ModuleName(),
 			strerror(status));
@@ -2490,20 +2524,20 @@ resume_node(device_node* node)
 struct power_hook : DoublyLinkedListLinkImpl<power_hook> {
 	device_manager_power_hook	hook;
 	void*						cookie;
+	const char*					name;
 };
 
 typedef DoublyLinkedList<power_hook> PowerHookList;
 
 static PowerHookList sPowerHooks;
-
-
 /*!	Registers a hook for drivers not managed by the device manager (like
 	legacy drivers) to be called when the system suspends and resumes.
 	Hooks are called before the device tree is suspended, in reverse order of
 	registration, and after it was resumed, in order of registration.
 */
 status_t
-device_manager_add_power_hook(device_manager_power_hook hook, void* cookie)
+device_manager_add_power_hook(device_manager_power_hook hook, void* cookie,
+	const char* name)
 {
 	power_hook* entry = new(std::nothrow) power_hook;
 	if (entry == NULL)
@@ -2511,6 +2545,7 @@ device_manager_add_power_hook(device_manager_power_hook hook, void* cookie)
 
 	entry->hook = hook;
 	entry->cookie = cookie;
+	entry->name = name != NULL ? name : "?";
 
 	RecursiveLocker _(sLock);
 	sPowerHooks.Add(entry);
@@ -2540,18 +2575,23 @@ device_manager_remove_power_hook(device_manager_power_hook hook, void* cookie)
 	drivers, children first.
 */
 status_t
-device_manager_suspend(int32 state)
+device_manager_suspend(int32 state, uint32 flags)
 {
 	RecursiveLocker _(sLock);
 
 	PowerHookList::ReverseIterator iterator = sPowerHooks.GetReverseIterator();
 	while (power_hook* entry = iterator.Next()) {
+		if ((flags & DEVICE_MANAGER_SKIP_POWER_HOOKS) != 0)
+			break;
+		suspend_step("device_manager: calling suspend hook %s\n",
+			entry->name);
 		status_t status = entry->hook(entry->cookie, false, state);
-		dprintf("device_manager: suspend hook %p: %s\n", entry->hook,
+		dprintf("device_manager: suspend hook %s: %s\n", entry->name,
 			strerror(status));
 	}
 
-	suspend_node(sRootNode, state);
+	if ((flags & DEVICE_MANAGER_SKIP_DEVICE_TREE) == 0)
+		suspend_node(sRootNode, state);
 	return B_OK;
 }
 
@@ -2560,15 +2600,19 @@ device_manager_suspend(int32 state)
 	the registered power hooks.
 */
 status_t
-device_manager_resume()
+device_manager_resume(uint32 flags)
 {
 	RecursiveLocker _(sLock);
-	resume_node(sRootNode);
+	if ((flags & DEVICE_MANAGER_SKIP_DEVICE_TREE) == 0)
+		resume_node(sRootNode);
 
 	PowerHookList::Iterator iterator = sPowerHooks.GetIterator();
 	while (power_hook* entry = iterator.Next()) {
+		if ((flags & DEVICE_MANAGER_SKIP_POWER_HOOKS) != 0)
+			break;
+		suspend_step("device_manager: calling resume hook %s\n", entry->name);
 		status_t status = entry->hook(entry->cookie, true, 0);
-		dprintf("device_manager: resume hook %p: %s\n", entry->hook,
+		dprintf("device_manager: resume hook %s: %s\n", entry->name,
 			strerror(status));
 	}
 

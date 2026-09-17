@@ -36,6 +36,13 @@ enum {
 		// the core resume path without working devices)
 	X86_SUSPEND_SKIP_DEVICES			= 0x02,
 		// don't suspend and resume devices
+	X86_SUSPEND_SKIP_POWER_HOOKS		= 0x08,
+		// don't call the drivers registered outside the device tree
+	X86_SUSPEND_SKIP_DEVICE_TREE		= 0x10,
+		// don't suspend and resume the device tree
+	X86_SUSPEND_VERBOSE					= 0x04,
+		// log every step and pause afterwards, so that the log is written
+		// before a step that hangs
 };
 
 

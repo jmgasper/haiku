@@ -889,6 +889,8 @@ struct pci_module_info {
 #define PCI_pm_state_d1         0x01
 #define PCI_pm_state_d2         0x02
 #define PCI_pm_state_d3         0x03
+#define PCI_pm_status_pme_enable	0x0100	/* PME_En in the status register */
+#define PCI_pm_status_pme_status	0x8000	/* PME_Status */
 
 /** MSI registers **/
 #define PCI_msi_control			0x02

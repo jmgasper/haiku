@@ -54,6 +54,7 @@ enum {
 	B_GET_EDID_INFO,					/* optional */
 	B_SET_BRIGHTNESS,                   /* optional */
 	B_GET_BRIGHTNESS,                   /* optional */
+	B_WAIT_FOR_DISPLAY_RESTORE,			/* optional */
 
 	/* cursor managment */
 	B_MOVE_CURSOR = 0x200,				/* optional */
@@ -309,6 +310,10 @@ typedef status_t (*get_monitor_info)(monitor_info* info);
 typedef status_t (*get_edid_info)(void* info, uint32 size, uint32* _version);
 typedef status_t (*set_brightness)(float brightness);
 typedef status_t (*get_brightness)(float* brightness);
+typedef status_t (*wait_for_display_restore)(bigtime_t timeout);
+	/* Returns B_OK when the accelerant restored the display state after it
+	   was lost (e.g. when resuming from suspend) and the screen contents need
+	   to be redrawn, B_TIMED_OUT when nothing happened within timeout. */
 
 typedef sem_id (*accelerant_retrace_semaphore)(void);
 

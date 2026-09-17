@@ -99,6 +99,20 @@ uninit_bus(void* bus_cookie)
 
 
 static status_t
+suspend_bus(void* bus_cookie, int32 state)
+{
+	return ((XHCI*)bus_cookie)->Suspend();
+}
+
+
+static status_t
+resume_bus(void* bus_cookie)
+{
+	return ((XHCI*)bus_cookie)->Resume();
+}
+
+
+static status_t
 register_child_devices(void* cookie)
 {
 	CALLED();
@@ -310,6 +324,8 @@ static usb_bus_interface gXHCIPCIDeviceModule = {
 		NULL,  // register child devices
 		NULL,  // rescan
 		NULL,  // device removed
+		suspend_bus,
+		resume_bus,
 	},
 };
 
@@ -350,6 +366,10 @@ XHCI::XHCI(pci_info *info, 	pci_device_module_info* pci, pci_device* device, Sta
 		fUseMSI(false),
 		fErstArea(-1),
 		fDcbaArea(-1),
+		fDcbaPhysical(0),
+		fErstPhysical(0),
+		fCmdRingPhysical(0),
+		fPortsDisconnected(false),
 		fCmdCompSem(-1),
 		fStopThreads(false),
 		fRootHub(NULL),
@@ -727,6 +747,8 @@ XHCI::Start()
 		fDcba->scratchpad[i] = scratchDmaAddress;
 	}
 
+	fDcbaPhysical = dmaAddress;
+
 	TRACE("setting DCBAAP %" B_PRIxPHYSADDR "\n", dmaAddress);
 	WriteOpReg(XHCI_DCBAAP_LO, (uint32)dmaAddress);
 	WriteOpReg(XHCI_DCBAAP_HI, (uint32)(dmaAddress >> 32));
@@ -744,6 +766,7 @@ XHCI::Start()
 		return B_ERROR;
 	}
 	fErst = (xhci_erst_element *)addr;
+	fErstPhysical = dmaAddress;
 	memset(fErst, 0, (XHCI_MAX_COMMANDS + XHCI_MAX_EVENTS) * sizeof(xhci_trb)
 		+ sizeof(xhci_erst_element));
 
@@ -783,6 +806,8 @@ XHCI::Start()
 			TRACE_ERROR("Command Ring still running after stop/cancel\n");
 		}
 	}
+	fCmdRingPhysical = dmaAddress;
+
 	TRACE("setting CRCR addr = 0x%" B_PRIxPHYSADDR "\n", dmaAddress);
 	WriteOpReg(XHCI_CRCR_LO, (uint32)dmaAddress | CRCR_RCS);
 	WriteOpReg(XHCI_CRCR_HI, (uint32)(dmaAddress >> 32));
@@ -790,18 +815,7 @@ XHCI::Start()
 	fCmdRing[XHCI_MAX_COMMANDS - 1].address = dmaAddress;
 
 	TRACE("setting interrupt rate\n");
-
-	// Setting IMOD below 0x3F8 on Intel Lynx Point can cause IRQ lockups
-	if (fPCIInfo->vendor_id == PCI_VENDOR_INTEL
-		&& (fPCIInfo->device_id == PCI_DEVICE_INTEL_PANTHER_POINT_XHCI
-			|| fPCIInfo->device_id == PCI_DEVICE_INTEL_LYNX_POINT_XHCI
-			|| fPCIInfo->device_id == PCI_DEVICE_INTEL_LYNX_POINT_LP_XHCI
-			|| fPCIInfo->device_id == PCI_DEVICE_INTEL_BAYTRAIL_XHCI
-			|| fPCIInfo->device_id == PCI_DEVICE_INTEL_WILDCAT_POINT_XHCI)) {
-		WriteRunReg32(XHCI_IMOD(0), 0x000003f8); // 4000 irq/s
-	} else {
-		WriteRunReg32(XHCI_IMOD(0), 0x000001f4); // 8000 irq/s
-	}
+	_SetInterruptModeration();
 
 	TRACE("enabling interrupt\n");
 	WriteRunReg32(XHCI_IMAN(0), ReadRunReg32(XHCI_IMAN(0)) | IMAN_INTR_ENA);
@@ -836,6 +850,91 @@ XHCI::Start()
 #endif
 
 	return BusManager::Start();
+}
+
+
+void
+XHCI::_SetInterruptModeration()
+{
+	// Setting IMOD below 0x3F8 on Intel Lynx Point can cause IRQ lockups
+	if (fPCIInfo->vendor_id == PCI_VENDOR_INTEL
+		&& (fPCIInfo->device_id == PCI_DEVICE_INTEL_PANTHER_POINT_XHCI
+			|| fPCIInfo->device_id == PCI_DEVICE_INTEL_LYNX_POINT_XHCI
+			|| fPCIInfo->device_id == PCI_DEVICE_INTEL_LYNX_POINT_LP_XHCI
+			|| fPCIInfo->device_id == PCI_DEVICE_INTEL_BAYTRAIL_XHCI
+			|| fPCIInfo->device_id == PCI_DEVICE_INTEL_WILDCAT_POINT_XHCI)) {
+		WriteRunReg32(XHCI_IMOD(0), 0x000003f8); // 4000 irq/s
+	} else {
+		WriteRunReg32(XHCI_IMOD(0), 0x000001f4); // 8000 irq/s
+	}
+}
+
+
+/*!	The controller loses its state while the system sleeps. Instead of saving
+	and restoring it, all devices are detached before suspending, and
+	enumerated again once the controller was reinitialized on resume.
+*/
+status_t
+XHCI::Suspend()
+{
+	TRACE_ALWAYS("suspending\n");
+
+	fPortsDisconnected = true;
+	fStack->Explore();
+
+	return ControllerHalt();
+}
+
+
+status_t
+XHCI::Resume()
+{
+	TRACE_ALWAYS("resuming\n");
+
+	ControllerHalt();
+	if (ControllerReset() != B_OK)
+		return B_ERROR;
+
+	WriteOpReg(XHCI_CONFIG, fSlotCount);
+	WriteOpReg(XHCI_STS, ReadOpReg(XHCI_STS));
+	WriteOpReg(XHCI_DNCTRL, 0);
+
+	for (uint32 i = 1; i < B_COUNT_OF(fDcba->baseAddress); i++)
+		fDcba->baseAddress[i] = 0;
+	WriteOpReg(XHCI_DCBAAP_LO, (uint32)fDcbaPhysical);
+	WriteOpReg(XHCI_DCBAAP_HI, (uint32)(fDcbaPhysical >> 32));
+
+	{
+		MutexLocker eventLocker(fEventLock);
+		memset(fEventRing, 0, XHCI_MAX_EVENTS * sizeof(xhci_trb));
+		fEventIdx = 0;
+		fEventCcs = 1;
+	}
+
+	memset(fCmdRing, 0, XHCI_MAX_COMMANDS * sizeof(xhci_trb));
+	fCmdRing[XHCI_MAX_COMMANDS - 1].address = fCmdRingPhysical;
+	fCmdIdx = 0;
+	fCmdCcs = 1;
+
+	WriteRunReg32(XHCI_ERSTSZ(0), XHCI_ERSTS_SET(1));
+	WriteRunReg32(XHCI_ERDP_LO(0), (uint32)fErst->rs_addr);
+	WriteRunReg32(XHCI_ERDP_HI(0), (uint32)(fErst->rs_addr >> 32));
+	WriteRunReg32(XHCI_ERSTBA_LO(0), (uint32)fErstPhysical);
+	WriteRunReg32(XHCI_ERSTBA_HI(0), (uint32)(fErstPhysical >> 32));
+
+	WriteOpReg(XHCI_CRCR_LO, (uint32)fCmdRingPhysical | CRCR_RCS);
+	WriteOpReg(XHCI_CRCR_HI, (uint32)(fCmdRingPhysical >> 32));
+
+	_SetInterruptModeration();
+	WriteRunReg32(XHCI_IMAN(0), ReadRunReg32(XHCI_IMAN(0)) | IMAN_INTR_ENA);
+
+	WriteOpReg(XHCI_CMD, CMD_RUN | CMD_INTE | CMD_HSEE);
+	if (WaitOpBits(XHCI_STS, STS_HCH, 0) != B_OK)
+		TRACE_ERROR("HCH start up timeout after resume\n");
+
+	// let the hub explore connected devices again
+	fPortsDisconnected = false;
+	return B_OK;
 }
 
 
@@ -2380,6 +2479,12 @@ XHCI::GetPortStatus(uint8 index, usb_port_status* status)
 		return B_BAD_INDEX;
 
 	status->status = status->change = 0;
+	if (fPortsDisconnected) {
+		// report all devices as removed while suspending
+		status->change = PORT_STATUS_CONNECTION;
+		return B_OK;
+	}
+
 	uint32 portStatus = ReadOpReg(XHCI_PORTSC(index));
 	TRACE("port %" B_PRId8 " status=0x%08" B_PRIx32 "\n", index, portStatus);
 

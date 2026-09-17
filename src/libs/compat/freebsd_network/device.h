@@ -64,6 +64,8 @@ __unimplemented(const char *method)
 
 #define UNIMPLEMENTED() __unimplemented(__FUNCTION__)
 
+void suspend_resume_devices(bool resume);
+
 status_t init_mbufs(void);
 void uninit_mbufs(void);
 

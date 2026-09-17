@@ -135,7 +135,7 @@ status_t NvHaikuDriver::Init()
 	CHECK_RET(fDeviceNamesArray.Init(1 + fDevices.Count()));
 	fDeviceNamesArray.SetName(0, NVIDIA_CONTROL_DEVIVE_NAME);
 
-	if (device_manager_add_power_hook(PowerHook, this) == B_OK)
+	if (device_manager_add_power_hook(PowerHook, this, "nvidia_rm") == B_OK)
 		fPowerHookAdded = true;
 	for (int32 i = 0; i < fDevices.Count(); i++) {
 		char name[128];

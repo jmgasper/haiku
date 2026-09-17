@@ -1052,7 +1052,17 @@ int nvme_ctrlr_resume(struct nvme_ctrlr *ctrlr)
 	int ret;
 
 	pthread_mutex_lock(&ctrlr->lock);
+
+	/*
+	 * The controller lost power, so commands that were pending while
+	 * suspending may have failed it. Reset would do nothing then, leaving
+	 * the controller dead, so start over.
+	 */
+	ctrlr->resetting = false;
+	ctrlr->failed = false;
+
 	ret = nvme_ctrlr_reset(ctrlr);
+
 	pthread_mutex_unlock(&ctrlr->lock);
 
 	return ret;
