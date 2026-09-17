@@ -1,5 +1,6 @@
 #include <Accelerant.h>
 
+#include <stdio.h>
 #include <string.h>
 #include <vector>
 
@@ -103,11 +104,24 @@ private:
 	NvKmsApi fKms;
 	NvKmsDevice fKmsDev;
 	NvKmsDispHandle fDisp;
-	NVDpyId fDpyId;
-	NvU32 fHead;
+
+	// A connected display and the head that drives it. When more than one
+	// display is connected, the desktop spans all of them from left to right.
+	struct Output {
+		NVDpyId dpyId;
+		NvU32 head;
+		NvKmsMode preferredMode;
+		int32 x;
+	};
+	std::vector<Output> fOutputs;
+	NVDpyId fDpyId;	// primary display
+	NvU32 fHead;	// primary head
 
 	std::vector<NvKmsMode> fModeList;
+	NvKmsMode fSpanMode {};
 	NvKmsMode fCurrentMode {};
+	display_mode fCurrentHaikuMode {};
+	bool fSpanning = false;
 	NvKmsDpyAttributeDpmsValue fDpmsState = NV_KMS_DPY_ATTRIBUTE_DPMS_ON;
 	NvKmsBitmap fOldFramebuffer, fFramebuffer;
 
@@ -121,7 +135,12 @@ private:
 	NvAccelerant(int devFd);
 
 	NVDpyId FindConnectedDisplay(NVDpyIdList validDpys);
+	void FindOutputs(NVDpyIdList validDpys);
 	bool ValidateMode(const NvKmsMode &mode);
+	NvKmsMode PreferredMode(NVDpyId dpyId);
+	void BuildSpanMode();
+	bool IsSpanMode(const display_timing &timing) const;
+	void SetSpanningMode(const display_mode &mode);
 
 	void UpdateCursor(bool updateImage, bool updatePos);
 
@@ -192,7 +211,9 @@ NvAccelerant::NvAccelerant(int devFd):
 		RaiseErrno(ENODEV);
 	}
 
-	fHead = 0;
+	FindOutputs(validDpys);
+	fDpyId = fOutputs[0].dpyId;
+	fHead = fOutputs[0].head;
 
 	{
 		NvKmsGrabOwnershipParams params {};
@@ -218,6 +239,173 @@ NvAccelerant::NvAccelerant(int devFd):
 		}
 		fModeList.push_back(params.reply.mode);
 	}
+
+	BuildSpanMode();
+}
+
+// Testing aid: "force_connected <connector>" lines in
+// ~/config/settings/nvidia_rm_accelerant force a connector on, using the EDID
+// of the first connected display, so that multi-display layouts can be tested
+// without monitors.
+static bool IsForcedConnected(const char *name)
+{
+	FILE *file = fopen("/boot/home/config/settings/nvidia_rm_accelerant", "r");
+	if (file == NULL)
+		return false;
+	bool forced = false;
+	char line[256];
+	while (fgets(line, sizeof(line), file) != NULL) {
+		char connector[128];
+		if (sscanf(line, "force_connected %127s", connector) == 1 && strcmp(connector, name) == 0)
+			forced = true;
+	}
+	fclose(file);
+	return forced;
+}
+
+void NvAccelerant::FindOutputs(NVDpyIdList validDpys)
+{
+	NvKmsQueryDpyDynamicDataReply firstConnected {};
+	bool haveFirstConnected = false;
+	NVDpyIdList forcedDpys = nvEmptyDpyIdList();
+	for (NVDpyId dpyId = nvNextDpyIdInDpyIdListUnsorted(nvInvalidDpyId(), validDpys);
+			!nvDpyIdIsInvalid(dpyId);
+			dpyId = nvNextDpyIdInDpyIdListUnsorted(dpyId, validDpys)) {
+		NvKmsQueryDpyDynamicDataParams params {};
+		params.request.deviceHandle = fKmsDev.Get();
+		params.request.dispHandle = fDisp;
+		params.request.dpyId = dpyId;
+		CheckErrno(fKms.Control(NVKMS_IOCTL_QUERY_DPY_DYNAMIC_DATA, &params, sizeof(params)));
+		debug_printf("nvidia_rm: connector %s%s\n", params.reply.name,
+			params.reply.connected ? " (connected)" : "");
+		if (!haveFirstConnected && params.reply.connected && params.reply.edid.valid) {
+			firstConnected = params.reply;
+			haveFirstConnected = true;
+		} else if (haveFirstConnected && !params.reply.connected && IsForcedConnected(params.reply.name)) {
+			NvKmsQueryDpyDynamicDataParams forceParams {};
+			forceParams.request.deviceHandle = fKmsDev.Get();
+			forceParams.request.dispHandle = fDisp;
+			forceParams.request.dpyId = dpyId;
+			forceParams.request.forceConnected = true;
+			forceParams.request.overrideEdid = true;
+			forceParams.request.edid.bufferSize = firstConnected.edid.bufferSize;
+			memcpy(forceParams.request.edid.buffer, firstConnected.edid.buffer,
+				sizeof(forceParams.request.edid.buffer));
+			CheckErrno(fKms.Control(NVKMS_IOCTL_QUERY_DPY_DYNAMIC_DATA, &forceParams, sizeof(forceParams)));
+			debug_printf("nvidia_rm: forcing %s connected: %d\n", params.reply.name,
+				forceParams.reply.connected);
+			if (forceParams.reply.connected)
+				forcedDpys = nvAddDpyIdToDpyIdList(dpyId, forcedDpys);
+		}
+	}
+
+	NvU32 usedHeads = 0;
+	for (NVDpyId dpyId = nvNextDpyIdInDpyIdListUnsorted(nvInvalidDpyId(), validDpys);
+			!nvDpyIdIsInvalid(dpyId);
+			dpyId = nvNextDpyIdInDpyIdListUnsorted(dpyId, validDpys)) {
+		NvKmsQueryDpyDynamicDataParams dynamicParams {};
+		dynamicParams.request.deviceHandle = fKmsDev.Get();
+		dynamicParams.request.dispHandle = fDisp;
+		dynamicParams.request.dpyId = dpyId;
+		CheckErrno(fKms.Control(NVKMS_IOCTL_QUERY_DPY_DYNAMIC_DATA, &dynamicParams, sizeof(dynamicParams)));
+		if (!dynamicParams.reply.connected && !dynamicParams.reply.edid.valid
+			&& !nvDpyIdIsInDpyIdList(dpyId, forcedDpys))
+			continue;
+
+		NvKmsQueryDpyStaticDataParams staticParams {};
+		staticParams.request.deviceHandle = fKmsDev.Get();
+		staticParams.request.dispHandle = fDisp;
+		staticParams.request.dpyId = dpyId;
+		CheckErrno(fKms.Control(NVKMS_IOCTL_QUERY_DPY_STATIC_DATA, &staticParams, sizeof(staticParams)));
+
+		NvU32 freeHeads = staticParams.reply.headMask & ~usedHeads;
+		if (freeHeads == 0) {
+			debug_printf("nvidia_rm: no free head for display %s\n", dynamicParams.reply.name);
+			continue;
+		}
+		NvU32 head = __builtin_ctz(freeHeads);
+		usedHeads |= 1U << head;
+
+		Output output {
+			.dpyId = dpyId,
+			.head = head,
+			.preferredMode = PreferredMode(dpyId),
+			.x = 0,
+		};
+		debug_printf("nvidia_rm: display %s on head %" B_PRIu32 ", %" B_PRIu32 "x%" B_PRIu32 "\n",
+			dynamicParams.reply.name, head, (uint32)output.preferredMode.timings.hVisible,
+			(uint32)output.preferredMode.timings.vVisible);
+		fOutputs.push_back(output);
+	}
+
+	if (fOutputs.empty())
+		RaiseErrno(ENODEV);
+
+	int32 x = 0;
+	for (auto &output: fOutputs) {
+		output.x = x;
+		x += output.preferredMode.timings.hVisible;
+	}
+}
+
+NvKmsMode NvAccelerant::PreferredMode(NVDpyId dpyId)
+{
+	NvKmsMode firstMode {};
+	for (NvU32 i = 0;; i++) {
+		NvKmsValidateModeIndexParams params {};
+		params.request.deviceHandle = fKmsDev.Get();
+		params.request.dispHandle = fDisp;
+		params.request.dpyId = dpyId;
+		params.request.modeIndex = i;
+		CheckErrno(fKms.Control(NVKMS_IOCTL_VALIDATE_MODE_INDEX, &params, sizeof(params)));
+		if (params.reply.end)
+			break;
+		if (!params.reply.valid)
+			continue;
+		if (params.reply.preferredMode)
+			return params.reply.mode;
+		if (firstMode.timings.hVisible == 0)
+			firstMode = params.reply.mode;
+	}
+	return firstMode;
+}
+
+void NvAccelerant::BuildSpanMode()
+{
+	if (fOutputs.size() < 2)
+		return;
+
+	const NvModeTimings &primary = fOutputs[0].preferredMode.timings;
+	NvU32 width = 0;
+	NvU32 height = 0;
+	for (const auto &output: fOutputs) {
+		width += output.preferredMode.timings.hVisible;
+		height = std::max(height, (NvU32)output.preferredMode.timings.vVisible);
+	}
+
+	// Synthetic timings: the primary display's blanking around the whole
+	// desktop. They only describe the desktop to app_server; every head is
+	// programmed with its own display's timings.
+	fSpanMode = fOutputs[0].preferredMode;
+	NvModeTimings &t = fSpanMode.timings;
+	NvU32 extraH = width - primary.hVisible;
+	NvU32 extraV = height - primary.vVisible;
+	t.hVisible += extraH;
+	t.hSyncStart += extraH;
+	t.hSyncEnd += extraH;
+	t.hTotal += extraH;
+	t.vVisible += extraV;
+	t.vSyncStart += extraV;
+	t.vSyncEnd += extraV;
+	t.vTotal += extraV;
+	t.pixelClockHz = (NvU32)((uint64)primary.RRx1k * t.hTotal * t.vTotal / 1000);
+}
+
+bool NvAccelerant::IsSpanMode(const display_timing &timing) const
+{
+	return fOutputs.size() >= 2
+		&& timing.h_display == fSpanMode.timings.hVisible
+		&& timing.v_display == fSpanMode.timings.vVisible;
 }
 
 NVDpyId NvAccelerant::FindConnectedDisplay(NVDpyIdList validDpys)
@@ -314,7 +502,7 @@ uint32 NvAccelerant::ModeCount()
 {
 	debug_printf("NvAccelerant::ModeCount\n");
 
-	return fModeList.size();
+	return fModeList.size() + (fOutputs.size() >= 2 ? 1 : 0);
 }
 
 void NvAccelerant::GetModeList(display_mode* mode)
@@ -322,6 +510,8 @@ void NvAccelerant::GetModeList(display_mode* mode)
 	debug_printf("NvAccelerant::GetModeList\n");
 
 	int32 i = 0;
+	if (fOutputs.size() >= 2)
+		mode[i++] = ToHaikuMode(fSpanMode);
 	for (const auto &nvKmsMode: fModeList) {
 		mode[i++] = ToHaikuMode(nvKmsMode);
 	}
@@ -383,6 +573,13 @@ status_t NvAccelerant::ProposeMode(display_mode *target, display_mode *low, disp
 {
 	debug_printf("NvAccelerant::ProposeMode\n");
 
+	if (IsSpanMode(target->timing)) {
+		target->timing = ToHaikuModeTimings(fSpanMode.timings);
+		target->virtual_width = target->timing.h_display;
+		target->virtual_height = target->timing.v_display;
+		return IsDisplayModeWithinBounds(*target, *low, *high) ? B_OK : B_BAD_VALUE;
+	}
+
 	for (int32 i = 0; i < fModeList.size(); i++) {
 		const auto &nvKmsMode = fModeList[i];
 		const auto mode = ToHaikuMode(nvKmsMode);
@@ -418,6 +615,11 @@ status_t NvAccelerant::ProposeMode(display_mode *target, display_mode *low, disp
 void NvAccelerant::SetDisplayMode(display_mode* modeToSet)
 {
 	debug_printf("NvAccelerant::SetDisplayMode\n");
+
+	if (IsSpanMode(modeToSet->timing)) {
+		SetSpanningMode(*modeToSet);
+		return;
+	}
 
 	if (
 		modeToSet->virtual_width != modeToSet->timing.h_display ||
@@ -466,6 +668,12 @@ void NvAccelerant::SetDisplayMode(display_mode* modeToSet)
 		params.request.disp[0].head[0].flip.layer[NVKMS_MAIN_LAYER].sizeOut.val = {.width = newFramebuffer.Width(), .height = newFramebuffer.Height()};
 		params.request.disp[0].head[0].flip.layer[NVKMS_MAIN_LAYER].sizeOut.specified = true;
 
+		// turn off the heads of other displays
+		for (const auto &output: fOutputs) {
+			if (output.head != 0)
+				params.request.disp[0].requestedHeadsBitMask |= 1U << output.head;
+		}
+
 		try {
 			CheckErrno(fKms.Control(NVKMS_IOCTL_SET_MODE, &params, sizeof(params)));
 		} catch (const std::system_error&) {
@@ -477,6 +685,60 @@ void NvAccelerant::SetDisplayMode(display_mode* modeToSet)
 		}
 	}
 	fCurrentMode = ToNvKmsMode(*modeToSet);
+	fCurrentHaikuMode = *modeToSet;
+	fSpanning = false;
+
+	fOldFramebuffer = std::move(fFramebuffer);
+	fFramebuffer = std::move(newFramebuffer);
+}
+
+void NvAccelerant::SetSpanningMode(const display_mode &mode)
+{
+	NvKmsBitmap newFramebuffer(fRmDev, fKmsDev, fSpanMode.timings.hVisible,
+		fSpanMode.timings.vVisible, (color_space)mode.space);
+
+	NvKmsSetModeParams params {};
+	params.request.deviceHandle = fKmsDev.Get();
+	params.request.commit = true;
+	params.request.requestedDispsBitMask |= 1U << 0;
+	for (const auto &output: fOutputs) {
+		const NvModeTimings &timings = output.preferredMode.timings;
+		NvKmsSetModeOneHeadRequest &head = params.request.disp[0].head[output.head];
+		params.request.disp[0].requestedHeadsBitMask |= 1U << output.head;
+		head.dpyIdList = nvAddDpyIdToEmptyDpyIdList(output.dpyId);
+		head.mode = output.preferredMode;
+		head.modeValidationParams.overrides = NVKMS_MODE_VALIDATION_NO_RRX1K_CHECK;
+		head.viewPortOut = {.x = 0, .y = 0, .width = timings.hVisible, .height = timings.vVisible};
+		head.viewPortSizeIn = {.width = timings.hVisible, .height = timings.vVisible};
+		head.flip.viewPortIn.specified = true;
+		head.flip.viewPortIn.point = {.x = (NvU16)output.x, .y = 0};
+		auto &layer = head.flip.layer[NVKMS_MAIN_LAYER];
+		layer.surface.handle[0] = newFramebuffer.Surface().Get();
+		layer.surface.specified = true;
+		// The layer covers the whole desktop; viewPortIn selects this head's part.
+		layer.sizeIn.val = {.width = newFramebuffer.Width(), .height = newFramebuffer.Height()};
+		layer.sizeIn.specified = true;
+		layer.sizeOut.val = {.width = newFramebuffer.Width(), .height = newFramebuffer.Height()};
+		layer.sizeOut.specified = true;
+	}
+
+	try {
+		CheckErrno(fKms.Control(NVKMS_IOCTL_SET_MODE, &params, sizeof(params)));
+	} catch (const std::system_error&) {
+		debug_printf("[!] NvAccelerant: spanning SetMode failed, status %d\n", params.reply.status);
+		for (const auto &output: fOutputs) {
+			debug_printf("  head %" B_PRIu32 " status: %d\n", output.head,
+				params.reply.disp[0].head[output.head].status);
+		}
+		throw;
+	}
+
+	fCurrentMode = fSpanMode;
+	fCurrentHaikuMode = mode;
+	fCurrentHaikuMode.timing = ToHaikuModeTimings(fSpanMode.timings);
+	fCurrentHaikuMode.virtual_width = fSpanMode.timings.hVisible;
+	fCurrentHaikuMode.virtual_height = fSpanMode.timings.vVisible;
+	fSpanning = true;
 
 	fOldFramebuffer = std::move(fFramebuffer);
 	fFramebuffer = std::move(newFramebuffer);
@@ -489,7 +751,7 @@ void NvAccelerant::GetDisplayMode(display_mode* currentMode)
 	if (fCurrentMode.timings.hVisible == 0) {
 		RaiseErrno(ENOENT);
 	}
-	*currentMode = ToHaikuMode(fCurrentMode);
+	*currentMode = fCurrentHaikuMode;
 }
 
 void NvAccelerant::GetFrameBufferConfig(frame_buffer_config* frameBuffer)
@@ -565,11 +827,13 @@ void NvAccelerant::SetDpmsMode(uint32 dpms_flags)
 			RaiseErrno(EINVAL);
 	}
 
-	{
+	for (const auto &output: fOutputs) {
+		if (!fSpanning && !nvDpyIdsAreEqual(output.dpyId, fDpyId))
+			continue;
 		NvKmsSetDpyAttributeParams params {};
 		params.request.deviceHandle = fKmsDev.Get();
 		params.request.dispHandle = fDisp;
-		params.request.dpyId = fDpyId;
+		params.request.dpyId = output.dpyId;
 		params.request.attribute = NV_KMS_DPY_ATTRIBUTE_DPMS;
 		params.request.value = value;
 		CheckErrno(fKms.Control(NVKMS_IOCTL_SET_DPY_ATTRIBUTE, &params, sizeof(params)));
@@ -580,6 +844,11 @@ void NvAccelerant::SetDpmsMode(uint32 dpms_flags)
 void NvAccelerant::GetPreferredDisplayMode(display_mode* preferredMode)
 {
 	debug_printf("NvAccelerant::GetPreferredDisplayMode\n");
+
+	if (fOutputs.size() >= 2) {
+		*preferredMode = ToHaikuMode(fSpanMode);
+		return;
+	}
 
 	for (NvU32 i = 0;; i++) {
 		NvKmsValidateModeIndexParams params {};
@@ -648,44 +917,50 @@ void NvAccelerant::ShowCursor(bool isVisible)
 
 void NvAccelerant::UpdateCursor(bool updateImage, bool updatePos)
 {
-	if (updateImage) {
-		NvKmsSetCursorImageParams params {
-			.request = {
-				.deviceHandle = fKmsDev.Get(),
-				.dispHandle = fDisp,
-				.head = fHead,
-				.common = {
-					.surfaceHandle = {
-						fCursorVisible ? (fNewCursor.IsSet() ? fNewCursor.Surface().Get() : fCursor.Surface().Get()) : 0,
-					},
-					.cursorCompParams = {
-						.blendingMode = {
-							NVKMS_COMPOSITION_BLENDING_MODE_PREMULT_ALPHA,
-							NVKMS_COMPOSITION_BLENDING_MODE_PREMULT_ALPHA,
-						}
+	for (const auto &output: fOutputs) {
+		if (!fSpanning && output.head != fHead)
+			continue;
+
+		if (updateImage) {
+			NvKmsSetCursorImageParams params {
+				.request = {
+					.deviceHandle = fKmsDev.Get(),
+					.dispHandle = fDisp,
+					.head = output.head,
+					.common = {
+						.surfaceHandle = {
+							fCursorVisible ? (fNewCursor.IsSet() ? fNewCursor.Surface().Get() : fCursor.Surface().Get()) : 0,
+						},
+						.cursorCompParams = {
+							.blendingMode = {
+								NVKMS_COMPOSITION_BLENDING_MODE_PREMULT_ALPHA,
+								NVKMS_COMPOSITION_BLENDING_MODE_PREMULT_ALPHA,
+							}
+						},
 					},
 				},
-			},
-		};
-		CheckErrno(fKms.Control(NVKMS_IOCTL_SET_CURSOR_IMAGE, &params, sizeof(params)));
-		if (fNewCursor.IsSet()) {
-			fCursor = std::move(fNewCursor);
+			};
+			CheckErrno(fKms.Control(NVKMS_IOCTL_SET_CURSOR_IMAGE, &params, sizeof(params)));
+		}
+
+		if (updatePos) {
+			NvKmsMoveCursorParams params {
+				.request = {
+					.deviceHandle = fKmsDev.Get(),
+					.dispHandle = fDisp,
+					.head = output.head,
+					.common = {
+						.x = (NvS16)(fCursorPos.x - fCursorHotSpot.x - (fSpanning ? output.x : 0)),
+						.y = (NvS16)(fCursorPos.y - fCursorHotSpot.y),
+					},
+				},
+			};
+			CheckErrno(fKms.Control(NVKMS_IOCTL_MOVE_CURSOR, &params, sizeof(params)));
 		}
 	}
 
-	if (updatePos) {
-		NvKmsMoveCursorParams params {
-			.request = {
-				.deviceHandle = fKmsDev.Get(),
-				.dispHandle = fDisp,
-				.head = fHead,
-				.common = {
-					.x = (NvS16)(fCursorPos.x - fCursorHotSpot.x),
-					.y = (NvS16)(fCursorPos.y - fCursorHotSpot.y),
-				},
-			},
-		};
-		CheckErrno(fKms.Control(NVKMS_IOCTL_MOVE_CURSOR, &params, sizeof(params)));
+	if (updateImage && fNewCursor.IsSet()) {
+		fCursor = std::move(fNewCursor);
 	}
 }
 
