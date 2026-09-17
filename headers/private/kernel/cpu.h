@@ -133,6 +133,7 @@ cpu_pause(void)
 void _user_clear_caches(void *address, size_t length, uint32 flags);
 bool _user_cpu_enabled(int32 cpu);
 status_t _user_set_cpu_enabled(int32 cpu, bool enabled);
+status_t cpu_set_enabled(int32 cpu, bool enabled);
 
 #ifdef __cplusplus
 }

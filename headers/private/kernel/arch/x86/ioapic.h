@@ -14,4 +14,7 @@ bool ioapic_is_interrupt_available(int32 gsi);
 void ioapic_init(kernel_args* args);
 void ioapic_routing_init();
 
+void ioapic_suspend();
+void ioapic_resume();
+
 #endif // _KERNEL_ARCH_x86_IOAPIC_H

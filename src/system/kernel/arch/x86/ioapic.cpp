@@ -109,6 +109,8 @@ struct ioapic {
 	area_id				register_area;
 	ioapic_registers*	registers;
 
+	uint64				saved_entries[MAX_SUPPORTED_REDIRECTION_ENTRIES];
+
 	ioapic*				next;
 };
 
@@ -809,6 +811,37 @@ ioapic_init(kernel_args* args)
 	// prefer the ioapic over the normal pic
 	dprintf("using io-apics for interrupt routing\n");
 	arch_int_set_interrupt_controller(ioapicController);
+}
+
+
+void
+ioapic_suspend()
+{
+	for (struct ioapic* current = sIOAPICs; current != NULL;
+			current = current->next) {
+		SpinLocker locker(current->registers_lock);
+		for (uint8 i = 0; i <= current->max_redirection_entry; i++) {
+			current->saved_entries[i] = ioapic_read_64(*current,
+				IO_APIC_REDIRECTION_TABLE + 2 * i);
+		}
+	}
+}
+
+
+void
+ioapic_resume()
+{
+	for (struct ioapic* current = sIOAPICs; current != NULL;
+			current = current->next) {
+		SpinLocker locker(current->registers_lock);
+		ioapic_write_32(*current, IO_APIC_ID,
+			current->apic_id << IO_APIC_ID_SHIFT);
+		for (uint8 i = 0; i <= current->max_redirection_entry; i++) {
+			ioapic_write_64(*current, IO_APIC_REDIRECTION_TABLE + 2 * i,
+				current->saved_entries[i],
+				(current->saved_entries[i] & IO_APIC_INTERRUPT_MASKED) != 0);
+		}
+	}
 }
 
 

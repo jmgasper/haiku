@@ -2449,3 +2449,59 @@ device_manager_get_lock()
 {
 	return &sLock;
 }
+
+
+static void
+suspend_node(device_node* node, int32 state)
+{
+	// suspend children before their parents
+	NodeList::ConstReverseIterator iterator
+		= node->Children().GetReverseIterator();
+	while (device_node* child = iterator.Next())
+		suspend_node(child, state);
+
+	driver_module_info* driver = node->DriverModule();
+	if (!node->IsInitialized() || driver == NULL || driver->suspend == NULL)
+		return;
+
+	status_t status = driver->suspend(node->DriverData(), state);
+	dprintf("device_manager: suspended %s: %s\n", node->ModuleName(),
+		strerror(status));
+}
+
+
+static void
+resume_node(device_node* node)
+{
+	// resume parents before their children
+	driver_module_info* driver = node->DriverModule();
+	if (node->IsInitialized() && driver != NULL && driver->resume != NULL) {
+		status_t status = driver->resume(node->DriverData());
+		dprintf("device_manager: resumed %s: %s\n", node->ModuleName(),
+			strerror(status));
+	}
+
+	NodeList::ConstIterator iterator = node->Children().GetIterator();
+	while (device_node* child = iterator.Next())
+		resume_node(child);
+}
+
+
+/*!	Calls the suspend hook of all initialized drivers, children first. */
+status_t
+device_manager_suspend(int32 state)
+{
+	RecursiveLocker _(sLock);
+	suspend_node(sRootNode, state);
+	return B_OK;
+}
+
+
+/*!	Calls the resume hook of all initialized drivers, parents first. */
+status_t
+device_manager_resume()
+{
+	RecursiveLocker _(sLock);
+	resume_node(sRootNode);
+	return B_OK;
+}

@@ -297,6 +297,10 @@ struct acpi_module_info {
 	/* Register Access */
 	status_t	(*read_bit_register)(uint32 regid, uint32 *val);
 	status_t	(*write_bit_register)(uint32 regid, uint32 val);
+
+	/* Leaving a sleep state: called with interrupts disabled and
+	   \a prepare set first, then again with interrupts enabled. */
+	status_t	(*leave_sleep_state)(uint8 state, bool prepare);
 };
 
 

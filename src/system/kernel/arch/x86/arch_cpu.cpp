@@ -33,6 +33,7 @@
 
 #include <arch_system_info.h>
 #include <arch/x86/apic.h>
+#include <arch/x86/arch_suspend.h>
 #include <arch/x86/timer.h>
 #include <boot/kernel_args.h>
 
@@ -1753,6 +1754,10 @@ arch_cpu_init_post_modules(kernel_args* args)
 
 	elf_add_memory_image_symbol(image, "commpage_thread_exit",
 		threadExitPosition, threadExitLen, B_SYMBOL_TYPE_TEXT);
+
+#ifdef __x86_64__
+	x86_suspend_init();
+#endif
 
 	return B_OK;
 }

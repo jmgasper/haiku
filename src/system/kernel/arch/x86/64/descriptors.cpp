@@ -461,3 +461,20 @@ x86_64_set_user_tls_segment_base(int cpu, addr_t base)
 {
 	return sGDT.SetUserTLS(cpu, base, TLS_COMPAT_SIZE);
 }
+
+
+/*!	Reloads the descriptor tables of \a cpu after it has been reset, e.g. when
+	resuming from ACPI S3. The GDT still marks the TSS as busy, so its
+	descriptor has to be rebuilt before it can be loaded again.
+*/
+void
+x86_descriptors_resume_percpu(int cpu)
+{
+	sGDT.Load();
+
+	auto tssIndex = sGDT.SetTSS(cpu,
+			TSSDescriptor(uintptr_t(&gCPU[cpu].arch.tss), sizeof(struct tss)));
+	TSSDescriptor::LoadTSS(tssIndex);
+
+	sIDT.Load();
+}

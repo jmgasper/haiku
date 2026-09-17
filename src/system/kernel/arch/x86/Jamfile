@@ -31,8 +31,11 @@ if $(TARGET_ARCH) = x86_64 {
 		interrupts.S
 		signals.cpp
 		stubs.S
+		suspend.S
 		syscalls.cpp
 		thread.cpp
+
+		arch_suspend.cpp
 
 		# paging
 		x86_physical_page_mapper_mapped.cpp
