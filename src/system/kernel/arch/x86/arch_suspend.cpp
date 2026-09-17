@@ -50,7 +50,8 @@
 #else
 #	define TRACE(x...) ;
 #endif
-#define INFO(x...) dprintf("suspend: " x)
+#define INFO(x...) do { dprintf("suspend: " x); \
+	device_manager_suspend_trace(x); } while (false)
 
 
 struct x86_suspend_context {
@@ -191,6 +192,28 @@ checkpoint(uint32 number)
 }
 
 
+/*!	Resume progress is recorded in a byte of CMOS RAM, which survives losing
+	power: when resuming goes wrong, the machine usually cannot write its log
+	any more, but the marker can be read at the next boot.
+*/
+static const uint8 kResumeMarkerRegister = 0x3f;
+
+static void
+write_resume_marker(uint8 value)
+{
+	out8(kResumeMarkerRegister, 0x70);
+	out8(value, 0x71);
+}
+
+
+static uint8
+read_resume_marker()
+{
+	out8(kResumeMarkerRegister, 0x70);
+	return in8(0x71);
+}
+
+
 static inline void*
 physical_page(phys_addr_t address)
 {
@@ -223,6 +246,8 @@ x86_suspend_restore_cpu(x86_suspend_context* context)
 {
 	int32 cpu = context - sContexts;
 	*(uint8*)physical_page(kWakeupArgsPage + kProgressOffset) = 4;
+	if (cpu == 0 && sAdjustTSC)
+		write_resume_marker(0x10);
 
 	if (sAdjustTSC) {
 		// The TSC was reset while sleeping. Continue where the boot CPU
@@ -450,6 +475,7 @@ x86_suspend_enter_s3(const x86_suspend_s3_args* args)
 		acpiPutter(B_ACPI_MODULE_NAME);
 
 	int32 cpuCount = smp_get_num_cpus();
+	device_manager_clear_suspend_trace();
 	INFO("entering S3, flags %#" B_PRIx32 "\n", flags);
 
 	sPowerOffCheckpoint = args->power_off_checkpoint;
@@ -563,14 +589,18 @@ x86_suspend_enter_s3(const x86_suspend_s3_args* args)
 		arch_timer_set_hardware_timer(1000);
 	}
 
-	if (resumed)
+	if (resumed) {
+		write_resume_marker(0x11);
 		checkpoint(3);
+	}
 
 	int32 restartedCount = 0;
 	for (int32 cpu = 1; cpu < parkedCount; cpu++) {
 		if (start_cpu(cpu) == B_OK)
 			restartedCount++;
 	}
+	if (resumed)
+		write_resume_marker(0x40 | (restartedCount & 0x3f));
 	sAdjustTSC = false;
 
 	if (resumed) {
@@ -601,8 +631,14 @@ x86_suspend_enter_s3(const x86_suspend_s3_args* args)
 	if (resumed)
 		checkpoint(10);
 
+	if (resumed)
+		write_resume_marker(0x13);
+
 	if ((flags & X86_SUSPEND_SKIP_DEVICES) == 0)
 		device_manager_resume(deviceFlags);
+
+	if (resumed)
+		write_resume_marker(0x14);
 
 	if (resumed)
 		verbose_step(flags, "devices resumed");
@@ -643,6 +679,16 @@ suspend_syscall(const char* subsystem, uint32 function, void* buffer,
 			return x86_suspend_restart_cpu(cpu);
 		}
 
+		case X86_SUSPEND_GET_TRACE:
+		{
+			char trace[4096];
+			size_t length = device_manager_get_suspend_trace(trace,
+				sizeof(trace));
+			if (bufferSize < length + 1 || !IS_USER_ADDRESS(buffer))
+				return B_BAD_VALUE;
+			return user_memcpy(buffer, trace, length + 1);
+		}
+
 		case X86_SUSPEND_ENTER_S3:
 		{
 			x86_suspend_s3_args args = {};
@@ -663,6 +709,12 @@ status_t
 x86_suspend_init(void)
 {
 	STATIC_ASSERT(offsetof(x86_suspend_context, gdtr) == 128);
+
+	uint8 marker = read_resume_marker();
+	if (marker != 0) {
+		INFO("resume marker of the last attempt: %#x\n", marker);
+		write_resume_marker(0);
+	}
 
 	check_features();
 

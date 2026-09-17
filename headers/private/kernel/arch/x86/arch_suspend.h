@@ -19,6 +19,8 @@ enum {
 		// trampoline, without sleeping
 	X86_SUSPEND_ENTER_S3		= 2,
 		// uint32 flags or struct x86_suspend_s3_args
+	X86_SUSPEND_GET_TRACE		= 3,
+		// char buffer: the trace of the last suspend and resume
 };
 
 // Debugging aid: without working devices after resume, the only observable

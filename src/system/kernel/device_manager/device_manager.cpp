@@ -8,6 +8,10 @@
 
 #include <syscalls.h>
 
+#include <stdarg.h>
+
+#include <algorithm>
+
 #include <new>
 #include <stdio.h>
 #include <stdlib.h>
@@ -2455,6 +2459,53 @@ device_manager_get_lock()
 
 static bool sSuspendVerbose;
 
+// A short trace of the last suspend and resume. Kept in memory, because a
+// machine that resumed badly often cannot write its log to disk any more.
+static char sSuspendTrace[4096];
+static size_t sSuspendTraceLength;
+static spinlock sSuspendTraceLock = B_SPINLOCK_INITIALIZER;
+
+
+void
+device_manager_suspend_trace(const char* format, ...)
+{
+	char buffer[256];
+	va_list args;
+	va_start(args, format);
+	ssize_t length = vsnprintf(buffer, sizeof(buffer), format, args);
+	va_end(args);
+	if (length <= 0)
+		return;
+
+	InterruptsSpinLocker locker(sSuspendTraceLock);
+	for (ssize_t i = 0; i < length && sSuspendTraceLength
+			< sizeof(sSuspendTrace) - 2; i++) {
+		sSuspendTrace[sSuspendTraceLength++] = buffer[i];
+	}
+	sSuspendTrace[sSuspendTraceLength++] = '\n';
+	sSuspendTrace[sSuspendTraceLength] = '\0';
+}
+
+
+void
+device_manager_clear_suspend_trace()
+{
+	InterruptsSpinLocker locker(sSuspendTraceLock);
+	sSuspendTraceLength = 0;
+	sSuspendTrace[0] = '\0';
+}
+
+
+size_t
+device_manager_get_suspend_trace(char* buffer, size_t size)
+{
+	InterruptsSpinLocker locker(sSuspendTraceLock);
+	size_t length = std::min(size - 1, sSuspendTraceLength);
+	memcpy(buffer, sSuspendTrace, length);
+	buffer[length] = '\0';
+	return length;
+}
+
 
 /*!	In verbose mode every step is logged and followed by a short pause, so
 	that the syslog daemon can write the log before a step that hangs.
@@ -2494,9 +2545,12 @@ suspend_node(device_node* node, int32 state)
 	if (!node->IsInitialized() || driver == NULL || driver->suspend == NULL)
 		return;
 
+	device_manager_suspend_trace("suspending %s", node->ModuleName());
 	suspend_step("device_manager: suspending %s\n", node->ModuleName());
 
 	status_t status = driver->suspend(node->DriverData(), state);
+	device_manager_suspend_trace("suspended %s: %s", node->ModuleName(),
+		strerror(status));
 	dprintf("device_manager: suspended %s: %s\n", node->ModuleName(),
 		strerror(status));
 }
@@ -2508,9 +2562,12 @@ resume_node(device_node* node)
 	// resume parents before their children
 	driver_module_info* driver = node->DriverModule();
 	if (node->IsInitialized() && driver != NULL && driver->resume != NULL) {
+		device_manager_suspend_trace("resuming %s", node->ModuleName());
 		suspend_step("device_manager: resuming %s\n", node->ModuleName());
 
 		status_t status = driver->resume(node->DriverData());
+		device_manager_suspend_trace("resumed %s: %s", node->ModuleName(),
+			strerror(status));
 		dprintf("device_manager: resumed %s: %s\n", node->ModuleName(),
 			strerror(status));
 	}
@@ -2586,6 +2643,8 @@ device_manager_suspend(int32 state, uint32 flags)
 		suspend_step("device_manager: calling suspend hook %s\n",
 			entry->name);
 		status_t status = entry->hook(entry->cookie, false, state);
+		device_manager_suspend_trace("suspend hook %s: %s", entry->name,
+			strerror(status));
 		dprintf("device_manager: suspend hook %s: %s\n", entry->name,
 			strerror(status));
 	}
@@ -2612,6 +2671,8 @@ device_manager_resume(uint32 flags)
 			break;
 		suspend_step("device_manager: calling resume hook %s\n", entry->name);
 		status_t status = entry->hook(entry->cookie, true, 0);
+		device_manager_suspend_trace("resume hook %s: %s", entry->name,
+			strerror(status));
 		dprintf("device_manager: resume hook %s: %s\n", entry->name,
 			strerror(status));
 	}
