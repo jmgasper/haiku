@@ -126,6 +126,41 @@ status_t NvHaikuBaseDeviceHandle::Control(uint32 op, void *data, size_t len)
 			*(void**)data = this;
 			return B_OK;
 		}
+		case NV_HAIKU_READ_REGISTER: {
+			nv_haiku_register_params params;
+			if (len != sizeof(params) || NV_IS_CTL_DEVICE(fDevice->Nv()))
+				return EINVAL;
+			CHECK_RET(user_memcpy(&params, data, sizeof(params)));
+			nv_state_t* nv = fDevice->Nv();
+			if (nv->regs == NULL || nv->regs->map == NULL
+				|| params.offset > nv->regs->size - 4 || (params.offset & 3) != 0)
+				return B_BAD_VALUE;
+			params.value = ((uint32*)nv->regs->map)[params.offset / 4];
+			return user_memcpy(data, &params, sizeof(params));
+		}
+		case NV_HAIKU_READ_VRAM: {
+			// read VRAM through the BAR0 PRAMIN window (NV_PBUS_BAR0_WINDOW)
+			nv_haiku_vram_params params;
+			if (len != sizeof(params) || NV_IS_CTL_DEVICE(fDevice->Nv()))
+				return EINVAL;
+			CHECK_RET(user_memcpy(&params, data, sizeof(params)));
+			nv_state_t* nv = fDevice->Nv();
+			uint32* regs = (uint32*)nv->regs->map;
+			if (regs == NULL)
+				return B_BAD_VALUE;
+			static spinlock sWindowLock = B_SPINLOCK_INITIALIZER;
+			{
+				InterruptsSpinLocker locker(sWindowLock);
+				uint32 oldWindow = regs[0x1700 / 4];
+				regs[0x1700 / 4] = (uint32)(params.offset >> 16);
+				for (int i = 0; i < 16; i++) {
+					params.values[i] = regs[(0x700000 + (params.offset & 0xffff)
+						+ i * 4) / 4];
+				}
+				regs[0x1700 / 4] = oldWindow;
+			}
+			return user_memcpy(data, &params, sizeof(params));
+		}
 		case NV_HAIKU_MAP: {
 			nv_haiku_map_params params;
 			if (len != sizeof(params)) {

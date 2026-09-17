@@ -16,6 +16,9 @@ class NvHaikuDevice;
 status_t nv_haiku_work_queue_init();
 void nv_haiku_work_queue_uninit();
 
+typedef struct nvidia_stack_s nvidia_stack_t;
+void nv_haiku_apply_registry_settings(nvidia_stack_t* sp);
+
 
 class NvHaikuDriver {
 private:

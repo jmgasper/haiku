@@ -15,7 +15,19 @@ enum {
 enum {
 	NV_HAIKU_GET_COOKIE = 0, // kernel only
 	NV_HAIKU_MAP,
+	NV_HAIKU_READ_REGISTER, // development aid
+	NV_HAIKU_READ_VRAM, // development aid
 };
+
+typedef struct {
+	uint64 offset;
+	uint32 values[16];
+} nv_haiku_vram_params;
+
+typedef struct {
+	uint32 offset;
+	uint32 value;
+} nv_haiku_register_params;
 
 
 typedef struct {

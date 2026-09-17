@@ -106,6 +106,8 @@ status_t NvHaikuDriver::Init()
 	}
 	fInitRmDone = true;
 
+	nv_haiku_apply_registry_settings(stack.Get());
+
 	fControlDevice = new(std::nothrow) NvHaikuControlDevice();
 	if (fControlDevice == nullptr) {
 		return B_NO_MEMORY;

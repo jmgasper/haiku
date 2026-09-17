@@ -1,5 +1,6 @@
 #include "nv-include.h"
 #include "RmStack.h"
+#include <driver_settings.h>
 extern "C" {
 #include <os-interface.h>
 #include "nvlink/interface/nvlink_os.h"
@@ -1445,22 +1446,122 @@ nv_schedule_uvm_isr(nv_state_t *nv)
 
 //#pragma mark - Timers
 
+struct nv_haiku_rc_timer;
+
+// nv_state_t has no spare OS field for the timer, so keep a small map.
+class RcTimerMap {
+public:
+	void Put(nv_state_t* nv, nv_haiku_rc_timer* timer)
+	{
+		MutexLocker locker(fLock);
+		for (int32 i = 0; i < kMax; i++) {
+			if (fEntries[i].nv == NULL) {
+				fEntries[i].nv = nv;
+				fEntries[i].timer = timer;
+				return;
+			}
+		}
+	}
+
+	nv_haiku_rc_timer* Get(nv_state_t* nv)
+	{
+		MutexLocker locker(fLock);
+		for (int32 i = 0; i < kMax; i++) {
+			if (fEntries[i].nv == nv)
+				return fEntries[i].timer;
+		}
+		return NULL;
+	}
+
+	void Remove(nv_state_t* nv)
+	{
+		MutexLocker locker(fLock);
+		for (int32 i = 0; i < kMax; i++) {
+			if (fEntries[i].nv == nv)
+				fEntries[i].nv = NULL;
+		}
+	}
+
+private:
+	static constexpr int32 kMax = 16;
+	struct Entry {
+		nv_state_t* nv;
+		nv_haiku_rc_timer* timer;
+	};
+	mutex fLock = MUTEX_INITIALIZER("nvidia_rm rc timers");
+	Entry fEntries[kMax] {};
+};
+
+static RcTimerMap sRcTimers;
+
+
+struct nv_haiku_rc_timer {
+	nv_state_t* nv;
+	thread_id thread;
+	sem_id stopSem;
+};
+
+
+static status_t
+nv_haiku_rc_timer_thread(void* arg)
+{
+	nv_haiku_rc_timer* timer = (nv_haiku_rc_timer*)arg;
+	RmStack stack;
+	// RM wants its callback once per second while the timer runs.
+	while (acquire_sem_etc(timer->stopSem, 1, B_RELATIVE_TIMEOUT, 1000000)
+			== B_TIMED_OUT) {
+		if (rm_run_rc_callback(stack.Get(), timer->nv) != NV_OK)
+			break;
+	}
+	return B_OK;
+}
+
+
 int NV_API_CALL nv_start_rc_timer(
     nv_state_t *nv
 )
 {
-    TRACE("nv_start_rc_timer()\n");
-    // TODO
-    return 0;
+	dprintf("nvidia_rm: starting RC timer\n");
+	if (nv->rc_timer_enabled)
+		return -1;
+
+	nv_haiku_rc_timer* timer = new(std::nothrow) nv_haiku_rc_timer;
+	if (timer == NULL)
+		return -1;
+	timer->nv = nv;
+	timer->stopSem = create_sem(0, "nvidia_rm rc timer");
+	timer->thread = spawn_kernel_thread(nv_haiku_rc_timer_thread,
+		"nvidia_rm rc timer", B_NORMAL_PRIORITY, timer);
+	if (timer->stopSem < B_OK || timer->thread < B_OK) {
+		delete_sem(timer->stopSem);
+		delete timer;
+		return -1;
+	}
+	sRcTimers.Put(nv, timer);
+	nv->rc_timer_enabled = 1;
+	resume_thread(timer->thread);
+	return 0;
 }
 
 int NV_API_CALL nv_stop_rc_timer(
     nv_state_t *nv
 )
 {
-    TRACE("nv_stop_rc_timer()\n");
-    // TODO
-    return 0;
+	TRACE("nv_stop_rc_timer()\n");
+	if (!nv->rc_timer_enabled)
+		return -1;
+
+	nv_haiku_rc_timer* timer = sRcTimers.Get(nv);
+	sRcTimers.Remove(nv);
+	nv->rc_timer_enabled = 0;
+	if (timer != NULL) {
+		release_sem(timer->stopSem);
+		status_t result;
+		wait_for_thread(timer->thread, &result);
+		delete_sem(timer->stopSem);
+		delete timer;
+	}
+	return 0;
 }
 
 
@@ -1888,6 +1989,41 @@ NV_STATUS NV_API_CALL nv_acquire_fabric_mgmt_cap(int fd, int *duped_fd)
 }
 
 
+// Applies RM registry values from /boot/system/settings/kernel/drivers/nvidia_rm,
+// in the form of Linux' NVreg_RegistryDwords: RegistryDwords "Key=Value;Key=Value"
+void
+nv_haiku_apply_registry_settings(nvidia_stack_t* sp)
+{
+	// Handle nonstall interrupts in DPC instead of interrupt handler directly.
+	// The proprietary RM does not call os_registry_init().
+	rm_write_registry_dword(sp, nullptr, (char*)NV_REG_PROCESS_NONSTALL_INTR_IN_LOCKLESS_ISR,
+		NV_REG_PROCESS_NONSTALL_INTR_IN_LOCKLESS_ISR_DISABLE);
+
+	void* settings = load_driver_settings("nvidia_rm");
+	if (settings == NULL)
+		return;
+	const char* dwords = get_driver_parameter(settings, "RegistryDwords", NULL, NULL);
+	if (dwords != NULL) {
+		char buffer[512];
+		strlcpy(buffer, dwords, sizeof(buffer));
+		char* next = buffer;
+		while (next != NULL && *next != '\0') {
+			char* entry = next;
+			next = strchr(entry, ';');
+			if (next != NULL)
+				*next++ = '\0';
+			char* value = strchr(entry, '=');
+			if (value == NULL)
+				continue;
+			*value++ = '\0';
+			dprintf("nvidia_rm: registry %s = %s\n", entry, value);
+			rm_write_registry_dword(sp, nullptr, entry, strtoul(value, NULL, 0));
+		}
+	}
+	unload_driver_settings(settings);
+}
+
+
 //#pragma mark -
 
 NV_STATUS NV_API_CALL os_registry_init(void)
@@ -1897,6 +2033,7 @@ NV_STATUS NV_API_CALL os_registry_init(void)
 	// Handle nonstall interrupts in DPC instead of interrupt handler directly.
 	RmStack stack;
 	rm_write_registry_dword(stack.Get(), nullptr, NV_REG_PROCESS_NONSTALL_INTR_IN_LOCKLESS_ISR, NV_REG_PROCESS_NONSTALL_INTR_IN_LOCKLESS_ISR_DISABLE);
+
 
     return NV_OK;
 }

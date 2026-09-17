@@ -29,3 +29,11 @@ listed as verified is untested.
 - 2026-09-17: `nvidia_rm` (X547's OS layer + NVIDIA 570.86.16 proprietary RM
   core) completes `RmInitAdapter` on the GTX 1080 Ti; app_server uses the
   NVKMS accelerant at 1920x1080.
+- 2026-09-17: NVK (X547's RM backend + pre-Volta patch, built natively on the
+  workstation with LLVM 20, libclc and SPIRV-LLVM-Translator) enumerates
+  "NVIDIA GeForce GTX 1080 Ti (NVK GP102-A)" with Vulkan 1.3 and creates a
+  device. The GPU fetches the GPFIFO and loads the channel's context (with the
+  RM watchdog disabled), but submitted work does not complete yet. The RM runs
+  its own watchdog channel without errors. `nvidia_rm` gained an RC timer,
+  registry settings (`~/config/settings/kernel/drivers/nvidia_rm`,
+  `RegistryDwords "Key=Value;..."`) and development register/VRAM readers.
