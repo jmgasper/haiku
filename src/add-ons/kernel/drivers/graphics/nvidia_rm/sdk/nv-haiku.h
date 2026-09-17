@@ -17,7 +17,18 @@ enum {
 	NV_HAIKU_MAP,
 	NV_HAIKU_READ_REGISTER, // development aid
 	NV_HAIKU_READ_VRAM, // development aid
+	NV_HAIKU_WAIT_FOR_RESUME,
 };
+
+// NV_HAIKU_WAIT_FOR_RESUME: waits until the resume generation differs from
+// the passed one (or the timeout expires) and returns the current one. Display
+// state is lost when resuming from suspend, so clients restore their modes
+// when the generation changes.
+typedef struct {
+	uint32 generation;
+	uint32 reserved;
+	int64 timeout;
+} nv_haiku_resume_params;
 
 typedef struct {
 	uint64 offset;

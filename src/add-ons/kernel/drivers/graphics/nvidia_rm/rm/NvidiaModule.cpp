@@ -89,9 +89,9 @@ void nvidia_module_op(void *ops_cmd)
 
 int nvidia_module_set_callbacks(const nvidia_modeset_callbacks_t *cb)
 {
-	dprintf("nvidia_module: set_callbacks()\n");
-	// TODO: implement
-	return 1;
+	dprintf("nvidia_module: set_callbacks(%p)\n", cb);
+	NvHaikuDriver::Instance().SetModesetCallbacks(cb);
+	return 0;
 }
 
 

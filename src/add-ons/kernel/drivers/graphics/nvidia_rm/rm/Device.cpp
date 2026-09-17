@@ -8,6 +8,7 @@ extern "C" {
 }
 
 #include "Driver.h"
+#include "nv-haiku-kernel.h"
 
 
 #define CHECK_RET(err) {status_t _err = (err); if (_err < B_OK) return _err;}
@@ -152,6 +153,7 @@ status_t NvHaikuDevice::Start()
 		return B_IO_ERROR;
 
 	fInitHardware = true;
+	nv->flags |= NV_FLAG_OPEN;
 
 	return B_OK;
 }
@@ -165,6 +167,7 @@ status_t NvHaikuDevice::Stop()
 		RmStack stack;
 		rm_shutdown_adapter(stack.Get(), nv);
 		fInitHardware = false;
+		nv->flags &= ~NV_FLAG_OPEN;
 	}
 
 	if (fIrq != 0) {
@@ -200,6 +203,112 @@ void NvHaikuDevice::ReleaseRef()
 		Stop();
 	}
 }
+
+void NvHaikuDevice::PreemptUserChannels()
+{
+	if (!fInitHardware || fUserChannelsStopped)
+		return;
+
+	nv_state_t *nv = Nv();
+	RmStack stack;
+	if (!stack.IsValid())
+		return;
+
+	NV_STATUS status = rm_ref_dynamic_power(stack.Get(), nv,
+		NV_DYNAMIC_PM_FINE);
+	if (status != NV_OK)
+		dprintf("nvidia_rm: rm_ref_dynamic_power: %#" B_PRIx32 "\n", status);
+
+	status = rm_stop_user_channels(stack.Get(), nv);
+	if (status != NV_OK)
+		dprintf("nvidia_rm: rm_stop_user_channels: %#" B_PRIx32 "\n", status);
+
+	fUserChannelsStopped = true;
+}
+
+
+void NvHaikuDevice::RestoreUserChannels()
+{
+	if (!fUserChannelsStopped)
+		return;
+
+	nv_state_t *nv = Nv();
+	RmStack stack;
+	if (!stack.IsValid())
+		return;
+
+	NV_STATUS status = rm_restart_user_channels(stack.Get(), nv);
+	if (status != NV_OK) {
+		dprintf("nvidia_rm: rm_restart_user_channels: %#" B_PRIx32 "\n",
+			status);
+	}
+	rm_unref_dynamic_power(stack.Get(), nv, NV_DYNAMIC_PM_FINE);
+
+	fUserChannelsStopped = false;
+}
+
+
+status_t NvHaikuDevice::Suspend()
+{
+	if (!fInitHardware || fSuspended)
+		return B_OK;
+
+	nv_state_t *nv = Nv();
+	dprintf("nvidia_rm: suspending GPU %#" B_PRIx32 "\n", nv->gpu_id);
+
+	RmStack stack;
+	if (!stack.IsValid())
+		return B_NO_MEMORY;
+
+	const nvidia_modeset_callbacks_t *callbacks
+		= NvHaikuDriver::Instance().ModesetCallbacks();
+	if (callbacks != nullptr && callbacks->suspend != nullptr)
+		callbacks->suspend(nv->gpu_id);
+
+	NV_STATUS status = rm_power_management(stack.Get(), nv,
+		NV_PM_ACTION_STANDBY);
+	if (status != NV_OK) {
+		dprintf("nvidia_rm: rm_power_management(standby): %#" B_PRIx32 "\n",
+			status);
+		if (callbacks != nullptr && callbacks->resume != nullptr)
+			callbacks->resume(nv->gpu_id);
+		return B_ERROR;
+	}
+
+	fSuspended = true;
+	return B_OK;
+}
+
+
+status_t NvHaikuDevice::Resume()
+{
+	if (!fSuspended)
+		return B_OK;
+
+	nv_state_t *nv = Nv();
+	dprintf("nvidia_rm: resuming GPU %#" B_PRIx32 "\n", nv->gpu_id);
+
+	RmStack stack;
+	if (!stack.IsValid())
+		return B_NO_MEMORY;
+
+	NV_STATUS status = rm_power_management(stack.Get(), nv,
+		NV_PM_ACTION_RESUME);
+	if (status != NV_OK) {
+		dprintf("nvidia_rm: rm_power_management(resume): %#" B_PRIx32 "\n",
+			status);
+	}
+
+	fSuspended = false;
+
+	const nvidia_modeset_callbacks_t *callbacks
+		= NvHaikuDriver::Instance().ModesetCallbacks();
+	if (callbacks != nullptr && callbacks->resume != nullptr)
+		callbacks->resume(nv->gpu_id);
+
+	return status == NV_OK ? B_OK : B_ERROR;
+}
+
 
 status_t NvHaikuDevice::Open(uint32 flags, DevfsNodeHandle &handle)
 {

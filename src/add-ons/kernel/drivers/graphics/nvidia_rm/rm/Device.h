@@ -23,6 +23,8 @@ private:
 	std::atomic<int32> fOpenCount {};
 	bool fInitSoftware: 1 = false;
 	bool fInitHardware: 1 = false;
+	bool fSuspended: 1 = false;
+	bool fUserChannelsStopped: 1 = false;
 
 	uint32 fIrq = 0;
 
@@ -56,6 +58,11 @@ public:
 
 	status_t AcquireRef();
 	void ReleaseRef();
+
+	void PreemptUserChannels();
+	void RestoreUserChannels();
+	status_t Suspend();
+	status_t Resume();
 
 	status_t Open(uint32 flags, DevfsNodeHandle &handle);
 	void Closed();

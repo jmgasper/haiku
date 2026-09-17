@@ -6,6 +6,7 @@
 #include <errno.h>
 
 #include <AutoDeleter.h>
+#include <kdevice_manager.h>
 
 #include "nv-include.h"
 #include "nv-haiku.h"
@@ -64,6 +65,9 @@ NvHaikuDriver::~NvHaikuDriver()
 {
 	dprintf("-NvHaikuDriver\n");
 
+	if (fPowerHookAdded)
+		device_manager_remove_power_hook(PowerHook, this);
+
 	for (int32 i = 0; i < fDevices.Count(); i++) {
 		delete fDevices[i];
 	}
@@ -92,6 +96,8 @@ status_t NvHaikuDriver::Init()
 	dprintf("+NvHaikuDriver\n");
 
 	CHECK_RET(get_module(B_PCI_MODULE_NAME, (module_info**)&fPCI));
+
+	fResumeCondition.Init(this, "nvidia_rm resume");
 
 	fIntrSafePool.Maintain();
 
@@ -128,6 +134,9 @@ status_t NvHaikuDriver::Init()
 
 	CHECK_RET(fDeviceNamesArray.Init(1 + fDevices.Count()));
 	fDeviceNamesArray.SetName(0, NVIDIA_CONTROL_DEVIVE_NAME);
+
+	if (device_manager_add_power_hook(PowerHook, this) == B_OK)
+		fPowerHookAdded = true;
 	for (int32 i = 0; i < fDevices.Count(); i++) {
 		char name[128];
 		sprintf(name, NVIDIA_DEVIVE_NAME "%" B_PRId32, i);
@@ -136,6 +145,55 @@ status_t NvHaikuDriver::Init()
 
 	return B_OK;
 }
+
+status_t NvHaikuDriver::PowerHook(void *cookie, bool resume, int32 state)
+{
+	NvHaikuDriver *driver = static_cast<NvHaikuDriver*>(cookie);
+	status_t result = B_OK;
+
+	if (!resume) {
+		// Like Linux: stop user channels of all GPUs before suspending them.
+		for (int32 i = 0; i < driver->fDevices.Count(); i++)
+			driver->fDevices[i]->PreemptUserChannels();
+		for (int32 i = driver->fDevices.Count() - 1; i >= 0; i--) {
+			status_t status = driver->fDevices[i]->Suspend();
+			if (status != B_OK)
+				result = status;
+		}
+	} else {
+		for (int32 i = 0; i < driver->fDevices.Count(); i++) {
+			status_t status = driver->fDevices[i]->Resume();
+			if (status != B_OK)
+				result = status;
+		}
+		for (int32 i = 0; i < driver->fDevices.Count(); i++)
+			driver->fDevices[i]->RestoreUserChannels();
+
+		driver->fResumeGeneration++;
+		driver->fResumeCondition.NotifyAll();
+	}
+
+	return result;
+}
+
+
+status_t NvHaikuDriver::WaitForResume(uint32 &generation, bigtime_t timeout)
+{
+	if (fResumeGeneration == generation) {
+		ConditionVariableEntry entry;
+		fResumeCondition.Add(&entry);
+		if (fResumeGeneration == generation) {
+			status_t status = entry.Wait(B_RELATIVE_TIMEOUT | B_CAN_INTERRUPT,
+				timeout);
+			if (status != B_OK && status != B_TIMED_OUT && status != B_WOULD_BLOCK)
+				return status;
+		}
+	}
+
+	generation = fResumeGeneration;
+	return B_OK;
+}
+
 
 status_t NvHaikuDriver::InitDriver()
 {

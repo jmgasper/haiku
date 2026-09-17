@@ -18,7 +18,7 @@ extern "C" {
  * These functions should be called without the RM lock held, using the kernel's
  * native calling convention.
  */
-typedef struct {
+typedef struct nvidia_modeset_callbacks_s {
     /*
      * Suspend & resume callbacks.  Note that these are called once per GPU.
      */

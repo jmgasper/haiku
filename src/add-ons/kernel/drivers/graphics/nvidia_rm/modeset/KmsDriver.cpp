@@ -20,8 +20,32 @@ extern "C" {
 NvHaikuKmsDriver NvHaikuKmsDriver::sInstance;
 
 
+static void
+nvkms_suspend(NvU32 gpuId)
+{
+	MutexLocker lock(&NvHaikuKmsDriver::Instance().Locker());
+	nvKmsSuspend(gpuId);
+}
+
+
+static void
+nvkms_resume(NvU32 gpuId)
+{
+	MutexLocker lock(&NvHaikuKmsDriver::Instance().Locker());
+	nvKmsResume(gpuId);
+}
+
+
+static const nvidia_modeset_callbacks_t sKmsCallbacks = {
+	.suspend = nvkms_suspend,
+	.resume = nvkms_resume,
+};
+
+
 NvHaikuKmsDriver::~NvHaikuKmsDriver()
 {
+	if (fNvidiaModule != nullptr)
+		fNvidiaModule->set_callbacks(nullptr);
 	if (fIsKmsLoaded) {
 		MutexLocker lock(&fLocker);
 		nvKmsModuleUnload();
@@ -49,6 +73,8 @@ status_t NvHaikuKmsDriver::Init()
 		return B_NO_INIT;
 	}
 	fIsKmsLoaded = true;
+
+	fNvidiaModule->set_callbacks(&sKmsCallbacks);
 
 	return B_OK;
 }

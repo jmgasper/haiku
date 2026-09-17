@@ -161,6 +161,15 @@ status_t NvHaikuBaseDeviceHandle::Control(uint32 op, void *data, size_t len)
 			}
 			return user_memcpy(data, &params, sizeof(params));
 		}
+		case NV_HAIKU_WAIT_FOR_RESUME: {
+			nv_haiku_resume_params params;
+			if (len != sizeof(params))
+				return EINVAL;
+			CHECK_RET(user_memcpy(&params, data, sizeof(params)));
+			CHECK_RET(NvHaikuDriver::Instance().WaitForResume(params.generation,
+				params.timeout));
+			return user_memcpy(data, &params, sizeof(params));
+		}
 		case NV_HAIKU_MAP: {
 			nv_haiku_map_params params;
 			if (len != sizeof(params)) {

@@ -1,7 +1,10 @@
 #pragma once
 
+#include <atomic>
+
 #include <PCI.h>
 
+#include <condition_variable.h>
 #include <util/Vector.h>
 
 #include "Drivers_cpp.h"
@@ -28,11 +31,19 @@ private:
 	bool fInitRmDone = false;
 	bool fWorkQueueInitDone = false;
 
+	bool fPowerHookAdded = false;
+	const struct nvidia_modeset_callbacks_s *fModesetCallbacks {};
+
+	std::atomic<uint32> fResumeGeneration {};
+	ConditionVariable fResumeCondition;
+
 	NvHaikuControlDevice *fControlDevice {};
 	Vector<NvHaikuDevice*> fDevices;
 	DeviceNamesArray fDeviceNamesArray;
 
 	static NvHaikuDriver sInstance;
+
+	static status_t PowerHook(void *cookie, bool resume, int32 state);
 
 public:
 	~NvHaikuDriver();
@@ -41,6 +52,13 @@ public:
 	static NvHaikuDriver &Instance() {return sInstance;}
 	pci_module_info &PCI() {return *fPCI;}
 	class IntrSafePool &IntrSafePool() {return fIntrSafePool;}
+
+	void SetModesetCallbacks(const struct nvidia_modeset_callbacks_s *callbacks)
+		{fModesetCallbacks = callbacks;}
+	const struct nvidia_modeset_callbacks_s *ModesetCallbacks()
+		{return fModesetCallbacks;}
+
+	status_t WaitForResume(uint32 &generation, bigtime_t timeout);
 
 	uint32 DeviceCount() {return fDevices.Count();}
 	NvHaikuDevice *DeviceAt(uint32 index) {return fDevices[index];}
