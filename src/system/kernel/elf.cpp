@@ -2109,6 +2109,8 @@ load_kernel_add_on(const char *path)
 	ssize_t length;
 	bool textSectionWritable = false;
 	int executableHeaderCount = 0;
+	addr_t loadBase;
+	bool fixedAddress = false;
 
 	TRACE(("elf_load_kspace: entry path '%s'\n", path));
 
@@ -2196,6 +2198,30 @@ load_kernel_add_on(const char *path)
 
 	reservedSize = 0;
 	length = 0;
+	loadBase = 0;
+
+#if defined(__x86_64__)
+	// Non-PIC add-ons built for GCC's kernel code model (for example, vendor
+	// objects that cannot be rebuilt) are linked as ET_EXEC images at a fixed
+	// address in the top 2 GB and must be mapped exactly there.
+	if (elfHeader->e_type == ET_EXEC) {
+		fixedAddress = true;
+		loadBase = ~(addr_t)0;
+		for (int32 i = 0; i < elfHeader->e_phnum; i++) {
+			if (programHeaders[i].p_type == PT_LOAD
+				&& ROUNDDOWN(programHeaders[i].p_vaddr, B_PAGE_SIZE)
+					< loadBase) {
+				loadBase = ROUNDDOWN(programHeaders[i].p_vaddr, B_PAGE_SIZE);
+			}
+		}
+		if (loadBase < KERNEL_FIXED_ADD_ON_BASE) {
+			dprintf("%s: fixed-address add-on outside the kernel code model "
+				"range\n", fileName);
+			status = B_NOT_AN_EXECUTABLE;
+			goto error3;
+		}
+	}
+#endif
 
 	for (int32 i = 0; i < elfHeader->e_phnum; i++) {
 		size_t end;
@@ -2207,7 +2233,7 @@ load_kernel_add_on(const char *path)
 			+ (programHeaders[i].p_vaddr % B_PAGE_SIZE), B_PAGE_SIZE);
 
 		end = ROUNDUP(programHeaders[i].p_memsz + programHeaders[i].p_vaddr,
-			B_PAGE_SIZE);
+			B_PAGE_SIZE) - loadBase;
 		if (end > reservedSize)
 			reservedSize = end;
 
@@ -2219,12 +2245,16 @@ load_kernel_add_on(const char *path)
 	// inbetween.
 	if ((ssize_t)reservedSize > length + 8 * 1024) {
 		status = B_BAD_DATA;
-		goto error1;
+		goto error3;
 	}
 
 	// reserve that space and allocate the areas from that one
+	reservedAddress = (void*)loadBase;
 	if (vm_reserve_address_range(VMAddressSpace::KernelID(), &reservedAddress,
-			B_ANY_KERNEL_ADDRESS, reservedSize, 0) < B_OK) {
+			fixedAddress ? B_EXACT_ADDRESS : B_ANY_KERNEL_ADDRESS,
+			reservedSize, 0) < B_OK) {
+		dprintf("%s: could not reserve %#" B_PRIxSIZE " bytes at %#" B_PRIxADDR
+			"\n", fileName, reservedSize, loadBase);
 		status = B_NO_MEMORY;
 		goto error3;
 	}
@@ -2303,7 +2333,7 @@ load_kernel_add_on(const char *path)
 		}
 
 		region->start = (addr_t)reservedAddress + ROUNDDOWN(
-			programHeaders[i].p_vaddr, B_PAGE_SIZE);
+			programHeaders[i].p_vaddr, B_PAGE_SIZE) - loadBase;
 		region->size = ROUNDUP(programHeaders[i].p_memsz
 			+ (programHeaders[i].p_vaddr % B_PAGE_SIZE), B_PAGE_SIZE);
 		region->id = create_area(regionName, (void **)&region->start,
