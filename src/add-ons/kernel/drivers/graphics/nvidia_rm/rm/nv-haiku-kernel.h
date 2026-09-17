@@ -8,7 +8,7 @@ extern "C" {
 }
 
 
-#define NV_HAIKU_MODULE_NAME "drivers/dev/graphics/nvidia_gsp/v570.86.16"
+#define NV_HAIKU_MODULE_NAME "drivers/dev/graphics/nvidia_rm/v570.86.16"
 
 
 /*

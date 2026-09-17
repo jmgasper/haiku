@@ -9,7 +9,7 @@ extern "C" {
 }
 
 #include "Drivers_cpp.h"
-#include "nvidia/nv-haiku-kernel.h"
+#include "rm/nv-haiku-kernel.h"
 
 #include "KmsDevice.h"
 

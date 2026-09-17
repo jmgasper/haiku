@@ -13,6 +13,9 @@
 class NvHaikuControlDevice;
 class NvHaikuDevice;
 
+status_t nv_haiku_work_queue_init();
+void nv_haiku_work_queue_uninit();
+
 
 class NvHaikuDriver {
 private:
@@ -20,6 +23,7 @@ private:
 	class IntrSafePool fIntrSafePool;
 
 	bool fInitRmDone = false;
+	bool fWorkQueueInitDone = false;
 
 	NvHaikuControlDevice *fControlDevice {};
 	Vector<NvHaikuDevice*> fDevices;

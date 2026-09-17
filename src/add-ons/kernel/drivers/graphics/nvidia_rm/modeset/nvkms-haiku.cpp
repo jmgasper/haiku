@@ -17,7 +17,7 @@ extern "C" {
 #include <AutoDeleterOS.h>
 #include <util/AutoLock.h>
 
-#include "nvidia/nv-haiku-kernel.h"
+#include "rm/nv-haiku-kernel.h"
 
 #include "ContainerOf.h"
 #include "nv-kref.h"

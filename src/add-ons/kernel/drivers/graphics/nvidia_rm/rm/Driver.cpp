@@ -1,4 +1,5 @@
 #include "Driver.h"
+#include "RmStack.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -72,8 +73,12 @@ NvHaikuDriver::~NvHaikuDriver()
 	}
 
 	if (fInitRmDone) {
-		rm_shutdown_rm(nullptr);
+		RmStack stack;
+		rm_shutdown_rm(stack.Get());
 	}
+
+	if (fWorkQueueInitDone)
+		nv_haiku_work_queue_uninit();
 
 	fIntrSafePool.ReclaimAll();
 
@@ -90,7 +95,13 @@ status_t NvHaikuDriver::Init()
 
 	fIntrSafePool.Maintain();
 
-	if (!rm_init_rm(nullptr)) {
+	CHECK_RET(nv_haiku_work_queue_init());
+	fWorkQueueInitDone = true;
+
+	RmStack stack;
+	if (!stack.IsValid())
+		return B_NO_MEMORY;
+	if (!rm_init_rm(stack.Get())) {
 		return B_ERROR;
 	}
 	fInitRmDone = true;
@@ -126,14 +137,14 @@ status_t NvHaikuDriver::Init()
 
 status_t NvHaikuDriver::InitDriver()
 {
-	dprintf("nvidia_gsp: InitDriver\n");
+	dprintf("nvidia_rm: InitDriver\n");
 	module_info *moduleInfo;
 	return get_module(NV_HAIKU_MODULE_NAME, &moduleInfo);
 }
 
 void NvHaikuDriver::UninitDriver()
 {
-	dprintf("nvidia_gsp: UninitDriver\n");
+	dprintf("nvidia_rm: UninitDriver\n");
 	put_module(NV_HAIKU_MODULE_NAME);
 }
 

@@ -39,8 +39,11 @@
 #define KERNEL_TOP				(KERNEL_BASE + (KERNEL_SIZE - 1))
 #define KERNEL_LOAD_BASE		0xffffffff80000000
 
-// Lowest address of add-ons linked at fixed addresses for the kernel code model.
-#define KERNEL_FIXED_ADD_ON_BASE	0xffffffff90000000
+// Address range reserved at boot for add-ons linked at fixed addresses for
+// the kernel code model. It is placed at the top of the address space since
+// kernel allocations in the top 2 GB grow upwards.
+#define KERNEL_FIXED_ADD_ON_BASE	0xfffffffff0000000
+#define KERNEL_FIXED_ADD_ON_SIZE	0x0f000000
 
 // Kernel physical memory map area.
 #define KERNEL_PMAP_BASE		0xffffff0000000000

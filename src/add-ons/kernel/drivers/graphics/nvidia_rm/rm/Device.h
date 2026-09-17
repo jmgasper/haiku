@@ -11,6 +11,7 @@
 #include <AutoDeleter.h>
 
 #include "ContainerOf.h"
+#include "RmStack.h"
 
 
 struct pci_info;
@@ -24,6 +25,10 @@ private:
 	bool fInitHardware: 1 = false;
 
 	uint32 fIrq = 0;
+
+	// alternate RM stacks for the interrupt handler and its bottom half
+	RmStack fIsrStack;
+	RmStack fIsrBottomHalfStack;
 
 	class DeferredInterruptHandler: public DPCCallback {
 	public:

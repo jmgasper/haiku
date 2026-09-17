@@ -1,4 +1,5 @@
 #include "BaseDevice.h"
+#include "RmStack.h"
 #include "Device.h"
 #include "Driver.h"
 
@@ -63,7 +64,8 @@ NvHaikuBaseDeviceHandle::~NvHaikuBaseDeviceHandle()
 {
 	//dprintf("-NvHaikuBaseDeviceHandle\n");
 
-	rm_cleanup_file_private(nullptr, &fDevice->fNvState, &fNvfp);
+	RmStack stack;
+	rm_cleanup_file_private(stack.Get(), &fDevice->fNvState, &fNvfp);
 
     if (fMmapContext.valid)
     {
@@ -98,7 +100,7 @@ status_t NvHaikuBaseDeviceHandle::Control(uint32 op, void *data, size_t len)
 				return EINVAL;
 			}
 
-			CHECK_RET(user_strlcpy((char*)data, "nvidia_gsp.accelerant", len));
+			CHECK_RET(user_strlcpy((char*)data, "nvidia_rm.accelerant", len));
 			return B_OK;
 		}
 		default:
@@ -255,7 +257,10 @@ status_t NvHaikuBaseDeviceHandle::Control(uint32 op, void *data, size_t len)
 	}
 	CHECK_RET(user_memcpy(&kernelData[0], data, len));
 
-	if (rm_ioctl(nullptr, &fDevice->fNvState, &fNvfp, cmd, &kernelData[0], len) != NV_OK)
+	RmStack stack;
+	if (!stack.IsValid())
+		return B_NO_MEMORY;
+	if (rm_ioctl(stack.Get(), &fDevice->fNvState, &fNvfp, cmd, &kernelData[0], len) != NV_OK)
 		return EINVAL;
 
 	CHECK_RET(user_memcpy(data, &kernelData[0], len));

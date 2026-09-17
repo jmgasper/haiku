@@ -1,4 +1,5 @@
 #include "Device.h"
+#include "RmStack.h"
 
 #include <PCI.h>
 
@@ -37,7 +38,8 @@ status_t NvHaikuDevice::Probe(ObjectDeleter<NvHaikuDevice> &outDevice, const pci
 	);
 
 	ObjectDeleter<NvHaikuDevice> device(new(std::nothrow) NvHaikuDevice());
-	if (!device.IsSet())
+	if (!device.IsSet() || !device->fIsrStack.IsValid()
+		|| !device->fIsrBottomHalfStack.IsValid())
 		return B_NO_MEMORY;
 
 	CHECK_RET(device->Init(pciInfo));
@@ -59,7 +61,8 @@ NvHaikuDevice::~NvHaikuDevice()
 
 	if (fInitSoftware) {
 		dprintf("rm_free_private_state()\n");
-		rm_free_private_state(nullptr, nv);
+		RmStack stack;
+		rm_free_private_state(stack.Get(), nv);
 		fInitSoftware = false;
 	}
 }
@@ -107,13 +110,18 @@ status_t NvHaikuDevice::Init(const pci_info &pciInfo)
 		);
 	}
 
-	if (!rm_init_private_state(nullptr, nv))
+	RmStack stack;
+	if (!stack.IsValid())
+		return B_NO_MEMORY;
+	if (!rm_init_private_state(stack.Get(), nv))
 		return B_ERROR;
 
 	fInitSoftware = true;
 
-	rm_set_rm_firmware_requested(nullptr, nv);
-
+	// GSP firmware is only requested for GPUs that require it. The
+	// proprietary RM runs pre-Turing GPUs such as Pascal on the CPU.
+	if (nv_is_rm_firmware_supported_os)
+		rm_set_rm_firmware_requested(stack.Get(), nv);
 
 	return B_OK;
 }
@@ -137,7 +145,10 @@ status_t NvHaikuDevice::Start()
 	NvHaikuDriver::Instance().PCI().enable_msi(nv->pci_info.bus, nv->pci_info.slot, nv->pci_info.function);
 	install_io_interrupt_handler(fIrq, InterruptHandler, (void *)this, 0);
 
-	if (!rm_init_adapter(nullptr, nv))
+	RmStack stack;
+	if (!stack.IsValid())
+		return B_NO_MEMORY;
+	if (!rm_init_adapter(stack.Get(), nv))
 		return B_IO_ERROR;
 
 	fInitHardware = true;
@@ -151,7 +162,8 @@ status_t NvHaikuDevice::Stop()
 	nv_state_t *nv = Nv();
 
 	if (fInitHardware) {
-		rm_shutdown_adapter(nullptr, nv);
+		RmStack stack;
+		rm_shutdown_adapter(stack.Get(), nv);
 		fInitHardware = false;
 	}
 
@@ -221,7 +233,7 @@ int32 NvHaikuDevice::InterruptHandlerInt()
 	nv_state_t *nv = Nv();
 
 	NvU32 needBottomHalf = NV_FALSE;
-	NvBool isIsrHandled = rm_isr(nullptr, nv, &needBottomHalf);
+	NvBool isIsrHandled = rm_isr(fIsrStack.Get(), nv, &needBottomHalf);
 	if (isIsrHandled) {
 		//dprintf("rm_isr(%d)\n", needBottomHalf);
 		if (needBottomHalf)
@@ -237,7 +249,7 @@ void NvHaikuDevice::DeferredInterruptHandler::DoDPC(DPCQueue* queue)
 //	dprintf("NvHaikuDevice::DeferredInterruptHandler()\n");
 	nv_state_t *nv = Base().Nv();
 
-	rm_isr_bh(nullptr, nv);
+	rm_isr_bh(Base().fIsrBottomHalfStack.Get(), nv);
 }
 
 

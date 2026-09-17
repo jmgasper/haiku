@@ -1,4 +1,5 @@
 #include "ControlDevice.h"
+#include "RmStack.h"
 
 #include <KernelExport.h>
 
@@ -15,12 +16,14 @@ NvHaikuControlDevice::NvHaikuControlDevice()
 {
 	Nv()->flags |= NV_FLAG_CONTROL;
 	gNvHaikuControlDeviceInst = this;
-	rm_init_event_locks(nullptr, Nv());
+	RmStack stack;
+	rm_init_event_locks(stack.Get(), Nv());
 }
 
 NvHaikuControlDevice::~NvHaikuControlDevice()
 {
-	rm_destroy_event_locks(nullptr, Nv());
+	RmStack stack;
+	rm_destroy_event_locks(stack.Get(), Nv());
 	gNvHaikuControlDeviceInst = nullptr;
 }
 

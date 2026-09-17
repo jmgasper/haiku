@@ -1,4 +1,5 @@
 #include "nv-include.h"
+#include "RmStack.h"
 extern "C" {
 #include <os-interface.h>
 #include "nvlink/interface/nvlink_os.h"
@@ -352,7 +353,7 @@ void* NV_API_CALL os_map_kernel_space(
 {
 	TRACE("os_map_kernel_space(%#" PRIx64 ", %#" PRIx64 ", %#" PRIx32 ")\n", start, size_bytes, mode);
 	void *address = nullptr;
-	area_id area = map_physical_memory("nvidia_gsp MMIO",
+	area_id area = map_physical_memory("nvidia_rm MMIO",
 		start, size_bytes,
 		B_ANY_KERNEL_ADDRESS | to_haiku_cache_type(mode),
 		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
@@ -1325,10 +1326,6 @@ NV_STATUS nv_get_syncpoint_aperture
     return NV_ERR_NOT_SUPPORTED;
 }
 
-NvBool NV_API_CALL os_is_queue_flush_ongoing(struct os_work_queue *queue)
-{
-    return NV_FALSE;
-}
 
 NV_STATUS NV_API_CALL nv_set_primary_vga_status(
     nv_state_t *nv
@@ -1898,7 +1895,8 @@ NV_STATUS NV_API_CALL os_registry_init(void)
     TRACE("os_registry_init()\n");
 
 	// Handle nonstall interrupts in DPC instead of interrupt handler directly.
-	rm_write_registry_dword(nullptr, nullptr, NV_REG_PROCESS_NONSTALL_INTR_IN_LOCKLESS_ISR, NV_REG_PROCESS_NONSTALL_INTR_IN_LOCKLESS_ISR_DISABLE);
+	RmStack stack;
+	rm_write_registry_dword(stack.Get(), nullptr, NV_REG_PROCESS_NONSTALL_INTR_IN_LOCKLESS_ISR, NV_REG_PROCESS_NONSTALL_INTR_IN_LOCKLESS_ISR_DISABLE);
 
     return NV_OK;
 }

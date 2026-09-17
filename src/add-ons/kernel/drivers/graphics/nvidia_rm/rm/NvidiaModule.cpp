@@ -1,4 +1,5 @@
 #include <string.h>
+#include "RmStack.h"
 #include <stdio.h>
 #include <new>
 
@@ -21,7 +22,7 @@ extern "C" {
 
 status_t nvidia_module_init()
 {
-	dprintf("nvidia_gsp: module_init\n");
+	dprintf("nvidia_rm: module_init\n");
 
 	new(&NvHaikuDriver::Instance()) NvHaikuDriver();
 	status_t res = NvHaikuDriver::Instance().Init();
@@ -33,7 +34,7 @@ status_t nvidia_module_init()
 
 void nvidia_module_uninit()
 {
-	dprintf("nvidia_gsp: module_uninit\n");
+	dprintf("nvidia_rm: module_uninit\n");
 
 	NvHaikuDriver::Instance().~NvHaikuDriver();
 }
@@ -82,7 +83,8 @@ void nvidia_module_close_gpu(NvU32 gpu_id)
 void nvidia_module_op(void *ops_cmd)
 {
 	//dprintf("nvidia_module: op()\n");
-	rm_kernel_rmapi_op(nullptr, ops_cmd);
+	RmStack stack;
+	rm_kernel_rmapi_op(stack.Get(), ops_cmd);
 }
 
 int nvidia_module_set_callbacks(const nvidia_modeset_callbacks_t *cb)

@@ -3597,6 +3597,17 @@ vm_init(kernel_args* args)
 	VMAddressSpace::Init();
 	reserve_boot_loader_ranges(args);
 
+#ifdef KERNEL_FIXED_ADD_ON_BASE
+	{
+		// keep the range for fixed-address kernel add-ons free
+		void* address = (void*)KERNEL_FIXED_ADD_ON_BASE;
+		if (vm_reserve_address_range(VMAddressSpace::KernelID(), &address,
+				B_EXACT_ADDRESS, KERNEL_FIXED_ADD_ON_SIZE, 0) != B_OK) {
+			dprintf("vm_init: could not reserve fixed add-on range\n");
+		}
+	}
+#endif
+
 #if DEBUG_HEAPS
 	heap_init_post_area();
 #endif
