@@ -1,5 +1,6 @@
 #include <Accelerant.h>
 
+#include <string.h>
 #include <vector>
 
 #include <ErrorUtils.h>
@@ -184,7 +185,7 @@ NvAccelerant::NvAccelerant(int devFd):
 		if (!nvDpyIdIsInvalid(fDpyId)) {
 			break;
 		}
-		debug_printf("nvidia_gsp: [%" B_PRId32 "/%" B_PRId32 "]: no connected displays\n", i, totalAttempts);
+		debug_printf("nvidia_rm: [%" B_PRId32 "/%" B_PRId32 "]: no connected displays\n", i, totalAttempts);
 		snooze(100000);
 	}
 	if (nvDpyIdIsInvalid(fDpyId)) {
@@ -742,7 +743,7 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 					NvAccelerant::Init(fd);
 					return B_OK;
 				} catch (const std::system_error &ex) {
-					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
 					return ToErrorCode(ex);
 				}
 			};
@@ -766,7 +767,7 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 					NvAccelerant::Clone(data);
 					return B_OK;
 				} catch (const std::system_error &ex) {
-					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
 					return ToErrorCode(ex);
 				}
 			};
@@ -777,7 +778,7 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 				try {
 					NvAccelerant::Instance()->Uninit();
 				} catch (const std::system_error &ex) {
-					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
 				}
 			};
 			return (void*)fn;
@@ -788,7 +789,7 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 					NvAccelerant::Instance()->GetDeviceInfo(adi);
 					return B_OK;
 				} catch (const std::system_error &ex) {
-					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
 					return ToErrorCode(ex);
 				}
 			};
@@ -800,7 +801,7 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 				try {
 					return NvAccelerant::Instance()->ModeCount();
 				} catch (const std::system_error &ex) {
-					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
 					return 0;
 				}
 			};
@@ -812,7 +813,7 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 					NvAccelerant::Instance()->GetModeList(modes);
 					return B_OK;
 				} catch (const std::system_error &ex) {
-					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
 					return ToErrorCode(ex);
 				}
 			};
@@ -823,7 +824,7 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 				try {
 					return NvAccelerant::Instance()->ProposeMode(target, low, high);
 				} catch (const std::system_error &ex) {
-					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
 					return ToErrorCode(ex);
 				}
 			};
@@ -835,7 +836,7 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 					NvAccelerant::Instance()->SetDisplayMode(modeToSet);
 					return B_OK;
 				} catch (const std::system_error &ex) {
-					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
 					return ToErrorCode(ex);
 				}
 			};
@@ -847,7 +848,7 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 					NvAccelerant::Instance()->GetDisplayMode(currentMode);
 					return B_OK;
 				} catch (const std::system_error &ex) {
-					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
 					return ToErrorCode(ex);
 				}
 			};
@@ -859,7 +860,7 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 					NvAccelerant::Instance()->GetFrameBufferConfig(frameBuffer);
 					return B_OK;
 				} catch (const std::system_error &ex) {
-					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
 					return ToErrorCode(ex);
 				}
 			};
@@ -871,7 +872,7 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 					NvAccelerant::Instance()->GetPixelClockLimits(dm, low, high);
 					return B_OK;
 				} catch (const std::system_error &ex) {
-					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
 					return ToErrorCode(ex);
 				}
 			};
@@ -883,7 +884,7 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 				try {
 					return NvAccelerant::Instance()->DpmsCapabilities();
 				} catch (const std::system_error &ex) {
-					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
 					return 0;
 				}
 			};
@@ -894,7 +895,7 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 				try {
 					return NvAccelerant::Instance()->DpmsMode();
 				} catch (const std::system_error &ex) {
-					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
 					return B_DPMS_ON;
 				}
 			};
@@ -906,7 +907,7 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 					NvAccelerant::Instance()->SetDpmsMode(dpms_flags);
 					return B_OK;
 				} catch (const std::system_error &ex) {
-					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
 					return ToErrorCode(ex);
 				}
 			};
@@ -918,7 +919,7 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 					NvAccelerant::Instance()->GetPreferredDisplayMode(preferredMode);
 					return B_OK;
 				} catch (const std::system_error &ex) {
-					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
 					return ToErrorCode(ex);
 				}
 			};
@@ -931,7 +932,7 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 					NvAccelerant::Instance()->GetMonitorInfo(info);
 					return B_OK;
 				} catch (const std::system_error &ex) {
-					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
 					return ToErrorCode(ex);
 				}
 			};
@@ -944,7 +945,7 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 					NvAccelerant::Instance()->GetEdidInfo(info, size, _version);
 					return B_OK;
 				} catch (const std::system_error &ex) {
-					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
 					return ToErrorCode(ex);
 				}
 			};
@@ -957,7 +958,7 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 				try {
 					NvAccelerant::Instance()->MoveCursor(x, y);
 				} catch (const std::system_error &ex) {
-					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
 				}
 			};
 			return (void*)fn;
@@ -969,7 +970,7 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 					NvAccelerant::Instance()->SetCursorShape(width, height, hotX, hotY, andMask, xorMask);
 					return B_OK;
 				} catch (const std::system_error &ex) {
-					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
 					return ToErrorCode(ex);
 				}
 			};
@@ -981,7 +982,7 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 				try {
 					NvAccelerant::Instance()->ShowCursor(isVisible);
 				} catch (const std::system_error &ex) {
-					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
 				}
 			};
 			return (void*)fn;
@@ -992,7 +993,7 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 					NvAccelerant::Instance()->SetCursorBitmap(width, height, hotX, hotY, colorSpace, bytesPerRow, bitmapData);
 					return B_OK;
 				} catch (const std::system_error &ex) {
-					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
 					return ToErrorCode(ex);
 				}
 			};
