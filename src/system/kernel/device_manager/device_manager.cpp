@@ -2487,21 +2487,90 @@ resume_node(device_node* node)
 }
 
 
-/*!	Calls the suspend hook of all initialized drivers, children first. */
+struct power_hook : DoublyLinkedListLinkImpl<power_hook> {
+	device_manager_power_hook	hook;
+	void*						cookie;
+};
+
+typedef DoublyLinkedList<power_hook> PowerHookList;
+
+static PowerHookList sPowerHooks;
+
+
+/*!	Registers a hook for drivers not managed by the device manager (like
+	legacy drivers) to be called when the system suspends and resumes.
+	Hooks are called before the device tree is suspended, in reverse order of
+	registration, and after it was resumed, in order of registration.
+*/
+status_t
+device_manager_add_power_hook(device_manager_power_hook hook, void* cookie)
+{
+	power_hook* entry = new(std::nothrow) power_hook;
+	if (entry == NULL)
+		return B_NO_MEMORY;
+
+	entry->hook = hook;
+	entry->cookie = cookie;
+
+	RecursiveLocker _(sLock);
+	sPowerHooks.Add(entry);
+	return B_OK;
+}
+
+
+status_t
+device_manager_remove_power_hook(device_manager_power_hook hook, void* cookie)
+{
+	RecursiveLocker _(sLock);
+
+	PowerHookList::Iterator iterator = sPowerHooks.GetIterator();
+	while (power_hook* entry = iterator.Next()) {
+		if (entry->hook == hook && entry->cookie == cookie) {
+			iterator.Remove();
+			delete entry;
+			return B_OK;
+		}
+	}
+
+	return B_ENTRY_NOT_FOUND;
+}
+
+
+/*!	Calls the registered power hooks and the suspend hook of all initialized
+	drivers, children first.
+*/
 status_t
 device_manager_suspend(int32 state)
 {
 	RecursiveLocker _(sLock);
+
+	PowerHookList::ReverseIterator iterator = sPowerHooks.GetReverseIterator();
+	while (power_hook* entry = iterator.Next()) {
+		status_t status = entry->hook(entry->cookie, false, state);
+		dprintf("device_manager: suspend hook %p: %s\n", entry->hook,
+			strerror(status));
+	}
+
 	suspend_node(sRootNode, state);
 	return B_OK;
 }
 
 
-/*!	Calls the resume hook of all initialized drivers, parents first. */
+/*!	Calls the resume hook of all initialized drivers, parents first, and then
+	the registered power hooks.
+*/
 status_t
 device_manager_resume()
 {
 	RecursiveLocker _(sLock);
 	resume_node(sRootNode);
+
+	PowerHookList::Iterator iterator = sPowerHooks.GetIterator();
+	while (power_hook* entry = iterator.Next()) {
+		status_t status = entry->hook(entry->cookie, true, 0);
+		dprintf("device_manager: resume hook %p: %s\n", entry->hook,
+			strerror(status));
+	}
+
 	return B_OK;
 }

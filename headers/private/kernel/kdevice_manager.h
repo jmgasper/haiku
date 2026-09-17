@@ -24,6 +24,13 @@ status_t device_manager_init_post_modules(struct kernel_args *args);
 
 recursive_lock* device_manager_get_lock();
 
+typedef status_t (*device_manager_power_hook)(void* cookie, bool resume,
+	int32 state);
+
+status_t device_manager_add_power_hook(device_manager_power_hook hook,
+	void* cookie);
+status_t device_manager_remove_power_hook(device_manager_power_hook hook,
+	void* cookie);
 status_t device_manager_suspend(int32 state);
 status_t device_manager_resume(void);
 
