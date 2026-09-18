@@ -1469,13 +1469,13 @@ CursorControl(Handle* handle, uint32 op, void* buffer, size_t length)
 	if (buffer == NULL)
 		return B_BAD_ADDRESS;
 	if (op == kGetCursor) {
+		// The state keeps a copy of the bitmap rows, so nothing of its 16 KB
+		// ever sits on the 16 KB kernel stack (the +291 image panicked in
+		// app_server's first ioctl with a copy here).
 		if (length != sizeof(CursorState))
 			return B_BAD_VALUE;
 		MutexLocker locker(sHardwareLock);
-		CursorState state = sCursorState;
-		if (sCursor.address != NULL)
-			memcpy(state.data, sCursor.address, kCursorBufferBytes);
-		return user_memcpy(buffer, &state, sizeof(state));
+		return user_memcpy(buffer, &sCursorState, sizeof(sCursorState));
 	}
 	if (!handle->writable)
 		return B_NOT_ALLOWED;
@@ -1509,6 +1509,7 @@ CursorControl(Handle* handle, uint32 op, void* buffer, size_t length)
 				memcpy(pixels + row * kCursorBytesPerRow, bitmap->data + row * bitmap->bytesPerRow,
 					bitmap->width * 4);
 			}
+			memcpy(sCursorState.data, pixels, kCursorBufferBytes);
 			sCursorState.width = bitmap->width;
 			sCursorState.height = bitmap->height;
 			sCursorState.hotX = bitmap->hotX;

@@ -525,6 +525,51 @@ the HDMI block to be read (`…automated-display-power/20260918T112137Z-92c242`)
 and the second on the NanoKVM capture, which never returns while there is
 no signal (`…20260918T113120Z-d30ea7`).
 
+## Stage 3f: hardware cursor on HDMI1
+
+The `rock5-itx-edk2-v1.1-display-cursor` profile (which implies the mode-set
+profile and everything below it) gives app_server a hardware cursor. The
+firmware left ESMART3 bound to video port 2 on its topmost layer
+(`OVL_PORT_SEL` 0xa5a47738, `OVL_LAYER_SEL` 0x76543210: window 3 on layer 7,
+which alpha mixer 6 blends), so the driver programs that window with a
+64x64 straight-alpha ARGB buffer it allocates with the frame buffer, using
+the mixer words Linux' `vop2_parse_alpha` derives for a per-pixel-alpha
+source over an opaque destination (`0x00ff0125`, `0x00ff0060`,
+`0x00000024`, `0x00000074`), 64-pixel rows, no scaling and no colour key.
+Four ioctls carry the pointer: the bitmap (B_RGBA32 rows of at most 64x64
+with the hot spot inside them), the position (clipped to the current mode's
+frame at every edge; the window's address skips the cropped rows and
+columns, and a pointer entirely off the frame disables the window),
+visibility, and the whole state for a probe to save and restore. Every
+request writes the window and mixer words, commits the port and polls the
+shadowed `REG_CFG_DONE` bit before reading the region control, start and
+address back. A hidden pointer only remembers its position and bitmap, a
+failed hide that left the window enabled is reprogrammed by the next
+request, a mode change re-clips the pointer, DPMS keeps its state, and the
+release disables the window before the firmware frame buffer returns. The
+accelerant exports `B_SET_CURSOR_BITMAP`, `B_MOVE_CURSOR` and
+`B_SHOW_CURSOR` when the driver advertises the cursor, so app_server hands
+over its pointer bitmap and position and stops drawing the software pointer
+into the frame buffer (a bitmap larger than 64x64 is refused and app_server
+keeps its software cursor).
+
+The host fixture models the cursor buffer and the shadowed ESMART3 and mixer
+words (pending until the modelled frame start) and checks gating and
+refusals, the programming sequence, clipping at the left, top, right and
+bottom edges, an off-frame pointer, new bitmaps while shown and hidden, the
+commit timeout, a region control that never takes, the mode change, DPMS
+and the release. The probe's `--cursor X Y` saves app_server's state to a
+file and shows its own 64x64 quadrant bitmap (white, black, transparent red
+and half-transparent white) with its corner at X,Y, `--cursor-hide` hides
+it where it is, and `--cursor-restore` puts app_server's pointer back. The
+native cycle places it whole at 200,200, clipped at the left edge at
+-32,500 and at the bottom-right corner at 1888,1048, hides it there and
+restores, reading the window registers back through the observation after
+each step and judging each NanoKVM capture (the quadrant colours, the
+desktop through the transparent quadrant, the blend, the plain desktop
+where the pointer was hidden), before the mode-change and DPMS checks of
+the earlier stages run on the same boot.
+
 ## Later stages
 
 3. After mode changes and power control: a cursor window, and modes beyond
