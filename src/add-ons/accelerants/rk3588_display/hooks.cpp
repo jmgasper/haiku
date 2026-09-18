@@ -54,8 +54,10 @@ get_accelerant_hook(uint32 feature, void* data)
 		case B_SET_CURSOR_BITMAP:
 		case B_MOVE_CURSOR:
 		case B_SHOW_CURSOR:
-			// The hardware cursor window needs the cursor profile.
-			if (gInfo == NULL || (gInfo->info.flags & RK3588Display::kAccelerantCursor) == 0)
+			// app_server's pointer goes to the hardware window only on the
+			// desktop cursor profile; the plain cursor profile keeps it for
+			// the probe.
+			if (gInfo == NULL || (gInfo->info.flags & RK3588Display::kAccelerantCursorHooks) == 0)
 				return NULL;
 			if (feature == B_SET_CURSOR_BITMAP)
 				return (void*)rk3588_set_cursor_bitmap;

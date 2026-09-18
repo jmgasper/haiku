@@ -174,6 +174,9 @@ VopModelStep()
 			sVopShadow[0xc8 / 4] = sVopModel[0xc8 / 4];
 			sVopOverrides[0xc8] = sVopModel[0xc8 / 4];
 			sVopModel[i] = 0;
+		} else if (sAllowCursor && (offset == 0x6f8 || offset == 0x008)) {
+			// The window delays and the automatic clock gating are plain words.
+			sVopOverrides[offset] = value;
 		} else if (sAllowCursor && ((offset >= kModelCursorWindowBase && offset < kModelCursorWindowBase + 0x200)
 				|| (offset >= kModelCursorMixerBase && offset < kModelCursorMixerBase + 0x10))) {
 			// The cursor window and its mixer are shadowed like the scanout
@@ -1121,6 +1124,14 @@ Prepare()
 	}
 	sVopOverrides[0x1c00] = 4;
 	sVopOverrides[0x1c10] = 1;
+	// ESMART2 on AXI bus 1 with Linux' read ids and a 23-cycle delay; ESMART3
+	// left mirrored with stale ids on bus 0; automatic clock gating enabled.
+	sVopOverrides[0x1c04] = (0xau << 4) | (0xbu << 12);
+	sVopOverrides[0x1c08] = 0x2;
+	sVopOverrides[0x1e04] = 0x80000000u | (0x3u << 4) | (0x3u << 12);
+	sVopOverrides[0x1e08] = 0x0;
+	sVopOverrides[0x6f8] = 0x00170000;
+	sVopOverrides[0x008] = 0x80000000u;
 	sVopOverrides[kModelAddressOffset] = kModelFirmwareAddress;
 	sVopOverrides[0x1c1c] = 1920;
 	sVopOverrides[0x1c20] = 0x0437077f;
@@ -2186,6 +2197,7 @@ main()
 	assert(Control(reader, kGetAccelerantInfo, &acc, sizeof(acc)) == B_OK);
 	assert(acc.flags == (kAccelerantAcquired | kAccelerantEdid | kAccelerantRetrace | kAccelerantModeSet
 		| kAccelerantCursor));
+	static_assert(kAccelerantCursorHooks == 32, "Cursor hooks flag changed");
 	assert(Control(reader, kGetCursor, &cursorState, sizeof(cursorState)) == B_OK);
 	assert(cursorState.version == kCursorVersion && cursorState.window == 3 && cursorState.mixer == 6);
 	assert(cursorState.width == 0 && cursorState.visible == 0 && cursorState.data[0] == 0);
@@ -2238,13 +2250,17 @@ main()
 	show.visible = 1;
 	assert(Control(primary, kShowCursor, &show, sizeof(show)) == B_OK && show.result == kCursorOK);
 	assert(show.polls >= 1 && show.polls <= 4 && show.regionControl == 1);
-	assert(sequenceOf(sVopWrites, {{0x1e08u, sVopOverrides[0x1e08]}, {0x1ed0u, 0u}, {0x1e30u, 0u}, {0x1e34u, 0u},
+	assert(sequenceOf(sVopWrites, {{0x1e04u, (0xcu << 4) | (0xdu << 12)}, {0x1e08u, 0x2u}, {0x6f8u, 0x17170000u},
+		{0x008u, 0u}, {0x1ed0u, 0u}, {0x1e30u, 0u}, {0x1e34u, 0u},
 		{0x6b0u, 0x00ff0125u}, {0x6b4u, 0x00ff0060u}, {0x6b8u, 0x00000024u}, {0x6bcu, 0x00000074u},
 		{0x1e1cu, 64u}, {0x1e14u, (uint32)kModelCursorPhysical}, {0x1e20u, 0x000f000fu},
 		{0x1e24u, 0x000f000fu}, {0x1e28u, 0x00c50062u}, {0x1e10u, 1u}, {0x000u, 0x00048004u}}));
-	assert(sVopWrites[0].first == 0x1e04 && (sVopOverrides[0x1e04] & 0x1f1f0) == ((0xcu << 4) | (0xdu << 12)));
-	assert((sVopOverrides[0x1e08] & 2) != 0 && sVopOverrides[0x1e10] == 1 && sVopOverrides[0x1e28] == 0x00c50062);
-	assert(sVopWrites.size() == 16 && sMappedBases.back() == 0xfdd90000);
+	// Ids two above the desktop window's on its bus, mirroring cleared, the
+	// desktop delay copied, gating off; the desktop window itself untouched.
+	assert(sVopOverrides[0x1e04] == ((0xcu << 4) | (0xdu << 12)) && sVopOverrides[0x1e08] == 2);
+	assert(sVopOverrides[0x6f8] == 0x17170000 && sVopOverrides[0x008] == 0 && sVopOverrides[0x1c04] == ((0xau << 4) | (0xbu << 12)));
+	assert(sVopOverrides[0x1e10] == 1 && sVopOverrides[0x1e28] == 0x00c50062);
+	assert(sVopWrites.size() == 18 && sMappedBases.back() == 0xfdd90000);
 	assert(Control(reader, kGetCursor, &cursorState, sizeof(cursorState)) == B_OK);
 	assert(cursorState.visible == 1 && cursorState.regionControl == 1 && cursorState.displayStart == 0x00c50062);
 	assert(cursorState.address == kModelCursorPhysical && cursorState.mixWords[0] == 0x00ff0125
@@ -2338,8 +2354,19 @@ main()
 	// and frees the buffer.
 	sVopWrites.clear();
 	assert(Close(primary) == B_OK && Free(primary) == B_OK && sOwner == NULL);
-	assert(sequenceOf(sVopWrites, {{0x1e10u, 0u}, {0x000u, 0x00048004u}, {kModelAddressOffset, kModelFirmwareAddress}}));
+	assert(sequenceOf(sVopWrites, {{0x1e10u, 0u}, {0x000u, 0x00048004u}, {0x008u, 0x80000000u}, {kModelAddressOffset, kModelFirmwareAddress}}));
 	assert(sCursorArea < 0 && sCursor.area < 0 && !sCursorProgrammed && sVopOverrides[0x1e10] == 0);
+	assert(sVopOverrides[0x008] == 0x80000000u && sVopOverrides[0x6f8] == 0x17170000);
+	// The desktop cursor profile also hands app_server's pointer to the window.
+	Prepare(); sAllowEdid = true; sAllowScanout = true; sAllowCursor = true;
+	controller.cursorHooksEnabled = true;
+	assert(Open(&controller, "", O_RDWR, &opened) == B_OK);
+	primary = (Handle*)opened;
+	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_OK && sOwner == primary && sCursorArea >= 0);
+	assert(Control(primary, kGetAccelerantInfo, &acc, sizeof(acc)) == B_OK);
+	assert((acc.flags & (kAccelerantCursor | kAccelerantCursorHooks)) == (kAccelerantCursor | kAccelerantCursorHooks));
+	assert(Close(primary) == B_OK && Free(primary) == B_OK && sOwner == NULL);
+	controller.cursorHooksEnabled = false;
 	// Without the cursor buffer the accelerant does without a hardware cursor.
 	Prepare(); sAllowEdid = true; sAllowScanout = true; sAllowCursor = true; sFailPattern = 3;
 	assert(Open(&controller, "", O_RDWR, &opened) == B_OK);

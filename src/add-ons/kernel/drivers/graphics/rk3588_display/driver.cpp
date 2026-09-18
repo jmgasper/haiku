@@ -68,6 +68,7 @@ struct Controller {
 	bool accelerantEnabled;
 	bool modeSetEnabled;
 	bool cursorEnabled;
+	bool cursorHooksEnabled; // app_server's pointer goes to the window, not only the probe's
 };
 
 // One open file handle. Only writable handles (the accelerant profile) may
@@ -112,6 +113,7 @@ static uint32 sPowerMode = kPowerOn;
 static ContiguousBuffer sCursor = {-1, NULL, 0};
 static CursorState sCursorState = {};
 static bool sCursorProgrammed = false; // the cursor window was written since acquisition
+static uint32_t sAutoGatingBefore = 0; // SYS_AUTO_GATING_CTRL as the firmware left it
 static status_t RestoreScanout(Controller* controller);
 static status_t AcquireFrameBuffer(Handle* handle);
 static status_t ChangeDisplayMode(Handle* handle, ModeRequest& request);
@@ -568,7 +570,12 @@ InitDriver(device_node* node, void** cookie)
 		controller->scanoutEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-scanout") == 0;
 		// The retrace profile names the stage that added the frame-start
 		// interrupt; both run the accelerant with retrace.
-		controller->cursorEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-cursor") == 0;
+		// The cursor profile admits the window to the probe; the desktop
+		// profile also hands app_server's pointer to it.
+		controller->cursorHooksEnabled
+			= strcmp(profile, "rock5-itx-edk2-v1.1-display-cursor-desktop") == 0;
+		controller->cursorEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-cursor") == 0
+			|| controller->cursorHooksEnabled;
 		controller->modeSetEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-modeset") == 0
 			|| controller->cursorEnabled;
 		controller->accelerantEnabled
@@ -581,13 +588,15 @@ InitDriver(device_node* node, void** cookie)
 	if (settings != NULL)
 		unload_driver_settings(settings);
 	dprintf("rk3588_display: validated VOP2 %#" B_PRIx64 " and HDMI TX1 %#" B_PRIx64
-		" resources; observation only; EDID %s; scanout %s; accelerant %s; modeset %s; cursor %s\n",
+		" resources; observation only; EDID %s; scanout %s; accelerant %s; modeset %s; cursor %s;"
+		" cursor hooks %s\n",
 		controller->resources.vopBase, controller->resources.hdmiBase,
 		controller->edidEnabled ? "enabled" : "disabled",
 		controller->scanoutEnabled ? "enabled" : "disabled",
 		controller->accelerantEnabled ? "enabled" : "disabled",
 		controller->modeSetEnabled ? "enabled" : "disabled",
-		controller->cursorEnabled ? "enabled" : "disabled");
+		controller->cursorEnabled ? "enabled" : "disabled",
+		controller->cursorHooksEnabled ? "enabled" : "disabled");
 	*cookie = controller;
 	return B_OK;
 }
@@ -1201,7 +1210,8 @@ AcquireFrameBuffer(Handle* handle)
 	sCursorProgrammed = false;
 	if (controller->cursorEnabled && AllocateContiguous(sCursor, "RK3588 display cursor",
 			kCursorBufferBytes, false) == B_OK) {
-		sAccelerant.flags |= kAccelerantCursor;
+		sAccelerant.flags |= kAccelerantCursor
+			| (controller->cursorHooksEnabled ? kAccelerantCursorHooks : 0);
 	}
 	sAccelerant.retraceSemaphore = -1;
 	sAccelerant.port = request.port;
@@ -1268,12 +1278,15 @@ ReleaseFrameBuffer(Controller* controller)
 	sPowerMode = kPowerOn;
 	memset(&sCurrentMode, 0, sizeof(sCurrentMode));
 	if (sCursorProgrammed && sVopRegisters != NULL) {
-		// The firmware frame buffer gets no cursor window over it.
+		// The firmware frame buffer gets no cursor window over it, and the
+		// automatic clock gating goes back to the firmware's setting.
 		sCursorState.visible = 0;
 		uint32_t polls = 0;
 		uint32_t hidden = ProgramCursor(polls);
+		MappedVop hardware;
+		hardware.WriteVop(kVopAutoGating, sAutoGatingBefore);
 		dprintf("rk3588_display: cursor window disabled result=%" B_PRIu32 " polls=%" B_PRIu32
-			"\n", hidden, polls);
+			" gating=%08" B_PRIx32 "\n", hidden, polls, sAutoGatingBefore);
 	}
 	sCursorProgrammed = false;
 	ReleaseContiguous(sCursor);
@@ -1434,6 +1447,42 @@ ChangePowerMode(Handle* handle, PowerRequest& request)
 }
 
 
+// The words that decide whether a second window can join the port: both
+// windows' control and bus words, the pipeline delays, the port's
+// background delay, the three mixers of the port's layer range, the overlay
+// selection, the clock gating and the bus error status. Logged before the
+// first cursor programming and after every one that changes the window.
+static void
+LogCursorRegisters(MappedVop& hardware, const char* label)
+{
+	uint32_t desktop = kVopEsmartBase + sAccelerant.window * kVopEsmartStride;
+	uint32_t cursor = kVopEsmartBase + sCursorState.window * kVopEsmartStride;
+	uint32_t mixer = kVopMixerBase + (sCursorState.mixer - 2) * kVopMixerStride;
+	dprintf("rk3588_display: cursor registers %s desktop=%08" B_PRIx32 ",%08" B_PRIx32 ",%08"
+		B_PRIx32 " cursor=%08" B_PRIx32 ",%08" B_PRIx32 ",%08" B_PRIx32 " delay=%08" B_PRIx32
+		",%08" B_PRIx32 " background=%08" B_PRIx32 " mixers=%08" B_PRIx32 ",%08" B_PRIx32
+		",%08" B_PRIx32 ",%08" B_PRIx32 "/%08" B_PRIx32 ",%08" B_PRIx32 ",%08" B_PRIx32 ",%08"
+		B_PRIx32 "/%08" B_PRIx32 ",%08" B_PRIx32 ",%08" B_PRIx32 ",%08" B_PRIx32 " overlay=%08"
+		B_PRIx32 ",%08" B_PRIx32 ",%08" B_PRIx32 " gating=%08" B_PRIx32 " bus=%08" B_PRIx32
+		",%08" B_PRIx32 "\n", label,
+		hardware.ReadVop(desktop), hardware.ReadVop(desktop + kVopEsmartControl1),
+		hardware.ReadVop(desktop + kVopEsmartAxiControl),
+		hardware.ReadVop(cursor), hardware.ReadVop(cursor + kVopEsmartControl1),
+		hardware.ReadVop(cursor + kVopEsmartAxiControl),
+		hardware.ReadVop(kVopClusterDelay), hardware.ReadVop(kVopSmartDelay),
+		hardware.ReadVop(kVopBackgroundMixBase + sAccelerant.port * 4),
+		hardware.ReadVop(mixer), hardware.ReadVop(mixer + 4), hardware.ReadVop(mixer + 8),
+		hardware.ReadVop(mixer + 12),
+		hardware.ReadVop(mixer + 0x10), hardware.ReadVop(mixer + 0x14),
+		hardware.ReadVop(mixer + 0x18), hardware.ReadVop(mixer + 0x1c),
+		hardware.ReadVop(mixer + 0x20), hardware.ReadVop(mixer + 0x24),
+		hardware.ReadVop(mixer + 0x28), hardware.ReadVop(mixer + 0x2c),
+		hardware.ReadVop(0x600), hardware.ReadVop(0x604), hardware.ReadVop(0x608),
+		hardware.ReadVop(kVopAutoGating), hardware.ReadVop(kVopBusStatus0),
+		hardware.ReadVop(kVopBusStatus1));
+}
+
+
 // Writes the cursor window for the current state over the persistent
 // mapping; the acquiring team's frame size clips it.
 static uint32_t
@@ -1443,9 +1492,17 @@ ProgramCursor(uint32_t& polls)
 	if (sOwner == NULL || sVopRegisters == NULL || sCursor.area < 0)
 		return kCursorNotAcquired;
 	MappedVop hardware;
+	bool first = !sCursorProgrammed;
+	if (first) {
+		sAutoGatingBefore = hardware.ReadVop(kVopAutoGating);
+		LogCursorRegisters(hardware, "before");
+	}
+	uint32_t enabledBefore = sCursorState.regionControl;
 	uint32_t result = ApplyCursor(hardware, sCursorState, sCursor.physical, sAccelerant.port,
-		sAccelerant.width, sAccelerant.height, polls);
+		sAccelerant.window, sAccelerant.width, sAccelerant.height, polls);
 	sCursorProgrammed = true;
+	if (first || sCursorState.regionControl != enabledBefore || result != kCursorOK)
+		LogCursorRegisters(hardware, result == kCursorOK ? "after" : "failed");
 	return result;
 }
 

@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include "DisplayScanout.h"
+#include "DisplayModeSet.h" // kVopBackgroundMixBase
 
 
 namespace RK3588Display {
@@ -88,9 +89,19 @@ static const uint32_t kVopEsmartAxiControl = 0x08; // bit 1: AXI bus 1
 static const uint32_t kVopEsmartRegionScaleControl = 0x30;
 static const uint32_t kVopEsmartRegionScaleFactor = 0x34;
 static const uint32_t kVopEsmartColorKey = 0xd0;
+static const uint32_t kVopEsmartYMirror = 1u << 31; // in ESMART_CTRL1
+static const uint32_t kVopSmartDelay = 0x6f8; // SMART_DLY_NUM: 8 bits per ESMART window
+static const uint32_t kVopClusterDelay = 0x6f0;
+static const uint32_t kVopAutoGating = 0x008; // SYS_AUTO_GATING_CTRL
+static const uint32_t kVopAutoGatingEnable = 1u << 31;
+static const uint32_t kVopBusStatus0 = 0x058; // SYS0_INT_STATUS
+static const uint32_t kVopBusStatus1 = 0x068; // SYS1_INT_STATUS
 static const uint32_t kVopEsmartRegionEnable = 1u << 0;
-static const uint32_t kVopEsmart3AxiYrgbId = 0x0c;
-static const uint32_t kVopEsmart3AxiUvId = 0x0d;
+// Linux gives ESMART3 AXI bus 1 with read ids 0x0c/0x0d, two above ESMART2's
+// 0x0a/0x0b on the same bus; the driver derives the cursor window's ids from
+// the desktop window the firmware runs, so they never collide with it.
+static const uint32_t kVopEsmartAxiIdMask = 0x1f;
+static const uint32_t kVopEsmartAxiIdStep = 2;
 static const uint32_t kVopMixerBase = 0x650; // MIX0_SRC_COLOR_CTRL; 0x10 per mixer
 static const uint32_t kVopMixerStride = 0x10;
 // Mixer words for a straight-alpha ARGB source over an opaque destination
@@ -136,22 +147,48 @@ PlaceCursor(const CursorState& state, uint32_t frameWidth, uint32_t frameHeight)
 }
 
 
+inline uint32_t
+NextAxiId(uint32_t id)
+{
+	id = (id + kVopEsmartAxiIdStep) & kVopEsmartAxiIdMask;
+	return id == 0 ? kVopEsmartAxiIdStep : id;
+}
+
+
 // Programs the cursor window and the mixer for the state and commits the
-// port. The window's bus ids, scaling (none), colour key (off) and the
-// mixer words are written every time: they are cheap and the firmware never
-// set them for this window. Read-backs after the commit fill the state.
+// port. The window's bus and read ids follow the desktop window's (the same
+// bus, ids two above), its pipeline delay copies the desktop window's, no
+// scaling, no colour key, no mirroring, and the mixer words are written
+// every time: they are cheap and the firmware never set them for this
+// window. Linux clears the VOP's automatic clock gating before it enables
+// windows ("avoid display image shift when a window enabled"); the driver
+// does the same and hands the word back at release. Read-backs after the
+// commit fill the state.
 template<class Hardware>
 uint32_t
 ApplyCursor(Hardware& hardware, CursorState& state, uint32_t bufferPhysical, uint32_t port,
-	uint32_t frameWidth, uint32_t frameHeight, uint32_t& polls)
+	uint32_t desktopWindow, uint32_t frameWidth, uint32_t frameHeight, uint32_t& polls)
 {
 	uint32_t base = kVopEsmartBase + state.window * kVopEsmartStride;
+	uint32_t desktop = kVopEsmartBase + desktopWindow * kVopEsmartStride;
 	CursorPlacement placement = PlaceCursor(state, frameWidth, frameHeight);
+	uint32_t desktopControl1 = hardware.ReadVop(desktop + kVopEsmartControl1);
 	uint32_t control1 = hardware.ReadVop(base + kVopEsmartControl1);
-	control1 = (control1 & ~((0x1fu << 4) | (0x1fu << 12)))
-		| (kVopEsmart3AxiYrgbId << 4) | (kVopEsmart3AxiUvId << 12);
+	control1 = (control1 & ~((kVopEsmartAxiIdMask << 4) | (kVopEsmartAxiIdMask << 12)
+			| kVopEsmartYMirror))
+		| (NextAxiId((desktopControl1 >> 4) & kVopEsmartAxiIdMask) << 4)
+		| (NextAxiId((desktopControl1 >> 12) & kVopEsmartAxiIdMask) << 12);
 	hardware.WriteVop(base + kVopEsmartControl1, control1);
-	hardware.WriteVop(base + kVopEsmartAxiControl, hardware.ReadVop(base + kVopEsmartAxiControl) | 2u);
+	uint32_t axi = hardware.ReadVop(base + kVopEsmartAxiControl);
+	axi = (axi & ~2u) | (hardware.ReadVop(desktop + kVopEsmartAxiControl) & 2u);
+	hardware.WriteVop(base + kVopEsmartAxiControl, axi);
+	uint32_t delay = hardware.ReadVop(kVopSmartDelay);
+	uint32_t desktopDelay = (delay >> (desktopWindow * 8)) & 0xff;
+	delay = (delay & ~(0xffu << (state.window * 8))) | (desktopDelay << (state.window * 8));
+	hardware.WriteVop(kVopSmartDelay, delay);
+	uint32_t gating = hardware.ReadVop(kVopAutoGating);
+	if ((gating & kVopAutoGatingEnable) != 0)
+		hardware.WriteVop(kVopAutoGating, gating & ~kVopAutoGatingEnable);
 	hardware.WriteVop(base + kVopEsmartColorKey, 0);
 	hardware.WriteVop(base + kVopEsmartRegionScaleControl, 0);
 	hardware.WriteVop(base + kVopEsmartRegionScaleFactor, 0);

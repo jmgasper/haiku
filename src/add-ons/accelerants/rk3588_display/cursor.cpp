@@ -24,7 +24,7 @@ status_t
 rk3588_set_cursor_bitmap(uint16 width, uint16 height, uint16 hotX, uint16 hotY,
 	color_space space, uint16 bytesPerRow, const uint8* data)
 {
-	if ((gInfo->info.flags & kAccelerantCursor) == 0)
+	if ((gInfo->info.flags & kAccelerantCursorHooks) == 0)
 		return B_UNSUPPORTED;
 	if ((space != B_RGBA32 && space != B_RGB32) || width == 0 || height == 0
 		|| width > kCursorMaxSize || height > kCursorMaxSize || hotX >= width || hotY >= height
