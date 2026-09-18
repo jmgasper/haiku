@@ -106,7 +106,7 @@ echo "built nvscanout into $OUT/bin"
 # Diagnostic tool: counts the display's vertical blanks (see VblankTest.cpp).
 TOOLDIR=$OBJDIR/nvvblank
 mkdir -p "$TOOLDIR"
-for f in VblankTest sdk/ErrorUtils sdk/NvRmApi sdk/NvRmDevice; do
+for f in VblankTest NvUtils sdk/ErrorUtils sdk/NvRmApi sdk/NvRmDevice sdk/NvKmsApi sdk/NvKmsDevice sdk/NvKmsSurface; do
 	$TOOLS-g++ -std=c++20 "${FLAGS[@]}" -c "$SRC/$f.cpp" -o "$TOOLDIR/$(basename $f).o"
 done
 $TOOLS-gcc "${FLAGS[@]}" -c "$OGKM/src/common/shared/nvstatus/nvstatus.c" \

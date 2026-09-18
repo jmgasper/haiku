@@ -1,23 +1,23 @@
 /* Does the display tell us when it starts a new frame?
  *
  * Presenting into the screen while it is being scanned out tears, and the cure
- * is to know when the scan is between frames. Resman can say so: a
- * GF100_DISP_SW object takes a request to be notified at the next vertical
- * blank, and delivers it through an operating system event, which on Haiku
- * means the driver wakes anyone selecting on the file.
+ * is to know when the scan is between frames.
  *
- * This counts those notifications. At 60 Hz a two second run should see about
- * 120 of them, evenly spaced about 16.7 ms apart; anything else means the
- * notification is not coming from the display.
+ * The first thing tried here was resman's GF100_DISP_SW object, which takes
+ * NV9072_CTRL_CMD_NOTIFY_ON_VBLANK and answers through an operating system
+ * event. Resman will not allocate that object anywhere except underneath a
+ * channel, and the accelerant has none: it drives the display through NVKMS
+ * and never touches a channel.
  *
- * It does not work yet: resman will only allocate GF100_DISP_SW underneath a
- * channel (see the resource list in the kernel modules: its parent is
- * KernelChannel), and the accelerant has none - it drives the display through
- * NVKMS and never touches a channel. The two ways on from here are to give the
- * accelerant a channel of its own purely to hang this object off, or to use
- * NVKMS's own vblank semaphore control, which writes a counter into a surface
- * at each blank and needs no channel. The latter also lets the GPU wait for
- * the blank itself rather than the processor waiting and then submitting.
+ * NVKMS has its own way, and it needs no channel. A client registers a piece
+ * of memory; at every vertical blank NVKMS looks at it, and if the client has
+ * changed `requestCounter` since it last looked, it copies that value into
+ * `semaphore` along with the frame number. So asking to be told about the next
+ * blank is a write, and hearing the answer is a read.
+ *
+ * This counts those answers. At 60 Hz a two second run should see about 120 of
+ * them, about 16.7 ms apart; anything else means the answer is not coming from
+ * the display.
  *
  * usage: nvvblank [seconds] [head]
  */
@@ -26,22 +26,20 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <errno.h>
-#include <sys/select.h>
 
 #include <OS.h>
 
 #include <ErrorUtils.h>
 #include <NvRmApi.h>
 #include <NvRmDevice.h>
+#include <NvKmsApi.h>
+#include <NvKmsDevice.h>
+#include <NvKmsSurface.h>
+
+#include "NvUtils.h"
 
 extern "C" {
 #include "nv-haiku.h"
-#include "nvos.h"
-#include "class/cl0005.h"
-#include "class/cl9072.h"
-#include "class/cl9072_notification.h"
-#include "ctrl/ctrl9072.h"
 }
 
 
@@ -54,71 +52,93 @@ int main(int argc, char **argv)
 	try {
 		NvRmApi rm;
 		NvRmDevice rmDev(rm, 0);
+		NvKmsApi kms;
+		NvKmsDevice kmsDev(kms, rmDev.DeviceId());
 
-		NV9072_ALLOCATION_PARAMETERS dispSwParams = {
-			.logicalHeadId = head,
-			.displayMask = 0,
-			.caps = 0,
-		};
-		NvRmObject dispSw = rmDev.Device().Alloc(GF100_DISP_SW, &dispSwParams);
-		printf("display software object %#" B_PRIx32 " on head %" B_PRIu32 "\n",
-			dispSw.Get(), head);
+		printf("vblank semaphore control: %s\n",
+			kmsDev.Info().supportsVblankSemControl ? "yes" : "NO");
+		if (!kmsDev.Info().supportsVblankSemControl)
+			return 1;
 
-		// The event is delivered on its own file: resman is told about the
-		// file, and the driver wakes whoever is selecting on it.
-		FileDesc eventFd(open("/dev/" NVIDIA_CONTROL_DEVICE_NAME,
-			O_RDWR | O_CLOEXEC));
-		CheckErrno(eventFd.Get());
-		rm.AllocOsEvent(eventFd.Get());
+		// The memory NVKMS looks at. It has to be a registered surface, so it
+		// is described as a one row image wide enough to hold the structure.
+		const NvU64 kSize = B_PAGE_SIZE;
+		NvRmObject memory;
+		NvU8 compressible = 0;
+		nvKmsKapiAllocateSystemMemory(rmDev, kmsDev, memory,
+			NvKmsSurfaceMemoryLayoutPitch, kSize,
+			NVKMS_KAPI_ALLOCATION_TYPE_OFFSCREEN, &compressible);
 
-		NV0005_ALLOC_PARAMETERS eventParams = {
-			.hParentClient = rm.Client().Get(),
-			.hSrcResource = dispSw.Get(),
-			.hClass = NV01_EVENT_OS_EVENT,
-			.notifyIndex = NV9072_NOTIFIERS_NOTIFY_ON_VBLANK,
-			.data = (NvP64)(uintptr_t)eventFd.Get(),
-		};
-		NvRmObject event = dispSw.Alloc(NV01_EVENT_OS_EVENT, &eventParams);
-		printf("event object %#" B_PRIx32 ", waiting on fd %d\n",
-			event.Get(), eventFd.Get());
+		FileDesc memoryFd = rmDev.ExportObjectToFd(rmDev.Device().Get(),
+			memory.Get());
+
+		NvKmsRegisterSurfaceParams surfaceParams {};
+		surfaceParams.request.deviceHandle = kmsDev.Get();
+		surfaceParams.request.useFd = true;
+		surfaceParams.request.planes[0].u.fd = memoryFd.Get();
+		surfaceParams.request.planes[0].offset = 0;
+		surfaceParams.request.planes[0].pitch = kSize;
+		surfaceParams.request.planes[0].rmObjectSizeInBytes = kSize;
+		surfaceParams.request.widthInPixels = kSize / 4;
+		surfaceParams.request.heightInPixels = 1;
+		surfaceParams.request.layout = NvKmsSurfaceMemoryLayoutPitch;
+		surfaceParams.request.format = NvKmsSurfaceMemoryFormatX8R8G8B8;
+		// Nothing scans this out; it is a place for counters, so the display
+		// hardware never looks at it and NVKMS maps it for the processor.
+		surfaceParams.request.noDisplayHardwareAccess = true;
+		surfaceParams.request.isoType = NVKMS_MEMORY_NISO;
+		printf("registering the surface\n");
+		CheckErrno(kms.Control(NVKMS_IOCTL_REGISTER_SURFACE, &surfaceParams,
+			sizeof(surfaceParams)));
+		NvKmsSurface surface(kmsDev, surfaceParams.reply.surfaceHandle);
+
+		printf("mapping the memory\n");
+		NvRmMemoryMapping mapping = rmDev.MapMemory(memory.Get(), true, 0,
+			kSize, 0);
+		auto *data = (volatile NvKmsVblankSemControlData *)mapping.Address();
+		memset((void *)data, 0, sizeof(*data));
+
+		NvKmsEnableVblankSemControlParams enableParams {};
+		enableParams.request.deviceHandle = kmsDev.Get();
+		enableParams.request.dispHandle = kmsDev.Info().dispHandles[0];
+		enableParams.request.headMask = 1U << head;
+		enableParams.request.surfaceHandle = surface.Get();
+		enableParams.request.surfaceOffset = 0;
+		printf("enabling on head %" B_PRIu32 " of disp %#" B_PRIx32 "\n",
+			head, (uint32)enableParams.request.dispHandle);
+		CheckErrno(kms.Control(NVKMS_IOCTL_ENABLE_VBLANK_SEM_CONTROL,
+			&enableParams, sizeof(enableParams)));
+		printf("watching head %" B_PRIu32 "\n", head);
+
+		volatile NvKmsVblankSemControlDataOneHead &one = data->head[head];
 
 		bigtime_t start = system_time();
 		bigtime_t end = start + (bigtime_t)(seconds * 1000000);
 		bigtime_t previous = 0;
-		bigtime_t shortest = 0, longest = 0;
-		int64 total = 0;
+		bigtime_t shortest = 0, longest = 0, total = 0;
 		int64 count = 0;
-		int timeouts = 0;
+		NvU32 request = 0;
+		bool lost = false;
 
 		while (system_time() < end) {
-			// Ask to be told at the next blank; the request is for one frame,
-			// so it goes in again each time round.
-			NV9072_CTRL_CMD_NOTIFY_ON_VBLANK_PARAMS notifyParams = {
-				.data = 0,
-				.bHeadDisabled = false,
-			};
-			dispSw.Control(NV9072_CTRL_CMD_NOTIFY_ON_VBLANK, &notifyParams,
-				sizeof(notifyParams));
+			// Ask about the next blank: change the counter, then wait for it
+			// to be copied across.
+			request++;
+			one.flags = 0;			// swap interval 0: the very next blank
+			one.requestCounterAccel = request;
+			one.requestCounter = request;
 
-			fd_set readSet;
-			FD_ZERO(&readSet);
-			FD_SET(eventFd.Get(), &readSet);
-			struct timeval timeout = { .tv_sec = 1, .tv_usec = 0 };
-			int ready = select(eventFd.Get() + 1, &readSet, NULL, NULL,
-				&timeout);
-			if (ready < 0) {
-				if (errno == EINTR)
-					continue;
-				perror("select");
-				break;
-			}
-			if (ready == 0) {
-				timeouts++;
-				printf("[!] nothing for a whole second\n");
-				if (timeouts > 2)
+			bigtime_t deadline = system_time() + 1000000;
+			while ((NvU32)one.semaphore != request) {
+				if (system_time() > deadline) {
+					printf("[!] nothing for a whole second\n");
+					lost = true;
 					break;
-				continue;
+				}
+				snooze(200);
 			}
+			if (lost)
+				break;
 
 			bigtime_t now = system_time();
 			if (previous != 0) {
@@ -133,17 +153,26 @@ int main(int argc, char **argv)
 			previous = now;
 		}
 
+		NvKmsDisableVblankSemControlParams disableParams {};
+		disableParams.request.deviceHandle = kmsDev.Get();
+		disableParams.request.dispHandle = kmsDev.Info().dispHandles[0];
+		disableParams.request.vblankSemControlHandle
+			= enableParams.reply.vblankSemControlHandle;
+		kms.Control(NVKMS_IOCTL_DISABLE_VBLANK_SEM_CONTROL, &disableParams,
+			sizeof(disableParams));
+
 		if (count < 2) {
-			printf("only %" B_PRId64 " notifications: the display is not"
-				" telling us anything\n", count + 1);
+			printf("only %" B_PRId64 " answers: the display is not telling us"
+				" anything\n", count + 1);
 			return 1;
 		}
 
 		double average = (double)total / count;
-		printf("%" B_PRId64 " notifications: one every %.2f ms"
-			" (%.1f a second), shortest %.2f, longest %.2f\n",
+		printf("%" B_PRId64 " answers: one every %.2f ms (%.1f a second),"
+			" shortest %.2f, longest %.2f, frame %llu\n",
 			count + 1, average / 1000.0, 1000000.0 / average,
-			shortest / 1000.0, longest / 1000.0);
+			shortest / 1000.0, longest / 1000.0,
+			(unsigned long long)one.vblankCount);
 	} catch (const std::system_error &ex) {
 		fprintf(stderr, "[!] %s\n", ex.what());
 		return 1;

@@ -303,6 +303,22 @@ listed as verified is untested.
   semaphore control, which writes a counter into a surface at each blank and
   needs no channel - and which would also let the GPU wait for the blank itself
   instead of the processor waiting and then submitting.
+- 2026-09-18: tried to stop the tearing and found the wall. NVKMS has a way to
+  say when the display is between frames that needs no channel: a client
+  registers a piece of memory and NVKMS writes a counter into it at every
+  vertical blank. This port reported it unsupported because
+  `nvkms_vblank_sem_control()` was a stub returning false - the Linux driver
+  has it on by default. Turning it on made NVKMS offer it, the surface
+  registered and the control enabled, and then the machine went down at the
+  first vertical blank: no network, no console, a power cycle to get it back.
+  NVKMS asks resman for the callback through NV9010_VBLANK_CALLBACK, which arms
+  a display interrupt, and nothing in this port appears to service or
+  acknowledge one; an interrupt that re-asserts for ever looks exactly like
+  this. The hook is back to false so that nothing can wedge the machine, with
+  the reasoning written where the next person will find it.
+  This wants the kernel debugger, which cannot be reached over the KVM's USB
+  keyboard - so the serial console that suspend and resume is waiting for
+  unblocks this too. `nvvblank` is the probe.
 - 2026-09-18: all five XHCI controllers - two AMD, one ASMedia, and the
   Thunderbolt 4 host with its USB4 interface - start and publish a root hub.
   Only the KVM is plugged in, so what is left in this area needs someone at the
