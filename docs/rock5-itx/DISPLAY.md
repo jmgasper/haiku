@@ -357,10 +357,37 @@ acquiring team, as intel_extreme does, fixed that; the first +277 run then
 tripped only on a controller assertion that the reboot-time "released" line
 reaches the syslog (`…20260918T082618Z-d018b8`).
 
+## Stage 3d: native mode changes on HDMI1
+
+The opt-in `rock5-itx-edk2-v1.1-display-modeset` profile admits a mode
+change of the acquired frame buffer's port through the accelerant's
+`B_SET_DISPLAY_MODE` (the accelerant then lists the sink's EDID modes whose
+pixel clocks the PHY PLL table can produce, at or below 1920x1080) or through
+the probe. The sequence follows mainline Linux 6.18 with the values EDK2
+v1.1 uses on this board (`state/hdmi1-modeset-notes.md` records both): the
+port is put into standby and the driver waits for its `DSP_HOLD_VALID`
+report through the retrace handler; the PHY is powered down with its APB
+reset pulsed and the init, common and lane resets asserted; the ROPLL is
+programmed for the TMDS character rate from the same table Linux and EDK2
+use, the PLL is enabled and the GRF's clock-ready bit awaited; the port's
+timing, line flag, post-processing and pre-scan words and the window's
+visible size are written and committed, and the port leaves standby; the
+lanes are configured and the PHY-ready and PLL-lock bits awaited; finally
+the AVI infoframe carries the new CEA VIC and AVMUTE is cleared. The pixel
+clock is the PHY PLL's pixel output, which the firmware had already selected
+as the port's clock, so the CRU is touched only for the three PHY resets.
+The frame buffer stays 1920x1080 with its stride; a smaller mode scans its
+top-left part, which is what app_server draws into once the accelerant
+reports the new mode. The host fixture models the PHY, the HDMI TX packet
+words, the HIWORD GRF and CRU words and the port's hold report, checks the
+whole write sequence for 1280x720@60 and each timeout, and the native cycle
+switches to 1280x720@60 and back on each boot, checking the observation,
+the accelerant and the NanoKVM capture at each size.
+
 ## Later stages
 
-3. After retrace: a cursor window, power control, and a real mode change
-   with HDPTX PHY1 and HDMI TX1 reconfiguration.
+3. After mode changes: a cursor window, power control, and modes beyond the
+   PLL table (the fractional-rate calculation) or the frame buffer size.
 4. DisplayPort TX1 through USBDP PHY1 and the RA620 bridge for the second
    connector. This needs a sink on that port (a monitor, an HDMI dummy plug,
    or the NanoKVM cable moved) before it can be qualified.

@@ -13,6 +13,7 @@
 #include "DisplayEdid.h"
 #include "DisplayScanout.h"
 #include "DisplayAccelerant.h"
+#include "DisplayModeSet.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -526,6 +527,92 @@ CheckAccelerant()
 }
 
 
+// Mode-set profile: ask the driver for one of the CEA modes and report what
+// the hardware did. The frame buffer stays; the port shows its top-left part.
+static bool
+ChangeMode(unsigned width, unsigned height)
+{
+	struct Timing { unsigned w, h, clock, hss, hse, ht, vss, vse, vt, vic; };
+	static const Timing kTimings[] = {
+		{1920, 1080, 148500, 2008, 2052, 2200, 1084, 1089, 1125, 16},
+		{1280, 720, 74250, 1390, 1430, 1650, 725, 730, 750, 4},
+		{720, 480, 27000, 736, 798, 858, 489, 495, 525, 2},
+		{640, 480, 25175, 656, 752, 800, 490, 492, 525, 1},
+	};
+	const Timing* timing = NULL;
+	for (unsigned i = 0; i < sizeof(kTimings) / sizeof(kTimings[0]); i++) {
+		if (kTimings[i].w == width && kTimings[i].h == height)
+			timing = &kTimings[i];
+	}
+	if (timing == NULL) {
+		fprintf(stderr, "No CEA timing for %ux%u\n", width, height);
+		return false;
+	}
+	int fd = open(kDevice, O_RDWR);
+	if (fd < 0) {
+		perror(kDevice);
+		return false;
+	}
+	ModeRequest request = {};
+	request.version = kModeVersion;
+	if (ioctl(fd, kSetDisplayMode, &request, sizeof(request) - 1) == 0 || errno != EINVAL) {
+		fprintf(stderr, "Malformed mode request was not rejected\n");
+		return false;
+	}
+	if (ioctl(fd, kSetDisplayMode, NULL, sizeof(request)) == 0 || errno != EFAULT) {
+		fprintf(stderr, "Null mode request was not rejected\n");
+		return false;
+	}
+	request.version = kModeVersion + 1;
+	if (ioctl(fd, kSetDisplayMode, &request, sizeof(request)) == 0 || errno != EINVAL) {
+		fprintf(stderr, "Invalid mode request version was not rejected\n");
+		return false;
+	}
+	printf("ROCK5_DISPLAY_MODE_REQUEST_CHECKS_PASS\n");
+	memset(&request, 0, sizeof(request));
+	request.version = kModeVersion;
+	request.flags = kModePositiveHSync | kModePositiveVSync;
+	request.pixelClockKHz = timing->clock;
+	request.hDisplay = timing->w;
+	request.hSyncStart = timing->hss;
+	request.hSyncEnd = timing->hse;
+	request.hTotal = timing->ht;
+	request.vDisplay = timing->h;
+	request.vSyncStart = timing->vss;
+	request.vSyncEnd = timing->vse;
+	request.vTotal = timing->vt;
+	request.vic = timing->vic;
+	if (ioctl(fd, kSetDisplayMode, &request, sizeof(request)) != 0) {
+		perror("display mode");
+		close(fd);
+		return false;
+	}
+	printf("ROCK5_DISPLAY_MODE width=%u height=%u clock=%" PRIu32 " vic=%" PRIu32 " result=%" PRIu32
+		" phase=%" PRIu32 " hold_polls=%" PRIu32 " clock_polls=%" PRIu32 " lock_polls=%" PRIu32
+		" phy_status=%08" PRIx32 " timing=%08" PRIx32 ",%08" PRIx32 ",%08" PRIx32 ",%08" PRIx32
+		" if_en=%08" PRIx32 " micros=%" PRId64 "\n", timing->w, timing->h, request.pixelClockKHz,
+		request.vic, request.result, request.phase, request.holdPolls, request.clockPolls,
+		request.lockPolls, request.phyStatus, request.timing[0], request.timing[1],
+		request.timing[2], request.timing[3], request.interfaceEnable,
+		request.finishedMicros - request.startedMicros);
+	AccelerantInfo info = {};
+	info.version = kAccelerantVersion;
+	if (ioctl(fd, kGetAccelerantInfo, &info, sizeof(info)) == 0) {
+		printf("ROCK5_DISPLAY_MODE_ACCELERANT width=%" PRIu32 " height=%" PRIu32 " flags=%" PRIu32
+			" retraces=%" PRIu32 "\n", info.width, info.height, info.flags, info.retraces);
+	}
+	close(fd);
+	if (request.result != kModeOK) {
+		fprintf(stderr, "Mode change result %" PRIu32 " at phase %" PRIu32 "\n", request.result,
+			request.phase);
+		return false;
+	}
+	printf("ROCK5_DISPLAY_MODE_PASS width=%u height=%u clock=%u vic=%u\n", timing->w, timing->h,
+		timing->clock, timing->vic);
+	return true;
+}
+
+
 int
 main(int argc, char** argv)
 {
@@ -546,6 +633,14 @@ main(int argc, char** argv)
 	bool edid = argc == 2 && strcmp(argv[1], "--edid") == 0;
 	bool accelerant = argc == 2 && strcmp(argv[1], "--accelerant") == 0;
 	bool scanout = argc >= 2 && strcmp(argv[1], "--scanout") == 0;
+	if (argc == 3 && strcmp(argv[1], "--mode") == 0) {
+		unsigned width = 0, height = 0;
+		if (sscanf(argv[2], "%ux%u", &width, &height) != 2) {
+			fprintf(stderr, "usage: %s --mode WIDTHxHEIGHT\n", argv[0]);
+			return 2;
+		}
+		return ChangeMode(width, height) ? 0 : 1;
+	}
 	unsigned hold = 10;
 	if (scanout && argc == 3)
 		hold = (unsigned)atoi(argv[2]);
@@ -553,7 +648,7 @@ main(int argc, char** argv)
 		samples = (unsigned)atoi(argv[1]);
 	if ((scanout ? argc > 3 || hold < 1 || hold > 120 : argc > 2) || samples < 1 || samples > 16) {
 		fprintf(stderr, "usage: %s [samples 1-16 | --absent-device | --edid | --accelerant"
-			" | --scanout [hold-seconds 1-120]]\n", argv[0]);
+			" | --scanout [hold-seconds 1-120] | --mode WIDTHxHEIGHT]\n", argv[0]);
 		return 2;
 	}
 	// Only the accelerant profile admits writable handles; opening and

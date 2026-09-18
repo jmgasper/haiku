@@ -23,6 +23,7 @@
 
 #include "DisplayScanout.h"
 #include "DisplayAccelerant.h"
+#include "DisplayModeSet.h"
 
 
 using namespace RK3588Display;
@@ -62,6 +63,7 @@ struct Controller {
 	bool edidEnabled;
 	bool scanoutEnabled;
 	bool accelerantEnabled;
+	bool modeSetEnabled;
 };
 
 // One open file handle. Only writable handles (the accelerant profile) may
@@ -99,8 +101,11 @@ static int32 sInterruptSpurious = 0;
 static int64 sFirstRetraceMicros = 0;
 static int64 sLastRetraceMicros = 0;
 static bool sInterruptInstalled = false;
+static int32 sHoldValid = 0; // the port reported standby (DSP_HOLD_VALID)
+static ModeRequest sCurrentMode = {}; // the mode the driver set, if any
 static status_t RestoreScanout(Controller* controller);
 static status_t AcquireFrameBuffer(Handle* handle);
+static status_t ChangeDisplayMode(Handle* handle, ModeRequest& request);
 static int32 RetraceInterrupt(void* data);
 static void ReleaseFrameBuffer(Controller* controller);
 
@@ -551,20 +556,23 @@ InitDriver(device_node* node, void** cookie)
 		controller->scanoutEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-scanout") == 0;
 		// The retrace profile names the stage that added the frame-start
 		// interrupt; both run the accelerant with retrace.
+		controller->modeSetEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-modeset") == 0;
 		controller->accelerantEnabled
 			= strcmp(profile, "rock5-itx-edk2-v1.1-display-accelerant") == 0
-			|| strcmp(profile, "rock5-itx-edk2-v1.1-display-retrace") == 0;
+			|| strcmp(profile, "rock5-itx-edk2-v1.1-display-retrace") == 0
+			|| controller->modeSetEnabled;
 		controller->scanoutEnabled = controller->scanoutEnabled || controller->accelerantEnabled;
 		controller->edidEnabled = controller->edidEnabled || controller->scanoutEnabled;
 	}
 	if (settings != NULL)
 		unload_driver_settings(settings);
 	dprintf("rk3588_display: validated VOP2 %#" B_PRIx64 " and HDMI TX1 %#" B_PRIx64
-		" resources; observation only; EDID %s; scanout %s; accelerant %s\n",
+		" resources; observation only; EDID %s; scanout %s; accelerant %s; modeset %s\n",
 		controller->resources.vopBase, controller->resources.hdmiBase,
 		controller->edidEnabled ? "enabled" : "disabled",
 		controller->scanoutEnabled ? "enabled" : "disabled",
-		controller->accelerantEnabled ? "enabled" : "disabled");
+		controller->accelerantEnabled ? "enabled" : "disabled",
+		controller->modeSetEnabled ? "enabled" : "disabled");
 	*cookie = controller;
 	return B_OK;
 }
@@ -647,6 +655,26 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 		sAccelerant.firstRetraceMicros = sFirstRetraceMicros;
 		sAccelerant.lastRetraceMicros = sLastRetraceMicros;
 		return user_memcpy(buffer, &sAccelerant, sizeof(sAccelerant));
+	}
+	if (op == kSetDisplayMode) {
+		if (!controller->modeSetEnabled)
+			return B_DEV_INVALID_IOCTL;
+		if (!handle->writable)
+			return B_NOT_ALLOWED;
+		if (length != sizeof(ModeRequest))
+			return B_BAD_VALUE;
+		if (buffer == NULL)
+			return B_BAD_ADDRESS;
+		ModeRequest request;
+		if (user_memcpy(&request, buffer, sizeof(request)) != B_OK)
+			return B_BAD_ADDRESS;
+		if (request.version != kModeVersion)
+			return B_BAD_VALUE;
+		MutexLocker locker(sHardwareLock);
+		status_t status = ChangeDisplayMode(handle, request);
+		if (status != B_OK)
+			return status;
+		return user_memcpy(buffer, &request, sizeof(request));
 	}
 	if (op == kRearmRetrace) {
 		if (!controller->accelerantEnabled)
@@ -870,6 +898,8 @@ RetraceInterrupt(void* /*data*/)
 		return B_UNHANDLED_INTERRUPT;
 	}
 	WriteDisplayRegister(sVopRegisters, base + kVopPortInterruptClear, status << 16 | status);
+	if ((status & kVopInterruptHoldValid) != 0)
+		atomic_set(&sHoldValid, 1);
 	if ((status & kVopInterruptFrameStart) == 0)
 		return B_HANDLED_INTERRUPT;
 	int32 count = atomic_add(&sRetraces, 1) + 1;
@@ -883,6 +913,75 @@ RetraceInterrupt(void* /*data*/)
 	}
 	return B_HANDLED_INTERRUPT;
 }
+
+
+// Everything the mode change touches: the persistent VOP2 mapping plus the
+// PHY, HDMI TX, HDPTX GRF and CRU blocks mapped writable for its duration.
+// The port's hold-valid report comes from the interrupt handler when it is
+// installed and from the status word otherwise.
+class ModeSetHardware {
+public:
+	status_t Prepare(const ResourceInfo& resources, uint32_t port)
+	{
+		fPort = port;
+		void* address = NULL;
+		fPhyArea.SetTo(map_physical_memory("RK3588 mode set PHY", resources.hdptxBase, kPhyMapSize,
+			B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
+			&address));
+		if (fPhyArea.Get() < B_OK)
+			return fPhyArea.Get();
+		fPhy = (volatile uint32*)address;
+		fHdmiArea.SetTo(map_physical_memory("RK3588 mode set HDMI TX", resources.hdmiBase,
+			kHdmiTxMapSize, B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY,
+			B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, &address));
+		if (fHdmiArea.Get() < B_OK)
+			return fHdmiArea.Get();
+		fHdmi = (volatile uint32*)address;
+		fGrfArea.SetTo(map_physical_memory("RK3588 mode set HDPTX GRF", resources.hdptxGrfBase,
+			B_PAGE_SIZE, B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY,
+			B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, &address));
+		if (fGrfArea.Get() < B_OK)
+			return fGrfArea.Get();
+		fGrf = (volatile uint32*)address;
+		fCruArea.SetTo(map_physical_memory("RK3588 mode set CRU", resources.clockBase,
+			resources.clockSize, B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY,
+			B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, &address));
+		if (fCruArea.Get() < B_OK)
+			return fCruArea.Get();
+		fCru = (volatile uint32*)address;
+		return B_OK;
+	}
+	uint32_t ReadVop(uint32_t offset) { return ReadDisplayRegister(sVopRegisters, offset); }
+	void WriteVop(uint32_t offset, uint32_t value)
+		{ WriteDisplayRegister(sVopRegisters, offset, value); }
+	uint32_t ReadPhy(uint32_t offset) { return ReadDisplayRegister(fPhy, offset); }
+	void WritePhy(uint32_t offset, uint32_t value) { WriteDisplayRegister(fPhy, offset, value); }
+	uint32_t ReadHdmi(uint32_t offset) { return ReadDisplayRegister(fHdmi, offset); }
+	void WriteHdmi(uint32_t offset, uint32_t value) { WriteDisplayRegister(fHdmi, offset, value); }
+	void WriteHdptxGrf(uint32_t offset, uint32_t value) { WriteDisplayRegister(fGrf, offset, value); }
+	uint32_t ReadHdptxGrfStatus() { return ReadDisplayRegister(fGrf, kPhyGrfStatus); }
+	void WriteCru(uint32_t offset, uint32_t value) { WriteDisplayRegister(fCru, offset, value); }
+	void Pause(unsigned micros) { spin(micros); }
+	void ClearHoldValid() { atomic_set(&sHoldValid, 0); }
+	bool HoldValid()
+	{
+		if (sInterruptInstalled)
+			return atomic_get(&sHoldValid) != 0;
+		uint32_t base = kVopPortInterruptBase + fPort * kVopPortInterruptStride;
+		uint32_t status = ReadVop(base + kVopPortInterruptStatus) & kVopInterruptHoldValid;
+		if (status == 0)
+			return false;
+		WriteVop(base + kVopPortInterruptClear, status << 16 | status);
+		return true;
+	}
+private:
+	AreaDeleter fPhyArea, fHdmiArea, fGrfArea, fCruArea;
+	volatile uint32* fPhy = NULL;
+	volatile uint32* fHdmi = NULL;
+	volatile uint32* fGrf = NULL;
+	volatile uint32* fCru = NULL;
+	uint32_t fPort = 0;
+};
 
 
 // Adapter over the persistent mapping for the swap helpers.
@@ -1034,7 +1133,8 @@ AcquireFrameBuffer(Handle* handle)
 	frame_buffer_update((addr_t)sFrame.address, kFrameWidth, kFrameHeight, 32, kFrameBytesPerRow);
 	memset(&sAccelerant, 0, sizeof(sAccelerant));
 	sAccelerant.version = kAccelerantVersion;
-	sAccelerant.flags = kAccelerantAcquired | (shared.flags & kAccelerantEdid);
+	sAccelerant.flags = kAccelerantAcquired | (shared.flags & kAccelerantEdid)
+		| (controller->modeSetEnabled ? kAccelerantModeSet : 0);
 	sAccelerant.retraceSemaphore = -1;
 	sAccelerant.port = request.port;
 	// Keep VOP2 mapped for the interrupt handler and the release path; the
@@ -1119,6 +1219,56 @@ ReleaseFrameBuffer(Controller* controller)
 		result, request.polls, sRetraces, sInterruptCalls, sInterruptSpurious,
 		sFirstRetraceMicros, sLastRetraceMicros);
 	memset(&sAccelerant, 0, sizeof(sAccelerant));
+}
+
+
+// Changes the mode of the acquired frame buffer's port. The shared
+// information follows so the accelerant reports the new mode.
+static status_t
+ChangeDisplayMode(Handle* handle, ModeRequest& request)
+{
+	uint32_t action[12];
+	memcpy(action, &request, sizeof(action)); // version, flags, clock, timing, vic
+	memset(&request, 0, sizeof(request));
+	memcpy(&request, action, sizeof(action));
+	if (sOwner == NULL || sVopRegisters == NULL || sShared == NULL) {
+		request.result = kModeNotAcquired;
+		return B_OK;
+	}
+	ModeSetHardware hardware;
+	status_t status = hardware.Prepare(handle->controller->resources, sAccelerant.port);
+	if (status != B_OK)
+		return status;
+	request.startedMicros = system_time();
+	request.result = SetDisplayMode(hardware, sAccelerant.port, sAccelerant.window, request);
+	request.finishedMicros = system_time();
+	if (request.result == kModeOK) {
+		sShared->width = request.hDisplay;
+		sShared->height = request.vDisplay;
+		sShared->pixelClockKHz = request.pixelClockKHz;
+		sShared->hSyncStart = request.hSyncStart;
+		sShared->hSyncEnd = request.hSyncEnd;
+		sShared->hTotal = request.hTotal;
+		sShared->vSyncStart = request.vSyncStart;
+		sShared->vSyncEnd = request.vSyncEnd;
+		sShared->vTotal = request.vTotal;
+		memcpy(sShared->portTiming, request.timing, sizeof(sShared->portTiming));
+		sShared->flags = (sShared->flags & ~(kModePositiveHSync | kModePositiveVSync)) | request.flags;
+		sAccelerant.width = request.hDisplay;
+		sAccelerant.height = request.vDisplay;
+		sCurrentMode = request;
+		frame_buffer_update((addr_t)sFrame.address, request.hDisplay, request.vDisplay, 32,
+			kFrameBytesPerRow);
+	}
+	dprintf("rk3588_display: mode %" B_PRIu32 "x%" B_PRIu32 " %" B_PRIu32 " kHz vic=%" B_PRIu32
+		" result=%" B_PRIu32 " phase=%" B_PRIu32 " hold=%" B_PRIu32 " clock=%" B_PRIu32 " lock=%"
+		B_PRIu32 " status=%#" B_PRIx32 " timing=%08" B_PRIx32 ",%08" B_PRIx32 ",%08" B_PRIx32
+		",%08" B_PRIx32 " micros=%" B_PRId64 "\n", request.hDisplay, request.vDisplay,
+		request.pixelClockKHz, request.vic, request.result, request.phase, request.holdPolls,
+		request.clockPolls, request.lockPolls, request.phyStatus, request.timing[0],
+		request.timing[1], request.timing[2], request.timing[3],
+		request.finishedMicros - request.startedMicros);
+	return B_OK;
 }
 
 

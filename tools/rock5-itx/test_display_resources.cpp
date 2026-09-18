@@ -48,10 +48,12 @@ static const uint32 B_DO_NOT_RESCHEDULE = 2;
 typedef int32 (*interrupt_handler)(void*);
 static int32 atomic_add(int32* value, int32 delta) { return __atomic_fetch_add(value, delta, __ATOMIC_SEQ_CST); }
 static int32 atomic_get(int32* value) { return __atomic_load_n(value, __ATOMIC_SEQ_CST); }
+static void atomic_set(int32* value, int32 newValue) { __atomic_store_n(value, newValue, __ATOMIC_SEQ_CST); }
 
 #include "DisplayEdid.h"
 #include "DisplayScanout.h"
 #include "DisplayAccelerant.h"
+#include "DisplayModeSet.h"
 
 using namespace RK3588Display;
 
@@ -79,6 +81,24 @@ static bool sAllowScanout, sStickyAddress, sCommitNeverCompletes;
 static uint32 sVopPendingAddress;
 static bool sVopAddressPending;
 static int sVopCommitCountdown = -1;
+// Mode-set models: PHY, HDMI TX packet words, HDPTX GRF (HIWORD control,
+// modeled status) and the CRU reset words. Every changed word is logged.
+static bool sAllowModeSet, sHoldNever;
+static interrupt_handler sHandler;
+static void* sHandlerData;
+static uint32* sPhyModel;
+static std::vector<uint32> sPhyShadow;
+static std::vector<std::pair<unsigned, uint32> > sPhyWrites;
+static std::vector<uint32> sHdmiShadow;
+static std::vector<std::pair<unsigned, uint32> > sHdmiWrites;
+static uint32* sGrfModel;
+static std::vector<uint32> sGrfShadow;
+static std::vector<std::pair<unsigned, uint32> > sGrfWrites;
+static uint32 sPhyStatusModel = 0x0e;
+static uint32* sCruModel;
+static std::vector<uint32> sCruShadow;
+static std::vector<std::pair<unsigned, uint32> > sCruWrites;
+static int sVopHoldCountdown = -1;
 static const unsigned kModelWindow = 2;
 static const unsigned kModelAddressOffset = 0x1800 + kModelWindow * 0x200 + 0x14;
 static const uint32 kModelFirmwareAddress = 0xed280000;
@@ -146,9 +166,25 @@ VopModelStep()
 			sVopShadow[0xc8 / 4] = sVopModel[0xc8 / 4];
 			sVopOverrides[0xc8] = sVopModel[0xc8 / 4];
 			sVopModel[i] = 0;
+		} else if (sAllowModeSet && (offset == 0xe00 || offset == 0xe04 || offset == 0xe2c
+				|| offset == 0xe30 || offset == 0xe34 || offset == 0xe38 || offset == 0xe3c
+				|| offset == 0xe40 || offset == 0xe48 || offset == 0xe4c || offset == 0xe50
+				|| offset == 0xe54 || offset == 0x78 || offset == 0x6e8 || offset == 0x1c20
+				|| offset == 0x1c24 || offset == 0x1c28)) {
+			// Port timing, post-processing and window geometry are plain words;
+			// standby reports DSP_HOLD_VALID once the frame ends.
+			sVopOverrides[offset] = value;
+			if (offset == 0xe00 && (value & 0x80000000u) != 0)
+				sVopHoldCountdown = sHoldNever ? -1 : 3;
 		} else
 			assert(!"unexpected VOP2 register write");
 		sVopShadow[i] = sVopModel[i];
+	}
+	if (sVopHoldCountdown > 0 && --sVopHoldCountdown == 0) {
+		uint32 raised = 0x40 & sVopModel[0xc0 / 4];
+		sVopModel[0xc8 / 4] |= raised;
+		sVopShadow[0xc8 / 4] = sVopModel[0xc8 / 4];
+		sVopOverrides[0xc8] = sVopModel[0xc8 / 4];
 	}
 	if (sVopCommitCountdown > 0 && --sVopCommitCountdown == 0) {
 		// Frame start: the shadow set becomes active and the port bit clears.
@@ -164,10 +200,79 @@ VopModelStep()
 }
 
 
+static bool
+PhyOffsetAccessible(unsigned offset)
+{
+	return offset <= 0x029c || (offset >= 0x0400 && offset <= 0x04a4)
+		|| (offset >= 0x0800 && offset <= 0x08a4) || (offset >= 0x0c00 && offset <= 0x0cb4)
+		|| (offset >= 0x1000 && offset <= 0x10b4) || (offset >= 0x1400 && offset <= 0x14b4)
+		|| (offset >= 0x1800 && offset <= 0x18b4);
+}
+
+
+static void
+ModeSetModelStep()
+{
+	if (sPhyModel != NULL) {
+		for (unsigned i = 0; i < sPhyShadow.size(); i++) {
+			if (sPhyModel[i] == sPhyShadow[i])
+				continue;
+			assert(PhyOffsetAccessible(i * 4) && sPhyModel[i] <= 0xff);
+			sPhyWrites.push_back(std::make_pair(i * 4, sPhyModel[i]));
+			sPhyShadow[i] = sPhyModel[i];
+		}
+	}
+	if (sHdmiModel != NULL && !sHdmiShadow.empty()) {
+		static const unsigned kPacketOffsets[] = {0x8e0, 0x968, 0xa9c, 0xaa8, 0xaac,
+			0xbe0, 0xbe4, 0xbe8, 0xbec, 0xbf0};
+		for (unsigned offset : kPacketOffsets) {
+			if (sHdmiModel[offset / 4] == sHdmiShadow[offset / 4])
+				continue;
+			assert(sAllowModeSet);
+			sHdmiWrites.push_back(std::make_pair(offset, sHdmiModel[offset / 4]));
+			sHdmiShadow[offset / 4] = sHdmiModel[offset / 4];
+		}
+	}
+	if (sGrfModel != NULL) {
+		for (unsigned i = 0; i < sGrfShadow.size(); i++) {
+			if (sGrfModel[i] == sGrfShadow[i])
+				continue;
+			assert(i == 0); // only HDPTX_CON0 is written, HIWORD-masked
+			uint32 value = sGrfModel[i];
+			sGrfWrites.push_back(std::make_pair(i * 4, value));
+			uint32 mask = value >> 16;
+			sGrfModel[i] = (sGrfShadow[i] & ~mask & 0xffff) | (value & mask);
+			sGrfShadow[i] = sGrfModel[i];
+		}
+		sGrfModel[0x80 / 4] = sGrfShadow[0x80 / 4] = sPhyStatusModel;
+	}
+	if (sCruModel != NULL) {
+		static const unsigned kResetOffsets[] = {0xb20, 0x30a0c, 0x30a10};
+		for (unsigned i = 0; i < sCruShadow.size(); i++) {
+			if (sCruModel[i] == sCruShadow[i])
+				continue;
+			bool allowed = false;
+			for (unsigned offset : kResetOffsets)
+				allowed |= offset == i * 4;
+			assert(allowed);
+			uint32 value = sCruModel[i];
+			sCruWrites.push_back(std::make_pair(i * 4, value));
+			uint32 mask = value >> 16;
+			sCruModel[i] = (sCruShadow[i] & ~mask & 0xffff) | (value & mask);
+			sCruShadow[i] = sCruModel[i];
+		}
+	}
+}
+
+
 static void
 ModelStep()
 {
 	VopModelStep();
+	ModeSetModelStep();
+	// The VOP interrupt line: an installed handler runs while enabled status is pending.
+	if (sHandler != NULL && sVopModel != NULL && (sVopModel[0xc8 / 4] & 0xffff) != 0)
+		sHandler(sHandlerData);
 	if (sHdmiModel == NULL)
 		return;
 	uint32* regs = sHdmiModel;
@@ -208,7 +313,7 @@ ModelStep()
 }
 
 static void memory_write_barrier() { ModelStep(); }
-static void spin(unsigned micros) { assert(micros == 20); sModelSpins++; ModelStep(); }
+static void spin(unsigned micros) { assert(micros >= 15 && micros <= 1000); sModelSpins++; ModelStep(); }
 
 
 static uint32
@@ -222,6 +327,10 @@ ModelRegister(uint64 base, unsigned offset)
 		return sGate61;
 	if (base == 0xfd58c000 && offset == 0x384)
 		return sHotPlug;
+	if (base == 0xfd5e4000 && offset == 0x00)
+		return 0xe0; // PLL, bias and bandgap enabled by firmware
+	if (base == 0xfd5e4000 && offset == 0x80)
+		return sPhyStatusModel;
 	if (base == 0xfdd90000) {
 		auto found = sVopOverrides.find(offset);
 		if (found != sVopOverrides.end())
@@ -242,9 +351,18 @@ map_physical_memory(const char*, uint64 base, size_t bytes, uint32 spec,
 	for (uint64 candidate : kControl)
 		control |= candidate == base;
 	bool writable = false;
-	if (control)
-		assert(bytes == B_PAGE_SIZE);
-	else if (base == 0xfdd90000) {
+	if (control) {
+		// The mode set maps the HDPTX GRF page and the whole CRU writable.
+		writable = (protection & B_KERNEL_WRITE_AREA) != 0;
+		if (base == 0xfd7c0000 && bytes == 0x5c000)
+			assert(writable && sAllowModeSet);
+		else
+			assert(bytes == B_PAGE_SIZE);
+		assert(!writable || (sAllowModeSet && (base == 0xfd5e4000 || base == 0xfd7c0000)));
+	} else if (base == 0xfed70000) {
+		assert(sAllowModeSet && bytes == kPhyMapSize && (protection & B_KERNEL_WRITE_AREA) != 0);
+		writable = true;
+	} else if (base == 0xfdd90000) {
 		assert(bytes == kVopMapSize && (sRepairStatus & (1u << 16)) != 0 && (sGate52 & 0x300) == 0);
 		// Only the opt-in scanout swap or restore maps VOP2 writable; queries do not.
 		writable = (protection & B_KERNEL_WRITE_AREA) != 0;
@@ -254,11 +372,10 @@ map_physical_memory(const char*, uint64 base, size_t bytes, uint32 spec,
 		// Only the opt-in EDID path maps HDMI TX1 writable, after its own gating.
 		writable = (protection & B_KERNEL_WRITE_AREA) != 0;
 		assert(bytes == (writable ? kHdmiEdidMapSize : kHdmiMapSize));
-		assert(!writable || sAllowEdid);
+		assert(!writable || sAllowEdid || sAllowModeSet);
 	} else
 		assert(false);
 	assert(spec == (B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY));
-	// Never a writable mapping of any control block.
 	assert(protection == (B_KERNEL_READ_AREA | (writable ? B_KERNEL_WRITE_AREA : 0)));
 	sMappedBases.push_back(base);
 	if (++sMapAttempts == sFailMap)
@@ -278,13 +395,33 @@ map_physical_memory(const char*, uint64 base, size_t bytes, uint32 spec,
 		// commit without an observed write applies the active value again.
 		sVopAddressPending = false;
 		sVopCommitCountdown = -1;
+	} else if (writable && base == 0xfed70000) {
+		assert(sPhyModel == NULL);
+		// A byte no sequence writes, so every programmed value shows as a change.
+		for (unsigned offset = 0; offset < bytes; offset += 4)
+			registers[offset / 4] = 0xa5;
+		sPhyModel = registers;
+		sPhyShadow.assign(registers, registers + bytes / 4);
+	} else if (writable && base == 0xfd5e4000) {
+		assert(sGrfModel == NULL);
+		sGrfModel = registers;
+		sGrfShadow.assign(registers, registers + bytes / 4);
+	} else if (writable && base == 0xfd7c0000) {
+		assert(sCruModel == NULL);
+		sCruModel = registers;
+		sCruShadow.assign(registers, registers + bytes / 4);
 	} else if (writable) {
 		registers[0xf4 / 4] = 0x00000a00; // idle master, slave 0x50 set by firmware
 		registers[0x3020 / 4] = 0;
 		registers[0x3024 / 4] = 0;
 		registers[0x3028 / 4] = 0;
 		registers[0xec / 4] = 0;
+		registers[0x8e0 / 4] = 0x1; // HDCP2 bypassed, TMDS HDMI, AVI and GCP scheduled
+		registers[0x968 / 4] = 0x0;
+		registers[0xa9c / 4] = 0x6f00;
+		registers[0xaa8 / 4] = 0x2008;
 		sHdmiModel = registers;
+		sHdmiShadow.assign(registers, registers + bytes / 4);
 		sServing = false;
 	} else {
 		// Any production write faults immediately, as would either guard page.
@@ -311,6 +448,12 @@ public:
 				VopModelStep();
 				sVopModel = NULL;
 			}
+			char* page = (char*)sAreas.at(fArea).first + B_PAGE_SIZE;
+			ModeSetModelStep();
+			if ((char*)sPhyModel == page) sPhyModel = NULL;
+			if ((char*)sGrfModel == page) sGrfModel = NULL;
+			if ((char*)sCruModel == page) sCruModel = NULL;
+			if ((char*)sHdmiModel == page) sHdmiShadow.clear();
 			assert(munmap(sAreas.at(fArea).first, sAreas.at(fArea).second) == 0);
 			sAreas.erase(fArea);
 		}
@@ -658,8 +801,6 @@ frame_buffer_update(addr_t address, int32 width, int32 height, int32 depth, int3
 
 // Interrupt line and semaphore model: one handler on the VOP interrupt, one
 // retrace semaphore whose waiter count the test sets.
-static interrupt_handler sHandler;
-static void* sHandlerData;
 static int32 sHandlerInterrupt = -1;
 static unsigned sHandlerInstalls, sHandlerRemovals, sFailInstall;
 static sem_id sModelSemaphore = -1;
@@ -907,6 +1048,16 @@ Prepare()
 	sVopShadow.clear();
 	sVopWrites.clear();
 	sAllowScanout = false;
+	sAllowModeSet = false;
+	sHoldNever = false;
+	sPhyModel = NULL; sPhyShadow.clear(); sPhyWrites.clear();
+	sHdmiShadow.clear(); sHdmiWrites.clear();
+	sGrfModel = NULL; sGrfShadow.clear(); sGrfWrites.clear();
+	sPhyStatusModel = 0x0e;
+	sCruModel = NULL; sCruShadow.clear(); sCruWrites.clear();
+	sVopHoldCountdown = -1;
+	sHoldValid = 0;
+	memset(&sCurrentMode, 0, sizeof(sCurrentMode));
 	sStickyAddress = false;
 	sCommitNeverCompletes = false;
 	sVopAddressPending = false;
@@ -1680,6 +1831,172 @@ main()
 		assert(sAreas.empty() && sHandlerRemovals == 0);
 	}
 	assert(sLockDepth == 0);
+
+	// Native mode set: gating, refusals, the full 720p60 sequence in order,
+	// each timeout, and the way back to the firmware mode.
+	static_assert(sizeof(ModeRequest) == 112, "Mode ABI layout changed");
+	Prepare(); sAllowEdid = true; sAllowScanout = true;
+	controller.modeSetEnabled = false;
+	ModeRequest mode = {};
+	mode.version = kModeVersion;
+	assert(Open(&controller, "", O_RDWR, &opened) == B_OK);
+	primary = (Handle*)opened;
+	assert(Control(primary, kSetDisplayMode, &mode, sizeof(mode)) == B_DEV_INVALID_IOCTL);
+	controller.modeSetEnabled = true;
+	assert(Open(&controller, "", O_RDONLY, &opened) == B_OK);
+	reader = (Handle*)opened;
+	assert(Control(reader, kSetDisplayMode, &mode, sizeof(mode)) == B_NOT_ALLOWED);
+	assert(Control(primary, kSetDisplayMode, &mode, sizeof(mode) - 1) == B_BAD_VALUE);
+	assert(Control(primary, kSetDisplayMode, NULL, sizeof(mode)) == B_BAD_ADDRESS);
+	mode.version = kModeVersion + 1;
+	assert(Control(primary, kSetDisplayMode, &mode, sizeof(mode)) == B_BAD_VALUE);
+	mode.version = kModeVersion;
+	assert(Control(primary, kSetDisplayMode, &mode, sizeof(mode)) == B_OK && mode.result == kModeNotAcquired);
+	assert(sMapAttempts == 0);
+	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_OK && sOwner == primary);
+	acc.version = kAccelerantVersion;
+	assert(Control(reader, kGetAccelerantInfo, &acc, sizeof(acc)) == B_OK);
+	assert(acc.flags == (kAccelerantAcquired | kAccelerantEdid | kAccelerantRetrace | kAccelerantModeSet));
+	auto fill = [&](unsigned w, unsigned h, unsigned clock, unsigned hss, unsigned hse, unsigned ht,
+			unsigned vss, unsigned vse, unsigned vt, unsigned vic) {
+		memset(&mode, 0xa5, sizeof(mode));
+		mode.version = kModeVersion;
+		mode.flags = kModePositiveHSync | kModePositiveVSync;
+		mode.pixelClockKHz = clock;
+		mode.hDisplay = w; mode.hSyncStart = hss; mode.hSyncEnd = hse; mode.hTotal = ht;
+		mode.vDisplay = h; mode.vSyncStart = vss; mode.vSyncEnd = vse; mode.vTotal = vt;
+		mode.vic = vic;
+		sVopWrites.clear(); sPhyWrites.clear(); sGrfWrites.clear(); sCruWrites.clear(); sHdmiWrites.clear();
+	};
+	auto sequenceOf = [](const std::vector<std::pair<unsigned, uint32> >& log,
+			std::initializer_list<std::pair<unsigned, uint32> > expected, unsigned from = 0) {
+		// The expected writes appear in this order (not necessarily adjacent).
+		unsigned at = from;
+		for (auto item : expected) {
+			while (at < log.size() && log[at] != item)
+				at++;
+			if (at == log.size())
+				return false;
+			at++;
+		}
+		return true;
+	};
+	auto adjacent = [](const std::vector<std::pair<unsigned, uint32> >& log,
+			std::initializer_list<std::pair<unsigned, uint32> > expected) {
+		for (unsigned start = 0; start + expected.size() <= log.size(); start++) {
+			unsigned i = 0;
+			for (auto item : expected) {
+				if (log[start + i] != item)
+					break;
+				i++;
+			}
+			if (i == expected.size())
+				return true;
+		}
+		return false;
+	};
+	sAllowModeSet = true;
+	// Rates without a PLL configuration and modes beyond the buffer are refused untouched.
+	fill(1280, 720, 74251, 1390, 1430, 1650, 725, 730, 750, 4);
+	assert(Control(primary, kSetDisplayMode, &mode, sizeof(mode)) == B_OK && mode.result == kModeUnsupported);
+	assert(mode.phase == 0 && sVopWrites.empty() && sPhyWrites.empty() && sCruWrites.empty() && sGrfWrites.empty());
+	fill(2560, 1440, 148500, 2608, 2640, 2720, 1443, 1448, 1481, 0);
+	assert(Control(primary, kSetDisplayMode, &mode, sizeof(mode)) == B_OK && mode.result == kModeUnsupported);
+	fill(1280, 720, 74250, 1390, 1430, 1650, 725, 730, 750, 4);
+	mode.flags = 4;
+	assert(Control(primary, kSetDisplayMode, &mode, sizeof(mode)) == B_OK && mode.result == kModeUnsupported);
+	assert(sAreas.size() == 1 && sVopWrites.empty());
+	// 1280x720@60 (CEA VIC 4): stop, PHY off, PLL, port, lanes, infoframe.
+	fill(1280, 720, 74250, 1390, 1430, 1650, 725, 730, 750, 4);
+	assert(Control(primary, kSetDisplayMode, &mode, sizeof(mode)) == B_OK);
+	assert(mode.result == kModeOK && mode.phase == kPhaseInfoframes);
+	assert(mode.holdPolls >= 1 && mode.holdPolls <= 4 && mode.clockPolls == 0 && mode.lockPolls == 0);
+	assert(mode.phyStatus == 0x0e && mode.interfaceEnable == 0x00080020);
+	assert(mode.timing[0] == 0x06720028 && mode.timing[1] == 0x01040604);
+	assert(mode.timing[2] == 0x02ee0005 && mode.timing[3] == 0x001902e9);
+	assert(mode.finishedMicros > mode.startedMicros && sAreas.size() == 1);
+	assert(sPhyModel == NULL && sGrfModel == NULL && sCruModel == NULL && sVopModel != NULL);
+	// Stop: hold-valid armed, standby, the handler acknowledged it, hold-valid disarmed.
+	assert(adjacent(sVopWrites, {{0xc4u, 0x00400040u}, {0xc0u, 0x00400040u}, {0xe00u, 0x80000000u}}));
+	assert(sequenceOf(sVopWrites, {{0xe00u, 0x80000000u}, {0xc4u, 0x00400040u}, {0xc0u, 0x00400000u}}));
+	assert(atomic_get(&sHoldValid) == 1 && sHandler != NULL);
+	// Port programming in Linux order, then commit and the port out of standby.
+	assert(adjacent(sVopWrites, {{0xe48u, 0x06720028u}, {0xe4cu, 0x01040604u}, {0xe54u, 0x001902e9u},
+		{0x78u, 0x02e902e9u}, {0xe50u, 0x02ee0005u}, {0xe04u, 0u}, {0x6e8u, 0x34000000u},
+		{0xe30u, 0x02b30028u}, {0xe34u, 0x01040604u}, {0xe38u, 0x001902e9u}, {0xe3cu, 0x10001000u},
+		{0xe40u, 0u}, {0xe2cu, 0u}, {0x1c20u, 0x02cf04ffu}, {0x1c24u, 0x02cf04ffu},
+		{0x000u, 0x00048004u}, {0xe00u, 0x0000000fu}})); // DSP_ST stays 0, so that write is invisible
+	assert(sVopOverrides[0xe48] == 0x06720028 && sVopOverrides[0x1c20] == 0x02cf04ff);
+	// PHY: power-off writes first, per-rate ROPLL words, PCG post-divider, lanes last.
+	assert(adjacent(sPhyWrites, {{0xc00u, 0x82u}, {0x43cu, 0xc1u}, {0x440u, 0x01u}, {0xc04u, 0x80u},
+		{0x1004u, 0x80u}, {0x1404u, 0x80u}, {0x1804u, 0x80u}}));
+	assert(sequenceOf(sPhyWrites, {{0x1804u, 0x80u}, {0x024u, 0x0cu}, {0x020u, 0x00u}, {0x144u, 0x7cu},
+		{0x154u, 0x7cu}, {0x164u, 0x11u}, {0x168u, 0x70u}, {0x180u, 0x3eu}, {0x194u, 0x10u},
+		{0x1b0u, 0x00u}, {0x1c0u, 0x01u}, {0x218u, 0x71u}, {0x450u, 0x00u}, {0x800u, 0x06u},
+		{0x804u, 0x07u}, {0x814u, 0x1fu}, {0x818u, 0x07u}, {0x81cu, 0x0fu}, {0xc0cu, 0x0cu},
+		{0x1878u, 0x0au}}));
+	for (auto write : sPhyWrites)
+		assert(write.first != 0x808 || write.second == 0xc1); // the 1/10 clock table, not 1/40
+	// GRF: everything off, bias/bandgap, PLL, TMDS mode, bias/bandgap for the lanes.
+	assert(sGrfWrites.size() == 6 && sGrfWrites[0] == std::make_pair(0u, 0x00e00000u));
+	assert(sGrfWrites[1] == std::make_pair(0u, 0x00e00000u) && sGrfWrites[2] == std::make_pair(0u, 0x00600060u));
+	assert(sGrfWrites[3] == std::make_pair(0u, 0x00800080u) && sGrfWrites[4] == std::make_pair(0u, 0x00010000u));
+	assert(sGrfWrites[5] == std::make_pair(0u, 0x00600060u));
+	// CRU: only the three PHY resets, APB pulses first, deasserts in Linux order.
+	assert(sCruWrites.size() == 13);
+	assert(adjacent(sCruWrites, {{0xb20u, 0x00400040u}, {0xb20u, 0x00400000u}, {0x30a10u, 0x00020002u},
+		{0x30a10u, 0x00010001u}, {0x30a0cu, 0x80008000u}}));
+	assert(sequenceOf(sCruWrites, {{0x30a0cu, 0x80008000u}, {0x30a0cu, 0x80000000u}, {0x30a10u, 0x00010000u},
+		{0x30a10u, 0x00020000u}}));
+	assert(sCruWrites.back() == std::make_pair(0x30a10u, 0x00020000u));
+	// HDMI TX: AVI infoframe for VIC 4 and the AVMUTE clear; RMW words kept their values.
+	assert(sequenceOf(sHdmiWrites, {{0xbe0u, 0x000d0200u}, {0xbe4u, 0x00000269u}, {0xbe8u, 4u}, {0xaacu, 2u}}));
+	for (auto write : sHdmiWrites)
+		assert(write.first != 0x8e0 && write.first != 0x968 && write.first != 0xa9c && write.first != 0xaa8);
+	// Shared information, description and console follow the new mode.
+	shared = (const SharedInfo*)sSharedPage;
+	assert(shared->width == 1280 && shared->height == 720 && shared->pixelClockKHz == 74250);
+	assert(shared->hSyncStart == 1390 && shared->hSyncEnd == 1430 && shared->hTotal == 1650);
+	assert(shared->vSyncStart == 725 && shared->vSyncEnd == 730 && shared->vTotal == 750);
+	assert(shared->portTiming[0] == 0x06720028 && shared->bytesPerRow == 7680);
+	assert(Control(reader, kGetAccelerantInfo, &acc, sizeof(acc)) == B_OK && acc.width == 1280 && acc.height == 720);
+	assert(sConsole.width == 1280 && sConsole.height == 720 && sConsole.bytesPerRow == 7680);
+	// A port that never reports standby: nothing beyond the stop is touched.
+	sHoldNever = true;
+	fill(1920, 1080, 148500, 2008, 2052, 2200, 1084, 1089, 1125, 16);
+	assert(Control(primary, kSetDisplayMode, &mode, sizeof(mode)) == B_OK);
+	assert(mode.result == kModeHoldTimeout && mode.phase == kPhaseStopped && mode.holdPolls == 60);
+	assert(sPhyWrites.empty() && sCruWrites.empty() && sGrfWrites.empty() && sHdmiWrites.empty());
+	assert(sVopWrites.size() == 4 && sVopWrites[3] == std::make_pair(0xc0u, 0x00400000u));
+	assert(shared->width == 1280 && sConsole.width == 1280);
+	sHoldNever = false;
+	// PHY clock never ready: the PLL was programmed, the port untouched.
+	sPhyStatusModel = 0;
+	fill(1920, 1080, 148500, 2008, 2052, 2200, 1084, 1089, 1125, 16);
+	assert(Control(primary, kSetDisplayMode, &mode, sizeof(mode)) == B_OK);
+	assert(mode.result == kModePllTimeout && mode.phase == kPhasePhyOff && mode.clockPolls == 100);
+	assert(sequenceOf(sPhyWrites, {{0x144u, 0x7bu}, {0x168u, 0x30u}, {0x218u, 0x31u}}));
+	assert(!sequenceOf(sPhyWrites, {{0x800u, 0x06u}}) && !sequenceOf(sVopWrites, {{0xe48u, 0x0898002cu}}));
+	// Lanes never lock: the port was programmed for the new mode before.
+	sPhyStatusModel = kPhyStatusClockReady;
+	fill(1920, 1080, 148500, 2008, 2052, 2200, 1084, 1089, 1125, 16);
+	assert(Control(primary, kSetDisplayMode, &mode, sizeof(mode)) == B_OK);
+	assert(mode.result == kModeLaneTimeout && mode.phase == kPhasePortProgrammed && mode.lockPolls == 50);
+	assert(sequenceOf(sPhyWrites, {{0x800u, 0x06u}, {0x81cu, 0x0fu}}) && sequenceOf(sVopWrites, {{0xe48u, 0x0898002cu}}));
+	assert(shared->width == 1280);
+	// Back to the firmware mode.
+	sPhyStatusModel = 0x0e;
+	fill(1920, 1080, 148500, 2008, 2052, 2200, 1084, 1089, 1125, 16);
+	assert(Control(primary, kSetDisplayMode, &mode, sizeof(mode)) == B_OK && mode.result == kModeOK);
+	assert(mode.timing[0] == 0x0898002c && mode.timing[3] == 0x00290461);
+	assert(sequenceOf(sHdmiWrites, {{0xbe4u, 0x0000025du}, {0xbe8u, 16u}}));
+	assert(shared->width == 1920 && shared->height == 1080 && sConsole.width == 1920);
+	assert(Close(reader) == B_OK && Free(reader) == B_OK);
+	sAllowScanout = true;
+	assert(Close(primary) == B_OK && Free(primary) == B_OK && sOwner == NULL);
+	sAllowScanout = false;
+	sAllowModeSet = false;
+	assert(sAreas.empty() && sLockDepth == 0);
 	printf("RK3588_DISPLAY_RESOURCES_TEST_PASS faults=%zu\n", faults.size());
 	return 0;
 }

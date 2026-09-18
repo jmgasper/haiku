@@ -337,6 +337,58 @@ class DisplayValidationTest(unittest.TestCase):
             with self.assertRaises(check.ValidationError):
                 check.check_desktop_frame(desktop)
 
+    def test_modeset_transcript(self):
+        line = ('ROCK5_DISPLAY_MODE width=1280 height=720 clock=74250 vic=4 result=0 phase=6 hold_polls=2'
+            ' clock_polls=3 lock_polls=7 phy_status=0000000e timing=06720028,01040604,02ee0005,001902e9'
+            ' if_en=00080020 micros=41230')
+        body = ('ROCK5_DISPLAY_MODE_REQUEST_CHECKS_PASS\n' + line + '\n'
+            'ROCK5_DISPLAY_MODE_ACCELERANT width=1280 height=720 flags=15 retraces=3000\n'
+            'ROCK5_DISPLAY_MODE_PASS width=1280 height=720 clock=74250 vic=4\n')
+        decoded = check.validate_modeset(body, 1280, 720)
+        self.assertEqual((decoded['clock'], decoded['vic'], decoded['polls'], decoded['retraces']),
+            (74250, 4, dict(hold=2, clock=3, lock=7), 3000))
+        back = body.replace('width=1280 height=720', 'width=1920 height=1080').replace('clock=74250 vic=4', 'clock=148500 vic=16').replace(
+            'timing=06720028,01040604,02ee0005,001902e9', 'timing=0898002c,00c00840,04650005,00290461')
+        self.assertEqual(check.validate_modeset(back, 1920, 1080)['timing'], ['0898002c', '00c00840', '04650005', '00290461'])
+        cases = [
+            ('checks', body.replace('ROCK5_DISPLAY_MODE_REQUEST_CHECKS_PASS\n', '')),
+            ('size', (body, 1920, 1080)),
+            ('result', body.replace('result=0 phase=6', 'result=4 phase=2')),
+            ('status', body.replace('phy_status=0000000e', 'phy_status=00000004')),
+            ('timing', body.replace('001902e9', '001902e8')),
+            ('routing', body.replace('if_en=00080020', 'if_en=00040020')),
+            ('accelerant', body.replace('ACCELERANT width=1280 height=720', 'ACCELERANT width=1920 height=1080')),
+            ('flags', body.replace('flags=15', 'flags=7')),
+            ('summary', body.replace('MODE_PASS width=1280', 'MODE_PASS width=1281')),
+        ]
+        for name, value in cases:
+            with self.subTest(name=name):
+                with self.assertRaises(check.ValidationError):
+                    if isinstance(value, tuple):
+                        check.validate_modeset(*value)
+                    else:
+                        check.validate_modeset(value, 1280, 720)
+
+    def test_desktop_crop(self):
+        import tempfile
+        from PIL import Image, ImageDraw
+        with tempfile.TemporaryDirectory() as directory:
+            crop = directory + '/crop.jpg'
+            image = Image.new('RGB', (1280, 720), check.DESKTOP_BLUE)
+            draw = ImageDraw.Draw(image)
+            for x in (20, 80, 140):
+                draw.rectangle([x, 20, x + 32, 52], fill=(230, 200, 60))
+            image.save(crop, format='JPEG', quality=80)
+            self.assertEqual(check.check_desktop_crop(crop, 1280, 720)['status'], 'pass')
+            with self.assertRaises(check.ValidationError):
+                check.check_desktop_crop(crop, 1920, 1080)
+            Image.new('RGB', (1280, 720), check.DESKTOP_BLUE).save(crop, format='JPEG')
+            with self.assertRaises(check.ValidationError):
+                check.check_desktop_crop(crop, 1280, 720)
+            real = '/mnt/HaikuWork/artifacts/interactive/20260918T083449Z-28d1a5/frame-007.jpg'
+            if os.path.exists(real):
+                self.assertEqual(check.check_desktop_crop(real, 1920, 1080)['status'], 'pass')
+
     def test_pattern_frame(self):
         import tempfile
         with tempfile.TemporaryDirectory() as directory:

@@ -573,3 +573,83 @@ def check_desktop_frame(path):
     if failed:
         raise ValidationError('frame does not show the Haiku desktop: %r' % failed)
     return dict(status='pass', samples=samples)
+
+
+MODE_LINE = re.compile(
+    r'^ROCK5_DISPLAY_MODE width=(\d+) height=(\d+) clock=(\d+) vic=(\d+) result=(\d+) phase=(\d+)'
+    r' hold_polls=(\d+) clock_polls=(\d+) lock_polls=(\d+) phy_status=([0-9a-f]{8})'
+    r' timing=([0-9a-f]{8}),([0-9a-f]{8}),([0-9a-f]{8}),([0-9a-f]{8}) if_en=([0-9a-f]{8}) micros=(\d+)$', re.M)
+MODE_ACCELERANT = re.compile(r'^ROCK5_DISPLAY_MODE_ACCELERANT width=(\d+) height=(\d+) flags=(\d+) retraces=(\d+)$', re.M)
+# CEA-861 timings the probe requests: (clock kHz, hss, hse, htotal, vss, vse, vtotal, vic).
+CEA_TIMINGS = {(1920, 1080): (148500, 2008, 2052, 2200, 1084, 1089, 1125, 16),
+    (1280, 720): (74250, 1390, 1430, 1650, 725, 730, 750, 4),
+    (720, 480): (27000, 736, 798, 858, 489, 495, 525, 2),
+    (640, 480): (25175, 656, 752, 800, 490, 492, 525, 1)}
+
+
+def validate_modeset(body, width, height):
+    """Return the decoded mode change from a native --mode transcript or raise ValidationError."""
+    if 'ROCK5_DISPLAY_MODE_REQUEST_CHECKS_PASS' not in body:
+        raise ValidationError('mode request boundary checks missing')
+    line = MODE_LINE.search(body)
+    if line is None:
+        raise ValidationError('mode line missing')
+    if (int(line.group(1)), int(line.group(2))) != (width, height):
+        raise ValidationError('mode line is for %sx%s, expected %dx%d' % (line.group(1), line.group(2), width, height))
+    timing = CEA_TIMINGS.get((width, height))
+    if timing is None:
+        raise ValidationError('no CEA timing for %dx%d' % (width, height))
+    clock, hss, hse, htotal, vss, vse, vtotal, vic = timing
+    if int(line.group(3)) != clock or int(line.group(4)) != vic:
+        raise ValidationError('mode clock/VIC %s/%s differ from CEA' % (line.group(3), line.group(4)))
+    result, phase = int(line.group(5)), int(line.group(6))
+    if result != 0 or phase != 6:
+        raise ValidationError('mode change result %d at phase %d' % (result, phase))
+    polls = dict(hold=int(line.group(7)), clock=int(line.group(8)), lock=int(line.group(9)))
+    if polls['hold'] > 60 or polls['clock'] > 100 or polls['lock'] > 50:
+        raise ValidationError('implausible poll counts %r' % polls)
+    phy_status = int(line.group(10), 16)
+    if phy_status & 0xe != 0xe:
+        raise ValidationError('PHY status %#x lacks ready/lock bits' % phy_status)
+    words = [int(line.group(i), 16) for i in (11, 12, 13, 14)]
+    expected = [(htotal << 16) | (hse - hss), ((htotal - hss) << 16) | (htotal - hss + width),
+        (vtotal << 16) | (vse - vss), ((vtotal - vss) << 16) | (vtotal - vss + height)]
+    if words != expected:
+        raise ValidationError('port timing %s, expected %s' % (['%08x' % w for w in words], ['%08x' % w for w in expected]))
+    if int(line.group(15), 16) != 0x00080020:
+        raise ValidationError('interface enable changed to %s' % line.group(15))
+    micros = int(line.group(16))
+    if micros <= 0 or micros > 2000000:
+        raise ValidationError('implausible mode change duration %d us' % micros)
+    accelerant = MODE_ACCELERANT.search(body)
+    if accelerant is None or (int(accelerant.group(1)), int(accelerant.group(2))) != (width, height):
+        raise ValidationError('accelerant description does not report the new mode')
+    if int(accelerant.group(3)) & 0x9 != 0x9:
+        raise ValidationError('accelerant flags %s lack acquired/modeset' % accelerant.group(3))
+    summary = 'ROCK5_DISPLAY_MODE_PASS width=%d height=%d clock=%d vic=%d' % (width, height, clock, vic)
+    if body.count(summary + '\n') != 1:
+        raise ValidationError('mode summary missing')
+    return dict(status='pass', width=width, height=height, clock=clock, vic=vic, polls=polls,
+        phy_status='%08x' % phy_status, timing=['%08x' % w for w in words], micros=micros,
+        retraces=int(accelerant.group(4)))
+
+
+def check_desktop_crop(path, width, height):
+    """Raise unless a capture of the given size shows the Haiku workspace with its top-left icons."""
+    from PIL import Image
+    image = Image.open(path).convert('RGB')
+    if image.size != (width, height):
+        raise ValidationError('frame is %dx%d, not %dx%d' % (image.size + (width, height)))
+    samples = []
+    for x, y in ((width // 3, height // 3), (width // 2, height * 2 // 3), (width * 3 // 4, height // 4), (width // 8, height * 7 // 8)):
+        rgb = image.getpixel((x, y))
+        samples.append(dict(x=x, y=y, rgb=list(rgb), kind='workspace',
+            ok=all(abs(a - b) <= 24 for a, b in zip(rgb, DESKTOP_BLUE))))
+    # The Haiku, home and Trash icons sit at the top left of the workspace.
+    icons = image.crop((16, 16, 176, 72))
+    distinct = sum(1 for rgb in icons.getdata() if not all(abs(a - b) <= 24 for a, b in zip(rgb, DESKTOP_BLUE)))
+    samples.append(dict(kind='icons', pixels=distinct, ok=distinct >= 600))
+    failed = [s for s in samples if not s['ok']]
+    if failed:
+        raise ValidationError('frame does not show the Haiku workspace crop: %r' % failed)
+    return dict(status='pass', samples=samples)
