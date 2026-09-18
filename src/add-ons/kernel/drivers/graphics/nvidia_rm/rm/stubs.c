@@ -63,7 +63,6 @@ int nv_pci_trigger_recovery(void) {panic("[!!!] nv_pci_trigger_recovery: not imp
 int nv_register_peer_io_mem(void) {panic("[!!!] nv_register_peer_io_mem: not implemented\n"); return -1;}
 int nv_register_phys_pages(void) {panic("[!!!] nv_register_phys_pages: not implemented\n"); return -1;}
 int nv_register_sgt(void) {panic("[!!!] nv_register_sgt: not implemented\n"); return -1;}
-int nv_register_user_pages(void) {panic("[!!!] nv_register_user_pages: not implemented\n"); return -1;}
 //int nv_requires_dma_remap(void) {panic("[!!!] nv_requires_dma_remap: not implemented\n"); return -1;}
 //int nv_schedule_uvm_isr(void) {panic("[!!!] nv_schedule_uvm_isr: not implemented\n"); return -1;}
 //int nv_set_dma_address_size(void) {panic("[!!!] nv_set_dma_address_size: not implemented\n"); return -1;}
@@ -72,7 +71,6 @@ int nv_register_user_pages(void) {panic("[!!!] nv_register_user_pages: not imple
 int nv_unregister_peer_io_mem(void) {panic("[!!!] nv_unregister_peer_io_mem: not implemented\n"); return -1;}
 int nv_unregister_phys_pages(void) {panic("[!!!] nv_unregister_phys_pages: not implemented\n"); return -1;}
 int nv_unregister_sgt(void) {panic("[!!!] nv_unregister_sgt: not implemented\n"); return -1;}
-int nv_unregister_user_pages(void) {panic("[!!!] nv_unregister_user_pages: not implemented\n"); return -1;}
 int nv_wait_for_ibmnpu_rsync(void) {panic("[!!!] nv_wait_for_ibmnpu_rsync: not implemented\n"); return -1;}
 int nvidia_caps_root(void) {panic("[!!!] nvidia_caps_root: not implemented\n"); return -1;}
 int nvlink_acquire_fabric_mgmt_cap(void) {panic("[!!!] nvlink_acquire_fabric_mgmt_cap: not implemented\n"); return -1;}
@@ -182,7 +180,6 @@ int os_get_page_refcount(void) {panic("[!!!] os_get_page_refcount: not implement
 //int os_is_isr(void) {panic("[!!!] os_is_isr: not implemented\n"); return -1;}
 //int os_is_nvswitch_present(void) {panic("[!!!] os_is_nvswitch_present: not implemented\n"); return -1;}
 //int os_is_vgx_hyper(void) {panic("[!!!] os_is_vgx_hyper: not implemented\n"); return -1;}
-int os_lock_user_pages(void) {panic("[!!!] os_lock_user_pages: not implemented\n"); return -1;}
 int os_lookup_user_io_memory(void) {panic("[!!!] os_lookup_user_io_memory: not implemented\n"); return -1;}
 //int os_map_kernel_space(void) {panic("[!!!] os_map_kernel_space: not implemented\n"); return -1;}
 //int os_map_user_space(void) {panic("[!!!] os_map_user_space: not implemented\n"); return -1;}
@@ -223,7 +220,6 @@ int os_read_file(void) {panic("[!!!] os_read_file: not implemented\n"); return -
 //int os_string_copy(void) {panic("[!!!] os_string_copy: not implemented\n"); return -1;}
 //int os_string_length(void) {panic("[!!!] os_string_length: not implemented\n"); return -1;}
 //int os_strtoul(void) {panic("[!!!] os_strtoul: not implemented\n"); return -1;}
-int os_unlock_user_pages(void) {panic("[!!!] os_unlock_user_pages: not implemented\n"); return -1;}
 //int os_unmap_kernel_space(void) {panic("[!!!] os_unmap_kernel_space: not implemented\n"); return -1;}
 //int os_unmap_user_space(void) {panic("[!!!] os_unmap_user_space: not implemented\n"); return -1;}
 //int os_wait_interruptible(void) {panic("[!!!] os_wait_interruptible: not implemented\n"); return -1;}

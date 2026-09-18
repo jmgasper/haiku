@@ -455,6 +455,111 @@ NV_STATUS NV_API_CALL nv_alloc_pages(
 	return NV_OK;
 }
 
+// #pragma mark - user pages
+
+// Pin a range of the calling application's memory and hand RM something it can
+// turn into a memory descriptor, so that the GPU can read and write the
+// application's own buffers - a window's bitmap, for instance.
+extern "C" NV_STATUS NV_API_CALL os_lock_user_pages(
+	void *address,
+	NvU64 page_count,
+	void **page_array,
+	NvU32 flags
+)
+{
+	dprintf("nvidia_rm: os_lock_user_pages(%p, %" B_PRIu64 " pages, flags %#"
+		B_PRIx32 ")\n", address, (uint64)page_count, (uint32)flags);
+
+	if (((addr_t)address & (B_PAGE_SIZE - 1)) != 0)
+		return NV_ERR_NOT_SUPPORTED;
+	if (!IS_USER_ADDRESS(address))
+		return NV_ERR_INVALID_ADDRESS;
+
+	ObjectDeleter<nv_user_pages_t> pages(new(std::nothrow) nv_user_pages_t());
+	if (!pages.IsSet())
+		return NV_ERR_NO_MEMORY;
+
+	pages->team = B_CURRENT_TEAM;
+	pages->address = (addr_t)address;
+	pages->size = page_count * B_PAGE_SIZE;
+	pages->pageCount = page_count;
+	pages->writable = FLD_TEST_DRF_NUM(_LOCK_USER_PAGES, _FLAGS, _WRITE, 1, flags);
+
+	// B_READ_DEVICE means the transfer goes from the device into this memory,
+	// which is what the GPU does when it writes a rendered frame.
+	status_t status = lock_memory_etc(pages->team, (void*)pages->address,
+		pages->size, pages->writable ? B_READ_DEVICE : 0);
+	if (status != B_OK) {
+		dprintf("nvidia_rm: cannot lock %" B_PRIuSIZE " bytes at %p: %s\n",
+			pages->size, address, strerror(status));
+		return NV_ERR_INVALID_ADDRESS;
+	}
+
+	dprintf("nvidia_rm: locked %" B_PRIuSIZE " bytes at %p\n", pages->size,
+		address);
+	*page_array = pages.Detach();
+	return NV_OK;
+}
+
+extern "C" NV_STATUS NV_API_CALL os_unlock_user_pages(
+	NvU64 page_count,
+	void *page_array,
+	NvU32 flags
+)
+{
+	ObjectDeleter<nv_user_pages_t> pages(static_cast<nv_user_pages_t*>(page_array));
+	if (!pages.IsSet())
+		return NV_OK;
+
+	unlock_memory_etc(pages->team, (void*)pages->address, pages->size,
+		pages->writable ? B_READ_DEVICE : 0);
+	return NV_OK;
+}
+
+// Fill in the physical addresses of the pages pinned above. The pages stay
+// pinned until os_unlock_user_pages(); this only describes them.
+extern "C" NV_STATUS NV_API_CALL nv_register_user_pages(
+	nv_state_t *nv,
+	NvU64 page_count,
+	NvU64 *phys_addr,
+	void *import_priv,
+	void **priv_data
+)
+{
+	auto pages = static_cast<nv_user_pages_t*>(*priv_data);
+	dprintf("nvidia_rm: nv_register_user_pages(%" B_PRIu64 " pages, priv %p)\n",
+		(uint64)page_count, pages);
+	if (pages == NULL || page_count > pages->pageCount)
+		return NV_ERR_INVALID_ARGUMENT;
+
+	for (NvU64 i = 0; i < page_count; i++) {
+		physical_entry entry;
+		uint32 entryCount = 1;
+		status_t status = get_memory_map_etc(pages->team,
+			(void*)(pages->address + i * B_PAGE_SIZE), B_PAGE_SIZE, &entry,
+			&entryCount);
+		if (status != B_OK || entryCount != 1) {
+			dprintf("nvidia_rm: cannot map page %" B_PRIu64 " of %p: %s\n", i,
+				(void*)pages->address, strerror(status));
+			return NV_ERR_INVALID_ADDRESS;
+		}
+		phys_addr[i] = entry.address;
+	}
+
+	return NV_OK;
+}
+
+extern "C" void NV_API_CALL nv_unregister_user_pages(
+	nv_state_t *nv,
+	NvU64 page_count,
+	void **import_priv,
+	void **priv_data
+)
+{
+	// The pages are released by os_unlock_user_pages().
+}
+
+
 NV_STATUS NV_API_CALL nv_free_pages(
     nv_state_t *nv,
     NvU32 page_count,

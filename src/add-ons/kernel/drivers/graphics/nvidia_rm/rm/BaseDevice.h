@@ -20,6 +20,17 @@ struct nv_alloc_t {
 };
 
 
+// A range of an application's memory that has been pinned so the GPU can read
+// and write it: what an "OS descriptor" allocation is made of.
+struct nv_user_pages_t {
+	team_id team {};
+	addr_t address {};
+	size_t size {};
+	uint64 pageCount {};
+	bool writable {};
+};
+
+
 const char *nv_cache_type_str(NvU32 cache_type);
 uint32 to_haiku_cache_type(NvU32 cache_type);
 
