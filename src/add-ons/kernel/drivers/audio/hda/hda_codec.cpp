@@ -1361,6 +1361,27 @@ err:
 //	#pragma mark -
 
 
+// Whether this widget can carry a stream: the right kind, on the right path,
+// stereo, and able to say what it can play. Digital converters are the ones
+// that feed HDMI and DisplayPort, and are only wanted when there is nothing
+// analog.
+static bool
+hda_widget_is_usable_converter(const hda_widget& widget, hda_widget_type type,
+	uint32 flags, bool digital)
+{
+	if (widget.type != type || (widget.flags & flags) == 0
+		|| widget.d.io.formats == 0)
+		return false;
+
+	if ((widget.capabilities.audio & AUDIO_CAP_STEREO) == 0)
+		return false;
+
+	const bool isDigital
+		= (widget.capabilities.audio & AUDIO_CAP_DIGITAL) != 0;
+	return isDigital == digital;
+}
+
+
 status_t
 hda_audio_group_get_widgets(hda_audio_group* audioGroup, hda_stream* stream)
 {
@@ -1444,10 +1465,7 @@ hda_audio_group_get_widgets(hda_audio_group* audioGroup, hda_stream* stream)
 			}
 		}
 
-		if (widget.type != type || (widget.flags & flags) == 0
-			|| (widget.capabilities.audio
-				& (AUDIO_CAP_STEREO | AUDIO_CAP_DIGITAL)) != AUDIO_CAP_STEREO
-			|| widget.d.io.formats == 0)
+		if (!hda_widget_is_usable_converter(widget, type, flags, false))
 			continue;
 
 		if (count == 0) {
@@ -1460,6 +1478,50 @@ hda_audio_group_get_widgets(hda_audio_group* audioGroup, hda_stream* stream)
 
 		stream->io_widgets[count++] = widget.node_id;
 	}
+
+	TRACE("converters for %s: %" B_PRIu32 " analog\n",
+		stream->type == STREAM_PLAYBACK ? "playback" : "record", count);
+
+	// Nothing analog to play through. A codec on a graphics card has only
+	// digital converters - its outputs are the HDMI and DisplayPort
+	// connectors - so try those before giving up. Analog is looked for first,
+	// so a codec with both, which is most of them, keeps using it.
+	if (count == 0) {
+		for (uint32 i = 0; i < audioGroup->widget_count
+				&& count < MAX_IO_WIDGETS; i++) {
+			hda_widget& widget = audioGroup->widgets[i];
+
+			if (!hda_widget_is_usable_converter(widget, type, flags, true))
+				continue;
+
+			if (count == 0) {
+				stream->sample_format = widget.d.io.formats;
+				stream->sample_rate = widget.d.io.rates;
+			} else {
+				stream->sample_format &= widget.d.io.formats;
+				stream->sample_rate &= widget.d.io.rates;
+			}
+
+			// A digital converter passes nothing until it is switched on.
+			uint32 response;
+			corb_t verb = MAKE_VERB(audioGroup->codec->addr, widget.node_id,
+				VID_GET_DIGITAL_CONVERTER_CONTROL, 0);
+			if (hda_send_verbs(audioGroup->codec, &verb, &response, 1)
+					== B_OK) {
+				verb = MAKE_VERB(audioGroup->codec->addr, widget.node_id,
+					VID_SET_DIGITAL_CONVERTER_CONTROL1,
+					(response & 0xff) | DIGITAL_CONVERTER_ENABLE);
+				hda_send_verbs(audioGroup->codec, &verb, NULL, 1);
+				TRACE("ENABLE digital converter widget %" B_PRIu32 "\n",
+					widget.node_id);
+			}
+
+			stream->io_widgets[count++] = widget.node_id;
+		}
+	}
+
+	TRACE("converters for %s: %" B_PRIu32 " in total\n",
+		stream->type == STREAM_PLAYBACK ? "playback" : "record", count);
 
 	if (count == 0)
 		return B_ENTRY_NOT_FOUND;
