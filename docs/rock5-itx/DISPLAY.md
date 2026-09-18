@@ -650,6 +650,26 @@ and `…20260918T230547Z-0884e5`); the first +294 run met Tracker windows
 opened through the NanoKVM's HID devices and a classifier that expected the
 plain desktop (`…20260918T231927Z-55dde9`).
 
+## Stage 3g: app_server's pointer on the hardware cursor
+
+The `rock5-itx-edk2-v1.1-display-cursor-desktop` profile is the cursor
+profile plus the accelerant's `B_SET_CURSOR_BITMAP`, `B_MOVE_CURSOR` and
+`B_SHOW_CURSOR` hooks (the driver advertises them with a second flag), so
+app_server hands its pointer bitmap, position and visibility to the window
+at start and stops drawing the software pointer into the frame buffer; a
+bitmap larger than 64x64 is refused and app_server keeps its software
+pointer. The native cycle is the cursor stage's with these additions: the
+inventory requires the driver's bitmap and show lines for app_server's
+pointer and reads ESMART3 back enabled with that bitmap at the desktop's
+centre less the hot spot; the accelerant check requires the hooks flag and
+a desktop-blue centre pixel in the frame buffer (no software pointer there);
+the probe's restore brings app_server's bitmap back; the pointer window is
+read back disabled at 720p (the centre is off that frame) and enabled again
+at 1080p and after power-on; and a pointer classifier (light and dark
+pixels over the desktop in the box at the pointer's position, plain desktop
+around it) judges the captures after inventory, the restore, the return to
+1080p and power-on.
+
 ## Later stages
 
 3. app_server's own pointer on the hardware cursor window (the
