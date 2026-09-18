@@ -364,6 +364,33 @@ listed as verified is untested.
     does not build up stale blanks.
   Vertical sync is off unless a program asks for it, which is Haiku's
   convention - `SwapBuffers(true)`, or `HGL_VSYNC` to force it.
+- 2026-09-19: OpenGL now reaches the GPU without anything being set in the
+  environment. Everything measured until now was run with VK_ICD_FILENAMES and
+  LD_LIBRARY_PATH pointed at the build by hand; a program started from the
+  Deskbar got the software rasterizer and nobody would have known why. The
+  library path turns out never to have been needed - the manifest names the
+  driver by absolute path and its dependencies are all in system directories -
+  and the manifest only had to be somewhere the loader looks. It looks in the
+  add-ons directories, not the data ones: asking it with `VK_LOADER_DEBUG=all`
+  prints the four it searches, which is quicker than guessing (two wrong
+  guesses here). `tools/haiku-build-nvk.sh` now installs it into
+  /boot/system/non-packaged/add-ons/vulkan/icd.d.
+  GLTeapot, started as the Deskbar starts it, now draws on the GPU - and at 60
+  frames a second rather than the 2390 it managed before, because it asks for
+  vertical sync and until today the accelerant had no retrace semaphore to give
+  it, so the request quietly did nothing.
+  Two things this turned up that are worth knowing:
+  * Zink's software fallback, which runs when no Vulkan device can be used,
+    dies at teardown on a locked mutex and leaves the program stopped in the
+    debugger. It is upstream-equivalent code and Haiku's own Software Pipe
+    add-on does not do it, the difference being softpipe against llvmpipe -
+    this build has `-Dllvm=disabled`. It only matters if the GPU driver cannot
+    be loaded at all, which is no longer the case here.
+  * The fallback exists because a renderer add-on cannot decline.
+    `GLRendererRoster::GetRenderer` returns the first add-on's answer without
+    looking at it, so an add-on that returns NULL leaves the program with no
+    renderer instead of passing it to the next one. Fixing that in libGL would
+    let this add-on simply stand aside when there is no GPU.
 - 2026-09-18: all five XHCI controllers - two AMD, one ASMedia, and the
   Thunderbolt 4 host with its USB4 interface - start and publish a root hub.
   Only the KVM is plugged in, so what is left in this area needs someone at the
