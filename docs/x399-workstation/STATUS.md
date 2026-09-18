@@ -11,7 +11,7 @@ listed as verified is untested.
 | Ethernet | I211 up with DHCP | verified: ipro1000 link 1000BASE-T, DHCP lease, HTTP upload and SSH |
 | USB | all controllers and ports enumerate devices | all 5 xHCI controllers start after the PCI fix; NanoKVM device enumerates on the ASM2142; other ports need physical devices |
 | Audio | ALC1220 analog output, HDMI audio | AMD HDA and GP102 HDMI controllers attach (`/dev/audio/hmulti/hda/0,1`); playback untested |
-| Graphics | GTX 1070/1080 Ti accelerated 2D/3D, 3-4 monitors | in progress: two displays (HDMI and DisplayPort) drive one 3840x1080 desktop, Vulkan runs shaders on the GPU (1.4 TFLOP/s compute, 55 Gpixel/s fill), and Haiku's OpenGL kit reports `zink (NVIDIA GeForce GTX 1070 (NVK GP104-A))` at GL 4.5; clearing and presenting work, drawing geometry still stops the graphics engine |
+| Graphics | GTX 1070/1080 Ti accelerated 2D/3D, 3-4 monitors | in progress: two displays (HDMI and DisplayPort) drive one 3840x1080 desktop, Vulkan runs shaders on the GPU (1.4 TFLOP/s compute, 55 Gpixel/s fill), and Haiku's OpenGL kit renders through the GPU: GLTeapot runs at 363 fps against 238 in software, a lit sphere at 800x600 at 170 against 42 |
 | Sleep | S3 suspend and resume | sleeps and wakes; the display comes back, but the NVMe and the network card usually do not |
 
 ## Log
@@ -145,3 +145,17 @@ listed as verified is untested.
   NVK_NVRM_TIMEOUT_MS instead of hanging, which makes NVK dump the command
   buffer that failed; it ends with the ordinary draw macro, so the offending
   state is somewhere earlier in the stream.
+- 2026-09-18: the draw that stopped the graphics engine was an unaligned
+  constant buffer. Diffing the command stream NVK builds for a Zink draw
+  against one for the same draw issued straight through Vulkan left exactly
+  three methods: SET_CONSTANT_BUFFER_SELECTOR_A/B/C. Its address,
+  0x205700140, is 64 byte aligned, and a pre-Turing GPU wants 256 there;
+  binding it that way raises a class error (Xid 69) and the channel is dead
+  from then on. The address is a dynamic uniform buffer, whose offset comes
+  from the caller, and the caller is Mesa's OpenGL state tracker: it uploads
+  the default uniform block at a hard coded alignment of 64. On Turing, where
+  NVK asks for 64, that happens to be right. It now uses the alignment the
+  driver reports, and OpenGL draws correctly.
+  What is left in this area: presenting a frame still copies the image back
+  through the CPU into a BBitmap, which is what limits a small window to a few
+  hundred frames a second.
