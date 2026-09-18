@@ -665,6 +665,37 @@ class DisplayValidationTest(unittest.TestCase):
             with self.assertRaises(check.ValidationError):
                 check.check_cursor_frame(frame, 200, 200)
 
+    def test_pointer_frame(self):
+        import tempfile
+        from PIL import Image, ImageDraw
+        with tempfile.TemporaryDirectory() as directory:
+            frame = directory + '/pointer.jpg'
+            def capture(pointer=True, x=958, y=538):
+                image = Image.new('RGB', (1920, 1080), check.DESKTOP_BLUE)
+                draw = ImageDraw.Draw(image)
+                draw.rectangle([1784, 0, 1919, 70], fill=(200, 200, 200))
+                if pointer:
+                    draw.polygon([(x, y), (x, y + 18), (x + 5, y + 13), (x + 13, y + 13)], fill=(255, 255, 255), outline=(0, 0, 0), width=2)
+                image.save(frame, format='JPEG', quality=80)
+            capture()
+            result = check.check_pointer_frame(frame, 958, 538)
+            self.assertEqual((result['status'], len(result['around'])), ('pass', 4))
+            self.assertGreaterEqual(result['light'], 20)
+            with self.assertRaises(check.ValidationError):
+                check.check_pointer_frame(frame, 500, 500)
+            capture(pointer=False)
+            with self.assertRaises(check.ValidationError):
+                check.check_pointer_frame(frame, 958, 538)
+            real = '/mnt/HaikuWork/artifacts/interactive/20260918T233200Z-0ced8a/frame-007.jpg'
+            if os.path.exists(real):
+                # The +294 software pointer at the centre of the desktop, judged the same way.
+                self.assertEqual(check.check_pointer_frame(real, 958, 538)['status'], 'pass')
+                with self.assertRaises(check.ValidationError):
+                    check.check_pointer_frame(real, 300, 300)
+            Image.new('RGB', (1280, 720), check.DESKTOP_BLUE).save(frame, format='JPEG')
+            with self.assertRaises(check.ValidationError):
+                check.check_pointer_frame(frame, 958, 538)
+
     def test_pattern_frame(self):
         import tempfile
         with tempfile.TemporaryDirectory() as directory:

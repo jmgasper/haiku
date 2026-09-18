@@ -982,3 +982,31 @@ def check_cursor_frame(path, x, y, shown=True, frame=(1920, 1080), reference=Non
     if failed:
         raise ValidationError('frame does not show the %s cursor at %d,%d: %r' % ('quadrant' if shown else 'hidden', x, y, failed))
     return dict(status='pass', x=x, y=y, shown=shown, reference=reference, samples=samples)
+
+
+def check_pointer_frame(path, x, y, size=24, frame=(1920, 1080)):
+    """Raise unless the capture shows a pointer (light and dark pixels over the desktop) in the size x size box at x, y.
+
+    app_server's default pointer is a white arrow with a black outline; on
+    the hardware window it sits where the driver placed it, and the desktop
+    blue surrounds the box.
+    """
+    from PIL import Image
+    image = Image.open(path).convert('RGB')
+    if image.size != tuple(frame):
+        raise ValidationError('frame is %dx%d, not %dx%d' % (image.size + tuple(frame)))
+    box = (max(0, x), max(0, y), min(frame[0], x + size), min(frame[1], y + size))
+    pixels = list(image.crop(box).getdata())
+    light = sum(1 for rgb in pixels if min(rgb) >= 180)
+    dark = sum(1 for rgb in pixels if max(rgb) <= 90)
+    blue = sum(1 for rgb in pixels if all(abs(a - b) <= 24 for a, b in zip(rgb, DESKTOP_BLUE)))
+    around = []
+    for px, py in ((x - 16, y + size // 2), (x + size + 16, y + size // 2), (x + size // 2, y - 16), (x + size // 2, y + size + 16)):
+        if 0 <= px < frame[0] and 0 <= py < frame[1]:
+            rgb = image.getpixel((px, py))
+            around.append(dict(x=px, y=py, rgb=list(rgb), ok=all(abs(a - b) <= 24 for a, b in zip(rgb, DESKTOP_BLUE))))
+    result = dict(status='pass', x=x, y=y, box=list(box), pixels=len(pixels), light=light, dark=dark, blue=blue, around=around)
+    if light < 20 or dark < 12 or blue > len(pixels) - 40 or not around or not all(a['ok'] for a in around):
+        result['status'] = 'fail'
+        raise ValidationError('frame does not show a pointer at %d,%d: %r' % (x, y, result))
+    return result
