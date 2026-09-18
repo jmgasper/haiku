@@ -323,22 +323,47 @@ listed as verified is untested.
   semaphore control, which writes a counter into a surface at each blank and
   needs no channel - and which would also let the GPU wait for the blank itself
   instead of the processor waiting and then submitting.
-- 2026-09-18: tried to stop the tearing and found the wall. NVKMS has a way to
-  say when the display is between frames that needs no channel: a client
-  registers a piece of memory and NVKMS writes a counter into it at every
-  vertical blank. This port reported it unsupported because
-  `nvkms_vblank_sem_control()` was a stub returning false - the Linux driver
-  has it on by default. Turning it on made NVKMS offer it, the surface
-  registered and the control enabled, and then the machine went down at the
-  first vertical blank: no network, no console, a power cycle to get it back.
-  NVKMS asks resman for the callback through NV9010_VBLANK_CALLBACK, which arms
-  a display interrupt, and nothing in this port appears to service or
-  acknowledge one; an interrupt that re-asserts for ever looks exactly like
-  this. The hook is back to false so that nothing can wedge the machine, with
-  the reasoning written where the next person will find it.
-  This wants the kernel debugger, which cannot be reached over the KVM's USB
-  keyboard - so the serial console that suspend and resume is waiting for
-  unblocks this too. `nvvblank` is the probe.
+- 2026-09-18: the tearing is gone. NVKMS can say when the display is between
+  frames without needing a channel - a client registers a page and NVKMS writes
+  the frame number into it at every blank - and this port reported it
+  unsupported only because `nvkms_vblank_sem_control()` was a stub returning
+  false, where the Linux driver has it on by default.
+  Turning it on took the machine down at the first blank, and the first guess -
+  a display interrupt nothing here acknowledges - was wrong. NVKMS asks for a
+  timer from inside its vblank callback, resman calls that callback from the
+  interrupt, and Haiku's allocator cannot be used there because the slab
+  allocator's depot lock is an rw_lock. The driver already knew this for
+  resman's own allocations and keeps memory set aside for them; the NVKMS timer
+  queue did not, and called new(). It now takes from a handful of timers set
+  aside in advance whenever interrupts are off, and running out costs one
+  missed notification rather than the machine. That was a latent hang
+  regardless of tearing: anything that made NVKMS allocate a timer at interrupt
+  time would have done it.
+  With that fixed, `nvvblank` counts 601 notifications in ten seconds - 60.0 a
+  second, 16.25 to 17.07 ms apart. The accelerant turns those into the
+  semaphore Haiku asks for, so `BScreen::WaitForRetrace()` works for every
+  program on the machine: `retracetest` measures 60.0 a second with nothing
+  timing out, three runs alike. And Zink waits for the blank before it starts
+  overwriting what the display is showing, which takes a lit sphere at 1600x900
+  from 957 frames a second to 60.0. Three windows at once hold 60.1 each, and a
+  program keeps its lock through a mode change (59.6 across twenty seconds
+  containing two of them).
+  Three things had to be got right, each found by measuring:
+  * The request counter needs a fence. NVKMS expects a channel's semaphore
+    release to write it, so nothing orders a write made by the processor and it
+    sits in a write buffer unseen - a clean 60 a second that stopped dead after
+    290. The accelerant sidesteps this by only reading the frame number, which
+    NVKMS updates at every blank whether or not anything asked.
+  * Waiting after the swap, which the renderer already did, does not stop
+    tearing: the copy has already happened. The wait has to come first, so the
+    copy starts at the blank - a millisecond of copying against sixteen of
+    scanning - and stays ahead of the beam.
+  * The semaphore must release every waiter on the same blank, not one per
+    blank. Two windows were getting every other frame each, 30 a second.
+    B_RELEASE_ALL also leaves the count at zero, so a semaphore nobody waits on
+    does not build up stale blanks.
+  Vertical sync is off unless a program asks for it, which is Haiku's
+  convention - `SwapBuffers(true)`, or `HGL_VSYNC` to force it.
 - 2026-09-18: all five XHCI controllers - two AMD, one ASMedia, and the
   Thunderbolt 4 host with its USB4 interface - start and publish a root hub.
   Only the KVM is plugged in, so what is left in this area needs someone at the
