@@ -457,6 +457,35 @@ asserts hotplug at present), devices in each USB port, and the serial console.
   share one call. The mode change paths are measured - 60.0 a second across a
   change either way - but the resume path cannot be until the serial console
   makes suspend testable, so that part is reasoned, not proven.
+- 2026-09-19: dragging a window - the commonest thing anyone does with one, and
+  the one case never tested - left a staircase of frames across the desktop,
+  one at every position the window had been. It reproduces only on the path
+  that draws into the screen: `ZINK_NO_SCANOUT_PRESENT=1` leaves the desktop
+  spotless, which is how it was pinned on this work rather than on Haiku.
+  Two fixes were wrong before tracing settled it, and both were worth the
+  detour:
+  * It is not frames sent with stale coordinates. The trace shows presents stop
+    when the window system says stop and resume at the new position, with none
+    in between, so the ordering was already right.
+  * Waiting on the queue from the window's thread does nothing, because zink
+    submits batches from a worker thread and a batch that has only been flushed
+    is not on the queue yet.
+  What actually happens is that a window that moves leaves a strip behind for
+  the window system to repaint, and a program drawing into the screen at eight
+  hundred frames a second outruns that repaint, so the strips linger until it
+  stops. A window that has just moved therefore presents through the window
+  system's bitmap until it has been still for a quarter of a second - slower,
+  and free of this - and a window is still almost all of the time. A still
+  window is back to 911 frames a second at 1600x900, vertical sync to 60.3, and
+  the soak passes with every pinned range released.
+  The present now also waits for its copy to have happened rather than only to
+  have been sent, for the same worker thread reason. That costs about six per
+  cent (911 against 970) and is what stops a copy landing after a window moves.
+  `GLTEST_MOVE=1` is the reproducer.
+  Worth remembering: one screenshot in this hunt came back entirely black and
+  looked like a catastrophe. It was the screen saver, on a machine rebooted
+  several times since it was last killed - the trap recorded above, walked into
+  again a few hours later.
 - 2026-09-19: `tools/check-workstation.sh` asks the machine whether it is doing
   what it is supposed to, one line per thing, and comes back 13 working, 0 not.
   Every check in it exists because something looked fine today and was not: a
