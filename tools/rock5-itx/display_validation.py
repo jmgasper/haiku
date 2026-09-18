@@ -185,3 +185,98 @@ def validate(body, expected_samples=3):
             video_config=hdmi[6:9], video_control=hdmi[9], video_status=hdmi[10],
             packing=hdmi[11], monitor_config=hdmi[12], monitor_status=hdmi[13])
     return result
+
+
+EDID_HEADER = bytes([0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00])
+
+
+def decode_edid_base(block):
+    """Independent decode of the EDID base block fields the probe reports."""
+    if len(block) != 128 or block[:8] != EDID_HEADER:
+        raise ValidationError('EDID base block header mismatch')
+    if sum(block) & 0xff:
+        raise ValidationError('EDID base block checksum failure')
+    vendor = block[8] << 8 | block[9]
+    manufacturer = ''.join(chr(ord('A') - 1 + ((vendor >> shift) & 0x1f)) for shift in (10, 5, 0))
+    dtd = block[54:72]
+    return dict(manufacturer=manufacturer, product=block[10] | block[11] << 8,
+        serial=block[12] | block[13] << 8 | block[14] << 16 | block[15] << 24,
+        week=block[16], year=1990 + block[17], version='%d.%d' % (block[18], block[19]),
+        extensions=block[126], digital=block[20] >> 7,
+        pixel_khz=(dtd[0] | dtd[1] << 8) * 10,
+        width=dtd[2] | (dtd[4] & 0xf0) << 4, hblank=dtd[3] | (dtd[4] & 0x0f) << 8,
+        height=dtd[5] | (dtd[7] & 0xf0) << 4, vblank=dtd[6] | (dtd[7] & 0x0f) << 8,
+        hsync_offset=dtd[8] | (dtd[11] & 0xc0) << 2, hsync_width=dtd[9] | (dtd[11] & 0x30) << 4,
+        vsync_offset=dtd[10] >> 4 | (dtd[11] & 0x0c) << 2, vsync_width=(dtd[10] & 0x0f) | (dtd[11] & 0x03) << 4,
+        flags=dtd[17], width_mm=dtd[12] | (dtd[14] & 0xf0) << 4, height_mm=dtd[13] | (dtd[14] & 0x0f) << 8)
+
+
+def validate_edid(body):
+    """Return the decoded EDID from a native --edid transcript or raise ValidationError."""
+    if 'ROCK5_DISPLAY_EDID_REQUEST_CHECKS_PASS' not in body:
+        raise ValidationError('EDID request boundary checks missing')
+    if body.count('ROCK5_DISPLAY_RESOURCE_DESCRIPTION_PASS') != 1:
+        raise ValidationError('resource description did not pass exactly once')
+    blocks = {}
+    for match in re.finditer(r'^ROCK5_DISPLAY_EDID block=(\d) result=(\d+) flags=(0x[0-9a-f]+) bytes=(\d+)'
+            r' polls=(\d+) control=([0-9a-f]{8})/([0-9a-f]{8}) status=([0-9a-f]{8})/([0-9a-f]{8})'
+            r' hpd=([0-9a-f]{8}) start_us=(\d+) end_us=(\d+) hex=([0-9a-f]{256})$', body, re.M):
+        index = int(match.group(1))
+        if index in blocks:
+            raise ValidationError('duplicate EDID block %d' % index)
+        data = bytes.fromhex(match.group(13))
+        if int(match.group(2)) != 0 or int(match.group(4)) != 128:
+            raise ValidationError('EDID block %d result %s bytes %s' % (index, match.group(2), match.group(4)))
+        if sum(data) & 0xff:
+            raise ValidationError('EDID block %d checksum failure' % index)
+        control_after, status_after = int(match.group(7), 16), int(match.group(9), 16)
+        if control_after & 0x1e or status_after & 0x5:
+            raise ValidationError('I2C master left busy after block %d' % index)
+        hpd = int(match.group(10), 16)
+        if not hpd & (1 << 24):
+            raise ValidationError('EDID read without HDMI1 hot-plug level')
+        start, end = int(match.group(11)), int(match.group(12))
+        if end < start or end - start > 20000000:
+            raise ValidationError('implausible EDID block duration')
+        flags = int(match.group(3), 16)
+        if bool(flags & 1) != (index >= 2) or flags & 2:
+            raise ValidationError('unexpected EDID flags %#x for block %d' % (flags, index))
+        blocks[index] = dict(data=data, polls=int(match.group(5)), micros=end - start, flags=flags)
+    if 0 not in blocks:
+        raise ValidationError('EDID base block missing')
+    base = decode_edid_base(blocks[0]['data'])
+    expected = list(range(1 + min(base['extensions'], 3)))
+    if sorted(blocks) != expected:
+        raise ValidationError('EDID blocks %s, expected %s' % (sorted(blocks), expected))
+    info = re.search(r'^ROCK5_DISPLAY_EDID_INFO (.*)$', body, re.M)
+    if info is None:
+        raise ValidationError('EDID info line missing')
+    fields = dict(item.split('=', 1) for item in info.group(1).split(' '))
+    checks = dict(manufacturer=base['manufacturer'], product='%#x' % base['product'],
+        serial='%#x' % base['serial'], week=str(base['week']), year=str(base['year']),
+        version=base['version'], extensions=str(base['extensions']), digital=str(base['digital']),
+        preferred='%dx%d' % (base['width'], base['height']), pixel_khz=str(base['pixel_khz']),
+        hblank=str(base['hblank']), vblank=str(base['vblank']), hsync_offset=str(base['hsync_offset']),
+        hsync_width=str(base['hsync_width']), vsync_offset=str(base['vsync_offset']),
+        vsync_width=str(base['vsync_width']), flags='%#x' % base['flags'],
+        size_mm='%dx%d' % (base['width_mm'], base['height_mm']), checksum='ok')
+    for key, value in checks.items():
+        if fields.get(key) != value:
+            raise ValidationError('probe EDID %s=%r, independent decode %r' % (key, fields.get(key), value))
+    for index in expected[1:]:
+        tag = blocks[index]['data'][0]
+        line = 'ROCK5_DISPLAY_EDID_EXTENSION block=%d tag=%#x revision=%d checksum=ok' % (index, tag, blocks[index]['data'][1])
+        if body.count(line) != 1:
+            raise ValidationError('extension line for block %d missing' % index)
+    summary = re.search(r'^ROCK5_DISPLAY_EDID_PASS blocks=(\d) extensions=(\d+) polls=(\d+)'
+        r' register_writes=i2c_master_only$', body, re.M)
+    if summary is None or int(summary.group(1)) != len(expected) or int(summary.group(2)) != base['extensions']:
+        raise ValidationError('EDID summary missing or inconsistent')
+    if int(summary.group(3)) != sum(b['polls'] for b in blocks.values()):
+        raise ValidationError('EDID poll total inconsistent')
+    refresh = None
+    if base['pixel_khz'] and base['width'] and base['height']:
+        refresh = base['pixel_khz'] * 1000 / ((base['width'] + base['hblank']) * (base['height'] + base['vblank']))
+    return dict(status='pass', base=base, blocks={index: b['data'].hex() for index, b in blocks.items()},
+        polls={index: b['polls'] for index, b in blocks.items()},
+        micros={index: b['micros'] for index, b in blocks.items()}, preferred_refresh_hz=refresh)

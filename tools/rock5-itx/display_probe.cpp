@@ -9,7 +9,7 @@
 
 #include <OS.h>
 
-#include "DisplayObservation.h"
+#include "DisplayEdid.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -144,6 +144,126 @@ ReportSnapshot(unsigned index, const DisplaySnapshot& snapshot)
 }
 
 
+static bool
+DecodeEdid(const uint8_t* block, unsigned* extensions)
+{
+	static const uint8_t kHeader[8] = {0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00};
+	if (memcmp(block, kHeader, 8) != 0) {
+		fprintf(stderr, "EDID header mismatch\n");
+		return false;
+	}
+	unsigned sum = 0;
+	for (unsigned i = 0; i < kEdidBlockBytes; i++)
+		sum += block[i];
+	if ((sum & 0xff) != 0) {
+		fprintf(stderr, "EDID base block checksum %u\n", sum & 0xff);
+		return false;
+	}
+	uint16_t vendor = (uint16_t)(block[8] << 8 | block[9]);
+	char manufacturer[4] = {(char)('A' - 1 + ((vendor >> 10) & 0x1f)),
+		(char)('A' - 1 + ((vendor >> 5) & 0x1f)), (char)('A' - 1 + (vendor & 0x1f)), 0};
+	const uint8_t* dtd = block + 54;
+	unsigned pixelClock = (dtd[0] | dtd[1] << 8) * 10;
+	unsigned hActive = dtd[2] | (dtd[4] & 0xf0) << 4;
+	unsigned hBlank = dtd[3] | (dtd[4] & 0x0f) << 8;
+	unsigned vActive = dtd[5] | (dtd[7] & 0xf0) << 4;
+	unsigned vBlank = dtd[6] | (dtd[7] & 0x0f) << 8;
+	unsigned hSyncOffset = dtd[8] | (dtd[11] & 0xc0) << 2;
+	unsigned hSyncWidth = dtd[9] | (dtd[11] & 0x30) << 4;
+	unsigned vSyncOffset = dtd[10] >> 4 | (dtd[11] & 0x0c) << 2;
+	unsigned vSyncWidth = (dtd[10] & 0x0f) | (dtd[11] & 0x03) << 4;
+	unsigned widthMm = dtd[12] | (dtd[14] & 0xf0) << 4;
+	unsigned heightMm = dtd[13] | (dtd[14] & 0x0f) << 8;
+	*extensions = block[126];
+	printf("ROCK5_DISPLAY_EDID_INFO manufacturer=%s product=%#x serial=%#x week=%u year=%u"
+		" version=%u.%u extensions=%u digital=%u preferred=%ux%u pixel_khz=%u hblank=%u vblank=%u"
+		" hsync_offset=%u hsync_width=%u vsync_offset=%u vsync_width=%u flags=%#x size_mm=%ux%u"
+		" checksum=ok\n", manufacturer, block[10] | block[11] << 8,
+		block[12] | block[13] << 8 | block[14] << 16 | block[15] << 24, block[16], 1990 + block[17],
+		block[18], block[19], *extensions, block[20] >> 7, hActive, vActive, pixelClock, hBlank,
+		vBlank, hSyncOffset, hSyncWidth, vSyncOffset, vSyncWidth, dtd[17], widthMm, heightMm);
+	return pixelClock > 0 && hActive > 0 && vActive > 0;
+}
+
+
+static bool
+ReadEdid(int fd)
+{
+	unsigned blocks = 1;
+	unsigned extensions = 0;
+	unsigned totalPolls = 0;
+	for (unsigned block = 0; block < blocks; block++) {
+		EdidRequest request = {};
+		request.version = kEdidVersion;
+		request.block = block;
+		if (block == 0) {
+			EdidRequest invalid = request;
+			invalid.version = 99;
+			if (ioctl(fd, kReadEdid, &invalid, sizeof(invalid)) == 0 || errno != EINVAL) {
+				fprintf(stderr, "Invalid EDID request version was not rejected\n");
+				return false;
+			}
+			invalid = request;
+			invalid.block = kEdidMaxBlocks;
+			if (ioctl(fd, kReadEdid, &invalid, sizeof(invalid)) == 0 || errno != EINVAL) {
+				fprintf(stderr, "Invalid EDID block was not rejected\n");
+				return false;
+			}
+			if (ioctl(fd, kReadEdid, &request, sizeof(request) - 1) == 0 || errno != EINVAL) {
+				fprintf(stderr, "Malformed EDID request was not rejected\n");
+				return false;
+			}
+			if (ioctl(fd, kReadEdid, NULL, sizeof(request)) == 0 || errno != EFAULT) {
+				fprintf(stderr, "Null EDID request was not rejected\n");
+				return false;
+			}
+			printf("ROCK5_DISPLAY_EDID_REQUEST_CHECKS_PASS\n");
+		}
+		if (ioctl(fd, kReadEdid, &request, sizeof(request)) != 0) {
+			perror("display EDID");
+			return false;
+		}
+		printf("ROCK5_DISPLAY_EDID block=%u result=%" PRIu32 " flags=%#" PRIx32 " bytes=%" PRIu32
+			" polls=%" PRIu32 " control=%08" PRIx32 "/%08" PRIx32 " status=%08" PRIx32 "/%08" PRIx32
+			" hpd=%08" PRIx32 " start_us=%" PRId64 " end_us=%" PRId64 " hex=", block, request.result,
+			request.flags, request.bytesRead, request.polls, request.controlBefore,
+			request.controlAfter, request.statusBefore, request.statusAfter, request.hotPlug,
+			request.startedMicros, request.finishedMicros);
+		for (unsigned i = 0; i < kEdidBlockBytes; i++)
+			printf("%02x", request.data[i]);
+		printf("\n");
+		if (request.result != kEdidOK || request.bytesRead != kEdidBlockBytes) {
+			fprintf(stderr, "EDID block %u result %" PRIu32 " after %" PRIu32 " bytes\n", block,
+				request.result, request.bytesRead);
+			return false;
+		}
+		if ((request.controlAfter & kI2cmWriteMask) != 0 || (request.statusAfter & (kI2cmOperationDone | kI2cmNack)) != 0) {
+			fprintf(stderr, "I2C master left busy or with pending status\n");
+			return false;
+		}
+		totalPolls += request.polls;
+		unsigned sum = 0;
+		for (unsigned i = 0; i < kEdidBlockBytes; i++)
+			sum += request.data[i];
+		if ((sum & 0xff) != 0) {
+			fprintf(stderr, "EDID block %u checksum %u\n", block, sum & 0xff);
+			return false;
+		}
+		if (block == 0) {
+			if (!DecodeEdid(request.data, &extensions))
+				return false;
+			blocks = 1 + (extensions < kEdidMaxBlocks - 1 ? extensions : kEdidMaxBlocks - 1);
+		} else {
+			printf("ROCK5_DISPLAY_EDID_EXTENSION block=%u tag=%#x revision=%u checksum=ok\n",
+				block, request.data[0], request.data[1]);
+		}
+	}
+	printf("ROCK5_DISPLAY_EDID_PASS blocks=%u extensions=%u polls=%u register_writes=i2c_master_only\n",
+		blocks, extensions, totalPolls);
+	return true;
+}
+
+
 int
 main(int argc, char** argv)
 {
@@ -161,10 +281,11 @@ main(int argc, char** argv)
 		printf("ROCK5_DISPLAY_ABSENT_PASS device=%s errno=ENOENT\n", kDevice);
 		return 0;
 	}
-	if (argc == 2)
+	bool edid = argc == 2 && strcmp(argv[1], "--edid") == 0;
+	if (argc == 2 && !edid)
 		samples = (unsigned)atoi(argv[1]);
 	if (argc > 2 || samples < 1 || samples > 16) {
-		fprintf(stderr, "usage: %s [samples 1-16 | --absent-device]\n", argv[0]);
+		fprintf(stderr, "usage: %s [samples 1-16 | --absent-device | --edid]\n", argv[0]);
 		return 2;
 	}
 	int writable = open(kDevice, O_RDWR);
@@ -196,6 +317,11 @@ main(int argc, char** argv)
 	if (!ReportResources(info))
 		return 1;
 	printf("ROCK5_DISPLAY_RESOURCE_DESCRIPTION_PASS\n");
+	if (edid) {
+		bool passed = ReadEdid(fd);
+		close(fd);
+		return passed ? 0 : 1;
+	}
 	DisplaySnapshot snapshot = {};
 	if (ioctl(fd, kGetSnapshot, &snapshot, sizeof(snapshot) - 1) == 0 || errno != EINVAL) {
 		fprintf(stderr, "Malformed snapshot request was not rejected\n");

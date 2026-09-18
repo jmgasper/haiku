@@ -88,7 +88,95 @@ def transcript(samples=3, vop=True, hdmi=True, vop_on=True, vo1_on=True, hdmi_ga
     return '\n'.join(lines) + '\n'
 
 
+def edid_blocks():
+    base = bytearray(128)
+    base[:8] = check.EDID_HEADER
+    base[8:10] = (0x10 << 10 | 0x0e << 5 | 0x0c).to_bytes(2, 'big')  # "PNL"
+    base[10:12] = (0x1234).to_bytes(2, 'little')
+    base[12:16] = (0x01020304).to_bytes(4, 'little')
+    base[16], base[17], base[18], base[19], base[20] = 12, 33, 1, 4, 0x80
+    dtd = bytearray(18)
+    clock = 14850
+    dtd[0], dtd[1] = clock & 0xff, clock >> 8
+    dtd[2], dtd[3], dtd[4] = 1920 & 0xff, 280 & 0xff, (1920 >> 8) << 4 | (280 >> 8)
+    dtd[5], dtd[6], dtd[7] = 1080 & 0xff, 45 & 0xff, (1080 >> 8) << 4 | (45 >> 8)
+    dtd[8], dtd[9] = 88, 44
+    dtd[10] = 4 << 4 | 5
+    dtd[11] = 0
+    dtd[12], dtd[13], dtd[14] = 600 & 0xff, 340 & 0xff, (600 >> 8) << 4 | (340 >> 8)
+    dtd[17] = 0x1e
+    base[54:72] = dtd
+    base[126] = 1
+    base[127] = (0x100 - sum(base) % 256) % 256
+    ext = bytearray(128)
+    ext[0], ext[1] = 0x02, 0x03
+    for i in range(2, 127):
+        ext[i] = (i * 5) & 0xff
+    ext[127] = (0x100 - sum(ext) % 256) % 256
+    return bytes(base), bytes(ext)
+
+
+def edid_transcript(blocks=None, info=None, summary=None):
+    base, ext = edid_blocks()
+    blocks = blocks if blocks is not None else [base, ext]
+    lines = ['ROCK5_DISPLAY_WRITE_OPEN_REJECTED', 'ROCK5_DISPLAY_RESOURCE_DESCRIPTION_PASS',
+        'ROCK5_DISPLAY_EDID_REQUEST_CHECKS_PASS']
+    for index, data in enumerate(blocks):
+        lines.append('ROCK5_DISPLAY_EDID block=%d result=0 flags=%#x bytes=128 polls=%d control=00000a00/00000a00'
+            ' status=00000000/00000000 hpd=09000000 start_us=%d end_us=%d hex=%s'
+            % (index, 1 if index >= 2 else 0, 300 + index, 1000 + index * 100, 1050 + index * 100, data.hex()))
+    try:
+        decoded = check.decode_edid_base(blocks[0])
+    except check.ValidationError:
+        decoded = None
+    if info is None and decoded is not None:
+        info = ('ROCK5_DISPLAY_EDID_INFO manufacturer=%s product=%#x serial=%#x week=%d year=%d version=%s'
+            ' extensions=%d digital=%d preferred=%dx%d pixel_khz=%d hblank=%d vblank=%d hsync_offset=%d'
+            ' hsync_width=%d vsync_offset=%d vsync_width=%d flags=%#x size_mm=%dx%d checksum=ok'
+            % (decoded['manufacturer'], decoded['product'], decoded['serial'], decoded['week'], decoded['year'],
+            decoded['version'], decoded['extensions'], decoded['digital'], decoded['width'], decoded['height'],
+            decoded['pixel_khz'], decoded['hblank'], decoded['vblank'], decoded['hsync_offset'],
+            decoded['hsync_width'], decoded['vsync_offset'], decoded['vsync_width'], decoded['flags'],
+            decoded['width_mm'], decoded['height_mm']))
+    if info:
+        lines.append(info)
+    for index, data in enumerate(blocks[1:], 1):
+        lines.append('ROCK5_DISPLAY_EDID_EXTENSION block=%d tag=%#x revision=%d checksum=ok' % (index, data[0], data[1]))
+    lines.append(summary or 'ROCK5_DISPLAY_EDID_PASS blocks=%d extensions=%d polls=%d register_writes=i2c_master_only'
+        % (len(blocks), blocks[0][126], sum(300 + i for i in range(len(blocks)))))
+    return '\n'.join(lines) + '\n'
+
+
 class DisplayValidationTest(unittest.TestCase):
+    def test_edid_decode(self):
+        result = check.validate_edid(edid_transcript())
+        self.assertEqual(result['base']['manufacturer'], 'PNL')
+        self.assertEqual(result['base']['product'], 0x1234)
+        self.assertEqual((result['base']['width'], result['base']['height']), (1920, 1080))
+        self.assertEqual(result['base']['pixel_khz'], 148500)
+        self.assertAlmostEqual(result['preferred_refresh_hz'], 60.0, places=1)
+        self.assertEqual(sorted(result['blocks']), [0, 1])
+
+    def test_edid_rejections(self):
+        base, ext = edid_blocks()
+        broken = bytearray(base); broken[127] ^= 1
+        bad_header = bytearray(base); bad_header[0] = 1
+        cases = [
+            ('checksum', edid_transcript(blocks=[bytes(broken), ext])),
+            ('header', edid_transcript(blocks=[bytes(bad_header), ext], info='ROCK5_DISPLAY_EDID_INFO manufacturer=PNL')),
+            ('missing_extension', edid_transcript(blocks=[base])),
+            ('info', edid_transcript().replace('preferred=1920x1080', 'preferred=1280x720')),
+            ('busy', edid_transcript().replace('control=00000a00/00000a00', 'control=00000a00/00000a04')),
+            ('hpd', edid_transcript().replace('hpd=09000000', 'hpd=08000000')),
+            ('summary', edid_transcript(summary='ROCK5_DISPLAY_EDID_PASS blocks=2 extensions=1 polls=1 register_writes=i2c_master_only')),
+            ('checks', edid_transcript().replace('ROCK5_DISPLAY_EDID_REQUEST_CHECKS_PASS\n', '')),
+            ('flags', edid_transcript().replace('block=1 result=0 flags=0x0', 'block=1 result=0 flags=0x2')),
+        ]
+        for name, body in cases:
+            with self.subTest(name=name):
+                with self.assertRaises(check.ValidationError):
+                    check.validate_edid(body)
+
     def test_decodes_live_port(self):
         result = check.validate(transcript())
         self.assertEqual(result['active_ports'], [1])

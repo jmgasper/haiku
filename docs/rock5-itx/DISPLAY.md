@@ -1,0 +1,82 @@
+# Native display control
+
+The desktop currently uses the EFI framebuffer that EDK2 v1.1 programs before
+Haiku starts. This page records the board's display wiring, the firmware
+configuration Haiku inherits, and the staged work toward native VOP2/HDMI
+control, a second output and a spanning desktop. Every stage keeps the
+qualification rules of the [GPU work](GPU.md): host fixtures, the full ARM64
+build, both QEMU modes, two native boots, recovery and independent integrity
+checks before any claim. Nothing here accelerates drawing; app_server no
+longer calls accelerant fill or blit hooks, so "2D acceleration" on this board
+means native mode setting, hardware cursor, vertical retrace and power control
+through a board accelerant, with GPU-rendered content presented by Mesa.
+
+## Board wiring
+
+The mainline `rk3588-rock-5-itx.dts` (Linux 6.18.52) describes the two HDMI
+connectors asymmetrically:
+
+| Connector | Path | Haiku device-tree presence |
+| --- | --- | --- |
+| `hdmi1-con` | VOP2 video port 1, DW HDMI QP TX1 (`hdmi@fdea0000`), Samsung HDPTX PHY1 (`phy@fed70000`) | Present and enabled in the EDK2 mainline DT that Haiku captures |
+| `hdmi0-con` | VOP2 video port 2, DisplayPort TX1 (`dp@fdec0000`), USBDP PHY1 (`phy@fed90000`, DP lanes 2 and 3), Radxa RA620 DP-to-HDMI bridge (`radxa,ra620`, no control bus) | The captured DT has the USBDP PHY node but no `dp` node and no bridge node |
+
+HDMI TX0 (`hdmi@fde80000`) is not wired to a connector and is disabled.
+
+EDK2 v1.1 (`edk2-rk3588` 6a682c0e, `edk2-rockchip` fbe0805b) configures
+`PcdDisplayConnectors = {HDMI1, DP0}` and `PcdDp1LaneMux = {0}` for this board,
+so the firmware framebuffer and the NanoKVM capture use the native HDMI1 path
+and the RA620 port is never driven by firmware. The fetched firmware display
+sources (VOP2, DW HDMI QP, HDPTX PHY, DP and EDID code) are verified by git
+object id in `artifacts/firmware-source/edk2-rk3588-v1.1/display-sources-receipt.json`.
+
+## Stage 1: read-only observation (+259)
+
+The `rk3588_display` kernel driver admits exactly the ROCK 5 ITX description:
+the VOP2 node, its video port 1 endpoint leading to the enabled HDMI TX1
+node, that controller's HDPTX PHY and GRF, the SYS/VOP/VO1 GRF syscons, the
+PMU and the CRU. Register bases, interrupt routes (VOP SPI 156; HDMI TX1 SPIs
+173-176 and 361), clock identities and power domains (VOP 24, VO1 26) are
+compared against the recorded firmware description before anything is mapped.
+Phandles stay dynamic. It publishes `/dev/graphics/rk3588_display/0`, which
+opens read-only and answers two ioctls: the resource description and a
+snapshot.
+
+A snapshot reads the always-on PMU, CRU and GRF words first, then maps VOP2
+(8 KiB) only while the VOP power domain is on and its bus clocks are ungated,
+and HDMI TX1 (4 KiB) only while the VO1 domain is on and its APB clock is
+ungated. It records VOP2 version, interface enables and muxes, overlay
+selection, all four video-port timings, cluster and ESMART window controls
+and addresses, HDMI TX1 video-interface status and the HDMI hot-plug levels.
+Nothing is written. The host fixture runs the production admission, gating,
+cleanup and ioctl paths against a modeled device tree and guarded register
+pages, including 75 rejected description faults and mapping failures at every
+step. The validator re-derives timing and routing from the raw words and
+requires three consecutive samples to agree.
+
+Native results are recorded below once the two-boot trial completes.
+
+## Stage 2: EDID over the HDMI TX1 I2C master
+
+The opt-in `rock5-itx-edk2-v1.1-display-edid` profile in the `rk3588_display`
+driver settings enables an EDID ioctl. It re-checks the VO1 domain, the HDMI
+APB clock and the HDMI1 hot-plug level, maps the HDMI TX1 window writable and
+reads one 128-byte block per request through the controller's I2C master,
+one byte per transfer as Linux and the firmware do, polling the done/error
+status with a bounded deadline. A NACK or timeout resets the master and
+clears the request bits. Segment reads use the DDC segment pointer for blocks
+2 and 3. Video, PHY, clock and power registers are untouched. The host
+fixture models the I2C master synchronously and checks data, segment use,
+NACK and timeout handling, mapping failures and gating. The validator decodes
+the base block, its preferred timing and the extension blocks independently.
+
+## Later stages
+
+3. Own framebuffer and VOP2 window programming at the firmware timing, then a
+   real mode change with HDPTX PHY1 and HDMI TX1 reconfiguration, vertical
+   retrace from the VOP2 interrupt, cursor window and power control, exposed
+   through a board accelerant.
+4. DisplayPort TX1 through USBDP PHY1 and the RA620 bridge for the second
+   connector. This needs a sink on that port (a monitor, an HDMI dummy plug,
+   or the NanoKVM cable moved) before it can be qualified.
+5. One wide framebuffer scanned by two video ports for a spanning desktop.

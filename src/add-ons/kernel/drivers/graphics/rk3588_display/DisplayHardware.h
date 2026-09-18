@@ -5,7 +5,7 @@
 #ifndef RK3588_DISPLAY_HARDWARE_H
 #define RK3588_DISPLAY_HARDWARE_H
 
-#include "DisplayObservation.h"
+#include "DisplayEdid.h"
 
 // Kernel platform adapter; included after the kernel declarations.
 // Host fixtures use the same definitions with modeled kernel services.
@@ -15,6 +15,18 @@ ReadDisplayRegister(const volatile uint32* registers, uint32 offset)
 	uint32 value = registers[offset / sizeof(uint32)];
 	memory_read_barrier();
 	return value;
+}
+
+
+static void
+WriteDisplayRegister(volatile uint32* registers, uint32 offset, uint32 value)
+{
+	registers[offset / sizeof(uint32)] = value;
+#if defined(__aarch64__)
+	__asm__ __volatile__("dsb sy" ::: "memory");
+#else
+	memory_write_barrier();
+#endif
 }
 
 
@@ -105,6 +117,67 @@ private:
 	volatile uint32* fVo1Grf = NULL;
 	volatile uint32* fHdptxGrf = NULL;
 	volatile uint32* fVop = NULL;
+	volatile uint32* fHdmi = NULL;
+};
+
+
+// EDID transfer adapter. The always-on control blocks are mapped read-only to
+// re-check the VO1 power domain, the HDMI APB clock and the hot-plug level;
+// only then is the HDMI TX1 register window mapped writable for the I2C master.
+class EdidHardware {
+public:
+	status_t Prepare(const RK3588Display::ResourceInfo& resources, uint32_t& hotPlug,
+		uint32_t& result)
+	{
+		if (!RK3588Display::ResourcesMatch(resources))
+			return B_NOT_SUPPORTED;
+		void* address = NULL;
+		fPmuArea.SetTo(map_physical_memory("RK3588 EDID PMU", resources.pmuBase, B_PAGE_SIZE,
+			B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY, B_KERNEL_READ_AREA, &address));
+		if (fPmuArea.Get() < B_OK)
+			return fPmuArea.Get();
+		fPmu = (volatile uint32*)address;
+		fClockArea.SetTo(map_physical_memory("RK3588 EDID CRU", resources.clockBase, B_PAGE_SIZE,
+			B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY, B_KERNEL_READ_AREA, &address));
+		if (fClockArea.Get() < B_OK)
+			return fClockArea.Get();
+		fClock = (volatile uint32*)address;
+		fGrfArea.SetTo(map_physical_memory("RK3588 EDID SYS GRF", resources.sysGrfBase, B_PAGE_SIZE,
+			B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY, B_KERNEL_READ_AREA, &address));
+		if (fGrfArea.Get() < B_OK)
+			return fGrfArea.Get();
+		fGrf = (volatile uint32*)address;
+		uint32_t repair = ReadDisplayRegister(fPmu, RK3588Display::kPmuOffsets[RK3588Display::kPmuRepairStatus]);
+		uint32_t gate = ReadDisplayRegister(fClock, RK3588Display::kClockGateOffsets[RK3588Display::kClockGateHdmi]);
+		hotPlug = ReadDisplayRegister(fGrf, RK3588Display::kSysGrfOffsets[2]);
+		if ((repair & RK3588Display::kPmuVo1On) == 0
+			|| (gate & RK3588Display::kClockGateHdmiMask) != 0) {
+			result = RK3588Display::kEdidNotReady;
+			return B_OK;
+		}
+		if ((hotPlug & RK3588Display::kHpdLevel1) == 0) {
+			result = RK3588Display::kEdidNoHotPlug;
+			return B_OK;
+		}
+		fHdmiArea.SetTo(map_physical_memory("RK3588 EDID HDMI TX1", resources.hdmiBase,
+			RK3588Display::kHdmiEdidMapSize, B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY,
+			B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, &address));
+		if (fHdmiArea.Get() < B_OK)
+			return fHdmiArea.Get();
+		fHdmi = (volatile uint32*)address;
+		result = RK3588Display::kEdidOK;
+		return B_OK;
+	}
+	bool Ready() const { return fHdmi != NULL; }
+	uint32_t ReadHdmi(uint32_t offset) { return ReadDisplayRegister(fHdmi, offset); }
+	void WriteHdmi(uint32_t offset, uint32_t value) { WriteDisplayRegister(fHdmi, offset, value); }
+	int64_t Now() { return system_time(); }
+	void Pause(unsigned micros) { spin(micros); }
+private:
+	AreaDeleter fPmuArea, fClockArea, fGrfArea, fHdmiArea;
+	volatile uint32* fPmu = NULL;
+	volatile uint32* fClock = NULL;
+	volatile uint32* fGrf = NULL;
 	volatile uint32* fHdmi = NULL;
 };
 

@@ -6,13 +6,14 @@
 #include <bus/FDT.h>
 #include <KernelExport.h>
 #include <AutoDeleterOS.h>
+#include <driver_settings.h>
 #include <lock.h>
 #include <util/AutoLock.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <unistd.h>
 
-#include "DisplayObservation.h"
+#include "DisplayEdid.h"
 
 
 using namespace RK3588Display;
@@ -26,6 +27,7 @@ static mutex sHardwareLock = MUTEX_INITIALIZER("RK3588 display platform");
 struct Controller {
 	device_node* node;
 	ResourceInfo resources;
+	bool edidEnabled;
 };
 
 
@@ -421,9 +423,15 @@ InitDriver(device_node* node, void** cookie)
 		return B_NOT_SUPPORTED;
 	}
 	controller->node = node;
+	void* settings = load_driver_settings("rk3588_display");
+	if (settings != NULL) {
+		const char* profile = get_driver_parameter(settings, "firmware_profile", "", "");
+		controller->edidEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-edid") == 0;
+		unload_driver_settings(settings);
+	}
 	dprintf("rk3588_display: validated VOP2 %#" B_PRIx64 " and HDMI TX1 %#" B_PRIx64
-		" resources; observation only\n", controller->resources.vopBase,
-		controller->resources.hdmiBase);
+		" resources; observation only; EDID %s\n", controller->resources.vopBase,
+		controller->resources.hdmiBase, controller->edidEnabled ? "enabled" : "disabled");
 	*cookie = controller;
 	return B_OK;
 }
@@ -474,6 +482,37 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 		if (status != B_OK)
 			return status;
 		return user_memcpy(buffer, &snapshot, sizeof(snapshot));
+	}
+	if (op == kReadEdid) {
+		if (length != sizeof(EdidRequest))
+			return B_BAD_VALUE;
+		if (buffer == NULL)
+			return B_BAD_ADDRESS;
+		EdidRequest request;
+		if (user_memcpy(&request, buffer, sizeof(request)) != B_OK)
+			return B_BAD_ADDRESS;
+		if (request.version != kEdidVersion || request.block >= kEdidMaxBlocks)
+			return B_BAD_VALUE;
+		if (!controller->edidEnabled)
+			return B_NOT_ALLOWED;
+		uint32_t block = request.block;
+		memset(&request, 0, sizeof(request));
+		request.version = kEdidVersion;
+		request.block = block;
+		MutexLocker locker(sHardwareLock);
+		EdidHardware hardware;
+		uint32_t result = kEdidNotReady;
+		status_t status = hardware.Prepare(controller->resources, request.hotPlug, result);
+		if (status != B_OK)
+			return status;
+		if (hardware.Ready())
+			ReadEdidBlock(hardware, block, request);
+		else
+			request.result = result;
+		dprintf("rk3588_display: EDID block %" B_PRIu32 " result=%" B_PRIu32 " bytes=%" B_PRIu32
+			" polls=%" B_PRIu32 " flags=%#" B_PRIx32 "\n", block, request.result,
+			request.bytesRead, request.polls, request.flags);
+		return user_memcpy(buffer, &request, sizeof(request));
 	}
 	if (op != kGetResources)
 		return B_DEV_INVALID_IOCTL;

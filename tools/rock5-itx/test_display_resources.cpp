@@ -32,7 +32,7 @@ static const unsigned B_PAGE_SIZE = 4096, B_ANY_KERNEL_ADDRESS = 4,
 	B_UNCACHED_MEMORY = 1u << 28, B_KERNEL_READ_AREA = 1u << 4,
 	B_KERNEL_WRITE_AREA = 1u << 5;
 
-#include "DisplayObservation.h"
+#include "DisplayEdid.h"
 
 using namespace RK3588Display;
 
@@ -43,6 +43,8 @@ static int64_t sTime;
 static unsigned sLockDepth;
 static uint32 sRepairStatus = (1u << 16) | (1u << 18);
 static uint32 sGate52, sGate61;
+static bool sAllowEdid;
+static uint32 sHotPlug = (1u << 24) | (1u << 27);
 
 struct mutex {};
 #define MUTEX_INITIALIZER(name) {}
@@ -54,6 +56,65 @@ public:
 
 static int64_t system_time() { return ++sTime; }
 static void memory_read_barrier() {}
+static void kernel_dprintf(const char*, ...) {}
+#define dprintf kernel_dprintf
+#define B_PRIu32 "u"
+#define B_PRIx32 "x"
+#define B_PRIx64 "llx"
+
+// I2C master model for the HDMI TX1 window: reacts synchronously to writes
+// (the production write helper issues a barrier after each store) and to polls.
+static uint32* sHdmiModel;
+static uint8_t sEdid[512];
+static int sNackAt = -1;
+static bool sUnresponsive;
+static unsigned sServed, sResets, sModelSpins;
+static bool sServing;
+
+static void
+ModelStep()
+{
+	if (sHdmiModel == NULL)
+		return;
+	uint32* regs = sHdmiModel;
+	if (regs[0x3028 / 4] != 0) {
+		regs[0x3020 / 4] &= ~regs[0x3028 / 4];
+		regs[0x3028 / 4] = 0;
+	}
+	if ((regs[0xec / 4] & 1) != 0) {
+		regs[0xec / 4] = 0;
+		regs[0xf4 / 4] &= ~0x1eu;
+		sServing = false;
+		sResets++;
+	}
+	uint32 control = regs[0xf4 / 4];
+	if ((control & 0x1e) == 0) {
+		sServing = false;
+		return;
+	}
+	if (sServing || sUnresponsive)
+		return;
+	sServing = true;
+	assert((control & 0x1e) == 0x04 || (control & 0x1e) == 0x10);
+	assert(((control >> 5) & 0x7f) == 0x50);
+	unsigned address = (control >> 12) & 0xff;
+	unsigned segment = 0;
+	if ((control & 0x10) != 0) {
+		assert((regs[0xf8 / 4] & 0x7f) == 0x30);
+		segment = (regs[0xf8 / 4] >> 7) & 0x7f;
+	}
+	assert((regs[0x3024 / 4] & 0x5) == 0x5); // done/error status unmasked during transfers
+	if (sNackAt >= 0 && (int)sServed == sNackAt) {
+		regs[0x3020 / 4] |= 0x4;
+	} else {
+		regs[0x10c / 4] = 0xa5000000u | sEdid[segment * 256 + address];
+		regs[0x3020 / 4] |= 0x1;
+	}
+	sServed++;
+}
+
+static void memory_write_barrier() { ModelStep(); }
+static void spin(unsigned micros) { assert(micros == 20); sModelSpins++; ModelStep(); }
 
 
 static uint32
@@ -65,6 +126,8 @@ ModelRegister(uint64 base, unsigned offset)
 		return sGate52;
 	if (base == 0xfd7c0000 && offset == 0x8f4)
 		return sGate61;
+	if (base == 0xfd58c000 && offset == 0x384)
+		return sHotPlug;
 	return (uint32)(base >> 4) ^ (offset * 0x01010101u);
 }
 
@@ -79,17 +142,22 @@ map_physical_memory(const char*, uint64 base, size_t bytes, uint32 spec,
 	bool control = false;
 	for (uint64 candidate : kControl)
 		control |= candidate == base;
+	bool writable = false;
 	if (control)
 		assert(bytes == B_PAGE_SIZE);
 	else if (base == 0xfdd90000)
 		assert(bytes == kVopMapSize && (sRepairStatus & (1u << 16)) != 0 && (sGate52 & 0x300) == 0);
-	else if (base == 0xfdea0000)
+	else if (base == 0xfdea0000 && bytes == kHdmiEdidMapSize) {
+		// Only the opt-in EDID path maps HDMI TX1 writable, after its own gating.
+		assert((sRepairStatus & (1u << 18)) != 0 && (sGate61 & 4) == 0 && sAllowEdid);
+		writable = true;
+	} else if (base == 0xfdea0000)
 		assert(bytes == kHdmiMapSize && (sRepairStatus & (1u << 18)) != 0 && (sGate61 & 4) == 0);
 	else
 		assert(false);
 	assert(spec == (B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY));
-	// Never a writable mapping of any display or control block.
-	assert(protection == B_KERNEL_READ_AREA);
+	// Never a writable mapping of any control block or of VOP2.
+	assert(protection == (B_KERNEL_READ_AREA | (writable ? B_KERNEL_WRITE_AREA : 0)));
 	sMappedBases.push_back(base);
 	if (++sMapAttempts == sFailMap)
 		return B_NO_MEMORY;
@@ -100,8 +168,18 @@ map_physical_memory(const char*, uint64 base, size_t bytes, uint32 spec,
 	assert(mprotect(registers, bytes, PROT_READ | PROT_WRITE) == 0);
 	for (unsigned offset = 0; offset < bytes; offset += 4)
 		registers[offset / 4] = ModelRegister(base, offset);
-	// Any production write faults immediately, as would either guard page.
-	assert(mprotect(registers, bytes, PROT_READ) == 0);
+	if (writable) {
+		registers[0xf4 / 4] = 0x00000a00; // idle master, slave 0x50 set by firmware
+		registers[0x3020 / 4] = 0;
+		registers[0x3024 / 4] = 0;
+		registers[0x3028 / 4] = 0;
+		registers[0xec / 4] = 0;
+		sHdmiModel = registers;
+		sServing = false;
+	} else {
+		// Any production write faults immediately, as would either guard page.
+		assert(mprotect(registers, bytes, PROT_READ) == 0);
+	}
 	int area = 17 + sMapAttempts;
 	sAreas[area] = {allocation, bytes + 2 * B_PAGE_SIZE};
 	*address = registers;
@@ -117,6 +195,8 @@ public:
 	{
 		if (fArea >= 0) {
 			assert(sAreas.count(fArea) == 1);
+			if (sHdmiModel != NULL && (char*)sHdmiModel == (char*)sAreas.at(fArea).first + B_PAGE_SIZE)
+				sHdmiModel = NULL;
 			assert(munmap(sAreas.at(fArea).first, sAreas.at(fArea).second) == 0);
 			sAreas.erase(fArea);
 		}
@@ -406,6 +486,23 @@ Prepare()
 	sMapAttempts = 0;
 	sFailMap = 0;
 	sMappedBases.clear();
+	sAllowEdid = false;
+	sHotPlug = (1u << 24) | (1u << 27);
+	sNackAt = -1;
+	sUnresponsive = false;
+	sServed = sResets = sModelSpins = 0;
+	sHdmiModel = NULL;
+	for (unsigned i = 0; i < 512; i++)
+		sEdid[i] = (uint8_t)(i * 7 + 3);
+	static const uint8_t header[8] = {0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00};
+	memcpy(sEdid, header, 8);
+	sEdid[126] = 3;
+	for (unsigned block = 0; block < 4; block++) {
+		unsigned sum = 0;
+		for (unsigned i = 0; i < 127; i++)
+			sum += sEdid[block * 128 + i];
+		sEdid[block * 128 + 127] = (uint8_t)(0x100 - (sum & 0xff));
+	}
 }
 
 
@@ -463,6 +560,7 @@ int
 main()
 {
 	static_assert(sizeof(ResourceInfo) == 304, "Diagnostic ABI layout changed");
+	static_assert(sizeof(EdidRequest) == 192, "EDID ABI layout changed");
 	static_assert(sizeof(DisplaySnapshot) == 800, "Snapshot ABI layout changed");
 	for (unsigned offset : kVopSystemOffsets) assert(offset + 4 <= kVopMapSize);
 	for (unsigned offset : kVopOverlayOffsets) assert(offset + 4 <= kVopMapSize);
@@ -655,6 +753,68 @@ main()
 	controller.resources.boardCompatible[16] = 'x';
 	assert(Control(&controller, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_NOT_SUPPORTED);
 	assert(sMapAttempts == 0);
+	assert(sLockDepth == 0);
+
+	// EDID: request validation, opt-in gating, power/hot-plug gating, data and cleanup.
+	Prepare();
+	controller.resources = good;
+	controller.edidEnabled = false;
+	EdidRequest edid = {};
+	edid.version = kEdidVersion;
+	assert(Control(&controller, kReadEdid, &edid, sizeof(edid) - 1) == B_BAD_VALUE);
+	assert(Control(&controller, kReadEdid, NULL, sizeof(edid)) == B_BAD_ADDRESS);
+	edid.version = 2;
+	assert(Control(&controller, kReadEdid, &edid, sizeof(edid)) == B_BAD_VALUE);
+	edid.version = kEdidVersion;
+	edid.block = kEdidMaxBlocks;
+	assert(Control(&controller, kReadEdid, &edid, sizeof(edid)) == B_BAD_VALUE);
+	edid.block = 0;
+	assert(Control(&controller, kReadEdid, &edid, sizeof(edid)) == B_NOT_ALLOWED);
+	assert(sMapAttempts == 0);
+	controller.edidEnabled = true;
+	sAllowEdid = true;
+	sRepairStatus = 1u << 16;
+	assert(Control(&controller, kReadEdid, &edid, sizeof(edid)) == B_OK);
+	assert(edid.result == kEdidNotReady && sMapAttempts == 3 && sAreas.empty() && edid.bytesRead == 0);
+	Prepare(); sAllowEdid = true; sGate61 = 1u << 2;
+	assert(Control(&controller, kReadEdid, &edid, sizeof(edid)) == B_OK);
+	assert(edid.result == kEdidNotReady && sMapAttempts == 3 && sAreas.empty());
+	Prepare(); sAllowEdid = true; sHotPlug = 1u << 27;
+	assert(Control(&controller, kReadEdid, &edid, sizeof(edid)) == B_OK);
+	assert(edid.result == kEdidNoHotPlug && sMapAttempts == 3 && sAreas.empty() && edid.hotPlug == (1u << 27));
+	for (unsigned block = 0; block < 4; block++) {
+		Prepare(); sAllowEdid = true;
+		memset(&edid, 0xa5, sizeof(edid));
+		edid.version = kEdidVersion;
+		edid.block = block;
+		assert(Control(&controller, kReadEdid, &edid, sizeof(edid)) == B_OK);
+		assert(edid.result == kEdidOK && edid.bytesRead == 128 && edid.block == block);
+		assert(memcmp(edid.data, sEdid + block * 128, 128) == 0);
+		assert(sMapAttempts == 4 && sAreas.empty() && sServed == 128 && sResets == 0);
+		assert(edid.flags == (block >= 2 ? kEdidSegmentUsed : 0));
+		assert((edid.controlAfter & kI2cmWriteMask) == 0 && (edid.statusAfter & 0x5) == 0);
+		assert(edid.finishedMicros > edid.startedMicros && edid.polls == 0);
+		assert(edid.hotPlug == ((1u << 24) | (1u << 27)));
+	}
+	// A NACK part-way through aborts the transfer, resets the master and clears requests.
+	Prepare(); sAllowEdid = true; sNackAt = 17;
+	memset(&edid, 0, sizeof(edid));
+	edid.version = kEdidVersion;
+	assert(Control(&controller, kReadEdid, &edid, sizeof(edid)) == B_OK);
+	assert(edid.result == kEdidNack && edid.bytesRead == 17 && sResets == 1 && sAreas.empty());
+	assert((edid.flags & kEdidMasterReset) != 0 && (edid.controlAfter & kI2cmWriteMask) == 0);
+	assert((edid.statusAfter & 0x5) == 0 && memcmp(edid.data, sEdid, 17) == 0 && edid.data[17] == 0);
+	// A silent bus times out after the bounded poll count and leaves the master idle.
+	Prepare(); sAllowEdid = true; sUnresponsive = true;
+	memset(&edid, 0, sizeof(edid));
+	edid.version = kEdidVersion;
+	assert(Control(&controller, kReadEdid, &edid, sizeof(edid)) == B_OK);
+	assert(edid.result == kEdidTimeout && edid.bytesRead == 0 && edid.polls == kEdidPollLimit);
+	assert(sResets == 1 && sAreas.empty() && (edid.controlAfter & kI2cmWriteMask) == 0);
+	// A failed HDMI mapping is reported and nothing stays mapped.
+	Prepare(); sAllowEdid = true; sFailMap = 4;
+	assert(Control(&controller, kReadEdid, &edid, sizeof(edid)) == B_NO_MEMORY);
+	assert(sMapAttempts == 4 && sAreas.empty());
 	assert(sLockDepth == 0);
 	printf("RK3588_DISPLAY_RESOURCES_TEST_PASS faults=%zu\n", faults.size());
 	return 0;
