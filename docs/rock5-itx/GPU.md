@@ -82,14 +82,15 @@ pass. Full logs are captured in RAM and retrieved with checked, paced transfers.
 Pending-work termination, GPU fault/reset recovery and native display control
 remain open.
 
-The +264 USB image qualifies the [EDID read](DISPLAY.md) over the HDMI TX1
-I2C master on two native boots: with the opt-in profile the driver reads the
-NanoKVM's 256-byte EDID (VCS `0x1145`, EDID 1.3 with one CEA-861 extension,
-preferred 1920x1080 at 148.5 MHz) one byte per transfer in about 52 ms per
-block, and the read-only observation before and after the read is identical.
-Both QEMU modes, the Mali regressions, normal reboot, verified shutdown and
-automatic recovery pass; the desktop was viewed on both boots. Native mode
-setting and the second (DisplayPort-bridged) HDMI port remain open.
+The +277 USB image qualifies the [board accelerant with vertical
+retrace](DISPLAY.md) on two native boots: app_server runs on
+`rk3588_display.accelerant`, draws the desktop into a driver-owned contiguous
+frame buffer that the live HDMI1 window scans at the firmware's 1920x1080
+mode, reports the sink's EDID, and its retrace semaphore is released by the
+VOP2 frame-start interrupt at 60.0 Hz. Normal reboot, verified shutdown and
+recovery pass; the earlier read-only, EDID and scanout-swap checks pass on
+the same boots. A cursor window, power control, a real mode change and the
+second (DisplayPort-bridged) HDMI port remain open.
 
 The +269 USB image qualifies the first [VOP2 write path](DISPLAY.md): with
 the opt-in scanout profile the driver points the live HDMI1 window at its own
@@ -98,9 +99,16 @@ configuration-done bit, and restores the firmware framebuffer, on two native
 boots. The NanoKVM capture shows the bars during the 30 s hold and the normal
 desktop afterwards, the observation is unchanged across the swap, and normal
 reboot, verified shutdown and recovery pass. The first candidate (+267)
-verified the address before the port's next frame start and is retained. An
-accelerant that owns the framebuffer, a real mode change and the second port
-remain open.
+verified the address before the port's next frame start and is retained.
+
+The +264 USB image qualifies the [EDID read](DISPLAY.md) over the HDMI TX1
+I2C master on two native boots: with the opt-in profile the driver reads the
+NanoKVM's 256-byte EDID (VCS `0x1145`, EDID 1.3 with one CEA-861 extension,
+preferred 1920x1080 at 148.5 MHz) one byte per transfer in about 52 ms per
+block, and the read-only observation before and after the read is identical.
+Both QEMU modes, the Mali regressions, normal reboot, verified shutdown and
+automatic recovery pass; the desktop was viewed on both boots. Native mode
+setting and the second (DisplayPort-bridged) HDMI port remain open.
 
 The +263 USB image qualifies the first [native display observation](DISPLAY.md)
 on two native boots: the read-only `rk3588_display` driver admits the VOP2,

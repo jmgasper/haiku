@@ -303,6 +303,60 @@ registers added to the two of the swap. The probe waits for 24 frame starts
 and reports their spacing and the driver's count; the validator requires a
 60 Hz period and a count that grew with the elapsed frames.
 
+### Qualified +277 accelerant with retrace (stages 3b and 3c)
+
+The `hrev60097+277` image (source `8bba87274f`, SHA-256
+`4918f10b0130d8c1a4715000ec2ca668b844b00a9c3df0de6f1105674eceadd9`) passes the
+host checks (162 tests), both two-boot QEMU modes (an EL2 attempt lost its
+USB shell marker and was rerun) and two native boots with normal reboot,
+verified shutdown and automatic ROOBI recovery. On each boot app_server came
+up on `rk3588_display.accelerant`: the driver acquired the frame buffer at
+boot, the desktop the NanoKVM captures is drawn into that buffer (the
+classifier and a visual review agree), the observation shows ESMART2 scanning
+it instead of the firmware address, the probe's second writable handle read
+the same description, mapped the live buffer (desktop blue at the corners,
+the cursor pixel at the centre) and was refused a second acquisition, and
+the observation and EDID inventory were unchanged by all of it. Retrace: the
+probe waited for 24 consecutive frame starts on both boots without a timeout
+or error, the spacing was 16 666 µs (60.0 Hz) and the driver's count grew by
+exactly 24; the handler had seen no spurious interrupt since boot.
+
+| Boot | Frame buffer | Acquire polls | Frame starts before the probe | Retrace period |
+| --- | --- | --- | --- | --- |
+| 1 | `0x103c9000` | 815 | 1249 (from 67.6 s after boot) | 16 666 µs |
+| 2 | `0x0fad8000` | 275 | 1274 (from 71.5 s after boot) | 16 666 µs |
+
+- Native evidence: `artifacts/automated-display-retrace/20260918T083448Z-7a36c4`
+  (`qualification.json`, `accelerant-boot{1,2}.json`, desktop classifier
+  records for every captured frame, desktop reviews, observation and EDID
+  decodes, FDT captures, driver syslog extracts).
+- Session: `artifacts/interactive/20260918T083449Z-28d1a5`; recovery boot
+  `49e4982b-35c3-4b79-96c3-5cb046102bee` after verified shutdown.
+- QEMU EL2/EL1: `artifacts/qemu-shell/20260918T081918Z-719a17` and
+  `20260918T080902Z-a8009c` (flaked EL2 attempt `20260918T080420Z-2c820d`);
+  build `artifacts/build-20260918T080405Z.log`.
+- Stage: `artifacts/display-retrace/20260918T080419Z-7af0a1`; used image
+  archive `artifacts/nanokvm-image-archive/20260918T084317Z-1a648f`.
+- Independent Linux eMMC readbacks were not run: the ROOBI sudo password is
+  not available to this session.
+
+The road to this image is retained. The +272 accelerant candidate
+(`artifacts/display-accelerant/20260918T064244Z-886333`) ran three native
+cycles: its first boot passed every check with the desktop on `0x10533000`,
+but the controller mis-counted the persisted syslog on boot 2, the NanoKVM
+storage was full for the second attempt, and the third used a validator that
+already required the retrace fields (`artifacts/automated-display-accelerant/
+20260918T064853Z-863365`, `…T065712Z-59f0db`, `…T072043Z-7aa4b5`). The +274
+retrace candidate booted with every opt-in path disabled because its settings
+named a profile the driver did not know (`…display-retrace/20260918T072645Z-7a4f01`).
+On +275 and +276 the frame-start interrupts ran at 60 Hz but the probe's
+waits failed at once: the kernel logged "tried to acquire kernel semaphore",
+because a semaphore created in the kernel is not acquirable from userland
+(`…20260918T073737Z-5a710a`, `…20260918T075542Z-25cfba`). Handing it to the
+acquiring team, as intel_extreme does, fixed that; the first +277 run then
+tripped only on a controller assertion that the reboot-time "released" line
+reaches the syslog (`…20260918T082618Z-d018b8`).
+
 ## Later stages
 
 3. After retrace: a cursor window, power control, and a real mode change
