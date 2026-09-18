@@ -122,26 +122,26 @@ def edid_transcript(blocks=None, info=None, summary=None):
     lines = ['ROCK5_DISPLAY_WRITE_OPEN_REJECTED', 'ROCK5_DISPLAY_RESOURCE_DESCRIPTION_PASS',
         'ROCK5_DISPLAY_EDID_REQUEST_CHECKS_PASS']
     for index, data in enumerate(blocks):
-        lines.append('ROCK5_DISPLAY_EDID block=%d result=0 flags=%#x bytes=128 polls=%d control=00000a00/00000a00'
+        lines.append('ROCK5_DISPLAY_EDID block=%d result=0 flags=%s bytes=128 polls=%d control=00000a00/00000a00'
             ' status=00000000/00000000 hpd=09000000 start_us=%d end_us=%d hex=%s'
-            % (index, 1 if index >= 2 else 0, 300 + index, 1000 + index * 100, 1050 + index * 100, data.hex()))
+            % (index, check.chex(1 if index >= 2 else 0), 300 + index, 1000 + index * 100, 1050 + index * 100, data.hex()))
     try:
         decoded = check.decode_edid_base(blocks[0])
     except check.ValidationError:
         decoded = None
     if info is None and decoded is not None:
-        info = ('ROCK5_DISPLAY_EDID_INFO manufacturer=%s product=%#x serial=%#x week=%d year=%d version=%s'
+        info = ('ROCK5_DISPLAY_EDID_INFO manufacturer=%s product=%s serial=%s week=%d year=%d version=%s'
             ' extensions=%d digital=%d preferred=%dx%d pixel_khz=%d hblank=%d vblank=%d hsync_offset=%d'
-            ' hsync_width=%d vsync_offset=%d vsync_width=%d flags=%#x size_mm=%dx%d checksum=ok'
-            % (decoded['manufacturer'], decoded['product'], decoded['serial'], decoded['week'], decoded['year'],
+            ' hsync_width=%d vsync_offset=%d vsync_width=%d flags=%s size_mm=%dx%d checksum=ok'
+            % (decoded['manufacturer'], check.chex(decoded['product']), check.chex(decoded['serial']), decoded['week'], decoded['year'],
             decoded['version'], decoded['extensions'], decoded['digital'], decoded['width'], decoded['height'],
             decoded['pixel_khz'], decoded['hblank'], decoded['vblank'], decoded['hsync_offset'],
-            decoded['hsync_width'], decoded['vsync_offset'], decoded['vsync_width'], decoded['flags'],
+            decoded['hsync_width'], decoded['vsync_offset'], decoded['vsync_width'], check.chex(decoded['flags']),
             decoded['width_mm'], decoded['height_mm']))
     if info:
         lines.append(info)
     for index, data in enumerate(blocks[1:], 1):
-        lines.append('ROCK5_DISPLAY_EDID_EXTENSION block=%d tag=%#x revision=%d checksum=ok' % (index, data[0], data[1]))
+        lines.append('ROCK5_DISPLAY_EDID_EXTENSION block=%d tag=%s revision=%d checksum=ok' % (index, check.chex(data[0]), data[1]))
     lines.append(summary or 'ROCK5_DISPLAY_EDID_PASS blocks=%d extensions=%d polls=%d register_writes=i2c_master_only'
         % (len(blocks), blocks[0][126], sum(300 + i for i in range(len(blocks)))))
     return '\n'.join(lines) + '\n'
@@ -157,6 +157,19 @@ class DisplayValidationTest(unittest.TestCase):
         self.assertAlmostEqual(result['preferred_refresh_hz'], 60.0, places=1)
         self.assertEqual(sorted(result['blocks']), ['0', '1'])
 
+    def test_native_edid_transcript(self):
+        # Actual transcript from the first native +264 EDID read (2026-09-18).
+        from pathlib import Path
+        path = Path('/mnt/HaikuWork/artifacts/interactive/20260918T045402Z-11d04a/shell-20260918T045748Z-d3fca7.txt')
+        if not path.exists():
+            self.skipTest('native transcript not present on this host')
+        body = path.read_text()
+        edid_body = body.split('ROCK5_DISPLAY_INVENTORY_EXIT=0\n', 1)[1].split('ROCK5_DISPLAY_EDID_EXIT=0\n', 1)[0]
+        result = check.validate_edid(edid_body)
+        self.assertEqual(result['base']['manufacturer'], 'VCS')
+        self.assertEqual((result['base']['width'], result['base']['height'], result['base']['pixel_khz']), (1920, 1080, 148500))
+        self.assertEqual(sorted(result['blocks']), ['0', '1'])
+
     def test_edid_rejections(self):
         base, ext = edid_blocks()
         broken = bytearray(base); broken[127] ^= 1
@@ -170,7 +183,7 @@ class DisplayValidationTest(unittest.TestCase):
             ('hpd', edid_transcript().replace('hpd=09000000', 'hpd=08000000')),
             ('summary', edid_transcript(summary='ROCK5_DISPLAY_EDID_PASS blocks=2 extensions=1 polls=1 register_writes=i2c_master_only')),
             ('checks', edid_transcript().replace('ROCK5_DISPLAY_EDID_REQUEST_CHECKS_PASS\n', '')),
-            ('flags', edid_transcript().replace('block=1 result=0 flags=0x0', 'block=1 result=0 flags=0x2')),
+            ('flags', edid_transcript().replace('block=1 result=0 flags=0 ', 'block=1 result=0 flags=0x2 ')),
         ]
         for name, body in cases:
             with self.subTest(name=name):

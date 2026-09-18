@@ -32,6 +32,11 @@ class ValidationError(AssertionError):
     pass
 
 
+def chex(value):
+    """Mirror C's %#x, which prints zero without the 0x prefix."""
+    return '%#x' % value if value else '0'
+
+
 def _words(line, count):
     values = [int(word, 16) for word in line.split(' ', 1)[1].split(',')]
     if len(values) != count:
@@ -92,7 +97,7 @@ def validate(body, expected_samples=3):
         raise ValidationError('observation summary missing or wrong sample count')
     if summary.group(2) != '1':
         raise ValidationError('probe reported inconsistent samples')
-    headers = list(re.finditer(r'^ROCK5_DISPLAY_SNAPSHOT sample=(\d+) version=1 flags=(0x[0-9a-f]+)'
+    headers = list(re.finditer(r'^ROCK5_DISPLAY_SNAPSHOT sample=(\d+) version=1 flags=(0x[0-9a-f]+|0)'
         r' start_us=(\d+) end_us=(\d+)$', body, re.M))
     if [int(h.group(1)) for h in headers] != list(range(expected_samples)):
         raise ValidationError('snapshot headers incomplete')
@@ -224,7 +229,7 @@ def validate_edid(body):
     if body.count('ROCK5_DISPLAY_RESOURCE_DESCRIPTION_PASS') != 1:
         raise ValidationError('resource description did not pass exactly once')
     blocks = {}
-    for match in re.finditer(r'^ROCK5_DISPLAY_EDID block=(\d) result=(\d+) flags=(0x[0-9a-f]+) bytes=(\d+)'
+    for match in re.finditer(r'^ROCK5_DISPLAY_EDID block=(\d) result=(\d+) flags=(0x[0-9a-f]+|0) bytes=(\d+)'
             r' polls=(\d+) control=([0-9a-f]{8})/([0-9a-f]{8}) status=([0-9a-f]{8})/([0-9a-f]{8})'
             r' hpd=([0-9a-f]{8}) start_us=(\d+) end_us=(\d+) hex=([0-9a-f]{256})$', body, re.M):
         index = int(match.group(1))
@@ -258,20 +263,20 @@ def validate_edid(body):
     if info is None:
         raise ValidationError('EDID info line missing')
     fields = dict(item.split('=', 1) for item in info.group(1).split(' '))
-    checks = dict(manufacturer=base['manufacturer'], product='%#x' % base['product'],
-        serial='%#x' % base['serial'], week=str(base['week']), year=str(base['year']),
+    checks = dict(manufacturer=base['manufacturer'], product=chex(base['product']),
+        serial=chex(base['serial']), week=str(base['week']), year=str(base['year']),
         version=base['version'], extensions=str(base['extensions']), digital=str(base['digital']),
         preferred='%dx%d' % (base['width'], base['height']), pixel_khz=str(base['pixel_khz']),
         hblank=str(base['hblank']), vblank=str(base['vblank']), hsync_offset=str(base['hsync_offset']),
         hsync_width=str(base['hsync_width']), vsync_offset=str(base['vsync_offset']),
-        vsync_width=str(base['vsync_width']), flags='%#x' % base['flags'],
+        vsync_width=str(base['vsync_width']), flags=chex(base['flags']),
         size_mm='%dx%d' % (base['width_mm'], base['height_mm']), checksum='ok')
     for key, value in checks.items():
         if fields.get(key) != value:
             raise ValidationError('probe EDID %s=%r, independent decode %r' % (key, fields.get(key), value))
     for index in expected[1:]:
         tag = blocks[index]['data'][0]
-        line = 'ROCK5_DISPLAY_EDID_EXTENSION block=%d tag=%#x revision=%d checksum=ok' % (index, tag, blocks[index]['data'][1])
+        line = 'ROCK5_DISPLAY_EDID_EXTENSION block=%d tag=%s revision=%d checksum=ok' % (index, chex(tag), blocks[index]['data'][1])
         if body.count(line) != 1:
             raise ValidationError('extension line for block %d missing' % index)
     summary = re.search(r'^ROCK5_DISPLAY_EDID_PASS blocks=(\d) extensions=(\d+) polls=(\d+)'
