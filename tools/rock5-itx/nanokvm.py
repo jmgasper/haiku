@@ -125,6 +125,38 @@ def key(names):
     return {"keys": names}
 
 
+def type_text(text, delay=0.12):
+    """Type printable ASCII through the HID keyboard, one key per report."""
+    plain = {' ': 44, '-': 45, '=': 46, '[': 47, ']': 48, '\\': 49, ';': 51, "'": 52,
+             '`': 53, ',': 54, '.': 55, '/': 56, '\n': 40, '\t': 43}
+    shifted = {'!': 30, '@': 31, '#': 32, '$': 33, '%': 34, '^': 35, '&': 36, '*': 37,
+               '(': 38, ')': 39, '_': 45, '+': 46, '{': 47, '}': 48, '|': 49, ':': 51,
+               '"': 52, '~': 53, '<': 54, '>': 55, '?': 56}
+    reports = []
+    for char in text:
+        modifier, code = 0, None
+        if 'a' <= char <= 'z':
+            code = 4 + ord(char) - ord('a')
+        elif 'A' <= char <= 'Z':
+            modifier, code = 2, 4 + ord(char) - ord('A')
+        elif '1' <= char <= '9':
+            code = 30 + ord(char) - ord('1')
+        elif char == '0':
+            code = 39
+        elif char in plain:
+            code = plain[char]
+        elif char in shifted:
+            modifier, code = 2, shifted[char]
+        else:
+            raise ValueError("Unsupported character %r" % char)
+        reports.append(bytes([1, modifier, 0, code, 0, 0, 0, 0, 0]))
+        reports.append(bytes([1] + [0] * 8))
+    for start in range(0, len(reports), 24):
+        send_reports(reports[start:start + 24])
+        time.sleep(delay)
+    return {"typed": len(text)}
+
+
 def click(x, y, width, height):
     if not (0 <= x < width and 0 <= y < height):
         raise ValueError("Click is outside screen bounds")
