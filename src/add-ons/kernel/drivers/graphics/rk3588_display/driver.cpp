@@ -1348,6 +1348,13 @@ ChangePowerMode(Handle* handle, PowerRequest& request)
 		request.result = kModeUnsupported;
 		return B_OK;
 	}
+	if (mode == sPowerMode) {
+		// app_server asks for DPMS on at every start; nothing is touched.
+		request.result = kModeOK;
+		dprintf("rk3588_display: power %s result=0 phase=0 already\n",
+			mode == kPowerOff ? "off" : "on");
+		return B_OK;
+	}
 	ModeSetHardware hardware;
 	status_t status = hardware.Prepare(handle->controller->resources, sAccelerant.port);
 	if (status != B_OK)

@@ -384,10 +384,36 @@ whole write sequence for 1280x720@60 and each timeout, and the native cycle
 switches to 1280x720@60 and back on each boot, checking the observation,
 the accelerant and the NanoKVM capture at each size.
 
+## Stage 3e: DPMS power control on HDMI1
+
+The same profile admits power control of the acquired frame buffer's port,
+through the accelerant's `B_SET_DPMS_MODE` (stand-by, suspend and off all
+mean the same thing to an HDMI sink) or through the probe. Off is the first
+two steps of a mode change and nothing more: the port goes to standby and
+the driver waits for its `DSP_HOLD_VALID` report, then the PHY is powered
+down with its resets asserted, so the sink loses its TMDS clock and the
+frame-start interrupts stop. On is the full mode set of the current mode
+(the firmware's, if the driver never changed it), so the port, PLL, lanes
+and infoframe come back exactly as a mode change leaves them, and a mode
+change while off simply starts from the stopped port. A request for the
+state the port is already in touches nothing (app_server asks for DPMS on
+at every start, which the driver logs as phase 0). The shared
+information carries the power mode and the mode's sync polarity in their
+own fields, and `B_DPMS_MODE` reports the last accepted request. Releasing
+the frame buffer while off, or on a mode other than the firmware's, first
+restores the firmware mode so the console on the firmware frame buffer is
+usable again. The host fixture checks the off, off-again and on sequences
+at 1080p and 720p, a mode set from the powered-off state and the
+release-time restore; the native cycle powers off after the mode changes,
+records what the NanoKVM captures without a signal, and powers on again,
+checking the observation (port standby, no active port), the retrace count
+(unchanged over half a second while off, growing again after on) and the
+desktop capture after on.
+
 ## Later stages
 
-3. After mode changes: a cursor window, power control, and modes beyond the
-   PLL table (the fractional-rate calculation) or the frame buffer size.
+3. After mode changes and power control: a cursor window, and modes beyond
+   the PLL table (the fractional-rate calculation) or the frame buffer size.
 4. DisplayPort TX1 through USBDP PHY1 and the RA620 bridge for the second
    connector. This needs a sink on that port (a monitor, an HDMI dummy plug,
    or the NanoKVM cable moved) before it can be qualified.

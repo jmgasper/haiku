@@ -2023,10 +2023,12 @@ main()
 	assert(sGrfWrites.size() == 1 && sGrfWrites[0] == std::make_pair(0u, 0x00e00000u));
 	assert(sHdmiWrites.empty() && shared->powerMode == kPowerOff && shared->width == 1920);
 	assert(Control(reader, kGetAccelerantInfo, &acc, sizeof(acc)) == B_OK && acc.width == 1920);
+	// Off again: nothing to do, nothing touched (app_server repeats DPMS on at every start).
 	sVopWrites.clear(); sPhyWrites.clear(); sGrfWrites.clear(); sCruWrites.clear();
+	unsigned mapsBefore = sMapAttempts;
 	assert(Control(primary, kSetPowerMode, &power, sizeof(power)) == B_OK && power.result == kModeOK);
-	assert(power.holdPolls == 0 && power.previous == kPowerOff && power.phase == kPhasePhyOff);
-	assert(sVopWrites.empty() && sPhyWrites.size() == 7 && sCruWrites.size() == 5 && sGrfWrites.size() == 1);
+	assert(power.holdPolls == 0 && power.previous == kPowerOff && power.phase == 0 && power.startedMicros == 0);
+	assert(sVopWrites.empty() && sPhyWrites.empty() && sCruWrites.empty() && sGrfWrites.empty() && sMapAttempts == mapsBefore);
 	// A mode set while off works from the stopped state and powers on.
 	fill(1280, 720, 74250, 1390, 1430, 1650, 725, 730, 750, 4);
 	assert(Control(primary, kSetDisplayMode, &mode, sizeof(mode)) == B_OK && mode.result == kModeOK);
@@ -2047,10 +2049,10 @@ main()
 	assert(sequenceOf(sHdmiWrites, {{0xbe8u, 4u}, {0xaacu, 2u}}) && sGrfWrites.size() == 6);
 	assert(shared->powerMode == kPowerOn && shared->width == 1280 && sConsole.width == 1280);
 	assert(Control(reader, kGetAccelerantInfo, &acc, sizeof(acc)) == B_OK && acc.width == 1280);
-	// On again: the same sequence, this time stopping a running port first.
-	sVopWrites.clear();
+	// On again: already on, nothing touched.
+	sVopWrites.clear(); sPhyWrites.clear();
 	assert(Control(primary, kSetPowerMode, &power, sizeof(power)) == B_OK && power.result == kModeOK);
-	assert(power.previous == kPowerOn && power.holdPolls >= 1 && sVopWrites[2] == std::make_pair(0xe00u, 0x80000000u));
+	assert(power.previous == kPowerOn && power.phase == 0 && sVopWrites.empty() && sPhyWrites.empty());
 	assert(Close(reader) == B_OK && Free(reader) == B_OK);
 	// Releasing a powered-off port at 720p brings the firmware mode back for
 	// the firmware frame buffer before the scanout returns to it.
