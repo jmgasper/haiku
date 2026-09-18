@@ -57,7 +57,7 @@ quad-strip boundary defect, default renderer integration and native display
 control remain open. The earlier failed candidates below retain their original
 results.
 
-## +258 first-provoking candidate: native trial interrupted
+## +258 first-provoking candidate: native trial passed, qualification blocked
 
 The +258 Mesa candidate (source `1ab9f70fc5`, retained +254 kernel, image
 SHA-256 `06fd3da3a63de0ed3fa7ff80a242eded6e98ada4eb2684d04788fea2ef002e7c`)
@@ -65,18 +65,32 @@ preserves quad-strip boundaries under first-vertex provoking. It passes the
 pinned host geometry test, both QEMU modes (`artifacts/qemu-shell/20260916T223624Z-8cb9ba`
 and `20260916T224534Z-79545f`, with the EL2 after-reboot sheets generated and
 reviewed on 2026-09-18) and the software polygon/provoking reviews. **It is
-not qualified.** Its first native boot on 2026-09-18 passed inventory, token
-lifetime, window, OpenGL Kit, pipeline, lifetime, heap pressure, heap limit,
-concurrency, pending, recovery and context-loss checks, then the GLTeapot
-step did not complete: the NanoKVM USB link produced 273,281 EHCI transaction
-errors and the guarded recovery failed until the firmware boot order, the
-NanoKVM's persisted disk selection and the USB gadget were repaired by hand
-(see [DISPLAY.md](DISPLAY.md) and `state/gpu-display-plan.md`). Evidence:
-`artifacts/automated-mali-first-provoking/20260918T021602Z-a4f59f`,
-`artifacts/interactive/20260918T021604Z-86d325`; used image archive
-`artifacts/nanokvm-image-archive/20260918T024606Z-93304a-mesa-first-provoking-failed`.
-The +256 qualification above remains the current result; a repeat native
-trial of +258 is pending a stable USB link.
+not qualified.** Its first native trial on 2026-09-18
+(`artifacts/automated-mali-first-provoking/20260918T021602Z-a4f59f`) was
+interrupted by the NanoKVM USB link (273,281 EHCI transaction errors) and
+the recovery repairs described in [DISPLAY.md](DISPLAY.md); that image is
+archived as `artifacts/nanokvm-image-archive/20260918T024606Z-93304a-mesa-first-provoking-failed`.
+
+The repeat trial `artifacts/automated-mali-first-provoking/20260918T091906Z-d17428`
+(session `artifacts/interactive/20260918T091908Z-f78ea1`, recovery boot
+458b6a7a after a verified shutdown) passed every native check on both
+boots: inventory, token lifetime, window, OpenGL Kit, pipeline, lifetime,
+heap pressure, heap limit, concurrency, pending, recovery, context loss,
+GLTeapot, and the default, first-provoking and last-provoking polygon
+captures. The polygon contact sheets (64 frames per boot) and GLTeapot
+sheets (16 frames per boot, with HDMI frame 10 of each boot) were actually
+reviewed; the first/last-provoking frames are byte-identical to the
+reviewed default sheets on both boots; `review-polygon.py native`,
+`review-provoking.py native` and `review-native-results.py` pass
+(`source-renderer-review.json`: 112 shared frame comparisons, 48 software
+captures). `qualify-native.py` needed one amendment, recorded in the image
+plan's `procedure_amendments`: it enumerated only the base capture kinds
+while this stage also captures `polygon_first` and `polygon_last`. It then
+stops at the independent Linux eMMC readbacks, which must be taken in the
+trial's own ROOBI recovery boot with sudo; that password is not on record
+and the board has since rebooted for the display stages. Closing +258
+therefore needs one more native run followed immediately by the two
+readbacks. The +256 qualification above remains the current result.
 
 ## Earlier +252 topology trial
 
