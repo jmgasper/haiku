@@ -427,7 +427,8 @@ def check_pattern_frame(path, expect_pattern=True):
 ACCELERANT_LINE = re.compile(
     r'^ROCK5_DISPLAY_ACCELERANT flags=(\d+) shared_area=(-?\d+) framebuffer=([0-9a-f]{8})'
     r' firmware=([0-9a-f]{8}) port=(\d) window=(\d) polls=(\d+) width=(\d+) height=(\d+)'
-    r' bytes_per_row=(\d+)(?: retrace_sem=(-?\d+) retraces=(\d+))?$', re.M)
+    r' bytes_per_row=(\d+)(?: retrace_sem=(-?\d+) retraces=(\d+))?'
+    r'(?: calls=(\d+) spurious=(\d+) first_us=(\d+) last_us=(\d+) now_us=(\d+))?$', re.M)
 RETRACE_LINE = re.compile(
     r'^ROCK5_DISPLAY_RETRACE waits=(\d+) timeouts=(\d+) first_us=(\d+) last_us=(\d+) period_us=(\d+)'
     r' retraces_before=(\d+) retraces_after=(\d+) elapsed_us=(\d+)$', re.M)
@@ -497,6 +498,9 @@ def validate_accelerant(body, observation=None, edid_block0=None):
         if before != retraces_before:
             raise ValidationError('retrace count differs between the description and the measurement')
         retrace = dict(waits=waits, period_us=period, count_delta=after - before, elapsed_us=elapsed)
+        if line.group(13) is not None:
+            retrace.update(calls=int(line.group(13)), spurious=int(line.group(14)),
+                first_us=int(line.group(15)), last_us=int(line.group(16)), now_us=int(line.group(17)))
     elif retrace_sem >= 0 or RETRACE_LINE.search(body):
         raise ValidationError('retrace data without the retrace flag')
     signature = re.search(r'^ROCK5_DISPLAY_ACCELERANT_SIGNATURE (.*)$', body, re.M)

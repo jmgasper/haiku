@@ -403,9 +403,12 @@ CheckAccelerant()
 	printf("ROCK5_DISPLAY_ACCELERANT flags=%" PRIu32 " shared_area=%" PRId32
 		" framebuffer=%08" PRIx32 " firmware=%08" PRIx32 " port=%" PRIu32 " window=%" PRIu32
 		" polls=%" PRIu32 " width=%" PRIu32 " height=%" PRIu32 " bytes_per_row=%" PRIu32
-		" retrace_sem=%" PRId32 " retraces=%" PRIu32 "\n", info.flags, info.sharedArea,
-		info.frameBufferPhysical, info.firmwareAddress, info.port, info.window, info.polls,
-		info.width, info.height, info.bytesPerRow, info.retraceSemaphore, info.retraces);
+		" retrace_sem=%" PRId32 " retraces=%" PRIu32 " calls=%" PRIu32 " spurious=%" PRIu32
+		" first_us=%" PRId64 " last_us=%" PRId64 " now_us=%" PRId64 "\n", info.flags,
+		info.sharedArea, info.frameBufferPhysical, info.firmwareAddress, info.port, info.window,
+		info.polls, info.width, info.height, info.bytesPerRow, info.retraceSemaphore,
+		info.retraces, info.interruptCalls, info.interruptSpurious, info.firstRetraceMicros,
+		info.lastRetraceMicros, system_time());
 	if ((info.flags & kAccelerantRetrace) != 0) {
 		// Wait for a series of frame starts and measure their spacing.
 		const unsigned kWaits = 24;
@@ -435,6 +438,29 @@ CheckAccelerant()
 			" elapsed_us=%" PRId64 "\n", kWaits, timeouts, first, last,
 			waited > 1 ? (last - first) / (bigtime_t)(waited - 1) : 0, info.retraces,
 			after.retraces, system_time() - started);
+		if (timeouts == kWaits) {
+			// Diagnostic: re-arm the interrupt and look again.
+			RetraceRearm rearm = {};
+			rearm.version = kAccelerantVersion;
+			if (ioctl(fd, kRearmRetrace, &rearm, sizeof(rearm)) != 0) {
+				perror("retrace re-arm");
+			} else {
+				unsigned again = 0;
+				for (unsigned i = 0; i < 12; i++) {
+					if (acquire_sem_etc(info.retraceSemaphore, 1, B_RELATIVE_TIMEOUT, 200000) == B_OK)
+						again++;
+				}
+				AccelerantInfo later = {};
+				later.version = kAccelerantVersion;
+				ioctl(fd, kGetAccelerantInfo, &later, sizeof(later));
+				printf("ROCK5_DISPLAY_RETRACE_REARM enable=%08" PRIx32 "/%08" PRIx32 " status=%08"
+					PRIx32 "/%08" PRIx32 " reinstall=%" PRId32 " waits=12 acquired=%u retraces=%"
+					PRIu32 "/%" PRIu32 " calls=%" PRIu32 " spurious=%" PRIu32 "\n",
+					rearm.enableBefore, rearm.enableAfter, rearm.statusBefore, rearm.statusAfter,
+					rearm.reinstall, again, rearm.retraces, later.retraces, later.interruptCalls,
+					later.interruptSpurious);
+			}
+		}
 	}
 	char text[B_PATH_NAME_LENGTH];
 	if (ioctl(fd, B_GET_ACCELERANT_SIGNATURE, text, sizeof(text)) != 0) {

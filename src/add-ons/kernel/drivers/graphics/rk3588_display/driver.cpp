@@ -93,9 +93,14 @@ static area_id sVopArea = -1;
 static volatile uint32* sVopRegisters = NULL;
 static sem_id sRetraceSemaphore = -1;
 static int32 sRetraces = 0;
+static int32 sInterruptCalls = 0;
+static int32 sInterruptSpurious = 0;
+static int64 sFirstRetraceMicros = 0;
+static int64 sLastRetraceMicros = 0;
 static bool sInterruptInstalled = false;
 static status_t RestoreScanout(Controller* controller);
 static status_t AcquireFrameBuffer(Handle* handle);
+static int32 RetraceInterrupt(void* data);
 static void ReleaseFrameBuffer(Controller* controller);
 
 
@@ -636,7 +641,56 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 		if (sOwner == NULL)
 			return B_NO_INIT;
 		sAccelerant.retraces = (uint32_t)atomic_get(&sRetraces);
+		sAccelerant.interruptCalls = (uint32_t)atomic_get(&sInterruptCalls);
+		sAccelerant.interruptSpurious = (uint32_t)atomic_get(&sInterruptSpurious);
+		sAccelerant.firstRetraceMicros = sFirstRetraceMicros;
+		sAccelerant.lastRetraceMicros = sLastRetraceMicros;
 		return user_memcpy(buffer, &sAccelerant, sizeof(sAccelerant));
+	}
+	if (op == kRearmRetrace) {
+		if (!controller->accelerantEnabled)
+			return B_DEV_INVALID_IOCTL;
+		if (!handle->writable)
+			return B_NOT_ALLOWED;
+		if (length != sizeof(RetraceRearm))
+			return B_BAD_VALUE;
+		if (buffer == NULL)
+			return B_BAD_ADDRESS;
+		RetraceRearm rearm;
+		if (user_memcpy(&rearm, buffer, sizeof(rearm)) != B_OK)
+			return B_BAD_ADDRESS;
+		if (rearm.version != kAccelerantVersion)
+			return B_BAD_VALUE;
+		MutexLocker locker(sHardwareLock);
+		if (sOwner == NULL || sVopRegisters == NULL || !sInterruptInstalled)
+			return B_NO_INIT;
+		memset(&rearm, 0, sizeof(rearm));
+		rearm.version = kAccelerantVersion;
+		uint32 base = kVopPortInterruptBase + sAccelerant.port * kVopPortInterruptStride;
+		rearm.enableBefore = ReadDisplayRegister(sVopRegisters, base + kVopPortInterruptEnable);
+		rearm.statusBefore = ReadDisplayRegister(sVopRegisters, base + kVopPortInterruptStatus);
+		WriteDisplayRegister(sVopRegisters, base + kVopPortInterruptEnable,
+			kVopInterruptFrameStart << 16);
+		remove_io_interrupt_handler(controller->resources.vopInterrupt, RetraceInterrupt, NULL);
+		sInterruptInstalled = false;
+		rearm.reinstall = install_io_interrupt_handler(controller->resources.vopInterrupt,
+			RetraceInterrupt, NULL, 0);
+		sInterruptInstalled = rearm.reinstall == B_OK;
+		WriteDisplayRegister(sVopRegisters, base + kVopPortInterruptClear,
+			kVopInterruptMask << 16 | kVopInterruptMask);
+		if (sInterruptInstalled) {
+			WriteDisplayRegister(sVopRegisters, base + kVopPortInterruptEnable,
+				kVopInterruptFrameStart << 16 | kVopInterruptFrameStart);
+		}
+		rearm.enableAfter = ReadDisplayRegister(sVopRegisters, base + kVopPortInterruptEnable);
+		rearm.statusAfter = ReadDisplayRegister(sVopRegisters, base + kVopPortInterruptStatus);
+		rearm.retraces = (uint32_t)atomic_get(&sRetraces);
+		dprintf("rk3588_display: retrace re-armed enable=%#" B_PRIx32 "/%#" B_PRIx32 " status=%#"
+			B_PRIx32 "/%#" B_PRIx32 " reinstall=%" B_PRId32 " retraces=%" B_PRIu32 " calls=%"
+			B_PRId32 " spurious=%" B_PRId32 "\n", rearm.enableBefore, rearm.enableAfter,
+			rearm.statusBefore, rearm.statusAfter, rearm.reinstall, rearm.retraces,
+			atomic_get(&sInterruptCalls), atomic_get(&sInterruptSpurious));
+		return user_memcpy(buffer, &rearm, sizeof(rearm));
 	}
 	if (op == kCloneFrameBuffer) {
 		if (!controller->accelerantEnabled)
@@ -806,15 +860,21 @@ RestoreScanout(Controller* controller)
 static int32
 RetraceInterrupt(void* /*data*/)
 {
+	atomic_add(&sInterruptCalls, 1);
 	uint32 base = kVopPortInterruptBase + sAccelerant.port * kVopPortInterruptStride;
 	uint32 status = ReadDisplayRegister(sVopRegisters, base + kVopPortInterruptStatus)
 		& kVopInterruptMask;
-	if (status == 0)
+	if (status == 0) {
+		atomic_add(&sInterruptSpurious, 1);
 		return B_UNHANDLED_INTERRUPT;
+	}
 	WriteDisplayRegister(sVopRegisters, base + kVopPortInterruptClear, status << 16 | status);
 	if ((status & kVopInterruptFrameStart) == 0)
 		return B_HANDLED_INTERRUPT;
-	atomic_add(&sRetraces, 1);
+	int32 count = atomic_add(&sRetraces, 1) + 1;
+	sLastRetraceMicros = system_time();
+	if (count == 1)
+		sFirstRetraceMicros = sLastRetraceMicros;
 	int32 waiting = 0;
 	if (get_sem_count(sRetraceSemaphore, &waiting) == B_OK && waiting < 0) {
 		release_sem_etc(sRetraceSemaphore, -waiting, B_DO_NOT_RESCHEDULE);
@@ -859,6 +919,10 @@ StartRetrace(uint32_t port, uint32_t interrupt)
 	if (sRetraceSemaphore < B_OK)
 		return sRetraceSemaphore;
 	sRetraces = 0;
+	sInterruptCalls = 0;
+	sInterruptSpurious = 0;
+	sFirstRetraceMicros = 0;
+	sLastRetraceMicros = 0;
 	status_t status = install_io_interrupt_handler(interrupt, RetraceInterrupt, NULL, 0);
 	if (status != B_OK) {
 		StopRetrace(port, interrupt);
@@ -1040,8 +1104,10 @@ ReleaseFrameBuffer(Controller* controller)
 	sShared = NULL;
 	sOwner = NULL;
 	dprintf("rk3588_display: frame buffer released; firmware %#" B_PRIx32 " restore result=%"
-		B_PRIu32 " polls=%" B_PRIu32 " retraces=%" B_PRId32 "\n", sAccelerant.firmwareAddress,
-		result, request.polls, sRetraces);
+		B_PRIu32 " polls=%" B_PRIu32 " retraces=%" B_PRId32 " calls=%" B_PRId32 " spurious=%"
+		B_PRId32 " first=%" B_PRId64 " last=%" B_PRId64 "\n", sAccelerant.firmwareAddress,
+		result, request.polls, sRetraces, sInterruptCalls, sInterruptSpurious,
+		sFirstRetraceMicros, sLastRetraceMicros);
 	memset(&sAccelerant, 0, sizeof(sAccelerant));
 }
 

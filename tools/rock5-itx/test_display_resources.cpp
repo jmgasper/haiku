@@ -30,6 +30,7 @@ using status_t = int32_t;
 static const status_t B_OK = 0, B_BAD_VALUE = -1, B_BAD_ADDRESS = -2,
 	B_DEV_INVALID_IOCTL = -3, B_NO_MEMORY = -4, B_NOT_SUPPORTED = -5,
 	B_NOT_ALLOWED = -6, B_ENTRY_NOT_FOUND = -8, B_ERROR = -9, B_BUSY = -10, B_NO_INIT = -11;
+using int64 = int64_t;
 using area_id = int32_t;
 using team_id = int32_t;
 using addr_t = uintptr_t;
@@ -99,6 +100,7 @@ static void kernel_dprintf(const char*, ...) {}
 #define B_PRIu32 "u"
 #define B_PRIx32 "x"
 #define B_PRId32 "d"
+#define B_PRId64 "lld"
 #define B_PRIx64 "llx"
 
 // I2C master model for the HDMI TX1 window: reacts synchronously to writes
@@ -1469,7 +1471,8 @@ main()
 
 	// Accelerant profile: handles, signature and device name, acquiring and
 	// releasing the frame buffer, clones, refusals and failure cleanup.
-	static_assert(sizeof(AccelerantInfo) == 56, "Accelerant ABI layout changed");
+	static_assert(sizeof(AccelerantInfo) == 80, "Accelerant ABI layout changed");
+	static_assert(sizeof(RetraceRearm) == 32, "Re-arm ABI layout changed");
 	static_assert(sizeof(SharedInfo) == 236, "Shared info ABI layout changed");
 	Prepare();
 	controller.resources = good;
@@ -1564,7 +1567,8 @@ main()
 	assert(acc.flags == (kAccelerantAcquired | kAccelerantEdid | kAccelerantRetrace) && acc.sharedArea == sSharedModelArea);
 	assert(acc.frameBufferPhysical == kModelFramePhysical && acc.firmwareAddress == kModelFirmwareAddress);
 	assert(acc.port == 2 && acc.window == 2 && acc.polls == 2 && acc.width == 1920 && acc.height == 1080);
-	assert(acc.bytesPerRow == 7680 && acc.reserved == 0 && acc.retraces == 0);
+	assert(acc.bytesPerRow == 7680 && acc.retraces == 0 && acc.interruptCalls == 0);
+	assert(acc.interruptSpurious == 0 && acc.firstRetraceMicros == 0 && acc.lastRetraceMicros == 0);
 	assert((acc.flags & kAccelerantRetrace) != 0 && acc.retraceSemaphore == sModelSemaphore);
 	// Frame-start interrupts: ignored while idle, acknowledged, and released
 	// only towards waiting threads. Other status bits are acknowledged too.
@@ -1582,6 +1586,20 @@ main()
 	sVopModel[0xc8 / 4] = sVopShadow[0xc8 / 4] = 0x10; // not a frame start
 	assert(sHandler(sHandlerData) == B_HANDLED_INTERRUPT && atomic_get(&sRetraces) == 2);
 	assert(Control(reader, kGetAccelerantInfo, &acc, sizeof(acc)) == B_OK && acc.retraces == 2);
+	assert(acc.interruptCalls == 4 && acc.interruptSpurious == 1);
+	assert(acc.firstRetraceMicros > 0 && acc.lastRetraceMicros > acc.firstRetraceMicros);
+	// Diagnostic re-arm: disable, reinstall the handler, clear and enable again.
+	RetraceRearm rearm = {};
+	rearm.version = kAccelerantVersion;
+	assert(Control(reader, kRearmRetrace, &rearm, sizeof(rearm)) == B_NOT_ALLOWED);
+	assert(Control(primary, kRearmRetrace, &rearm, sizeof(rearm) - 1) == B_BAD_VALUE);
+	sVopWrites.clear();
+	assert(Control(primary, kRearmRetrace, &rearm, sizeof(rearm)) == B_OK);
+	assert(rearm.enableBefore == 0x20 && rearm.statusBefore == 0 && rearm.enableAfter == 0x20);
+	assert(rearm.statusAfter == 0 && rearm.reinstall == B_OK && rearm.retraces == 2);
+	assert(sVopWrites.size() == 3 && sVopWrites[0] == std::make_pair(0xc0u, 0x00200000u));
+	assert(sVopWrites[1] == std::make_pair(0xc4u, 0xffffffffu) && sVopWrites[2] == std::make_pair(0xc0u, 0x00200020u));
+	assert(sHandlerRemovals == 1 && sHandlerInstalls == 2 && sHandler != NULL);
 	sVopWrites.clear();
 	acc.version = 2;
 	assert(Control(reader, kGetAccelerantInfo, &acc, sizeof(acc)) == B_BAD_VALUE);
@@ -1607,7 +1625,7 @@ main()
 	assert(sOwner == NULL && sVopWrites.size() == 3 && sVopWrites[0] == std::make_pair(0xc0u, 0x00200000u));
 	assert(sVopWrites[1] == std::make_pair(kModelAddressOffset, kModelFirmwareAddress));
 	assert(sVopWrites[2] == std::make_pair(0x000u, 0x00048004u) && sVopOverrides[0xc0] == 0);
-	assert(sHandler == NULL && sHandlerRemovals == 1 && sModelSemaphore < 0 && sSemaphoreDeletions == 1);
+	assert(sHandler == NULL && sHandlerRemovals == 2 && sModelSemaphore < 0 && sSemaphoreDeletions == 1);
 	assert(sConsoleUpdates == 2 && sConsole.address == 0xffff000012340000ull && sConsole.bytesPerRow == 7680);
 	assert(sNullClones == 1 && sFrameArea < 0 && sSharedPage == NULL && sAreas.empty() && sVopModel == NULL);
 	assert(Free(primary) == B_OK);

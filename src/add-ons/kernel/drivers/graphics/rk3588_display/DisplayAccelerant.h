@@ -22,6 +22,7 @@ static const uint32_t kAcquireFrameBuffer = 0x52444904; // writable handle only
 static const uint32_t kGetAccelerantInfo = 0x52444905;
 static const uint32_t kCloneFrameBuffer = 0x52444906; // fills an area_info
 static const uint32_t kGetDeviceName = 0x52444907; // B_PATH_NAME_LENGTH bytes
+static const uint32_t kRearmRetrace = 0x52444908; // diagnostic: re-enable the frame-start interrupt
 static const uint32_t kAccelerantVersion = 1;
 static const char kAccelerantSignature[] = "rk3588_display.accelerant";
 static const char kDevicePath[] = "graphics/rk3588_display/0";
@@ -60,6 +61,22 @@ struct AccelerantInfo {
 	uint32_t bytesPerRow;
 	int32_t retraceSemaphore; // released at each frame start while acquired, or -1
 	uint32_t retraces; // frame-start interrupts handled since acquisition
+	uint32_t interruptCalls; // handler invocations, including ones with no status
+	uint32_t interruptSpurious; // invocations that found no port status
+	int64_t firstRetraceMicros; // system time of the first and latest frame start
+	int64_t lastRetraceMicros;
+};
+
+// Diagnostic re-arm: disables and re-enables the port's frame-start interrupt
+// and reinstalls the handler, reporting the interrupt words around it.
+struct RetraceRearm {
+	uint32_t version; // in
+	uint32_t enableBefore;
+	uint32_t statusBefore;
+	uint32_t enableAfter;
+	uint32_t statusAfter;
+	int32_t reinstall; // status of the handler reinstallation
+	uint32_t retraces;
 	uint32_t reserved;
 };
 
