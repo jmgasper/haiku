@@ -60,6 +60,7 @@ public:
 	static inline NvHaikuBaseDeviceHandle *FromNvfp(nv_file_private_t *nvfp) {return static_cast<NvHaikuBaseDeviceHandle*>(nvfp->ctl_nvfp_priv);}
 	inline nv_file_private_t &Nvfp() {return fNvfp;}
 	inline nv_alloc_mapping_context_t &MmapContext() {return fMmapContext;}
+	void ConsumeMmapContext();
 	NvHaikuBaseDevice *GetBaseDevice() const {return fDevice;}
 
 	inline void SetDatalessEventPending();

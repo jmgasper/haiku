@@ -87,7 +87,12 @@ NvRmMemoryMapping NvRmDevice::MapMemory(NvHandle hMemory, bool isSystemMemory, N
 	};
 	int ret = NvRmIoctl(memFd.Get(), NV_HAIKU_MAP, &mapParams, sizeof(mapParams));
 	CheckErrno(ret); // TODO: call rm.UnmapMemory on fail
-	return NvRmMemoryMapping(rm, fDevice.Get(), hMemory, pLinearAddress, flags, mapParams.address, length, ret);
+	// The driver maps whole pages, so a mapping that does not start on a page
+	// boundary - a channel's USERD, for instance - has to be offset back to
+	// where RM put it, which pLinearAddress tells us.
+	void *address = (uint8*)mapParams.address
+		+ ((addr_t)pLinearAddress & (B_PAGE_SIZE - 1));
+	return NvRmMemoryMapping(rm, fDevice.Get(), hMemory, pLinearAddress, flags, address, length, ret);
 #else
 	void *address = (void*)mmap(0, length, PROT_READ|PROT_WRITE, MAP_SHARED, memFd.Get(), 0);
 	assert(address != MAP_FAILED); // TODO: call rm.UnmapMemory on fail

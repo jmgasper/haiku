@@ -4,6 +4,8 @@
 #include "Driver.h"
 
 #include <new>
+#include <stdlib.h>
+#include <string.h>
 
 #include <sys/ioccom.h>
 
@@ -67,17 +69,23 @@ NvHaikuBaseDeviceHandle::~NvHaikuBaseDeviceHandle()
 	RmStack stack;
 	rm_cleanup_file_private(stack.Get(), &fDevice->fNvState, &fNvfp);
 
-    if (fMmapContext.valid)
-    {
-        if (fMmapContext.page_array != nullptr)
-        {
-            free(fMmapContext.page_array);
-        }
-        if (fMmapContext.memArea.pRanges != nullptr)
-        {
-            free(fMmapContext.memArea.pRanges);
-        }
-    }
+    ConsumeMmapContext();
+}
+
+
+// Release the mapping context RM stored with nv_add_mapping_context_to_file().
+// It describes exactly one pending mapping, and RM refuses to store another one
+// while it is still valid, so it has to be dropped once the mapping is done -
+// this is what nvidia_mmap() does on Linux.  Keeping a stale context around
+// makes every later mapping on the same file descriptor alias the first one.
+void NvHaikuBaseDeviceHandle::ConsumeMmapContext()
+{
+    if (!fMmapContext.valid)
+        return;
+
+    free(fMmapContext.page_array);
+    free(fMmapContext.memArea.pRanges);
+    memset(&fMmapContext, 0, sizeof(fMmapContext));
 }
 
 status_t NvHaikuBaseDeviceHandle::Close()
@@ -191,6 +199,11 @@ status_t NvHaikuBaseDeviceHandle::Control(uint32 op, void *data, size_t len)
 				dprintf("[!] !fMmapContext.valid\n");
 				return EINVAL;
 			}
+
+			struct MmapContextConsumer {
+				NvHaikuBaseDeviceHandle &handle;
+				~MmapContextConsumer() {handle.ConsumeMmapContext();}
+			} mmapContextConsumer {*this};
 
 			AreaDeleter area;
 			void *baseAddress {};
