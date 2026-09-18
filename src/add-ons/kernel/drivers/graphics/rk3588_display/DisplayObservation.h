@@ -92,11 +92,17 @@ static const uint32_t kVopEsmartOffsets[] = {0x00, 0x10, 0x14, 0x1c, 0x20, 0x24,
 	0x28};
 static const unsigned kVopEsmartRegisterCount = 7;
 
-// DW HDMI QP TX1 (fdea0000): only the first 4 KiB are mapped and read.
-static const uint32_t kHdmiMapSize = 0x1000;
-static const uint32_t kHdmiOffsets[] = {0x044, 0x0e8, 0x0ec, 0x0f0, 0x0f4, 0x180,
-	0x800, 0x804, 0x808, 0x80c, 0x814, 0x81c, 0x880, 0x884};
-static const unsigned kHdmiCount = 14;
+// DW HDMI QP TX1 (fdea0000): 16 KiB are mapped and only registers that Linux or
+// the firmware read (read-modify-write or read) are touched. Reading other
+// offsets can raise a synchronous external abort: the +259 native trial
+// panicked on the write-only I2CM_CONTROL0 (0xec). Order: GLOBAL_SWDISABLE,
+// I2CM_INTERFACE_CONTROL0/1, AUDIO_INTERFACE_CONFIG0, HDCP2LOGIC_CONFIG0,
+// LINK_CONFIG0, PKTSCHED_PKT_CONFIG1, PKTSCHED_PKT_EN, MAINUNIT_1_INT_STATUS,
+// MAINUNIT_1_INT_MASK_N.
+static const uint32_t kHdmiMapSize = 0x4000;
+static const uint32_t kHdmiOffsets[] = {0x044, 0x0f4, 0x0f8, 0x820, 0x8e0, 0x968,
+	0xa9c, 0xaa8, 0x3020, 0x3024};
+static const unsigned kHdmiCount = 10;
 
 
 struct DisplaySnapshot {

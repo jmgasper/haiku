@@ -79,7 +79,7 @@ def transcript(samples=3, vop=True, hdmi=True, vop_on=True, vo1_on=True, hdmi_ga
                 ' mipi0=0 mipi1=0 rgb=0 dp0_mux=0 dp1_mux=0 hdmi_edp0_mux=0 hdmi_edp1_mux=1'
                 ' version=35880000' % index)
         if hdmi:
-            lines.append('ROCK5_DISPLAY_HDMI1 sample=%d %s' % (index, words(list(range(14)))))
+            lines.append('ROCK5_DISPLAY_HDMI1 sample=%d %s' % (index, words(list(range(10)))))
         lines.append('ROCK5_DISPLAY_HPD sample=%d hdmi0_level=0 hdmi0_int=0 hdmi1_level=1 hdmi1_int=1'
             ' vop_on=%d vo0_on=1 vo1_on=%d vop_gates=0x0 hdmi_gates=%#x hdptx1_status=0xf'
             % (index, vop_on, vo1_on, 4 if hdmi_gated else 0))

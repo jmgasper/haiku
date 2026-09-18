@@ -147,13 +147,13 @@ map_physical_memory(const char*, uint64 base, size_t bytes, uint32 spec,
 		assert(bytes == B_PAGE_SIZE);
 	else if (base == 0xfdd90000)
 		assert(bytes == kVopMapSize && (sRepairStatus & (1u << 16)) != 0 && (sGate52 & 0x300) == 0);
-	else if (base == 0xfdea0000 && bytes == kHdmiEdidMapSize) {
+	else if (base == 0xfdea0000) {
+		assert((sRepairStatus & (1u << 18)) != 0 && (sGate61 & 4) == 0);
 		// Only the opt-in EDID path maps HDMI TX1 writable, after its own gating.
-		assert((sRepairStatus & (1u << 18)) != 0 && (sGate61 & 4) == 0 && sAllowEdid);
-		writable = true;
-	} else if (base == 0xfdea0000)
-		assert(bytes == kHdmiMapSize && (sRepairStatus & (1u << 18)) != 0 && (sGate61 & 4) == 0);
-	else
+		writable = (protection & B_KERNEL_WRITE_AREA) != 0;
+		assert(bytes == (writable ? kHdmiEdidMapSize : kHdmiMapSize));
+		assert(!writable || sAllowEdid);
+	} else
 		assert(false);
 	assert(spec == (B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY));
 	// Never a writable mapping of any control block or of VOP2.
@@ -561,13 +561,24 @@ main()
 {
 	static_assert(sizeof(ResourceInfo) == 304, "Diagnostic ABI layout changed");
 	static_assert(sizeof(EdidRequest) == 192, "EDID ABI layout changed");
-	static_assert(sizeof(DisplaySnapshot) == 800, "Snapshot ABI layout changed");
+	static_assert(sizeof(DisplaySnapshot) == 784, "Snapshot ABI layout changed");
 	for (unsigned offset : kVopSystemOffsets) assert(offset + 4 <= kVopMapSize);
 	for (unsigned offset : kVopOverlayOffsets) assert(offset + 4 <= kVopMapSize);
 	assert(kVopPortBase + 3 * kVopPortStride + 0x54 + 4 <= kVopMapSize);
 	assert(kVopClusterBase + 3 * kVopClusterStride + 0x100 + 4 <= kVopMapSize);
 	assert(kVopEsmartBase + 3 * kVopEsmartStride + 0x28 + 4 <= kVopMapSize);
 	for (unsigned offset : kHdmiOffsets) assert(offset + 4 <= kHdmiMapSize);
+	{
+		// Registers Linux 6.18 dw-hdmi-qp.c or EDK2 DwHdmiQpLib.c read or read-modify-write.
+		static const unsigned kReadableByReference[] = {0x044, 0x0f4, 0x0f8, 0x10c, 0x820, 0x8e0,
+			0x968, 0xa9c, 0xaa8, 0x3020, 0x3024};
+		for (unsigned offset : kHdmiOffsets) {
+			bool listed = false;
+			for (unsigned known : kReadableByReference) listed |= known == offset;
+			assert(listed);
+			assert(offset != 0x0ec); // write-only I2CM_CONTROL0 aborts on read (+259 panic)
+		}
+	}
 	for (unsigned offset : kPmuOffsets) assert(offset + 4 <= 0x400);
 	for (unsigned offset : kHdptxGrfOffsets) assert(offset + 4 <= 0x100);
 	assert(sysconf(_SC_PAGESIZE) == B_PAGE_SIZE);

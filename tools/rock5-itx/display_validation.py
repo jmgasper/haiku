@@ -17,7 +17,7 @@ VOP_OVL_COUNT = 7
 VOP_VP_COUNT = 14
 VOP_CLUSTER_COUNT = 8
 VOP_ESMART_COUNT = 7
-HDMI_COUNT = 14
+HDMI_COUNT = 10
 
 FLAG_READ_ONLY = 1
 FLAG_VOP_READ = 2
@@ -181,9 +181,11 @@ def validate(body, expected_samples=3):
                 raise ValidationError('probe timing decode disagrees for port %d' % port)
     if hdmi_read:
         hdmi = collect('HDMI1', HDMI_COUNT)
-        result['hdmi1'] = dict(global_swdisable=hdmi[0], i2cm_status=hdmi[3], mainunit_status=hdmi[5],
-            video_config=hdmi[6:9], video_control=hdmi[9], video_status=hdmi[10],
-            packing=hdmi[11], monitor_config=hdmi[12], monitor_status=hdmi[13])
+        result['hdmi1'] = dict(global_swdisable=hdmi[0], video_disabled=(hdmi[0] >> 6) & 1,
+            i2cm_control0=hdmi[1], i2cm_control1=hdmi[2], audio_config=hdmi[3],
+            hdcp2_config=hdmi[4], link_config=hdmi[5], frl=hdmi[5] & 1, dvi=(hdmi[5] >> 4) & 1,
+            pktsched_config1=hdmi[6], pktsched_enable=hdmi[7], interrupt_status=hdmi[8],
+            interrupt_mask=hdmi[9])
     return result
 
 

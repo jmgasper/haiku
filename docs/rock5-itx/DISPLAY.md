@@ -44,7 +44,7 @@ snapshot.
 
 A snapshot reads the always-on PMU, CRU and GRF words first, then maps VOP2
 (8 KiB) only while the VOP power domain is on and its bus clocks are ungated,
-and HDMI TX1 (4 KiB) only while the VO1 domain is on and its APB clock is
+and HDMI TX1 (16 KiB) only while the VO1 domain is on and its APB clock is
 ungated. It records VOP2 version, interface enables and muxes, overlay
 selection, all four video-port timings, cluster and ESMART window controls
 and addresses, HDMI TX1 video-interface status and the HDMI hot-plug levels.
@@ -54,7 +54,28 @@ pages, including 75 rejected description faults and mapping failures at every
 step. The validator re-derives timing and routing from the raw words and
 requires three consecutive samples to agree.
 
-Native results are recorded below once the two-boot trial completes.
+### Retained +259 failure
+
+The first native +259 boot passed the Mali firmware, resource and platform
+regressions, published `/dev/graphics/rk3588_display/0`, rejected a writable
+open and reported the matching resource description, then panicked inside the
+snapshot with a synchronous external abort (`ESR 96000010`,
+`FAR ffff0000022160ec`) while reading HDMI TX1 offset `0xec`, the write-only
+`I2CM_CONTROL0` software-reset register. VOP2 reads had completed. Neither
+Linux nor the firmware ever reads that register. The guarded session's
+emergency recovery returned ROOBI (boot `897a16e0-6c7c-4652-9569-55355b88ca49`)
+through the corrected firmware boot order. The panic, its controller record and
+the used image are retained:
+`artifacts/automated-display-observe/20260918T033856Z-0336d2`,
+`artifacts/interactive/20260918T033858Z-59a66f` and
+`artifacts/nanokvm-image-archive/20260918T034713Z-afdc15-display-observe-panic`.
+
+The corrected driver reads only HDMI TX1 registers that the reference drivers
+read or read-modify-write (`GLOBAL_SWDISABLE`, the I2C master interface
+controls, `AUDIO_INTERFACE_CONFIG0`, `HDCP2LOGIC_CONFIG0`, `LINK_CONFIG0`, the
+packet scheduler configuration/enable words and the main-unit interrupt
+status/mask), and the host fixture rejects any other offset. Native results
+are recorded below once the two-boot trial completes.
 
 ## Stage 2: EDID over the HDMI TX1 I2C master
 
