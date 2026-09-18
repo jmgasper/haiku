@@ -215,6 +215,45 @@ The fixture now models the shadowed registers and the commit bit, including a
 port that never takes the commit (bounded timeout, swap kept pending for the
 restore on close).
 
+### Qualified +269 scanout swap
+
+The corrected `hrev60097+269` image (source `23b4eebf6c`, SHA-256
+`79de4d2691ef350d9560452ca430857e450be40224de778b916d7daa6922d441`) passes
+the host checks (159 tests), both two-boot QEMU modes and two native boots
+with normal reboot, verified shutdown and automatic ROOBI recovery. On each
+boot, after the observation and EDID inventory, the probe swapped the live
+window to the driver pattern, held it for 30 s, and restored it; the NanoKVM
+frame captured during the hold shows the eight colour bars and grey border
+(classifier: 28 of 28 samples correct; also viewed), the frame after the
+restore shows the normal desktop, and the observation after the swap equals
+the one before it. This is the first VOP2 register write from Haiku on the
+board.
+
+| Boot | Pattern buffer | Show (polls, time) | Restore (polls, time) |
+| --- | --- | --- | --- |
+| 1 | `0x14c55000` | 240 polls, 12.4 ms | 731 polls, 14.6 ms |
+| 2 | `0x148d1000` | 790 polls, 23.4 ms | 738 polls, 14.8 ms |
+
+Both swaps used video port 2 and ESMART2 with the firmware address
+`0xed280000`, wrote only `REGION0_YRGB_MST` and `REG_CFG_DONE`
+(`0x00048004`), and completed within two frame periods. The driver never had
+to restore on close. The two boots' pattern buffers differ only because the
+contiguous allocation landed elsewhere.
+
+- Native evidence: `artifacts/automated-display-scanout/20260918T055256Z-9be223`
+  (`qualification.json`, `scanout-boot{1,2}.json`, `pattern-boot{1,2}.json`,
+  `after-scanout-boot{1,2}.json`, desktop and pattern reviews, observation and
+  EDID decodes, FDT captures, driver syslog extracts).
+- Session: `artifacts/interactive/20260918T055257Z-442e25` (pattern frames
+  `frame-009.jpg` and `frame-024.jpg`); recovery boot
+  `e8d0f2f4-b701-44fd-baa7-3806e5571b60` after verified shutdown.
+- QEMU EL2/EL1: `artifacts/qemu-shell/20260918T054755Z-02bf6b` and
+  `20260918T055012Z-b681aa`; build `artifacts/build-20260918T054708Z.log`.
+- Stage: `artifacts/display-scanout/20260918T054742Z-b09571`; used image
+  archive `artifacts/nanokvm-image-archive/20260918T060137Z-080d21`.
+- Independent Linux eMMC readbacks were not run: the ROOBI sudo password is
+  not available to this session.
+
 ## Later stages
 
 3. After the swap: a board accelerant that owns the framebuffer at the
