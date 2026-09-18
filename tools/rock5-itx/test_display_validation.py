@@ -24,7 +24,7 @@ def port_words(width, height, standby=0, mode=0):
 
 
 def transcript(samples=3, vop=True, hdmi=True, vop_on=True, vo1_on=True, hdmi_gated=False,
-        consistent=True, flags=None, status_jitter=0):
+        consistent=True, flags=None, status_jitter=0, pll=True):
     lines = ['ROCK5_DISPLAY_WRITE_OPEN_REJECTED',
         'ROCK5_DISPLAY_RESOURCES version=1 flags=1 vop=0xfdd90000/0x4200 lut=0xfdd95000/0x1000'
         ' hdmi=0xfdea0000/0x20000 hdptx=0xfed70000/0x2000 hdptx_grf=0xfd5e4000/0x100'
@@ -51,7 +51,7 @@ def transcript(samples=3, vop=True, hdmi=True, vop_on=True, vo1_on=True, hdmi_ga
         lines.append('ROCK5_DISPLAY_SYS_GRF sample=%d %s' % (index, words([0, 0x3000, status1 | (status_jitter * index)])))
         lines.append('ROCK5_DISPLAY_VOP_GRF sample=%d %s' % (index, words([0x2])))
         lines.append('ROCK5_DISPLAY_VO1_GRF sample=%d %s' % (index, words([0x0, 0x0])))
-        lines.append('ROCK5_DISPLAY_HDPTX1_GRF sample=%d %s' % (index, words([0xe0, 0xf])))
+        lines.append('ROCK5_DISPLAY_HDPTX1_GRF sample=%d %s' % (index, words([0xe0, 0xf] if pll else [0, 0])))
         if vop:
             system = [0] * check.VOP_SYS_COUNT
             system[1] = 0x35880000
@@ -564,6 +564,10 @@ class DisplayValidationTest(unittest.TestCase):
         self.assertFalse(result['vop_read'])
         self.assertNotIn('ports', result)
         result = check.validate(transcript(hdmi=False, hdmi_gated=True))
+        # DPMS off: the PHY PLL is off, so the driver skips the HDMI block.
+        powered_off = check.validate(transcript(hdmi=False, pll=False))
+        self.assertFalse(powered_off['hdmi_read'])
+        self.assertEqual((powered_off['hdptx_grf'][0], powered_off['hdptx1']['pll_lock']), (0, 0))
         self.assertFalse(result['hdmi_read'])
         self.assertNotIn('hdmi1', result)
 
@@ -578,6 +582,7 @@ class DisplayValidationTest(unittest.TestCase):
             ('flags', transcript(flags=1 | 2 | 8 | 4)),
             ('gating', transcript(vop=True, vop_on=False)),
             ('hdmi_gating', transcript(hdmi=True, hdmi_gated=True)),
+            ('hdmi_phy_off', transcript(hdmi=True, pll=False)),
             ('summary_flags', transcript().replace('vop_read=1 hdmi_read=1', 'vop_read=0 hdmi_read=1')),
             ('timing', transcript().replace('width=1920 height=1080', 'width=1280 height=720')),
             ('duplicate', transcript() + 'ROCK5_DISPLAY_PMU sample=0 ' + words([0] * 11) + '\n'),

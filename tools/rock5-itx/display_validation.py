@@ -148,11 +148,14 @@ def validate(body, expected_samples=3):
     power = dict(vop_on=(repair >> 16) & 1, vo0_on=(repair >> 17) & 1, vo1_on=(repair >> 18) & 1,
         power_gate2=pmu[7])
     gates = dict(vop=cru_gate[0] & 0x300, hdmi_pclk=cru_gate[3] & 0x4)
-    # The driver's own gating rule, re-derived here from the raw words.
+    # The driver's own gating rule, re-derived here from the raw words. The
+    # HDMI TX block is unreachable while the HDPTX PHY is powered down (DPMS
+    # off), which the GRF shows as the PLL-enable bit (CON0 bit 7) clear.
+    phy_pll = (hdptx_grf[0] >> 7) & 1
     if vop_read != (power['vop_on'] == 1 and gates['vop'] == 0):
         raise ValidationError('VOP read flag disagrees with power/clock words')
-    if hdmi_read != (power['vo1_on'] == 1 and gates['hdmi_pclk'] == 0):
-        raise ValidationError('HDMI read flag disagrees with power/clock words')
+    if hdmi_read != (power['vo1_on'] == 1 and gates['hdmi_pclk'] == 0 and phy_pll == 1):
+        raise ValidationError('HDMI read flag disagrees with power/clock/PLL words')
     status1 = sys_grf[2]
     hpd = dict(hdmi0_level=(status1 >> 19) & 1, hdmi0_int=(status1 >> 16) & 1,
         hdmi1_level=(status1 >> 27) & 1, hdmi1_int=(status1 >> 24) & 1)
