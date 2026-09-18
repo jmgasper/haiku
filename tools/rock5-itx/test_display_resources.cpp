@@ -690,6 +690,19 @@ remove_io_interrupt_handler(int32 interrupt, interrupt_handler handler, void* da
 }
 
 
+static const team_id kModelTeam = 4242;
+static team_id team_get_current_team_id() { return kModelTeam; }
+static team_id sSemaphoreOwner = -1;
+
+static status_t
+set_sem_owner(sem_id id, team_id team)
+{
+	assert(id == sModelSemaphore && id >= 0 && team == kModelTeam);
+	sSemaphoreOwner = team;
+	return B_OK;
+}
+
+
 static sem_id
 create_sem(int32 count, const char* name)
 {
@@ -708,6 +721,7 @@ delete_sem(sem_id id)
 {
 	assert(id == sModelSemaphore && id >= 0);
 	sModelSemaphore = -1;
+	sSemaphoreOwner = -1;
 	sSemaphoreDeletions++;
 	return B_OK;
 }
@@ -1550,6 +1564,7 @@ main()
 	assert(sVopWrites[1] == std::make_pair(0x000u, 0x00048004u));
 	assert(sVopWrites[2] == std::make_pair(0xc4u, 0xffffffffu) && sVopWrites[3] == std::make_pair(0xc0u, 0x00200020u));
 	assert(sVopOverrides[0xc0] == 0x20 && sHandler != NULL && sHandlerInterrupt == 188 && sModelSemaphore >= 0);
+	assert(sSemaphoreOwner == kModelTeam); // owned by app_server's team, never by the kernel
 	assert(sConsoleUpdates == 1 && sConsole.address == (addr_t)sFrameAllocation && sConsole.width == 1920);
 	assert(sConsole.height == 1080 && sConsole.depth == 32 && sConsole.bytesPerRow == 7680);
 	const SharedInfo* shared = (const SharedInfo*)sSharedPage;

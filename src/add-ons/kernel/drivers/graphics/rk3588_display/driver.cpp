@@ -11,6 +11,7 @@
 #include <frame_buffer_console.h>
 #include <graphic_driver.h>
 #include <lock.h>
+#include <team.h>
 #include <util/AutoLock.h>
 #include <vm/vm.h>
 #if defined(__aarch64__)
@@ -918,12 +919,21 @@ StartRetrace(uint32_t port, uint32_t interrupt)
 	sRetraceSemaphore = create_sem(0, "RK3588 display retrace");
 	if (sRetraceSemaphore < B_OK)
 		return sRetraceSemaphore;
+	// A kernel-owned semaphore cannot be acquired from userland (the kernel
+	// logs "tried to acquire kernel semaphore"); the acquiring team, which is
+	// app_server, owns it and it goes away with that team.
+	status_t status = set_sem_owner(sRetraceSemaphore, team_get_current_team_id());
+	if (status != B_OK) {
+		delete_sem(sRetraceSemaphore);
+		sRetraceSemaphore = -1;
+		return status;
+	}
 	sRetraces = 0;
 	sInterruptCalls = 0;
 	sInterruptSpurious = 0;
 	sFirstRetraceMicros = 0;
 	sLastRetraceMicros = 0;
-	status_t status = install_io_interrupt_handler(interrupt, RetraceInterrupt, NULL, 0);
+	status = install_io_interrupt_handler(interrupt, RetraceInterrupt, NULL, 0);
 	if (status != B_OK) {
 		StopRetrace(port, interrupt);
 		return status;

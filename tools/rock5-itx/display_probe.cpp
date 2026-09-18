@@ -412,14 +412,20 @@ CheckAccelerant()
 	if ((info.flags & kAccelerantRetrace) != 0) {
 		// Wait for a series of frame starts and measure their spacing.
 		const unsigned kWaits = 24;
-		unsigned timeouts = 0;
+		unsigned timeouts = 0, errors = 0;
+		status_t lastError = B_OK;
 		bigtime_t first = 0, last = 0;
 		bigtime_t started = system_time();
 		for (unsigned i = 0; i < kWaits; i++) {
 			status_t status = acquire_sem_etc(info.retraceSemaphore, 1, B_RELATIVE_TIMEOUT, 200000);
 			bigtime_t now = system_time();
-			if (status != B_OK) {
+			if (status == B_TIMED_OUT) {
 				timeouts++;
+				continue;
+			}
+			if (status != B_OK) {
+				errors++;
+				lastError = status;
 				continue;
 			}
 			if (first == 0)
@@ -432,13 +438,14 @@ CheckAccelerant()
 			perror("accelerant info after retrace");
 			return false;
 		}
-		unsigned waited = kWaits - timeouts;
+		unsigned waited = kWaits - timeouts - errors;
 		printf("ROCK5_DISPLAY_RETRACE waits=%u timeouts=%u first_us=%" PRId64 " last_us=%" PRId64
 			" period_us=%" PRId64 " retraces_before=%" PRIu32 " retraces_after=%" PRIu32
-			" elapsed_us=%" PRId64 "\n", kWaits, timeouts, first, last,
+			" elapsed_us=%" PRId64 " errors=%u status=%s\n", kWaits, timeouts, first, last,
 			waited > 1 ? (last - first) / (bigtime_t)(waited - 1) : 0, info.retraces,
-			after.retraces, system_time() - started);
-		if (timeouts == kWaits) {
+			after.retraces, system_time() - started, errors,
+			errors != 0 ? strerror(lastError) : "ok");
+		if (waited == 0) {
 			// Diagnostic: re-arm the interrupt and look again.
 			RetraceRearm rearm = {};
 			rearm.version = kAccelerantVersion;

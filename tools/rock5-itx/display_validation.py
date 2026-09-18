@@ -431,7 +431,7 @@ ACCELERANT_LINE = re.compile(
     r'(?: calls=(\d+) spurious=(\d+) first_us=(\d+) last_us=(\d+) now_us=(\d+))?$', re.M)
 RETRACE_LINE = re.compile(
     r'^ROCK5_DISPLAY_RETRACE waits=(\d+) timeouts=(\d+) first_us=(\d+) last_us=(\d+) period_us=(\d+)'
-    r' retraces_before=(\d+) retraces_after=(\d+) elapsed_us=(\d+)$', re.M)
+    r' retraces_before=(\d+) retraces_after=(\d+) elapsed_us=(\d+)(?: errors=(\d+) status=(.+?))?$', re.M)
 FRAME_PERIOD_US = (15500, 18000) # 60 Hz nominal, 16667 us
 ACCELERANT_SHARED = re.compile(
     r'^ROCK5_DISPLAY_ACCELERANT_SHARED version=(\d+) flags=(\d+) mode_list_area=(-?\d+) modes=(\d+)'
@@ -486,8 +486,9 @@ def validate_accelerant(body, observation=None, edid_block0=None):
         waits, timeouts = int(measured.group(1)), int(measured.group(2))
         period = int(measured.group(5))
         before, after, elapsed = int(measured.group(6)), int(measured.group(7)), int(measured.group(8))
-        if timeouts or waits < 8:
-            raise ValidationError('retrace waits %d timeouts %d' % (waits, timeouts))
+        errors = int(measured.group(9)) if measured.group(9) is not None else 0
+        if timeouts or errors or waits < 8:
+            raise ValidationError('retrace waits %d timeouts %d errors %d (%s)' % (waits, timeouts, errors, measured.group(10)))
         if not FRAME_PERIOD_US[0] <= period <= FRAME_PERIOD_US[1]:
             raise ValidationError('retrace period %d us is not a 60 Hz frame' % period)
         # Interrupts keep counting whether or not anyone waits: the count must

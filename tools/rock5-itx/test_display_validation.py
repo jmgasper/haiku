@@ -216,6 +216,8 @@ class DisplayValidationTest(unittest.TestCase):
         self.assertEqual((decoded['framebuffer'], decoded['firmware'], decoded['port'], decoded['window']), ('14c00000', 'ed280000', 2, 2))
         self.assertEqual((decoded['polls'], decoded['modes'], decoded['edid_result'], decoded['flags']), (300, 1, 0, 7))
         self.assertEqual(decoded['retrace'], dict(waits=24, period_us=16667, count_delta=26, elapsed_us=400300))
+        with_status = accelerant_transcript(retrace='ROCK5_DISPLAY_RETRACE waits=24 timeouts=0 first_us=5000000 last_us=5383341 period_us=16667 retraces_before=1800 retraces_after=1826 elapsed_us=400300 errors=0 status=ok')
+        self.assertEqual(check.validate_accelerant(with_status)['retrace']['waits'], 24)
         self.assertIsNone(check.validate_accelerant(accelerant_transcript(flags=3))['retrace'])
         legacy = accelerant_transcript(flags=3).replace(' retrace_sem=-1 retraces=1800', '')
         self.assertEqual(check.validate_accelerant(legacy)['flags'], 3)
@@ -234,6 +236,7 @@ class DisplayValidationTest(unittest.TestCase):
             ('runaway', accelerant_transcript(retrace='ROCK5_DISPLAY_RETRACE waits=24 timeouts=0 first_us=5000000 last_us=5383341 period_us=16667 retraces_before=1800 retraces_after=1900 elapsed_us=400300')),
             ('mismatch', accelerant_transcript(retrace='ROCK5_DISPLAY_RETRACE waits=24 timeouts=0 first_us=5000000 last_us=5383341 period_us=16667 retraces_before=1799 retraces_after=1826 elapsed_us=400300')),
             ('unflagged', accelerant_transcript(flags=3, extra='\nROCK5_DISPLAY_RETRACE waits=24 timeouts=0 first_us=5000000 last_us=5383341 period_us=16667 retraces_before=1800 retraces_after=1826 elapsed_us=400300')),
+            ('errors', accelerant_transcript(retrace='ROCK5_DISPLAY_RETRACE waits=24 timeouts=0 first_us=0 last_us=0 period_us=0 retraces_before=1800 retraces_after=1800 elapsed_us=455 errors=24 status=Operation not allowed')),
         ]
         for name, value in retrace_cases:
             with self.subTest(name=name):
