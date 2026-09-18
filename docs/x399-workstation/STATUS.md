@@ -440,6 +440,15 @@ listed as verified is untested.
   putting work on a channel, which means giving the accelerant a channel - the
   same thing the vblank work wanted before NVKMS's own route turned out to
   need none.
+- 2026-09-19: found by reading rather than testing - NVKMS stops reporting
+  blanks for a head it has shut down, so every path that sets a mode has to ask
+  again, and coming back from suspend goes through ApplyMode directly rather
+  than through SetDisplayMode. Two of the three places did; the resume one did
+  not, which would have left WaitForRetrace timing out for ever and vertical
+  sync quietly doing nothing once the machine had been asleep. All three now
+  share one call. The mode change paths are measured - 60.0 a second across a
+  change either way - but the resume path cannot be until the serial console
+  makes suspend testable, so that part is reasoned, not proven.
 - 2026-09-19: `tools/check-workstation.sh` asks the machine whether it is doing
   what it is supposed to, one line per thing, and comes back 13 working, 0 not.
   Every check in it exists because something looked fine today and was not: a
