@@ -11,7 +11,7 @@ listed as verified is untested.
 | Ethernet | I211 up with DHCP | verified: ipro1000 link 1000BASE-T, DHCP lease, HTTP upload and SSH |
 | USB | all controllers and ports enumerate devices | all 5 xHCI controllers start after the PCI fix; NanoKVM device enumerates on the ASM2142; other ports need physical devices |
 | Audio | ALC1220 analog output, HDMI audio | AMD HDA and GP102 HDMI controllers attach (`/dev/audio/hmulti/hda/0,1`); playback untested |
-| Graphics | GTX 1070/1080 Ti accelerated 2D/3D, 3-4 monitors | in progress: two displays (HDMI and DisplayPort) drive one 3840x1080 desktop, and Vulkan runs shaders on the GPU (1.4 TFLOP/s compute, 55 Gpixel/s fill); OpenGL still uses Haiku's software renderer |
+| Graphics | GTX 1070/1080 Ti accelerated 2D/3D, 3-4 monitors | in progress: two displays (HDMI and DisplayPort) drive one 3840x1080 desktop, Vulkan runs shaders on the GPU (1.4 TFLOP/s compute, 55 Gpixel/s fill), and Haiku's OpenGL kit reports `zink (NVIDIA GeForce GTX 1070 (NVK GP104-A))` at GL 4.5; clearing and presenting work, drawing geometry still stops the graphics engine |
 | Sleep | S3 suspend and resume | sleeps and wakes; the display comes back, but the NVMe and the network card usually do not |
 
 ## Log
@@ -120,3 +120,28 @@ listed as verified is untested.
   58 GB/s copy within video memory and 6.1 GB/s upload over PCIe.
   Delivering the completion interrupt to the waiting thread instead of
   polling is still open.
+- 2026-09-18: OpenGL reaches the GPU. Haiku's OpenGL kit (libGL.so and the
+  renderer add-ons in add-ons/opengl) belongs to the mesa package, 22.0.5 here,
+  so the Zink renderer is built from that same release - the add-on and libGL
+  then share one glapi - while Zink itself talks to NVK through the Vulkan
+  loader, which is a stable interface between the two Mesa versions. The new
+  add-on (src/gallium/targets/haiku-zink in src/mesa-build/mesa-hgl, built by
+  tools/build-mesa-hgl.sh) is the software renderer's target with the screen
+  created by `zink_create_screen`, and HGL_NO_ZINK falls back to software.
+  `gltest` (tests/gltest.cpp) reports
+  `renderer: zink (NVIDIA GeForce GTX 1070 (NVK GP104-A))`, OpenGL 4.5, and
+  clears and presents 800x600 frames at 186 fps, against 43 fps for the same
+  window drawn by softpipe.
+  Three things had to be fixed on the way: the page kind table in NVK's resman
+  backend was Turing's, so every depth buffer was refused on Pascal; the front
+  buffer has to be flushed with the pipe context, which a hardware driver needs
+  to read the image back; and the Haiku winsys asked BBitmap for a default row
+  size while advertising an aligned one, so Zink's copy ran off the end of the
+  bitmap.
+  What is left: a draw call stops the graphics engine with a class error
+  (Xid 69), after a few frames have already been presented, while the same
+  draws issued directly through Vulkan by `vkbench` (including depth buffers
+  and vertex buffers) run fine. NVK's flush now gives up after
+  NVK_NVRM_TIMEOUT_MS instead of hanging, which makes NVK dump the command
+  buffer that failed; it ends with the ordinary draw macro, so the offending
+  state is somewhere earlier in the stream.
