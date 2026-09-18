@@ -543,8 +543,11 @@ InitDriver(device_node* node, void** cookie)
 		const char* profile = get_driver_parameter(settings, "firmware_profile", "", "");
 		controller->edidEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-edid") == 0;
 		controller->scanoutEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-scanout") == 0;
+		// The retrace profile names the stage that added the frame-start
+		// interrupt; both run the accelerant with retrace.
 		controller->accelerantEnabled
-			= strcmp(profile, "rock5-itx-edk2-v1.1-display-accelerant") == 0;
+			= strcmp(profile, "rock5-itx-edk2-v1.1-display-accelerant") == 0
+			|| strcmp(profile, "rock5-itx-edk2-v1.1-display-retrace") == 0;
 		controller->scanoutEnabled = controller->scanoutEnabled || controller->accelerantEnabled;
 		controller->edidEnabled = controller->edidEnabled || controller->scanoutEnabled;
 	}

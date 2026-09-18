@@ -217,6 +217,10 @@ class DisplayValidationTest(unittest.TestCase):
         self.assertEqual((decoded['polls'], decoded['modes'], decoded['edid_result'], decoded['flags']), (300, 1, 0, 7))
         self.assertEqual(decoded['retrace'], dict(waits=24, period_us=16667, count_delta=26, elapsed_us=400300))
         self.assertIsNone(check.validate_accelerant(accelerant_transcript(flags=3))['retrace'])
+        legacy = accelerant_transcript(flags=3).replace(' retrace_sem=-1 retraces=1800', '')
+        self.assertEqual(check.validate_accelerant(legacy)['flags'], 3)
+        with self.assertRaises(check.ValidationError):
+            check.validate_accelerant(accelerant_transcript().replace(' retrace_sem=1310 retraces=1800', ''))
         self.assertEqual(decoded['name'], 'RK3588 VOP2 HDMI TX1')
         self.assertEqual(decoded['samples'][3], 'ffdddddd')
         without = check.validate_accelerant(accelerant_transcript(flags=1))

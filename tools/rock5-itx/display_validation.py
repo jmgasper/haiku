@@ -427,7 +427,7 @@ def check_pattern_frame(path, expect_pattern=True):
 ACCELERANT_LINE = re.compile(
     r'^ROCK5_DISPLAY_ACCELERANT flags=(\d+) shared_area=(-?\d+) framebuffer=([0-9a-f]{8})'
     r' firmware=([0-9a-f]{8}) port=(\d) window=(\d) polls=(\d+) width=(\d+) height=(\d+)'
-    r' bytes_per_row=(\d+) retrace_sem=(-?\d+) retraces=(\d+)$', re.M)
+    r' bytes_per_row=(\d+)(?: retrace_sem=(-?\d+) retraces=(\d+))?$', re.M)
 RETRACE_LINE = re.compile(
     r'^ROCK5_DISPLAY_RETRACE waits=(\d+) timeouts=(\d+) first_us=(\d+) last_us=(\d+) period_us=(\d+)'
     r' retraces_before=(\d+) retraces_after=(\d+) elapsed_us=(\d+)$', re.M)
@@ -472,7 +472,9 @@ def validate_accelerant(body, observation=None, edid_block0=None):
         raise ValidationError('frame buffer geometry %dx%d/%d' % (width, height, bytes_per_row))
     if polls > 5000:
         raise ValidationError('implausible acquisition poll count %d' % polls)
-    retrace_sem, retraces_before = int(line.group(11)), int(line.group(12))
+    # Probes before the retrace stage print no semaphore or count.
+    retrace_sem = int(line.group(11)) if line.group(11) is not None else -1
+    retraces_before = int(line.group(12)) if line.group(12) is not None else 0
     retrace = None
     if flags & 4:
         if retrace_sem < 0:
