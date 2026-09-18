@@ -161,6 +161,7 @@ def main():
                 ('lib/libgame.so', game, '755', True),
                 ('lib/libmedia.so', media, '755', True),
                 ('run-application', HERE / 'run-application', '755', False),
+                ('run-system', HERE / 'run-system', '755', False),
                 ('licenses/glu-9.0.3.tar.xz', archive, '644', False)]:
             target = package / name
             target.parent.mkdir(parents=True, exist_ok=True)

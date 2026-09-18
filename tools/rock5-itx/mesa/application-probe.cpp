@@ -251,8 +251,16 @@ int main(int argc, char** argv)
 {
     setbuf(stdout, nullptr);
     if (argc == 2 && !strcmp(argv[1], "--self-test")) return SelfTest();
-    if (argc != 4 || (strcmp(argv[1], "--native") && strcmp(argv[1], "--software"))) return 2;
+    if (argc != 4 || (strcmp(argv[1], "--native") && strcmp(argv[1], "--software")
+            && strcmp(argv[1], "--system"))) {
+        return 2;
+    }
     bool software = !strcmp(argv[1], "--software");
+    // System mode launches the application with nothing selected: the
+    // libraries, the vendor file, the device and the firmware all come from
+    // their installed defaults, and the GPU is used only if the driver
+    // published it.
+    bool system = !strcmp(argv[1], "--system");
     int observer = -1;
     Snapshot baseline{};
     thread_id child = -1;
@@ -268,6 +276,20 @@ int main(int argc, char** argv)
                 "software mode requires the native GPU to be absent");
             Require(setenv("LIBGL_ALWAYS_SOFTWARE", "1", 1) == 0, "software mode selection");
             Require(setenv("GALLIUM_DRIVER", "softpipe", 1) == 0, "software renderer selection");
+        } else if (system) {
+            for (const char* name : {"LIBRARY_PATH", "__EGL_VENDOR_LIBRARY_FILENAMES",
+                    "__EGL_VENDOR_LIBRARY_DIRS", "HAIKU_PAN_SW_POLYGON", "HAIKU_PAN_SW_POLYGON_TRACE"})
+                Require(unsetenv(name) == 0, "clear launch environment");
+            bool present = access("/dev/graphics/mali_csf/0", F_OK) == 0;
+            Require(present || errno == ENOENT, "native GPU device probe");
+            printf("ROCK5_APPLICATION_SYSTEM device=%s libraries=/boot/system/non-packaged/lib"
+                " vendor=/boot/system/non-packaged/add-ons/opengl/egl_vendor.d\n",
+                present ? "present" : "absent");
+            if (present) {
+                observer = open("/dev/graphics/mali_csf/0", O_RDWR | O_CLOEXEC);
+                Require(observer >= 0 && snapshot(observer, &baseline), "native allocation baseline");
+                Require(same_snapshot(baseline, baseline, 99), "initial native baseline");
+            }
         } else {
             Require(setenv("HAIKU_CSF_DEVICE", "/dev/graphics/mali_csf/0", 1) == 0,
                 "native GPU selection");

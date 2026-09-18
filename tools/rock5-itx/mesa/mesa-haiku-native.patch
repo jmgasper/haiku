@@ -1,7 +1,8 @@
 diff --git a/include/drm-uapi/drm.h b/include/drm-uapi/drm.h
+index 4e4f7c2..4595a2a 100644
 --- a/include/drm-uapi/drm.h
 +++ b/include/drm-uapi/drm.h
-@@ -44,7 +44,11 @@
+@@ -44,7 +44,11 @@ typedef unsigned int drm_handle_t;
  #else /* One of the BSDs */
  
  #include <stdint.h>
@@ -14,6 +15,7 @@ diff --git a/include/drm-uapi/drm.h b/include/drm-uapi/drm.h
  typedef int8_t   __s8;
  typedef uint8_t  __u8;
 diff --git a/include/renderdoc_app.h b/include/renderdoc_app.h
+index b2d10c5..debd0c7 100644
 --- a/include/renderdoc_app.h
 +++ b/include/renderdoc_app.h
 @@ -35,7 +35,7 @@
@@ -26,17 +28,21 @@ diff --git a/include/renderdoc_app.h b/include/renderdoc_app.h
  #elif defined(__APPLE__)
  #define RENDERDOC_CC
 diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_haiku.cpp
+index f2f75c0..85a937d 100644
 --- a/src/egl/drivers/haiku/egl_haiku.cpp
 +++ b/src/egl/drivers/haiku/egl_haiku.cpp
-@@ -28,6 +28,7 @@
+@@ -26,8 +26,10 @@
+ #include <errno.h>
+ #include <stdint.h>
  #include <stdio.h>
++#include <unistd.h>
  
  #include <algorithm>
 +#include <new>
  
  #include "eglconfig.h"
  #include "eglcontext.h"
-@@ -43,11 +44,16 @@
+@@ -43,11 +45,16 @@
  #include "pipe/p_context.h"
  #include "pipe/p_defines.h"
  #include "state_tracker/st_context.h"
@@ -53,7 +59,7 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
  
  #include <Bitmap.h>
  
-@@ -68,6 +74,7 @@
+@@ -68,6 +75,7 @@ _EGL_DRIVER_STANDARD_TYPECASTS(haiku_egl)
  
  struct haiku_egl_display {
     int ref_count;
@@ -61,7 +67,7 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
     struct hgl_display *disp;
  };
  
-@@ -86,6 +93,53 @@
+@@ -86,6 +94,53 @@ struct haiku_egl_surface {
     struct pipe_fence_handle *throttle_fence;
  };
  
@@ -115,7 +121,7 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
  // #pragma mark EGLSurface
  
  // Called via eglCreateWindowSurface(), drv->CreateWindowSurface().
-@@ -93,6 +147,10 @@
+@@ -93,6 +148,10 @@ static _EGLSurface *
  haiku_create_window_surface(_EGLDisplay *disp, _EGLConfig *conf,
                              void *native_window, const EGLint *attrib_list)
  {
@@ -126,7 +132,7 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
     printf("haiku_create_window_surface\n");
     struct haiku_egl_display *hgl_dpy = haiku_egl_display(disp);
  
-@@ -108,7 +166,7 @@
+@@ -108,7 +167,7 @@ haiku_create_window_surface(_EGLDisplay *disp, _EGLConfig *conf,
     }
  
     struct st_visual visual;
@@ -135,7 +141,7 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
  
     wgl_surf->fb =
        hgl_create_st_framebuffer(hgl_dpy->disp, &visual, native_window);
-@@ -117,6 +175,13 @@
+@@ -117,6 +176,13 @@ haiku_create_window_surface(_EGLDisplay *disp, _EGLConfig *conf,
        return NULL;
     }
  
@@ -149,7 +155,7 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
     // Unset and delete previously set bitmap if any.
     delete ((BitmapHook *)native_window)->SetBitmap(NULL);
  
-@@ -150,7 +215,7 @@
+@@ -150,7 +216,7 @@ haiku_create_pbuffer_surface(_EGLDisplay *disp, _EGLConfig *conf,
     }
  
     struct st_visual visual;
@@ -158,7 +164,15 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
  
     wgl_surf->fb = hgl_create_st_framebuffer(hgl_dpy->disp, &visual, NULL);
     if (!wgl_surf->fb) {
-@@ -168,8 +233,9 @@
+@@ -165,11 +231,17 @@ haiku_create_pbuffer_surface(_EGLDisplay *disp, _EGLConfig *conf,
+    return &wgl_surf->base;
+ }
+ 
++#ifdef GALLIUM_PANFROST
++/* The mali_csf driver publishes its first device here. */
++static const char kHaikuDefaultCsfDevice[] = "/dev/graphics/mali_csf/0";
++#endif
++
  static EGLBoolean
  haiku_destroy_surface(_EGLDisplay *disp, _EGLSurface *surf)
  {
@@ -169,7 +183,7 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
        struct haiku_egl_surface *hgl_surf = haiku_egl_surface(surf);
        struct pipe_screen *screen = hgl_dpy->disp->fscreen->screen;
        screen->fence_reference(screen, &hgl_surf->throttle_fence, NULL);
-@@ -177,8 +243,11 @@
+@@ -177,8 +249,11 @@ haiku_destroy_surface(_EGLDisplay *disp, _EGLSurface *surf)
        // Unset bitmap to release ownership. Bitmap will be deleted later
        // when destroying framebuffer.
        BitmapHook *bitmapHook = (BitmapHook*)hgl_surf->fb->winsysContext;
@@ -183,7 +197,7 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
  
        hgl_destroy_st_framebuffer(hgl_surf->fb);
        free(surf);
-@@ -189,9 +258,19 @@
+@@ -189,18 +264,45 @@ haiku_destroy_surface(_EGLDisplay *disp, _EGLSurface *surf)
  static void
  update_size(struct hgl_buffer *buffer)
  {
@@ -203,10 +217,10 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
        buffer->newWidth = newWidth;
        buffer->newHeight = newHeight;
        p_atomic_inc(&buffer->base.stamp);
-@@ -199,8 +278,25 @@
+    }
  }
  
- static EGLBoolean
++static EGLBoolean
 +haiku_query_surface(_EGLDisplay *disp, _EGLSurface *surf, EGLint attribute,
 +                     EGLint *value)
 +{
@@ -219,7 +233,7 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
 +   return _eglQuerySurface(disp, surf, attribute, value);
 +}
 +
-+static EGLBoolean
+ static EGLBoolean
  haiku_swap_buffers(_EGLDisplay *disp, _EGLSurface *surf)
  {
 +   /* EGL swaps only window surfaces. Pbuffers retain their contents. */
@@ -229,7 +243,7 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
     struct haiku_egl_display *hgl_dpy = haiku_egl_display(disp);
     struct haiku_egl_surface *hgl_surf = haiku_egl_surface(surf);
     struct haiku_egl_context *hgl_ctx = haiku_egl_context(surf->CurrentContext);
-@@ -210,6 +306,8 @@
+@@ -210,6 +312,8 @@ haiku_swap_buffers(_EGLDisplay *disp, _EGLSurface *surf)
     struct st_context *st = hgl_ctx->ctx->st;
     struct pipe_screen *screen = hgl_dpy->disp->fscreen->screen;
  
@@ -238,16 +252,16 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
     struct hgl_buffer *buffer = hgl_surf->fb;
     auto &frontBuffer = buffer->textures[ST_ATTACHMENT_FRONT_LEFT];
     auto &backBuffer = buffer->textures[ST_ATTACHMENT_BACK_LEFT];
-@@ -217,8 +315,6 @@
-    // Inform ST of a flush if double buffering is used
+@@ -218,8 +322,6 @@ haiku_swap_buffers(_EGLDisplay *disp, _EGLSurface *surf)
     if (backBuffer != NULL)
        st->pipe->flush_resource(st->pipe, backBuffer);
--
--   _mesa_glthread_finish(st->ctx);
  
+-   _mesa_glthread_finish(st->ctx);
+-
     struct pipe_fence_handle *new_fence = NULL;
     st_context_flush(st, ST_FLUSH_FRONT, &new_fence, NULL, NULL);
-@@ -231,8 +327,13 @@
+    if (hgl_surf->throttle_fence) {
+@@ -231,8 +333,13 @@ haiku_swap_buffers(_EGLDisplay *disp, _EGLSurface *surf)
  
     // flush back buffer and swap buffers if double buffering is used
     if (backBuffer != NULL) {
@@ -263,7 +277,7 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
        std::swap(frontBuffer, backBuffer);
        p_atomic_inc(&buffer->base.stamp);
     }
-@@ -273,20 +374,22 @@
+@@ -273,20 +380,22 @@ haiku_add_configs_for_visuals(_EGLDisplay *disp)
     conf->base.ConfigID = 1;
     conf->base.BindToTextureRGB = EGL_FALSE;
     conf->base.BindToTextureRGBA = EGL_FALSE;
@@ -294,7 +308,7 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
  
     TRACE("Config configuated\n");
     if (!_eglValidateConfig(&conf->base, EGL_FALSE)) {
-@@ -321,12 +424,14 @@
+@@ -321,12 +430,14 @@ haiku_display_destroy(_EGLDisplay *disp)
     if (!p_atomic_dec_zero(&hgl_dpy->ref_count))
        return;
  
@@ -309,7 +323,7 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
  }
  
  static EGLBoolean
-@@ -342,20 +447,55 @@
+@@ -342,20 +453,67 @@ haiku_initialize_impl(_EGLDisplay *disp, void *platformDisplay)
     hgl_dpy->ref_count = 1;
     disp->DriverData = (void *)hgl_dpy;
  
@@ -318,12 +332,24 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
 +   struct pipe_screen *screen = NULL;
 +#ifdef GALLIUM_PANFROST
 +   const char *device = getenv("HAIKU_CSF_DEVICE");
-+   if (device && *device) {
++   bool explicit_device = device != NULL && *device != '\0';
++   if (!explicit_device && !disp->Options.ForceSoftware
++       && access(kHaikuDefaultCsfDevice, R_OK | W_OK) == 0) {
++      /* System default: the Mali CSF device whenever the driver published it. */
++      device = kHaikuDefaultCsfDevice;
++   }
++   if (device != NULL && *device != '\0') {
 +      hgl_dpy->native_csf = true;
 +      /* An explicit native device must never become a software fallback. */
 +      if (!disp->Options.ForceSoftware)
 +         screen = panfrost_haiku_screen_create(device);
-+   } else
++      if (screen == NULL && !explicit_device) {
++         /* The default device did not come up: software, as without a device. */
++         hgl_dpy->native_csf = false;
++         device = NULL;
++      }
++   }
++   if (device == NULL || *device == '\0')
 +#endif
 +   {
 +      struct sw_winsys *winsys = hgl_create_sw_winsys();
@@ -339,14 +365,13 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
 +      return _eglError(EGL_NOT_INITIALIZED, "Haiku screen creation failed");
 +   }
     hgl_dpy->disp = hgl_create_display(screen);
--
 +   if (!hgl_dpy->disp) {
 +      screen->destroy(screen);
 +      free(hgl_dpy);
 +      disp->DriverData = NULL;
 +      return _eglError(EGL_BAD_ALLOC, "Haiku display creation failed");
 +   }
-+
+ 
 +   struct st_config_options options = {};
 +   int gl_core, gl_compat, gles1, gles2;
 +   st_api_query_versions(hgl_dpy->disp->fscreen, &options,
@@ -373,7 +398,7 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
  
     /* Report back to EGL the bitmask of priorities supported */
     disp->Extensions.IMG_context_priority =
-@@ -364,17 +504,17 @@
+@@ -364,17 +522,17 @@ haiku_initialize_impl(_EGLDisplay *disp, void *platformDisplay)
        disp->Extensions.IMG_context_priority &
        (1 << __EGL_CONTEXT_PRIORITY_REALTIME_BIT);
  
@@ -401,7 +426,7 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
  
     return EGL_TRUE;
  }
-@@ -386,7 +526,7 @@
+@@ -386,7 +544,7 @@ haiku_initialize(_EGLDisplay *disp)
     struct haiku_egl_display *hgl_dpy = haiku_egl_display(disp);
  
     if (hgl_dpy) {
@@ -410,7 +435,7 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
        return EGL_TRUE;
     }
  
-@@ -414,6 +554,8 @@
+@@ -414,6 +572,8 @@ haiku_initialize(_EGLDisplay *disp)
  static EGLBoolean
  haiku_terminate(_EGLDisplay *disp)
  {
@@ -419,7 +444,7 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
     haiku_display_destroy(disp);
     return EGL_TRUE;
  }
-@@ -428,8 +570,9 @@
+@@ -428,8 +588,9 @@ haiku_create_context(_EGLDisplay *disp, _EGLConfig *conf,
  
     struct haiku_egl_display *hgl_dpy = haiku_egl_display(disp);
  
@@ -431,7 +456,7 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
  
     struct haiku_egl_context *context =
        (struct haiku_egl_context *)calloc(1, sizeof(*context));
-@@ -441,11 +584,56 @@
+@@ -441,11 +602,56 @@ haiku_create_context(_EGLDisplay *disp, _EGLConfig *conf,
     if (!_eglInitContext(&context->base, disp, conf, share_list, attrib_list))
        goto cleanup;
  
@@ -455,7 +480,7 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
 +      break;
 +   default:
 +      _eglError(EGL_BAD_PARAMETER, "Haiku EGL client API");
-       goto cleanup;
++      goto cleanup;
 +   }
 +   if (context->base.Flags & EGL_CONTEXT_OPENGL_FORWARD_COMPATIBLE_BIT_KHR)
 +      attribs.flags |= ST_CONTEXT_FLAG_FORWARD_COMPATIBLE;
@@ -487,23 +512,30 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
 +   if (context->ctx == NULL) {
 +      _eglError(error == ST_CONTEXT_ERROR_NO_MEMORY ? EGL_BAD_ALLOC : EGL_BAD_MATCH,
 +                "Haiku EGL context creation failed");
-+      goto cleanup;
+       goto cleanup;
 +   }
  
     return &context->base;
  
-@@ -488,23 +676,61 @@
+@@ -488,23 +694,61 @@ haiku_make_current(_EGLDisplay *disp, _EGLSurface *dsurf, _EGLSurface *rsurf,
        return EGL_TRUE;
     }
  
 -   if (ctx == NULL) {
+-      st_api_make_current(NULL, NULL, NULL);
+-   } else {
+-      if (dsurf != NULL && dsurf != old_dsurf)
+-         update_size(hgl_dsurf->fb);
 +   _EGLDisplay *old_disp = old_ctx ? old_ctx->Resource.Display : NULL;
 +   if (old_ctx && old_ctx->ReleaseBehavior == EGL_CONTEXT_RELEASE_BEHAVIOR_FLUSH_KHR) {
 +      struct st_context *st = haiku_egl_context(old_ctx)->ctx->st;
 +      _mesa_glthread_finish(st->ctx);
 +      st_context_flush(st, 0, NULL, NULL, NULL);
 +   }
-+
+ 
+-      st_api_make_current(hgl_ctx->ctx->st,
+-                          hgl_dsurf == NULL ? NULL : &hgl_dsurf->fb->base,
+-                          hgl_rsurf == NULL ? NULL : &hgl_rsurf->fb->base);
 +   if (hgl_dsurf)
 +      update_size(hgl_dsurf->fb);
 +   if (hgl_rsurf && hgl_rsurf != hgl_dsurf)
@@ -533,24 +565,15 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
 +
 +      /* If restoration also fails, leave both EGL and GL unbound. */
 +      _eglBindContext(NULL, NULL, NULL, &old_ctx, &old_dsurf, &old_rsurf);
-       st_api_make_current(NULL, NULL, NULL);
--   } else {
--      if (dsurf != NULL && dsurf != old_dsurf)
--         update_size(hgl_dsurf->fb);
--
--      st_api_make_current(hgl_ctx->ctx->st,
--                          hgl_dsurf == NULL ? NULL : &hgl_dsurf->fb->base,
--                          hgl_rsurf == NULL ? NULL : &hgl_rsurf->fb->base);
--   }
--
++      st_api_make_current(NULL, NULL, NULL);
 +      haiku_destroy_surface(old_disp, old_dsurf);
 +      haiku_destroy_surface(old_disp, old_rsurf);
 +      haiku_destroy_context(old_disp, old_ctx);
 +      if (old_disp)
 +         haiku_display_destroy(old_disp);
 +      return _eglError(EGL_BAD_MATCH, "Haiku EGL context restoration failed");
-+   }
-+
+    }
+ 
 +   if (ctx)
 +      p_atomic_inc(&haiku_egl_display(disp)->ref_count);
     if (old_dsurf != NULL)
@@ -568,7 +591,7 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
  
     return EGL_TRUE;
  }
-@@ -519,5 +745,6 @@
+@@ -519,5 +763,6 @@ extern "C" const _EGLDriver _eglDriver = {
     .CreatePixmapSurface = haiku_create_pixmap_surface,
     .CreatePbufferSurface = haiku_create_pbuffer_surface,
     .DestroySurface = haiku_destroy_surface,
@@ -576,9 +599,10 @@ diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_hai
     .SwapBuffers = haiku_swap_buffers,
  };
 diff --git a/src/egl/meson.build b/src/egl/meson.build
+index b9baa09..7116969 100644
 --- a/src/egl/meson.build
 +++ b/src/egl/meson.build
-@@ -147,8 +147,8 @@
+@@ -147,8 +147,8 @@ elif with_platform_haiku
    incs_for_egl += [inc_mesa]
    incs_for_egl += [include_directories('../gallium/frontends/hgl')]
  
@@ -589,21 +613,70 @@ diff --git a/src/egl/meson.build b/src/egl/meson.build
  elif with_platform_windows
    c_args_for_egl += [
      '-DEGLAPI=', '-DPUBLIC='
+diff --git a/src/gallium/auxiliary/draw/draw_decompose_tmp.h b/src/gallium/auxiliary/draw/draw_decompose_tmp.h
+index d086354..a359400 100644
+--- a/src/gallium/auxiliary/draw/draw_decompose_tmp.h
++++ b/src/gallium/auxiliary/draw/draw_decompose_tmp.h
+@@ -255,17 +255,19 @@ FUNC(FUNC_VARS)
+                QUAD(0, idx[3], idx[2],
+                     idx[0], idx[1]);
+ #else
+-               flags = DRAW_PIPE_RESET_STIPPLE |
+-                       DRAW_PIPE_EDGE_FLAG_0 |
+-                       DRAW_PIPE_EDGE_FLAG_1;
+-               /* always emit idx[3] / idx[0 first */
++               /* Preserve the outer strip edges after rotating triangles
++                * to put the provoking vertex first.  The idx[0] -> idx[3]
++                * diagonal is internal when the first vertex provokes. */
++               flags = DRAW_PIPE_RESET_STIPPLE | DRAW_PIPE_EDGE_FLAG_1 |
++                       (quads_flatshade_last ? DRAW_PIPE_EDGE_FLAG_0 : DRAW_PIPE_EDGE_FLAG_2);
++               /* always emit idx[3] / idx[0] first */
+                if (quads_flatshade_last)
+                   TRIANGLE(flags, idx[3], idx[2], idx[0]);
+                else
+                   TRIANGLE(flags, idx[0], idx[3], idx[2]);
+ 
+                flags = DRAW_PIPE_EDGE_FLAG_1 |
+-                       DRAW_PIPE_EDGE_FLAG_2;
++                       (quads_flatshade_last ? DRAW_PIPE_EDGE_FLAG_2 : DRAW_PIPE_EDGE_FLAG_0);
+                if (quads_flatshade_last)
+                   TRIANGLE(flags, idx[3], idx[0], idx[1]);
+                else
+diff --git a/src/gallium/auxiliary/draw/draw_vs_exec.c b/src/gallium/auxiliary/draw/draw_vs_exec.c
+index b56283c..73c4330 100644
+--- a/src/gallium/auxiliary/draw/draw_vs_exec.c
++++ b/src/gallium/auxiliary/draw/draw_vs_exec.c
+@@ -209,6 +209,13 @@ vs_exec_run_linear(struct draw_vertex_shader *shader,
+ static void
+ vs_exec_delete(struct draw_vertex_shader *dvs)
+ {
++   struct exec_vertex_shader *evs = exec_vertex_shader(dvs);
++   /* The machine caches expanded instructions by the token address. Retiring
++    * that address must invalidate the cache before the allocator can reuse it
++    * for a different shader, including after draw_bind_vertex_shader(NULL).
++    */
++   if (evs->machine->Tokens == dvs->state.tokens)
++      tgsi_exec_machine_bind_shader(evs->machine, NULL, NULL, NULL, NULL);
+    FREE((void*) dvs->state.tokens);
+    FREE(dvs);
+ }
 diff --git a/src/gallium/drivers/panfrost/meson.build b/src/gallium/drivers/panfrost/meson.build
+index 017024e..93614d4 100644
 --- a/src/gallium/drivers/panfrost/meson.build
 +++ b/src/gallium/drivers/panfrost/meson.build
-@@ -26,6 +26,10 @@
-   'pan_nir_lower_sysvals.c',
+@@ -27,6 +27,10 @@ files_panfrost = files(
    'pan_nir_lower_res_indices.c',
  )
-+
+ 
 +if with_platform_haiku
 +  files_panfrost += files('pan_haiku.c', 'pan_sw_polygon.c')
 +endif
- 
++
  panfrost_includes = [
    inc_gallium,
+   inc_gallium_aux,
 diff --git a/src/gallium/drivers/panfrost/pan_bo.c b/src/gallium/drivers/panfrost/pan_bo.c
+index 0aeca6b..3769968 100644
 --- a/src/gallium/drivers/panfrost/pan_bo.c
 +++ b/src/gallium/drivers/panfrost/pan_bo.c
 @@ -27,7 +27,7 @@
@@ -615,7 +688,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_bo.c b/src/gallium/drivers/panfros
  
  #include "pan_bo.h"
  #include "pan_device.h"
-@@ -363,7 +363,7 @@
+@@ -363,7 +363,7 @@ panfrost_bo_munmap(struct panfrost_bo *bo)
     if (!bo->ptr.cpu)
        return;
  
@@ -624,7 +697,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_bo.c b/src/gallium/drivers/panfros
        mesa_loge("munmap failed: %s", strerror(errno));
        abort();
     }
-@@ -490,6 +490,9 @@
+@@ -490,6 +490,9 @@ panfrost_bo_unreference(struct panfrost_bo *bo)
  struct panfrost_bo *
  panfrost_bo_import(struct panfrost_device *dev, int fd)
  {
@@ -634,7 +707,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_bo.c b/src/gallium/drivers/panfros
     struct panfrost_bo *bo;
     ASSERTED int ret;
     unsigned gem_handle;
-@@ -548,6 +551,7 @@
+@@ -548,6 +551,7 @@ panfrost_bo_import(struct panfrost_device *dev, int fd)
     pthread_mutex_unlock(&dev->bo_map_lock);
  
     return bo;
@@ -643,6 +716,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_bo.c b/src/gallium/drivers/panfros
  
  int
 diff --git a/src/gallium/drivers/panfrost/pan_cmdstream.c b/src/gallium/drivers/panfrost/pan_cmdstream.c
+index 930958d..432b137 100644
 --- a/src/gallium/drivers/panfrost/pan_cmdstream.c
 +++ b/src/gallium/drivers/panfrost/pan_cmdstream.c
 @@ -48,6 +48,9 @@
@@ -655,7 +729,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_cmdstream.c b/src/gallium/drivers/
  #include "pan_csf.h"
  #include "pan_fb_preload.h"
  #include "pan_format.h"
-@@ -3475,6 +3478,20 @@
+@@ -3475,6 +3478,20 @@ panfrost_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info,
     if (!panfrost_render_condition_check(ctx))
        return;
  
@@ -677,6 +751,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_cmdstream.c b/src/gallium/drivers/
  
     if (indirect && indirect->buffer) {
 diff --git a/src/gallium/drivers/panfrost/pan_context.c b/src/gallium/drivers/panfrost/pan_context.c
+index 9264477..b147ab9 100644
 --- a/src/gallium/drivers/panfrost/pan_context.c
 +++ b/src/gallium/drivers/panfrost/pan_context.c
 @@ -30,11 +30,16 @@
@@ -696,7 +771,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_context.c b/src/gallium/drivers/pa
  #include "util/macros.h"
  #include "util/u_debug_cb.h"
  #include "util/u_helpers.h"
-@@ -538,6 +543,10 @@
+@@ -538,6 +543,10 @@ panfrost_destroy(struct pipe_context *pipe)
     struct panfrost_context *panfrost = pan_context(pipe);
     struct panfrost_device *dev = pan_device(pipe->screen);
  
@@ -707,7 +782,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_context.c b/src/gallium/drivers/pa
     pan_screen(pipe->screen)->vtbl.context_cleanup(panfrost);
  
     u_printf_destroy(&panfrost->printf.ctx);
-@@ -563,13 +572,13 @@
+@@ -563,13 +572,13 @@ panfrost_destroy(struct pipe_context *pipe)
  
     util_dynarray_fini(&panfrost->global_buffers);
  
@@ -723,7 +798,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_context.c b/src/gallium/drivers/pa
     ralloc_free(pipe);
  }
  
-@@ -962,16 +971,30 @@
+@@ -962,16 +971,30 @@ panfrost_fence_server_sync(struct pipe_context *pctx,
                             struct pipe_fence_handle *f,
                             uint64_t value)
  {
@@ -755,7 +830,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_context.c b/src/gallium/drivers/pa
  }
  
  static const struct debug_named_value panfrost_prio_options[] = {
-@@ -1008,7 +1031,7 @@
+@@ -1008,7 +1031,7 @@ panfrost_create_context(struct pipe_screen *screen, void *priv, unsigned flags)
     /* Create a syncobj in a signaled state. Will be updated to point to the
      * last queued job out_sync every time we submit a new job.
      */
@@ -764,7 +839,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_context.c b/src/gallium/drivers/pa
                            &ctx->syncobj);
     if (ret) {
        ralloc_free(ctx);
-@@ -1114,7 +1137,7 @@
+@@ -1114,7 +1137,7 @@ panfrost_create_context(struct pipe_screen *screen, void *priv, unsigned flags)
  
     /* Sync object/FD used for NATIVE_FENCE_FD. */
     ctx->in_sync_fd = -1;
@@ -774,9 +849,10 @@ diff --git a/src/gallium/drivers/panfrost/pan_context.c b/src/gallium/drivers/pa
  
     ctx->printf.bo =
 diff --git a/src/gallium/drivers/panfrost/pan_context.h b/src/gallium/drivers/panfrost/pan_context.h
+index 32a5242..f542d28 100644
 --- a/src/gallium/drivers/panfrost/pan_context.h
 +++ b/src/gallium/drivers/panfrost/pan_context.h
-@@ -238,6 +238,12 @@
+@@ -238,6 +238,12 @@ struct panfrost_context {
  
     int in_sync_fd;
     uint32_t in_sync_obj;
@@ -789,7 +865,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_context.h b/src/gallium/drivers/pa
  
     union {
        struct panfrost_csf_context csf;
-@@ -411,6 +417,10 @@
+@@ -411,6 +417,10 @@ struct panfrost_uncompiled_shader {
      * as we don't need any compute variants.
      */
     const nir_shader *nir;
@@ -801,6 +877,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_context.h b/src/gallium/drivers/pa
     /* A SHA1 of the serialized NIR for the disk cache. */
     unsigned char nir_sha1[20];
 diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfrost/pan_csf.c
+index 58dd55a..d2e4d71 100644
 --- a/src/gallium/drivers/panfrost/pan_csf.c
 +++ b/src/gallium/drivers/panfrost/pan_csf.c
 @@ -24,6 +24,7 @@
@@ -811,7 +888,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfro
  
  #include "genxml/cs_builder.h"
  
-@@ -98,7 +99,7 @@
+@@ -98,7 +99,7 @@ csf_oom_handler_init(struct panfrost_context *ctx)
     struct panfrost_bo *cs_bo = NULL, *reg_save_bo = NULL;
     struct panfrost_device *dev = pan_device(ctx->base.screen);
     const struct drm_panthor_csif_info *csif_info =
@@ -820,7 +897,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfro
  
     cs_bo =
        panfrost_bo_create(dev, 4096, 0, "Temporary CS buffer");
-@@ -257,7 +258,7 @@
+@@ -257,7 +258,7 @@ GENX(csf_init_batch)(struct panfrost_batch *batch)
        return -1;
  
     const struct drm_panthor_csif_info *csif_info =
@@ -829,7 +906,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfro
  
     const struct cs_builder_conf conf = {
        .nr_registers = csif_info->cs_reg_count,
-@@ -301,7 +302,7 @@
+@@ -301,7 +302,7 @@ csf_prepare_qsubmit(struct panfrost_context *ctx,
        .queue_index = queue,
        .stream_addr = cs_start,
        .stream_size = cs_size,
@@ -838,7 +915,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfro
        .syncs = DRM_PANTHOR_OBJ_ARRAY(sync_count, syncs),
     };
  }
-@@ -326,8 +327,7 @@
+@@ -326,8 +327,7 @@ csf_submit_gsubmit(struct panfrost_context *ctx,
     int ret = 0;
  
     if (!ctx->is_noop) {
@@ -848,11 +925,10 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfro
     }
  
     if (ret)
-@@ -382,6 +382,17 @@
-    uint64_t vm_sync_wait_point = 0, bo_sync_point;
+@@ -383,6 +383,17 @@ csf_submit_collect_wait_ops(struct panfrost_batch *batch,
     uint32_t bo_sync_handle;
     int ret;
-+
+ 
 +#ifdef __HAIKU__
 +   if (ctx->haiku_sync_failed) { errno = EIO; return -1; }
 +   if (ctx->haiku_in_sync_point) {
@@ -863,10 +939,11 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfro
 +      util_dynarray_append(syncops, struct drm_panthor_sync_op, waitop);
 +   }
 +#endif
- 
++
     /* We don't wait on BOs attached to the various batch pools, because those
      * are private to the batch, and are guaranteed to be idle at allocation
-@@ -404,7 +415,7 @@
+     * time. We need to iterate over other BOs accessed by the batch though,
+@@ -404,7 +415,7 @@ csf_submit_collect_wait_ops(struct panfrost_batch *batch,
         */
        struct panfrost_bo *bo = pan_lookup_bo(dev, i);
  
@@ -875,7 +952,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfro
                                             &bo_sync_point,
                                             !(flags & PAN_BO_ACCESS_WRITE));
        if (ret)
-@@ -441,7 +452,7 @@
+@@ -441,7 +452,7 @@ csf_submit_collect_wait_ops(struct panfrost_batch *batch,
     }
  
     if (ctx->in_sync_fd >= 0) {
@@ -884,7 +961,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfro
                                       ctx->in_sync_fd);
        if (ret)
           return ret;
-@@ -477,7 +488,7 @@
+@@ -477,7 +488,7 @@ csf_attach_sync_points(struct panfrost_batch *batch, uint32_t vm_sync_handle,
      */
     util_dynarray_foreach(&batch->pool.bos, struct panfrost_bo *, bo) {
        (*bo)->gpu_access |= PAN_BO_ACCESS_RW;
@@ -893,7 +970,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfro
                                                vm_sync_signal_point, true);
        if (ret)
           return ret;
-@@ -486,7 +497,7 @@
+@@ -486,7 +497,7 @@ csf_attach_sync_points(struct panfrost_batch *batch, uint32_t vm_sync_handle,
     util_dynarray_foreach(&batch->csf.cs_chunk_pool.bos, struct panfrost_bo *,
                           bo) {
        (*bo)->gpu_access |= PAN_BO_ACCESS_RW;
@@ -902,7 +979,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfro
                                                vm_sync_signal_point, true);
        if (ret)
           return ret;
-@@ -503,7 +514,7 @@
+@@ -503,7 +514,7 @@ csf_attach_sync_points(struct panfrost_batch *batch, uint32_t vm_sync_handle,
        struct panfrost_bo *bo = pan_lookup_bo(dev, i);
  
        bo->gpu_access |= flags & (PAN_BO_ACCESS_RW);
@@ -911,7 +988,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfro
                                                vm_sync_signal_point,
                                                flags & PAN_BO_ACCESS_WRITE);
        if (ret)
-@@ -511,7 +522,7 @@
+@@ -511,7 +522,7 @@ csf_attach_sync_points(struct panfrost_batch *batch, uint32_t vm_sync_handle,
     }
  
     /* And finally transfer the VM sync point to the context syncobj. */
@@ -920,7 +997,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfro
                               vm_sync_handle, vm_sync_signal_point, 0);
  }
  
-@@ -543,17 +554,48 @@
+@@ -543,17 +554,48 @@ update_reset_status(struct panfrost_context *ctx,
     }
  }
  
@@ -971,7 +1048,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfro
     if (ret) {
        update_reset_status(ctx, PIPE_UNKNOWN_CONTEXT_RESET);
        mesa_loge("DRM_IOCTL_PANTHOR_GROUP_GET_STATE failed (err=%d)", errno);
-@@ -585,6 +627,7 @@
+@@ -585,6 +627,7 @@ csf_check_ctx_state_and_reinit(struct panfrost_context *ctx)
  
     mesa_loge("Group became unusable, re-initializing context");
     panfrost_context_reinit(ctx);
@@ -979,7 +1056,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfro
  }
  
  static void
-@@ -604,7 +647,7 @@
+@@ -604,7 +647,7 @@ csf_submit_wait_and_dump(struct panfrost_batch *batch,
     /* Wait so we can get errors reported back */
     if (wait) {
        int ret =
@@ -988,7 +1065,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfro
                                  &vm_sync_signal_point, 1, INT64_MAX, 0, NULL);
        assert(ret >= 0);
  
-@@ -658,7 +701,7 @@
+@@ -658,7 +701,7 @@ GENX(csf_submit_batch)(struct panfrost_batch *batch)
     uint32_t cs_size = cs_root_chunk_size(batch->csf.cs.builder);
     struct panfrost_context *ctx = batch->ctx;
     struct panfrost_device *dev = pan_device(ctx->base.screen);
@@ -997,7 +1074,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfro
     struct util_dynarray syncops;
  
     util_dynarray_init(&syncops, NULL);
-@@ -667,7 +710,7 @@
+@@ -667,7 +710,7 @@ GENX(csf_submit_batch)(struct panfrost_batch *batch)
     if (ret)
        goto out_free_syncops;
  
@@ -1006,7 +1083,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfro
     uint64_t vm_sync_signal_point = vm_sync_cur_point + 1;
  
     struct drm_panthor_sync_op signalop = {
-@@ -687,7 +730,7 @@
+@@ -687,7 +730,7 @@ GENX(csf_submit_batch)(struct panfrost_batch *batch)
        util_dynarray_num_elements(&syncops, struct drm_panthor_sync_op));
     csf_prepare_gsubmit(ctx, &gsubmit, &qsubmit, 1);
     ret = csf_submit_gsubmit(ctx, &gsubmit);
@@ -1015,7 +1092,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfro
                                 ret ? vm_sync_cur_point : vm_sync_signal_point);
  
     if (!ret) {
-@@ -1479,6 +1522,12 @@
+@@ -1479,6 +1522,12 @@ static enum pipe_reset_status
  get_device_reset_status(struct pipe_context *pctx)
  {
     struct panfrost_context *ctx = pan_context(pctx);
@@ -1028,7 +1105,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfro
     enum pipe_reset_status reset_status = ctx->csf.reset_status;
  
     /* Reset the status before returning. */
-@@ -1509,8 +1558,7 @@
+@@ -1509,8 +1558,7 @@ GENX(csf_init_context)(struct panfrost_context *ctx)
     };
  
     int ret =
@@ -1038,7 +1115,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfro
  
     if (ret)
        goto err_group_create;
-@@ -1530,8 +1578,7 @@
+@@ -1530,8 +1578,7 @@ GENX(csf_init_context)(struct panfrost_context *ctx)
        .max_chunks = pan_screen(ctx->base.screen)->csf_tiler_heap.max_chunks,
        .target_in_flight = 65535,
     };
@@ -1048,7 +1125,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfro
  
     if (ret)
        goto err_tiler_heap;
-@@ -1577,7 +1624,7 @@
+@@ -1577,7 +1624,7 @@ GENX(csf_init_context)(struct panfrost_context *ctx)
        .capacity = panfrost_bo_size(cs_bo) / sizeof(uint64_t),
     };
     const struct drm_panthor_csif_info *csif_info =
@@ -1057,7 +1134,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfro
     const struct cs_builder_conf bconf = {
        .nr_registers = csif_info->cs_reg_count,
        .nr_kernel_registers = MAX2(csif_info->unpreserved_cs_reg_count, 4),
-@@ -1627,7 +1674,7 @@
+@@ -1627,7 +1674,7 @@ GENX(csf_init_context)(struct panfrost_context *ctx)
        goto err_g_submit;
  
     /* Wait before freeing the buffer. */
@@ -1066,7 +1143,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfro
                          NULL);
     assert(!ret);
  
-@@ -1644,11 +1691,9 @@
+@@ -1644,11 +1691,9 @@ err_tiler_heap_cs_bo:
  err_tiler_heap_tmp_geom_bo:
     panfrost_bo_unreference(ctx->csf.heap.desc_bo);
  err_tiler_heap_desc_bo:
@@ -1080,7 +1157,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfro
  err_group_create:
     return -1;
  }
-@@ -1666,12 +1711,11 @@
+@@ -1666,12 +1711,11 @@ GENX(csf_cleanup_context)(struct panfrost_context *ctx)
     int ret;
  
     /* Make sure all jobs are done before destroying the heap. */
@@ -1095,7 +1172,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfro
     assert(!ret);
  
     struct drm_panthor_group_destroy gd = {
-@@ -1679,8 +1723,7 @@
+@@ -1679,8 +1723,7 @@ GENX(csf_cleanup_context)(struct panfrost_context *ctx)
     };
  
     ret =
@@ -1106,9 +1183,10 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.c b/src/gallium/drivers/panfro
  
     panfrost_bo_unreference(ctx->csf.tmp_geom_bo);
 diff --git a/src/gallium/drivers/panfrost/pan_csf.h b/src/gallium/drivers/panfrost/pan_csf.h
+index 78b9678..8e9e022 100644
 --- a/src/gallium/drivers/panfrost/pan_csf.h
 +++ b/src/gallium/drivers/panfrost/pan_csf.h
-@@ -88,6 +88,9 @@
+@@ -88,6 +88,9 @@ struct panfrost_csf_context {
     } heap;
  
     enum pipe_reset_status reset_status;
@@ -1119,6 +1197,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_csf.h b/src/gallium/drivers/panfro
     /* Temporary geometry buffer. Used as a FIFO by the tiler. */
     struct panfrost_bo *tmp_geom_bo;
 diff --git a/src/gallium/drivers/panfrost/pan_device.c b/src/gallium/drivers/panfrost/pan_device.c
+index a0e062f..47836f0 100644
 --- a/src/gallium/drivers/panfrost/pan_device.c
 +++ b/src/gallium/drivers/panfrost/pan_device.c
 @@ -24,7 +24,7 @@
@@ -1130,7 +1209,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_device.c b/src/gallium/drivers/pan
  
  #include "drm-uapi/panfrost_drm.h"
  #include "util/hash_table.h"
-@@ -97,6 +97,7 @@
+@@ -97,6 +97,7 @@ panfrost_open_device(void *memctx, int fd, struct panfrost_device *dev)
     dev->blendable_formats = pan_blendable_format_table(dev->arch);
  
     util_sparse_array_init(&dev->bo_map, sizeof(struct panfrost_bo), 512);
@@ -1138,7 +1217,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_device.c b/src/gallium/drivers/pan
  
     pthread_mutex_init(&dev->bo_cache.lock, NULL);
     list_inithead(&dev->bo_cache.lru);
-@@ -162,6 +163,7 @@
+@@ -162,6 +163,7 @@ panfrost_close_device(struct panfrost_device *dev)
        panfrost_bo_cache_evict_all(dev);
        pthread_mutex_destroy(&dev->bo_cache.lock);
        util_sparse_array_finish(&dev->bo_map);
@@ -1147,6 +1226,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_device.c b/src/gallium/drivers/pan
  
     if (dev->kmod.vm)
 diff --git a/src/gallium/drivers/panfrost/pan_device.h b/src/gallium/drivers/panfrost/pan_device.h
+index 955368d..39c80a9 100644
 --- a/src/gallium/drivers/panfrost/pan_device.h
 +++ b/src/gallium/drivers/panfrost/pan_device.h
 @@ -30,7 +30,7 @@
@@ -1159,9 +1239,10 @@ diff --git a/src/gallium/drivers/panfrost/pan_device.h b/src/gallium/drivers/pan
  #include "util/bitset.h"
  #include "util/list.h"
 diff --git a/src/gallium/drivers/panfrost/pan_fence.c b/src/gallium/drivers/panfrost/pan_fence.c
+index f3c9e14..7e4c6ef 100644
 --- a/src/gallium/drivers/panfrost/pan_fence.c
 +++ b/src/gallium/drivers/panfrost/pan_fence.c
-@@ -42,7 +42,7 @@
+@@ -42,7 +42,7 @@ panfrost_fence_reference(struct pipe_screen *pscreen,
     struct pipe_fence_handle *old = *ptr;
  
     if (pipe_reference(&old->reference, &fence->reference)) {
@@ -1170,7 +1251,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_fence.c b/src/gallium/drivers/panf
        free(old);
     }
  
-@@ -63,8 +63,8 @@
+@@ -63,8 +63,8 @@ panfrost_fence_finish(struct pipe_screen *pscreen, struct pipe_context *ctx,
     if (abs_timeout == OS_TIMEOUT_INFINITE)
        abs_timeout = INT64_MAX;
  
@@ -1181,7 +1262,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_fence.c b/src/gallium/drivers/panf
  
     fence->signaled = (ret >= 0);
     return fence->signaled;
-@@ -76,7 +76,7 @@
+@@ -76,7 +76,7 @@ panfrost_fence_get_fd(struct pipe_screen *screen, struct pipe_fence_handle *f)
     struct panfrost_device *dev = pan_device(screen);
     int fd = -1;
  
@@ -1190,7 +1271,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_fence.c b/src/gallium/drivers/panf
     return fd;
  }
  
-@@ -92,20 +92,20 @@
+@@ -92,20 +92,20 @@ panfrost_fence_from_fd(struct panfrost_context *ctx, int fd,
        return NULL;
  
     if (type == PIPE_FD_TYPE_NATIVE_SYNC) {
@@ -1214,7 +1295,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_fence.c b/src/gallium/drivers/panf
        if (ret) {
           mesa_loge("import syncobj FD failed\n");
           goto err_free_fence;
-@@ -117,7 +117,7 @@
+@@ -117,7 +117,7 @@ panfrost_fence_from_fd(struct panfrost_context *ctx, int fd,
     return f;
  
  err_destroy_syncobj:
@@ -1223,7 +1304,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_fence.c b/src/gallium/drivers/panf
  err_free_fence:
     free(f);
     return NULL;
-@@ -134,7 +134,7 @@
+@@ -134,7 +134,7 @@ panfrost_fence_create(struct panfrost_context *ctx)
      * (HandleToFD/FDToHandle just gives you another syncobj ID for the
      * same syncobj).
      */
@@ -1234,6 +1315,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_fence.c b/src/gallium/drivers/panf
        return NULL;
 diff --git a/src/gallium/drivers/panfrost/pan_haiku.c b/src/gallium/drivers/panfrost/pan_haiku.c
 new file mode 100644
+index 0000000..97b4cb5
 --- /dev/null
 +++ b/src/gallium/drivers/panfrost/pan_haiku.c
 @@ -0,0 +1,23 @@
@@ -1261,9 +1343,10 @@ new file mode 100644
 +   return screen;
 +}
 diff --git a/src/gallium/drivers/panfrost/pan_jm.c b/src/gallium/drivers/panfrost/pan_jm.c
+index e798e47..7e1c1a7 100644
 --- a/src/gallium/drivers/panfrost/pan_jm.c
 +++ b/src/gallium/drivers/panfrost/pan_jm.c
-@@ -105,7 +105,7 @@
+@@ -105,7 +105,7 @@ jm_submit_jc(struct panfrost_batch *batch, uint64_t first_job_desc,
     submit.requirements = reqs;
  
     if (ctx->in_sync_fd >= 0) {
@@ -1272,7 +1355,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_jm.c b/src/gallium/drivers/panfros
                                       ctx->in_sync_fd);
        assert(!ret);
  
-@@ -178,7 +178,7 @@
+@@ -178,7 +178,7 @@ jm_submit_jc(struct panfrost_batch *batch, uint64_t first_job_desc,
     /* Trace the job if we're doing that */
     if (dev->debug & (PAN_DBG_TRACE | PAN_DBG_SYNC)) {
        /* Wait so we can get errors reported back */
@@ -1282,9 +1365,10 @@ diff --git a/src/gallium/drivers/panfrost/pan_jm.c b/src/gallium/drivers/panfros
        if (ret)
           return errno;
 diff --git a/src/gallium/drivers/panfrost/pan_public.h b/src/gallium/drivers/panfrost/pan_public.h
+index 587fc3f..bfab732 100644
 --- a/src/gallium/drivers/panfrost/pan_public.h
 +++ b/src/gallium/drivers/panfrost/pan_public.h
-@@ -32,6 +32,8 @@
+@@ -32,6 +32,8 @@ struct pipe_screen;
  struct pipe_screen_config;
  struct renderonly;
  
@@ -1294,6 +1378,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_public.h b/src/gallium/drivers/pan
  panfrost_create_screen(int fd, const struct pipe_screen_config *config,
                         struct renderonly *ro);
 diff --git a/src/gallium/drivers/panfrost/pan_resource.c b/src/gallium/drivers/panfrost/pan_resource.c
+index dca5513..2a2e050 100644
 --- a/src/gallium/drivers/panfrost/pan_resource.c
 +++ b/src/gallium/drivers/panfrost/pan_resource.c
 @@ -32,7 +32,7 @@
@@ -1305,7 +1390,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_resource.c b/src/gallium/drivers/p
  #include "drm-uapi/drm_fourcc.h"
  
  #include "frontend/winsys_handle.h"
-@@ -241,11 +241,15 @@
+@@ -241,11 +241,15 @@ panfrost_resource_destroy(struct pipe_screen *screen, struct pipe_resource *pt)
  {
     MESA_TRACE_FUNC();
  
@@ -1322,7 +1407,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_resource.c b/src/gallium/drivers/p
  
     if (rsrc->shadow_image)
        pipe_resource_reference(
-@@ -351,6 +355,9 @@
+@@ -351,6 +355,9 @@ panfrost_resource_from_handle(struct pipe_screen *pscreen,
                                const struct pipe_resource *templat,
                                struct winsys_handle *whandle, unsigned usage)
  {
@@ -1332,7 +1417,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_resource.c b/src/gallium/drivers/p
     struct panfrost_device *dev = pan_device(pscreen);
     struct panfrost_resource *rsc;
     struct pipe_resource *prsc;
-@@ -442,6 +449,7 @@
+@@ -442,6 +449,7 @@ panfrost_resource_from_handle(struct pipe_screen *pscreen,
     }
  
     return prsc;
@@ -1340,7 +1425,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_resource.c b/src/gallium/drivers/p
  }
  
  static void
-@@ -472,6 +480,9 @@
+@@ -472,6 +480,9 @@ panfrost_resource_get_handle(struct pipe_screen *pscreen,
                               struct pipe_context *ctx, struct pipe_resource *pt,
                               struct winsys_handle *handle, unsigned usage)
  {
@@ -1350,7 +1435,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_resource.c b/src/gallium/drivers/p
     struct panfrost_device *dev = pan_device(pscreen);
     struct panfrost_resource *rsrc = pan_resource(pt);
     struct renderonly_scanout *scanout;
-@@ -524,6 +535,7 @@
+@@ -524,6 +535,7 @@ panfrost_resource_get_handle(struct pipe_screen *pscreen,
     }
  
     return true;
@@ -1359,6 +1444,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_resource.c b/src/gallium/drivers/p
  
  static bool
 diff --git a/src/gallium/drivers/panfrost/pan_screen.c b/src/gallium/drivers/panfrost/pan_screen.c
+index 1554290..d2299ba 100644
 --- a/src/gallium/drivers/panfrost/pan_screen.c
 +++ b/src/gallium/drivers/panfrost/pan_screen.c
 @@ -53,6 +53,9 @@
@@ -1371,7 +1457,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_screen.c b/src/gallium/drivers/pan
  #include "pan_shader.h"
  #include "pan_util.h"
  
-@@ -882,12 +885,26 @@
+@@ -882,12 +885,26 @@ panfrost_init_screen_caps(struct panfrost_screen *screen)
        modes &= ~BITFIELD_BIT(MESA_PRIM_QUADS);
     }
  
@@ -1398,7 +1484,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_screen.c b/src/gallium/drivers/pan
  
     caps->context_priority_mask =
        from_kmod_group_allow_priority_flags(
-@@ -998,8 +1015,10 @@
+@@ -998,8 +1015,10 @@ panfrost_create_screen(int fd, const struct pipe_screen_config *config,
     /* Create the screen */
     struct panfrost_screen *screen = rzalloc(NULL, struct panfrost_screen);
  
@@ -1411,6 +1497,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_screen.c b/src/gallium/drivers/pan
     struct panfrost_device *dev = pan_device(&screen->base);
  
 diff --git a/src/gallium/drivers/panfrost/pan_screen.h b/src/gallium/drivers/panfrost/pan_screen.h
+index e1c17c6..f56c752 100644
 --- a/src/gallium/drivers/panfrost/pan_screen.h
 +++ b/src/gallium/drivers/panfrost/pan_screen.h
 @@ -29,7 +29,7 @@
@@ -1423,6 +1510,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_screen.h b/src/gallium/drivers/pan
  #include "pipe/p_screen.h"
  #include "renderonly/renderonly.h"
 diff --git a/src/gallium/drivers/panfrost/pan_shader.c b/src/gallium/drivers/panfrost/pan_shader.c
+index fba3569..abefebc 100644
 --- a/src/gallium/drivers/panfrost/pan_shader.c
 +++ b/src/gallium/drivers/panfrost/pan_shader.c
 @@ -38,6 +38,9 @@
@@ -1435,7 +1523,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_shader.c b/src/gallium/drivers/pan
  #include "shader_enums.h"
  
  static struct panfrost_uncompiled_shader *
-@@ -497,6 +500,10 @@
+@@ -497,6 +500,10 @@ panfrost_create_shader_state(struct pipe_context *pctx,
  
     so->stream_output = cso->stream_output;
     so->nir = nir;
@@ -1448,6 +1536,7 @@ diff --git a/src/gallium/drivers/panfrost/pan_shader.c b/src/gallium/drivers/pan
     if (nir->info.stage == MESA_SHADER_FRAGMENT &&
 diff --git a/src/gallium/drivers/panfrost/pan_sw_polygon.c b/src/gallium/drivers/panfrost/pan_sw_polygon.c
 new file mode 100644
+index 0000000..1e99541
 --- /dev/null
 +++ b/src/gallium/drivers/panfrost/pan_sw_polygon.c
 @@ -0,0 +1,692 @@
@@ -1475,7 +1564,7 @@ new file mode 100644
 +
 +#define POLYGON_BATCH_VERTICES 2048
 +
-+DEBUG_GET_ONCE_BOOL_OPTION(haiku_sw_polygon, "HAIKU_PAN_SW_POLYGON", false)
++DEBUG_GET_ONCE_BOOL_OPTION(haiku_sw_polygon, "HAIKU_PAN_SW_POLYGON", true)
 +DEBUG_GET_ONCE_BOOL_OPTION(haiku_sw_polygon_trace, "HAIKU_PAN_SW_POLYGON_TRACE", false)
 +
 +bool
@@ -2145,6 +2234,7 @@ new file mode 100644
 +}
 diff --git a/src/gallium/drivers/panfrost/pan_sw_polygon.h b/src/gallium/drivers/panfrost/pan_sw_polygon.h
 new file mode 100644
+index 0000000..c97450f
 --- /dev/null
 +++ b/src/gallium/drivers/panfrost/pan_sw_polygon.h
 @@ -0,0 +1,37 @@
@@ -2186,9 +2276,10 @@ new file mode 100644
 +
 +#endif
 diff --git a/src/gallium/frontends/hgl/hgl.c b/src/gallium/frontends/hgl/hgl.c
+index e91ffeb..635612b 100644
 --- a/src/gallium/frontends/hgl/hgl.c
 +++ b/src/gallium/frontends/hgl/hgl.c
-@@ -65,8 +65,11 @@
+@@ -65,8 +65,11 @@ hgl_st_framebuffer_flush_front(struct st_context *st,
  	if (statt != ST_ATTACHMENT_FRONT_LEFT)
  		return false;
  
@@ -2201,7 +2292,7 @@ diff --git a/src/gallium/frontends/hgl/hgl.c b/src/gallium/frontends/hgl/hgl.c
  
  	// TODO: pipe_context here??? Might be needed for hw renderers
  	buffer->screen->flush_frontbuffer(buffer->screen, NULL, ptex, 0, 0,
-@@ -114,7 +117,9 @@
+@@ -114,7 +117,9 @@ hgl_st_framebuffer_validate_textures(struct pipe_frontend_drawable *drawable,
  				case ST_ATTACHMENT_FRONT_RIGHT:
  				case ST_ATTACHMENT_BACK_RIGHT:
  					format = buffer->visual.color_format;
@@ -2212,7 +2303,7 @@ diff --git a/src/gallium/frontends/hgl/hgl.c b/src/gallium/frontends/hgl/hgl.c
  					break;
  				case ST_ATTACHMENT_DEPTH_STENCIL:
  					format = buffer->visual.depth_stencil_format;
-@@ -163,6 +168,8 @@
+@@ -163,6 +168,8 @@ hgl_st_framebuffer_validate(struct st_context *st,
  	CALLED();
  
  	buffer = hgl_st_framebuffer(drawable);
@@ -2221,7 +2312,7 @@ diff --git a/src/gallium/frontends/hgl/hgl.c b/src/gallium/frontends/hgl/hgl.c
  
  	// Build mask of current attachments
  	stAttachmentMask = 0;
-@@ -223,7 +230,8 @@
+@@ -223,7 +230,8 @@ hgl_create_st_framebuffer(struct hgl_display *display, struct st_visual* visual,
  	assert(visual);
  
  	buffer = CALLOC_STRUCT(hgl_buffer);
@@ -2231,7 +2322,7 @@ diff --git a/src/gallium/frontends/hgl/hgl.c b/src/gallium/frontends/hgl/hgl.c
  
  	// Prepare our buffer
  	buffer->visual = *visual;
-@@ -252,6 +260,7 @@
+@@ -252,6 +260,7 @@ void
  hgl_destroy_st_framebuffer(struct hgl_buffer *buffer)
  {
  	CALLED();
@@ -2239,7 +2330,7 @@ diff --git a/src/gallium/frontends/hgl/hgl.c b/src/gallium/frontends/hgl/hgl.c
  
  	int i;
  	for (i = 0; i < ST_ATTACHMENT_COUNT; i++)
-@@ -264,10 +273,6 @@
+@@ -264,10 +273,6 @@ hgl_destroy_st_framebuffer(struct hgl_buffer *buffer)
  struct hgl_context*
  hgl_create_context(struct hgl_display *display, struct st_visual* visual, struct st_context* shared)
  {
@@ -2250,7 +2341,7 @@ diff --git a/src/gallium/frontends/hgl/hgl.c b/src/gallium/frontends/hgl/hgl.c
  	struct st_context_attribs attribs;
  	memset(&attribs, 0, sizeof(attribs));
  	attribs.options.force_glsl_extensions_warn = false;
-@@ -277,7 +282,22 @@
+@@ -277,7 +282,22 @@ hgl_create_context(struct hgl_display *display, struct st_visual* visual, struct
  	attribs.minor = 0;
  
  	enum st_context_error result;
@@ -2274,7 +2365,7 @@ diff --git a/src/gallium/frontends/hgl/hgl.c b/src/gallium/frontends/hgl/hgl.c
  	if (context->st == NULL) {
  		FREE(context);
  		return NULL;
-@@ -299,14 +319,15 @@
+@@ -299,14 +319,15 @@ hgl_create_context(struct hgl_display *display, struct st_visual* visual, struct
  void
  hgl_destroy_context(struct hgl_context* context)
  {
@@ -2293,7 +2384,7 @@ diff --git a/src/gallium/frontends/hgl/hgl.c b/src/gallium/frontends/hgl/hgl.c
  	FREE(context);
  }
  
-@@ -317,6 +338,7 @@
+@@ -317,6 +338,7 @@ hgl_get_st_visual(struct st_visual* visual, ulong options)
  	CALLED();
  
  	assert(visual);
@@ -2301,7 +2392,7 @@ diff --git a/src/gallium/frontends/hgl/hgl.c b/src/gallium/frontends/hgl/hgl.c
  
  	// Determine color format
  	if ((options & HGL_INDEX) != 0) {
-@@ -365,9 +387,13 @@
+@@ -365,9 +387,13 @@ hgl_create_display(struct pipe_screen* screen)
  	struct hgl_display* display;
  
  	display = CALLOC_STRUCT(hgl_display);
@@ -2318,9 +2409,10 @@ diff --git a/src/gallium/frontends/hgl/hgl.c b/src/gallium/frontends/hgl/hgl.c
  	display->fscreen->get_param = hgl_st_manager_get_param;
  	// display->fscreen->st_screen is used by llvmpipe
 diff --git a/src/gallium/frontends/hgl/hgl_context.h b/src/gallium/frontends/hgl/hgl_context.h
+index 4ec985e..8419dc7 100644
 --- a/src/gallium/frontends/hgl/hgl_context.h
 +++ b/src/gallium/frontends/hgl/hgl_context.h
-@@ -55,6 +55,9 @@
+@@ -55,6 +55,9 @@ struct hgl_buffer
  
  	struct pipe_screen* screen;
  	void* winsysContext;
@@ -2330,7 +2422,7 @@ diff --git a/src/gallium/frontends/hgl/hgl_context.h b/src/gallium/frontends/hgl
  
  	enum pipe_texture_target target;
  	struct pipe_resource* textures[ST_ATTACHMENT_COUNT];
-@@ -84,6 +87,10 @@
+@@ -84,6 +87,10 @@ struct hgl_buffer* hgl_create_st_framebuffer(struct hgl_display *display, struct
  void hgl_destroy_st_framebuffer(struct hgl_buffer *buffer);
  
  struct hgl_context* hgl_create_context(struct hgl_display *display, struct st_visual* visual, struct st_context* shared);
@@ -2342,6 +2434,7 @@ diff --git a/src/gallium/frontends/hgl/hgl_context.h b/src/gallium/frontends/hgl
  
  // hgl visual
 diff --git a/src/gallium/winsys/panfrost/drm/meson.build b/src/gallium/winsys/panfrost/drm/meson.build
+index 1e98cef..82d5e5a 100644
 --- a/src/gallium/winsys/panfrost/drm/meson.build
 +++ b/src/gallium/winsys/panfrost/drm/meson.build
 @@ -1,3 +1,6 @@
@@ -2351,16 +2444,17 @@ diff --git a/src/gallium/winsys/panfrost/drm/meson.build b/src/gallium/winsys/pa
  # Copyright © 2017 Broadcom
  # SPDX-License-Identifier: MIT
  
-@@ -11,3 +14,5 @@
+@@ -11,3 +14,5 @@ libpanfrostwinsys = static_library(
    gnu_symbol_visibility : 'hidden',
    dependencies: [dep_libdrm, idep_mesautil],
  )
 +
 +endif
 diff --git a/src/mesa/state_tracker/st_cb_flush.c b/src/mesa/state_tracker/st_cb_flush.c
+index 8e92ce5..5980c8f 100644
 --- a/src/mesa/state_tracker/st_cb_flush.c
 +++ b/src/mesa/state_tracker/st_cb_flush.c
-@@ -159,8 +159,19 @@
+@@ -159,8 +159,19 @@ st_get_graphics_reset_status(struct gl_context *ctx)
        st->reset_status = PIPE_NO_RESET;
     } else {
        status = st->pipe->get_device_reset_status(st->pipe);
@@ -2382,6 +2476,7 @@ diff --git a/src/mesa/state_tracker/st_cb_flush.c b/src/mesa/state_tracker/st_cb
     return gl_reset_status_from_pipe_reset_status(status);
 diff --git a/src/panfrost/lib/kmod/haiku-abi/CsfBuffer.h b/src/panfrost/lib/kmod/haiku-abi/CsfBuffer.h
 new file mode 100644
+index 0000000..6aeec40
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/haiku-abi/CsfBuffer.h
 @@ -0,0 +1,84 @@
@@ -2471,6 +2566,7 @@ new file mode 100644
 +#endif
 diff --git a/src/panfrost/lib/kmod/haiku-abi/CsfFirmware.h b/src/panfrost/lib/kmod/haiku-abi/CsfFirmware.h
 new file mode 100644
+index 0000000..cf345b2
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/haiku-abi/CsfFirmware.h
 @@ -0,0 +1,81 @@
@@ -2557,6 +2653,7 @@ new file mode 100644
 +#endif // MALI_CSF_FIRMWARE_H
 diff --git a/src/panfrost/lib/kmod/haiku-abi/CsfHeap.h b/src/panfrost/lib/kmod/haiku-abi/CsfHeap.h
 new file mode 100644
+index 0000000..f6050fd
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/haiku-abi/CsfHeap.h
 @@ -0,0 +1,54 @@
@@ -2616,6 +2713,7 @@ new file mode 100644
 +#endif
 diff --git a/src/panfrost/lib/kmod/haiku-abi/CsfProperties.h b/src/panfrost/lib/kmod/haiku-abi/CsfProperties.h
 new file mode 100644
+index 0000000..a72f57c
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/haiku-abi/CsfProperties.h
 @@ -0,0 +1,45 @@
@@ -2666,6 +2764,7 @@ new file mode 100644
 +#endif
 diff --git a/src/panfrost/lib/kmod/haiku-abi/CsfQueue.h b/src/panfrost/lib/kmod/haiku-abi/CsfQueue.h
 new file mode 100644
+index 0000000..3d22aa9
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/haiku-abi/CsfQueue.h
 @@ -0,0 +1,132 @@
@@ -2803,6 +2902,7 @@ new file mode 100644
 +#endif
 diff --git a/src/panfrost/lib/kmod/haiku-abi/CsfSync.h b/src/panfrost/lib/kmod/haiku-abi/CsfSync.h
 new file mode 100644
+index 0000000..d7d7f6e
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/haiku-abi/CsfSync.h
 @@ -0,0 +1,98 @@
@@ -2906,6 +3006,7 @@ new file mode 100644
 +#endif
 diff --git a/src/panfrost/lib/kmod/haiku-abi/CsfVm.h b/src/panfrost/lib/kmod/haiku-abi/CsfVm.h
 new file mode 100644
+index 0000000..7a0e171
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/haiku-abi/CsfVm.h
 @@ -0,0 +1,90 @@
@@ -3001,6 +3102,7 @@ new file mode 100644
 +#endif
 diff --git a/src/panfrost/lib/kmod/haiku_csf_native.cpp b/src/panfrost/lib/kmod/haiku_csf_native.cpp
 new file mode 100644
+index 0000000..7acb3d8
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/haiku_csf_native.cpp
 @@ -0,0 +1,327 @@
@@ -3333,6 +3435,7 @@ new file mode 100644
 +}
 diff --git a/src/panfrost/lib/kmod/haiku_csf_native.h b/src/panfrost/lib/kmod/haiku_csf_native.h
 new file mode 100644
+index 0000000..cd85ee4
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/haiku_csf_native.h
 @@ -0,0 +1,102 @@
@@ -3440,6 +3543,7 @@ new file mode 100644
 +#endif
 diff --git a/src/panfrost/lib/kmod/haiku_csf_sync.cpp b/src/panfrost/lib/kmod/haiku_csf_sync.cpp
 new file mode 100644
+index 0000000..3418007
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/haiku_csf_sync.cpp
 @@ -0,0 +1,120 @@
@@ -3565,6 +3669,7 @@ new file mode 100644
 +}
 diff --git a/src/panfrost/lib/kmod/haiku_csf_sync.h b/src/panfrost/lib/kmod/haiku_csf_sync.h
 new file mode 100644
+index 0000000..8351088
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/haiku_csf_sync.h
 @@ -0,0 +1,47 @@
@@ -3617,9 +3722,10 @@ new file mode 100644
 +#endif
 diff --git a/src/panfrost/lib/kmod/haiku_kmod.c b/src/panfrost/lib/kmod/haiku_kmod.c
 new file mode 100644
+index 0000000..4fb4435
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/haiku_kmod.c
-@@ -0,0 +1,583 @@
+@@ -0,0 +1,598 @@
 +/*
 + * Copyright © 2023 Collabora, Ltd. (Panfrost synchronization bookkeeping)
 + * SPDX-License-Identifier: MIT
@@ -3627,6 +3733,7 @@ new file mode 100644
 + * Native Haiku CSF backend. Panthor structures used by the command builder
 + * are translated in-process; no DRM ioctl or Linux descriptor ABI is exposed.
 + */
++#include <unistd.h>
 +#include <errno.h>
 +#include <stdlib.h>
 +#include <string.h>
@@ -3689,7 +3796,21 @@ new file mode 100644
 +   if (!dev) { errno = ENOMEM; return NULL; }
 +   if (pan_haiku_vm_create(fd, 0, &dev->bootstrap_vm)) goto fail_free;
 +   const char *firmware = getenv("HAIKU_CSF_FIRMWARE");
-+   if (!firmware) firmware = "/boot/system/data/firmware/mali/arch10.8/mali_csffw.bin";
++   if (!firmware || !*firmware) {
++      /* Packaged, non-packaged, then per-user firmware locations. */
++      static const char *const candidates[] = {
++         "/boot/system/data/firmware/mali/arch10.8/mali_csffw.bin",
++         "/boot/system/non-packaged/data/firmware/mali/arch10.8/mali_csffw.bin",
++         "/boot/home/config/non-packaged/data/firmware/mali/arch10.8/mali_csffw.bin",
++      };
++      firmware = candidates[0];
++      for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
++         if (access(candidates[i], R_OK) == 0) {
++            firmware = candidates[i];
++            break;
++         }
++      }
++   }
 +   if (pan_haiku_queue_create_with_file(fd, dev->bootstrap_vm, firmware,
 +                                      &dev->bootstrap_queue)) goto fail_vm;
 +   if (pan_haiku_queue_properties(fd, dev->bootstrap_queue, &dev->props)) goto fail_queue;
@@ -4205,6 +4326,7 @@ new file mode 100644
 +};
 diff --git a/src/panfrost/lib/kmod/haiku_kmod.h b/src/panfrost/lib/kmod/haiku_kmod.h
 new file mode 100644
+index 0000000..e4cef88
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/haiku_kmod.h
 @@ -0,0 +1,29 @@
@@ -4238,6 +4360,7 @@ new file mode 100644
 +int haiku_kmod_heap_create(struct pan_kmod_dev *, struct drm_panthor_tiler_heap_create *);
 +int haiku_kmod_heap_destroy(struct pan_kmod_dev *, struct drm_panthor_tiler_heap_destroy *);
 diff --git a/src/panfrost/lib/kmod/meson.build b/src/panfrost/lib/kmod/meson.build
+index cb021a3..2a08e2e 100644
 --- a/src/panfrost/lib/kmod/meson.build
 +++ b/src/panfrost/lib/kmod/meson.build
 @@ -3,14 +3,18 @@
@@ -4264,6 +4387,7 @@ diff --git a/src/panfrost/lib/kmod/meson.build b/src/panfrost/lib/kmod/meson.bui
    dependencies: [dep_libdrm, idep_mesautil, idep_pan_packers, libpanfrost_model_dep],
 diff --git a/src/panfrost/lib/kmod/pan_csf_kmod.h b/src/panfrost/lib/kmod/pan_csf_kmod.h
 new file mode 100644
+index 0000000..ad9d4cc
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/pan_csf_kmod.h
 @@ -0,0 +1,41 @@
@@ -4309,6 +4433,7 @@ new file mode 100644
 +{ return pan_kmod_ioctl(dev->fd, DRM_IOCTL_PANTHOR_TILER_HEAP_DESTROY, req); }
 +#endif
 diff --git a/src/panfrost/lib/kmod/pan_kmod.c b/src/panfrost/lib/kmod/pan_kmod.c
+index a4370bb..9846c07 100644
 --- a/src/panfrost/lib/kmod/pan_kmod.c
 +++ b/src/panfrost/lib/kmod/pan_kmod.c
 @@ -5,12 +5,15 @@
@@ -4327,7 +4452,7 @@ diff --git a/src/panfrost/lib/kmod/pan_kmod.c b/src/panfrost/lib/kmod/pan_kmod.c
  extern const struct pan_kmod_ops panfrost_kmod_ops;
  extern const struct pan_kmod_ops panthor_kmod_ops;
  
-@@ -28,6 +31,8 @@
+@@ -28,6 +31,8 @@ static const struct {
     },
  };
  
@@ -4336,7 +4461,7 @@ diff --git a/src/panfrost/lib/kmod/pan_kmod.c b/src/panfrost/lib/kmod/pan_kmod.c
  static void *
  default_zalloc(const struct pan_kmod_allocator *allocator, size_t size,
                 UNUSED bool transient)
-@@ -50,6 +55,9 @@
+@@ -50,6 +55,9 @@ struct pan_kmod_dev *
  pan_kmod_dev_create(int fd, uint32_t flags,
                      const struct pan_kmod_allocator *allocator)
  {
@@ -4346,7 +4471,7 @@ diff --git a/src/panfrost/lib/kmod/pan_kmod.c b/src/panfrost/lib/kmod/pan_kmod.c
     drmVersionPtr version = drmGetVersion(fd);
     struct pan_kmod_dev *dev = NULL;
  
-@@ -63,13 +71,15 @@
+@@ -63,13 +71,15 @@ pan_kmod_dev_create(int fd, uint32_t flags,
        if (!strcmp(drivers[i].name, version->name)) {
           const struct pan_kmod_ops *ops = drivers[i].ops;
  
@@ -4363,7 +4488,7 @@ diff --git a/src/panfrost/lib/kmod/pan_kmod.c b/src/panfrost/lib/kmod/pan_kmod.c
  }
  
  void
-@@ -138,6 +148,7 @@
+@@ -138,6 +148,7 @@ pan_kmod_bo_put(struct pan_kmod_bo *bo)
     simple_mtx_unlock(&dev->handle_to_bo.lock);
  }
  
@@ -4371,7 +4496,7 @@ diff --git a/src/panfrost/lib/kmod/pan_kmod.c b/src/panfrost/lib/kmod/pan_kmod.c
  static bool
  pan_kmod_bo_check_import_flags(struct pan_kmod_bo *bo, uint32_t flags)
  {
-@@ -149,9 +160,14 @@
+@@ -149,9 +160,14 @@ pan_kmod_bo_check_import_flags(struct pan_kmod_bo *bo, uint32_t flags)
     return (bo->flags & mask) == (flags & mask);
  }
  
@@ -4386,16 +4511,15 @@ diff --git a/src/panfrost/lib/kmod/pan_kmod.c b/src/panfrost/lib/kmod/pan_kmod.c
     struct pan_kmod_bo *bo = NULL;
     struct pan_kmod_bo **slot;
  
-@@ -202,5 +218,6 @@
+@@ -202,5 +218,6 @@ err_unlock:
     simple_mtx_unlock(&dev->handle_to_bo.lock);
  
     return NULL;
--}
--
 +#endif
-+}
-+
+ }
+ 
 diff --git a/src/panfrost/lib/kmod/pan_kmod.h b/src/panfrost/lib/kmod/pan_kmod.h
+index d763376..dbe97bc 100644
 --- a/src/panfrost/lib/kmod/pan_kmod.h
 +++ b/src/panfrost/lib/kmod/pan_kmod.h
 @@ -19,7 +19,10 @@
@@ -4410,7 +4534,7 @@ diff --git a/src/panfrost/lib/kmod/pan_kmod.h b/src/panfrost/lib/kmod/pan_kmod.h
  
  #include "drm-uapi/drm.h"
  
-@@ -40,6 +43,7 @@
+@@ -40,6 +43,7 @@ extern "C" {
  #endif
  
  struct pan_kmod_dev;
@@ -4418,7 +4542,7 @@ diff --git a/src/panfrost/lib/kmod/pan_kmod.h b/src/panfrost/lib/kmod/pan_kmod.h
  
  /* GPU VM creation flags. */
  enum pan_kmod_vm_flags {
-@@ -363,7 +367,7 @@
+@@ -363,7 +367,7 @@ struct pan_kmod_ops {
      * Return NULL if the creation fails for any reason.
      */
     struct pan_kmod_dev *(*dev_create)(
@@ -4427,7 +4551,7 @@ diff --git a/src/panfrost/lib/kmod/pan_kmod.h b/src/panfrost/lib/kmod/pan_kmod.h
        const struct pan_kmod_allocator *allocator);
  
     /* Destroy a pan_kmod_dev object. */
-@@ -487,12 +491,20 @@
+@@ -487,12 +491,20 @@ struct pan_kmod_dev {
     void *user_priv;
  };
  
@@ -4448,7 +4572,7 @@ diff --git a/src/panfrost/lib/kmod/pan_kmod.h b/src/panfrost/lib/kmod/pan_kmod.h
  struct pan_kmod_dev *
  pan_kmod_dev_create(int fd, uint32_t flags,
                      const struct pan_kmod_allocator *allocator);
-@@ -579,6 +591,9 @@
+@@ -579,6 +591,9 @@ struct pan_kmod_bo *pan_kmod_bo_import(struct pan_kmod_dev *dev, int fd,
  static inline int
  pan_kmod_bo_export(struct pan_kmod_bo *bo)
  {
@@ -4458,7 +4582,7 @@ diff --git a/src/panfrost/lib/kmod/pan_kmod.h b/src/panfrost/lib/kmod/pan_kmod.h
     int fd;
  
     if (drmPrimeHandleToFD(bo->dev->fd, bo->handle, DRM_CLOEXEC | DRM_RDWR,
-@@ -594,6 +609,7 @@
+@@ -594,6 +609,7 @@ pan_kmod_bo_export(struct pan_kmod_bo *bo)
  
     bo->flags |= PAN_KMOD_BO_FLAG_EXPORTED;
     return fd;
@@ -4466,7 +4590,7 @@ diff --git a/src/panfrost/lib/kmod/pan_kmod.h b/src/panfrost/lib/kmod/pan_kmod.h
  }
  
  static inline bool
-@@ -623,6 +639,9 @@
+@@ -623,6 +639,9 @@ static inline void *
  pan_kmod_bo_mmap(struct pan_kmod_bo *bo, off_t bo_offset, size_t size, int prot,
                   int flags, void *host_addr)
  {
@@ -4476,7 +4600,7 @@ diff --git a/src/panfrost/lib/kmod/pan_kmod.h b/src/panfrost/lib/kmod/pan_kmod.h
     off_t mmap_offset;
  
     if ((uint64_t)bo_offset + (uint64_t)size > bo->size)
-@@ -639,6 +658,18 @@
+@@ -639,6 +658,18 @@ pan_kmod_bo_mmap(struct pan_kmod_bo *bo, off_t bo_offset, size_t size, int prot,
                  size, prot, flags, strerror(errno));
  
     return host_addr;
@@ -4495,7 +4619,7 @@ diff --git a/src/panfrost/lib/kmod/pan_kmod.h b/src/panfrost/lib/kmod/pan_kmod.h
  }
  
  static inline void
-@@ -698,7 +729,7 @@
+@@ -698,7 +729,7 @@ pan_kmod_vm_handle(struct pan_kmod_vm *vm)
  static inline uint64_t
  pan_kmod_query_timestamp(const struct pan_kmod_dev *dev)
  {
@@ -4505,6 +4629,7 @@ diff --git a/src/panfrost/lib/kmod/pan_kmod.h b/src/panfrost/lib/kmod/pan_kmod.h
  
  #if defined(__cplusplus)
 diff --git a/src/panfrost/lib/kmod/pan_kmod_backend.h b/src/panfrost/lib/kmod/pan_kmod_backend.h
+index 11bccfc..c8837eb 100644
 --- a/src/panfrost/lib/kmod/pan_kmod_backend.h
 +++ b/src/panfrost/lib/kmod/pan_kmod_backend.h
 @@ -12,14 +12,14 @@
@@ -4527,6 +4652,7 @@ diff --git a/src/panfrost/lib/kmod/pan_kmod_backend.h b/src/panfrost/lib/kmod/pa
     dev->ops = ops;
 diff --git a/src/panfrost/lib/kmod/pan_sync.h b/src/panfrost/lib/kmod/pan_sync.h
 new file mode 100644
+index 0000000..1997069
 --- /dev/null
 +++ b/src/panfrost/lib/kmod/pan_sync.h
 @@ -0,0 +1,45 @@
@@ -4576,9 +4702,10 @@ new file mode 100644
 +#define pan_sync_timeline_signal drmSyncobjTimelineSignal
 +#endif
 diff --git a/src/panfrost/lib/kmod/panfrost_kmod.c b/src/panfrost/lib/kmod/panfrost_kmod.c
+index df5382f..5071cf8 100644
 --- a/src/panfrost/lib/kmod/panfrost_kmod.c
 +++ b/src/panfrost/lib/kmod/panfrost_kmod.c
-@@ -43,13 +43,13 @@
+@@ -43,13 +43,13 @@ struct panfrost_kmod_bo {
  };
  
  static struct pan_kmod_dev *
@@ -4597,9 +4724,10 @@ diff --git a/src/panfrost/lib/kmod/panfrost_kmod.c b/src/panfrost/lib/kmod/panfr
     }
  
 diff --git a/src/panfrost/lib/kmod/panthor_kmod.c b/src/panfrost/lib/kmod/panthor_kmod.c
+index ba35915..b9b7ded 100644
 --- a/src/panfrost/lib/kmod/panthor_kmod.c
 +++ b/src/panfrost/lib/kmod/panthor_kmod.c
-@@ -104,7 +104,7 @@
+@@ -104,7 +104,7 @@ struct panthor_kmod_bo {
  };
  
  static struct pan_kmod_dev *
@@ -4608,7 +4736,7 @@ diff --git a/src/panfrost/lib/kmod/panthor_kmod.c b/src/panfrost/lib/kmod/pantho
                          const struct pan_kmod_allocator *allocator)
  {
     struct panthor_kmod_dev *panthor_dev =
-@@ -139,7 +139,7 @@
+@@ -139,7 +139,7 @@ panthor_kmod_dev_create(int fd, uint32_t flags, drmVersionPtr version,
        goto err_free_dev;
     }
  
@@ -4617,7 +4745,7 @@ diff --git a/src/panfrost/lib/kmod/panthor_kmod.c b/src/panfrost/lib/kmod/pantho
        query = (struct drm_panthor_dev_query){
           .type = DRM_PANTHOR_DEV_QUERY_TIMESTAMP_INFO,
           .size = sizeof(panthor_dev->props.timestamp),
-@@ -154,7 +154,7 @@
+@@ -154,7 +154,7 @@ panthor_kmod_dev_create(int fd, uint32_t flags, drmVersionPtr version,
     }
  
     /* Map the LATEST_FLUSH_ID register at device creation time. */
@@ -4626,7 +4754,7 @@ diff --git a/src/panfrost/lib/kmod/panthor_kmod.c b/src/panfrost/lib/kmod/pantho
        struct drm_panthor_set_user_mmio_offset user_mmio_offset = {
           .offset = DRM_PANTHOR_USER_MMIO_OFFSET,
        };
-@@ -173,7 +173,7 @@
+@@ -173,7 +173,7 @@ panthor_kmod_dev_create(int fd, uint32_t flags, drmVersionPtr version,
        goto err_free_dev;
     }
  
@@ -4636,9 +4764,10 @@ diff --git a/src/panfrost/lib/kmod/panthor_kmod.c b/src/panfrost/lib/kmod/pantho
           .type = DRM_PANTHOR_DEV_QUERY_GROUP_PRIORITIES_INFO,
           .size = sizeof(panthor_dev->props.group_priorities),
 diff --git a/src/panfrost/meson.build b/src/panfrost/meson.build
+index bad5721..2783625 100644
 --- a/src/panfrost/meson.build
 +++ b/src/panfrost/meson.build
-@@ -24,7 +24,9 @@
+@@ -24,7 +24,9 @@ endif
  
  if with_gallium_panfrost or with_panfrost_vk
     subdir('libpan')
@@ -4649,48 +4778,3 @@ diff --git a/src/panfrost/meson.build b/src/panfrost/meson.build
  endif
  
  files_bifrost = files(
-diff --git a/src/gallium/auxiliary/draw/draw_vs_exec.c b/src/gallium/auxiliary/draw/draw_vs_exec.c
---- a/src/gallium/auxiliary/draw/draw_vs_exec.c
-+++ b/src/gallium/auxiliary/draw/draw_vs_exec.c
-@@ -209,6 +209,13 @@
- static void
- vs_exec_delete(struct draw_vertex_shader *dvs)
- {
-+   struct exec_vertex_shader *evs = exec_vertex_shader(dvs);
-+   /* The machine caches expanded instructions by the token address. Retiring
-+    * that address must invalidate the cache before the allocator can reuse it
-+    * for a different shader, including after draw_bind_vertex_shader(NULL).
-+    */
-+   if (evs->machine->Tokens == dvs->state.tokens)
-+      tgsi_exec_machine_bind_shader(evs->machine, NULL, NULL, NULL, NULL);
-    FREE((void*) dvs->state.tokens);
-    FREE(dvs);
- }
-diff --git a/src/gallium/auxiliary/draw/draw_decompose_tmp.h b/src/gallium/auxiliary/draw/draw_decompose_tmp.h
---- a/src/gallium/auxiliary/draw/draw_decompose_tmp.h
-+++ b/src/gallium/auxiliary/draw/draw_decompose_tmp.h
-@@ -255,17 +255,19 @@
-                QUAD(0, idx[3], idx[2],
-                     idx[0], idx[1]);
- #else
--               flags = DRAW_PIPE_RESET_STIPPLE |
--                       DRAW_PIPE_EDGE_FLAG_0 |
--                       DRAW_PIPE_EDGE_FLAG_1;
--               /* always emit idx[3] / idx[0 first */
-+               /* Preserve the outer strip edges after rotating triangles
-+                * to put the provoking vertex first.  The idx[0] -> idx[3]
-+                * diagonal is internal when the first vertex provokes. */
-+               flags = DRAW_PIPE_RESET_STIPPLE | DRAW_PIPE_EDGE_FLAG_1 |
-+                       (quads_flatshade_last ? DRAW_PIPE_EDGE_FLAG_0 : DRAW_PIPE_EDGE_FLAG_2);
-+               /* always emit idx[3] / idx[0] first */
-                if (quads_flatshade_last)
-                   TRIANGLE(flags, idx[3], idx[2], idx[0]);
-                else
-                   TRIANGLE(flags, idx[0], idx[3], idx[2]);
- 
-                flags = DRAW_PIPE_EDGE_FLAG_1 |
--                       DRAW_PIPE_EDGE_FLAG_2;
-+                       (quads_flatshade_last ? DRAW_PIPE_EDGE_FLAG_2 : DRAW_PIPE_EDGE_FLAG_0);
-                if (quads_flatshade_last)
-                   TRIANGLE(flags, idx[3], idx[0], idx[1]);
-                else

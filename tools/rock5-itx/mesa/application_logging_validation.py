@@ -3,11 +3,11 @@ import hashlib
 import re
 
 
-def validate(text, software=False):
+def validate(text, software=False, mode=None):
     raw=text.encode()
     runs=re.findall(rb'^ROCK5_APPLICATION_RUN_BEGIN cycle=(\d+) mode=(\S+)\n(.*?)'
         rb'^ROCK5_APPLICATION_RUN_EXIT cycle=(\d+) application=0 frames=0\s*$',raw,re.M|re.S)
-    mode=b'--software' if software else b'--native'
+    mode=(b'--software' if software else b'--native') if mode is None else mode.encode()
     assert [(int(c),m,int(end)) for c,m,body,end in runs]==[(0,mode,0),(1,mode,1)]
     assert raw.count(b'ROCK5_APPLICATION_LOG_BEGIN ')==raw.count(b'ROCK5_APPLICATION_LOG_END ')==4
     results=[]

@@ -75,11 +75,12 @@ def native_evidence(body):
         allocation_baseline=snapshots[0], expected_runtime_joins=1)
 
 
-def validate(text, output=None, software=False):
+def validate(text, output=None, software=False, mode=None):
     for marker in ('ROCK5_APPLICATION_FAILURE', 'ROCK5_MESA_FAILURE', 'PANIC:',
             'Kernel Debugging Land', 'DEBUGGER:', 'mutex->owner', 'No EGL renderer'):
         assert marker not in text
-    mode = '--software' if software else '--native'
+    if mode is None:
+        mode = '--software' if software else '--native'
     assert re.findall(r'^ROCK5_APPLICATION_SELF_TEST_PASS accepted=4 rejected=7 cleanup=11$',
         text, re.M) == ['ROCK5_APPLICATION_SELF_TEST_PASS accepted=4 rejected=7 cleanup=11']
     assert text.count('ROCK5_APPLICATION_SELF_TEST_PASS ') == 1

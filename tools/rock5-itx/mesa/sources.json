@@ -89,9 +89,9 @@
     }
   ],
   "bundle_files": {
-    "mesa-haiku-native.patch": "8b17cf2429bbbd1a6bd1d61e42ac350411e949dd171184daa77500c3951df57a",
+    "mesa-haiku-native.patch": "19ca86d5aa36039da00ea8a2c0e590fe5d7b31a8f18f046f59d1d31b1ffc6187",
     "libglvnd-haiku-sysroot.patch": "16c8c1110172bed628a6160bd86b2f4e36cb408a59bdbe59d133f7f812732d13",
-    "mesa-native-source-manifest.json": "7972b6626275e2edcfd934900c3c318fd1efb844a9d4e159bf4d209cb7b1deec",
+    "mesa-native-source-manifest.json": "764552f134d20d3174d3e1d1fc5305d08ade63128ab1cbf18724f6df1a9fa0d8",
     "libglvnd-haiku-mutex.patch": "96f0fa776fa8b3c6425e26981e6e4cbca7fc33f31eb8f8e58bad730891de6035",
     "native_render_validation.py": "709c02edeacce5f66b27f1863d2f26d8bbbe7e1edc932b75ac812562910c1880",
     "render_validation.py": "460d5ab54cf289fe1e84ed3cbe8d8522f453260b889b9b1e86fee074f3843c5b",
@@ -127,7 +127,7 @@
     "concurrency-probe.cpp": "2f69b46e92d89dc8ea737a1b65b63c541e1b240ecd972031f9c4a7ed23d3c74e",
     "concurrency_validation.py": "54fc31f044fbd67f60305a1c613fd25e3cac907ac758638f179597eb391941d1",
     "run-concurrency": "cd539f9590dcccca034db8ef5c32cfb70312337b676c9bca06744d00f33fff20",
-    "graphics_capture.py": "e05f6273de9da05d0d809e51a91f4d7586e751d9cc67c79b9dad71bf5340230a",
+    "graphics_capture.py": "d96a50a7946f7085b4afd60354ec75610b274d7647d6ec99006a55f457281abd",
     "pending-probe.cpp": "8b4e548ad2a12bff765a9cfc24101e323daa3f437126d74c956fc221bb83a92b",
     "pending_validation.py": "c98e7be3e639a9e279cdc0f0a50ba7142e7c63a968d01f4b8fb62b14e1547993",
     "run-pending": "8db43588e07626a073a240823d85a0a22a171d32372c0fad0e3937c88af261a1",
@@ -180,10 +180,12 @@
     "test-polygon-geometry.py": "def32c033a3b17a4488901a6d055b8863a9cc148bf056a1523d6b828e5110eed",
     "polygon-geometry-test.c": "96bfaefc21e57b9942c372f6c53b7f50b56a4e86bac35d1307e02ea21c27689d",
     "polygon-context-test-adapter.h": "6fb645d3beb0a8b47251c044528e04fc6b56f031cd8bcfed8ff3174d85e2a74e",
-    "application_logging_validation.py": "86f48d3723ad3b63986c4344461db9e05b2486e4068566aa3807823acb38cadc",
+    "application_logging_validation.py": "7ae538734ebbb0e5bcef6b6a6ccd35bc9f68b11d9687a90528873978b5de2242",
     "test-application-logging.py": "41328940166113aa3b305de290eda293a270879ef04ccc765db3aa63241c1625",
     "shader-token-lifetime-test.c": "939397ffd76ce94d9e1ec1615d818f1abdca70e5f7778ad60b08770adc24f8e3",
-    "test-shader-token-lifetime.py": "5ca3265efff1d53c19c0f4580ce4e6ecc81c38ec75e0902e5be5d4a1af1fcd5b"
+    "test-shader-token-lifetime.py": "5ca3265efff1d53c19c0f4580ce4e6ecc81c38ec75e0902e5be5d4a1af1fcd5b",
+    "run-system": "f9d5531ded055b71344538934a52d1a12a9217aa63f086cfc8f37ead2cc8fbfa",
+    "system_validation.py": "049585fc12e916b00f548149bff9fc718d84c67026e0f58209e7621b98bc0444"
   },
   "host_helpers": {
     "vtn_bindgen2": "8f03a1c42332ec1494a89de73d9bdbe7bba91aeeb98c6c0cd2d6623eb276a167",
