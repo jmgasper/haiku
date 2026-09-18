@@ -269,3 +269,23 @@ listed as verified is untested.
     frame rate quietly returns to the old path. It also stops the KVM
     capturing, which is the quickest way to notice. Kill `screen_blanker`
     before measuring.
+- 2026-09-18: changing the screen mode under a running OpenGL program works.
+  The accelerant publishes the new frame buffer each time (the resman handle
+  changes), and the renderer notices because the window system reports a
+  different frame buffer address - it used to compare only the row pitch, which
+  two modes of the same width share, and would have gone on painting into a
+  surface nobody was scanning out.
+- 2026-09-18: sound plays. `tests/soundtest.cpp` runs a tone through the media
+  kit and counts the frames the driver takes: 144000 frames in 300 buffers over
+  3.0 s, which is the 48 kHz the stream asked for, so the hardware is clocking
+  the stream rather than a software timer free-running. That is the analog
+  output on the motherboard (AMD Family 17h HD Audio). The GPU's own HDMI audio
+  (`GP104 High Definition Audio Controller`) is found but not usable: the hda
+  driver reports `hda_audio_group_get_widgets failed` and `no active codec` for
+  it. Nobody here can listen to the speakers, so what is proven is that the
+  stream runs at the hardware's clock, not that sound reaches the jack.
+- 2026-09-18: all five XHCI controllers - two AMD, one ASMedia, and the
+  Thunderbolt 4 host with its USB4 interface - start and publish a root hub.
+  Only the KVM is plugged in, so what is left in this area needs someone at the
+  machine: devices in each physical port, on both the chipset and the
+  Thunderbolt controller.
