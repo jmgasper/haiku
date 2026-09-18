@@ -7,6 +7,19 @@ firmware supports it.
 Current scope is [Mali-G610 GPU acceleration](GPU.md) only; network stack changes
 and other hardware development are deferred at the owner's request.
 
+The +282 USB image qualifies [native mode changes on HDMI1](DISPLAY.md) on
+two native boots: with the opt-in mode-set profile the driver switches the
+port app_server draws to from the firmware's 1920x1080@60 to 1280x720@60 and
+back, reprogramming the HDPTX PHY PLL and lanes, the VOP2 port timing and
+window, and the AVI infoframe, while the accelerant reports each mode and
+its retrace keeps running at 60 Hz. The NanoKVM shows the 720p signal as the
+desktop's top-left crop and the normal desktop after the return; normal
+reboot, verified shutdown and recovery pass, and the earlier read-only,
+EDID, scanout-swap, accelerant and retrace checks pass on the same boots.
+DPMS power control is built on the same driver and awaits its own native
+cycle; a cursor window and the second (DisplayPort-bridged) HDMI port remain
+open.
+
 The +277 USB image qualifies the [board accelerant with vertical
 retrace](DISPLAY.md) on two native boots: app_server runs on
 `rk3588_display.accelerant`, draws the desktop into a driver-owned contiguous

@@ -384,6 +384,65 @@ whole write sequence for 1280x720@60 and each timeout, and the native cycle
 switches to 1280x720@60 and back on each boot, checking the observation,
 the accelerant and the NanoKVM capture at each size.
 
+### Qualified +282 mode changes (stage 3d)
+
+The `hrev60097+282` image (source `e55761012a`, SHA-256
+`3a3b80617655346a492443675f2f8955587e93a60a8a2d354dcf4b8fafec250d`) passes the
+host checks (165 tests), both two-boot QEMU modes and two native boots with
+normal reboot, verified shutdown and automatic ROOBI recovery. On each boot,
+after the inventory and accelerant checks of the earlier stages passed
+unchanged (app_server on the accelerant, the desktop in the driver's buffer,
+24 retrace waits at 16 666 µs), the probe asked the driver for 1280x720@60
+(CEA VIC 4) and then for 1920x1080@60 (VIC 16). Every change completed at
+phase 6: the port reported standby within a few polls, the PHY clock was
+ready after 5 polls and the lanes locked after 1, the port timing read back
+as programmed, and the retrace measurement afterwards still gave 24
+consecutive frame starts at 16 666 µs. The observation after each change
+showed one live port at the new size with the ESMART2 window's visible size
+following it and the power domains unchanged, and the accelerant reported
+the new mode with its CEA timing at the buffer's 7680-byte pitch. The
+NanoKVM captured the 720p signal as the desktop's top-left 1280x720 crop
+enlarged to its 1920x1080 output (larger icons, no Deskbar, the cursor at
+the scaled position) and the 1080p return as the normal desktop; the
+classifier and a visual review agree. One capture after each 720p change
+timed out on the NanoKVM and was retried once.
+
+| Boot | Frame buffer | 720p: hold polls, time | 1080p: hold polls, time |
+| --- | --- | --- | --- |
+| 1 | `0x1018a000` | 6, 6.6 ms | 3, 3.6 ms |
+| 2 | `0x0f881000` | 12, 12.6 ms | 9, 9.6 ms |
+
+- Native evidence: `artifacts/automated-display-modeset/20260918T103134Z-1553a1`
+  (`qualification.json`, `mode_720-boot{1,2}.json` and `mode_1080-boot{1,2}.json`
+  with the change, the observation and the accelerant state after it, crop
+  and desktop classifier records for every captured frame, desktop reviews,
+  driver syslog extracts, FDT captures).
+- Session: `artifacts/interactive/20260918T103136Z-8eebb6`; recovery boot
+  `e2fc0b76-1ce6-4b8c-8679-df917fa92862` after verified shutdown.
+- QEMU EL2/EL1: `artifacts/qemu-shell/20260918T101312Z-ff9581` and
+  `20260918T101529Z-5ae25a`; build `artifacts/build-20260918T101021Z.log`.
+- Stage: `artifacts/display-modeset/20260918T101310Z-1083a9`; used image
+  archive `artifacts/nanokvm-image-archive/20260918T104119Z-12530a`.
+- Independent Linux eMMC readbacks were not run: the ROOBI sudo password is
+  not available to this session.
+
+The road to this image is retained. The +279 candidate reached 720p on the
+board (`artifacts/display-modeset/20260918T092008Z-a64434`,
+`artifacts/automated-display-modeset/20260918T094056Z-aa5b69`) but its
+controller insisted on the firmware geometry after the change; +280
+(`…display-modeset/20260918T095627Z-9d4a1d`, `…automated-display-modeset/20260918T100101Z-326554`)
+did the same and exposed the sync-polarity bits the driver had merged into
+the shared flags. On +282 one start failed because an image archive held
+the lab's hardware lock (`…20260918T101747Z-66243a`) and one run lost the
+NanoKVM capture after the 720p change before the retry existed
+(`…20260918T102507Z-3e2d44`); the archived images are
+`artifacts/nanokvm-image-archive/20260918T101528Z-8cd730-display-modeset-279-failed`
+and `…20260918T102004Z-9a4bd6-display-modeset-280-failed`. This image also
+carries the first power-control code: app_server's start-up DPMS-on request
+replayed the 1080p mode set on each boot (`power on result=0 phase=6`, 10.6
+and 15.6 ms), which 213e02c5a9 turns into a no-op; power control itself is
+stage 3e below and not yet qualified.
+
 ## Stage 3e: DPMS power control on HDMI1
 
 The same profile admits power control of the acquired frame buffer's port,
