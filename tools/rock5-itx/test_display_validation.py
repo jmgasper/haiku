@@ -178,14 +178,17 @@ def pattern_image(path, quality=80, blank=False):
     image.save(path, format='JPEG', quality=quality)
 
 
-def accelerant_transcript(framebuffer=0x14c00000, firmware=0xed280000, flags=3, edid=None, timing=None, extra=''):
+def accelerant_transcript(framebuffer=0x14c00000, firmware=0xed280000, flags=7, edid=None, timing=None, extra='',
+        retrace='ROCK5_DISPLAY_RETRACE waits=24 timeouts=0 first_us=5000000 last_us=5383341 period_us=16667'
+        ' retraces_before=1800 retraces_after=1826 elapsed_us=400300', retrace_sem=1310):
     base, _ = edid_blocks()
     edid = edid if edid is not None else base.hex()
     timing = timing or ' pixel_khz=148500 h=2008/2052/2200 v=1084/1089/1125 port_timing=0898002c,00c00840,04650005,00290461'
     lines = ['ROCK5_DISPLAY_WRITE_OPEN_ALLOWED', 'ROCK5_DISPLAY_RESOURCE_DESCRIPTION_PASS',
         'ROCK5_DISPLAY_ACCELERANT_REQUEST_CHECKS_PASS',
         'ROCK5_DISPLAY_ACCELERANT flags=%d shared_area=1234 framebuffer=%08x firmware=%08x port=2 window=2 polls=300'
-        ' width=1920 height=1080 bytes_per_row=7680' % (flags, framebuffer, firmware),
+        ' width=1920 height=1080 bytes_per_row=7680 retrace_sem=%d retraces=1800' % (flags, framebuffer, firmware, retrace_sem if flags & 4 else -1),
+        retrace if flags & 4 and retrace else None,
         'ROCK5_DISPLAY_ACCELERANT_SIGNATURE rk3588_display.accelerant',
         'ROCK5_DISPLAY_ACCELERANT_DEVICE graphics/rk3588_display/0',
         'ROCK5_DISPLAY_ACCELERANT_SHARED version=1 flags=%d mode_list_area=1240 modes=1 size=1920x1080 bytes_per_row=7680%s'
@@ -194,7 +197,7 @@ def accelerant_transcript(framebuffer=0x14c00000, firmware=0xed280000, flags=3, 
         'ROCK5_DISPLAY_ACCELERANT_ACQUIRE_BUSY',
         'ROCK5_DISPLAY_ACCELERANT_PASS acquired=1 edid=%d framebuffer=%08x firmware=%08x register_writes=owner_only'
         % (1 if flags & 2 else 0, framebuffer, firmware)]
-    return '\n'.join(lines) + extra + '\n'
+    return '\n'.join(line for line in lines if line is not None) + extra + '\n'
 
 
 class DisplayValidationTest(unittest.TestCase):
@@ -211,17 +214,33 @@ class DisplayValidationTest(unittest.TestCase):
             + [dict(region_control=1, address=0x14c00000)] + [dict(region_control=0, address=0)]))
         decoded = check.validate_accelerant(accelerant_transcript(), observation, base.hex())
         self.assertEqual((decoded['framebuffer'], decoded['firmware'], decoded['port'], decoded['window']), ('14c00000', 'ed280000', 2, 2))
-        self.assertEqual((decoded['polls'], decoded['modes'], decoded['edid_result'], decoded['flags']), (300, 1, 0, 3))
+        self.assertEqual((decoded['polls'], decoded['modes'], decoded['edid_result'], decoded['flags']), (300, 1, 0, 7))
+        self.assertEqual(decoded['retrace'], dict(waits=24, period_us=16667, count_delta=26, elapsed_us=400300))
+        self.assertIsNone(check.validate_accelerant(accelerant_transcript(flags=3))['retrace'])
         self.assertEqual(decoded['name'], 'RK3588 VOP2 HDMI TX1')
         self.assertEqual(decoded['samples'][3], 'ffdddddd')
         without = check.validate_accelerant(accelerant_transcript(flags=1))
         self.assertEqual((without['flags'], without['edid_result']), (1, 2))
+        retrace_cases = [
+            ('no_sem', accelerant_transcript(retrace_sem=-1)),
+            ('missing', accelerant_transcript(retrace='')),
+            ('timeouts', accelerant_transcript(retrace='ROCK5_DISPLAY_RETRACE waits=24 timeouts=1 first_us=5000000 last_us=5383341 period_us=16667 retraces_before=1800 retraces_after=1826 elapsed_us=400300')),
+            ('period', accelerant_transcript(retrace='ROCK5_DISPLAY_RETRACE waits=24 timeouts=0 first_us=5000000 last_us=5383341 period_us=33333 retraces_before=1800 retraces_after=1826 elapsed_us=400300')),
+            ('count', accelerant_transcript(retrace='ROCK5_DISPLAY_RETRACE waits=24 timeouts=0 first_us=5000000 last_us=5383341 period_us=16667 retraces_before=1800 retraces_after=1810 elapsed_us=400300')),
+            ('runaway', accelerant_transcript(retrace='ROCK5_DISPLAY_RETRACE waits=24 timeouts=0 first_us=5000000 last_us=5383341 period_us=16667 retraces_before=1800 retraces_after=1900 elapsed_us=400300')),
+            ('mismatch', accelerant_transcript(retrace='ROCK5_DISPLAY_RETRACE waits=24 timeouts=0 first_us=5000000 last_us=5383341 period_us=16667 retraces_before=1799 retraces_after=1826 elapsed_us=400300')),
+            ('unflagged', accelerant_transcript(flags=3, extra='\nROCK5_DISPLAY_RETRACE waits=24 timeouts=0 first_us=5000000 last_us=5383341 period_us=16667 retraces_before=1800 retraces_after=1826 elapsed_us=400300')),
+        ]
+        for name, value in retrace_cases:
+            with self.subTest(name=name):
+                with self.assertRaises(check.ValidationError):
+                    check.validate_accelerant(value)
         body = accelerant_transcript()
         cases = [
             ('open', body.replace('ROCK5_DISPLAY_WRITE_OPEN_ALLOWED', 'ROCK5_DISPLAY_WRITE_OPEN_REJECTED')),
             ('checks', body.replace('ROCK5_DISPLAY_ACCELERANT_REQUEST_CHECKS_PASS\n', '')),
             ('not_acquired', body + 'ROCK5_DISPLAY_ACCELERANT_NOT_ACQUIRED errno=1\n'),
-            ('flags', body.replace('ACCELERANT flags=3', 'ACCELERANT flags=2')),
+            ('flags', body.replace('ACCELERANT flags=7', 'ACCELERANT flags=6')),
             ('same_buffer', accelerant_transcript(framebuffer=0xed280000)),
             ('unaligned', accelerant_transcript(framebuffer=0x14c00800)),
             ('geometry', body.replace('width=1920 height=1080 bytes_per_row=7680', 'width=1920 height=1080 bytes_per_row=7684')),

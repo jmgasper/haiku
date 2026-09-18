@@ -87,6 +87,13 @@ static area_id sSharedArea = -1;
 static SharedInfo* sShared = NULL;
 static Handle* sOwner = NULL;
 static AccelerantInfo sAccelerant = {};
+// While the frame buffer is acquired VOP2 stays mapped for the frame-start
+// interrupt handler; the semaphore is released only towards waiting threads.
+static area_id sVopArea = -1;
+static volatile uint32* sVopRegisters = NULL;
+static sem_id sRetraceSemaphore = -1;
+static int32 sRetraces = 0;
+static bool sInterruptInstalled = false;
 static status_t RestoreScanout(Controller* controller);
 static status_t AcquireFrameBuffer(Handle* handle);
 static void ReleaseFrameBuffer(Controller* controller);
@@ -625,6 +632,7 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 		MutexLocker locker(sHardwareLock);
 		if (sOwner == NULL)
 			return B_NO_INIT;
+		sAccelerant.retraces = (uint32_t)atomic_get(&sRetraces);
 		return user_memcpy(buffer, &sAccelerant, sizeof(sAccelerant));
 	}
 	if (op == kCloneFrameBuffer) {
@@ -707,13 +715,17 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 		MutexLocker locker(sHardwareLock);
 		ScanoutHardware hardware;
 		uint32_t result = kScanoutNotReady;
-		status_t status = hardware.Prepare(controller->resources, action != kScanoutQuery,
-			result);
+		// While the accelerant owns the window only queries are served.
+		bool owned = sOwner != NULL;
+		status_t status = hardware.Prepare(controller->resources,
+			action != kScanoutQuery && !owned, result);
 		if (status != B_OK)
 			return status;
 		request.startedMicros = hardware.Now();
 		if (hardware.Ready())
 			result = LocateScanoutWindow(hardware, request);
+		if (result == kScanoutOK && owned && action != kScanoutQuery)
+			result = kScanoutUnexpectedState;
 		if (result == kScanoutOK && action == kScanoutShowPattern) {
 			if (!sScanoutSwapped) {
 				frame_buffer_boot_info* bootInfo
@@ -788,9 +800,81 @@ RestoreScanout(Controller* controller)
 }
 
 
+static int32
+RetraceInterrupt(void* /*data*/)
+{
+	uint32 base = kVopPortInterruptBase + sAccelerant.port * kVopPortInterruptStride;
+	uint32 status = ReadDisplayRegister(sVopRegisters, base + kVopPortInterruptStatus)
+		& kVopInterruptMask;
+	if (status == 0)
+		return B_UNHANDLED_INTERRUPT;
+	WriteDisplayRegister(sVopRegisters, base + kVopPortInterruptClear, status << 16 | status);
+	if ((status & kVopInterruptFrameStart) == 0)
+		return B_HANDLED_INTERRUPT;
+	atomic_add(&sRetraces, 1);
+	int32 waiting = 0;
+	if (get_sem_count(sRetraceSemaphore, &waiting) == B_OK && waiting < 0) {
+		release_sem_etc(sRetraceSemaphore, -waiting, B_DO_NOT_RESCHEDULE);
+		return B_INVOKE_SCHEDULER;
+	}
+	return B_HANDLED_INTERRUPT;
+}
+
+
+// Adapter over the persistent mapping for the swap helpers.
+struct MappedVop {
+	uint32_t ReadVop(uint32_t offset) { return ReadDisplayRegister(sVopRegisters, offset); }
+	void WriteVop(uint32_t offset, uint32_t value)
+		{ WriteDisplayRegister(sVopRegisters, offset, value); }
+	void Pause(unsigned micros) { spin(micros); }
+};
+
+
+static void
+StopRetrace(uint32_t port, uint32_t interrupt)
+{
+	uint32 base = kVopPortInterruptBase + port * kVopPortInterruptStride;
+	if (sInterruptInstalled) {
+		// Only an enabled interrupt gets disabled: nothing else is written.
+		WriteDisplayRegister(sVopRegisters, base + kVopPortInterruptEnable,
+			kVopInterruptFrameStart << 16);
+		remove_io_interrupt_handler(interrupt, RetraceInterrupt, NULL);
+	}
+	sInterruptInstalled = false;
+	if (sRetraceSemaphore >= 0)
+		delete_sem(sRetraceSemaphore);
+	sRetraceSemaphore = -1;
+}
+
+
+// Frame-start interrupts on the live port drive the retrace semaphore. The
+// three interrupt words of that port are the only registers touched.
+static status_t
+StartRetrace(uint32_t port, uint32_t interrupt)
+{
+	sRetraceSemaphore = create_sem(0, "RK3588 display retrace");
+	if (sRetraceSemaphore < B_OK)
+		return sRetraceSemaphore;
+	sRetraces = 0;
+	status_t status = install_io_interrupt_handler(interrupt, RetraceInterrupt, NULL, 0);
+	if (status != B_OK) {
+		StopRetrace(port, interrupt);
+		return status;
+	}
+	sInterruptInstalled = true;
+	uint32 base = kVopPortInterruptBase + port * kVopPortInterruptStride;
+	WriteDisplayRegister(sVopRegisters, base + kVopPortInterruptClear,
+		kVopInterruptMask << 16 | kVopInterruptMask);
+	WriteDisplayRegister(sVopRegisters, base + kVopPortInterruptEnable,
+		kVopInterruptFrameStart << 16 | kVopInterruptFrameStart);
+	return B_OK;
+}
+
+
 // Acquires the frame buffer for the accelerant: the live window must still
 // scan the firmware frame buffer, whose geometry the boot item describes.
-// Only the two qualified VOP2 words are written.
+// Only the two qualified VOP2 words are written for the swap; the port's
+// interrupt words follow once the buffer is live.
 static status_t
 AcquireFrameBuffer(Handle* handle)
 {
@@ -874,6 +958,22 @@ AcquireFrameBuffer(Handle* handle)
 	memset(&sAccelerant, 0, sizeof(sAccelerant));
 	sAccelerant.version = kAccelerantVersion;
 	sAccelerant.flags = kAccelerantAcquired | (shared.flags & kAccelerantEdid);
+	sAccelerant.retraceSemaphore = -1;
+	sAccelerant.port = request.port;
+	// Keep VOP2 mapped for the interrupt handler and the release path; the
+	// swap's own mapping goes first so only one writable mapping exists.
+	hardware.ReleaseVop();
+	void* address = NULL;
+	sVopArea = map_physical_memory("RK3588 display VOP2", controller->resources.vopBase,
+		kVopMapSize, B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY,
+		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, &address);
+	if (sVopArea >= B_OK) {
+		sVopRegisters = (volatile uint32*)address;
+		if (StartRetrace(request.port, controller->resources.vopInterrupt) == B_OK) {
+			sAccelerant.flags |= kAccelerantRetrace;
+			sAccelerant.retraceSemaphore = sRetraceSemaphore;
+		}
+	}
 	sAccelerant.sharedArea = sSharedArea;
 	sAccelerant.frameBufferPhysical = sFrame.physical;
 	sAccelerant.firmwareAddress = request.addressBefore;
@@ -887,10 +987,12 @@ AcquireFrameBuffer(Handle* handle)
 	dprintf("rk3588_display: frame buffer acquired at %#" B_PRIx32 " (firmware %#" B_PRIx32
 		") port=%" B_PRIu32 " window=%" B_PRIu32 " polls=%" B_PRIu32 " edid=%" B_PRIu32
 		" timing=%" B_PRIu32 "x%" B_PRIu32 " %" B_PRIu32 "/%" B_PRIu32 " %" B_PRIu32
-		"/%" B_PRIu32 " %" B_PRIu32 " kHz\n", sFrame.physical, request.addressBefore,
-		request.port, request.window, request.polls, shared.edidResult, shared.hTotal,
-		shared.vTotal, shared.hSyncStart, shared.hSyncEnd, shared.vSyncStart, shared.vSyncEnd,
-		shared.pixelClockKHz);
+		"/%" B_PRIu32 " %" B_PRIu32 " kHz retrace=%s irq=%" B_PRIu32 "\n", sFrame.physical,
+		request.addressBefore, request.port, request.window, request.polls, shared.edidResult,
+		shared.hTotal, shared.vTotal, shared.hSyncStart, shared.hSyncEnd, shared.vSyncStart,
+		shared.vSyncEnd, shared.pixelClockKHz,
+		(sAccelerant.flags & kAccelerantRetrace) != 0 ? "on" : "off",
+		controller->resources.vopInterrupt);
 	return B_OK;
 }
 
@@ -904,11 +1006,23 @@ ReleaseFrameBuffer(Controller* controller)
 		return;
 	uint32_t result = kScanoutNotReady;
 	ScanoutRequest request = {};
-	ScanoutHardware hardware;
-	if (hardware.Prepare(controller->resources, true, result) == B_OK && hardware.Ready()) {
+	StopRetrace(sAccelerant.port, controller->resources.vopInterrupt);
+	if (sVopRegisters != NULL) {
+		// The persistent mapping serves the restore; the domain stayed on.
+		MappedVop hardware;
 		result = LocateScanoutWindow(hardware, request);
 		if (result == kScanoutOK)
 			result = SwapScanoutAddress(hardware, request, sAccelerant.firmwareAddress);
+		sVopRegisters = NULL;
+		delete_area(sVopArea);
+		sVopArea = -1;
+	} else {
+		ScanoutHardware hardware;
+		if (hardware.Prepare(controller->resources, true, result) == B_OK && hardware.Ready()) {
+			result = LocateScanoutWindow(hardware, request);
+			if (result == kScanoutOK)
+				result = SwapScanoutAddress(hardware, request, sAccelerant.firmwareAddress);
+		}
 	}
 	frame_buffer_boot_info* bootInfo
 		= (frame_buffer_boot_info*)get_boot_item(FRAME_BUFFER_BOOT_INFO, NULL);
@@ -923,7 +1037,8 @@ ReleaseFrameBuffer(Controller* controller)
 	sShared = NULL;
 	sOwner = NULL;
 	dprintf("rk3588_display: frame buffer released; firmware %#" B_PRIx32 " restore result=%"
-		B_PRIu32 " polls=%" B_PRIu32 "\n", sAccelerant.firmwareAddress, result, request.polls);
+		B_PRIu32 " polls=%" B_PRIu32 " retraces=%" B_PRId32 "\n", sAccelerant.firmwareAddress,
+		result, request.polls, sRetraces);
 	memset(&sAccelerant, 0, sizeof(sAccelerant));
 }
 

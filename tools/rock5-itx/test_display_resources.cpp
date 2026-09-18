@@ -41,6 +41,12 @@ static const int32 B_CURRENT_TEAM = 0;
 static const unsigned B_FILE_NAME_LENGTH = 256, B_PATH_NAME_LENGTH = 1024;
 static const uint32 B_GET_ACCELERANT_SIGNATURE = 8300;
 struct area_info { int32 area; size_t size; void* address; };
+using sem_id = int32_t;
+static const int32 B_UNHANDLED_INTERRUPT = 0, B_HANDLED_INTERRUPT = 1, B_INVOKE_SCHEDULER = 2;
+static const uint32 B_DO_NOT_RESCHEDULE = 2;
+typedef int32 (*interrupt_handler)(void*);
+static int32 atomic_add(int32* value, int32 delta) { return __atomic_fetch_add(value, delta, __ATOMIC_SEQ_CST); }
+static int32 atomic_get(int32* value) { return __atomic_load_n(value, __ATOMIC_SEQ_CST); }
 
 #include "DisplayEdid.h"
 #include "DisplayScanout.h"
@@ -92,6 +98,7 @@ static void kernel_dprintf(const char*, ...) {}
 #define dprintf kernel_dprintf
 #define B_PRIu32 "u"
 #define B_PRIx32 "x"
+#define B_PRId32 "d"
 #define B_PRIx64 "llx"
 
 // I2C master model for the HDMI TX1 window: reacts synchronously to writes
@@ -125,6 +132,18 @@ VopModelStep()
 			sVopPendingAddress = value;
 			sVopAddressPending = true;
 			sVopModel[i] = sVopShadow[i]; // the active address stays readable
+		} else if (offset == 0xc0) {
+			// VP2 interrupt enable: high half masks which low bits are written.
+			uint32 mask = value >> 16;
+			sVopModel[i] = (sVopShadow[i] & ~mask & 0xffff) | (value & mask);
+			sVopOverrides[offset] = sVopModel[i];
+		} else if (offset == 0xc4) {
+			// VP2 interrupt clear: masked status bits drop; the word reads as zero.
+			uint32 mask = value >> 16;
+			sVopModel[0xc8 / 4] &= ~(value & mask & 0xffff);
+			sVopShadow[0xc8 / 4] = sVopModel[0xc8 / 4];
+			sVopOverrides[0xc8] = sVopModel[0xc8 / 4];
+			sVopModel[i] = 0;
 		} else
 			assert(!"unexpected VOP2 register write");
 		sVopShadow[i] = sVopModel[i];
@@ -514,6 +533,16 @@ get_memory_map(const void* address, size_t bytes, physical_entry* table, int32 c
 static status_t
 delete_area(area_id area)
 {
+	if (sAreas.count(area) == 1) {
+		// A persistent register mapping released directly by the driver.
+		if (sVopModel != NULL && (char*)sVopModel == (char*)sAreas.at(area).first + B_PAGE_SIZE) {
+			VopModelStep();
+			sVopModel = NULL;
+		}
+		assert(munmap(sAreas.at(area).first, sAreas.at(area).second) == 0);
+		sAreas.erase(area);
+		return B_OK;
+	}
 	if (area == sPatternArea) {
 		assert(munmap(sPatternAllocation, kPatternBytes) == 0);
 		sPatternAllocation = NULL;
@@ -621,6 +650,84 @@ frame_buffer_update(addr_t address, int32 width, int32 height, int32 depth, int3
 	assert(sLockDepth == 1);
 	sConsole = ConsoleState{address, width, height, depth, bytesPerRow};
 	sConsoleUpdates++;
+	return B_OK;
+}
+
+
+// Interrupt line and semaphore model: one handler on the VOP interrupt, one
+// retrace semaphore whose waiter count the test sets.
+static interrupt_handler sHandler;
+static void* sHandlerData;
+static int32 sHandlerInterrupt = -1;
+static unsigned sHandlerInstalls, sHandlerRemovals, sFailInstall;
+static sem_id sModelSemaphore = -1;
+static int32 sSemaphoreWaiters, sSemaphoreReleases, sSemaphoreReleased;
+static unsigned sSemaphoreCreations, sSemaphoreDeletions, sFailSemaphore;
+
+static status_t
+install_io_interrupt_handler(int32 interrupt, interrupt_handler handler, void* data, uint32 flags)
+{
+	assert(sLockDepth == 1 && interrupt == 188 && handler != NULL && flags == 0 && sHandler == NULL);
+	if (++sHandlerInstalls == sFailInstall)
+		return B_ERROR;
+	sHandler = handler;
+	sHandlerData = data;
+	sHandlerInterrupt = interrupt;
+	return B_OK;
+}
+
+
+static status_t
+remove_io_interrupt_handler(int32 interrupt, interrupt_handler handler, void* data)
+{
+	assert(interrupt == sHandlerInterrupt && handler == sHandler && data == sHandlerData);
+	sHandler = NULL;
+	sHandlerInterrupt = -1;
+	sHandlerRemovals++;
+	return B_OK;
+}
+
+
+static sem_id
+create_sem(int32 count, const char* name)
+{
+	assert(sLockDepth == 1 && count == 0 && strcmp(name, "RK3588 display retrace") == 0);
+	assert(sModelSemaphore < 0);
+	if (++sSemaphoreCreations == sFailSemaphore)
+		return B_NO_MEMORY;
+	sModelSemaphore = 1300 + (sem_id)sSemaphoreCreations;
+	sSemaphoreWaiters = 0;
+	return sModelSemaphore;
+}
+
+
+static status_t
+delete_sem(sem_id id)
+{
+	assert(id == sModelSemaphore && id >= 0);
+	sModelSemaphore = -1;
+	sSemaphoreDeletions++;
+	return B_OK;
+}
+
+
+static status_t
+get_sem_count(sem_id id, int32* count)
+{
+	assert(id == sModelSemaphore);
+	*count = sSemaphoreWaiters;
+	return B_OK;
+}
+
+
+static status_t
+release_sem_etc(sem_id id, int32 count, uint32 flags)
+{
+	assert(id == sModelSemaphore && count > 0 && flags == B_DO_NOT_RESCHEDULE);
+	assert(count == -sSemaphoreWaiters);
+	sSemaphoreReleases++;
+	sSemaphoreReleased += count;
+	sSemaphoreWaiters += count;
 	return B_OK;
 }
 
@@ -809,6 +916,11 @@ Prepare()
 	sVopOverrides[0x1c20] = 0x0437077f;
 	sVopOverrides[0x1c24] = 0x0437077f;
 	sVopOverrides[0x1c28] = 0;
+	// No video-port interrupts enabled or pending, as observed.
+	for (unsigned port = 0; port < 4; port++) {
+		for (unsigned word = 0; word < 3; word++)
+			sVopOverrides[0xa0 + port * 0x10 + word * 4] = 0;
+	}
 	// Video port 2 timing as observed: 2200x1125 total, sync 44/5, active 192-2112 / 41-1121.
 	sVopOverrides[0xe48] = 0x0898002c;
 	sVopOverrides[0xe4c] = 0x00c00840;
@@ -828,6 +940,15 @@ Prepare()
 	memset(&sAccelerant, 0, sizeof(sAccelerant));
 	sPatternAllocations = sFailPattern = sNoncacheableCalls = sFrameNoncacheable = 0;
 	sClones = sNullClones = sConsoleUpdates = 0;
+	assert(sVopRegisters == NULL && sVopArea < 0 && sRetraceSemaphore < 0 && !sInterruptInstalled);
+	sHandler = NULL;
+	sHandlerData = NULL;
+	sHandlerInterrupt = -1;
+	sHandlerInstalls = sHandlerRemovals = sFailInstall = 0;
+	sModelSemaphore = -1;
+	sSemaphoreWaiters = sSemaphoreReleases = sSemaphoreReleased = 0;
+	sSemaphoreCreations = sSemaphoreDeletions = sFailSemaphore = 0;
+	sRetraces = 0;
 	sConsole = ConsoleState{};
 	sPatternHighPhysical = false;
 	for (unsigned i = 0; i < 512; i++)
@@ -1194,7 +1315,7 @@ main()
 		scan.action = action;
 		assert(Control(&handle, kSwapScanout, &scan, sizeof(scan)) == B_OK);
 		assert(scan.result == expected && scan.action == action && scan.version == kScanoutVersion);
-		assert(scan.finishedMicros > scan.startedMicros && sAreas.empty());
+		assert(scan.finishedMicros > scan.startedMicros && sAreas.size() == (sOwner != NULL ? 1u : 0u));
 		sAllowScanout = false;
 	};
 	// A query never maps VOP2 writable and needs the VOP domain and bus clocks.
@@ -1348,7 +1469,7 @@ main()
 
 	// Accelerant profile: handles, signature and device name, acquiring and
 	// releasing the frame buffer, clones, refusals and failure cleanup.
-	static_assert(sizeof(AccelerantInfo) == 48, "Accelerant ABI layout changed");
+	static_assert(sizeof(AccelerantInfo) == 56, "Accelerant ABI layout changed");
 	static_assert(sizeof(SharedInfo) == 236, "Shared info ABI layout changed");
 	Prepare();
 	controller.resources = good;
@@ -1419,10 +1540,13 @@ main()
 	// The real thing: EDID captured, timing decoded, buffer black, two writes, console moved.
 	Prepare(); sAllowEdid = true; sAllowScanout = true;
 	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_OK);
-	assert(sOwner == primary && sMapAttempts == 7 && sAreas.empty());
+	assert(sOwner == primary && sMapAttempts == 8 && sAreas.size() == 1 && sVopModel != NULL);
 	assert(sFrameArea >= 0 && sFrameNoncacheable == 1 && sSharedPage != NULL && sServed == 128);
-	assert(sVopWrites.size() == 2 && sVopWrites[0] == std::make_pair(kModelAddressOffset, (uint32)kModelFramePhysical));
+	// The swap's two writes, then the port's interrupt clear and enable.
+	assert(sVopWrites.size() == 4 && sVopWrites[0] == std::make_pair(kModelAddressOffset, (uint32)kModelFramePhysical));
 	assert(sVopWrites[1] == std::make_pair(0x000u, 0x00048004u));
+	assert(sVopWrites[2] == std::make_pair(0xc4u, 0xffffffffu) && sVopWrites[3] == std::make_pair(0xc0u, 0x00200020u));
+	assert(sVopOverrides[0xc0] == 0x20 && sHandler != NULL && sHandlerInterrupt == 188 && sModelSemaphore >= 0);
 	assert(sConsoleUpdates == 1 && sConsole.address == (addr_t)sFrameAllocation && sConsole.width == 1920);
 	assert(sConsole.height == 1080 && sConsole.depth == 32 && sConsole.bytesPerRow == 7680);
 	const SharedInfo* shared = (const SharedInfo*)sSharedPage;
@@ -1437,10 +1561,28 @@ main()
 	memset(&acc, 0, sizeof(acc));
 	acc.version = kAccelerantVersion;
 	assert(Control(reader, kGetAccelerantInfo, &acc, sizeof(acc)) == B_OK);
-	assert(acc.flags == (kAccelerantAcquired | kAccelerantEdid) && acc.sharedArea == sSharedModelArea);
+	assert(acc.flags == (kAccelerantAcquired | kAccelerantEdid | kAccelerantRetrace) && acc.sharedArea == sSharedModelArea);
 	assert(acc.frameBufferPhysical == kModelFramePhysical && acc.firmwareAddress == kModelFirmwareAddress);
 	assert(acc.port == 2 && acc.window == 2 && acc.polls == 2 && acc.width == 1920 && acc.height == 1080);
-	assert(acc.bytesPerRow == 7680 && acc.reserved == 0);
+	assert(acc.bytesPerRow == 7680 && acc.reserved == 0 && acc.retraces == 0);
+	assert((acc.flags & kAccelerantRetrace) != 0 && acc.retraceSemaphore == sModelSemaphore);
+	// Frame-start interrupts: ignored while idle, acknowledged, and released
+	// only towards waiting threads. Other status bits are acknowledged too.
+	sVopWrites.clear();
+	assert(sHandler(sHandlerData) == B_UNHANDLED_INTERRUPT && sVopWrites.empty());
+	sVopModel[0xc8 / 4] = sVopShadow[0xc8 / 4] = 0x20;
+	assert(sHandler(sHandlerData) == B_HANDLED_INTERRUPT);
+	assert(sVopWrites.size() == 1 && sVopWrites[0] == std::make_pair(0xc4u, 0x00200020u) && sVopModel[0xc8 / 4] == 0);
+	assert(sSemaphoreReleases == 0 && atomic_get(&sRetraces) == 1);
+	sVopModel[0xc8 / 4] = sVopShadow[0xc8 / 4] = 0x21;
+	sSemaphoreWaiters = -2;
+	assert(sHandler(sHandlerData) == B_INVOKE_SCHEDULER);
+	assert(sSemaphoreReleases == 1 && sSemaphoreReleased == 2 && sSemaphoreWaiters == 0 && atomic_get(&sRetraces) == 2);
+	assert(sVopWrites.size() == 2 && sVopWrites[1] == std::make_pair(0xc4u, 0x00210021u) && sVopModel[0xc8 / 4] == 0);
+	sVopModel[0xc8 / 4] = sVopShadow[0xc8 / 4] = 0x10; // not a frame start
+	assert(sHandler(sHandlerData) == B_HANDLED_INTERRUPT && atomic_get(&sRetraces) == 2);
+	assert(Control(reader, kGetAccelerantInfo, &acc, sizeof(acc)) == B_OK && acc.retraces == 2);
+	sVopWrites.clear();
 	acc.version = 2;
 	assert(Control(reader, kGetAccelerantInfo, &acc, sizeof(acc)) == B_BAD_VALUE);
 	assert(Control(reader, kCloneFrameBuffer, &cloneInfo, sizeof(cloneInfo) - 1) == B_BAD_VALUE);
@@ -1461,24 +1603,49 @@ main()
 	sAllowScanout = true;
 	assert(Close(primary) == B_OK);
 	sAllowScanout = false;
-	assert(sOwner == NULL && sVopWrites.size() == 2 && sVopWrites[0] == std::make_pair(kModelAddressOffset, kModelFirmwareAddress));
-	assert(sVopWrites[1] == std::make_pair(0x000u, 0x00048004u));
+	// Release: interrupt off and handler gone first, then the swap back.
+	assert(sOwner == NULL && sVopWrites.size() == 3 && sVopWrites[0] == std::make_pair(0xc0u, 0x00200000u));
+	assert(sVopWrites[1] == std::make_pair(kModelAddressOffset, kModelFirmwareAddress));
+	assert(sVopWrites[2] == std::make_pair(0x000u, 0x00048004u) && sVopOverrides[0xc0] == 0);
+	assert(sHandler == NULL && sHandlerRemovals == 1 && sModelSemaphore < 0 && sSemaphoreDeletions == 1);
 	assert(sConsoleUpdates == 2 && sConsole.address == 0xffff000012340000ull && sConsole.bytesPerRow == 7680);
-	assert(sNullClones == 1 && sFrameArea < 0 && sSharedPage == NULL && sAreas.empty());
+	assert(sNullClones == 1 && sFrameArea < 0 && sSharedPage == NULL && sAreas.empty() && sVopModel == NULL);
 	assert(Free(primary) == B_OK);
 	assert(sVopOverrides[kModelAddressOffset] == kModelFirmwareAddress);
 	// Without EDID (no hot-plug) the frame buffer is still acquired.
 	Prepare(); sAllowEdid = true; sAllowScanout = true; sHotPlug = 1u << 27;
 	assert(Open(&controller, "", O_RDWR, &opened) == B_OK);
 	primary = (Handle*)opened;
-	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_OK && sMapAttempts == 6);
+	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_OK && sMapAttempts == 7);
 	shared = (const SharedInfo*)sSharedPage;
 	assert(shared->flags == 0 && shared->edidResult == kEdidNoHotPlug && shared->hTotal == 2200);
 	acc.version = kAccelerantVersion;
-	assert(Control(primary, kGetAccelerantInfo, &acc, sizeof(acc)) == B_OK && acc.flags == kAccelerantAcquired);
+	assert(Control(primary, kGetAccelerantInfo, &acc, sizeof(acc)) == B_OK);
+	assert(acc.flags == (kAccelerantAcquired | kAccelerantRetrace));
 	sAllowScanout = true;
 	assert(Close(primary) == B_OK && Free(primary) == B_OK && sOwner == NULL && sNullClones == 1);
 	sAllowScanout = false;
+	// Without an interrupt handler or semaphore the frame buffer still works,
+	// just without retrace; the release then skips the interrupt words.
+	for (unsigned failure = 0; failure < 2; failure++) {
+		Prepare(); sAllowEdid = true; sAllowScanout = true;
+		if (failure == 0)
+			sFailInstall = 1;
+		else
+			sFailSemaphore = 1;
+		assert(Open(&controller, "", O_RDWR, &opened) == B_OK);
+		primary = (Handle*)opened;
+		assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_OK && sOwner == primary);
+		assert(Control(primary, kGetAccelerantInfo, &acc, sizeof(acc)) == B_OK);
+		assert(acc.flags == (kAccelerantAcquired | kAccelerantEdid) && acc.retraceSemaphore == -1);
+		assert(sHandler == NULL && sModelSemaphore < 0 && sVopWrites.size() == 2);
+		sVopWrites.clear();
+		sAllowScanout = true;
+		assert(Close(primary) == B_OK && Free(primary) == B_OK && sOwner == NULL);
+		sAllowScanout = false;
+		assert(sVopWrites.size() == 2 && sVopWrites[0] == std::make_pair(kModelAddressOffset, kModelFirmwareAddress));
+		assert(sAreas.empty() && sHandlerRemovals == 0);
+	}
 	assert(sLockDepth == 0);
 	printf("RK3588_DISPLAY_RESOURCES_TEST_PASS faults=%zu\n", faults.size());
 	return 0;

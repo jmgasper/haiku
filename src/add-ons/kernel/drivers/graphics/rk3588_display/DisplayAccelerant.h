@@ -33,6 +33,18 @@ static const uint32_t kFrameBytes = kFrameBytesPerRow * kFrameHeight;
 
 static const uint32_t kAccelerantAcquired = 1; // flags
 static const uint32_t kAccelerantEdid = 2; // shared EDID block is valid
+static const uint32_t kAccelerantRetrace = 4; // frame-start interrupt drives the semaphore
+
+// Video-port interrupt words (VP_INT_EN/CLR/STATUS at 0xa0 + 0x10 per port):
+// the low half holds the bits, the high half the write mask. The frame-start
+// field interrupt marks the start of every scanned frame.
+static const uint32_t kVopPortInterruptBase = 0xa0;
+static const uint32_t kVopPortInterruptStride = 0x10;
+static const uint32_t kVopPortInterruptEnable = 0x0;
+static const uint32_t kVopPortInterruptClear = 0x4;
+static const uint32_t kVopPortInterruptStatus = 0x8;
+static const uint32_t kVopInterruptFrameStart = 1u << 5; // FS_FIELD
+static const uint32_t kVopInterruptMask = 0xffff;
 
 struct AccelerantInfo {
 	uint32_t version; // in: kAccelerantVersion
@@ -46,6 +58,8 @@ struct AccelerantInfo {
 	uint32_t width;
 	uint32_t height;
 	uint32_t bytesPerRow;
+	int32_t retraceSemaphore; // released at each frame start while acquired, or -1
+	uint32_t retraces; // frame-start interrupts handled since acquisition
 	uint32_t reserved;
 };
 

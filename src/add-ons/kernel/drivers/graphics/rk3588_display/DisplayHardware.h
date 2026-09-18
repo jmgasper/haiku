@@ -222,6 +222,7 @@ public:
 		return B_OK;
 	}
 	bool Ready() const { return fVop != NULL; }
+	void ReleaseVop() { fVopArea.SetTo(-1); fVop = NULL; }
 	uint32_t ReadVop(uint32_t offset) { return ReadDisplayRegister(fVop, offset); }
 	void WriteVop(uint32_t offset, uint32_t value) { WriteDisplayRegister(fVop, offset, value); }
 	int64_t Now() { return system_time(); }

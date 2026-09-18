@@ -427,7 +427,11 @@ def check_pattern_frame(path, expect_pattern=True):
 ACCELERANT_LINE = re.compile(
     r'^ROCK5_DISPLAY_ACCELERANT flags=(\d+) shared_area=(-?\d+) framebuffer=([0-9a-f]{8})'
     r' firmware=([0-9a-f]{8}) port=(\d) window=(\d) polls=(\d+) width=(\d+) height=(\d+)'
-    r' bytes_per_row=(\d+)$', re.M)
+    r' bytes_per_row=(\d+) retrace_sem=(-?\d+) retraces=(\d+)$', re.M)
+RETRACE_LINE = re.compile(
+    r'^ROCK5_DISPLAY_RETRACE waits=(\d+) timeouts=(\d+) first_us=(\d+) last_us=(\d+) period_us=(\d+)'
+    r' retraces_before=(\d+) retraces_after=(\d+) elapsed_us=(\d+)$', re.M)
+FRAME_PERIOD_US = (15500, 18000) # 60 Hz nominal, 16667 us
 ACCELERANT_SHARED = re.compile(
     r'^ROCK5_DISPLAY_ACCELERANT_SHARED version=(\d+) flags=(\d+) mode_list_area=(-?\d+) modes=(\d+)'
     r' size=(\d+)x(\d+) bytes_per_row=(\d+) pixel_khz=(\d+) h=(\d+)/(\d+)/(\d+) v=(\d+)/(\d+)/(\d+)'
@@ -468,6 +472,31 @@ def validate_accelerant(body, observation=None, edid_block0=None):
         raise ValidationError('frame buffer geometry %dx%d/%d' % (width, height, bytes_per_row))
     if polls > 5000:
         raise ValidationError('implausible acquisition poll count %d' % polls)
+    retrace_sem, retraces_before = int(line.group(11)), int(line.group(12))
+    retrace = None
+    if flags & 4:
+        if retrace_sem < 0:
+            raise ValidationError('retrace flagged without a semaphore')
+        measured = RETRACE_LINE.search(body)
+        if measured is None:
+            raise ValidationError('retrace measurement missing')
+        waits, timeouts = int(measured.group(1)), int(measured.group(2))
+        period = int(measured.group(5))
+        before, after, elapsed = int(measured.group(6)), int(measured.group(7)), int(measured.group(8))
+        if timeouts or waits < 8:
+            raise ValidationError('retrace waits %d timeouts %d' % (waits, timeouts))
+        if not FRAME_PERIOD_US[0] <= period <= FRAME_PERIOD_US[1]:
+            raise ValidationError('retrace period %d us is not a 60 Hz frame' % period)
+        # Interrupts keep counting whether or not anyone waits: the count must
+        # have grown by about the elapsed frames, and never less than the waits.
+        frames = elapsed / 16667.0
+        if after - before < waits or after - before > frames * 1.25 + 4:
+            raise ValidationError('retrace count grew by %d over %.1f frames' % (after - before, frames))
+        if before != retraces_before:
+            raise ValidationError('retrace count differs between the description and the measurement')
+        retrace = dict(waits=waits, period_us=period, count_delta=after - before, elapsed_us=elapsed)
+    elif retrace_sem >= 0 or RETRACE_LINE.search(body):
+        raise ValidationError('retrace data without the retrace flag')
     signature = re.search(r'^ROCK5_DISPLAY_ACCELERANT_SIGNATURE (.*)$', body, re.M)
     if signature is None or signature.group(1) != 'rk3588_display.accelerant':
         raise ValidationError('accelerant signature missing or wrong')
@@ -510,7 +539,7 @@ def validate_accelerant(body, observation=None, edid_block0=None):
             raise ValidationError('observation window %d scans %#x, accelerant buffer is %#x' % (window, seen['address'], framebuffer))
     return dict(status='pass', flags=flags, framebuffer='%08x' % framebuffer, firmware='%08x' % firmware,
         port=port, window=window, polls=polls, modes=int(shared.group(4)), edid_result=edid_result,
-        name=shared.group(20), samples=[clone.group(i) for i in (3, 4, 5, 6)])
+        name=shared.group(20), samples=[clone.group(i) for i in (3, 4, 5, 6)], retrace=retrace)
 
 
 # The Haiku desktop as the NanoKVM captures it: the default blue workspace

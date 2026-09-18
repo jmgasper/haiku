@@ -402,9 +402,40 @@ CheckAccelerant()
 	}
 	printf("ROCK5_DISPLAY_ACCELERANT flags=%" PRIu32 " shared_area=%" PRId32
 		" framebuffer=%08" PRIx32 " firmware=%08" PRIx32 " port=%" PRIu32 " window=%" PRIu32
-		" polls=%" PRIu32 " width=%" PRIu32 " height=%" PRIu32 " bytes_per_row=%" PRIu32 "\n",
-		info.flags, info.sharedArea, info.frameBufferPhysical, info.firmwareAddress, info.port,
-		info.window, info.polls, info.width, info.height, info.bytesPerRow);
+		" polls=%" PRIu32 " width=%" PRIu32 " height=%" PRIu32 " bytes_per_row=%" PRIu32
+		" retrace_sem=%" PRId32 " retraces=%" PRIu32 "\n", info.flags, info.sharedArea,
+		info.frameBufferPhysical, info.firmwareAddress, info.port, info.window, info.polls,
+		info.width, info.height, info.bytesPerRow, info.retraceSemaphore, info.retraces);
+	if ((info.flags & kAccelerantRetrace) != 0) {
+		// Wait for a series of frame starts and measure their spacing.
+		const unsigned kWaits = 24;
+		unsigned timeouts = 0;
+		bigtime_t first = 0, last = 0;
+		bigtime_t started = system_time();
+		for (unsigned i = 0; i < kWaits; i++) {
+			status_t status = acquire_sem_etc(info.retraceSemaphore, 1, B_RELATIVE_TIMEOUT, 200000);
+			bigtime_t now = system_time();
+			if (status != B_OK) {
+				timeouts++;
+				continue;
+			}
+			if (first == 0)
+				first = now;
+			last = now;
+		}
+		AccelerantInfo after = {};
+		after.version = kAccelerantVersion;
+		if (ioctl(fd, kGetAccelerantInfo, &after, sizeof(after)) != 0) {
+			perror("accelerant info after retrace");
+			return false;
+		}
+		unsigned waited = kWaits - timeouts;
+		printf("ROCK5_DISPLAY_RETRACE waits=%u timeouts=%u first_us=%" PRId64 " last_us=%" PRId64
+			" period_us=%" PRId64 " retraces_before=%" PRIu32 " retraces_after=%" PRIu32
+			" elapsed_us=%" PRId64 "\n", kWaits, timeouts, first, last,
+			waited > 1 ? (last - first) / (bigtime_t)(waited - 1) : 0, info.retraces,
+			after.retraces, system_time() - started);
+	}
 	char text[B_PATH_NAME_LENGTH];
 	if (ioctl(fd, B_GET_ACCELERANT_SIGNATURE, text, sizeof(text)) != 0) {
 		perror("accelerant signature");

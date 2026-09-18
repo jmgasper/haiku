@@ -168,5 +168,7 @@ rk3588_get_accelerant_device_info(accelerant_device_info* info)
 sem_id
 rk3588_accelerant_retrace_semaphore(void)
 {
-	return -1;
+	if ((gInfo->info.flags & kAccelerantRetrace) == 0 || gInfo->info.retraceSemaphore < 0)
+		return -1;
+	return gInfo->info.retraceSemaphore;
 }
