@@ -317,8 +317,13 @@ listed as verified is untested.
   48160 frames a second through the graphics card, 48241 through the
   motherboard, against the 48000 asked for. tests/audioout.cpp lists them and
   chooses which one the system uses, since they are both called "HD Audio".
-  What is not done: no audio infoframe, no channel mapping, nothing with the
-  ELD. Stereo is what a sink is most likely to accept without them. And as with
+  The driver now reads what a display says about its own audio and logs it,
+  because "no sound" and "this screen has no speakers" are otherwise the same
+  thing seen from a machine with nobody in the room. This monitor answers
+  `"MOREJOY" over HDMI, speakers 0x1, 1 audio format`: speaker allocation 0x1
+  is front left and right, so it takes stereo - which is exactly what can be
+  sent without infoframes or channel mapping. Neither of those is implemented,
+  so anything beyond stereo will need that work. And as with
   the motherboard's output, what is proven is that the hardware clocks the
   stream, not that a speaker makes a sound - that needs someone in the room.
   Replacing a driver that ships with Haiku needs care: the kernel looks in the
