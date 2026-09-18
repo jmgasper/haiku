@@ -21,6 +21,7 @@ extern "C" {
 #include <kernel.h>
 #include <lock.h>
 #include <interrupts.h>
+#include <team.h>
 #include <vm/vm.h>
 #include <condition_variable.h>
 
@@ -479,7 +480,11 @@ extern "C" NV_STATUS NV_API_CALL os_lock_user_pages(
 	if (!pages.IsSet())
 		return NV_ERR_NO_MEMORY;
 
-	pages->team = B_CURRENT_TEAM;
+	// The real team, not B_CURRENT_TEAM: the pages are unlocked when the
+	// application's objects are cleaned up, which can run in another team's
+	// context, and unlocking memory in the wrong address space wrecks the
+	// system.
+	pages->team = team_get_current_team_id();
 	pages->address = (addr_t)address;
 	pages->size = page_count * B_PAGE_SIZE;
 	pages->pageCount = page_count;
@@ -495,8 +500,8 @@ extern "C" NV_STATUS NV_API_CALL os_lock_user_pages(
 		return NV_ERR_INVALID_ADDRESS;
 	}
 
-	dprintf("nvidia_rm: locked %" B_PRIuSIZE " bytes at %p\n", pages->size,
-		address);
+	dprintf("nvidia_rm: locked %" B_PRIuSIZE " bytes at %p for team %" B_PRId32
+		"\n", pages->size, address, pages->team);
 	*page_array = pages.Detach();
 	return NV_OK;
 }
@@ -511,8 +516,11 @@ extern "C" NV_STATUS NV_API_CALL os_unlock_user_pages(
 	if (!pages.IsSet())
 		return NV_OK;
 
-	unlock_memory_etc(pages->team, (void*)pages->address, pages->size,
-		pages->writable ? B_READ_DEVICE : 0);
+	status_t status = unlock_memory_etc(pages->team, (void*)pages->address,
+		pages->size, pages->writable ? B_READ_DEVICE : 0);
+	dprintf("nvidia_rm: os_unlock_user_pages(team %" B_PRId32 ", %p, %" B_PRIuSIZE
+		"): %s\n", pages->team, (void*)pages->address, pages->size,
+		strerror(status));
 	return NV_OK;
 }
 
