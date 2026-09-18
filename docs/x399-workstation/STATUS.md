@@ -418,6 +418,23 @@ listed as verified is untested.
   putting work on a channel, which means giving the accelerant a channel - the
   same thing the vblank work wanted before NVKMS's own route turned out to
   need none.
+- 2026-09-19: exercised three displays without having three, using the
+  accelerant's own `force_connected` setting - it copies the real monitor's
+  EDID onto a connector nothing is plugged into, which is what it is there for.
+  Forcing DP-0 gave two heads and a 2560x1080 desktop; forcing DP-0 and DP-2
+  gave three heads and 3200x1080, and app_server chose it. Everything built
+  this week works across a spanning frame buffer: the accelerant publishes it
+  at the wider pitch (12800 bytes a row), OpenGL presents into it at 1269
+  frames a second, vertical sync holds 60.3, the retrace semaphore stays at
+  60.0 with nothing timing out, and 2D is unchanged. The monitor shows the
+  leftmost 1920 of the desktop with the Deskbar off its right edge, which is
+  what a spanning desktop wider than one screen should look like.
+  What this does not prove: a forced connector takes its mode from the copied
+  EDID and settled on 640 wide rather than 1920, so the desktop was 3200 rather
+  than 5760. Three heads really are driving one frame buffer, but three real
+  1920x1080 monitors will be three times the pixels of one, and at that size
+  the 2D figures above start to matter.
+  The setting has been cleared again; the machine is back on one display.
 - 2026-09-18: all five XHCI controllers - two AMD, one ASMedia, and the
   Thunderbolt 4 host with its USB4 interface - start and publish a root hub.
   Only the KVM is plugged in, so what is left in this area needs someone at the
