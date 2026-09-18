@@ -486,6 +486,23 @@ asserts hotplug at present), devices in each USB port, and the serial console.
   looked like a catastrophe. It was the screen saver, on a machine rebooted
   several times since it was last killed - the trap recorded above, walked into
   again a few hours later.
+- 2026-09-19: resizing a window, tried next for the same reason dragging was -
+  it is ordinary, and it had never been tried. It changes the frame buffer, the
+  texture behind it and the clipping all at once. Two things came out of it,
+  neither a defect in this work:
+  * A program has to say what part of its new frame buffer to draw into. gltest
+    did not, so the picture stayed the size the window started at and the rest
+    was black - on both paths, which is how it was placed on the test rather
+    than the renderer. It handles `FrameResized` now, as a program must.
+  * With that fixed, a window resized three times a second leaves the area it
+    shrank off it showing its old contents for a moment. The trace says the
+    scanout path is not running at all while this happens - the settling rule
+    holds, no presents at all between the notifications - so nothing here is
+    painting stale pixels. It is the window system's repaint of the vacated
+    area not keeping up, and it clears completely the moment the resizing
+    stops. It shows on this path and not through the bitmap because this path
+    is three times faster and leaves the repaint less room.
+  `GLTEST_RESIZE=1` is the reproducer, beside `GLTEST_MOVE=1`.
 - 2026-09-19: `tools/check-workstation.sh` asks the machine whether it is doing
   what it is supposed to, one line per thing, and comes back 13 working, 0 not.
   Every check in it exists because something looked fine today and was not: a
