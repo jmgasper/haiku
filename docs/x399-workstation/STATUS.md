@@ -159,3 +159,26 @@ listed as verified is untested.
   What is left in this area: presenting a frame still copies the image back
   through the CPU into a BBitmap, which is what limits a small window to a few
   hundred frames a second.
+- 2026-09-18: the GPU now writes the frame into app_server's own bitmap.
+  Presenting used to read the image back with the CPU and copy it into the
+  window's bitmap; the bitmap's pages are now pinned and mapped into the GPU's
+  address space, so the copy that presents a frame is a GPU write into the
+  memory app_server already reads, and the CPU never touches the pixels. That
+  needed three pieces: `os_lock_user_pages()` in the driver, which was a stub
+  that panicked and now locks the pages with lock_memory_etc(); support for
+  VK_EXT_external_memory_host in NVK's resman backend, built on resman's OS
+  descriptors; and a present path in Zink that imports the window system's
+  buffers once and copies into them on the GPU. Redrawing a window no longer
+  touches the GPU at all - the frame is already in the bitmap.
+  Measuring it also exposed that every submission was costing a millisecond:
+  the flush waited with poll(), whose shortest sleep is a whole tick, however
+  short a timeout is asked for. Spinning first and then sleeping in short steps
+  took an empty submission from 1.08 ms to 13 us, which is worth far more than
+  the present path itself: the lit sphere at 800x600 went from 167 to 500 fps,
+  and GLTeapot from 363 to over 1000.
+  The frame rate depends heavily on the GPU's clocks, which only ramp under
+  sustained load, so measurements are only comparable after a warm up.
+  What is left in this area: presenting still crosses the PCIe bus, and the GPU
+  writes system memory at only 1.6 GB/s (it reads at 6.2). Presenting into the
+  screen's own frame buffer in video memory, through Haiku's direct window
+  mode, would avoid the bus entirely.
