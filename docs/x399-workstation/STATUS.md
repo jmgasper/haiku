@@ -11,7 +11,7 @@ listed as verified is untested.
 | Ethernet | I211 up with DHCP | verified: ipro1000 link 1000BASE-T, DHCP lease, HTTP upload and SSH |
 | USB | all controllers and ports enumerate devices | all 5 xHCI controllers start after the PCI fix; NanoKVM device enumerates on the ASM2142; other ports need physical devices |
 | Audio | ALC1220 analog output, HDMI audio | AMD HDA and GP102 HDMI controllers attach (`/dev/audio/hmulti/hda/0,1`); playback untested |
-| Graphics | GTX 1080 Ti accelerated 2D/3D, 3-4 monitors | in progress: NVKMS modesetting works; the accelerant spans the desktop over all connected displays (verified with HDMI plus a forced DP-0, 2560x1080); 3D not working yet |
+| Graphics | GTX 1080 Ti accelerated 2D/3D, 3-4 monitors | in progress: NVKMS modesetting works; the accelerant spans the desktop over all connected displays (verified with HDMI plus a forced DP-0, 2560x1080); Vulkan runs on the GPU (`vkprobe` copies a buffer and renders a triangle); no display is detected on any DisplayPort connector |
 | Sleep | S3 suspend and resume | sleeps and wakes; the display comes back, but the NVMe and the network card usually do not |
 
 ## Log
@@ -75,3 +75,30 @@ listed as verified is untested.
   so the cause is still open. Debugging it further needs a channel that
   survives the failure: the machine cannot write its log to disk, and the
   HDMI capture of the NanoKVM returns stale frames.
+- 2026-09-18: Vulkan works. Submitted work never completed because a mapping
+  smaller than a page came back pointing at the start of its page: RM rounds
+  the ranges of a mapping context down to a page boundary and hands the offset
+  inside the page to the caller in `pLinearAddress`, which neither the Haiku
+  RM clients nor the driver added back. A channel's USERD is 512 bytes and
+  eight of them share one page, so every channel after the first wrote its
+  GPPut into the first channel's USERD: the wrong channel was kicked and the
+  submitting one never ran. It showed up as GPFIFO entries being consumed with
+  nothing executing, no MMU fault and no semaphore release; submitting an entry
+  pointing at unmapped memory, which faulted on one channel but was silently
+  swallowed on the other, is what pinned it down. The driver now also releases
+  the mapping context after use, as `nvidia_mmap()` does on Linux, instead of
+  leaving it to be reused by the next mapping on the same file descriptor.
+  With that, `vkprobe` passes reliably: a compute-free buffer copy and a
+  rendered triangle read back correctly, waiting on a real GF100 semaphore
+  release rather than polling.
+- 2026-09-18: DisplayPort detection investigated with the new `nvdpyinfo`
+  tool. NVKMS only learns about a DisplayPort connection through a hotplug
+  event from RM, and RM itself reports no connection on any of the three
+  physical DisplayPort connectors: the hot plug detect line reads low (a
+  detection with DDC and load detection disabled returns only HDMI-0), and a
+  DPCD read over the AUX channel of DP-0, DP-2 and DP-4 gets no reply, while
+  the same query on the HDMI connector reports it connected. So the GPU sees
+  nothing on those connectors at all, which points at the cable, the port or
+  the monitor rather than at the driver. `nvdpyinfo --watch <seconds>` polls
+  both RM and NVKMS and reports every change, to catch a plug event when one
+  happens.
