@@ -25,6 +25,7 @@ static const uint32_t kEdidNoHotPlug = 2; // HDMI TX1 hot-plug level low
 static const uint32_t kEdidTimeout = 3;
 static const uint32_t kEdidNack = 4;
 static const uint32_t kEdidInvalidBlock = 5;
+static const uint32_t kEdidPoweredOff = 6; // DPMS off: the HDMI TX registers are unreachable
 
 static const uint32_t kEdidSegmentUsed = 1;
 static const uint32_t kEdidMasterReset = 2; // the master was reset after an error

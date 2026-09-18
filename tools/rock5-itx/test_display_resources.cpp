@@ -95,6 +95,7 @@ static uint32* sGrfModel;
 static std::vector<uint32> sGrfShadow;
 static std::vector<std::pair<unsigned, uint32> > sGrfWrites;
 static uint32 sPhyStatusModel = 0x0e;
+static uint32 sGrfControl = 0xe0; // HDPTX GRF CON0: PLL, bias and bandgap enabled by firmware
 static uint32* sCruModel;
 static std::vector<uint32> sCruShadow;
 static std::vector<std::pair<unsigned, uint32> > sCruWrites;
@@ -243,6 +244,7 @@ ModeSetModelStep()
 			uint32 mask = value >> 16;
 			sGrfModel[i] = (sGrfShadow[i] & ~mask & 0xffff) | (value & mask);
 			sGrfShadow[i] = sGrfModel[i];
+			sGrfControl = sGrfModel[0];
 		}
 		sGrfModel[0x80 / 4] = sGrfShadow[0x80 / 4] = sPhyStatusModel;
 	}
@@ -328,7 +330,7 @@ ModelRegister(uint64 base, unsigned offset)
 	if (base == 0xfd58c000 && offset == 0x384)
 		return sHotPlug;
 	if (base == 0xfd5e4000 && offset == 0x00)
-		return 0xe0; // PLL, bias and bandgap enabled by firmware
+		return sGrfControl;
 	if (base == 0xfd5e4000 && offset == 0x80)
 		return sPhyStatusModel;
 	if (base == 0xfdd90000) {
@@ -1052,7 +1054,7 @@ Prepare()
 	sHoldNever = false;
 	sPhyModel = NULL; sPhyShadow.clear(); sPhyWrites.clear();
 	sHdmiShadow.clear(); sHdmiWrites.clear();
-	sGrfModel = NULL; sGrfShadow.clear(); sGrfWrites.clear();
+	sGrfModel = NULL; sGrfShadow.clear(); sGrfWrites.clear(); sGrfControl = 0xe0;
 	sPhyStatusModel = 0x0e;
 	sCruModel = NULL; sCruShadow.clear(); sCruWrites.clear();
 	sVopHoldCountdown = -1;
@@ -2023,6 +2025,18 @@ main()
 	assert(sGrfWrites.size() == 1 && sGrfWrites[0] == std::make_pair(0u, 0x00e00000u));
 	assert(sHdmiWrites.empty() && shared->powerMode == kPowerOff && shared->width == 1920);
 	assert(Control(reader, kGetAccelerantInfo, &acc, sizeof(acc)) == B_OK && acc.width == 1920);
+	// With the PHY down the HDMI TX registers are unreachable: the observation
+	// skips that block (the GRF shows the PLL off) and EDID requests are refused.
+	DisplaySnapshot offSnapshot;
+	memset(&offSnapshot, 0xa5, sizeof(offSnapshot));
+	assert(Control(reader, kGetSnapshot, &offSnapshot, sizeof(offSnapshot)) == B_OK);
+	assert((offSnapshot.flags & kSnapshotHdmiSkipped) != 0 && (offSnapshot.flags & kSnapshotHdmiRead) == 0);
+	assert((offSnapshot.flags & kSnapshotVopRead) != 0 && offSnapshot.hdptxGrf[0] == 0 && offSnapshot.hdmi[0] == 0);
+	assert(sMappedBases.back() == 0xfdd90000);
+	EdidRequest offEdid = {};
+	offEdid.version = kEdidVersion;
+	assert(Control(reader, kReadEdid, &offEdid, sizeof(offEdid)) == B_OK && offEdid.result == kEdidPoweredOff);
+	assert(sMappedBases.back() == 0xfdd90000);
 	// Off again: nothing to do, nothing touched (app_server repeats DPMS on at every start).
 	sVopWrites.clear(); sPhyWrites.clear(); sGrfWrites.clear(); sCruWrites.clear();
 	unsigned mapsBefore = sMapAttempts;
@@ -2049,6 +2063,10 @@ main()
 	assert(sequenceOf(sHdmiWrites, {{0xbe8u, 4u}, {0xaacu, 2u}}) && sGrfWrites.size() == 6);
 	assert(shared->powerMode == kPowerOn && shared->width == 1280 && sConsole.width == 1280);
 	assert(Control(reader, kGetAccelerantInfo, &acc, sizeof(acc)) == B_OK && acc.width == 1280);
+	memset(&offSnapshot, 0xa5, sizeof(offSnapshot));
+	assert(Control(reader, kGetSnapshot, &offSnapshot, sizeof(offSnapshot)) == B_OK);
+	assert((offSnapshot.flags & kSnapshotHdmiRead) != 0 && offSnapshot.hdptxGrf[0] == 0xe0);
+	assert(sMappedBases.back() == 0xfdea0000);
 	// On again: already on, nothing touched.
 	sVopWrites.clear(); sPhyWrites.clear();
 	assert(Control(primary, kSetPowerMode, &power, sizeof(power)) == B_OK && power.result == kModeOK);

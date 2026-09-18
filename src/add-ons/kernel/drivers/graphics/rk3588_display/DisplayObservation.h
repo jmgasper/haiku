@@ -134,11 +134,18 @@ VopReadable(const DisplaySnapshot& snapshot)
 }
 
 
+// HDPTX GRF CON0 bit 7 enables the PHY PLL. With the PHY powered down (DPMS
+// off) a read of the HDMI TX1 registers raised an SError on the board
+// (+284, "unhandled error" in the observation's HDMI loop), so the block is
+// read only while the PLL is enabled.
+static const uint32_t kHdptxGrfPllEnable = 1u << 7;
+
 inline bool
 HdmiReadable(const DisplaySnapshot& snapshot)
 {
 	return (snapshot.pmu[kPmuRepairStatus] & kPmuVo1On) != 0
-		&& (snapshot.clockGate[kClockGateHdmi] & kClockGateHdmiMask) == 0;
+		&& (snapshot.clockGate[kClockGateHdmi] & kClockGateHdmiMask) == 0
+		&& (snapshot.hdptxGrf[0] & kHdptxGrfPllEnable) != 0;
 }
 
 

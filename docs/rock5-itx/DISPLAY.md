@@ -458,7 +458,10 @@ change while off simply starts from the stopped port. A request for the
 state the port is already in touches nothing (app_server asks for DPMS on
 at every start, which the driver logs as phase 0). The shared
 information carries the power mode and the mode's sync polarity in their
-own fields, and `B_DPMS_MODE` reports the last accepted request. Releasing
+own fields, and `B_DPMS_MODE` reports the last accepted request. While the
+PHY is down the HDMI TX1 registers are unreachable (a read raised an SError
+on the board), so the observation reads that block only while the GRF shows
+the PHY PLL enabled and an EDID request is answered "powered off". Releasing
 the frame buffer while off, or on a mode other than the firmware's, first
 restores the firmware mode so the console on the firmware frame buffer is
 usable again. The host fixture checks the off, off-again and on sequences

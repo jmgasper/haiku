@@ -791,6 +791,11 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 		request.version = kEdidVersion;
 		request.block = block;
 		MutexLocker locker(sHardwareLock);
+		if (sPowerMode == kPowerOff) {
+			// The HDMI TX I2C master is unreachable while the PHY is powered down.
+			request.result = kEdidPoweredOff;
+			return user_memcpy(buffer, &request, sizeof(request));
+		}
 		EdidHardware hardware;
 		uint32_t result = kEdidNotReady;
 		status_t status = hardware.Prepare(controller->resources, request.hotPlug, result);
