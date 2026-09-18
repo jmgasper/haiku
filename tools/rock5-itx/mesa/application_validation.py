@@ -180,6 +180,11 @@ def validate(text, output=None, software=False, mode=None):
         if software:
             assert 'HAIKU_MESA_NATIVE_' not in body and 'ROCK5_MESA_NATIVE_LIFETIME' not in body
             cycles.append(dict(software=True, team=teams[-1]))
+        elif mode == '--system':
+            # The system launch sets no HAIKU_CSF_TRACE, so the renderer prints no GPU
+            # trace; GPU use is established by the UART interval, not by this transcript.
+            cycles.append(dict(team=teams[-1], launch='system',
+                traced='HAIKU_MESA_NATIVE_GPU ' in body))
         else:
             cycles.append(dict(team=teams[-1], **native_evidence(body)))
     assert len(set(teams)) == 2
