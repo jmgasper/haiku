@@ -1232,8 +1232,7 @@ nvme_disk_suspend(void* _cookie, int32 state)
 	if (info->ctrlr == NULL)
 		return B_OK;
 
-	// Wait for pending commands; new ones are blocked until resumed.
-	rw_lock_write_lock(&info->suspend_lock);
+	// XXX test: no quiesce
 
 	nvme_ctrlr_suspend(info->ctrlr);
 	return B_OK;

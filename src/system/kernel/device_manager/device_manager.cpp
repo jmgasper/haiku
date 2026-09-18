@@ -29,6 +29,7 @@
 #include <kernel.h>
 #include <kmodule.h>
 #include <util/AutoLock.h>
+#include <util/Vector.h>
 #include <util/DoublyLinkedList.h>
 #include <util/Stack.h>
 
@@ -2532,53 +2533,75 @@ suspend_step(const char* format, const char* name)
 }
 
 
+/*!	Collects the nodes to suspend or resume. A snapshot is needed because the
+	hooks change the tree: resuming a USB controller makes it scan its bus
+	again, which adds and removes nodes while they are visited.
+*/
 static void
-suspend_node(device_node* node, int32 state)
+collect_nodes(device_node* node, Vector<device_node*>& nodes, bool childrenFirst)
 {
-	// suspend children before their parents
-	NodeList::ConstReverseIterator iterator
-		= node->Children().GetReverseIterator();
-	while (device_node* child = iterator.Next())
-		suspend_node(child, state);
-
-	driver_module_info* driver = node->DriverModule();
-	if (!node->IsInitialized() || driver == NULL || driver->suspend == NULL)
-		return;
-
-	device_manager_suspend_trace("suspending %s", node->ModuleName());
-	suspend_step("device_manager: suspending %s\n", node->ModuleName());
-
-	status_t status = driver->suspend(node->DriverData(), state);
-	device_manager_suspend_trace("suspended %s: %s", node->ModuleName(),
-		strerror(status));
-	dprintf("device_manager: suspended %s: %s\n", node->ModuleName(),
-		strerror(status));
-}
-
-
-static void
-resume_node(device_node* node)
-{
-	// resume parents before their children
-	driver_module_info* driver = node->DriverModule();
-	if (node->IsInitialized() && driver != NULL && driver->resume != NULL) {
-		device_manager_suspend_trace("resuming %s", node->ModuleName());
-		suspend_step("device_manager: resuming %s\n", node->ModuleName());
-
-		// Give the hardware time between the steps: several devices need a
-		// moment after their configuration was restored.
-		snooze(200000);
-
-		status_t status = driver->resume(node->DriverData());
-		device_manager_suspend_trace("resumed %s: %s", node->ModuleName(),
-			strerror(status));
-		dprintf("device_manager: resumed %s: %s\n", node->ModuleName(),
-			strerror(status));
+	if (!childrenFirst) {
+		node->Acquire();
+		nodes.Add(node);
 	}
 
 	NodeList::ConstIterator iterator = node->Children().GetIterator();
 	while (device_node* child = iterator.Next())
-		resume_node(child);
+		collect_nodes(child, nodes, childrenFirst);
+
+	if (childrenFirst) {
+		node->Acquire();
+		nodes.Add(node);
+	}
+}
+
+
+static void
+suspend_nodes(int32 state)
+{
+	Vector<device_node*> nodes;
+	collect_nodes(sRootNode, nodes, true);
+
+	for (int32 i = 0; i < nodes.Count(); i++) {
+		device_node* node = nodes[i];
+		driver_module_info* driver = node->DriverModule();
+		if (node->IsInitialized() && driver != NULL && driver->suspend != NULL) {
+			device_manager_suspend_trace("suspending %s", node->ModuleName());
+			suspend_step("device_manager: suspending %s\n",
+				node->ModuleName());
+
+			status_t status = driver->suspend(node->DriverData(), state);
+			device_manager_suspend_trace("suspended %s: %s",
+				node->ModuleName(), strerror(status));
+			dprintf("device_manager: suspended %s: %s\n", node->ModuleName(),
+				strerror(status));
+		}
+		node->Release();
+	}
+}
+
+
+static void
+resume_nodes()
+{
+	Vector<device_node*> nodes;
+	collect_nodes(sRootNode, nodes, false);
+
+	for (int32 i = 0; i < nodes.Count(); i++) {
+		device_node* node = nodes[i];
+		driver_module_info* driver = node->DriverModule();
+		if (node->IsInitialized() && driver != NULL && driver->resume != NULL) {
+			device_manager_suspend_trace("resuming %s", node->ModuleName());
+			suspend_step("device_manager: resuming %s\n", node->ModuleName());
+
+			status_t status = driver->resume(node->DriverData());
+			device_manager_suspend_trace("resumed %s: %s", node->ModuleName(),
+				strerror(status));
+			dprintf("device_manager: resumed %s: %s\n", node->ModuleName(),
+				strerror(status));
+		}
+		node->Release();
+	}
 }
 
 
@@ -2654,7 +2677,7 @@ device_manager_suspend(int32 state, uint32 flags)
 	}
 
 	if ((flags & DEVICE_MANAGER_SKIP_DEVICE_TREE) == 0)
-		suspend_node(sRootNode, state);
+		suspend_nodes(state);
 	return B_OK;
 }
 
@@ -2667,7 +2690,7 @@ device_manager_resume(uint32 flags)
 {
 	RecursiveLocker _(sLock);
 	if ((flags & DEVICE_MANAGER_SKIP_DEVICE_TREE) == 0)
-		resume_node(sRootNode);
+		resume_nodes();
 
 	PowerHookList::Iterator iterator = sPowerHooks.GetIterator();
 	while (power_hook* entry = iterator.Next()) {
