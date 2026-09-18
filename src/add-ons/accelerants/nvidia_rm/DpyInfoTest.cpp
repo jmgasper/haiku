@@ -7,6 +7,9 @@
 //   --edid   dump the raw EDID bytes of every dpy that has one
 //   --rm     ask resman directly which displays it sees, and read DPCD over
 //            the DisplayPort AUX channel of every display
+//   --pcie-speed <gen>
+//            ask resman to train the bus to that generation (1, 2 or 3) and
+//            report what the link settles on
 //   --watch <seconds>
 //            poll both resman and NVKMS for that long and report every change,
 //            to see whether plugging a display in is noticed
@@ -28,6 +31,7 @@ extern "C" {
 #include "class/cl0073.h" // NV04_DISPLAY_COMMON
 #include "ctrl/ctrl0073/ctrl0073system.h"
 #include "ctrl/ctrl0073/ctrl0073dp.h"
+#include "ctrl/ctrl2080/ctrl2080bus.h"
 }
 
 
@@ -53,6 +57,35 @@ static void PrintFirstLine(const char *label, const char *text)
 
 // Ask resman itself what it thinks is plugged in, bypassing NVKMS, and try to
 // talk to each display over the DisplayPort AUX channel.
+// Ask resman to retrain the bus. The link comes up at the slowest speed and
+// something has to ask for more; on this system nothing does.
+static void SetPcieSpeed(int gen)
+{
+	NvRmApi rm;
+	NvRmDevice rmDev(rm, 0);
+
+	static const NvU32 kSpeeds[] = {
+		0,
+		NV2080_CTRL_BUS_SET_PCIE_SPEED_2500MBPS,
+		NV2080_CTRL_BUS_SET_PCIE_SPEED_5000MBPS,
+		NV2080_CTRL_BUS_SET_PCIE_SPEED_8000MBPS,
+	};
+	if (gen < 1 || gen > 3) {
+		printf("pcie: generation must be 1, 2 or 3\n");
+		return;
+	}
+
+	NV2080_CTRL_BUS_SET_PCIE_SPEED_PARAMS params { .busSpeed = kSpeeds[gen] };
+	try {
+		rmDev.Subdevice().Control(NV2080_CTRL_CMD_BUS_SET_PCIE_SPEED, &params,
+			sizeof(params));
+		printf("pcie: asked for gen %d\n", gen);
+	} catch (const std::system_error &ex) {
+		printf("pcie: resman refused gen %d: %s\n", gen, ex.what());
+	}
+}
+
+
 static void RmProbe()
 {
 	NvRmApi rm;
@@ -85,6 +118,39 @@ static void RmProbe()
 		printf("rm: connect state (%s): 0x%x\n", method.name, (unsigned)params.displayMask);
 	}
 
+	{
+		// How wide and how fast the link to the GPU is: it bounds everything
+		// that crosses the bus, a frame being read back, for instance.
+		NV2080_CTRL_BUS_GET_INFO_V2_PARAMS params {};
+		params.busInfoListSize = 5;
+		params.busInfoList[0].index = NV2080_CTRL_BUS_INFO_INDEX_PCIE_GPU_LINK_CTRL_STATUS;
+		params.busInfoList[1].index = NV2080_CTRL_BUS_INFO_INDEX_PCIE_GEN_INFO;
+		params.busInfoList[2].index = NV2080_CTRL_BUS_INFO_INDEX_PCIE_ROOT_LINK_CTRL_STATUS;
+		params.busInfoList[3].index = NV2080_CTRL_BUS_INFO_INDEX_PCIE_GPU_LINK_CAPS;
+		params.busInfoList[4].index = NV2080_CTRL_BUS_INFO_INDEX_PCIE_ROOT_LINK_CAPS;
+		try {
+			rmDev.Subdevice().Control(NV2080_CTRL_CMD_BUS_GET_INFO_V2, &params,
+				sizeof(params));
+			NvU32 status = params.busInfoList[0].data;
+			static const char *kSpeeds[] = { "?", "2.5", "5", "8", "16", "32", "64" };
+			NvU32 speed = DRF_VAL(2080, _CTRL_BUS_INFO, _PCIE_LINK_CTRL_STATUS_LINK_SPEED, status);
+			NvU32 width = DRF_VAL(2080, _CTRL_BUS_INFO, _PCIE_LINK_CTRL_STATUS_LINK_WIDTH, status);
+			printf("rm: pcie link: x%u at %s GT/s (gen info %#x)\n", (unsigned)width,
+				speed < 7 ? kSpeeds[speed] : "?", (unsigned)params.busInfoList[1].data);
+
+			NvU32 rootStatus = params.busInfoList[2].data;
+			NvU32 rootSpeed = DRF_VAL(2080, _CTRL_BUS_INFO, _PCIE_LINK_CTRL_STATUS_LINK_SPEED, rootStatus);
+			NvU32 rootWidth = DRF_VAL(2080, _CTRL_BUS_INFO, _PCIE_LINK_CTRL_STATUS_LINK_WIDTH, rootStatus);
+			printf("rm: root port:  x%u at %s GT/s\n", (unsigned)rootWidth,
+				rootSpeed < 7 ? kSpeeds[rootSpeed] : "?");
+			printf("rm: link caps: gpu %#x, root %#x (gen field: gpu %u, root %u)\n",
+				(unsigned)params.busInfoList[3].data, (unsigned)params.busInfoList[4].data,
+				(unsigned)DRF_VAL(2080, _CTRL_BUS_INFO, _PCIE_LINK_CAP_GEN, params.busInfoList[3].data),
+				(unsigned)DRF_VAL(2080, _CTRL_BUS_INFO, _PCIE_LINK_CAP_GEN, params.busInfoList[4].data));
+		} catch (const std::system_error &ex) {
+			printf("rm: pcie link: %s\n", ex.what());
+		}
+	}
 	{
 		NV0073_CTRL_SYSTEM_GET_SET_HOTPLUG_CONFIG_PARAMS params {};
 		display.Control(NV0073_CTRL_CMD_SYSTEM_GET_HOTPLUG_CONFIG, &params, sizeof(params));
@@ -191,6 +257,7 @@ int main(int argc, char **argv)
 	bool dumpEdid = false;
 	bool rmProbe = false;
 	int watchSeconds = 0;
+	int pcieGen = 0;
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--force") == 0)
 			force = true;
@@ -200,6 +267,8 @@ int main(int argc, char **argv)
 			rmProbe = true;
 		else if (strcmp(argv[i], "--watch") == 0 && i + 1 < argc)
 			watchSeconds = atoi(argv[++i]);
+		else if (strcmp(argv[i], "--pcie-speed") == 0 && i + 1 < argc)
+			pcieGen = atoi(argv[++i]);
 		else {
 			fprintf(stderr, "usage: %s [--force] [--edid] [--rm] [--watch <seconds>]\n",
 				argv[0]);
@@ -302,6 +371,11 @@ int main(int argc, char **argv)
 				PrintFirstLine("forced edid info", forceParams.reply.edid.infoString);
 			}
 		}
+	}
+
+	if (pcieGen != 0) {
+		SetPcieSpeed(pcieGen);
+		rmProbe = true;
 	}
 
 	if (rmProbe)
