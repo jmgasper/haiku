@@ -12,7 +12,7 @@ listed as verified is untested.
 | USB | all controllers and ports enumerate devices | all 5 xHCI controllers start after the PCI fix; NanoKVM device enumerates on the ASM2142; other ports need physical devices |
 | Audio | ALC1220 analog output, HDMI audio | AMD HDA and GP102 HDMI controllers attach (`/dev/audio/hmulti/hda/0,1`); playback untested |
 | Graphics | GTX 1080 Ti accelerated 2D/3D, 3-4 monitors | in progress: NVKMS modesetting works; the accelerant spans the desktop over all connected displays (verified with HDMI plus a forced DP-0, 2560x1080); 3D not working yet |
-| Sleep | S3 suspend and resume | kernel, CPUs, PCI, NVMe and GPU resume; USB, network, audio and screen redraw pending |
+| Sleep | S3 suspend and resume | sleeps and wakes; the display comes back, but the NVMe and the network card usually do not |
 
 ## Log
 
@@ -54,3 +54,24 @@ listed as verified is untested.
   `x86suspend s3 [flags]` (generic syscall `x86_suspend`). Later on the same
   day the workstation stopped reacting to the NanoKVM power button and needs a
   power-cycle at the wall.
+- 2026-09-18: suspending with 32 CPUs deadlocked, because parking the
+  application processors one at a time while the scheduler was still running
+  let a halted processor block anything that waits for it. They are parked at
+  once now, with interrupts already disabled, and the file systems are synced
+  before the system is quiesced. Message signaled interrupts stopped working
+  after resuming until the HyperTransport MSI mapping was restored along with
+  configuration space; PME is cleared while sleeping, since a network card
+  left in wake on LAN mode woke the machine seconds after it slept.
+  Suspending can be traced step by step, the trace is also kept in memory
+  (`x86suspend trace`, or `x86suspend watch <host> <port>` to have it reported
+  over the network), and single parts can be skipped for bisecting.
+  Sleeping and waking themselves work: all 32 CPUs come back, and the
+  accelerant restores the display. The NVMe and the network card, however,
+  usually stay dead afterwards, which also blocks anything that needs the
+  disk (a clean shutdown, for instance). One run had everything back,
+  including the network 8 seconds after waking, so the failure is not
+  systematic. Skipping the USB, NVMe or driver power hooks does not change
+  it, all CPUs demonstrably restart, and the IOMMU is disabled on this board,
+  so the cause is still open. Debugging it further needs a channel that
+  survives the failure: the machine cannot write its log to disk, and the
+  HDMI capture of the NanoKVM returns stale frames.
