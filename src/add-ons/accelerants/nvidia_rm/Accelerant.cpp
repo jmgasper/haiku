@@ -1031,11 +1031,27 @@ void NvAccelerant::RetraceThread()
 	bigtime_t lastChange = system_time();
 
 	while (!fQuitRetraceThread.load()) {
-		volatile NvKmsVblankSemControlDataOneHead &one = data->head[fHead];
-		const uint64 count = one.vblankCount;
+		// Following the display closely costs a few hundred wake-ups a second,
+		// which is worth paying only while somebody is waiting for a blank. A
+		// semaphore with a negative count has threads blocked on it; with none
+		// blocked, look every so often for one arriving and leave the
+		// processor alone in between. The cost of that is that the first wait
+		// after a quiet spell can be one look late.
+		int32 count = 0;
+		const bool waiting = get_sem_count(fRetraceSem, &count) == B_OK
+			&& count < 0;
+		if (!waiting) {
+			snooze(10000);
+			previous = data->head[fHead].vblankCount;
+			lastChange = system_time();
+			continue;
+		}
 
-		if (count != previous) {
-			previous = count;
+		volatile NvKmsVblankSemControlDataOneHead &one = data->head[fHead];
+		const uint64 vblankCount = one.vblankCount;
+
+		if (vblankCount != previous) {
+			previous = vblankCount;
 			lastChange = system_time();
 
 			// Every program waiting on this blank is let go on this blank,
