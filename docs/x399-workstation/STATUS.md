@@ -503,6 +503,30 @@ asserts hotplug at present), devices in each USB port, and the serial console.
     stops. It shows on this path and not through the bitmap because this path
     is three times faster and leaves the repaint less room.
   `GLTEST_RESIZE=1` is the reproducer, beside `GLTEST_MOVE=1`.
+- 2026-09-19: switching workspaces, the last ordinary thing left untried, and
+  the one that nearly cost a working feature.
+  A program that switches its own workspace from inside its drawing loop hangs,
+  and killing the hung program takes the machine down with it - four times
+  here, twice leaving a test binary full of syslog text, which is what a hard
+  power cycle does to a file written a minute earlier. That looked like a
+  serious defect in drawing into the screen, and the scanout present was
+  switched off by default because of it.
+  It was the test. A program asking the window system to take its window off
+  the screen from inside its drawing loop deadlocks against the window system
+  waiting for that same program to say it has stopped drawing, and no real
+  program does that. Switching workspaces the way a person does - from another
+  program, `tests/switchws.cpp` - works perfectly with the feature on: 1124
+  frames a second across five switches, clean exit, machine untouched. The
+  default is back to drawing into the screen, and gltest no longer offers a way
+  to deadlock itself.
+  One real fix came out of it: coming back from another workspace hands the
+  window a buffer description with no address and a row of zero bytes, and
+  believing it meant going back to the driver for a frame buffer of that shape
+  on every frame. Nothing describes a frame buffer of no width, so that is
+  refused now.
+  The lesson is the same one dragging taught, pointing the other way: check
+  whether the test is doing something no program would before believing what it
+  says about the code.
 - 2026-09-19: `tools/check-workstation.sh` asks the machine whether it is doing
   what it is supposed to, one line per thing, and comes back 13 working, 0 not.
   Every check in it exists because something looked fine today and was not: a
