@@ -304,14 +304,31 @@ listed as verified is untested.
   the frame is copied into the screen with no conversion but nothing checked
   that the two agree on what a pixel is. Both are fixed and the soak was run
   again with them in.
-- 2026-09-18: the GPU's HDMI audio cannot work as Haiku's hda driver stands.
-  The codec enumerates - six pin widgets and four audio outputs, all of them
-  digital - but `hda_audio_group_get_widgets` skips any widget whose
-  capabilities say `AUDIO_CAP_DIGITAL`, so it finds no playback stream and
-  gives up with `no active codec`. Making it work means teaching that driver
-  about digital converters: the pin's digital converter control, and for HDMI
-  the ELD and the audio infoframe. That is upstream Haiku work, not this
-  driver's.
+- 2026-09-19: the graphics card's HDMI audio works. Haiku's hda driver skipped
+  any widget whose capabilities said digital when looking for something to play
+  through, so a codec on a graphics card - where every converter is digital,
+  because its outputs are the HDMI and DisplayPort connectors - found nothing
+  and was thrown away with "no active codec". Its converters enumerate fine and
+  report 16, 20 and 24 bits at 32 to 192 kHz; they were simply never
+  considered. The driver now looks for analog first, so a codec with both
+  kinds keeps behaving exactly as it did, and falls back to digital only when
+  there is no analog converter, switching it on (DIGEN) as it goes.
+  Two outputs now, and both clock their stream at the hardware's own rate:
+  48160 frames a second through the graphics card, 48241 through the
+  motherboard, against the 48000 asked for. tests/audioout.cpp lists them and
+  chooses which one the system uses, since they are both called "HD Audio".
+  What is not done: no audio infoframe, no channel mapping, nothing with the
+  ELD. Stereo is what a sink is most likely to accept without them. And as with
+  the motherboard's output, what is proven is that the hardware clocks the
+  stream, not that a speaker makes a sound - that needs someone in the room.
+  Replacing a driver that ships with Haiku needs care: the kernel looks in the
+  user's non-packaged directory, the user's, the system's non-packaged one and
+  then the system's, and hda is already in the last. Putting a replacement in
+  the system non-packaged directory is not enough - the packaged one still
+  wins, silently, and the old binary keeps running while you wonder why nothing
+  changed. It has to go in the user's, with the dev/ symlink beside it, because
+  a legacy driver is found through that tree rather than by its binary.
+  tools/deploy-hda.sh does it.
 - 2026-09-18: looked into what it would take to stop the tearing. Resman can
   say when the display is between frames - a GF100_DISP_SW object takes
   NV9072_CTRL_CMD_NOTIFY_ON_VBLANK and delivers the answer through an operating
