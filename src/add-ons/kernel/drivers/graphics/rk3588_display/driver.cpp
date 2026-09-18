@@ -9,6 +9,7 @@
 #include <boot_item.h>
 #include <driver_settings.h>
 #include <frame_buffer_console.h>
+#include <graphic_driver.h>
 #include <lock.h>
 #include <util/AutoLock.h>
 #include <vm/vm.h>
@@ -20,6 +21,7 @@
 #include <unistd.h>
 
 #include "DisplayScanout.h"
+#include "DisplayAccelerant.h"
 
 
 using namespace RK3588Display;
@@ -31,7 +33,7 @@ using namespace RK3588Display;
 // area write-combining so later CPU stores reach RAM before the VOP2 reads
 // it (the Mali client buffer pattern). The host fixture models this call.
 static status_t
-MakePatternNoncacheable(area_id area, void* address, size_t bytes)
+MakeBufferNoncacheable(area_id area, void* address, size_t bytes)
 {
 #if defined(__aarch64__)
 	uint64 ctr;
@@ -58,67 +60,84 @@ struct Controller {
 	ResourceInfo resources;
 	bool edidEnabled;
 	bool scanoutEnabled;
+	bool accelerantEnabled;
 };
 
-// Driver-owned test pattern for the scanout swap. Physically contiguous below
-// 4 GiB (VOP2 window addresses are 32-bit), filled through the cached alias,
-// evicted and then mapped write-combining like the Mali client buffers.
-struct PatternBuffer {
+// One open file handle. Only writable handles (the accelerant profile) may
+// acquire the frame buffer; the acquiring handle releases it when closed.
+struct Handle {
+	Controller* controller;
+	bool writable;
+};
+
+// Driver-owned scanout buffers (the swap test pattern and the accelerant
+// frame buffer). Physically contiguous below 4 GiB (VOP2 window addresses
+// are 32-bit), filled through the cached alias, evicted and then mapped
+// write-combining like the Mali client buffers.
+struct ContiguousBuffer {
 	area_id area;
 	void* address;
 	uint32_t physical;
 };
-static PatternBuffer sPattern = {-1, NULL, 0};
+static ContiguousBuffer sPattern = {-1, NULL, 0};
+static ContiguousBuffer sFrame = {-1, NULL, 0};
 static bool sScanoutSwapped = false;
 static uint32_t sFirmwareAddress = 0;
+static area_id sSharedArea = -1;
+static SharedInfo* sShared = NULL;
+static Handle* sOwner = NULL;
+static AccelerantInfo sAccelerant = {};
 static status_t RestoreScanout(Controller* controller);
+static status_t AcquireFrameBuffer(Handle* handle);
+static void ReleaseFrameBuffer(Controller* controller);
 
 
 #include "DisplayHardware.h"
 
 
 static void
-ReleasePattern()
+ReleaseContiguous(ContiguousBuffer& buffer)
 {
-	if (sPattern.area >= B_OK)
-		delete_area(sPattern.area);
-	sPattern.area = -1;
-	sPattern.address = NULL;
-	sPattern.physical = 0;
+	if (buffer.area >= B_OK)
+		delete_area(buffer.area);
+	buffer.area = -1;
+	buffer.address = NULL;
+	buffer.physical = 0;
 }
 
 
 static status_t
-AllocatePattern()
+AllocateContiguous(ContiguousBuffer& buffer, const char* name, size_t bytes, bool pattern)
 {
-	if (sPattern.area >= B_OK)
+	if (buffer.area >= B_OK)
 		return B_OK;
 	virtual_address_restrictions virtualRestrictions = {};
 	physical_address_restrictions physicalRestrictions = {};
 	physicalRestrictions.high_address = 0x100000000ull;
 	physicalRestrictions.alignment = B_PAGE_SIZE;
-	sPattern.area = create_area_etc(B_SYSTEM_TEAM, "RK3588 display pattern", kPatternBytes,
-		B_CONTIGUOUS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, 0, 0,
-		&virtualRestrictions, &physicalRestrictions, &sPattern.address);
-	if (sPattern.area < B_OK)
-		return sPattern.area;
+	buffer.area = create_area_etc(B_SYSTEM_TEAM, name, bytes, B_CONTIGUOUS,
+		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, 0, 0, &virtualRestrictions,
+		&physicalRestrictions, &buffer.address);
+	if (buffer.area < B_OK)
+		return buffer.area;
 	physical_entry entry;
-	status_t status = get_memory_map(sPattern.address, kPatternBytes, &entry, 1);
-	if (status == B_OK && (entry.size < kPatternBytes
-			|| entry.address + kPatternBytes > 0x100000000ull)) {
+	status_t status = get_memory_map(buffer.address, bytes, &entry, 1);
+	if (status == B_OK && (entry.size < bytes || entry.address + bytes > 0x100000000ull))
 		status = B_BAD_VALUE;
-	}
 	if (status == B_OK) {
-		sPattern.physical = (uint32_t)entry.address;
-		uint32_t* pixels = (uint32_t*)sPattern.address;
-		for (uint32_t y = 0; y < kPatternHeight; y++) {
-			for (uint32_t x = 0; x < kPatternWidth; x++)
-				pixels[y * kPatternWidth + x] = PatternPixel(x, y);
-		}
-		status = MakePatternNoncacheable(sPattern.area, sPattern.address, kPatternBytes);
+		buffer.physical = (uint32_t)entry.address;
+		uint32_t* pixels = (uint32_t*)buffer.address;
+		if (pattern) {
+			for (uint32_t y = 0; y < kPatternHeight; y++) {
+				for (uint32_t x = 0; x < kPatternWidth; x++)
+					pixels[y * kPatternWidth + x] = PatternPixel(x, y);
+			}
+		} else
+			memset(pixels, 0, bytes);
+		status = MakeBufferNoncacheable(buffer.area, buffer.address, bytes);
 	}
 	if (status != B_OK)
-		ReleasePattern();
+		ReleaseContiguous(buffer);
 	return status;
 }
 
@@ -517,14 +536,19 @@ InitDriver(device_node* node, void** cookie)
 		const char* profile = get_driver_parameter(settings, "firmware_profile", "", "");
 		controller->edidEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-edid") == 0;
 		controller->scanoutEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-scanout") == 0;
+		controller->accelerantEnabled
+			= strcmp(profile, "rock5-itx-edk2-v1.1-display-accelerant") == 0;
+		controller->scanoutEnabled = controller->scanoutEnabled || controller->accelerantEnabled;
 		controller->edidEnabled = controller->edidEnabled || controller->scanoutEnabled;
 	}
 	if (settings != NULL)
 		unload_driver_settings(settings);
 	dprintf("rk3588_display: validated VOP2 %#" B_PRIx64 " and HDMI TX1 %#" B_PRIx64
-		" resources; observation only; EDID %s; scanout %s\n", controller->resources.vopBase,
-		controller->resources.hdmiBase, controller->edidEnabled ? "enabled" : "disabled",
-		controller->scanoutEnabled ? "enabled" : "disabled");
+		" resources; observation only; EDID %s; scanout %s; accelerant %s\n",
+		controller->resources.vopBase, controller->resources.hdmiBase,
+		controller->edidEnabled ? "enabled" : "disabled",
+		controller->scanoutEnabled ? "enabled" : "disabled",
+		controller->accelerantEnabled ? "enabled" : "disabled");
 	*cookie = controller;
 	return B_OK;
 }
@@ -534,8 +558,9 @@ static void
 UninitDriver(void* cookie)
 {
 	MutexLocker locker(sHardwareLock);
+	ReleaseFrameBuffer((Controller*)cookie);
 	RestoreScanout((Controller*)cookie);
-	ReleasePattern();
+	ReleaseContiguous(sPattern);
 	free(cookie);
 }
 static status_t InitDevice(void* driver, void** device) { *device = driver; return B_OK; }
@@ -548,25 +573,77 @@ PublishDevices(void* cookie)
 }
 
 
-static status_t
-Open(void* cookie, const char*, int mode, void** handle)
-{
-	if ((mode & O_ACCMODE) != O_RDONLY)
-		return B_NOT_ALLOWED;
-	*handle = cookie;
-	return B_OK;
-}
-
-
 static status_t Read(void*, off_t, void*, size_t* length) { *length = 0; return B_NOT_ALLOWED; }
 static status_t Write(void*, off_t, const void*, size_t* length) { *length = 0; return B_NOT_ALLOWED; }
-static status_t Free(void*) { return B_OK; }
 
 
 static status_t
 Control(void* cookie, uint32 op, void* buffer, size_t length)
 {
-	Controller* controller = (Controller*)cookie;
+	Handle* handle = (Handle*)cookie;
+	Controller* controller = handle->controller;
+	if (op == B_GET_ACCELERANT_SIGNATURE) {
+		// Under the other profiles app_server must keep ignoring this device.
+		if (!controller->accelerantEnabled)
+			return B_DEV_INVALID_IOCTL;
+		if (buffer == NULL)
+			return B_BAD_ADDRESS;
+		if (length < sizeof(kAccelerantSignature))
+			return B_BAD_VALUE;
+		return user_strlcpy((char*)buffer, kAccelerantSignature, length) < B_OK
+			? B_BAD_ADDRESS : B_OK;
+	}
+	if (op == kGetDeviceName) {
+		if (!controller->accelerantEnabled)
+			return B_DEV_INVALID_IOCTL;
+		if (buffer == NULL)
+			return B_BAD_ADDRESS;
+		if (length < sizeof(kDevicePath))
+			return B_BAD_VALUE;
+		return user_strlcpy((char*)buffer, kDevicePath, length) < B_OK ? B_BAD_ADDRESS : B_OK;
+	}
+	if (op == kAcquireFrameBuffer) {
+		if (!controller->accelerantEnabled || !handle->writable)
+			return B_NOT_ALLOWED;
+		MutexLocker locker(sHardwareLock);
+		if (sOwner != NULL)
+			return B_BUSY;
+		return AcquireFrameBuffer(handle);
+	}
+	if (op == kGetAccelerantInfo) {
+		if (!controller->accelerantEnabled)
+			return B_DEV_INVALID_IOCTL;
+		if (length != sizeof(AccelerantInfo))
+			return B_BAD_VALUE;
+		if (buffer == NULL)
+			return B_BAD_ADDRESS;
+		AccelerantInfo info;
+		if (user_memcpy(&info, buffer, sizeof(info)) != B_OK)
+			return B_BAD_ADDRESS;
+		if (info.version != kAccelerantVersion)
+			return B_BAD_VALUE;
+		MutexLocker locker(sHardwareLock);
+		if (sOwner == NULL)
+			return B_NO_INIT;
+		return user_memcpy(buffer, &sAccelerant, sizeof(sAccelerant));
+	}
+	if (op == kCloneFrameBuffer) {
+		if (!controller->accelerantEnabled)
+			return B_DEV_INVALID_IOCTL;
+		if (length != sizeof(area_info))
+			return B_BAD_VALUE;
+		if (buffer == NULL)
+			return B_BAD_ADDRESS;
+		MutexLocker locker(sHardwareLock);
+		if (sOwner == NULL)
+			return B_NO_INIT;
+		void* address = NULL;
+		area_id area = vm_clone_area(B_CURRENT_TEAM, "RK3588 display frame buffer clone",
+			&address, B_ANY_ADDRESS, B_READ_AREA | B_WRITE_AREA, 0, sFrame.area, true);
+		if (area < B_OK)
+			return area;
+		return _user_get_area_info(area, (area_info*)buffer);
+	}
 	if (op == kGetSnapshot) {
 		if (length != sizeof(DisplaySnapshot))
 			return B_BAD_VALUE;
@@ -646,7 +723,8 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 					|| bootInfo->height != (int32)kPatternHeight
 					|| bootInfo->bytes_per_row != (int32)(kPatternWidth * 4)) {
 					result = kScanoutUnexpectedState;
-				} else if (AllocatePattern() != B_OK) {
+				} else if (AllocateContiguous(sPattern, "RK3588 display pattern", kPatternBytes,
+						true) != B_OK) {
 					result = kScanoutNoBuffer;
 				} else {
 					sFirmwareAddress = request.addressBefore;
@@ -710,13 +788,182 @@ RestoreScanout(Controller* controller)
 }
 
 
+// Acquires the frame buffer for the accelerant: the live window must still
+// scan the firmware frame buffer, whose geometry the boot item describes.
+// Only the two qualified VOP2 words are written.
+static status_t
+AcquireFrameBuffer(Handle* handle)
+{
+	Controller* controller = handle->controller;
+	frame_buffer_boot_info* bootInfo
+		= (frame_buffer_boot_info*)get_boot_item(FRAME_BUFFER_BOOT_INFO, NULL);
+	if (bootInfo == NULL || bootInfo->width != (int32)kFrameWidth
+		|| bootInfo->height != (int32)kFrameHeight
+		|| bootInfo->bytes_per_row != (int32)kFrameBytesPerRow || bootInfo->depth != 32) {
+		return B_NOT_SUPPORTED;
+	}
+	SharedInfo shared = {};
+	shared.version = kAccelerantVersion;
+	shared.modeListArea = -1;
+	shared.width = kFrameWidth;
+	shared.height = kFrameHeight;
+	shared.bytesPerRow = kFrameBytesPerRow;
+	strncpy(shared.name, "RK3588 VOP2 HDMI TX1", sizeof(shared.name) - 1);
+	{
+		// The sink's EDID base block, when the port is powered and connected.
+		EdidHardware edid;
+		EdidRequest request = {};
+		request.version = kEdidVersion;
+		uint32_t result = kEdidNotReady;
+		status_t status = edid.Prepare(controller->resources, request.hotPlug, result);
+		if (status != B_OK)
+			return status;
+		if (edid.Ready())
+			ReadEdidBlock(edid, 0, request);
+		else
+			request.result = result;
+		shared.edidResult = request.result;
+		if (request.result == kEdidOK) {
+			memcpy(shared.edid, request.data, sizeof(shared.edid));
+			shared.flags |= kAccelerantEdid;
+		}
+	}
+	ScanoutHardware hardware;
+	uint32_t result = kScanoutNotReady;
+	status_t status = hardware.Prepare(controller->resources, true, result);
+	if (status != B_OK)
+		return status;
+	if (!hardware.Ready())
+		return B_BUSY;
+	ScanoutRequest request = {};
+	result = LocateScanoutWindow(hardware, request);
+	if (result != kScanoutOK || request.addressBefore != bootInfo->physical_frame_buffer)
+		return B_NOT_SUPPORTED;
+	for (unsigned i = 0; i < 4; i++) {
+		shared.portTiming[i] = hardware.ReadVop(kVopPortBase + request.port * kVopPortStride
+			+ kVopPortOffsets[kVopPortHTotal + i]);
+	}
+	if (!DecodePortTiming(shared.portTiming, kFrameWidth, kFrameHeight, shared))
+		return B_NOT_SUPPORTED;
+	// The firmware runs the port at 60 Hz; the pixel clock follows the totals.
+	shared.pixelClockKHz = shared.hTotal * shared.vTotal * 60 / 1000;
+	status = AllocateContiguous(sFrame, "RK3588 display frame buffer", kFrameBytes, false);
+	if (status != B_OK)
+		return status;
+	sSharedArea = create_area("RK3588 display shared", (void**)&sShared, B_ANY_KERNEL_ADDRESS,
+		B_PAGE_SIZE, B_FULL_LOCK, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA | B_CLONEABLE_AREA);
+	if (sSharedArea < B_OK) {
+		ReleaseContiguous(sFrame);
+		sShared = NULL;
+		return sSharedArea;
+	}
+	*sShared = shared;
+	result = SwapScanoutAddress(hardware, request, sFrame.physical);
+	if (result != kScanoutOK) {
+		ScanoutRequest restore = request;
+		uint32_t restored = SwapScanoutAddress(hardware, restore, request.addressBefore);
+		dprintf("rk3588_display: frame buffer swap result=%" B_PRIu32 " after=%#" B_PRIx32
+			"; firmware restore result=%" B_PRIu32 "\n", result, request.addressAfter, restored);
+		delete_area(sSharedArea);
+		sSharedArea = -1;
+		sShared = NULL;
+		ReleaseContiguous(sFrame);
+		return B_ERROR;
+	}
+	frame_buffer_update((addr_t)sFrame.address, kFrameWidth, kFrameHeight, 32, kFrameBytesPerRow);
+	memset(&sAccelerant, 0, sizeof(sAccelerant));
+	sAccelerant.version = kAccelerantVersion;
+	sAccelerant.flags = kAccelerantAcquired | (shared.flags & kAccelerantEdid);
+	sAccelerant.sharedArea = sSharedArea;
+	sAccelerant.frameBufferPhysical = sFrame.physical;
+	sAccelerant.firmwareAddress = request.addressBefore;
+	sAccelerant.port = request.port;
+	sAccelerant.window = request.window;
+	sAccelerant.polls = request.polls;
+	sAccelerant.width = kFrameWidth;
+	sAccelerant.height = kFrameHeight;
+	sAccelerant.bytesPerRow = kFrameBytesPerRow;
+	sOwner = handle;
+	dprintf("rk3588_display: frame buffer acquired at %#" B_PRIx32 " (firmware %#" B_PRIx32
+		") port=%" B_PRIu32 " window=%" B_PRIu32 " polls=%" B_PRIu32 " edid=%" B_PRIu32
+		" timing=%" B_PRIu32 "x%" B_PRIu32 " %" B_PRIu32 "/%" B_PRIu32 " %" B_PRIu32
+		"/%" B_PRIu32 " %" B_PRIu32 " kHz\n", sFrame.physical, request.addressBefore,
+		request.port, request.window, request.polls, shared.edidResult, shared.hTotal,
+		shared.vTotal, shared.hSyncStart, shared.hSyncEnd, shared.vSyncStart, shared.vSyncEnd,
+		shared.pixelClockKHz);
+	return B_OK;
+}
+
+
+// Returns the scanout and the kernel console to the firmware frame buffer
+// and detaches every clone before the buffers go away.
+static void
+ReleaseFrameBuffer(Controller* controller)
+{
+	if (sOwner == NULL)
+		return;
+	uint32_t result = kScanoutNotReady;
+	ScanoutRequest request = {};
+	ScanoutHardware hardware;
+	if (hardware.Prepare(controller->resources, true, result) == B_OK && hardware.Ready()) {
+		result = LocateScanoutWindow(hardware, request);
+		if (result == kScanoutOK)
+			result = SwapScanoutAddress(hardware, request, sAccelerant.firmwareAddress);
+	}
+	frame_buffer_boot_info* bootInfo
+		= (frame_buffer_boot_info*)get_boot_item(FRAME_BUFFER_BOOT_INFO, NULL);
+	if (bootInfo != NULL) {
+		frame_buffer_update(bootInfo->frame_buffer, bootInfo->width, bootInfo->height,
+			bootInfo->depth, bootInfo->bytes_per_row);
+	}
+	vm_change_clones_to_null_areas(sFrame.area);
+	ReleaseContiguous(sFrame);
+	delete_area(sSharedArea);
+	sSharedArea = -1;
+	sShared = NULL;
+	sOwner = NULL;
+	dprintf("rk3588_display: frame buffer released; firmware %#" B_PRIx32 " restore result=%"
+		B_PRIu32 " polls=%" B_PRIu32 "\n", sAccelerant.firmwareAddress, result, request.polls);
+	memset(&sAccelerant, 0, sizeof(sAccelerant));
+}
+
+
+static status_t
+Open(void* cookie, const char*, int mode, void** _handle)
+{
+	Controller* controller = (Controller*)cookie;
+	bool writable = (mode & O_ACCMODE) != O_RDONLY;
+	if (writable && !controller->accelerantEnabled)
+		return B_NOT_ALLOWED;
+	Handle* handle = (Handle*)malloc(sizeof(Handle));
+	if (handle == NULL)
+		return B_NO_MEMORY;
+	handle->controller = controller;
+	handle->writable = writable;
+	*_handle = handle;
+	return B_OK;
+}
+
+
 static status_t
 Close(void* cookie)
 {
 	// A client that swapped the scanout and went away must not leave the
-	// desktop on the pattern buffer.
+	// desktop on the pattern buffer; the accelerant's handle gives the
+	// firmware frame buffer back.
+	Handle* handle = (Handle*)cookie;
 	MutexLocker locker(sHardwareLock);
-	RestoreScanout((Controller*)cookie);
+	if (sOwner == handle)
+		ReleaseFrameBuffer(handle->controller);
+	RestoreScanout(handle->controller);
+	return B_OK;
+}
+
+
+static status_t
+Free(void* cookie)
+{
+	free(cookie);
 	return B_OK;
 }
 

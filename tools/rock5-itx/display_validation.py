@@ -78,8 +78,11 @@ def decode_interfaces(dsp_if_en):
 
 def validate(body, expected_samples=3):
     """Return the decoded observation or raise ValidationError."""
-    if 'ROCK5_DISPLAY_WRITE_OPEN_REJECTED' not in body:
-        raise ValidationError('writable open was not rejected')
+    rejected = body.count('ROCK5_DISPLAY_WRITE_OPEN_REJECTED\n')
+    allowed = body.count('ROCK5_DISPLAY_WRITE_OPEN_ALLOWED\n')
+    if rejected + allowed != 1:
+        raise ValidationError('writable open outcome missing or ambiguous')
+    write_open = 'rejected' if rejected else 'allowed'
     if body.count('ROCK5_DISPLAY_RESOURCE_DESCRIPTION_PASS') != 1:
         raise ValidationError('resource description did not pass exactly once')
     resources = re.search(r'^ROCK5_DISPLAY_RESOURCES (.*)$', body, re.M)
@@ -197,6 +200,7 @@ def validate(body, expected_samples=3):
             hdcp2_config=hdmi[4], link_config=hdmi[5], frl=hdmi[5] & 1, dvi=(hdmi[5] >> 4) & 1,
             pktsched_config1=hdmi[6], pktsched_enable=hdmi[7], interrupt_status=hdmi[8],
             interrupt_mask=hdmi[9])
+    result['write_open'] = write_open
     return result
 
 
@@ -418,3 +422,118 @@ def check_pattern_frame(path, expect_pattern=True):
     if not expect_pattern and visible:
         raise ValidationError('frame still shows the scanout pattern')
     return dict(status='pass', pattern_visible=visible, mismatches=mismatches, samples=samples)
+
+
+ACCELERANT_LINE = re.compile(
+    r'^ROCK5_DISPLAY_ACCELERANT flags=(\d+) shared_area=(-?\d+) framebuffer=([0-9a-f]{8})'
+    r' firmware=([0-9a-f]{8}) port=(\d) window=(\d) polls=(\d+) width=(\d+) height=(\d+)'
+    r' bytes_per_row=(\d+)$', re.M)
+ACCELERANT_SHARED = re.compile(
+    r'^ROCK5_DISPLAY_ACCELERANT_SHARED version=(\d+) flags=(\d+) mode_list_area=(-?\d+) modes=(\d+)'
+    r' size=(\d+)x(\d+) bytes_per_row=(\d+) pixel_khz=(\d+) h=(\d+)/(\d+)/(\d+) v=(\d+)/(\d+)/(\d+)'
+    r' port_timing=([0-9a-f]{8}),([0-9a-f]{8}),([0-9a-f]{8}),([0-9a-f]{8}) edid_result=(\d+)'
+    r' name=(.+?) edid=([0-9a-f]{256})$', re.M)
+ACCELERANT_CLONE = re.compile(
+    r'^ROCK5_DISPLAY_ACCELERANT_CLONE area=(\d+) size=(\d+) samples=([0-9a-f]{8}),([0-9a-f]{8}),([0-9a-f]{8}),([0-9a-f]{8})$', re.M)
+FIRMWARE_TIMING = dict(h=(2008, 2052, 2200), v=(1084, 1089, 1125), pixel_khz=148500,
+    port_timing=('0898002c', '00c00840', '04650005', '00290461'))
+
+
+def validate_accelerant(body, observation=None, edid_block0=None):
+    """Return the decoded accelerant state from a native --accelerant transcript or raise ValidationError.
+
+    `observation` is a decoded observation of the same boot taken while the
+    accelerant owned the frame buffer: its live window must scan the
+    accelerant's buffer. `edid_block0` is the base block read by the EDID
+    inventory, which the shared information must repeat.
+    """
+    if 'ROCK5_DISPLAY_WRITE_OPEN_ALLOWED\n' not in body:
+        raise ValidationError('writable open was not admitted')
+    if 'ROCK5_DISPLAY_ACCELERANT_REQUEST_CHECKS_PASS' not in body:
+        raise ValidationError('accelerant request boundary checks missing')
+    if 'ROCK5_DISPLAY_ACCELERANT_NOT_ACQUIRED' in body:
+        raise ValidationError('no accelerant owned the frame buffer')
+    line = ACCELERANT_LINE.search(body)
+    if line is None:
+        raise ValidationError('accelerant line missing')
+    flags = int(line.group(1))
+    framebuffer, firmware = int(line.group(3), 16), int(line.group(4), 16)
+    port, window, polls = int(line.group(5)), int(line.group(6)), int(line.group(7))
+    width, height, bytes_per_row = int(line.group(8)), int(line.group(9)), int(line.group(10))
+    if flags & 1 == 0:
+        raise ValidationError('frame buffer not acquired')
+    if not framebuffer or framebuffer == firmware or framebuffer & 0xfff or framebuffer >= 1 << 32:
+        raise ValidationError('implausible frame buffer %#x (firmware %#x)' % (framebuffer, firmware))
+    if (width, height, bytes_per_row) != (1920, 1080, 7680):
+        raise ValidationError('frame buffer geometry %dx%d/%d' % (width, height, bytes_per_row))
+    if polls > 5000:
+        raise ValidationError('implausible acquisition poll count %d' % polls)
+    signature = re.search(r'^ROCK5_DISPLAY_ACCELERANT_SIGNATURE (.*)$', body, re.M)
+    if signature is None or signature.group(1) != 'rk3588_display.accelerant':
+        raise ValidationError('accelerant signature missing or wrong')
+    device = re.search(r'^ROCK5_DISPLAY_ACCELERANT_DEVICE (.*)$', body, re.M)
+    if device is None or device.group(1) != 'graphics/rk3588_display/0':
+        raise ValidationError('accelerant device name missing or wrong')
+    shared = ACCELERANT_SHARED.search(body)
+    if shared is None:
+        raise ValidationError('shared information line missing')
+    if int(shared.group(1)) != 1 or int(shared.group(2)) != (flags & 2):
+        raise ValidationError('shared information version or flags differ from the driver description')
+    if int(shared.group(3)) < 0 or int(shared.group(4)) < 1:
+        raise ValidationError('the primary accelerant published no mode list')
+    if (int(shared.group(5)), int(shared.group(6)), int(shared.group(7))) != (width, height, bytes_per_row):
+        raise ValidationError('shared geometry differs from the driver description')
+    timing = dict(h=tuple(int(shared.group(i)) for i in (9, 10, 11)), v=tuple(int(shared.group(i)) for i in (12, 13, 14)),
+        pixel_khz=int(shared.group(8)), port_timing=tuple(shared.group(i) for i in (15, 16, 17, 18)))
+    if timing != FIRMWARE_TIMING:
+        raise ValidationError('decoded timing %r differs from the firmware mode' % (timing,))
+    edid_result = int(shared.group(19))
+    edid = shared.group(21)
+    if bool(flags & 2) != (edid_result == 0):
+        raise ValidationError('EDID flag and result disagree')
+    if edid_block0 is not None and (not flags & 2 or edid != edid_block0):
+        raise ValidationError('shared EDID block differs from the EDID inventory')
+    clone = ACCELERANT_CLONE.search(body)
+    if clone is None or int(clone.group(2)) != width * height * 4:
+        raise ValidationError('frame buffer clone missing or wrong size')
+    if 'ROCK5_DISPLAY_ACCELERANT_ACQUIRE_BUSY\n' not in body:
+        raise ValidationError('a second acquisition was not refused')
+    summary = ('ROCK5_DISPLAY_ACCELERANT_PASS acquired=1 edid=%d framebuffer=%08x firmware=%08x'
+        ' register_writes=owner_only' % (1 if flags & 2 else 0, framebuffer, firmware))
+    if body.count(summary + '\n') != 1:
+        raise ValidationError('accelerant summary missing or inconsistent')
+    if observation is not None:
+        if observation.get('active_ports') != [port]:
+            raise ValidationError('observation active ports %r, accelerant port %d' % (observation.get('active_ports'), port))
+        seen = observation['windows']['esmarts'][window]
+        if seen['region_control'] != 1 or seen['address'] != framebuffer:
+            raise ValidationError('observation window %d scans %#x, accelerant buffer is %#x' % (window, seen['address'], framebuffer))
+    return dict(status='pass', flags=flags, framebuffer='%08x' % framebuffer, firmware='%08x' % firmware,
+        port=port, window=window, polls=polls, modes=int(shared.group(4)), edid_result=edid_result,
+        name=shared.group(20), samples=[clone.group(i) for i in (3, 4, 5, 6)])
+
+
+# The Haiku desktop as the NanoKVM captures it: the default blue workspace
+# and the light Deskbar in the top-right corner.
+DESKTOP_BLUE = (63, 105, 145)
+
+
+def check_desktop_frame(path):
+    """Raise unless a 1920x1080 capture shows the plain Haiku desktop with its Deskbar."""
+    from PIL import Image
+    image = Image.open(path).convert('RGB')
+    if image.size != (1920, 1080):
+        raise ValidationError('frame is %dx%d, not 1920x1080' % image.size)
+    samples = []
+    for x, y in ((400, 400), (960, 700), (1500, 300), (100, 900), (1300, 950)):
+        rgb = image.getpixel((x, y))
+        samples.append(dict(x=x, y=y, rgb=list(rgb), kind='workspace',
+            ok=all(abs(a - b) <= 24 for a, b in zip(rgb, DESKTOP_BLUE))))
+    for x, y in ((1850, 37), (1800, 10)):
+        rgb = image.getpixel((x, y))
+        samples.append(dict(x=x, y=y, rgb=list(rgb), kind='deskbar',
+            ok=min(rgb) >= 150 and max(rgb) - min(rgb) <= 24))
+    failed = [s for s in samples if not s['ok']]
+    if failed:
+        raise ValidationError('frame does not show the Haiku desktop: %r' % failed)
+    return dict(status='pass', samples=samples)

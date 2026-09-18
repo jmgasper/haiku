@@ -9,6 +9,7 @@
 // touches hardware.
 
 #include <assert.h>
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,16 +29,22 @@ using uint64 = uint64_t;
 using status_t = int32_t;
 static const status_t B_OK = 0, B_BAD_VALUE = -1, B_BAD_ADDRESS = -2,
 	B_DEV_INVALID_IOCTL = -3, B_NO_MEMORY = -4, B_NOT_SUPPORTED = -5,
-	B_NOT_ALLOWED = -6, B_ENTRY_NOT_FOUND = -8, B_ERROR = -9, B_BUSY = -10;
+	B_NOT_ALLOWED = -6, B_ENTRY_NOT_FOUND = -8, B_ERROR = -9, B_BUSY = -10, B_NO_INIT = -11;
 using area_id = int32_t;
 using team_id = int32_t;
 using addr_t = uintptr_t;
-static const unsigned B_PAGE_SIZE = 4096, B_ANY_KERNEL_ADDRESS = 4,
+static const unsigned B_PAGE_SIZE = 4096, B_ANY_KERNEL_ADDRESS = 4, B_ANY_ADDRESS = 1,
 	B_UNCACHED_MEMORY = 1u << 28, B_KERNEL_READ_AREA = 1u << 4,
-	B_KERNEL_WRITE_AREA = 1u << 5;
+	B_KERNEL_WRITE_AREA = 1u << 5, B_READ_AREA = 1, B_WRITE_AREA = 2,
+	B_CLONEABLE_AREA = 1u << 8, B_FULL_LOCK = 1;
+static const int32 B_CURRENT_TEAM = 0;
+static const unsigned B_FILE_NAME_LENGTH = 256, B_PATH_NAME_LENGTH = 1024;
+static const uint32 B_GET_ACCELERANT_SIGNATURE = 8300;
+struct area_info { int32 area; size_t size; void* address; };
 
 #include "DisplayEdid.h"
 #include "DisplayScanout.h"
+#include "DisplayAccelerant.h"
 
 using namespace RK3588Display;
 
@@ -69,6 +76,7 @@ static const unsigned kModelWindow = 2;
 static const unsigned kModelAddressOffset = 0x1800 + kModelWindow * 0x200 + 0x14;
 static const uint32 kModelFirmwareAddress = 0xed280000;
 static const uint64 kModelPatternPhysical = 0x40100000;
+static const uint64 kModelFramePhysical = 0x14c00000;
 
 struct mutex {};
 #define MUTEX_INITIALIZER(name) {}
@@ -449,37 +457,55 @@ struct physical_entry { uint64 address; uint64 size; };
 static const uint32 B_CONTIGUOUS = 3;
 static const team_id B_SYSTEM_TEAM = 1;
 static void* sPatternAllocation;
-static int sPatternArea = -1;
-static unsigned sPatternAllocations, sFailPattern, sNoncacheableCalls;
+static void* sFrameAllocation;
+static int sPatternArea = -1, sFrameArea = -1, sSharedModelArea = -1;
+static void* sSharedPage;
+static unsigned sPatternAllocations, sFailPattern, sNoncacheableCalls, sFrameNoncacheable;
+static unsigned sClones, sNullClones, sConsoleUpdates;
 static bool sPatternHighPhysical;
+struct ConsoleState { addr_t address; int32 width, height, depth, bytesPerRow; };
+static ConsoleState sConsole;
 
 static area_id
 create_area_etc(team_id team, const char* name, size_t size, uint32 lock, uint32 protection,
 	uint32 flags, size_t guardSize, const virtual_address_restrictions* virtualRestrictions,
 	const physical_address_restrictions* physicalRestrictions, void** address)
 {
-	assert(sLockDepth == 1 && team == B_SYSTEM_TEAM && strcmp(name, "RK3588 display pattern") == 0);
-	assert(size == kPatternBytes && lock == B_CONTIGUOUS && flags == 0 && guardSize == 0);
+	bool pattern = strcmp(name, "RK3588 display pattern") == 0;
+	assert(sLockDepth == 1 && team == B_SYSTEM_TEAM);
+	assert(pattern || strcmp(name, "RK3588 display frame buffer") == 0);
+	assert(size == (pattern ? kPatternBytes : kFrameBytes) && lock == B_CONTIGUOUS);
+	assert(flags == 0 && guardSize == 0);
 	assert(protection == (B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA));
 	assert(virtualRestrictions->address == NULL && virtualRestrictions->address_specification == 0);
 	assert(physicalRestrictions->low_address == 0 && physicalRestrictions->high_address == 0x100000000ull);
 	assert(physicalRestrictions->alignment == B_PAGE_SIZE && physicalRestrictions->boundary == 0);
-	assert(sPatternArea < 0);
+	assert((pattern ? sPatternArea : sFrameArea) < 0);
 	if (++sPatternAllocations == sFailPattern)
 		return B_NO_MEMORY;
-	sPatternAllocation = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	assert(sPatternAllocation != MAP_FAILED);
-	sPatternArea = 900 + (int)sPatternAllocations;
-	*address = sPatternAllocation;
-	return sPatternArea;
+	void* allocation = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	assert(allocation != MAP_FAILED);
+	// A fresh mapping is zero; the driver must clear the frame buffer itself.
+	memset(allocation, 0x5a, 64);
+	int area = (pattern ? 900 : 1000) + (int)sPatternAllocations;
+	(pattern ? sPatternAllocation : sFrameAllocation) = allocation;
+	(pattern ? sPatternArea : sFrameArea) = area;
+	*address = allocation;
+	return area;
 }
 
 
 static status_t
 get_memory_map(const void* address, size_t bytes, physical_entry* table, int32 count)
 {
-	assert(address == sPatternAllocation && bytes == kPatternBytes && count == 1);
-	table->address = sPatternHighPhysical ? 0xffc00000ull : kModelPatternPhysical;
+	assert(count == 1);
+	if (address == sPatternAllocation && sPatternAllocation != NULL) {
+		assert(bytes == kPatternBytes);
+		table->address = sPatternHighPhysical ? 0xffc00000ull : kModelPatternPhysical;
+	} else {
+		assert(address == sFrameAllocation && sFrameAllocation != NULL && bytes == kFrameBytes);
+		table->address = kModelFramePhysical;
+	}
 	table->size = bytes;
 	return B_OK;
 }
@@ -488,20 +514,39 @@ get_memory_map(const void* address, size_t bytes, physical_entry* table, int32 c
 static status_t
 delete_area(area_id area)
 {
-	assert(area == sPatternArea && sPatternAllocation != NULL);
-	assert(munmap(sPatternAllocation, kPatternBytes) == 0);
-	sPatternAllocation = NULL;
-	sPatternArea = -1;
+	if (area == sPatternArea) {
+		assert(munmap(sPatternAllocation, kPatternBytes) == 0);
+		sPatternAllocation = NULL;
+		sPatternArea = -1;
+	} else if (area == sFrameArea) {
+		assert(munmap(sFrameAllocation, kFrameBytes) == 0);
+		sFrameAllocation = NULL;
+		sFrameArea = -1;
+	} else {
+		assert(area == sSharedModelArea && sSharedPage != NULL);
+		assert(munmap(sSharedPage, B_PAGE_SIZE) == 0);
+		sSharedPage = NULL;
+		sSharedModelArea = -1;
+	}
 	return B_OK;
 }
 
 
 static status_t
-MakePatternNoncacheable(area_id area, void* address, size_t bytes)
+MakeBufferNoncacheable(area_id area, void* address, size_t bytes)
 {
+	const uint32* pixels = (const uint32*)address;
+	if (area == sFrameArea) {
+		// The frame buffer starts black; nothing of the allocation leaks through.
+		assert(address == sFrameAllocation && bytes == kFrameBytes);
+		for (unsigned i = 0; i < kFrameBytes / 4; i += 4093)
+			assert(pixels[i] == 0);
+		assert(pixels[0] == 0 && pixels[kFrameBytes / 4 - 1] == 0);
+		sFrameNoncacheable++;
+		return B_OK;
+	}
 	assert(area == sPatternArea && address == sPatternAllocation && bytes == kPatternBytes);
 	// The whole pattern is filled through the cached alias before retyping.
-	const uint32* pixels = (const uint32*)address;
 	assert(pixels[0] == kPatternBorderColor && pixels[1079 * 1920 + 1919] == kPatternBorderColor);
 	assert(pixels[540 * 1920 + 31] == kPatternBorderColor && pixels[31 * 1920 + 960] == kPatternBorderColor);
 	assert(pixels[540 * 1920 + 32] == 0xffffffff && pixels[540 * 1920 + 1887] == 0xff000000);
@@ -510,6 +555,72 @@ MakePatternNoncacheable(area_id area, void* address, size_t bytes)
 			assert(pixels[y * 1920 + 32 + bar * 232 + 116] == kPatternColors[bar]);
 	}
 	sNoncacheableCalls++;
+	return B_OK;
+}
+
+
+static area_id
+create_area(const char* name, void** address, uint32 spec, size_t size, uint32 lock, uint32 protection)
+{
+	assert(sLockDepth == 1 && strcmp(name, "RK3588 display shared") == 0 && sSharedPage == NULL);
+	assert(spec == B_ANY_KERNEL_ADDRESS && size == B_PAGE_SIZE && lock == B_FULL_LOCK);
+	assert(protection == (B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA | B_CLONEABLE_AREA));
+	sSharedPage = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	assert(sSharedPage != MAP_FAILED);
+	sSharedModelArea = 1100 + (int)++sPatternAllocations;
+	*address = sSharedPage;
+	return sSharedModelArea;
+}
+
+
+static area_id
+vm_clone_area(team_id team, const char* name, void** address, uint32 spec, uint32 protection,
+	uint32 mapping, area_id source, bool kernel)
+{
+	assert(sLockDepth == 1 && team == B_CURRENT_TEAM && spec == B_ANY_ADDRESS && kernel);
+	assert(strcmp(name, "RK3588 display frame buffer clone") == 0 && mapping == 0);
+	assert(protection == (B_READ_AREA | B_WRITE_AREA) && source == sFrameArea && sFrameArea >= 0);
+	*address = sFrameAllocation;
+	return 1200 + (int)++sClones;
+}
+
+
+static status_t
+_user_get_area_info(area_id area, area_info* info)
+{
+	assert(area == 1200 + (int)sClones && info != NULL);
+	info->area = area;
+	info->size = kFrameBytes;
+	info->address = sFrameAllocation;
+	return B_OK;
+}
+
+
+static status_t
+vm_change_clones_to_null_areas(area_id area)
+{
+	assert(sLockDepth == 1 && area == sFrameArea && sFrameArea >= 0);
+	sNullClones++;
+	return B_OK;
+}
+
+
+static ssize_t
+user_strlcpy(char* to, const char* from, size_t size)
+{
+	if (to == NULL)
+		return B_BAD_ADDRESS;
+	snprintf(to, size, "%s", from);
+	return (ssize_t)strlen(from);
+}
+
+
+static status_t
+frame_buffer_update(addr_t address, int32 width, int32 height, int32 depth, int32 bytesPerRow)
+{
+	assert(sLockDepth == 1);
+	sConsole = ConsoleState{address, width, height, depth, bytesPerRow};
+	sConsoleUpdates++;
 	return B_OK;
 }
 
@@ -698,12 +809,26 @@ Prepare()
 	sVopOverrides[0x1c20] = 0x0437077f;
 	sVopOverrides[0x1c24] = 0x0437077f;
 	sVopOverrides[0x1c28] = 0;
+	// Video port 2 timing as observed: 2200x1125 total, sync 44/5, active 192-2112 / 41-1121.
+	sVopOverrides[0xe48] = 0x0898002c;
+	sVopOverrides[0xe4c] = 0x00c00840;
+	sVopOverrides[0xe50] = 0x04650005;
+	sVopOverrides[0xe54] = 0x00290461;
 	sBootInfoPresent = true;
-	sBootInfo = frame_buffer_boot_info{17, kModelFirmwareAddress, 0, 1920, 1080, 32, 7680, 0};
+	sBootInfo = frame_buffer_boot_info{17, kModelFirmwareAddress, 0xffff000012340000ull, 1920, 1080, 32, 7680, 0};
 	sScanoutSwapped = false;
 	sFirmwareAddress = 0;
-	ReleasePattern();
-	sPatternAllocations = sFailPattern = sNoncacheableCalls = 0;
+	assert(sOwner == NULL);
+	ReleaseContiguous(sPattern);
+	ReleaseContiguous(sFrame);
+	if (sSharedModelArea >= 0)
+		delete_area(sSharedModelArea);
+	sSharedArea = -1;
+	sShared = NULL;
+	memset(&sAccelerant, 0, sizeof(sAccelerant));
+	sPatternAllocations = sFailPattern = sNoncacheableCalls = sFrameNoncacheable = 0;
+	sClones = sNullClones = sConsoleUpdates = 0;
+	sConsole = ConsoleState{};
 	sPatternHighPhysical = false;
 	for (unsigned i = 0; i < 512; i++)
 		sEdid[i] = (uint8_t)(i * 7 + 3);
@@ -919,53 +1044,54 @@ main()
 
 	Controller controller{};
 	controller.resources = good;
+	Handle handle{&controller, false};
 	ResourceInfo copy;
-	assert(Control(&controller, kGetResources, &copy, sizeof(copy)) == B_OK);
+	assert(Control(&handle, kGetResources, &copy, sizeof(copy)) == B_OK);
 	assert(memcmp(&copy, &good, sizeof(good)) == 0);
-	assert(Control(&controller, kGetResources, NULL, sizeof(copy)) == B_BAD_ADDRESS);
-	assert(Control(&controller, kGetResources, &copy, sizeof(copy) - 1) == B_BAD_VALUE);
-	assert(Control(&controller, kGetResources, &copy, sizeof(copy) + 1) == B_BAD_VALUE);
-	assert(Control(&controller, kGetResources + 127, &copy, sizeof(copy)) == B_DEV_INVALID_IOCTL);
+	assert(Control(&handle, kGetResources, NULL, sizeof(copy)) == B_BAD_ADDRESS);
+	assert(Control(&handle, kGetResources, &copy, sizeof(copy) - 1) == B_BAD_VALUE);
+	assert(Control(&handle, kGetResources, &copy, sizeof(copy) + 1) == B_BAD_VALUE);
+	assert(Control(&handle, kGetResources + 127, &copy, sizeof(copy)) == B_DEV_INVALID_IOCTL);
 	assert(sMapAttempts == 0);
 
 	DisplaySnapshot snapshot;
 	memset(&snapshot, 0xa5, sizeof(snapshot));
-	assert(Control(&controller, kGetSnapshot, &snapshot, sizeof(snapshot) - 1) == B_BAD_VALUE);
-	assert(Control(&controller, kGetSnapshot, NULL, sizeof(snapshot)) == B_BAD_ADDRESS);
+	assert(Control(&handle, kGetSnapshot, &snapshot, sizeof(snapshot) - 1) == B_BAD_VALUE);
+	assert(Control(&handle, kGetSnapshot, NULL, sizeof(snapshot)) == B_BAD_ADDRESS);
 	assert(sMapAttempts == 0);
 	// Both blocks powered and clocked: eight read-only mappings, all released.
-	assert(Control(&controller, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
+	assert(Control(&handle, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
 	assert(sMapAttempts == 8 && sAreas.empty());
 	assert(sMappedBases.back() == 0xfdea0000 && sMappedBases[6] == 0xfdd90000);
 	CheckSnapshotValues(snapshot, true, true);
 	// VOP power domain off: VOP2 is never mapped; HDMI still observed.
 	Prepare(); sRepairStatus = 1u << 18;
-	assert(Control(&controller, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
+	assert(Control(&handle, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
 	assert(sMapAttempts == 7 && sAreas.empty());
 	CheckSnapshotValues(snapshot, false, true);
 	// VOP bus clock gated: same skip.
 	Prepare(); sGate52 = 1u << 8;
-	assert(Control(&controller, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
+	assert(Control(&handle, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
 	assert(sMapAttempts == 7 && sAreas.empty());
 	CheckSnapshotValues(snapshot, false, true);
 	// VO1 off or HDMI APB clock gated: HDMI TX1 is never mapped.
 	Prepare(); sRepairStatus = 1u << 16;
-	assert(Control(&controller, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
+	assert(Control(&handle, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
 	assert(sMapAttempts == 7 && sAreas.empty());
 	CheckSnapshotValues(snapshot, true, false);
 	Prepare(); sGate61 = 1u << 2;
-	assert(Control(&controller, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
+	assert(Control(&handle, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
 	assert(sMapAttempts == 7 && sAreas.empty());
 	CheckSnapshotValues(snapshot, true, false);
 	Prepare(); sRepairStatus = 0;
-	assert(Control(&controller, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
+	assert(Control(&handle, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
 	assert(sMapAttempts == 6 && sAreas.empty());
 	CheckSnapshotValues(snapshot, false, false);
 	// Every mapping failure is reported and leaves nothing mapped.
 	for (unsigned failing = 1; failing <= 8; failing++) {
 		Prepare(); sFailMap = failing;
 		memset(&snapshot, 0xa5, sizeof(snapshot));
-		assert(Control(&controller, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_NO_MEMORY);
+		assert(Control(&handle, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_NO_MEMORY);
 		assert(sMapAttempts == failing && sAreas.empty());
 		for (unsigned char byte : std::vector<unsigned char>((unsigned char*)&snapshot,
 				(unsigned char*)&snapshot + sizeof(snapshot))) assert(byte == 0xa5);
@@ -973,11 +1099,11 @@ main()
 	// An altered description is refused before any mapping.
 	Prepare();
 	controller.resources.vopBase += 0x1000;
-	assert(Control(&controller, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_NOT_SUPPORTED);
+	assert(Control(&handle, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_NOT_SUPPORTED);
 	assert(sMapAttempts == 0);
 	controller.resources = good;
 	controller.resources.boardCompatible[16] = 'x';
-	assert(Control(&controller, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_NOT_SUPPORTED);
+	assert(Control(&handle, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_NOT_SUPPORTED);
 	assert(sMapAttempts == 0);
 	assert(sLockDepth == 0);
 
@@ -987,33 +1113,33 @@ main()
 	controller.edidEnabled = false;
 	EdidRequest edid = {};
 	edid.version = kEdidVersion;
-	assert(Control(&controller, kReadEdid, &edid, sizeof(edid) - 1) == B_BAD_VALUE);
-	assert(Control(&controller, kReadEdid, NULL, sizeof(edid)) == B_BAD_ADDRESS);
+	assert(Control(&handle, kReadEdid, &edid, sizeof(edid) - 1) == B_BAD_VALUE);
+	assert(Control(&handle, kReadEdid, NULL, sizeof(edid)) == B_BAD_ADDRESS);
 	edid.version = 2;
-	assert(Control(&controller, kReadEdid, &edid, sizeof(edid)) == B_BAD_VALUE);
+	assert(Control(&handle, kReadEdid, &edid, sizeof(edid)) == B_BAD_VALUE);
 	edid.version = kEdidVersion;
 	edid.block = kEdidMaxBlocks;
-	assert(Control(&controller, kReadEdid, &edid, sizeof(edid)) == B_BAD_VALUE);
+	assert(Control(&handle, kReadEdid, &edid, sizeof(edid)) == B_BAD_VALUE);
 	edid.block = 0;
-	assert(Control(&controller, kReadEdid, &edid, sizeof(edid)) == B_NOT_ALLOWED);
+	assert(Control(&handle, kReadEdid, &edid, sizeof(edid)) == B_NOT_ALLOWED);
 	assert(sMapAttempts == 0);
 	controller.edidEnabled = true;
 	sAllowEdid = true;
 	sRepairStatus = 1u << 16;
-	assert(Control(&controller, kReadEdid, &edid, sizeof(edid)) == B_OK);
+	assert(Control(&handle, kReadEdid, &edid, sizeof(edid)) == B_OK);
 	assert(edid.result == kEdidNotReady && sMapAttempts == 3 && sAreas.empty() && edid.bytesRead == 0);
 	Prepare(); sAllowEdid = true; sGate61 = 1u << 2;
-	assert(Control(&controller, kReadEdid, &edid, sizeof(edid)) == B_OK);
+	assert(Control(&handle, kReadEdid, &edid, sizeof(edid)) == B_OK);
 	assert(edid.result == kEdidNotReady && sMapAttempts == 3 && sAreas.empty());
 	Prepare(); sAllowEdid = true; sHotPlug = 1u << 27;
-	assert(Control(&controller, kReadEdid, &edid, sizeof(edid)) == B_OK);
+	assert(Control(&handle, kReadEdid, &edid, sizeof(edid)) == B_OK);
 	assert(edid.result == kEdidNoHotPlug && sMapAttempts == 3 && sAreas.empty() && edid.hotPlug == (1u << 27));
 	for (unsigned block = 0; block < 4; block++) {
 		Prepare(); sAllowEdid = true;
 		memset(&edid, 0xa5, sizeof(edid));
 		edid.version = kEdidVersion;
 		edid.block = block;
-		assert(Control(&controller, kReadEdid, &edid, sizeof(edid)) == B_OK);
+		assert(Control(&handle, kReadEdid, &edid, sizeof(edid)) == B_OK);
 		assert(edid.result == kEdidOK && edid.bytesRead == 128 && edid.block == block);
 		assert(memcmp(edid.data, sEdid + block * 128, 128) == 0);
 		assert(sMapAttempts == 4 && sAreas.empty() && sServed == 128 && sResets == 0);
@@ -1026,7 +1152,7 @@ main()
 	Prepare(); sAllowEdid = true; sNackAt = 17;
 	memset(&edid, 0, sizeof(edid));
 	edid.version = kEdidVersion;
-	assert(Control(&controller, kReadEdid, &edid, sizeof(edid)) == B_OK);
+	assert(Control(&handle, kReadEdid, &edid, sizeof(edid)) == B_OK);
 	assert(edid.result == kEdidNack && edid.bytesRead == 17 && sResets == 1 && sAreas.empty());
 	assert((edid.flags & kEdidMasterReset) != 0 && (edid.controlAfter & kI2cmWriteMask) == 0);
 	assert((edid.statusAfter & 0x5) == 0 && memcmp(edid.data, sEdid, 17) == 0 && edid.data[17] == 0);
@@ -1034,12 +1160,12 @@ main()
 	Prepare(); sAllowEdid = true; sUnresponsive = true;
 	memset(&edid, 0, sizeof(edid));
 	edid.version = kEdidVersion;
-	assert(Control(&controller, kReadEdid, &edid, sizeof(edid)) == B_OK);
+	assert(Control(&handle, kReadEdid, &edid, sizeof(edid)) == B_OK);
 	assert(edid.result == kEdidTimeout && edid.bytesRead == 0 && edid.polls == kEdidPollLimit);
 	assert(sResets == 1 && sAreas.empty() && (edid.controlAfter & kI2cmWriteMask) == 0);
 	// A failed HDMI mapping is reported and nothing stays mapped.
 	Prepare(); sAllowEdid = true; sFailMap = 4;
-	assert(Control(&controller, kReadEdid, &edid, sizeof(edid)) == B_NO_MEMORY);
+	assert(Control(&handle, kReadEdid, &edid, sizeof(edid)) == B_NO_MEMORY);
 	assert(sMapAttempts == 4 && sAreas.empty());
 	assert(sLockDepth == 0);
 
@@ -1050,15 +1176,15 @@ main()
 	controller.scanoutEnabled = false;
 	ScanoutRequest scan = {};
 	scan.version = kScanoutVersion;
-	assert(Control(&controller, kSwapScanout, &scan, sizeof(scan) - 1) == B_BAD_VALUE);
-	assert(Control(&controller, kSwapScanout, NULL, sizeof(scan)) == B_BAD_ADDRESS);
+	assert(Control(&handle, kSwapScanout, &scan, sizeof(scan) - 1) == B_BAD_VALUE);
+	assert(Control(&handle, kSwapScanout, NULL, sizeof(scan)) == B_BAD_ADDRESS);
 	scan.version = 2;
-	assert(Control(&controller, kSwapScanout, &scan, sizeof(scan)) == B_BAD_VALUE);
+	assert(Control(&handle, kSwapScanout, &scan, sizeof(scan)) == B_BAD_VALUE);
 	scan.version = kScanoutVersion;
 	scan.action = kScanoutRestore + 1;
-	assert(Control(&controller, kSwapScanout, &scan, sizeof(scan)) == B_BAD_VALUE);
+	assert(Control(&handle, kSwapScanout, &scan, sizeof(scan)) == B_BAD_VALUE);
 	scan.action = kScanoutQuery;
-	assert(Control(&controller, kSwapScanout, &scan, sizeof(scan)) == B_NOT_ALLOWED);
+	assert(Control(&handle, kSwapScanout, &scan, sizeof(scan)) == B_NOT_ALLOWED);
 	assert(sMapAttempts == 0);
 	controller.scanoutEnabled = true;
 	auto scanout = [&](uint32 action, uint32 expected, bool writable) {
@@ -1066,7 +1192,7 @@ main()
 		memset(&scan, 0xa5, sizeof(scan));
 		scan.version = kScanoutVersion;
 		scan.action = action;
-		assert(Control(&controller, kSwapScanout, &scan, sizeof(scan)) == B_OK);
+		assert(Control(&handle, kSwapScanout, &scan, sizeof(scan)) == B_OK);
 		assert(scan.result == expected && scan.action == action && scan.version == kScanoutVersion);
 		assert(scan.finishedMicros > scan.startedMicros && sAreas.empty());
 		sAllowScanout = false;
@@ -1114,7 +1240,7 @@ main()
 	memset(&scan, 0, sizeof(scan));
 	scan.version = kScanoutVersion;
 	scan.action = kScanoutShowPattern;
-	assert(Control(&controller, kSwapScanout, &scan, sizeof(scan)) == B_NO_MEMORY);
+	assert(Control(&handle, kSwapScanout, &scan, sizeof(scan)) == B_NO_MEMORY);
 	assert(sMapAttempts == 3 && sAreas.empty() && sVopWrites.empty() && sPatternArea < 0);
 	// The swap itself: exactly two writes, in order, with a verified read-back.
 	Prepare();
@@ -1130,7 +1256,7 @@ main()
 	assert(sModelSpins == 2); // one pause per poll that saw the port bit set
 	// Observation reports the pattern address through its own read-only mapping.
 	sVopWrites.clear();
-	assert(Control(&controller, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
+	assert(Control(&handle, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
 	CheckSnapshotValues(snapshot, true, true);
 	assert(snapshot.vopEsmart[2][2] == kModelPatternPhysical && sVopWrites.empty());
 	// Showing again is idempotent; a foreign window address is refused.
@@ -1152,12 +1278,12 @@ main()
 	assert(sVopWrites.empty() && scan.flags == 0 && scan.addressBefore == kModelFirmwareAddress && scan.polls == 0);
 	// Close restores a pending swap and otherwise touches nothing.
 	unsigned attempts = sMapAttempts;
-	assert(Close(&controller) == B_OK && sMapAttempts == attempts && sVopWrites.empty());
+	assert(Close(&handle) == B_OK && sMapAttempts == attempts && sVopWrites.empty());
 	scanout(kScanoutShowPattern, kScanoutOK, true);
 	assert(sNoncacheableCalls == 1 && sPatternAllocations == 1); // buffer reused, not refilled
 	sVopWrites.clear();
 	sAllowScanout = true;
-	assert(Close(&controller) == B_OK);
+	assert(Close(&handle) == B_OK);
 	sAllowScanout = false;
 	assert(sVopWrites.size() == 2 && sVopWrites[0] == std::make_pair(kModelAddressOffset, kModelFirmwareAddress));
 	assert(sAreas.empty());
@@ -1172,7 +1298,7 @@ main()
 	sStickyAddress = false;
 	sVopWrites.clear();
 	sAllowScanout = true;
-	assert(Close(&controller) == B_OK);
+	assert(Close(&handle) == B_OK);
 	sAllowScanout = false;
 	assert(!sVopWrites.empty() && sVopWrites.back() == std::make_pair(0x000u, 0x00048004u));
 	scanout(kScanoutQuery, kScanoutOK, false);
@@ -1187,7 +1313,7 @@ main()
 	assert(scan.addressAfter == kModelFirmwareAddress && sVopWrites.size() == 2);
 	sVopWrites.clear();
 	sAllowScanout = true;
-	assert(Close(&controller) == B_OK);
+	assert(Close(&handle) == B_OK);
 	sAllowScanout = false;
 	assert(sVopWrites.size() == 1 && sVopWrites[0] == std::make_pair(0x000u, 0x00048004u));
 	scanout(kScanoutQuery, kScanoutOK, false);
@@ -1195,7 +1321,7 @@ main()
 	sCommitNeverCompletes = false;
 	sVopWrites.clear();
 	sAllowScanout = true;
-	assert(Close(&controller) == B_OK);
+	assert(Close(&handle) == B_OK);
 	sAllowScanout = false;
 	assert(sVopWrites.size() == 1 && sVopWrites[0] == std::make_pair(0x000u, 0x00048004u));
 	scanout(kScanoutQuery, kScanoutOK, false);
@@ -1205,19 +1331,154 @@ main()
 	sVopWrites.clear();
 	sRepairStatus = 1u << 18;
 	sAllowScanout = true;
-	assert(Close(&controller) == B_OK);
+	assert(Close(&handle) == B_OK);
 	assert(sVopWrites.empty() && sAreas.empty());
 	sRepairStatus = (1u << 16) | (1u << 18);
 	scanout(kScanoutQuery, kScanoutOK, false);
 	assert(scan.flags == kScanoutSwapped && scan.addressBefore == kModelPatternPhysical);
 	sAllowScanout = true;
-	assert(Close(&controller) == B_OK);
+	assert(Close(&handle) == B_OK);
 	sAllowScanout = false;
 	assert(sVopWrites.size() == 2 && sVopWrites[0] == std::make_pair(kModelAddressOffset, kModelFirmwareAddress));
 	scanout(kScanoutQuery, kScanoutOK, false);
 	assert(scan.flags == 0 && scan.addressBefore == kModelFirmwareAddress);
-	ReleasePattern();
+	ReleaseContiguous(sPattern);
 	assert(sPatternArea < 0 && sPatternAllocation == NULL);
+	assert(sLockDepth == 0);
+
+	// Accelerant profile: handles, signature and device name, acquiring and
+	// releasing the frame buffer, clones, refusals and failure cleanup.
+	static_assert(sizeof(AccelerantInfo) == 48, "Accelerant ABI layout changed");
+	static_assert(sizeof(SharedInfo) == 236, "Shared info ABI layout changed");
+	Prepare();
+	controller.resources = good;
+	controller.accelerantEnabled = false;
+	void* opened = NULL;
+	assert(Open(&controller, "", O_RDWR, &opened) == B_NOT_ALLOWED && opened == NULL);
+	assert(Open(&controller, "", O_WRONLY, &opened) == B_NOT_ALLOWED);
+	assert(Open(&controller, "", O_RDONLY, &opened) == B_OK);
+	Handle* reader = (Handle*)opened;
+	assert(!reader->writable && reader->controller == &controller);
+	char signature[64];
+	assert(Control(reader, B_GET_ACCELERANT_SIGNATURE, signature, sizeof(signature)) == B_DEV_INVALID_IOCTL);
+	AccelerantInfo acc = {};
+	acc.version = kAccelerantVersion;
+	assert(Control(reader, kGetAccelerantInfo, &acc, sizeof(acc)) == B_DEV_INVALID_IOCTL);
+	assert(Control(reader, kGetDeviceName, signature, sizeof(signature)) == B_DEV_INVALID_IOCTL);
+	area_info cloneInfo = {};
+	assert(Control(reader, kCloneFrameBuffer, &cloneInfo, sizeof(cloneInfo)) == B_DEV_INVALID_IOCTL);
+	assert(Control(reader, kAcquireFrameBuffer, NULL, 0) == B_NOT_ALLOWED);
+	assert(Close(reader) == B_OK && Free(reader) == B_OK && sMapAttempts == 0);
+	controller.accelerantEnabled = true;
+	assert(Open(&controller, "", O_RDONLY, &opened) == B_OK);
+	reader = (Handle*)opened;
+	assert(Control(reader, kAcquireFrameBuffer, NULL, 0) == B_NOT_ALLOWED); // read-only handle
+	assert(Control(reader, B_GET_ACCELERANT_SIGNATURE, NULL, sizeof(signature)) == B_BAD_ADDRESS);
+	assert(Control(reader, B_GET_ACCELERANT_SIGNATURE, signature, 8) == B_BAD_VALUE);
+	assert(Control(reader, B_GET_ACCELERANT_SIGNATURE, signature, sizeof(signature)) == B_OK);
+	assert(strcmp(signature, "rk3588_display.accelerant") == 0);
+	assert(Control(reader, kGetDeviceName, signature, 8) == B_BAD_VALUE);
+	assert(Control(reader, kGetDeviceName, signature, sizeof(signature)) == B_OK);
+	assert(strcmp(signature, "graphics/rk3588_display/0") == 0);
+	assert(Control(reader, kGetAccelerantInfo, &acc, sizeof(acc) - 1) == B_BAD_VALUE);
+	assert(Control(reader, kGetAccelerantInfo, NULL, sizeof(acc)) == B_BAD_ADDRESS);
+	assert(Control(reader, kGetAccelerantInfo, &acc, sizeof(acc)) == B_NO_INIT);
+	assert(Control(reader, kCloneFrameBuffer, &cloneInfo, sizeof(cloneInfo)) == B_NO_INIT);
+	assert(Open(&controller, "", O_RDWR, &opened) == B_OK);
+	Handle* primary = (Handle*)opened;
+	assert(primary->writable && sMapAttempts == 0);
+	// Refusals before anything is mapped or allocated.
+	sBootInfoPresent = false;
+	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_NOT_SUPPORTED && sMapAttempts == 0);
+	Prepare(); sBootInfo.bytes_per_row = 7684;
+	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_NOT_SUPPORTED && sMapAttempts == 0);
+	Prepare(); sBootInfo.depth = 24;
+	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_NOT_SUPPORTED && sMapAttempts == 0);
+	// The VOP domain must be on; the window must still scan the firmware buffer.
+	Prepare(); sAllowEdid = true; sAllowScanout = true; sRepairStatus = 1u << 18;
+	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_BUSY && sAreas.empty() && sFrameArea < 0);
+	Prepare(); sAllowEdid = true; sAllowScanout = true; sVopOverrides[kModelAddressOffset] = 0x11111000;
+	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_NOT_SUPPORTED && sAreas.empty() && sFrameArea < 0);
+	Prepare(); sAllowEdid = true; sAllowScanout = true; sVopOverrides[0x1c1c] = 1921;
+	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_NOT_SUPPORTED && sAreas.empty());
+	Prepare(); sAllowEdid = true; sAllowScanout = true; sVopOverrides[0xe4c] = 0x00c00841; // 1921 active
+	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_NOT_SUPPORTED && sAreas.empty());
+	Prepare(); sAllowEdid = true; sAllowScanout = true; sVopOverrides[0xe48] = 0x0840002c; // total < active end
+	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_NOT_SUPPORTED && sAreas.empty());
+	assert(sVopWrites.empty() && sConsoleUpdates == 0 && sSharedPage == NULL);
+	// Allocation failure leaves nothing behind and nothing written.
+	Prepare(); sAllowEdid = true; sAllowScanout = true; sFailPattern = 1;
+	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_NO_MEMORY);
+	assert(sAreas.empty() && sFrameArea < 0 && sSharedPage == NULL && sVopWrites.empty() && sOwner == NULL);
+	// A swap that never becomes active is undone and reported.
+	Prepare(); sAllowEdid = true; sAllowScanout = true; sStickyAddress = true;
+	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_ERROR);
+	assert(sAreas.empty() && sFrameArea < 0 && sSharedPage == NULL && sOwner == NULL && sConsoleUpdates == 0);
+	assert(sVopWrites.size() == 3 && sVopWrites[0] == std::make_pair(kModelAddressOffset, (uint32)kModelFramePhysical));
+	assert(sVopWrites[1] == std::make_pair(0x000u, 0x00048004u) && sVopWrites[2] == std::make_pair(0x000u, 0x00048004u));
+	// The real thing: EDID captured, timing decoded, buffer black, two writes, console moved.
+	Prepare(); sAllowEdid = true; sAllowScanout = true;
+	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_OK);
+	assert(sOwner == primary && sMapAttempts == 7 && sAreas.empty());
+	assert(sFrameArea >= 0 && sFrameNoncacheable == 1 && sSharedPage != NULL && sServed == 128);
+	assert(sVopWrites.size() == 2 && sVopWrites[0] == std::make_pair(kModelAddressOffset, (uint32)kModelFramePhysical));
+	assert(sVopWrites[1] == std::make_pair(0x000u, 0x00048004u));
+	assert(sConsoleUpdates == 1 && sConsole.address == (addr_t)sFrameAllocation && sConsole.width == 1920);
+	assert(sConsole.height == 1080 && sConsole.depth == 32 && sConsole.bytesPerRow == 7680);
+	const SharedInfo* shared = (const SharedInfo*)sSharedPage;
+	assert(shared->version == kAccelerantVersion && shared->flags == kAccelerantEdid && shared->modeListArea == -1);
+	assert(shared->width == 1920 && shared->height == 1080 && shared->bytesPerRow == 7680);
+	assert(shared->hTotal == 2200 && shared->vTotal == 1125 && shared->pixelClockKHz == 148500);
+	assert(shared->hSyncStart == 2008 && shared->hSyncEnd == 2052 && shared->vSyncStart == 1084 && shared->vSyncEnd == 1089);
+	assert(shared->portTiming[0] == 0x0898002c && shared->portTiming[3] == 0x00290461);
+	assert(shared->edidResult == kEdidOK && memcmp(shared->edid, sEdid, 128) == 0);
+	assert(strcmp(shared->name, "RK3588 VOP2 HDMI TX1") == 0);
+	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_BUSY);
+	memset(&acc, 0, sizeof(acc));
+	acc.version = kAccelerantVersion;
+	assert(Control(reader, kGetAccelerantInfo, &acc, sizeof(acc)) == B_OK);
+	assert(acc.flags == (kAccelerantAcquired | kAccelerantEdid) && acc.sharedArea == sSharedModelArea);
+	assert(acc.frameBufferPhysical == kModelFramePhysical && acc.firmwareAddress == kModelFirmwareAddress);
+	assert(acc.port == 2 && acc.window == 2 && acc.polls == 2 && acc.width == 1920 && acc.height == 1080);
+	assert(acc.bytesPerRow == 7680 && acc.reserved == 0);
+	acc.version = 2;
+	assert(Control(reader, kGetAccelerantInfo, &acc, sizeof(acc)) == B_BAD_VALUE);
+	assert(Control(reader, kCloneFrameBuffer, &cloneInfo, sizeof(cloneInfo) - 1) == B_BAD_VALUE);
+	assert(Control(reader, kCloneFrameBuffer, NULL, sizeof(cloneInfo)) == B_BAD_ADDRESS);
+	assert(Control(reader, kCloneFrameBuffer, &cloneInfo, sizeof(cloneInfo)) == B_OK);
+	assert(sClones == 1 && cloneInfo.area == 1201 && cloneInfo.size == kFrameBytes && cloneInfo.address == sFrameAllocation);
+	assert(Control(primary, kCloneFrameBuffer, &cloneInfo, sizeof(cloneInfo)) == B_OK && sClones == 2);
+	// Observation sees the new address; a pattern swap is refused while acquired.
+	sVopWrites.clear();
+	assert(Control(reader, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
+	CheckSnapshotValues(snapshot, true, true);
+	assert(snapshot.vopEsmart[2][2] == kModelFramePhysical && sVopWrites.empty());
+	scanout(kScanoutShowPattern, kScanoutUnexpectedState, true);
+	assert(sVopWrites.empty() && sPatternArea < 0);
+	// Closing another handle changes nothing; closing the owner restores everything.
+	assert(Close(reader) == B_OK && sOwner == primary && sVopWrites.empty() && sConsoleUpdates == 1);
+	assert(Free(reader) == B_OK);
+	sAllowScanout = true;
+	assert(Close(primary) == B_OK);
+	sAllowScanout = false;
+	assert(sOwner == NULL && sVopWrites.size() == 2 && sVopWrites[0] == std::make_pair(kModelAddressOffset, kModelFirmwareAddress));
+	assert(sVopWrites[1] == std::make_pair(0x000u, 0x00048004u));
+	assert(sConsoleUpdates == 2 && sConsole.address == 0xffff000012340000ull && sConsole.bytesPerRow == 7680);
+	assert(sNullClones == 1 && sFrameArea < 0 && sSharedPage == NULL && sAreas.empty());
+	assert(Free(primary) == B_OK);
+	assert(sVopOverrides[kModelAddressOffset] == kModelFirmwareAddress);
+	// Without EDID (no hot-plug) the frame buffer is still acquired.
+	Prepare(); sAllowEdid = true; sAllowScanout = true; sHotPlug = 1u << 27;
+	assert(Open(&controller, "", O_RDWR, &opened) == B_OK);
+	primary = (Handle*)opened;
+	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_OK && sMapAttempts == 6);
+	shared = (const SharedInfo*)sSharedPage;
+	assert(shared->flags == 0 && shared->edidResult == kEdidNoHotPlug && shared->hTotal == 2200);
+	acc.version = kAccelerantVersion;
+	assert(Control(primary, kGetAccelerantInfo, &acc, sizeof(acc)) == B_OK && acc.flags == kAccelerantAcquired);
+	sAllowScanout = true;
+	assert(Close(primary) == B_OK && Free(primary) == B_OK && sOwner == NULL && sNullClones == 1);
+	sAllowScanout = false;
 	assert(sLockDepth == 0);
 	printf("RK3588_DISPLAY_RESOURCES_TEST_PASS faults=%zu\n", faults.size());
 	return 0;

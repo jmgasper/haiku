@@ -8,9 +8,11 @@
 // the HDPTX PHY GRF and the clock/power controllers. Nothing is written.
 
 #include <OS.h>
+#include <graphic_driver.h>
 
 #include "DisplayEdid.h"
 #include "DisplayScanout.h"
+#include "DisplayAccelerant.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -364,6 +366,102 @@ SwapScanout(int fd, unsigned hold)
 }
 
 
+// Accelerant profile: app_server's primary accelerant owns the frame buffer.
+// Through a second writable handle, read the driver's description and the
+// shared information, map the live frame buffer once, and confirm that a
+// second acquisition is refused. Nothing here changes the display.
+static bool
+CheckAccelerant()
+{
+	int fd = open(kDevice, O_RDWR);
+	if (fd < 0) {
+		perror(kDevice);
+		return false;
+	}
+	AccelerantInfo info = {};
+	info.version = kAccelerantVersion;
+	if (ioctl(fd, kGetAccelerantInfo, &info, sizeof(info) - 1) == 0 || errno != EINVAL) {
+		fprintf(stderr, "Malformed accelerant request was not rejected\n");
+		return false;
+	}
+	if (ioctl(fd, kGetAccelerantInfo, NULL, sizeof(info)) == 0 || errno != EFAULT) {
+		fprintf(stderr, "Null accelerant request was not rejected\n");
+		return false;
+	}
+	info.version = kAccelerantVersion + 1;
+	if (ioctl(fd, kGetAccelerantInfo, &info, sizeof(info)) == 0 || errno != EINVAL) {
+		fprintf(stderr, "Invalid accelerant request version was not rejected\n");
+		return false;
+	}
+	printf("ROCK5_DISPLAY_ACCELERANT_REQUEST_CHECKS_PASS\n");
+	info.version = kAccelerantVersion;
+	if (ioctl(fd, kGetAccelerantInfo, &info, sizeof(info)) != 0) {
+		printf("ROCK5_DISPLAY_ACCELERANT_NOT_ACQUIRED errno=%d\n", errno);
+		fprintf(stderr, "No accelerant owns the frame buffer (errno %d)\n", errno);
+		return false;
+	}
+	printf("ROCK5_DISPLAY_ACCELERANT flags=%" PRIu32 " shared_area=%" PRId32
+		" framebuffer=%08" PRIx32 " firmware=%08" PRIx32 " port=%" PRIu32 " window=%" PRIu32
+		" polls=%" PRIu32 " width=%" PRIu32 " height=%" PRIu32 " bytes_per_row=%" PRIu32 "\n",
+		info.flags, info.sharedArea, info.frameBufferPhysical, info.firmwareAddress, info.port,
+		info.window, info.polls, info.width, info.height, info.bytesPerRow);
+	char text[B_PATH_NAME_LENGTH];
+	if (ioctl(fd, B_GET_ACCELERANT_SIGNATURE, text, sizeof(text)) != 0) {
+		perror("accelerant signature");
+		return false;
+	}
+	printf("ROCK5_DISPLAY_ACCELERANT_SIGNATURE %s\n", text);
+	if (ioctl(fd, kGetDeviceName, text, sizeof(text)) != 0) {
+		perror("accelerant device name");
+		return false;
+	}
+	printf("ROCK5_DISPLAY_ACCELERANT_DEVICE %s\n", text);
+	const SharedInfo* shared = NULL;
+	area_id sharedArea = clone_area("probe shared info", (void**)&shared, B_ANY_ADDRESS,
+		B_READ_AREA, info.sharedArea);
+	if (sharedArea < 0) {
+		fprintf(stderr, "Cloning the shared area failed: %s\n", strerror(sharedArea));
+		return false;
+	}
+	printf("ROCK5_DISPLAY_ACCELERANT_SHARED version=%" PRIu32 " flags=%" PRIu32
+		" mode_list_area=%" PRId32 " modes=%" PRIu32 " size=%" PRIu32 "x%" PRIu32
+		" bytes_per_row=%" PRIu32 " pixel_khz=%" PRIu32 " h=%" PRIu32 "/%" PRIu32 "/%" PRIu32
+		" v=%" PRIu32 "/%" PRIu32 "/%" PRIu32 " port_timing=%08" PRIx32 ",%08" PRIx32 ",%08" PRIx32
+		",%08" PRIx32 " edid_result=%" PRIu32 " name=%.31s edid=", shared->version, shared->flags,
+		shared->modeListArea, shared->modeCount, shared->width, shared->height,
+		shared->bytesPerRow, shared->pixelClockKHz, shared->hSyncStart, shared->hSyncEnd,
+		shared->hTotal, shared->vSyncStart, shared->vSyncEnd, shared->vTotal,
+		shared->portTiming[0], shared->portTiming[1], shared->portTiming[2],
+		shared->portTiming[3], shared->edidResult, shared->name);
+	for (unsigned i = 0; i < sizeof(shared->edid); i++)
+		printf("%02x", shared->edid[i]);
+	printf("\n");
+	delete_area(sharedArea);
+	area_info clone = {};
+	if (ioctl(fd, kCloneFrameBuffer, &clone, sizeof(clone)) != 0) {
+		perror("frame buffer clone");
+		return false;
+	}
+	const uint32_t* pixels = (const uint32_t*)clone.address;
+	printf("ROCK5_DISPLAY_ACCELERANT_CLONE area=%" PRId32 " size=%zu samples=%08" PRIx32
+		",%08" PRIx32 ",%08" PRIx32 ",%08" PRIx32 "\n", clone.area, clone.size,
+		pixels[0], pixels[540 * info.width + 960], pixels[1079 * info.width + 1919],
+		pixels[20 * info.width + 1850]);
+	delete_area(clone.area);
+	if (ioctl(fd, kAcquireFrameBuffer, NULL, 0) == 0 || errno != EBUSY) {
+		fprintf(stderr, "A second acquisition was not refused (errno %d)\n", errno);
+		return false;
+	}
+	printf("ROCK5_DISPLAY_ACCELERANT_ACQUIRE_BUSY\n");
+	close(fd);
+	printf("ROCK5_DISPLAY_ACCELERANT_PASS acquired=%u edid=%u framebuffer=%08" PRIx32
+		" firmware=%08" PRIx32 " register_writes=owner_only\n",
+		(info.flags & kAccelerantAcquired) != 0, (info.flags & kAccelerantEdid) != 0,
+		info.frameBufferPhysical, info.firmwareAddress);
+	return true;
+}
+
+
 int
 main(int argc, char** argv)
 {
@@ -382,25 +480,38 @@ main(int argc, char** argv)
 		return 0;
 	}
 	bool edid = argc == 2 && strcmp(argv[1], "--edid") == 0;
+	bool accelerant = argc == 2 && strcmp(argv[1], "--accelerant") == 0;
 	bool scanout = argc >= 2 && strcmp(argv[1], "--scanout") == 0;
 	unsigned hold = 10;
 	if (scanout && argc == 3)
 		hold = (unsigned)atoi(argv[2]);
-	if (argc == 2 && !edid && !scanout)
+	if (argc == 2 && !edid && !scanout && !accelerant)
 		samples = (unsigned)atoi(argv[1]);
 	if ((scanout ? argc > 3 || hold < 1 || hold > 120 : argc > 2) || samples < 1 || samples > 16) {
-		fprintf(stderr, "usage: %s [samples 1-16 | --absent-device | --edid"
+		fprintf(stderr, "usage: %s [samples 1-16 | --absent-device | --edid | --accelerant"
 			" | --scanout [hold-seconds 1-120]]\n", argv[0]);
 		return 2;
 	}
+	// Only the accelerant profile admits writable handles; opening and
+	// closing one has no side effect on the display.
 	int writable = open(kDevice, O_RDWR);
-	if (writable >= 0 || errno != EPERM) {
-		if (writable >= 0)
-			close(writable);
-		fprintf(stderr, "Writable open of %s was not rejected (errno %d)\n", kDevice, errno);
+	if (writable >= 0) {
+		close(writable);
+		printf("ROCK5_DISPLAY_WRITE_OPEN_ALLOWED\n");
+	} else if (errno == EPERM) {
+		printf("ROCK5_DISPLAY_WRITE_OPEN_REJECTED\n");
+	} else {
+		fprintf(stderr, "Writable open of %s failed unexpectedly (errno %d)\n", kDevice, errno);
 		return 1;
 	}
-	printf("ROCK5_DISPLAY_WRITE_OPEN_REJECTED\n");
+	if (accelerant) {
+		if (writable < 0) {
+			fprintf(stderr, "The accelerant profile must admit a writable handle\n");
+			return 1;
+		}
+		bool passed = CheckAccelerant();
+		return passed ? 0 : 1;
+	}
 	int fd = open(kDevice, O_RDONLY);
 	if (fd < 0) {
 		perror(kDevice);

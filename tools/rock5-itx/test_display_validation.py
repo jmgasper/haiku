@@ -1,4 +1,5 @@
 """Check the display observation decoder against synthetic probe transcripts."""
+import os
 import unittest
 
 import display_validation as check
@@ -177,7 +178,76 @@ def pattern_image(path, quality=80, blank=False):
     image.save(path, format='JPEG', quality=quality)
 
 
+def accelerant_transcript(framebuffer=0x14c00000, firmware=0xed280000, flags=3, edid=None, timing=None, extra=''):
+    base, _ = edid_blocks()
+    edid = edid if edid is not None else base.hex()
+    timing = timing or ' pixel_khz=148500 h=2008/2052/2200 v=1084/1089/1125 port_timing=0898002c,00c00840,04650005,00290461'
+    lines = ['ROCK5_DISPLAY_WRITE_OPEN_ALLOWED', 'ROCK5_DISPLAY_RESOURCE_DESCRIPTION_PASS',
+        'ROCK5_DISPLAY_ACCELERANT_REQUEST_CHECKS_PASS',
+        'ROCK5_DISPLAY_ACCELERANT flags=%d shared_area=1234 framebuffer=%08x firmware=%08x port=2 window=2 polls=300'
+        ' width=1920 height=1080 bytes_per_row=7680' % (flags, framebuffer, firmware),
+        'ROCK5_DISPLAY_ACCELERANT_SIGNATURE rk3588_display.accelerant',
+        'ROCK5_DISPLAY_ACCELERANT_DEVICE graphics/rk3588_display/0',
+        'ROCK5_DISPLAY_ACCELERANT_SHARED version=1 flags=%d mode_list_area=1240 modes=1 size=1920x1080 bytes_per_row=7680%s'
+        ' edid_result=%d name=RK3588 VOP2 HDMI TX1 edid=%s' % (flags & 2, timing, 0 if flags & 2 else 2, edid),
+        'ROCK5_DISPLAY_ACCELERANT_CLONE area=1250 size=8294400 samples=ff336699,ff336699,ff336699,ffdddddd',
+        'ROCK5_DISPLAY_ACCELERANT_ACQUIRE_BUSY',
+        'ROCK5_DISPLAY_ACCELERANT_PASS acquired=1 edid=%d framebuffer=%08x firmware=%08x register_writes=owner_only'
+        % (1 if flags & 2 else 0, framebuffer, firmware)]
+    return '\n'.join(lines) + extra + '\n'
+
+
 class DisplayValidationTest(unittest.TestCase):
+    def test_write_open_outcome(self):
+        self.assertEqual(check.validate(transcript())['write_open'], 'rejected')
+        allowed = transcript().replace('ROCK5_DISPLAY_WRITE_OPEN_REJECTED', 'ROCK5_DISPLAY_WRITE_OPEN_ALLOWED')
+        self.assertEqual(check.validate(allowed)['write_open'], 'allowed')
+        with self.assertRaises(check.ValidationError):
+            check.validate(transcript() + 'ROCK5_DISPLAY_WRITE_OPEN_ALLOWED\n')
+
+    def test_accelerant_transcript(self):
+        base, _ = edid_blocks()
+        observation = dict(active_ports=[2], windows=dict(esmarts=[dict(region_control=0, address=0)] * 2
+            + [dict(region_control=1, address=0x14c00000)] + [dict(region_control=0, address=0)]))
+        decoded = check.validate_accelerant(accelerant_transcript(), observation, base.hex())
+        self.assertEqual((decoded['framebuffer'], decoded['firmware'], decoded['port'], decoded['window']), ('14c00000', 'ed280000', 2, 2))
+        self.assertEqual((decoded['polls'], decoded['modes'], decoded['edid_result'], decoded['flags']), (300, 1, 0, 3))
+        self.assertEqual(decoded['name'], 'RK3588 VOP2 HDMI TX1')
+        self.assertEqual(decoded['samples'][3], 'ffdddddd')
+        without = check.validate_accelerant(accelerant_transcript(flags=1))
+        self.assertEqual((without['flags'], without['edid_result']), (1, 2))
+        body = accelerant_transcript()
+        cases = [
+            ('open', body.replace('ROCK5_DISPLAY_WRITE_OPEN_ALLOWED', 'ROCK5_DISPLAY_WRITE_OPEN_REJECTED')),
+            ('checks', body.replace('ROCK5_DISPLAY_ACCELERANT_REQUEST_CHECKS_PASS\n', '')),
+            ('not_acquired', body + 'ROCK5_DISPLAY_ACCELERANT_NOT_ACQUIRED errno=1\n'),
+            ('flags', body.replace('ACCELERANT flags=3', 'ACCELERANT flags=2')),
+            ('same_buffer', accelerant_transcript(framebuffer=0xed280000)),
+            ('unaligned', accelerant_transcript(framebuffer=0x14c00800)),
+            ('geometry', body.replace('width=1920 height=1080 bytes_per_row=7680', 'width=1920 height=1080 bytes_per_row=7684')),
+            ('signature', body.replace('SIGNATURE rk3588_display.accelerant', 'SIGNATURE framebuffer.accelerant')),
+            ('device', body.replace('DEVICE graphics/rk3588_display/0', 'DEVICE graphics/rk3588_display/1')),
+            ('modes', body.replace('mode_list_area=1240 modes=1', 'mode_list_area=-1 modes=0')),
+            ('timing', accelerant_transcript(timing=' pixel_khz=148500 h=2008/2052/2200 v=1084/1089/1126 port_timing=0898002c,00c00840,04650005,00290461')),
+            ('port_words', accelerant_transcript(timing=' pixel_khz=148500 h=2008/2052/2200 v=1084/1089/1125 port_timing=0898002c,00c00840,04650005,00290462')),
+            ('edid_flag', body.replace('edid_result=0', 'edid_result=3')),
+            ('clone', body.replace('size=8294400', 'size=8294396')),
+            ('busy', body.replace('ROCK5_DISPLAY_ACCELERANT_ACQUIRE_BUSY\n', '')),
+            ('summary', body.replace('register_writes=owner_only', 'register_writes=none')),
+        ]
+        for name, value in cases:
+            with self.subTest(name=name):
+                with self.assertRaises(check.ValidationError):
+                    check.validate_accelerant(value)
+        with self.assertRaises(check.ValidationError):
+            check.validate_accelerant(body, dict(observation, active_ports=[1]))
+        with self.assertRaises(check.ValidationError):
+            check.validate_accelerant(accelerant_transcript(framebuffer=0x14d00000), observation)
+        with self.assertRaises(check.ValidationError):
+            check.validate_accelerant(body, None, 'ab' * 128)
+        with self.assertRaises(check.ValidationError):
+            check.validate_accelerant(accelerant_transcript(flags=1), None, base.hex())
+
     def test_scanout_transcript(self):
         decoded = check.validate_scanout(scanout_transcript())
         self.assertEqual(decoded['port'], 2)
@@ -221,6 +291,25 @@ class DisplayValidationTest(unittest.TestCase):
             check.validate_scanout(body, dict(observation, active_ports=[1]))
         with self.assertRaises(check.ValidationError):
             check.validate_scanout(scanout_transcript(firmware=0xed281000), observation)
+
+    def test_desktop_frame(self):
+        import tempfile
+        from PIL import Image, ImageDraw
+        with tempfile.TemporaryDirectory() as directory:
+            desktop = directory + '/desktop.jpg'
+            image = Image.new('RGB', (1920, 1080), check.DESKTOP_BLUE)
+            ImageDraw.Draw(image).rectangle([1784, 0, 1919, 70], fill=(200, 200, 200))
+            image.save(desktop, format='JPEG', quality=80)
+            self.assertEqual(len(check.check_desktop_frame(desktop)['samples']), 7)
+            real = '/mnt/HaikuWork/artifacts/interactive/20260918T055257Z-442e25/frame-026.jpg'
+            if os.path.exists(real):
+                self.assertEqual(check.check_desktop_frame(real)['status'], 'pass')
+            pattern_image(desktop)
+            with self.assertRaises(check.ValidationError):
+                check.check_desktop_frame(desktop)
+            Image.new('RGB', (1920, 1080), check.DESKTOP_BLUE).save(desktop, format='JPEG')
+            with self.assertRaises(check.ValidationError):
+                check.check_desktop_frame(desktop)
 
     def test_pattern_frame(self):
         import tempfile

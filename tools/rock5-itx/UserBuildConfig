@@ -25,4 +25,5 @@ rule UserBuildConfigRulePreImage
 	# the explicit onboard firmware profile and legacy_interrupts setting.
 	AddDriversToHaikuImage net : ipro1000 rtl8125 ;
 	AddNewDriversToHaikuImage graphics : mali_csf rk3588_display ;
+	AddFilesToHaikuImage system non-packaged add-ons accelerants : rk3588_display.accelerant ;
 }
