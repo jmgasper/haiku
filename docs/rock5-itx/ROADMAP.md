@@ -16,6 +16,16 @@ the underlying buses permit it. No calendar estimates imply guaranteed support.
 Current owner scope: phase 7 GPU support only. Network stack changes and other
 hardware development are deferred. [GPU.md](GPU.md) records qualified
 native power/reset/IRQ, firmware, client buffers, GPU VMs and persistent queues.
+The system-default OpenGL candidate ([MESA-SYSTEM.md](MESA-SYSTEM.md), Mesa
+at `3139063445` on the qualified +256 image) runs GLTeapot on Mali with no
+launch environment on two native boots: the Mesa backend takes the Mali
+device and its firmware from installed defaults, the CPU polygon path is on
+by default, and the GLVND/Mesa libraries and EGL vendor file are installed
+system-wide. Every earlier Mesa fixture passes on the same boots and the
+emulator gates show the software fallback without a device. It is not
+qualified: the independent Linux eMMC readbacks need the ROOBI sudo
+password, which is not on record.
+
 The +285 USB image qualifies [DPMS power control on HDMI1](DISPLAY.md) on
 two native boots: through the accelerant's DPMS hooks the driver stops the
 video port and powers the HDPTX PHY down, so the sink loses its signal, the
