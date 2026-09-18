@@ -284,6 +284,26 @@ listed as verified is untested.
   driver reports `hda_audio_group_get_widgets failed` and `no active codec` for
   it. Nobody here can listen to the speakers, so what is proven is that the
   stream runs at the hardware's clock, not that sound reaches the jack.
+- 2026-09-18: soaked the present path (tools/gl-soak.sh): three windows drawing
+  into the screen at once, twenty windows opening and closing, eight mode
+  changes underneath a running program, five kills while the GPU was writing
+  the screen, and a quiet window covered and uncovered four times. The machine
+  stayed up through all of it, every pinned range came back (10 locked, 10
+  released - those are the host path, which still runs for a window's first
+  frames before Haiku connects it directly, so both paths were exercised), the
+  driver logged nothing new, and the desktop was clean afterwards. The program
+  that had the mode changed underneath it kept drawing at 1252 fps.
+  Three windows all report the same frame rate whatever their size, because
+  each is held up pushing the sphere's eight thousand triangles through
+  immediate mode rather than by the pixels; on sixteen cores they do not slow
+  each other down.
+  Reading the code during the soak turned up two things it would only have
+  caught by luck: the application's thread replaces the frame buffer on a mode
+  set while the window's thread may be reading it to put the last frame back,
+  which is a use after free waiting for a badly timed resolution change; and
+  the frame is copied into the screen with no conversion but nothing checked
+  that the two agree on what a pixel is. Both are fixed and the soak was run
+  again with them in.
 - 2026-09-18: the GPU's HDMI audio cannot work as Haiku's hda driver stands.
   The codec enumerates - six pin widgets and four audio outputs, all of them
   digital - but `hda_audio_group_get_widgets` skips any widget whose
