@@ -132,12 +132,74 @@ fixture models the I2C master synchronously and checks data, segment use,
 NACK and timeout handling, mapping failures and gating. The validator decodes
 the base block, its preferred timing and the extension blocks independently.
 
+### Qualified +264 EDID read
+
+The `hrev60097+264` image (source `28cfe534a9`, SHA-256
+`c95f9f922f8500ccecfdf150ab87011ebd6498c5700153419383624a03a47888`) passes the
+host checks, both two-boot QEMU modes (no device without a VOP2 node; the EDID
+mode fails cleanly) and two native boots with normal reboot, verified shutdown
+and automatic ROOBI recovery. On each boot the inventory reads three identical
+snapshots, then both EDID blocks, then three more snapshots that match the
+first set in power, gating, hot-plug, interface and timing state. The Mali
+firmware, resource and platform regressions pass alongside and the desktop was
+viewed on both boots.
+
+| EDID field (NanoKVM HDMI sink) | Value |
+| --- | --- |
+| Manufacturer, product, serial | `VCS`, `0x1145`, `0x4515b1`; 2021, EDID 1.3, digital |
+| Extensions | one CEA-861 block (tag `0x02`, revision 3); both checksums valid |
+| Preferred timing | 1920x1080, 148.5 MHz pixel clock, 280/45 blanking, 60.0 Hz |
+| Transfer | 128 one-byte reads per block, 2560 status polls, about 51.7 ms per block, identical on both boots |
+| Master state after each block | request bits clear, no pending done/NACK status, hot-plug level set |
+
+- Native evidence: `artifacts/automated-display-edid/20260918T051843Z-7f2d0c`
+  (`qualification.json`, `edid-boot{1,2}.json`, `display-boot{1,2}.json`,
+  desktop reviews, FDT captures, driver syslog extracts).
+- Session: `artifacts/interactive/20260918T051845Z-398455`; recovery boot
+  `e68f4a2f-9808-4853-8321-e92304fe9290` after verified shutdown.
+- QEMU EL2/EL1: `artifacts/qemu-shell/20260918T043332Z-196567` and
+  `20260918T044627Z-6e0b38` (an earlier EL1 attempt, `20260918T043352Z-8dd42d`,
+  lost its USB shell marker and was rerun); build `artifacts/build-20260918T042045Z.log`.
+- Stage: `artifacts/display-edid/20260918T034024Z-b7ba19`. A first native run
+  (`artifacts/automated-display-edid/20260918T050549Z-388b64`) passed the same
+  checks but its controller mislabelled the inventory events through a
+  shadowed loop variable; it is retained and the corrected controller was
+  rerun on the same image. Used image archive:
+  `artifacts/nanokvm-image-archive/20260918T052837Z-2ce714`.
+- Independent Linux eMMC readbacks were not run: the ROOBI sudo password is
+  not available to this session.
+
+## Stage 3a: scanout buffer swap (+267 candidate)
+
+The opt-in `rock5-itx-edk2-v1.1-display-scanout` profile adds the first VOP2
+write path. A swap request re-checks the VOP power domain and bus clocks, maps
+VOP2 writable, and locates the single enabled ESMART window that feeds the
+live HDMI1 video port (the port comes from the `DSP_IF_EN` mux, so it follows
+the firmware's VP2 routing). The window must be XRGB8888, 1920 words wide,
+1920x1080 at the origin, and its buffer address must equal the framebuffer
+boot item's physical address. The driver then fills a physically contiguous
+8 MiB colour-bar pattern below 4 GiB (eight vertical bars inside a grey
+border), evicts it from the cache and retypes it write-combining, writes the
+window's `REGION0_YRGB_MST` and commits with `REG_CFG_DONE` for that port
+only, verifying the address read-back. Restore writes the firmware address
+back the same way; closing the device restores a pending swap. Timing, PHY,
+clock and power registers are untouched, and queries map VOP2 read-only.
+
+The host fixture models VOP2 with the words observed on hardware, logs every
+changed word of a writable mapping in order and admits only those two
+offsets; it covers gating, every geometry deviation, boot-item mismatches,
+allocation failures, verify failures and restore-on-close. The native cycle
+captures a NanoKVM frame about 11 s into a 30 s hold and classifies its bar
+colours, then checks that the desktop frame after the restore no longer shows
+the pattern and that the observation is unchanged. The stage directory is
+`artifacts/display-scanout/20260918T053010Z-fe133a`.
+
 ## Later stages
 
-3. Own framebuffer and VOP2 window programming at the firmware timing, then a
-   real mode change with HDPTX PHY1 and HDMI TX1 reconfiguration, vertical
-   retrace from the VOP2 interrupt, cursor window and power control, exposed
-   through a board accelerant.
+3. After the swap: a board accelerant that owns the framebuffer at the
+   firmware timing, then a real mode change with HDPTX PHY1 and HDMI TX1
+   reconfiguration, vertical retrace from the VOP2 interrupt, cursor window
+   and power control.
 4. DisplayPort TX1 through USBDP PHY1 and the RA620 bridge for the second
    connector. This needs a sink on that port (a monitor, an HDMI dummy plug,
    or the NanoKVM cable moved) before it can be qualified.

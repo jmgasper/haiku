@@ -16,6 +16,16 @@ the underlying buses permit it. No calendar estimates imply guaranteed support.
 Current owner scope: phase 7 GPU support only. Network stack changes and other
 hardware development are deferred. [GPU.md](GPU.md) records qualified
 native power/reset/IRQ, firmware, client buffers, GPU VMs and persistent queues.
+The +264 USB image qualifies the [EDID read](DISPLAY.md) over the HDMI TX1
+I2C master on two native boots: with the opt-in profile the driver reads the
+NanoKVM's 256-byte EDID (VCS `0x1145`, EDID 1.3 with one CEA-861 extension,
+preferred 1920x1080 at 148.5 MHz) one byte per transfer in about 52 ms per
+block, and the read-only observation before and after the read is identical.
+Both QEMU modes, the Mali regressions, normal reboot, verified shutdown and
+automatic recovery pass; the desktop was viewed on both boots. Native mode
+setting and the second (DisplayPort-bridged) HDMI port remain open; the +267
+scanout-swap candidate is being qualified.
+
 The +263 USB image qualifies the first [native display observation](DISPLAY.md)
 on two native boots: the read-only `rk3588_display` driver admits the VOP2,
 HDMI TX1, HDPTX PHY1 and control-block description and reads the firmware
@@ -24,8 +34,7 @@ from VOP2 video port 2 at 1920x1080 (2200x1125 total) through ESMART2 at
 `0xed280000`; the HDMI1 hot-plug level, PHY lock and TMDS link are recorded.
 Both QEMU modes, the earlier Mali regressions, normal reboot, verified shutdown
 and automatic recovery pass. A first +259 run panicked reading a write-only
-HDMI register and is retained. EDID reading, native mode setting and the
-second (DisplayPort-bridged) HDMI port remain open.
+HDMI register and is retained.
 
 The +256 Mesa fix on the retained +254 Haiku kernel qualifies the bounded
 [GLTeapot and polygon tests](MESA-APPLICATION.md) on two native boots: all 128
