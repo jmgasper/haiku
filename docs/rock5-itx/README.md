@@ -9,6 +9,17 @@ The [GitHub work items](TRACKING.md) split the roadmap into issues and milestone
 The current scope is [Mali-G610 GPU support](GPU.md) only. The owner has deferred
 network stack changes and all other hardware development.
 
+The +263 USB image qualifies the first [native display observation](DISPLAY.md)
+on two native boots: the read-only `rk3588_display` driver admits the VOP2,
+HDMI TX1, HDPTX PHY1 and control-block description and reads the firmware
+display state without a register write. The firmware drives the HDMI1 port
+from VOP2 video port 2 at 1920x1080 (2200x1125 total) through ESMART2 at
+`0xed280000`; the HDMI1 hot-plug level, PHY lock and TMDS link are recorded.
+Both QEMU modes, the earlier Mali regressions, normal reboot, verified shutdown
+and automatic recovery pass. A first +259 run panicked reading a write-only
+HDMI register and is retained. EDID reading, native mode setting and the
+second (DisplayPort-bridged) HDMI port remain open.
+
 The +256 Mesa fix, on the retained +254 Haiku kernel, qualifies the bounded
 [GLTeapot and polygon tests](MESA-APPLICATION.md) on two native boots. All 128
 polygon frames pass, including complete immediate-mode boundaries, points and

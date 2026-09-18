@@ -74,8 +74,49 @@ The corrected driver reads only HDMI TX1 registers that the reference drivers
 read or read-modify-write (`GLOBAL_SWDISABLE`, the I2C master interface
 controls, `AUDIO_INTERFACE_CONFIG0`, `HDCP2LOGIC_CONFIG0`, `LINK_CONFIG0`, the
 packet scheduler configuration/enable words and the main-unit interrupt
-status/mask), and the host fixture rejects any other offset. Native results
-are recorded below once the two-boot trial completes.
+status/mask), and the host fixture rejects any other offset.
+
+### Qualified +263 observation
+
+The corrected `hrev60097+263` image (source `eb2cef4e29`, SHA-256
+`ad16ced6d81893da89e764d8e1982e35fbea4ee7e75981d42ba74cc5fdc85eb9`) passes
+154 host checks, both two-boot QEMU modes (the driver correctly publishes no
+device without a VOP2 node) and two native boots with normal reboot, verified
+shutdown and automatic ROOBI recovery. Each boot reads three identical
+snapshots without a register write; the Mali firmware, resource and platform
+regressions pass alongside. Both boots inherit the same firmware display state:
+
+| Observation | Value |
+| --- | --- |
+| VOP2 version | `0x40176786` |
+| Interface enables (`DSP_IF_EN`) | HDMI1 only, fed by video port 2 (`hdmi_edp1_mux` = 2) |
+| Video port 2 timing | 2200 x 1125 total, 1920 x 1080 active (h 192-2112, v 41-1121), hsync end 44, vsync end 5, out mode 15; ports 0, 1 and 3 in standby |
+| Scanout window | ESMART2 region 0 enabled, buffer `0xed280000`, virtual width 1920, 1920 x 1080 at origin |
+| Hot-plug (`SOC_STATUS1`) | HDMI1 level and interrupt bits set; HDMI0 clear |
+| HDPTX PHY1 GRF status | PLL lock, clock ready and PHY ready set |
+| HDMI TX1 | video path enabled, TMDS link (`LINK_CONFIG0` = 0), AVI and GCP packets scheduled, no pending I2C status |
+| Power and clocks | VOP, VO0 and VO1 domains on; VOP and HDMI TX1 bus clocks ungated; dclk selectors 111-113 = `0x201`, `0x1001`, `0x5` |
+
+So the firmware drives the NanoKVM's HDMI1 port from **video port 2**, not the
+video port 1 that the mainline device tree assigns to HDMI1. Stage 3 must
+follow the firmware routing. The desktops on both boots were actually viewed
+(normal Tracker/Deskbar desktop, no error dialog). The `SOC_STATUS1` low bits
+change between samples; the validator compares only its hot-plug bits. The
+earlier +263 run was rejected for exactly that and its used image is archived
+(`artifacts/nanokvm-image-archive/20260918T041540Z-c89dc4-display-observe-validator-rejected`);
+a second run failed only on a controller assertion because the minimum image
+has no `grep` (`...20260918T043352Z-4d1501-display-observe-syslog-assert`).
+
+- Native evidence: `artifacts/automated-display-observe/20260918T043836Z-49720b`
+  (`qualification.json`, `display-boot{1,2}.json`, desktop reviews, FDT captures).
+- Session: `artifacts/interactive/20260918T043838Z-ce5f59`; recovery boot
+  `5956166f-fbc5-4e1c-9878-9e3b8cd45ab6` after verified shutdown.
+- QEMU EL2/EL1: `artifacts/qemu-shell/20260918T035509Z-9056c6` and
+  `20260918T035529Z-4dcff7`; build `artifacts/build-20260918T035351Z.log`.
+- Stage: `artifacts/display-observe/20260918T035350Z-e1424f`; used image
+  archive `artifacts/nanokvm-image-archive/20260918T044908Z-dea7fd`.
+- Independent Linux eMMC readbacks were not run for this stage: the ROOBI sudo
+  password is not available to this session.
 
 ## Stage 2: EDID over the HDMI TX1 I2C master
 

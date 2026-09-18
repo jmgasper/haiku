@@ -1,11 +1,22 @@
 # Tested status
 
-Updated 2026-09-17 (Australia/Hobart). This page distinguishes lab readiness from native Haiku
+Updated 2026-09-18 (Australia/Hobart). This page distinguishes lab readiness from native Haiku
 support. No hardware row in the roadmap is accepted merely because Linux or
 firmware supports it.
 
 Current scope is [Mali-G610 GPU acceleration](GPU.md) only; network stack changes
 and other hardware development are deferred at the owner's request.
+
+The +263 USB image qualifies the first [native display observation](DISPLAY.md)
+on two native boots: the read-only `rk3588_display` driver admits the VOP2,
+HDMI TX1, HDPTX PHY1 and control-block description and reads the firmware
+display state without a register write. The firmware drives the HDMI1 port
+from VOP2 video port 2 at 1920x1080 (2200x1125 total) through ESMART2 at
+`0xed280000`; the HDMI1 hot-plug level, PHY lock and TMDS link are recorded.
+Both QEMU modes, the earlier Mali regressions, normal reboot, verified shutdown
+and automatic recovery pass. A first +259 run panicked reading a write-only
+HDMI register and is retained. EDID reading, native mode setting and the
+second (DisplayPort-bridged) HDMI port remain open.
 
 The +256 Mesa fix, on the retained +254 Haiku kernel, qualifies the bounded
 [GLTeapot and polygon tests](MESA-APPLICATION.md) on two native boots. All 128
