@@ -883,14 +883,12 @@ def validate_cursor(body, action, x=None, y=None, frame=(1920, 1080), base=None,
     else:
         if saved is None:
             raise ValueError('restore needs the saved state')
-        if saved['width'] != 0:
-            if bitmap is None or (int(bitmap.group(1)), int(bitmap.group(2))) != (saved['width'], saved['height']):
-                raise ValidationError('saved bitmap missing or not %dx%d' % (saved['width'], saved['height']))
-            if (int(bitmap.group(3)), int(bitmap.group(4))) != tuple(saved['hot']) or int(bitmap.group(5)) != 0:
-                raise ValidationError('saved bitmap hot spot %s,%s result %s' % bitmap.group(3, 4, 5))
-            polls.append(int(bitmap.group(6)))
-        elif bitmap is not None:
-            raise ValidationError('restore set a bitmap the saved state did not have')
+        # The saved bitmap comes back; a saved state without one clears the window's bitmap (0x0).
+        if bitmap is None or (int(bitmap.group(1)), int(bitmap.group(2))) != (saved['width'], saved['height']):
+            raise ValidationError('saved bitmap missing or not %dx%d' % (saved['width'], saved['height']))
+        if (int(bitmap.group(3)), int(bitmap.group(4))) != tuple(saved['hot']) or int(bitmap.group(5)) != 0:
+            raise ValidationError('saved bitmap hot spot %s,%s result %s' % bitmap.group(3, 4, 5))
+        polls.append(int(bitmap.group(6)))
         expected = dict(width=saved['width'], height=saved['height'], hot=tuple(saved['hot']), x=saved['x'], y=saved['y'], visible=saved['visible'])
     if (int(move.group(1)), int(move.group(2))) != (expected['x'], expected['y']) or int(show.group(1)) != expected['visible']:
         raise ValidationError('move to %s,%s show %s, expected %d,%d show %d' % (move.group(1), move.group(2), show.group(1), expected['x'], expected['y'], expected['visible']))

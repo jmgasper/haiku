@@ -20,7 +20,7 @@ namespace RK3588Display {
 // rock5-itx-edk2-v1.1-display-cursor profile. app_server hands the
 // accelerant the pointer bitmap and its position; the frame buffer itself
 // no longer carries the pointer.
-static const uint32_t kSetCursorBitmap = 0x5244490b; // writable handle, frame buffer acquired
+static const uint32_t kSetCursorBitmap = 0x5244490b; // writable handle, frame buffer acquired; 0x0 clears
 static const uint32_t kMoveCursor = 0x5244490c;
 static const uint32_t kShowCursor = 0x5244490d;
 static const uint32_t kGetCursor = 0x5244490e; // any handle

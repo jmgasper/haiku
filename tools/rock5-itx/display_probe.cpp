@@ -845,20 +845,19 @@ ControlCursor(const char* action, int x, int y)
 			close(fd);
 			return false;
 		}
-		passed = true;
-		if (saved.width != 0) {
-			static CursorBitmap bitmap;
-			memset(&bitmap, 0, sizeof(bitmap));
-			bitmap.version = kCursorVersion;
-			bitmap.width = saved.width;
-			bitmap.height = saved.height;
-			bitmap.hotX = saved.hotX;
-			bitmap.hotY = saved.hotY;
-			bitmap.bytesPerRow = kCursorBytesPerRow;
-			memcpy(bitmap.data, saved.data, sizeof(bitmap.data));
-			passed = SetBitmap(fd, bitmap);
-			polls += bitmap.polls;
-		}
+		// The saved bitmap comes back; a state without one (app_server on its
+		// software pointer) clears the window's bitmap.
+		static CursorBitmap bitmap;
+		memset(&bitmap, 0, sizeof(bitmap));
+		bitmap.version = kCursorVersion;
+		bitmap.width = saved.width;
+		bitmap.height = saved.height;
+		bitmap.hotX = saved.hotX;
+		bitmap.hotY = saved.hotY;
+		bitmap.bytesPerRow = kCursorBytesPerRow;
+		memcpy(bitmap.data, saved.data, sizeof(bitmap.data));
+		passed = SetBitmap(fd, bitmap);
+		polls += bitmap.polls;
 		uint32_t movePolls = 0;
 		passed = MoveAndShow(fd, saved.x, saved.y, saved.visible != 0, movePolls) && passed;
 		polls += movePolls;

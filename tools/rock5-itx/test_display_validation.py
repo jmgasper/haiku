@@ -532,13 +532,16 @@ class DisplayValidationTest(unittest.TestCase):
         self.assertEqual((hidden['after']['visible'], hidden['placement'], hidden['address']), (0, None, 0x15400000))
         restored = check.validate_cursor(transcript('restore', x=1888, y=1048), 'restore', saved=saved)
         self.assertEqual((restored['after']['width'], restored['after']['x'], restored['after']['control']), (22, 960, '00000001'))
-        # A saved state without a bitmap comes back without one.
+        # A saved state without a bitmap (app_server on its software pointer) clears the window's bitmap.
         bare = dict(saved, width=0, height=0, hot=(0, 0), visible=0)
-        body = transcript('restore', x=1888, y=1048, bitmap='', move='ROCK5_DISPLAY_CURSOR_MOVE x=960 y=540 result=0 polls=0 start=00000000 address=15400000',
+        body = transcript('restore', x=1888, y=1048, bitmap='ROCK5_DISPLAY_CURSOR_BITMAP width=0 height=0 hot=0,0 result=0 polls=311',
+            move='ROCK5_DISPLAY_CURSOR_MOVE x=960 y=540 result=0 polls=0 start=00000000 address=15400000',
             show='ROCK5_DISPLAY_CURSOR_SHOW visible=0 result=0 polls=0 control=00000000',
             after=state('AFTER', width=0, height=0, x=960, y=540, visible=0, control='00000000', saved='removed'),
-            passed='ROCK5_DISPLAY_CURSOR_PASS action=restore x=960 y=540 visible=0 width=0 height=0 polls=0').replace('\n\n', '\n')
+            passed='ROCK5_DISPLAY_CURSOR_PASS action=restore x=960 y=540 visible=0 width=0 height=0 polls=311')
         self.assertEqual(check.validate_cursor(body, 'restore', saved=bare)['after']['width'], 0)
+        with self.assertRaises(check.ValidationError):
+            check.validate_cursor(body.replace('ROCK5_DISPLAY_CURSOR_BITMAP width=0 height=0 hot=0,0 result=0 polls=311\n', ''), 'restore', saved=bare)
         with self.assertRaises(ValueError):
             check.validate_cursor(transcript(), 'blink')
         with self.assertRaises(ValueError):

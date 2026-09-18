@@ -1554,6 +1554,17 @@ CursorControl(Handle* handle, uint32 op, void* buffer, size_t length)
 		bitmap->polls = 0;
 		if (sOwner == NULL || sCursor.address == NULL) {
 			bitmap->result = kCursorNotAcquired;
+		} else if (bitmap->width == 0 && bitmap->height == 0 && bitmap->hotX == 0
+			&& bitmap->hotY == 0) {
+			// No pointer at all (a probe restoring app_server's untouched
+			// state): the window shows nothing until a bitmap arrives.
+			memset(sCursor.address, 0, kCursorBufferBytes);
+			memset(sCursorState.data, 0, kCursorBufferBytes);
+			sCursorState.width = sCursorState.height = 0;
+			sCursorState.hotX = sCursorState.hotY = 0;
+			bitmap->result = CursorWindowLive() ? ProgramCursor(bitmap->polls) : kCursorOK;
+			dprintf("rk3588_display: cursor bitmap cleared result=%" B_PRIu32 " polls=%" B_PRIu32
+				"\n", bitmap->result, bitmap->polls);
 		} else if (bitmap->width == 0 || bitmap->height == 0 || bitmap->width > kCursorMaxSize
 			|| bitmap->height > kCursorMaxSize || bitmap->hotX >= bitmap->width
 			|| bitmap->hotY >= bitmap->height || bitmap->bytesPerRow < bitmap->width * 4

@@ -2219,6 +2219,7 @@ main()
 		return cursorBitmap.result;
 	};
 	assert(bitmap(0, 16, 0, 0, 64) == kCursorUnsupported && bitmap(16, 0, 0, 0, 64) == kCursorUnsupported);
+	assert(bitmap(0, 0, 1, 0, 0) == kCursorUnsupported && bitmap(0, 0, 0, 0, 0) == kCursorOK && sVopWrites.empty());
 	assert(bitmap(65, 16, 0, 0, 260) == kCursorUnsupported && bitmap(16, 65, 0, 0, 64) == kCursorUnsupported);
 	assert(bitmap(16, 16, 16, 0, 64) == kCursorUnsupported && bitmap(16, 16, 0, 16, 64) == kCursorUnsupported);
 	assert(bitmap(16, 16, 0, 0, 60) == kCursorUnsupported && bitmap(16, 16, 0, 0, 257) == kCursorUnsupported);
@@ -2293,7 +2294,14 @@ main()
 	move.x = 500; move.y = 400;
 	assert(Control(primary, kMoveCursor, &move, sizeof(move)) == B_OK && move.result == kCursorOK);
 	assert(move.displayStart == ((397u << 16) | 498u) && sequenceOf(sVopWrites, {{0x1e10u, 1u}, {0x000u, 0x00048004u}}));
-	// A new bitmap while visible is programmed at once; the hot spot moves the window.
+	// A cleared bitmap (0x0, no hot spot) disables the window while visible;
+	// the next bitmap brings it back. A new bitmap while visible is programmed
+	// at once; the hot spot moves the window.
+	sVopWrites.clear();
+	assert(bitmap(0, 0, 0, 0, 0) == kCursorOK && cursorBitmap.polls >= 1);
+	assert(sequenceOf(sVopWrites, {{0x1e20u, 0u}, {0x1e10u, 0u}, {0x000u, 0x00048004u}}));
+	assert(Control(reader, kGetCursor, &cursorState, sizeof(cursorState)) == B_OK);
+	assert(cursorState.width == 0 && cursorState.visible == 1 && cursorState.regionControl == 0 && cursorState.data[5 * kCursorBytesPerRow + 7 * 4] == 0);
 	sVopWrites.clear();
 	assert(bitmap(64, 32, 63, 31, 256) == kCursorOK && cursorBitmap.polls >= 1);
 	assert(sequenceOf(sVopWrites, {{0x1e20u, 0x001f003fu}, {0x1e28u, (369u << 16) | 437u}, {0x000u, 0x00048004u}}));
