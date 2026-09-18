@@ -300,7 +300,7 @@ SCANOUT_LINE = re.compile(
     r'^ROCK5_DISPLAY_SCANOUT action=(query|show|restore) result=(\d+) flags=(\d+) port=(\d) window=(\d)'
     r' before=([0-9a-f]{8}) after=([0-9a-f]{8}) firmware=([0-9a-f]{8}) pattern=([0-9a-f]{8})'
     r' region_control=([0-9a-f]{8}) virtual=(\d+) active=([0-9a-f]{8}) display=([0-9a-f]{8})'
-    r' start=([0-9a-f]{8}) if_en=([0-9a-f]{8}) cfg_done=([0-9a-f]{8}) start_us=(\d+) end_us=(\d+)$', re.M)
+    r' start=([0-9a-f]{8}) if_en=([0-9a-f]{8}) cfg_done=([0-9a-f]{8}) polls=(\d+) start_us=(\d+) end_us=(\d+)$', re.M)
 SCANOUT_STEPS = [('query', 0), ('show', 1), ('query', 1), ('restore', 0), ('query', 0)]
 SCANOUT_GEOMETRY = dict(region_control=1, virtual=1920, active=0x0437077f, display=0x0437077f, start=0)
 # 0xAARRGGBB bar colours of DisplayScanout.h as RGB, then the border grey.
@@ -324,14 +324,14 @@ def validate_scanout(body, observation=None):
         raise ValidationError('scanout probe aborted')
     steps = []
     for match in SCANOUT_LINE.finditer(body):
-        start, end = int(match.group(17)), int(match.group(18))
+        start, end = int(match.group(18)), int(match.group(19))
         steps.append(dict(action=match.group(1), result=int(match.group(2)), flags=int(match.group(3)),
             port=int(match.group(4)), window=int(match.group(5)), before=int(match.group(6), 16),
             after=int(match.group(7), 16), firmware=int(match.group(8), 16), pattern=int(match.group(9), 16),
             region_control=int(match.group(10), 16), virtual=int(match.group(11)),
             active=int(match.group(12), 16), display=int(match.group(13), 16), start=int(match.group(14), 16),
-            if_en=int(match.group(15), 16), cfg_done=int(match.group(16), 16), micros=end - start,
-            offset=match.start()))
+            if_en=int(match.group(15), 16), cfg_done=int(match.group(16), 16), polls=int(match.group(17)),
+            micros=end - start, offset=match.start()))
     if [(s['action'], s['flags']) for s in steps] != SCANOUT_STEPS:
         raise ValidationError('scanout steps %r' % [(s['action'], s['flags']) for s in steps])
     for step in steps:
@@ -339,6 +339,8 @@ def validate_scanout(body, observation=None):
             raise ValidationError('scanout %s result %d' % (step['action'], step['result']))
         if step['micros'] < 0 or step['micros'] > 5000000:
             raise ValidationError('implausible scanout %s duration' % step['action'])
+        if step['polls'] > 5000 or (step['action'] == 'query' and step['polls']):
+            raise ValidationError('implausible scanout %s poll count %d' % (step['action'], step['polls']))
         for key, value in SCANOUT_GEOMETRY.items():
             if step[key] != value:
                 raise ValidationError('window %s %#x differs from the qualified firmware state' % (key, step[key]))
@@ -382,7 +384,8 @@ def validate_scanout(body, observation=None):
     names = ['query_before', 'show', 'query_swapped', 'restore', 'query_after']
     return dict(status='pass', port=port, window=window, firmware='%08x' % firmware, pattern='%08x' % pattern,
         hold_seconds=int(hold.group(1)), commit='%08x' % commit,
-        micros={name: step['micros'] for name, step in zip(names, steps)})
+        micros={name: step['micros'] for name, step in zip(names, steps)},
+        polls={name: step['polls'] for name, step in zip(names, steps)})
 
 
 def _nearest_pattern_color(rgb):

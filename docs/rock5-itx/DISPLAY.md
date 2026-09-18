@@ -169,7 +169,7 @@ viewed on both boots.
 - Independent Linux eMMC readbacks were not run: the ROOBI sudo password is
   not available to this session.
 
-## Stage 3a: scanout buffer swap (+267 candidate)
+## Stage 3a: scanout buffer swap
 
 The opt-in `rock5-itx-edk2-v1.1-display-scanout` profile adds the first VOP2
 write path. A swap request re-checks the VOP power domain and bus clocks, maps
@@ -181,9 +181,13 @@ boot item's physical address. The driver then fills a physically contiguous
 8 MiB colour-bar pattern below 4 GiB (eight vertical bars inside a grey
 border), evicts it from the cache and retypes it write-combining, writes the
 window's `REGION0_YRGB_MST` and commits with `REG_CFG_DONE` for that port
-only, verifying the address read-back. Restore writes the firmware address
-back the same way; closing the device restores a pending swap. Timing, PHY,
-clock and power registers are untouched, and queries map VOP2 read-only.
+only. The window registers are shadowed: the port keeps its `REG_CFG_DONE`
+bit set until its next frame start loads the new set, and reads return the
+active values. The driver therefore polls that bit (20 µs steps, at most
+100 ms) before verifying the address read-back, as mainline Linux does before
+sending a flip's vblank event. Restore writes the firmware address back the
+same way; closing the device restores a pending swap. Timing, PHY, clock and
+power registers are untouched, and queries map VOP2 read-only.
 
 The host fixture models VOP2 with the words observed on hardware, logs every
 changed word of a writable mapping in order and admits only those two
@@ -191,8 +195,25 @@ offsets; it covers gating, every geometry deviation, boot-item mismatches,
 allocation failures, verify failures and restore-on-close. The native cycle
 captures a NanoKVM frame about 11 s into a 30 s hold and classifies its bar
 colours, then checks that the desktop frame after the restore no longer shows
-the pattern and that the observation is unchanged. The stage directory is
-`artifacts/display-scanout/20260918T053010Z-fe133a`.
+the pattern and that the observation is unchanged.
+
+### Retained +267 verify failure
+
+The first native run of the swap (`hrev60097+267`, stage
+`artifacts/display-scanout/20260918T053010Z-fe133a`, both QEMU gates passed)
+located the window correctly (port 2, ESMART2, `0xed280000`), allocated the
+pattern and issued the two writes, but verified the address immediately after
+the commit and read the still-active firmware address, so it reported
+`VerifyFailed` and restored on close; the probe aborted before the hold and
+the run was recovered without a clean shutdown. No panic, no other register
+was touched, and the observation and EDID checks of that boot passed.
+Evidence: `artifacts/automated-display-scanout/20260918T053658Z-78e3c4`,
+session `artifacts/interactive/20260918T053659Z-1ac5e5` (recovery boot
+`fef4908d-9235-4afc-b023-d1d064bdc38e`), used image archive
+`artifacts/nanokvm-image-archive/20260918T054342Z-d485f9-display-scanout-verify-failed`.
+The fixture now models the shadowed registers and the commit bit, including a
+port that never takes the commit (bounded timeout, swap kept pending for the
+restore on close).
 
 ## Later stages
 

@@ -30,6 +30,12 @@ static const uint32_t kScanoutUnexpectedState = 3; // window geometry or format 
 static const uint32_t kScanoutNoBuffer = 4; // pattern buffer allocation failed
 static const uint32_t kScanoutNotSwapped = 5; // restore requested without a swap
 static const uint32_t kScanoutVerifyFailed = 6; // read-back address differs
+static const uint32_t kScanoutTimeout = 7; // the port never took the new configuration
+
+// REG_CFG_DONE keeps the port's bit set until its next frame start loads the
+// shadowed window registers; reads of those registers return the active set.
+static const unsigned kScanoutPollMicros = 20;
+static const uint32_t kScanoutPollLimit = 5000; // 100 ms, several frames
 
 static const uint32_t kScanoutSwapped = 1; // flags: scanout currently shows the pattern
 
@@ -76,7 +82,7 @@ struct ScanoutRequest {
 	uint32_t displayStart;
 	uint32_t interfaceEnable;
 	uint32_t configDone;
-	uint32_t reserved;
+	uint32_t polls; // REG_CFG_DONE polls until the port bit cleared
 };
 
 
@@ -141,6 +147,15 @@ SwapScanoutAddress(Hardware& hardware, ScanoutRequest& request, uint32_t address
 	hardware.WriteVop(base + kVopEsmartRegionAddress, address);
 	request.configDone = kVopConfigDoneEnable | (1u << request.port) | ((1u << request.port) << 16);
 	hardware.WriteVop(kVopConfigDone, request.configDone);
+	request.polls = 0;
+	while ((hardware.ReadVop(kVopConfigDone) & (1u << request.port)) != 0) {
+		if (request.polls >= kScanoutPollLimit) {
+			request.addressAfter = hardware.ReadVop(base + kVopEsmartRegionAddress);
+			return kScanoutTimeout;
+		}
+		request.polls++;
+		hardware.Pause(kScanoutPollMicros);
+	}
 	request.addressAfter = hardware.ReadVop(base + kVopEsmartRegionAddress);
 	return request.addressAfter == address ? kScanoutOK : kScanoutVerifyFailed;
 }

@@ -58,7 +58,13 @@ static std::map<unsigned, uint32> sVopOverrides;
 static uint32* sVopModel;
 static std::vector<uint32> sVopShadow;
 static std::vector<std::pair<unsigned, uint32> > sVopWrites;
-static bool sAllowScanout, sStickyAddress;
+static bool sAllowScanout, sStickyAddress, sCommitNeverCompletes;
+// Shadowed window registers: a written address waits in the shadow set until
+// the port's frame start, modeled as a countdown of barrier/poll steps after
+// the commit word; reads keep returning the active value until then.
+static uint32 sVopPendingAddress;
+static bool sVopAddressPending;
+static int sVopCommitCountdown = -1;
 static const unsigned kModelWindow = 2;
 static const unsigned kModelAddressOffset = 0x1800 + kModelWindow * 0x200 + 0x14;
 static const uint32 kModelFirmwareAddress = 0xed280000;
@@ -103,17 +109,28 @@ VopModelStep()
 		uint32 value = sVopModel[i];
 		sVopWrites.push_back(std::make_pair(offset, value));
 		if (offset == 0x000) {
-			// The commit word self-clears once the port has taken the shadow set.
-			assert((value & 0x8000) != 0);
-			sVopModel[i] = ModelRegister(0xfdd90000, 0);
+			// Commit: the port bit stays visible until its next frame start.
+			assert((value & 0x8000) != 0 && (value >> 16) == (value & 0xf));
+			sVopModel[i] = 0x8000 | (value & 0xf);
+			sVopCommitCountdown = sCommitNeverCompletes ? -1 : 3;
 		} else if (offset == kModelAddressOffset) {
-			if (sStickyAddress)
-				sVopModel[i] = sVopShadow[i];
-			else
-				sVopOverrides[offset] = value;
+			sVopPendingAddress = value;
+			sVopAddressPending = true;
+			sVopModel[i] = sVopShadow[i]; // the active address stays readable
 		} else
 			assert(!"unexpected VOP2 register write");
 		sVopShadow[i] = sVopModel[i];
+	}
+	if (sVopCommitCountdown > 0 && --sVopCommitCountdown == 0) {
+		// Frame start: the shadow set becomes active and the port bit clears.
+		sVopModel[0] = ModelRegister(0xfdd90000, 0);
+		sVopShadow[0] = sVopModel[0];
+		if (sVopAddressPending && !sStickyAddress) {
+			sVopOverrides[kModelAddressOffset] = sVopPendingAddress;
+			sVopModel[kModelAddressOffset / 4] = sVopPendingAddress;
+			sVopShadow[kModelAddressOffset / 4] = sVopPendingAddress;
+		}
+		sVopAddressPending = false;
 	}
 }
 
@@ -228,6 +245,10 @@ map_physical_memory(const char*, uint64 base, size_t bytes, uint32 spec,
 		assert(sVopModel == NULL);
 		sVopModel = registers;
 		sVopShadow.assign(registers, registers + bytes / 4);
+		// The driver always writes the address before committing, so a
+		// commit without an observed write applies the active value again.
+		sVopAddressPending = false;
+		sVopCommitCountdown = -1;
 	} else if (writable) {
 		registers[0xf4 / 4] = 0x00000a00; // idle master, slave 0x50 set by firmware
 		registers[0x3020 / 4] = 0;
@@ -653,11 +674,14 @@ Prepare()
 	sVopWrites.clear();
 	sAllowScanout = false;
 	sStickyAddress = false;
+	sCommitNeverCompletes = false;
+	sVopAddressPending = false;
+	sVopCommitCountdown = -1;
 	sVopOverrides.clear();
 	// Firmware state from the qualified +263 observation: HDMI1 fed by video
 	// port 2, ports 0/1/3 in standby, ESMART2 region 0 alone scanning the
 	// 1920x1080 XRGB8888 framebuffer at 0xed280000.
-	sVopOverrides[0x000] = 0;
+	sVopOverrides[0x000] = 0x8000; // GLB_CFG_DONE_EN stays set, port bits clear
 	sVopOverrides[0x028] = 0x00080020;
 	sVopOverrides[0xc00] = 0x8000000f;
 	sVopOverrides[0xd00] = 0x8000000f;
@@ -1044,7 +1068,7 @@ main()
 		scan.action = action;
 		assert(Control(&controller, kSwapScanout, &scan, sizeof(scan)) == B_OK);
 		assert(scan.result == expected && scan.action == action && scan.version == kScanoutVersion);
-		assert(scan.reserved == 0 && scan.finishedMicros > scan.startedMicros && sAreas.empty());
+		assert(scan.finishedMicros > scan.startedMicros && sAreas.empty());
 		sAllowScanout = false;
 	};
 	// A query never maps VOP2 writable and needs the VOP domain and bus clocks.
@@ -1098,11 +1122,12 @@ main()
 	assert(scan.flags == kScanoutSwapped && scan.port == 2 && scan.window == 2 && sMapAttempts == 3);
 	assert(scan.addressBefore == kModelFirmwareAddress && scan.addressAfter == kModelPatternPhysical);
 	assert(scan.firmwareAddress == kModelFirmwareAddress && scan.patternAddress == kModelPatternPhysical);
-	assert(scan.configDone == (0x8000u | (1u << 2) | (1u << 18)));
+	assert(scan.configDone == (0x8000u | (1u << 2) | (1u << 18)) && scan.polls == 2);
 	assert(sVopWrites.size() == 2);
 	assert(sVopWrites[0] == std::make_pair(kModelAddressOffset, (uint32)kModelPatternPhysical));
 	assert(sVopWrites[1] == std::make_pair(0x000u, 0x00048004u));
 	assert(sNoncacheableCalls == 1 && sPatternArea >= 0 && sPatternAllocations == 1);
+	assert(sModelSpins == 2); // one pause per poll that saw the port bit set
 	// Observation reports the pattern address through its own read-only mapping.
 	sVopWrites.clear();
 	assert(Control(&controller, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
@@ -1119,11 +1144,12 @@ main()
 	scanout(kScanoutRestore, kScanoutOK, true);
 	assert(scan.flags == 0 && scan.addressBefore == kModelPatternPhysical && scan.addressAfter == kModelFirmwareAddress);
 	assert(scan.firmwareAddress == kModelFirmwareAddress && scan.patternAddress == kModelPatternPhysical);
+	assert(scan.polls == 2 && sModelSpins == 4);
 	assert(sVopWrites.size() == 2 && sVopWrites[0] == std::make_pair(kModelAddressOffset, kModelFirmwareAddress));
 	assert(sVopWrites[1] == std::make_pair(0x000u, 0x00048004u) && sPatternArea >= 0 && sNoncacheableCalls == 1);
 	sVopWrites.clear();
 	scanout(kScanoutRestore, kScanoutNotSwapped, true);
-	assert(sVopWrites.empty() && scan.flags == 0 && scan.addressBefore == kModelFirmwareAddress);
+	assert(sVopWrites.empty() && scan.flags == 0 && scan.addressBefore == kModelFirmwareAddress && scan.polls == 0);
 	// Close restores a pending swap and otherwise touches nothing.
 	unsigned attempts = sMapAttempts;
 	assert(Close(&controller) == B_OK && sMapAttempts == attempts && sVopWrites.empty());
@@ -1142,12 +1168,36 @@ main()
 	sStickyAddress = true;
 	scanout(kScanoutShowPattern, kScanoutVerifyFailed, true);
 	assert(scan.flags == kScanoutSwapped && scan.addressAfter == kModelFirmwareAddress && sVopWrites.size() == 2);
+	assert(scan.polls == 2);
 	sStickyAddress = false;
 	sVopWrites.clear();
 	sAllowScanout = true;
 	assert(Close(&controller) == B_OK);
 	sAllowScanout = false;
 	assert(!sVopWrites.empty() && sVopWrites.back() == std::make_pair(0x000u, 0x00048004u));
+	scanout(kScanoutQuery, kScanoutOK, false);
+	assert(scan.flags == 0 && scan.addressBefore == kModelFirmwareAddress);
+	// A port that never takes the commit times out after the bounded polls;
+	// the swap stays pending and restore succeeds once the port runs again.
+	sVopWrites.clear();
+	sCommitNeverCompletes = true;
+	unsigned spins = sModelSpins;
+	scanout(kScanoutShowPattern, kScanoutTimeout, true);
+	assert(scan.flags == kScanoutSwapped && scan.polls == kScanoutPollLimit && sModelSpins == spins + kScanoutPollLimit);
+	assert(scan.addressAfter == kModelFirmwareAddress && sVopWrites.size() == 2);
+	sVopWrites.clear();
+	sAllowScanout = true;
+	assert(Close(&controller) == B_OK);
+	sAllowScanout = false;
+	assert(sVopWrites.size() == 1 && sVopWrites[0] == std::make_pair(0x000u, 0x00048004u));
+	scanout(kScanoutQuery, kScanoutOK, false);
+	assert(scan.flags == kScanoutSwapped);
+	sCommitNeverCompletes = false;
+	sVopWrites.clear();
+	sAllowScanout = true;
+	assert(Close(&controller) == B_OK);
+	sAllowScanout = false;
+	assert(sVopWrites.size() == 1 && sVopWrites[0] == std::make_pair(0x000u, 0x00048004u));
 	scanout(kScanoutQuery, kScanoutOK, false);
 	assert(scan.flags == 0 && scan.addressBefore == kModelFirmwareAddress);
 	// With the VOP domain off a pending swap waits for power to return.

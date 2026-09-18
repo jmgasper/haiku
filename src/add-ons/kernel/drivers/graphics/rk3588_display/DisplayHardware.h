@@ -225,6 +225,7 @@ public:
 	uint32_t ReadVop(uint32_t offset) { return ReadDisplayRegister(fVop, offset); }
 	void WriteVop(uint32_t offset, uint32_t value) { WriteDisplayRegister(fVop, offset, value); }
 	int64_t Now() { return system_time(); }
+	void Pause(unsigned micros) { spin(micros); }
 private:
 	AreaDeleter fPmuArea, fClockArea, fVopArea;
 	volatile uint32* fPmu = NULL;

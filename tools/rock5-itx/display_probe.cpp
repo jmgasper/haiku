@@ -272,10 +272,10 @@ PrintScanout(const char* action, const ScanoutRequest& r)
 		" window=%" PRIu32 " before=%08" PRIx32 " after=%08" PRIx32 " firmware=%08" PRIx32
 		" pattern=%08" PRIx32 " region_control=%08" PRIx32 " virtual=%" PRIu32 " active=%08" PRIx32
 		" display=%08" PRIx32 " start=%08" PRIx32 " if_en=%08" PRIx32 " cfg_done=%08" PRIx32
-		" start_us=%" PRId64 " end_us=%" PRId64 "\n", action, r.result, r.flags, r.port, r.window,
-		r.addressBefore, r.addressAfter, r.firmwareAddress, r.patternAddress, r.regionControl,
-		r.virtualWidth, r.activeInfo, r.displayInfo, r.displayStart, r.interfaceEnable,
-		r.configDone, r.startedMicros, r.finishedMicros);
+		" polls=%" PRIu32 " start_us=%" PRId64 " end_us=%" PRId64 "\n", action, r.result, r.flags,
+		r.port, r.window, r.addressBefore, r.addressAfter, r.firmwareAddress, r.patternAddress,
+		r.regionControl, r.virtualWidth, r.activeInfo, r.displayInfo, r.displayStart,
+		r.interfaceEnable, r.configDone, r.polls, r.startedMicros, r.finishedMicros);
 	fflush(stdout);
 }
 

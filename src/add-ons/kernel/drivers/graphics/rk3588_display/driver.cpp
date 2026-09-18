@@ -671,9 +671,9 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 		request.patternAddress = sPattern.physical;
 		request.finishedMicros = hardware.Now();
 		dprintf("rk3588_display: scanout action=%" B_PRIu32 " result=%" B_PRIu32 " port=%" B_PRIu32
-			" window=%" B_PRIu32 " before=%#" B_PRIx32 " after=%#" B_PRIx32 " swapped=%u\n",
-			action, result, request.port, request.window, request.addressBefore,
-			request.addressAfter, sScanoutSwapped ? 1 : 0);
+			" window=%" B_PRIu32 " before=%#" B_PRIx32 " after=%#" B_PRIx32 " polls=%" B_PRIu32
+			" swapped=%u\n", action, result, request.port, request.window, request.addressBefore,
+			request.addressAfter, request.polls, sScanoutSwapped ? 1 : 0);
 		return user_memcpy(buffer, &request, sizeof(request));
 	}
 	if (op != kGetResources)
@@ -704,8 +704,8 @@ RestoreScanout(Controller* controller)
 		return B_ERROR;
 	result = SwapScanoutAddress(hardware, request, sFirmwareAddress);
 	sScanoutSwapped = result != kScanoutOK;
-	dprintf("rk3588_display: scanout restored to %#" B_PRIx32 " result=%" B_PRIu32 "\n",
-		sFirmwareAddress, result);
+	dprintf("rk3588_display: scanout restored to %#" B_PRIx32 " result=%" B_PRIu32 " polls=%"
+		B_PRIu32 "\n", sFirmwareAddress, result, request.polls);
 	return result == kScanoutOK ? B_OK : B_ERROR;
 }
 

@@ -151,14 +151,14 @@ def scanout_transcript(firmware=0xed280000, pattern=0x40100000, port=2, window=2
     lines = ['ROCK5_DISPLAY_WRITE_OPEN_REJECTED', 'ROCK5_DISPLAY_RESOURCE_DESCRIPTION_PASS',
         'ROCK5_DISPLAY_SCANOUT_REQUEST_CHECKS_PASS']
     commit = 0x8000 | 1 << port | 1 << (port + 16)
-    steps = steps or [('query', 0, firmware, 0, 0, 0, 0), ('show', 1, firmware, pattern, firmware, pattern, commit),
-        ('query', 1, pattern, 0, firmware, pattern, 0), ('restore', 0, pattern, firmware, firmware, pattern, commit),
-        ('query', 0, firmware, 0, firmware, pattern, 0)]
-    for index, (action, flags, before, after, fw, pat, cfg) in enumerate(steps):
+    steps = steps or [('query', 0, firmware, 0, 0, 0, 0, 0), ('show', 1, firmware, pattern, firmware, pattern, commit, 700),
+        ('query', 1, pattern, 0, firmware, pattern, 0, 0), ('restore', 0, pattern, firmware, firmware, pattern, commit, 650),
+        ('query', 0, firmware, 0, firmware, pattern, 0, 0)]
+    for index, (action, flags, before, after, fw, pat, cfg, polls) in enumerate(steps):
         lines.append('ROCK5_DISPLAY_SCANOUT action=%s result=0 flags=%d port=%d window=%d before=%08x after=%08x'
             ' firmware=%08x pattern=%08x region_control=00000001 virtual=1920 active=0437077f display=0437077f'
-            ' start=00000000 if_en=%08x cfg_done=%08x start_us=%d end_us=%d'
-            % (action, flags, port, window, before, after, fw, pat, 0x20 | port << 18, cfg, 5000 + index * 100, 5040 + index * 100))
+            ' start=00000000 if_en=%08x cfg_done=%08x polls=%d start_us=%d end_us=%d'
+            % (action, flags, port, window, before, after, fw, pat, 0x20 | port << 18, cfg, polls, 5000 + index * 100, 5040 + index * 100))
         if action == 'show':
             lines.append('ROCK5_DISPLAY_SCANOUT_HOLD seconds=%d' % hold)
     lines.append('ROCK5_DISPLAY_SCANOUT_PASS port=%d window=%d firmware=%08x pattern=%08x hold_seconds=%d'
@@ -185,6 +185,7 @@ class DisplayValidationTest(unittest.TestCase):
         self.assertEqual((decoded['firmware'], decoded['pattern'], decoded['commit']), ('ed280000', '40100000', '00048004'))
         self.assertEqual(decoded['hold_seconds'], 12)
         self.assertEqual(decoded['micros'], dict(query_before=40, show=40, query_swapped=40, restore=40, query_after=40))
+        self.assertEqual(decoded['polls'], dict(query_before=0, show=700, query_swapped=0, restore=650, query_after=0))
         observation = dict(active_ports=[2], windows=dict(esmarts=[dict(region_control=0, address=0)] * 2
             + [dict(region_control=1, address=0xed280000)] + [dict(region_control=0, address=0)]))
         self.assertEqual(check.validate_scanout(scanout_transcript(), observation)['status'], 'pass')
@@ -209,6 +210,8 @@ class DisplayValidationTest(unittest.TestCase):
             ('hold', body.replace('ROCK5_DISPLAY_SCANOUT_HOLD seconds=12\n', '')),
             ('summary', body.replace('hold_seconds=12', 'hold_seconds=13')),
             ('duration', body.replace('start_us=5100 end_us=5140', 'start_us=5100 end_us=9000000')),
+            ('polls', body.replace('cfg_done=00048004 polls=700', 'cfg_done=00048004 polls=5001')),
+            ('query_polls', body.replace('cfg_done=00000000 polls=0 start_us=5000', 'cfg_done=00000000 polls=1 start_us=5000')),
         ]
         for name, value in cases:
             with self.subTest(name=name):

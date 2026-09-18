@@ -89,8 +89,10 @@ preferred 1920x1080 at 148.5 MHz) one byte per transfer in about 52 ms per
 block, and the read-only observation before and after the read is identical.
 Both QEMU modes, the Mali regressions, normal reboot, verified shutdown and
 automatic recovery pass; the desktop was viewed on both boots. Native mode
-setting and the second (DisplayPort-bridged) HDMI port remain open; the +267
-scanout-swap candidate is being qualified.
+setting and the second (DisplayPort-bridged) HDMI port remain open. The first
+scanout-swap candidate (+267) verified its window address before the port's
+next frame start and reported a read-back mismatch; the corrected candidate
+waits for the configuration-done bit and is being qualified.
 
 The +263 USB image qualifies the first [native display observation](DISPLAY.md)
 on two native boots: the read-only `rk3588_display` driver admits the VOP2,
