@@ -472,6 +472,59 @@ checking the observation (port standby, no active port), the retrace count
 (unchanged over half a second while off, growing again after on) and the
 desktop capture after on.
 
+### Qualified +285 DPMS power control (stage 3e)
+
+The `hrev60097+285` image (source `e1649e849a`, SHA-256
+`884d8ff441ef06216af75d03626e112b7b8cfffebebde2dd9b4d060b97f9a43d`) passes the
+host checks (165 tests), both two-boot QEMU modes and two native boots with
+normal reboot, verified shutdown and automatic ROOBI recovery. On each boot,
+after the inventory, accelerant and 720p/1080p mode-change checks of the
+earlier stages passed unchanged, the probe asked the driver for DPMS off and
+then on. Off completed at phase 2: the port reported standby within a few
+polls, the PHY was powered down (GRF status 0, PLL-enable clear), the
+driver's frame-start count did not move over the following half second, the
+observation showed no live port and skipped the unreachable HDMI TX block,
+and the NanoKVM, with no input signal, had no frame to capture (its
+screenshot request timed out, which the controller records as the no-signal
+outcome). On completed at phase 6 in about 0.6 ms with the PHY clock ready
+after 3 polls and the lanes locked after 1, the frame-start count grew by 30
+in the next half second, the retrace measurement gave 24 waits at
+16 666 µs, the observation showed the 1080p port live again with the HDMI
+block read, and the NanoKVM captured the restored desktop (the classifier
+and a visual review agree). app_server's start-up DPMS-on request was
+answered as a no-op once per boot (`power on result=0 phase=0 already`).
+
+| Boot | Frame buffer | Off: hold polls, time | On: PLL polls, time | Frame starts off, on |
+| --- | --- | --- | --- | --- |
+| 1 | `0x10143000` | 17, 17.0 ms | 3, 0.57 ms | 3475 → 3475, 3476 → 3506 |
+| 2 | `0x0f926000` | 5, 5.0 ms | 3, 0.58 ms | 3533 → 3533, 3534 → 3564 |
+
+- Native evidence: `artifacts/automated-display-power/20260918T122414Z-f91277`
+  (`qualification.json`, `power_off-boot{1,2}.json` and `power_on-boot{1,2}.json`
+  with the change, the observation and, after on, the accelerant state,
+  `desktop-power_off-boot{1,2}.json` recording the absent capture, desktop
+  classifier records and reviews, driver syslog extracts, FDT captures).
+- Session: `artifacts/interactive/20260918T122416Z-7f1c47`; recovery boot
+  `37be467f-6b95-4eb0-8c64-07d3193bb658` after verified shutdown.
+- QEMU EL2/EL1: `artifacts/qemu-shell/20260918T111706Z-2b9ef3` and
+  `20260918T111922Z-28aca9`; build `artifacts/build-20260918T111650Z.log`.
+- Stage: `artifacts/display-power/20260918T111705Z-2bf370` (its controller
+  was regenerated twice during the stage, for the validator's PLL rule and
+  for the absent capture; the run directory holds the version used); used
+  image archive `artifacts/nanokvm-image-archive/20260918T123516Z-58a730`.
+- Independent Linux eMMC readbacks were not run: the ROOBI sudo password is
+  not available to this session.
+
+The road to this image is retained. The +284 candidate powered the port
+off correctly and then took the kernel down when the observation probe read
+the HDMI TX registers with the PHY off (SError; `artifacts/display-power/20260918T104837Z-04025c`,
+`artifacts/automated-display-power/20260918T105311Z-b4639d`, image archive
+`artifacts/nanokvm-image-archive/20260918T111113Z-c5ef61-display-power-284-panic`).
+On +285 the first run stopped on the host validator, which still expected
+the HDMI block to be read (`…automated-display-power/20260918T112137Z-92c242`),
+and the second on the NanoKVM capture, which never returns while there is
+no signal (`…20260918T113120Z-d30ea7`).
+
 ## Later stages
 
 3. After mode changes and power control: a cursor window, and modes beyond

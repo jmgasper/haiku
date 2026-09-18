@@ -9,6 +9,17 @@ The [GitHub work items](TRACKING.md) split the roadmap into issues and milestone
 The current scope is [Mali-G610 GPU support](GPU.md) only. The owner has deferred
 network stack changes and all other hardware development.
 
+The +285 USB image qualifies [DPMS power control on HDMI1](DISPLAY.md) on
+two native boots: through the accelerant's DPMS hooks the driver stops the
+video port and powers the HDPTX PHY down, so the sink loses its signal, the
+frame-start interrupts stop and the NanoKVM has no frame to capture, and
+brings the current mode back with the full mode set in under a millisecond,
+with retrace at 60 Hz again and the desktop restored. The 720p/1080p mode
+changes and the earlier read-only, EDID, scanout-swap, accelerant and
+retrace checks pass on the same boots, and app_server's start-up DPMS-on
+request is answered as a no-op. A cursor window and the second
+(DisplayPort-bridged) HDMI port remain open.
+
 The +282 USB image qualifies [native mode changes on HDMI1](DISPLAY.md) on
 two native boots: with the opt-in mode-set profile the driver switches the
 port app_server draws to from the firmware's 1920x1080@60 to 1280x720@60 and
@@ -18,8 +29,7 @@ its retrace keeps running at 60 Hz. The NanoKVM shows the 720p signal as the
 desktop's top-left crop and the normal desktop after the return; normal
 reboot, verified shutdown and recovery pass, and the earlier read-only,
 EDID, scanout-swap, accelerant and retrace checks pass on the same boots.
-DPMS power control is built on the same driver and awaits its own native
-cycle; a cursor window and the second (DisplayPort-bridged) HDMI port remain
+A cursor window and the second (DisplayPort-bridged) HDMI port remained
 open.
 
 The +277 USB image qualifies the [board accelerant with vertical
