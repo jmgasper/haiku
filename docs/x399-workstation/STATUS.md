@@ -190,3 +190,25 @@ listed as verified is untested.
   no longer makes is proportional to its area. At 800x600 the frame rates are
   the same and only the processor time differs (2.0 s against 2.6 s).
   GLTeapot reaches 2390 fps, against 238 on the software renderer.
+- 2026-09-18: the machine froze twice - no network, no keyboard, a still
+  desktop whose clock had stopped - and the second freeze left the file system
+  damaged. The cause was in the page pinning added for presenting:
+  os_lock_user_pages() recorded B_CURRENT_TEAM, which is not a team but a
+  sentinel meaning whichever team is running. The pages are unlocked when
+  resman tears the memory down, which happens while the application is being
+  cleaned up and can run in another team's context, so the unlock went to the
+  wrong address space. Recording the team that locked the range fixes it:
+  tools/gl-stress.sh now runs the test repeatedly, killing it while the GPU is
+  writing into its window, and the machine stays up with every pinned range
+  released (64 locked, 64 released).
+  The kernel debugger could not be reached over the KVM's USB keyboard, so the
+  diagnosis came from the code rather than from the frozen machine; a serial
+  console would have made it quicker.
+- 2026-09-18: the GPU had been talking to the machine at PCIe 2.5 GT/s, a
+  quarter of what the link can carry. Both ends advertise 8 GT/s, but the link
+  drops to its slowest speed whenever the GPU is idle and nothing here raised
+  it again - resman does that from the power management that this driver does
+  not run. NVK now asks resman to train the link when it opens the device.
+  Copies into memory the application owns went from 1.6 GB/s to 4.6, and
+  reading a frame back from 1.6 to 2.8; `nvdpyinfo --rm` reports the link, and
+  `--pcie-speed <gen>` retrains it by hand.
