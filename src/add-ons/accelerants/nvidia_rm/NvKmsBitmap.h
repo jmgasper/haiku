@@ -17,11 +17,17 @@ private:
 	uint32 fHeight;
 	uint32 fBytesPerRow;
 	color_space fColorSpace;
+	bool fSystemMemory = false;
 
 public:
 	inline NvKmsBitmap();
 	inline NvKmsBitmap(NvKmsBitmap &&other);
-	NvKmsBitmap(NvRmDevice &rmDev, NvKmsDevice &kmsDev, uint32 width, uint32 height, color_space colorSpace);
+	// systemMemory puts the surface in ordinary memory rather than video
+	// memory. Do not ask for it for anything the display scans out: this card
+	// refuses, and the mode set fails - see STATUS. It is here for surfaces
+	// the display never reads.
+	NvKmsBitmap(NvRmDevice &rmDev, NvKmsDevice &kmsDev, uint32 width, uint32 height,
+		color_space colorSpace, bool systemMemory = false);
 
 	inline NvKmsBitmap &operator=(NvKmsBitmap &&other);
 
@@ -36,6 +42,7 @@ public:
 	inline int32 BitsLength() const;
 	inline int32 BytesPerRow() const;
 	inline color_space ColorSpace() const;
+	inline bool IsSystemMemory() const {return fSystemMemory;}
 
 	inline const NvRmObject &Memory() const;
 	inline const NvKmsSurface &Surface() const;
@@ -59,6 +66,7 @@ NvKmsBitmap::NvKmsBitmap(NvKmsBitmap &&other):
 	fMapping = std::move(other.fMapping);
 	fSurface = std::move(other.fSurface);
 	fMemory = std::move(other.fMemory);
+	fSystemMemory = other.fSystemMemory;
 
 	other.fWidth = 0;
 	other.fHeight = 0;
@@ -76,6 +84,7 @@ NvKmsBitmap &NvKmsBitmap::operator=(NvKmsBitmap &&other)
 	fHeight = other.fHeight;
 	fBytesPerRow = other.fBytesPerRow;
 	fColorSpace = other.fColorSpace;
+	fSystemMemory = other.fSystemMemory;
 
 	other.fWidth = 0;
 	other.fHeight = 0;

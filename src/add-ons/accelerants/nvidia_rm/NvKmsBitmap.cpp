@@ -12,11 +12,13 @@ static inline size_t AlignUp(size_t val, size_t align)
 }
 
 
-NvKmsBitmap::NvKmsBitmap(NvRmDevice &rmDev, NvKmsDevice &kmsDev, uint32 width, uint32 height, color_space colorSpace):
+NvKmsBitmap::NvKmsBitmap(NvRmDevice &rmDev, NvKmsDevice &kmsDev, uint32 width, uint32 height,
+	color_space colorSpace, bool systemMemory):
 	fWidth(width),
 	fHeight(height),
 	fBytesPerRow(AlignUp(4*width, 256)),
-	fColorSpace(colorSpace)
+	fColorSpace(colorSpace),
+	fSystemMemory(systemMemory)
 {
 	NvKmsSurfaceMemoryFormat nvKmsFormat;
 	switch (colorSpace) {
@@ -35,7 +37,13 @@ NvKmsBitmap::NvKmsBitmap(NvRmDevice &rmDev, NvKmsDevice &kmsDev, uint32 width, u
 	uint32 size = fBytesPerRow*height;
 
 	NvU8 compressible = 0;
-	nvKmsKapiAllocateVideoMemory(rmDev, fMemory, NvKmsSurfaceMemoryLayoutPitch, AlignUp(size, B_PAGE_SIZE), NVKMS_KAPI_ALLOCATION_TYPE_SCANOUT, &compressible);
+	if (systemMemory) {
+		nvKmsKapiAllocateSystemMemory(rmDev, kmsDev, fMemory, NvKmsSurfaceMemoryLayoutPitch,
+			AlignUp(size, B_PAGE_SIZE), NVKMS_KAPI_ALLOCATION_TYPE_SCANOUT, &compressible);
+	} else {
+		nvKmsKapiAllocateVideoMemory(rmDev, fMemory, NvKmsSurfaceMemoryLayoutPitch,
+			AlignUp(size, B_PAGE_SIZE), NVKMS_KAPI_ALLOCATION_TYPE_SCANOUT, &compressible);
+	}
 
 	FileDesc memoryFd = rmDev.ExportObjectToFd(rmDev.Device().Get(), fMemory.Get());
 
@@ -54,5 +62,5 @@ NvKmsBitmap::NvKmsBitmap(NvRmDevice &rmDev, NvKmsDevice &kmsDev, uint32 width, u
 	CheckErrno(kms.Control(NVKMS_IOCTL_REGISTER_SURFACE, &params, sizeof(params)));
 	fSurface = NvKmsSurface(kmsDev, params.reply.surfaceHandle);
 
-	fMapping = rmDev.MapMemory(fMemory.Get(), false, 0, AlignUp(size, B_PAGE_SIZE), 0);
+	fMapping = rmDev.MapMemory(fMemory.Get(), systemMemory, 0, AlignUp(size, B_PAGE_SIZE), 0);
 }

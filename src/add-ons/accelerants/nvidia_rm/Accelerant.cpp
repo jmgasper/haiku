@@ -841,7 +841,8 @@ void NvAccelerant::SetDisplayMode(display_mode* modeToSet)
 		}
 	}
 
-	NvKmsBitmap newFramebuffer(fRmDev, fKmsDev, modeToSet->virtual_width, modeToSet->virtual_height, (color_space)modeToSet->space);
+	NvKmsBitmap newFramebuffer(fRmDev, fKmsDev, modeToSet->virtual_width,
+		modeToSet->virtual_height, (color_space)modeToSet->space);
 
 	ApplyMode(*modeToSet, newFramebuffer);
 

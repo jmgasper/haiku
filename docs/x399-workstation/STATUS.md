@@ -391,6 +391,33 @@ listed as verified is untested.
     looking at it, so an add-on that returns NULL leaves the program with no
     renderer instead of passing it to the next one. Fixing that in libGL would
     let this add-on simply stand aside when there is no GPU.
+- 2026-09-19: measured what 2D drawing costs, since the accelerant offers no 2D
+  hooks at all and every pixel app_server draws crosses the bus. The same
+  drawing into an off-screen bitmap, against a window on the screen
+  (tests/drawtest.cpp, on a quiet machine):
+      fill a 1000x700 window    2.71 GB/s against 23.59   0.12x
+      200 small rectangles      1.44 GB/s against  7.97   0.18x
+      scroll it up 20 rows      5.26 GB/s against 18.95   0.28x
+      40 lines of text                                    0.73x
+  So drawing on the screen is four to eight times slower than drawing in
+  memory, and it is the bus, not the processor. In absolute terms it is still
+  969 whole-window fills a second, which is far more than a desktop needs, so
+  this is not what anyone would notice - it would begin to matter at several
+  times the pixels, which three or four monitors would be.
+  The cheap way out does not exist on this card. Putting the frame buffer in
+  ordinary memory and letting the display read it back would make the
+  processor's drawing twenty times faster, and NVKMS refuses: every mode set
+  comes back NV_ERR_INVALID_ARGUMENT and the machine stops at the boot splash
+  with no display (it stays reachable over the network). A discrete card's
+  display engine scans out of video memory. The switch that turned this on has
+  been taken out again rather than left as a trap; NvKmsBitmap keeps the
+  ability to allocate elsewhere, with a comment saying not to use it for
+  anything scanned out.
+  What is left, if 2D ever needs to be faster, is a real 2D engine: the
+  accelerant would answer B_SCREEN_TO_SCREEN_BLIT and B_FILL_RECTANGLE by
+  putting work on a channel, which means giving the accelerant a channel - the
+  same thing the vblank work wanted before NVKMS's own route turned out to
+  need none.
 - 2026-09-18: all five XHCI controllers - two AMD, one ASMedia, and the
   Thunderbolt 4 host with its USB4 interface - start and publish a root hub.
   Only the KVM is plugged in, so what is left in this area needs someone at the
