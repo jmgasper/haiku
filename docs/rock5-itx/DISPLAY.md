@@ -583,10 +583,79 @@ desktop through the transparent quadrant, the blend, the plain desktop
 where the pointer was hidden), before the mode-change and DPMS checks of
 the earlier stages run on the same boot.
 
+### Qualified +294 hardware cursor (stage 3f, probe-only profile)
+
+The `hrev60097+294` image (source `0a301485e0`, SHA-256
+`79afea4e7cf8b0353aa44659b03339742b0e95fc6b62f6baee016525e9978c0c`) passes the
+host checks (167 tests), both two-boot QEMU modes and two native boots with
+normal reboot, verified shutdown and automatic ROOBI recovery. It runs the
+`rock5-itx-edk2-v1.1-display-cursor` profile: app_server keeps its software
+pointer, and on each boot, after the inventory and accelerant checks, the
+probe saved that (bitmap-less) state, showed its quadrant bitmap with the
+corner at 200,200, moved it to -32,500 and to 1888,1048, hid it there and
+restored the saved state, before the mode-change and DPMS checks of the
+earlier stages ran unchanged. After every step the observation read ESMART3
+back exactly as programmed (region control 1 with 64-pixel rows and the
+clipped geometry, or 0 when hidden), the desktop window ESMART2 untouched,
+and the NanoKVM capture agreed with the quadrant classifier, judged against
+the previous capture: white and black quadrants, the desktop through the
+transparent quadrant, the half-white blend, only the right half of the
+bitmap at the left edge (32x64 from a buffer address 128 bytes in), only the
+white top-left quadrant at the bottom-right corner (32x32), the plain
+desktop after the hide, and the plain desktop with the software pointer
+after the restore. A visual review of the captures agrees. Each request
+that changes the window waits for the port's frame start (about 800 polls
+of 20 µs, one frame); a move or bitmap while hidden touches nothing. The
+register dump before the first programming shows the firmware's ESMART2
+with AXI read ids 0x0c/0x0d on bus 1 and ESMART3 with the same ids, the
+window delays 0x17171717, the port's background delay 0x34 and mixers 4 to
+6 zero; after it ESMART3 carries ids 0x0e/0x0f, mixer 6 the four blend
+words and the gating word bit 31 cleared, with no bus error status bit.
+
+| Boot | Frame buffer | Cursor buffer | Show polls at 200,200 | Left edge: start, address | Corner: start | Hide polls |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | `0x10013000` | `0x09b45000` | 779 | `0x01f40000`, `+0x80` | `0x04180760` | 309 |
+| 2 | `0x0fb2d000` | `0x09d73000` | 431 | `0x01f40000`, `+0x80` | `0x04180760` | 400 |
+
+- Native evidence: `artifacts/automated-display-cursor/20260918T233158Z-a4147f`
+  (`qualification.json`, `cursor*-boot{1,2}.json` with the decoded control,
+  the observation, the ESMART3 words and the register dumps,
+  `desktop-cursor*-boot{1,2}.json` with the classifier samples and the
+  reference capture, the desktop reviews, driver syslog extracts, FDT
+  captures); the mode-change and DPMS records as in the earlier stages.
+- Session: `artifacts/interactive/20260918T233200Z-0ced8a`; recovery boot
+  `b783bbdd-d999-4ea8-b8f1-49a3245dbbd2` after verified shutdown.
+- QEMU EL2/EL1: `artifacts/qemu-shell/20260918T231454Z-5866d4` and
+  `20260918T231710Z-b13b3f`; build `artifacts/build-20260918T231437Z.log`.
+- Stage: `artifacts/display-cursor/20260918T231435Z-e58a06` (its controller
+  and qualifier were regenerated during the stage for the reference-frame
+  classifier and the record comparison; the run directory holds the
+  controller used).
+- Independent Linux eMMC readbacks were not run: the ROOBI sudo password is
+  not available to this session.
+
+The road to this image is retained. On +291 app_server's first ioctl
+overflowed the 16 KB kernel stack with a cursor-state local
+(`artifacts/display-cursor/20260918T150410Z-db669c`, run
+`…automated-display-cursor/20260918T151229Z-407591`). On +292 app_server
+took the hardware cursor at start and the port went dark after its first
+scanline: the cursor window had been given Linux' ESMART3 read ids, which
+the firmware had already given the desktop window
+(`…display-cursor/20260918T152007Z-d2961f`, run `…20260918T152629Z-4b7cb7`,
+image archive `…nanokvm-image-archive/…-display-cursor-292-black-frame`).
++293 rendered the cursor correctly and stopped on a controller record and
+then on the restore of a state without a bitmap
+(`…display-cursor/20260918T223443Z-b5f8da`, runs `…20260918T224059Z-054576`
+and `…20260918T230547Z-0884e5`); the first +294 run met Tracker windows
+opened through the NanoKVM's HID devices and a classifier that expected the
+plain desktop (`…20260918T231927Z-55dde9`).
+
 ## Later stages
 
-3. After mode changes and power control: a cursor window, and modes beyond
-   the PLL table (the fractional-rate calculation) or the frame buffer size.
+3. app_server's own pointer on the hardware cursor window (the
+   `rock5-itx-edk2-v1.1-display-cursor-desktop` profile, which exports the
+   accelerant's cursor hooks), then modes beyond the PLL table (the
+   fractional-rate calculation) or the frame buffer size.
 4. DisplayPort TX1 through USBDP PHY1 and the RA620 bridge for the second
    connector. This needs a sink on that port (a monitor, an HDMI dummy plug,
    or the NanoKVM cable moved) before it can be qualified.

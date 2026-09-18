@@ -19,6 +19,20 @@ emulator gates show the software fallback without a device. It is not
 qualified: the independent Linux eMMC readbacks need the ROOBI sudo
 password, which is not on record.
 
+The +294 USB image qualifies a [hardware cursor on HDMI1](DISPLAY.md) on
+two native boots: on the probe-only cursor profile the driver programs a
+second VOP2 window (ESMART3, blended by the port's alpha mixer) with a
+64x64 straight-alpha bitmap over the desktop window, clips it at every
+edge, hides it and restores app_server's state, with every window register
+read back and the NanoKVM captures showing the white, black, transparent
+and half-transparent quadrants where expected and the desktop untouched.
+The cause of an earlier dark frame is recorded: the firmware runs the
+desktop window with the AXI read ids Linux assigns to ESMART3, so the cursor
+window takes ids derived from the desktop window's. app_server still draws
+its software pointer on this image; handing its pointer to the window (the
+desktop cursor profile) is the next stage, and the second
+(DisplayPort-bridged) HDMI port remains open.
+
 The +285 USB image qualifies [DPMS power control on HDMI1](DISPLAY.md) on
 two native boots: through the accelerant's DPMS hooks the driver stops the
 video port and powers the HDPTX PHY down, so the sink loses its signal, the
