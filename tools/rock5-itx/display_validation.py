@@ -784,3 +784,187 @@ def check_desktop_crop(path, width, height, capture=(1920, 1080)):
     if failed:
         raise ValidationError('frame does not show the %dx%d Haiku workspace crop: %r' % (width, height, failed))
     return dict(status='pass', scale=scale, samples=samples)
+
+
+CURSOR_STATE = re.compile(
+    r'^ROCK5_DISPLAY_CURSOR_(BEFORE|AFTER) width=(\d+) height=(\d+) hot=(\d+),(\d+) x=(-?\d+) y=(-?\d+)'
+    r' visible=(\d) window=(\d+) mixer=(\d+) control=([0-9a-f]{8}) start=([0-9a-f]{8}) address=([0-9a-f]{8})'
+    r' mix=([0-9a-f]{8}),([0-9a-f]{8}),([0-9a-f]{8}),([0-9a-f]{8}) saved=(yes|no|kept|removed)$', re.M)
+CURSOR_ACCELERANT = re.compile(r'^ROCK5_DISPLAY_CURSOR_ACCELERANT flags=(\d+) width=(\d+) height=(\d+)$', re.M)
+CURSOR_BITMAP = re.compile(r'^ROCK5_DISPLAY_CURSOR_BITMAP width=(\d+) height=(\d+) hot=(\d+),(\d+) result=(\d+) polls=(\d+)$', re.M)
+CURSOR_MOVE = re.compile(r'^ROCK5_DISPLAY_CURSOR_MOVE x=(-?\d+) y=(-?\d+) result=(\d+) polls=(\d+) start=([0-9a-f]{8}) address=([0-9a-f]{8})$', re.M)
+CURSOR_SHOW = re.compile(r'^ROCK5_DISPLAY_CURSOR_SHOW visible=(\d) result=(\d+) polls=(\d+) control=([0-9a-f]{8})$', re.M)
+CURSOR_PASS = re.compile(
+    r'^ROCK5_DISPLAY_CURSOR_PASS action=(place|hide|restore) x=(-?\d+) y=(-?\d+) visible=(\d) width=(\d+) height=(\d+) polls=(\d+)$', re.M)
+# The alpha mixer words the driver programs for a straight-alpha ARGB cursor
+# over the opaque desktop (DisplayCursor.h).
+CURSOR_MIXER_WORDS = ('00ff0125', '00ff0060', '00000024', '00000074')
+CURSOR_SIZE = 64
+CURSOR_ROW_BYTES = CURSOR_SIZE * 4
+CURSOR_POLL_LIMIT = 5000
+
+
+def cursor_placement(x, y, hot_x, hot_y, width, height, frame=(1920, 1080)):
+    """Return the driver's clipped window for a pointer at x, y, or None when it is off the frame."""
+    left, top = x - hot_x, y - hot_y
+    right, bottom = left + width, top + height
+    if width == 0 or height == 0 or right <= 0 or bottom <= 0 or left >= frame[0] or top >= frame[1]:
+        return None
+    crop_x, crop_y = max(0, -left), max(0, -top)
+    display_x, display_y = max(0, left), max(0, top)
+    return dict(crop_x=crop_x, crop_y=crop_y, display_x=display_x, display_y=display_y,
+        width=min(right, frame[0]) - display_x, height=min(bottom, frame[1]) - display_y,
+        start='%08x' % (display_y << 16 | display_x), offset=crop_y * CURSOR_ROW_BYTES + crop_x * 4)
+
+
+def _cursor_state(match):
+    return dict(width=int(match.group(2)), height=int(match.group(3)), hot=(int(match.group(4)), int(match.group(5))),
+        x=int(match.group(6)), y=int(match.group(7)), visible=int(match.group(8)), window=int(match.group(9)),
+        mixer=int(match.group(10)), control=match.group(11), start=match.group(12), address=match.group(13),
+        mix=tuple(match.group(i) for i in (14, 15, 16, 17)), saved=match.group(18))
+
+
+def validate_cursor(body, action, x=None, y=None, frame=(1920, 1080), base=None, saved=None):
+    """Return the decoded cursor control from a native --cursor transcript or raise ValidationError.
+
+    `action` is place (the probe's 64x64 quadrant bitmap shown with its hot
+    spot at x, y), hide (hidden where it is) or restore (the state the first
+    placement saved comes back; `saved` is that placement's BEFORE state).
+    `frame` is the mode the port shows, and `base` the cursor buffer address
+    an unclipped placement reported, which a clipped one must offset.
+    """
+    if action not in ('place', 'hide', 'restore'):
+        raise ValueError(action)
+    if 'ROCK5_DISPLAY_CURSOR_REQUEST_CHECKS_PASS' not in body:
+        raise ValidationError('cursor request boundary checks missing')
+    accelerant = CURSOR_ACCELERANT.search(body)
+    if accelerant is None:
+        raise ValidationError('accelerant state before the cursor control missing')
+    flags = int(accelerant.group(1))
+    if flags & 17 != 17:
+        raise ValidationError('accelerant flags %d lack acquisition or the cursor' % flags)
+    if (int(accelerant.group(2)), int(accelerant.group(3))) != tuple(frame):
+        raise ValidationError('accelerant frame %sx%s, expected %dx%d' % ((accelerant.group(2), accelerant.group(3)) + tuple(frame)))
+    states = {m.group(1): _cursor_state(m) for m in CURSOR_STATE.finditer(body)}
+    if set(states) != {'BEFORE', 'AFTER'}:
+        raise ValidationError('cursor state lines missing')
+    before, after = states['BEFORE'], states['AFTER']
+    for state in (before, after):
+        if state['window'] != 3 or state['mixer'] != 6:
+            raise ValidationError('cursor window %d mixer %d, expected ESMART3 and mixer 6' % (state['window'], state['mixer']))
+    # The first placement records app_server's state; later controls find it.
+    if before['saved'] not in (('yes', 'no') if action == 'place' else ('yes',)):
+        raise ValidationError('saved state %s before the %s' % (before['saved'], action))
+    if after['saved'] != ('removed' if action == 'restore' else 'kept'):
+        raise ValidationError('saved state %s after the %s' % (after['saved'], action))
+    if after['mix'] != CURSOR_MIXER_WORDS and (after['visible'] or after['control'] != '00000000'):
+        raise ValidationError('mixer words %r' % (after['mix'],))
+    bitmap = CURSOR_BITMAP.search(body)
+    move = CURSOR_MOVE.search(body)
+    show = CURSOR_SHOW.search(body)
+    if move is None or show is None:
+        raise ValidationError('cursor move or show line missing')
+    polls = [int(move.group(4)), int(show.group(3))]
+    if int(move.group(3)) != 0 or int(show.group(2)) != 0:
+        raise ValidationError('cursor move result %s show result %s' % (move.group(3), show.group(2)))
+    if action == 'place':
+        if x is None or y is None:
+            raise ValueError('place needs x and y')
+        if bitmap is None or (int(bitmap.group(1)), int(bitmap.group(2))) != (CURSOR_SIZE, CURSOR_SIZE):
+            raise ValidationError('quadrant bitmap missing or not %dx%d' % (CURSOR_SIZE, CURSOR_SIZE))
+        if (int(bitmap.group(3)), int(bitmap.group(4))) != (0, 0) or int(bitmap.group(5)) != 0:
+            raise ValidationError('quadrant bitmap hot spot %s,%s result %s' % bitmap.group(3, 4, 5))
+        polls.append(int(bitmap.group(6)))
+        expected = dict(width=CURSOR_SIZE, height=CURSOR_SIZE, hot=(0, 0), x=x, y=y, visible=1)
+    elif action == 'hide':
+        if bitmap is not None:
+            raise ValidationError('hide set a bitmap')
+        expected = dict(width=before['width'], height=before['height'], hot=before['hot'], x=before['x'], y=before['y'], visible=0)
+    else:
+        if saved is None:
+            raise ValueError('restore needs the saved state')
+        if saved['width'] != 0:
+            if bitmap is None or (int(bitmap.group(1)), int(bitmap.group(2))) != (saved['width'], saved['height']):
+                raise ValidationError('saved bitmap missing or not %dx%d' % (saved['width'], saved['height']))
+            if (int(bitmap.group(3)), int(bitmap.group(4))) != tuple(saved['hot']) or int(bitmap.group(5)) != 0:
+                raise ValidationError('saved bitmap hot spot %s,%s result %s' % bitmap.group(3, 4, 5))
+            polls.append(int(bitmap.group(6)))
+        elif bitmap is not None:
+            raise ValidationError('restore set a bitmap the saved state did not have')
+        expected = dict(width=saved['width'], height=saved['height'], hot=tuple(saved['hot']), x=saved['x'], y=saved['y'], visible=saved['visible'])
+    if (int(move.group(1)), int(move.group(2))) != (expected['x'], expected['y']) or int(show.group(1)) != expected['visible']:
+        raise ValidationError('move to %s,%s show %s, expected %d,%d show %d' % (move.group(1), move.group(2), show.group(1), expected['x'], expected['y'], expected['visible']))
+    for key, value in expected.items():
+        if after[key] != value:
+            raise ValidationError('cursor %s is %r after the %s, expected %r' % (key, after[key], action, value))
+    if any(p > CURSOR_POLL_LIMIT for p in polls):
+        raise ValidationError('cursor polls %r' % polls)
+    placement = cursor_placement(after['x'], after['y'], after['hot'][0], after['hot'][1], after['width'], after['height'], frame) if after['visible'] else None
+    if placement is None:
+        if after['control'] != '00000000' or after['start'] != '00000000' or show.group(4) != '00000000':
+            raise ValidationError('cursor window still enabled while %s' % ('hidden' if not after['visible'] else 'off the frame'))
+    else:
+        if after['control'] != '00000001' or show.group(4) != '00000001':
+            raise ValidationError('cursor window control %s after the %s' % (after['control'], action))
+        # A move while hidden reports the stale window words; the state after
+        # the show is what counts.
+        if after['start'] != placement['start']:
+            raise ValidationError('cursor start %s, expected %s' % (after['start'], placement['start']))
+        address = int(after['address'], 16)
+        if base is not None:
+            if address != base + placement['offset']:
+                raise ValidationError('cursor address %#x, expected %#x + %d' % (address, base, placement['offset']))
+        elif address & 0xfff != placement['offset'] & 0xfff or address == 0 or address >= 1 << 32:
+            raise ValidationError('implausible cursor address %#x for offset %d' % (address, placement['offset']))
+    passed = CURSOR_PASS.search(body)
+    if passed is None or passed.group(1) != action or body.count('ROCK5_DISPLAY_CURSOR_PASS ') != 1:
+        raise ValidationError('cursor summary missing or inconsistent')
+    if (int(passed.group(2)), int(passed.group(3)), int(passed.group(4)), int(passed.group(5)), int(passed.group(6))) != (
+            after['x'], after['y'], after['visible'], after['width'], after['height']):
+        raise ValidationError('cursor summary differs from the state')
+    if int(passed.group(7)) != sum(polls):
+        raise ValidationError('cursor summary polls %s, lines %r' % (passed.group(7), polls))
+    return dict(status='pass', action=action, flags=flags, before=before, after=after, placement=placement,
+        polls=polls, address=int(after['address'], 16) if after['address'] != '00000000' else None,
+        base=base if base is not None else (int(after['address'], 16) if placement is not None and placement['offset'] == 0 else None))
+
+
+# The probe's quadrant cursor as the capture shows it over the desktop blue:
+# white, black, the desktop through the transparent quadrant, and half white.
+CURSOR_QUADRANTS = (((16, 16), (255, 255, 255), 'white'), ((48, 16), (0, 0, 0), 'black'),
+    ((16, 48), DESKTOP_BLUE, 'transparent'),
+    ((48, 48), tuple(d + (255 - d) * 128 // 255 for d in DESKTOP_BLUE), 'half'))
+
+
+def check_cursor_frame(path, x, y, shown=True, frame=(1920, 1080)):
+    """Raise unless the capture shows the probe's quadrant cursor with its corner at x, y (or, hidden, the plain desktop there).
+
+    Only quadrant centres inside the frame are judged; two desktop points
+    just outside the cursor must stay blue either way.
+    """
+    from PIL import Image
+    image = Image.open(path).convert('RGB')
+    if image.size != tuple(frame):
+        raise ValidationError('frame is %dx%d, not %dx%d' % (image.size + tuple(frame)))
+    samples = []
+    for (dx, dy), colour, kind in CURSOR_QUADRANTS:
+        px, py = x + dx, y + dy
+        if not (0 <= px < frame[0] and 0 <= py < frame[1]):
+            continue
+        expected = colour if shown else DESKTOP_BLUE
+        rgb = image.getpixel((px, py))
+        tolerance = 32 if kind == 'half' and shown else 24
+        samples.append(dict(x=px, y=py, rgb=list(rgb), kind=kind if shown else 'hidden_' + kind, expected=list(expected),
+            ok=all(abs(a - b) <= tolerance for a, b in zip(rgb, expected))))
+    if not samples:
+        raise ValidationError('no quadrant centre of a cursor at %d,%d lies on the frame' % (x, y))
+    for px, py in ((x - 24, y + 32), (x + CURSOR_SIZE + 24, y + 32), (x + 32, y - 24), (x + 32, y + CURSOR_SIZE + 24)):
+        if not (0 <= px < frame[0] and 0 <= py < frame[1]):
+            continue
+        rgb = image.getpixel((px, py))
+        samples.append(dict(x=px, y=py, rgb=list(rgb), kind='outside', expected=list(DESKTOP_BLUE),
+            ok=all(abs(a - b) <= 24 for a, b in zip(rgb, DESKTOP_BLUE))))
+    failed = [s for s in samples if not s['ok']]
+    if failed:
+        raise ValidationError('frame does not show the %s cursor at %d,%d: %r' % ('quadrant' if shown else 'hidden', x, y, failed))
+    return dict(status='pass', x=x, y=y, shown=shown, samples=samples)

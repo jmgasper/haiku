@@ -7,6 +7,7 @@ UseHeaders [ FDirName $(HAIKU_TOP) src add-ons kernel drivers graphics rk3588_di
 
 Addon rk3588_display.accelerant :
 	accelerant.cpp
+	cursor.cpp
 	hooks.cpp
 	mode.cpp
 	: libaccelerantscommon.a

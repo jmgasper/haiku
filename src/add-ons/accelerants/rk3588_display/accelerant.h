@@ -52,6 +52,10 @@ status_t rk3588_get_pixel_clock_limits(display_mode* mode, uint32* low, uint32* 
 uint32 rk3588_dpms_capabilities(void);
 uint32 rk3588_dpms_mode(void);
 status_t rk3588_set_dpms_mode(uint32 mode);
+status_t rk3588_set_cursor_bitmap(uint16 width, uint16 height, uint16 hotX, uint16 hotY,
+	color_space space, uint16 bytesPerRow, const uint8* data);
+void rk3588_move_cursor(uint16 x, uint16 y);
+void rk3588_show_cursor(bool visible);
 }
 
 #endif // RK3588_DISPLAY_ACCELERANT_PRIVATE_H

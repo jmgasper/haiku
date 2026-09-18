@@ -18,12 +18,15 @@
 #include <arch/arm64/cache_line_size.h>
 #endif
 #include <fcntl.h>
+#include <new>
+#include <stddef.h>
 #include <stdlib.h>
 #include <unistd.h>
 
 #include "DisplayScanout.h"
 #include "DisplayAccelerant.h"
 #include "DisplayModeSet.h"
+#include "DisplayCursor.h"
 
 
 using namespace RK3588Display;
@@ -64,6 +67,7 @@ struct Controller {
 	bool scanoutEnabled;
 	bool accelerantEnabled;
 	bool modeSetEnabled;
+	bool cursorEnabled;
 };
 
 // One open file handle. Only writable handles (the accelerant profile) may
@@ -105,10 +109,15 @@ static int32 sHoldValid = 0; // the port reported standby (DSP_HOLD_VALID)
 static ModeRequest sCurrentMode = {}; // the mode the driver set, if any
 static ModeRequest sFirmwareMode = {}; // the firmware's mode as a request
 static uint32 sPowerMode = kPowerOn;
+static ContiguousBuffer sCursor = {-1, NULL, 0};
+static CursorState sCursorState = {};
+static bool sCursorProgrammed = false; // the cursor window was written since acquisition
 static status_t RestoreScanout(Controller* controller);
 static status_t AcquireFrameBuffer(Handle* handle);
 static status_t ChangeDisplayMode(Handle* handle, ModeRequest& request);
 static status_t ChangePowerMode(Handle* handle, PowerRequest& request);
+static status_t CursorControl(Handle* handle, uint32 op, void* buffer, size_t length);
+static uint32_t ProgramCursor(uint32_t& polls);
 static int32 RetraceInterrupt(void* data);
 static void ReleaseFrameBuffer(Controller* controller);
 
@@ -559,7 +568,9 @@ InitDriver(device_node* node, void** cookie)
 		controller->scanoutEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-scanout") == 0;
 		// The retrace profile names the stage that added the frame-start
 		// interrupt; both run the accelerant with retrace.
-		controller->modeSetEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-modeset") == 0;
+		controller->cursorEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-cursor") == 0;
+		controller->modeSetEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-modeset") == 0
+			|| controller->cursorEnabled;
 		controller->accelerantEnabled
 			= strcmp(profile, "rock5-itx-edk2-v1.1-display-accelerant") == 0
 			|| strcmp(profile, "rock5-itx-edk2-v1.1-display-retrace") == 0
@@ -570,12 +581,13 @@ InitDriver(device_node* node, void** cookie)
 	if (settings != NULL)
 		unload_driver_settings(settings);
 	dprintf("rk3588_display: validated VOP2 %#" B_PRIx64 " and HDMI TX1 %#" B_PRIx64
-		" resources; observation only; EDID %s; scanout %s; accelerant %s; modeset %s\n",
+		" resources; observation only; EDID %s; scanout %s; accelerant %s; modeset %s; cursor %s\n",
 		controller->resources.vopBase, controller->resources.hdmiBase,
 		controller->edidEnabled ? "enabled" : "disabled",
 		controller->scanoutEnabled ? "enabled" : "disabled",
 		controller->accelerantEnabled ? "enabled" : "disabled",
-		controller->modeSetEnabled ? "enabled" : "disabled");
+		controller->modeSetEnabled ? "enabled" : "disabled",
+		controller->cursorEnabled ? "enabled" : "disabled");
 	*cookie = controller;
 	return B_OK;
 }
@@ -761,6 +773,8 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 			return area;
 		return _user_get_area_info(area, (area_info*)buffer);
 	}
+	if (op == kSetCursorBitmap || op == kMoveCursor || op == kShowCursor || op == kGetCursor)
+		return CursorControl(handle, op, buffer, length);
 	if (op == kGetSnapshot) {
 		if (length != sizeof(DisplaySnapshot))
 			return B_BAD_VALUE;
@@ -1180,6 +1194,15 @@ AcquireFrameBuffer(Handle* handle)
 	sAccelerant.version = kAccelerantVersion;
 	sAccelerant.flags = kAccelerantAcquired | (shared.flags & kAccelerantEdid)
 		| (controller->modeSetEnabled ? kAccelerantModeSet : 0);
+	memset(&sCursorState, 0, sizeof(sCursorState));
+	sCursorState.version = kCursorVersion;
+	sCursorState.window = kVopCursorWindow;
+	sCursorState.mixer = kVopCursorMixer;
+	sCursorProgrammed = false;
+	if (controller->cursorEnabled && AllocateContiguous(sCursor, "RK3588 display cursor",
+			kCursorBufferBytes, false) == B_OK) {
+		sAccelerant.flags |= kAccelerantCursor;
+	}
 	sAccelerant.retraceSemaphore = -1;
 	sAccelerant.port = request.port;
 	// Keep VOP2 mapped for the interrupt handler and the release path; the
@@ -1244,6 +1267,16 @@ ReleaseFrameBuffer(Controller* controller)
 	}
 	sPowerMode = kPowerOn;
 	memset(&sCurrentMode, 0, sizeof(sCurrentMode));
+	if (sCursorProgrammed && sVopRegisters != NULL) {
+		// The firmware frame buffer gets no cursor window over it.
+		sCursorState.visible = 0;
+		uint32_t polls = 0;
+		uint32_t hidden = ProgramCursor(polls);
+		dprintf("rk3588_display: cursor window disabled result=%" B_PRIu32 " polls=%" B_PRIu32
+			"\n", hidden, polls);
+	}
+	sCursorProgrammed = false;
+	ReleaseContiguous(sCursor);
 	StopRetrace(sAccelerant.port, controller->resources.vopInterrupt);
 	if (sVopRegisters != NULL) {
 		// The persistent mapping serves the restore; the domain stayed on.
@@ -1320,6 +1353,10 @@ ChangeDisplayMode(Handle* handle, ModeRequest& request)
 		sCurrentMode = request;
 		sPowerMode = kPowerOn; // the mode set powers everything on
 		sShared->powerMode = kPowerOn;
+		if (sCursorProgrammed) {
+			uint32_t polls = 0;
+			ProgramCursor(polls); // clipped to the new frame
+		}
 		frame_buffer_update((addr_t)sFrame.address, request.hDisplay, request.vDisplay, 32,
 			kFrameBytesPerRow);
 	}
@@ -1394,6 +1431,146 @@ ChangePowerMode(Handle* handle, PowerRequest& request)
 		request.phyStatus, request.portControl, request.previous,
 		request.finishedMicros - request.startedMicros);
 	return B_OK;
+}
+
+
+// Writes the cursor window for the current state over the persistent
+// mapping; the acquiring team's frame size clips it.
+static uint32_t
+ProgramCursor(uint32_t& polls)
+{
+	polls = 0;
+	if (sOwner == NULL || sVopRegisters == NULL || sCursor.area < 0)
+		return kCursorNotAcquired;
+	MappedVop hardware;
+	uint32_t result = ApplyCursor(hardware, sCursorState, sCursor.physical, sAccelerant.port,
+		sAccelerant.width, sAccelerant.height, polls);
+	sCursorProgrammed = true;
+	return result;
+}
+
+
+// Whether the window needs programming for a change of position or state:
+// while the pointer shows, or while a failed hide left the window enabled.
+static bool
+CursorWindowLive()
+{
+	return sCursorState.visible != 0
+		|| (sCursorState.regionControl & kVopEsmartRegionEnable) != 0;
+}
+
+
+static status_t
+CursorControl(Handle* handle, uint32 op, void* buffer, size_t length)
+{
+	Controller* controller = handle->controller;
+	if (!controller->cursorEnabled)
+		return B_DEV_INVALID_IOCTL;
+	if (buffer == NULL)
+		return B_BAD_ADDRESS;
+	if (op == kGetCursor) {
+		if (length != sizeof(CursorState))
+			return B_BAD_VALUE;
+		MutexLocker locker(sHardwareLock);
+		CursorState state = sCursorState;
+		if (sCursor.address != NULL)
+			memcpy(state.data, sCursor.address, kCursorBufferBytes);
+		return user_memcpy(buffer, &state, sizeof(state));
+	}
+	if (!handle->writable)
+		return B_NOT_ALLOWED;
+	if (op == kSetCursorBitmap) {
+		if (length != sizeof(CursorBitmap))
+			return B_BAD_VALUE;
+		CursorBitmap* bitmap = new(std::nothrow) CursorBitmap;
+		if (bitmap == NULL)
+			return B_NO_MEMORY;
+		if (user_memcpy(bitmap, buffer, sizeof(*bitmap)) != B_OK) {
+			delete bitmap;
+			return B_BAD_ADDRESS;
+		}
+		if (bitmap->version != kCursorVersion) {
+			delete bitmap;
+			return B_BAD_VALUE;
+		}
+		MutexLocker locker(sHardwareLock);
+		bitmap->polls = 0;
+		if (sOwner == NULL || sCursor.address == NULL) {
+			bitmap->result = kCursorNotAcquired;
+		} else if (bitmap->width == 0 || bitmap->height == 0 || bitmap->width > kCursorMaxSize
+			|| bitmap->height > kCursorMaxSize || bitmap->hotX >= bitmap->width
+			|| bitmap->hotY >= bitmap->height || bitmap->bytesPerRow < bitmap->width * 4
+			|| bitmap->bytesPerRow > kCursorBytesPerRow) {
+			bitmap->result = kCursorUnsupported;
+		} else {
+			uint8_t* pixels = (uint8_t*)sCursor.address;
+			memset(pixels, 0, kCursorBufferBytes);
+			for (uint32 row = 0; row < bitmap->height; row++) {
+				memcpy(pixels + row * kCursorBytesPerRow, bitmap->data + row * bitmap->bytesPerRow,
+					bitmap->width * 4);
+			}
+			sCursorState.width = bitmap->width;
+			sCursorState.height = bitmap->height;
+			sCursorState.hotX = bitmap->hotX;
+			sCursorState.hotY = bitmap->hotY;
+			bitmap->result = CursorWindowLive() ? ProgramCursor(bitmap->polls) : kCursorOK;
+			dprintf("rk3588_display: cursor bitmap %" B_PRIu32 "x%" B_PRIu32 " hot=%" B_PRIu32
+				",%" B_PRIu32 " result=%" B_PRIu32 " polls=%" B_PRIu32 "\n", bitmap->width,
+				bitmap->height, bitmap->hotX, bitmap->hotY, bitmap->result, bitmap->polls);
+		}
+		status_t status = user_memcpy(buffer, bitmap, offsetof(CursorBitmap, data));
+		delete bitmap;
+		return status;
+	}
+	if (op == kMoveCursor) {
+		if (length != sizeof(CursorMove))
+			return B_BAD_VALUE;
+		CursorMove move;
+		if (user_memcpy(&move, buffer, sizeof(move)) != B_OK)
+			return B_BAD_ADDRESS;
+		if (move.version != kCursorVersion)
+			return B_BAD_VALUE;
+		MutexLocker locker(sHardwareLock);
+		move.polls = 0;
+		if (sOwner == NULL || sCursor.address == NULL) {
+			move.result = kCursorNotAcquired;
+		} else if (move.x < -32768 || move.x > 32767 || move.y < -32768 || move.y > 32767) {
+			move.result = kCursorUnsupported;
+		} else {
+			sCursorState.x = move.x;
+			sCursorState.y = move.y;
+			// A hidden cursor only remembers its position.
+			move.result = CursorWindowLive() ? ProgramCursor(move.polls) : kCursorOK;
+		}
+		move.displayStart = sCursorState.displayStart;
+		move.address = sCursorState.address;
+		return user_memcpy(buffer, &move, sizeof(move));
+	}
+	if (op == kShowCursor) {
+		if (length != sizeof(CursorShow))
+			return B_BAD_VALUE;
+		CursorShow show;
+		if (user_memcpy(&show, buffer, sizeof(show)) != B_OK)
+			return B_BAD_ADDRESS;
+		if (show.version != kCursorVersion)
+			return B_BAD_VALUE;
+		MutexLocker locker(sHardwareLock);
+		show.polls = 0;
+		if (sOwner == NULL || sCursor.address == NULL) {
+			show.result = kCursorNotAcquired;
+		} else {
+			bool wasVisible = sCursorState.visible != 0;
+			sCursorState.visible = show.visible != 0 ? 1 : 0;
+			show.result = wasVisible || CursorWindowLive() ? ProgramCursor(show.polls) : kCursorOK;
+			dprintf("rk3588_display: cursor %s result=%" B_PRIu32 " polls=%" B_PRIu32
+				" control=%#" B_PRIx32 " start=%#" B_PRIx32 "\n",
+				show.visible != 0 ? "shown" : "hidden", show.result, show.polls,
+				sCursorState.regionControl, sCursorState.displayStart);
+		}
+		show.regionControl = sCursorState.regionControl;
+		return user_memcpy(buffer, &show, sizeof(show));
+	}
+	return B_DEV_INVALID_IOCTL;
 }
 
 

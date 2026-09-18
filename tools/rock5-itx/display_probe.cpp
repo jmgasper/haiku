@@ -14,6 +14,7 @@
 #include "DisplayScanout.h"
 #include "DisplayAccelerant.h"
 #include "DisplayModeSet.h"
+#include "DisplayCursor.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -691,6 +692,226 @@ ChangePower(bool off)
 }
 
 
+// Hardware cursor through the driver, while app_server keeps its own
+// pointer state: the probe saves that state to a file, shows its own
+// 64x64 quadrant bitmap (white, black, transparent red, half-transparent
+// white) at a position for the capture, hides it, and restores the saved
+// state afterwards.
+static const char* kCursorSaved = "/tmp/rock5-cursor-saved.bin";
+
+
+static void
+ReportCursor(const char* label, const CursorState& state, const char* saved)
+{
+	printf("ROCK5_DISPLAY_CURSOR_%s width=%" PRIu32 " height=%" PRIu32 " hot=%" PRIu32 ",%" PRIu32
+		" x=%" PRId32 " y=%" PRId32 " visible=%" PRIu32 " window=%" PRIu32 " mixer=%" PRIu32
+		" control=%08" PRIx32 " start=%08" PRIx32 " address=%08" PRIx32 " mix=%08" PRIx32 ",%08"
+		PRIx32 ",%08" PRIx32 ",%08" PRIx32 " saved=%s\n", label, state.width, state.height,
+		state.hotX, state.hotY, state.x, state.y, state.visible, state.window, state.mixer,
+		state.regionControl, state.displayStart, state.address, state.mixWords[0],
+		state.mixWords[1], state.mixWords[2], state.mixWords[3], saved);
+}
+
+
+static bool
+CursorChecks(int fd)
+{
+	CursorShow show = {};
+	show.version = kCursorVersion;
+	if (ioctl(fd, kShowCursor, &show, sizeof(show) - 1) == 0 || errno != EINVAL) {
+		fprintf(stderr, "Malformed cursor request was not rejected\n");
+		return false;
+	}
+	if (ioctl(fd, kShowCursor, NULL, sizeof(show)) == 0 || errno != EFAULT) {
+		fprintf(stderr, "Null cursor request was not rejected\n");
+		return false;
+	}
+	show.version = kCursorVersion + 1;
+	if (ioctl(fd, kShowCursor, &show, sizeof(show)) == 0 || errno != EINVAL) {
+		fprintf(stderr, "Invalid cursor request version was not rejected\n");
+		return false;
+	}
+	CursorMove move = {};
+	move.version = kCursorVersion;
+	move.x = 40000;
+	if (ioctl(fd, kMoveCursor, &move, sizeof(move)) != 0 || move.result != kCursorUnsupported) {
+		fprintf(stderr, "Out-of-range cursor position was not refused\n");
+		return false;
+	}
+	printf("ROCK5_DISPLAY_CURSOR_REQUEST_CHECKS_PASS\n");
+	AccelerantInfo info = {};
+	info.version = kAccelerantVersion;
+	if (ioctl(fd, kGetAccelerantInfo, &info, sizeof(info)) != 0) {
+		perror("accelerant info");
+		return false;
+	}
+	printf("ROCK5_DISPLAY_CURSOR_ACCELERANT flags=%" PRIu32 " width=%" PRIu32 " height=%" PRIu32
+		"\n", info.flags, info.width, info.height);
+	if ((info.flags & kAccelerantCursor) == 0) {
+		fprintf(stderr, "The accelerant has no hardware cursor\n");
+		return false;
+	}
+	return true;
+}
+
+
+static bool
+MoveAndShow(int fd, int x, int y, bool visible, uint32_t& polls)
+{
+	CursorMove move = {};
+	move.version = kCursorVersion;
+	move.x = x;
+	move.y = y;
+	if (ioctl(fd, kMoveCursor, &move, sizeof(move)) != 0) {
+		perror("cursor move");
+		return false;
+	}
+	printf("ROCK5_DISPLAY_CURSOR_MOVE x=%d y=%d result=%" PRIu32 " polls=%" PRIu32 " start=%08"
+		PRIx32 " address=%08" PRIx32 "\n", x, y, move.result, move.polls, move.displayStart,
+		move.address);
+	CursorShow show = {};
+	show.version = kCursorVersion;
+	show.visible = visible ? 1 : 0;
+	if (ioctl(fd, kShowCursor, &show, sizeof(show)) != 0) {
+		perror("cursor show");
+		return false;
+	}
+	printf("ROCK5_DISPLAY_CURSOR_SHOW visible=%u result=%" PRIu32 " polls=%" PRIu32
+		" control=%08" PRIx32 "\n", visible ? 1 : 0, show.result, show.polls, show.regionControl);
+	polls = move.polls + show.polls;
+	return move.result == kCursorOK && show.result == kCursorOK;
+}
+
+
+static bool
+SetBitmap(int fd, CursorBitmap& bitmap)
+{
+	if (ioctl(fd, kSetCursorBitmap, &bitmap, sizeof(bitmap)) != 0) {
+		perror("cursor bitmap");
+		return false;
+	}
+	printf("ROCK5_DISPLAY_CURSOR_BITMAP width=%" PRIu32 " height=%" PRIu32 " hot=%" PRIu32 ",%"
+		PRIu32 " result=%" PRIu32 " polls=%" PRIu32 "\n", bitmap.width, bitmap.height,
+		bitmap.hotX, bitmap.hotY, bitmap.result, bitmap.polls);
+	return bitmap.result == kCursorOK;
+}
+
+
+// --cursor X Y: the quadrant bitmap at X,Y; --cursor-hide: hidden where it is;
+// --cursor-restore: app_server's saved state back.
+static bool
+ControlCursor(const char* action, int x, int y)
+{
+	int fd = open(kDevice, O_RDWR);
+	if (fd < 0) {
+		perror(kDevice);
+		return false;
+	}
+	if (!CursorChecks(fd)) {
+		close(fd);
+		return false;
+	}
+	static CursorState before, after, saved;
+	before.version = kCursorVersion;
+	if (ioctl(fd, kGetCursor, &before, sizeof(before)) != 0) {
+		perror("cursor state");
+		close(fd);
+		return false;
+	}
+	bool restoring = strcmp(action, "restore") == 0;
+	bool hiding = strcmp(action, "hide") == 0;
+	FILE* file = fopen(kCursorSaved, restoring ? "rb" : "rb");
+	bool haveSaved = file != NULL && fread(&saved, sizeof(saved), 1, file) == 1;
+	if (file != NULL)
+		fclose(file);
+	if (!restoring && !haveSaved) {
+		// The first placement keeps app_server's pointer for the restore.
+		file = fopen(kCursorSaved, "wb");
+		if (file == NULL || fwrite(&before, sizeof(before), 1, file) != 1) {
+			perror(kCursorSaved);
+			close(fd);
+			return false;
+		}
+		fclose(file);
+		saved = before;
+		haveSaved = true;
+	}
+	ReportCursor("BEFORE", before, haveSaved ? "yes" : "no");
+	bool passed = false;
+	uint32_t polls = 0;
+	if (restoring) {
+		if (!haveSaved) {
+			fprintf(stderr, "No saved cursor state at %s\n", kCursorSaved);
+			close(fd);
+			return false;
+		}
+		passed = true;
+		if (saved.width != 0) {
+			static CursorBitmap bitmap;
+			memset(&bitmap, 0, sizeof(bitmap));
+			bitmap.version = kCursorVersion;
+			bitmap.width = saved.width;
+			bitmap.height = saved.height;
+			bitmap.hotX = saved.hotX;
+			bitmap.hotY = saved.hotY;
+			bitmap.bytesPerRow = kCursorBytesPerRow;
+			memcpy(bitmap.data, saved.data, sizeof(bitmap.data));
+			passed = SetBitmap(fd, bitmap);
+			polls += bitmap.polls;
+		}
+		uint32_t movePolls = 0;
+		passed = MoveAndShow(fd, saved.x, saved.y, saved.visible != 0, movePolls) && passed;
+		polls += movePolls;
+		unlink(kCursorSaved);
+	} else if (hiding) {
+		passed = MoveAndShow(fd, before.x, before.y, false, polls);
+	} else {
+		static CursorBitmap bitmap;
+		memset(&bitmap, 0, sizeof(bitmap));
+		bitmap.version = kCursorVersion;
+		bitmap.width = bitmap.height = kCursorMaxSize;
+		bitmap.bytesPerRow = kCursorBytesPerRow;
+		for (unsigned row = 0; row < kCursorMaxSize; row++) {
+			for (unsigned column = 0; column < kCursorMaxSize; column++) {
+				uint8_t* pixel = bitmap.data + row * kCursorBytesPerRow + column * 4;
+				bool right = column >= kCursorMaxSize / 2, bottom = row >= kCursorMaxSize / 2;
+				// B_RGBA32 little-endian: blue, green, red, alpha.
+				if (!bottom && !right) {
+					pixel[0] = pixel[1] = pixel[2] = 0xff; pixel[3] = 0xff; // white
+				} else if (!bottom) {
+					pixel[0] = pixel[1] = pixel[2] = 0x00; pixel[3] = 0xff; // black
+				} else if (!right) {
+					pixel[0] = pixel[1] = 0x00; pixel[2] = 0xff; pixel[3] = 0x00; // transparent red
+				} else {
+					pixel[0] = pixel[1] = pixel[2] = 0xff; pixel[3] = 0x80; // half white
+				}
+			}
+		}
+		passed = SetBitmap(fd, bitmap);
+		polls += bitmap.polls;
+		uint32_t movePolls = 0;
+		passed = MoveAndShow(fd, x, y, true, movePolls) && passed;
+		polls += movePolls;
+	}
+	after.version = kCursorVersion;
+	if (ioctl(fd, kGetCursor, &after, sizeof(after)) != 0) {
+		perror("cursor state after");
+		close(fd);
+		return false;
+	}
+	ReportCursor("AFTER", after, restoring ? "removed" : "kept");
+	close(fd);
+	if (!passed) {
+		fprintf(stderr, "Cursor %s failed\n", action);
+		return false;
+	}
+	printf("ROCK5_DISPLAY_CURSOR_PASS action=%s x=%" PRId32 " y=%" PRId32 " visible=%" PRIu32
+		" width=%" PRIu32 " height=%" PRIu32 " polls=%" PRIu32 "\n", action, after.x, after.y,
+		after.visible, after.width, after.height, polls);
+	return true;
+}
+
+
 int
 main(int argc, char** argv)
 {
@@ -719,6 +940,21 @@ main(int argc, char** argv)
 		}
 		return ChangeMode(width, height) ? 0 : 1;
 	}
+	if (argc == 4 && strcmp(argv[1], "--cursor") == 0) {
+		char* end = NULL;
+		long x = strtol(argv[2], &end, 10);
+		bool valid = end != NULL && *end == '\0';
+		long y = strtol(argv[3], &end, 10);
+		valid = valid && end != NULL && *end == '\0' && x >= -32768 && x <= 32767 && y >= -32768
+			&& y <= 32767;
+		if (!valid) {
+			fprintf(stderr, "usage: %s --cursor X Y\n", argv[0]);
+			return 2;
+		}
+		return ControlCursor("place", (int)x, (int)y) ? 0 : 1;
+	}
+	if (argc == 2 && (strcmp(argv[1], "--cursor-hide") == 0 || strcmp(argv[1], "--cursor-restore") == 0))
+		return ControlCursor(argv[1] + strlen("--cursor-"), 0, 0) ? 0 : 1;
 	if (argc == 3 && strcmp(argv[1], "--power") == 0) {
 		if (strcmp(argv[2], "off") != 0 && strcmp(argv[2], "on") != 0) {
 			fprintf(stderr, "usage: %s --power off|on\n", argv[0]);
@@ -733,7 +969,8 @@ main(int argc, char** argv)
 		samples = (unsigned)atoi(argv[1]);
 	if ((scanout ? argc > 3 || hold < 1 || hold > 120 : argc > 2) || samples < 1 || samples > 16) {
 		fprintf(stderr, "usage: %s [samples 1-16 | --absent-device | --edid | --accelerant"
-			" | --scanout [hold-seconds 1-120] | --mode WIDTHxHEIGHT | --power off|on]\n", argv[0]);
+			" | --scanout [hold-seconds 1-120] | --mode WIDTHxHEIGHT | --power off|on"
+			" | --cursor X Y | --cursor-hide | --cursor-restore]\n", argv[0]);
 		return 2;
 	}
 	// Only the accelerant profile admits writable handles; opening and

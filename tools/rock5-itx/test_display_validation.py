@@ -480,6 +480,156 @@ class DisplayValidationTest(unittest.TestCase):
                 with self.assertRaises(check.ValidationError):
                     check.check_desktop_crop(session + 'frame-009.jpg', 1280, 720)
 
+    def test_cursor_transcript(self):
+        def state(label, width=64, height=64, hot=(0, 0), x=200, y=200, visible=1, control='00000001', start=None,
+                address='15400000', mix=check.CURSOR_MIXER_WORDS, saved='no', window=3, mixer=6):
+            if start is None:
+                placement = check.cursor_placement(x, y, hot[0], hot[1], width, height) if visible else None
+                start = placement['start'] if placement else '00000000'
+                if placement is None:
+                    control = '00000000'
+            return ('ROCK5_DISPLAY_CURSOR_%s width=%d height=%d hot=%d,%d x=%d y=%d visible=%d window=%d mixer=%d'
+                ' control=%s start=%s address=%s mix=%s saved=%s' % (label, width, height, hot[0], hot[1], x, y, visible,
+                window, mixer, control, start, address, ','.join(mix), saved))
+        def transcript(action='place', x=200, y=200, before=None, bitmap=None, move=None, show=None, after=None,
+                passed=None, flags=31, frame=(1920, 1080), address='15400000'):
+            placement = check.cursor_placement(x, y, 0, 0, 64, 64, frame)
+            lines = ['ROCK5_DISPLAY_CURSOR_REQUEST_CHECKS_PASS',
+                'ROCK5_DISPLAY_CURSOR_ACCELERANT flags=%d width=%d height=%d' % ((flags,) + tuple(frame))]
+            if action == 'place':
+                lines.append(before if before is not None else state('BEFORE', width=22, height=22, hot=(1, 1), x=960, y=540, address='15400000', saved='no'))
+                lines.append(bitmap if bitmap is not None else 'ROCK5_DISPLAY_CURSOR_BITMAP width=64 height=64 hot=0,0 result=0 polls=3')
+                lines.append(move if move is not None else 'ROCK5_DISPLAY_CURSOR_MOVE x=%d y=%d result=0 polls=2 start=%s address=%08x'
+                    % (x, y, placement['start'], int(address, 16) + placement['offset']))
+                lines.append(show if show is not None else 'ROCK5_DISPLAY_CURSOR_SHOW visible=1 result=0 polls=1 control=00000001')
+                lines.append(after if after is not None else state('AFTER', x=x, y=y, address='%08x' % (int(address, 16) + placement['offset']), saved='kept'))
+                lines.append(passed if passed is not None else 'ROCK5_DISPLAY_CURSOR_PASS action=place x=%d y=%d visible=1 width=64 height=64 polls=6' % (x, y))
+            elif action == 'hide':
+                lines.append(before if before is not None else state('BEFORE', x=x, y=y, saved='yes'))
+                lines.append(move if move is not None else 'ROCK5_DISPLAY_CURSOR_MOVE x=%d y=%d result=0 polls=2 start=00000000 address=%s' % (x, y, address))
+                lines.append(show if show is not None else 'ROCK5_DISPLAY_CURSOR_SHOW visible=0 result=0 polls=1 control=00000000')
+                lines.append(after if after is not None else state('AFTER', x=x, y=y, visible=0, control='00000000', start='00000000', saved='kept'))
+                lines.append(passed if passed is not None else 'ROCK5_DISPLAY_CURSOR_PASS action=hide x=%d y=%d visible=0 width=64 height=64 polls=3' % (x, y))
+            else:
+                lines.append(before if before is not None else state('BEFORE', x=x, y=y, visible=0, control='00000000', saved='yes'))
+                lines.append(bitmap if bitmap is not None else 'ROCK5_DISPLAY_CURSOR_BITMAP width=22 height=22 hot=1,1 result=0 polls=0')
+                lines.append(move if move is not None else 'ROCK5_DISPLAY_CURSOR_MOVE x=960 y=540 result=0 polls=0 start=00000000 address=%s' % address)
+                lines.append(show if show is not None else 'ROCK5_DISPLAY_CURSOR_SHOW visible=1 result=0 polls=4 control=00000001')
+                lines.append(after if after is not None else state('AFTER', width=22, height=22, hot=(1, 1), x=960, y=540, saved='removed'))
+                lines.append(passed if passed is not None else 'ROCK5_DISPLAY_CURSOR_PASS action=restore x=960 y=540 visible=1 width=22 height=22 polls=4')
+            return '\n'.join(lines) + '\n'
+        placed = check.validate_cursor(transcript(), 'place', 200, 200)
+        self.assertEqual((placed['base'], placed['after']['start'], placed['polls'], placed['placement']['width']), (0x15400000, '00c800c8', [2, 1, 3], 64))
+        saved = placed['before']
+        self.assertEqual((saved['width'], saved['x'], saved['y'], saved['visible']), (22, 960, 540, 1))
+        # Clipped placements offset the buffer address by the cropped rows and columns.
+        left = check.validate_cursor(transcript(x=-32, y=500), 'place', -32, 500, base=0x15400000)
+        self.assertEqual((left['after']['start'], left['placement']['offset'], left['placement']['width']), ('01f40000', 128, 32))
+        self.assertIsNone(check.validate_cursor(transcript(x=-32, y=500), 'place', -32, 500)['base'])
+        right = check.validate_cursor(transcript(x=1888, y=1048), 'place', 1888, 1048, base=0x15400000)
+        self.assertEqual((right['after']['start'], right['placement']['height']), ('04180760', 32))
+        hidden = check.validate_cursor(transcript('hide', x=1888, y=1048), 'hide')
+        self.assertEqual((hidden['after']['visible'], hidden['placement'], hidden['address']), (0, None, 0x15400000))
+        restored = check.validate_cursor(transcript('restore', x=1888, y=1048), 'restore', saved=saved)
+        self.assertEqual((restored['after']['width'], restored['after']['x'], restored['after']['control']), (22, 960, '00000001'))
+        # A saved state without a bitmap comes back without one.
+        bare = dict(saved, width=0, height=0, hot=(0, 0), visible=0)
+        body = transcript('restore', x=1888, y=1048, bitmap='', move='ROCK5_DISPLAY_CURSOR_MOVE x=960 y=540 result=0 polls=0 start=00000000 address=15400000',
+            show='ROCK5_DISPLAY_CURSOR_SHOW visible=0 result=0 polls=0 control=00000000',
+            after=state('AFTER', width=0, height=0, x=960, y=540, visible=0, control='00000000', saved='removed'),
+            passed='ROCK5_DISPLAY_CURSOR_PASS action=restore x=960 y=540 visible=0 width=0 height=0 polls=0').replace('\n\n', '\n')
+        self.assertEqual(check.validate_cursor(body, 'restore', saved=bare)['after']['width'], 0)
+        with self.assertRaises(ValueError):
+            check.validate_cursor(transcript(), 'blink')
+        with self.assertRaises(ValueError):
+            check.validate_cursor(transcript(), 'place')
+        with self.assertRaises(ValueError):
+            check.validate_cursor(transcript('restore'), 'restore')
+        cases = [
+            ('checks', transcript().replace('ROCK5_DISPLAY_CURSOR_REQUEST_CHECKS_PASS\n', ''), 'place', dict(x=200, y=200)),
+            ('no_cursor_flag', transcript(flags=15), 'place', dict(x=200, y=200)),
+            ('frame', transcript(frame=(1280, 720)), 'place', dict(x=200, y=200)),
+            ('window', transcript().replace('window=3 mixer=6 control=00000001 start=00c800c8', 'window=2 mixer=6 control=00000001 start=00c800c8'), 'place', dict(x=200, y=200)),
+            ('mixer_words', transcript().replace('mix=00ff0125,00ff0060,00000024,00000074 saved=kept', 'mix=00ff0125,00ff0060,00000024,00000075 saved=kept'), 'place', dict(x=200, y=200)),
+            ('saved_before', transcript(before=state('BEFORE', width=22, height=22, hot=(1, 1), x=960, y=540, saved='kept')), 'place', dict(x=200, y=200)),
+            ('saved_after', transcript().replace('saved=kept', 'saved=removed'), 'place', dict(x=200, y=200)),
+            ('bitmap_size', transcript(bitmap='ROCK5_DISPLAY_CURSOR_BITMAP width=32 height=32 hot=0,0 result=0 polls=3'), 'place', dict(x=200, y=200)),
+            ('bitmap_result', transcript(bitmap='ROCK5_DISPLAY_CURSOR_BITMAP width=64 height=64 hot=0,0 result=4 polls=3'), 'place', dict(x=200, y=200)),
+            ('move_result', transcript(move='ROCK5_DISPLAY_CURSOR_MOVE x=200 y=200 result=3 polls=5000 start=00c800c8 address=15400000'), 'place', dict(x=200, y=200)),
+            ('move_target', transcript(move='ROCK5_DISPLAY_CURSOR_MOVE x=201 y=200 result=0 polls=2 start=00c800c8 address=15400000'), 'place', dict(x=200, y=200)),
+            ('show_result', transcript(show='ROCK5_DISPLAY_CURSOR_SHOW visible=1 result=4 polls=1 control=00000001'), 'place', dict(x=200, y=200)),
+            ('show_control', transcript(show='ROCK5_DISPLAY_CURSOR_SHOW visible=1 result=0 polls=1 control=00000000'), 'place', dict(x=200, y=200)),
+            ('after_position', transcript(after=state('AFTER', x=200, y=201, saved='kept')), 'place', dict(x=200, y=200)),
+            ('after_control', transcript(after=state('AFTER', control='00000000', start='00c800c8', saved='kept')), 'place', dict(x=200, y=200)),
+            ('after_start', transcript(after=state('AFTER', start='00c800c9', saved='kept')), 'place', dict(x=200, y=200)),
+            ('address_page', transcript(after=state('AFTER', address='15400010', saved='kept'), move='ROCK5_DISPLAY_CURSOR_MOVE x=200 y=200 result=0 polls=2 start=00c800c8 address=15400010'), 'place', dict(x=200, y=200)),
+            ('address_base', transcript(x=-32, y=500), 'place', dict(x=-32, y=500, base=0x15400100)),
+            ('address_mismatch', transcript(x=-32, y=500).replace('address=15400080 mix', 'address=15400084 mix'), 'place', dict(x=-32, y=500, base=0x15400000)),
+            ('polls', transcript(bitmap='ROCK5_DISPLAY_CURSOR_BITMAP width=64 height=64 hot=0,0 result=0 polls=5001',
+                passed='ROCK5_DISPLAY_CURSOR_PASS action=place x=200 y=200 visible=1 width=64 height=64 polls=5004'), 'place', dict(x=200, y=200)),
+            ('summary_polls', transcript(passed='ROCK5_DISPLAY_CURSOR_PASS action=place x=200 y=200 visible=1 width=64 height=64 polls=7'), 'place', dict(x=200, y=200)),
+            ('summary_action', transcript(passed='ROCK5_DISPLAY_CURSOR_PASS action=hide x=200 y=200 visible=1 width=64 height=64 polls=6'), 'place', dict(x=200, y=200)),
+            ('summary_missing', transcript(passed=''), 'place', dict(x=200, y=200)),
+            ('hide_visible', transcript('hide', x=1888, y=1048, after=state('AFTER', x=1888, y=1048, saved='kept')), 'hide', {}),
+            ('hide_control', transcript('hide', x=1888, y=1048, after=state('AFTER', x=1888, y=1048, visible=0, control='00000001', start='00000000', saved='kept')), 'hide', {}),
+            ('hide_bitmap', transcript('hide', x=1888, y=1048, move='ROCK5_DISPLAY_CURSOR_BITMAP width=64 height=64 hot=0,0 result=0 polls=3\nROCK5_DISPLAY_CURSOR_MOVE x=1888 y=1048 result=0 polls=2 start=00000000 address=15400000'), 'hide', {}),
+            ('hide_moved', transcript('hide', x=1888, y=1048, move='ROCK5_DISPLAY_CURSOR_MOVE x=1888 y=1000 result=0 polls=2 start=00000000 address=15400000'), 'hide', {}),
+            ('restore_bitmap', transcript('restore', x=1888, y=1048, bitmap='ROCK5_DISPLAY_CURSOR_BITMAP width=24 height=22 hot=1,1 result=0 polls=0'), 'restore', dict(saved=saved)),
+            ('restore_hot', transcript('restore', x=1888, y=1048, bitmap='ROCK5_DISPLAY_CURSOR_BITMAP width=22 height=22 hot=2,1 result=0 polls=0'), 'restore', dict(saved=saved)),
+            ('restore_position', transcript('restore', x=1888, y=1048, move='ROCK5_DISPLAY_CURSOR_MOVE x=960 y=541 result=0 polls=0 start=00000000 address=15400000'), 'restore', dict(saved=saved)),
+            ('restore_saved_before', transcript('restore', x=1888, y=1048, before=state('BEFORE', x=1888, y=1048, visible=0, control='00000000', saved='no')), 'restore', dict(saved=saved)),
+            ('restore_saved_after', transcript('restore', x=1888, y=1048).replace('saved=removed', 'saved=kept'), 'restore', dict(saved=saved)),
+            ('restore_after', transcript('restore', x=1888, y=1048, after=state('AFTER', width=22, height=22, hot=(1, 1), x=960, y=540, visible=0, control='00000000', start='00000000', saved='removed')), 'restore', dict(saved=saved)),
+        ]
+        for name, body, action, keywords in cases:
+            with self.subTest(name):
+                with self.assertRaises(check.ValidationError):
+                    check.validate_cursor(body, action, **keywords)
+
+    def test_cursor_frame(self):
+        import tempfile
+        from PIL import Image, ImageDraw
+        half = tuple(d + (255 - d) * 128 // 255 for d in check.DESKTOP_BLUE)
+        def capture(path, x, y, shown=True, quadrants=None):
+            image = Image.new('RGB', (1920, 1080), check.DESKTOP_BLUE)
+            draw = ImageDraw.Draw(image)
+            draw.rectangle([1784, 0, 1919, 70], fill=(200, 200, 200))
+            if shown:
+                colours = quadrants or ((255, 255, 255), (0, 0, 0), check.DESKTOP_BLUE, half)
+                for (dx, dy), colour in zip(((0, 0), (32, 0), (0, 32), (32, 32)), colours):
+                    draw.rectangle([x + dx, y + dy, x + dx + 31, y + dy + 31], fill=colour)
+            image.save(path, format='JPEG', quality=80)
+        with tempfile.TemporaryDirectory() as directory:
+            frame = directory + '/cursor.jpg'
+            capture(frame, 200, 200)
+            result = check.check_cursor_frame(frame, 200, 200)
+            self.assertEqual([s['kind'] for s in result['samples']], ['white', 'black', 'transparent', 'half', 'outside', 'outside', 'outside', 'outside'])
+            with self.assertRaises(check.ValidationError):
+                check.check_cursor_frame(frame, 200, 200, shown=False)
+            with self.assertRaises(check.ValidationError):
+                check.check_cursor_frame(frame, 300, 200)
+            capture(frame, -32, 500)
+            result = check.check_cursor_frame(frame, -32, 500)
+            self.assertEqual([s['kind'] for s in result['samples']], ['black', 'half', 'outside', 'outside', 'outside'])
+            capture(frame, 1888, 1048)
+            self.assertEqual([s['kind'] for s in check.check_cursor_frame(frame, 1888, 1048)['samples']], ['white'])
+            capture(frame, 1888, 1048, shown=False)
+            self.assertEqual(check.check_cursor_frame(frame, 1888, 1048, shown=False)['samples'][0]['kind'], 'hidden_white')
+            with self.assertRaises(check.ValidationError):
+                check.check_cursor_frame(frame, 1888, 1048)
+            # An opaque bottom-left quadrant means the alpha was ignored; an unblended bottom-right likewise.
+            capture(frame, 200, 200, quadrants=((255, 255, 255), (0, 0, 0), (255, 0, 0), half))
+            with self.assertRaises(check.ValidationError):
+                check.check_cursor_frame(frame, 200, 200)
+            capture(frame, 200, 200, quadrants=((255, 255, 255), (0, 0, 0), check.DESKTOP_BLUE, (255, 255, 255)))
+            with self.assertRaises(check.ValidationError):
+                check.check_cursor_frame(frame, 200, 200)
+            with self.assertRaises(check.ValidationError):
+                check.check_cursor_frame(frame, 3000, 3000)
+            Image.new('RGB', (1280, 720), check.DESKTOP_BLUE).save(frame, format='JPEG')
+            with self.assertRaises(check.ValidationError):
+                check.check_cursor_frame(frame, 200, 200)
+
     def test_pattern_frame(self):
         import tempfile
         with tempfile.TemporaryDirectory() as directory:

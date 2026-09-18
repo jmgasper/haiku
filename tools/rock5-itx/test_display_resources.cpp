@@ -54,6 +54,7 @@ static void atomic_set(int32* value, int32 newValue) { __atomic_store_n(value, n
 #include "DisplayScanout.h"
 #include "DisplayAccelerant.h"
 #include "DisplayModeSet.h"
+#include "DisplayCursor.h"
 
 using namespace RK3588Display;
 
@@ -84,6 +85,9 @@ static int sVopCommitCountdown = -1;
 // Mode-set models: PHY, HDMI TX packet words, HDPTX GRF (HIWORD control,
 // modeled status) and the CRU reset words. Every changed word is logged.
 static bool sAllowModeSet, sHoldNever;
+static bool sAllowCursor;
+static std::map<unsigned, uint32> sVopPendingWindow; // shadowed cursor window and mixer words
+static bool sCursorStickyControl; // REGION0_CTRL of the cursor window never takes a write
 static interrupt_handler sHandler;
 static void* sHandlerData;
 static uint32* sPhyModel;
@@ -105,6 +109,9 @@ static const unsigned kModelAddressOffset = 0x1800 + kModelWindow * 0x200 + 0x14
 static const uint32 kModelFirmwareAddress = 0xed280000;
 static const uint64 kModelPatternPhysical = 0x40100000;
 static const uint64 kModelFramePhysical = 0x14c00000;
+static const uint64 kModelCursorPhysical = 0x15400000;
+static const unsigned kModelCursorWindowBase = 0x1800 + 3 * 0x200;
+static const unsigned kModelCursorMixerBase = 0x650 + 6 * 0x10;
 
 struct mutex {};
 #define MUTEX_INITIALIZER(name) {}
@@ -167,6 +174,13 @@ VopModelStep()
 			sVopShadow[0xc8 / 4] = sVopModel[0xc8 / 4];
 			sVopOverrides[0xc8] = sVopModel[0xc8 / 4];
 			sVopModel[i] = 0;
+		} else if (sAllowCursor && ((offset >= kModelCursorWindowBase && offset < kModelCursorWindowBase + 0x200)
+				|| (offset >= kModelCursorMixerBase && offset < kModelCursorMixerBase + 0x10))) {
+			// The cursor window and its mixer are shadowed like the scanout
+			// address: the active word stays readable until the frame start.
+			if (!(sCursorStickyControl && offset == kModelCursorWindowBase + 0x10))
+				sVopPendingWindow[offset] = value;
+			sVopModel[i] = sVopShadow[i];
 		} else if (sAllowModeSet && (offset == 0xe00 || offset == 0xe04 || offset == 0xe2c
 				|| offset == 0xe30 || offset == 0xe34 || offset == 0xe38 || offset == 0xe3c
 				|| offset == 0xe40 || offset == 0xe48 || offset == 0xe4c || offset == 0xe50
@@ -197,6 +211,12 @@ VopModelStep()
 			sVopShadow[kModelAddressOffset / 4] = sVopPendingAddress;
 		}
 		sVopAddressPending = false;
+		for (auto& pending : sVopPendingWindow) {
+			sVopOverrides[pending.first] = pending.second;
+			sVopModel[pending.first / 4] = pending.second;
+			sVopShadow[pending.first / 4] = pending.second;
+		}
+		sVopPendingWindow.clear();
 	}
 }
 
@@ -624,7 +644,9 @@ static const uint32 B_CONTIGUOUS = 3;
 static const team_id B_SYSTEM_TEAM = 1;
 static void* sPatternAllocation;
 static void* sFrameAllocation;
-static int sPatternArea = -1, sFrameArea = -1, sSharedModelArea = -1;
+static void* sCursorAllocation;
+static int sPatternArea = -1, sFrameArea = -1, sCursorArea = -1, sSharedModelArea = -1;
+static unsigned sCursorNoncacheable;
 static void* sSharedPage;
 static unsigned sPatternAllocations, sFailPattern, sNoncacheableCalls, sFrameNoncacheable;
 static unsigned sClones, sNullClones, sConsoleUpdates;
@@ -638,24 +660,25 @@ create_area_etc(team_id team, const char* name, size_t size, uint32 lock, uint32
 	const physical_address_restrictions* physicalRestrictions, void** address)
 {
 	bool pattern = strcmp(name, "RK3588 display pattern") == 0;
+	bool cursor = strcmp(name, "RK3588 display cursor") == 0;
 	assert(sLockDepth == 1 && team == B_SYSTEM_TEAM);
-	assert(pattern || strcmp(name, "RK3588 display frame buffer") == 0);
-	assert(size == (pattern ? kPatternBytes : kFrameBytes) && lock == B_CONTIGUOUS);
+	assert(pattern || cursor || strcmp(name, "RK3588 display frame buffer") == 0);
+	assert(size == (pattern ? kPatternBytes : cursor ? kCursorBufferBytes : kFrameBytes) && lock == B_CONTIGUOUS);
 	assert(flags == 0 && guardSize == 0);
 	assert(protection == (B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA));
 	assert(virtualRestrictions->address == NULL && virtualRestrictions->address_specification == 0);
 	assert(physicalRestrictions->low_address == 0 && physicalRestrictions->high_address == 0x100000000ull);
 	assert(physicalRestrictions->alignment == B_PAGE_SIZE && physicalRestrictions->boundary == 0);
-	assert((pattern ? sPatternArea : sFrameArea) < 0);
+	assert((pattern ? sPatternArea : cursor ? sCursorArea : sFrameArea) < 0);
 	if (++sPatternAllocations == sFailPattern)
 		return B_NO_MEMORY;
 	void* allocation = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	assert(allocation != MAP_FAILED);
 	// A fresh mapping is zero; the driver must clear the frame buffer itself.
 	memset(allocation, 0x5a, 64);
-	int area = (pattern ? 900 : 1000) + (int)sPatternAllocations;
-	(pattern ? sPatternAllocation : sFrameAllocation) = allocation;
-	(pattern ? sPatternArea : sFrameArea) = area;
+	int area = (pattern ? 900 : cursor ? 1200 : 1000) + (int)sPatternAllocations;
+	(pattern ? sPatternAllocation : cursor ? sCursorAllocation : sFrameAllocation) = allocation;
+	(pattern ? sPatternArea : cursor ? sCursorArea : sFrameArea) = area;
 	*address = allocation;
 	return area;
 }
@@ -668,6 +691,9 @@ get_memory_map(const void* address, size_t bytes, physical_entry* table, int32 c
 	if (address == sPatternAllocation && sPatternAllocation != NULL) {
 		assert(bytes == kPatternBytes);
 		table->address = sPatternHighPhysical ? 0xffc00000ull : kModelPatternPhysical;
+	} else if (address == sCursorAllocation && sCursorAllocation != NULL) {
+		assert(bytes == kCursorBufferBytes);
+		table->address = kModelCursorPhysical;
 	} else {
 		assert(address == sFrameAllocation && sFrameAllocation != NULL && bytes == kFrameBytes);
 		table->address = kModelFramePhysical;
@@ -698,6 +724,10 @@ delete_area(area_id area)
 		assert(munmap(sFrameAllocation, kFrameBytes) == 0);
 		sFrameAllocation = NULL;
 		sFrameArea = -1;
+	} else if (area == sCursorArea) {
+		assert(munmap(sCursorAllocation, kCursorBufferBytes) == 0);
+		sCursorAllocation = NULL;
+		sCursorArea = -1;
 	} else {
 		assert(area == sSharedModelArea && sSharedPage != NULL);
 		assert(munmap(sSharedPage, B_PAGE_SIZE) == 0);
@@ -719,6 +749,13 @@ MakeBufferNoncacheable(area_id area, void* address, size_t bytes)
 			assert(pixels[i] == 0);
 		assert(pixels[0] == 0 && pixels[kFrameBytes / 4 - 1] == 0);
 		sFrameNoncacheable++;
+		return B_OK;
+	}
+	if (area == sCursorArea) {
+		assert(address == sCursorAllocation && bytes == kCursorBufferBytes);
+		for (unsigned i = 0; i < kCursorBufferBytes / 4; i++)
+			assert(pixels[i] == 0);
+		sCursorNoncacheable++;
 		return B_OK;
 	}
 	assert(area == sPatternArea && address == sPatternAllocation && bytes == kPatternBytes);
@@ -1052,6 +1089,10 @@ Prepare()
 	sAllowScanout = false;
 	sAllowModeSet = false;
 	sHoldNever = false;
+	sAllowCursor = false;
+	sVopPendingWindow.clear();
+	sCursorStickyControl = false;
+	sCursorNoncacheable = 0;
 	sPhyModel = NULL; sPhyShadow.clear(); sPhyWrites.clear();
 	sHdmiShadow.clear(); sHdmiWrites.clear();
 	sGrfModel = NULL; sGrfShadow.clear(); sGrfWrites.clear(); sGrfControl = 0xe0;
@@ -1102,6 +1143,9 @@ Prepare()
 	assert(sOwner == NULL);
 	ReleaseContiguous(sPattern);
 	ReleaseContiguous(sFrame);
+	ReleaseContiguous(sCursor);
+	sCursorProgrammed = false;
+	memset(&sCursorState, 0, sizeof(sCursorState));
 	if (sSharedModelArea >= 0)
 		delete_area(sSharedModelArea);
 	sSharedArea = -1;
@@ -2085,6 +2129,233 @@ main()
 	assert(sCurrentMode.version == 0 && sConsole.width == 1920);
 	sAllowScanout = false;
 	sAllowModeSet = false;
+
+	// Hardware cursor: gating, refusals, the buffer, the window and mixer
+	// programming through the shadowed commit, clipping at every edge, the
+	// mode change, the timeouts and the release.
+	static_assert(sizeof(CursorBitmap) == 32 + 16384, "Cursor bitmap ABI layout changed");
+	static_assert(sizeof(CursorMove) == 32 && sizeof(CursorShow) == 32, "Cursor ABI layout changed");
+	static_assert(sizeof(CursorState) == 68 + 16384, "Cursor state ABI layout changed");
+	Prepare(); sAllowEdid = true; sAllowScanout = true; sAllowCursor = true; sAllowModeSet = true;
+	controller.modeSetEnabled = true;
+	controller.cursorEnabled = false;
+	CursorShow show = {};
+	show.version = kCursorVersion;
+	show.visible = 1;
+	assert(Open(&controller, "", O_RDWR, &opened) == B_OK);
+	primary = (Handle*)opened;
+	assert(Control(primary, kShowCursor, &show, sizeof(show)) == B_DEV_INVALID_IOCTL);
+	controller.cursorEnabled = true;
+	assert(Open(&controller, "", O_RDONLY, &opened) == B_OK);
+	reader = (Handle*)opened;
+	static CursorState cursorState;
+	static CursorBitmap cursorBitmap;
+	CursorMove move = {};
+	move.version = kCursorVersion;
+	assert(Control(reader, kShowCursor, &show, sizeof(show)) == B_NOT_ALLOWED);
+	assert(Control(reader, kMoveCursor, &move, sizeof(move)) == B_NOT_ALLOWED);
+	assert(Control(reader, kSetCursorBitmap, &cursorBitmap, sizeof(cursorBitmap)) == B_NOT_ALLOWED);
+	assert(Control(primary, kShowCursor, &show, sizeof(show) - 1) == B_BAD_VALUE);
+	assert(Control(primary, kMoveCursor, &move, sizeof(move) + 1) == B_BAD_VALUE);
+	assert(Control(primary, kSetCursorBitmap, &cursorBitmap, sizeof(cursorBitmap) - 4) == B_BAD_VALUE);
+	assert(Control(reader, kGetCursor, &cursorState, sizeof(cursorState) - 1) == B_BAD_VALUE);
+	assert(Control(primary, kShowCursor, NULL, sizeof(show)) == B_BAD_ADDRESS);
+	show.version = kCursorVersion + 1;
+	assert(Control(primary, kShowCursor, &show, sizeof(show)) == B_BAD_VALUE);
+	show.version = kCursorVersion;
+	move.version = 0;
+	assert(Control(primary, kMoveCursor, &move, sizeof(move)) == B_BAD_VALUE);
+	move.version = kCursorVersion;
+	cursorBitmap.version = 7;
+	assert(Control(primary, kSetCursorBitmap, &cursorBitmap, sizeof(cursorBitmap)) == B_BAD_VALUE);
+	// Nothing acquired yet: every request reports that, the hardware is untouched.
+	assert(Control(primary, kShowCursor, &show, sizeof(show)) == B_OK && show.result == kCursorNotAcquired);
+	assert(Control(primary, kMoveCursor, &move, sizeof(move)) == B_OK && move.result == kCursorNotAcquired);
+	memset(&cursorBitmap, 0, sizeof(cursorBitmap));
+	cursorBitmap.version = kCursorVersion;
+	cursorBitmap.width = cursorBitmap.height = 16;
+	cursorBitmap.bytesPerRow = 64;
+	assert(Control(primary, kSetCursorBitmap, &cursorBitmap, sizeof(cursorBitmap)) == B_OK);
+	assert(cursorBitmap.result == kCursorNotAcquired && sMapAttempts == 0 && sCursorArea < 0);
+	assert(Control(reader, kGetCursor, &cursorState, sizeof(cursorState)) == B_OK && cursorState.width == 0);
+	// Acquisition allocates the cursor buffer (zeroed, non-cacheable) and
+	// advertises the cursor; nothing is programmed until the pointer shows.
+	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_OK && sOwner == primary);
+	assert(sCursorArea >= 0 && sCursorNoncacheable == 1 && sCursor.physical == kModelCursorPhysical);
+	acc.version = kAccelerantVersion;
+	assert(Control(reader, kGetAccelerantInfo, &acc, sizeof(acc)) == B_OK);
+	assert(acc.flags == (kAccelerantAcquired | kAccelerantEdid | kAccelerantRetrace | kAccelerantModeSet
+		| kAccelerantCursor));
+	assert(Control(reader, kGetCursor, &cursorState, sizeof(cursorState)) == B_OK);
+	assert(cursorState.version == kCursorVersion && cursorState.window == 3 && cursorState.mixer == 6);
+	assert(cursorState.width == 0 && cursorState.visible == 0 && cursorState.data[0] == 0);
+	sVopWrites.clear();
+	// The bitmap: rejected sizes and strides, then a 16x16 pointer with hot spot 2,3.
+	auto bitmap = [&](unsigned w, unsigned h, unsigned hx, unsigned hy, unsigned stride) {
+		memset(&cursorBitmap, 0, sizeof(cursorBitmap));
+		cursorBitmap.version = kCursorVersion;
+		cursorBitmap.width = w; cursorBitmap.height = h;
+		cursorBitmap.hotX = hx; cursorBitmap.hotY = hy;
+		cursorBitmap.bytesPerRow = stride;
+		for (unsigned y = 0; y < h && y * stride < kCursorBufferBytes; y++) {
+			for (unsigned x = 0; x < w; x++) {
+				uint32 pixel = 0x80000000u | (y << 8) | x;
+				memcpy(cursorBitmap.data + y * stride + x * 4, &pixel, 4);
+			}
+		}
+		assert(Control(primary, kSetCursorBitmap, &cursorBitmap, sizeof(cursorBitmap)) == B_OK);
+		return cursorBitmap.result;
+	};
+	assert(bitmap(0, 16, 0, 0, 64) == kCursorUnsupported && bitmap(16, 0, 0, 0, 64) == kCursorUnsupported);
+	assert(bitmap(65, 16, 0, 0, 260) == kCursorUnsupported && bitmap(16, 65, 0, 0, 64) == kCursorUnsupported);
+	assert(bitmap(16, 16, 16, 0, 64) == kCursorUnsupported && bitmap(16, 16, 0, 16, 64) == kCursorUnsupported);
+	assert(bitmap(16, 16, 0, 0, 60) == kCursorUnsupported && bitmap(16, 16, 0, 0, 257) == kCursorUnsupported);
+	assert(sVopWrites.empty() && cursorBitmap.polls == 0);
+	assert(Control(reader, kGetCursor, &cursorState, sizeof(cursorState)) == B_OK && cursorState.width == 0);
+	assert(bitmap(16, 16, 2, 3, 64) == kCursorOK && cursorBitmap.polls == 0 && sVopWrites.empty());
+	assert(Control(reader, kGetCursor, &cursorState, sizeof(cursorState)) == B_OK);
+	assert(cursorState.width == 16 && cursorState.height == 16 && cursorState.hotX == 2 && cursorState.hotY == 3);
+	uint32 pixel = 0;
+	memcpy(&pixel, cursorState.data + 5 * kCursorBytesPerRow + 7 * 4, 4);
+	assert(pixel == (0x80000000u | (5 << 8) | 7));
+	memcpy(&pixel, cursorState.data + 15 * kCursorBytesPerRow + 15 * 4, 4);
+	assert(pixel == (0x80000000u | (15 << 8) | 15));
+	memcpy(&pixel, cursorState.data + 5 * kCursorBytesPerRow + 16 * 4, 4);
+	assert(pixel == 0 && cursorState.data[16 * kCursorBytesPerRow] == 0 && cursorState.data[kCursorBufferBytes - 1] == 0);
+	// A hidden pointer only remembers its position.
+	move.x = 100; move.y = 200;
+	assert(Control(primary, kMoveCursor, &move, sizeof(move)) == B_OK && move.result == kCursorOK);
+	assert(move.polls == 0 && move.displayStart == 0 && move.address == 0 && sVopWrites.empty());
+	move.x = 40000;
+	assert(Control(primary, kMoveCursor, &move, sizeof(move)) == B_OK && move.result == kCursorUnsupported);
+	move.x = 100; move.y = -40000;
+	assert(Control(primary, kMoveCursor, &move, sizeof(move)) == B_OK && move.result == kCursorUnsupported);
+	assert(Control(reader, kGetCursor, &cursorState, sizeof(cursorState)) == B_OK);
+	assert(cursorState.x == 100 && cursorState.y == 200 && cursorState.visible == 0 && sVopWrites.empty());
+	// Showing programs ESMART3 (bus ids, no scaling, no colour key, 64-pixel
+	// rows, the buffer, 16x16 at 98,197), mixer 6 and commits port 2; the
+	// read-backs wait for the frame start.
+	show.visible = 1;
+	assert(Control(primary, kShowCursor, &show, sizeof(show)) == B_OK && show.result == kCursorOK);
+	assert(show.polls >= 1 && show.polls <= 4 && show.regionControl == 1);
+	assert(sequenceOf(sVopWrites, {{0x1e08u, sVopOverrides[0x1e08]}, {0x1ed0u, 0u}, {0x1e30u, 0u}, {0x1e34u, 0u},
+		{0x6b0u, 0x00ff0125u}, {0x6b4u, 0x00ff0060u}, {0x6b8u, 0x00000024u}, {0x6bcu, 0x00000074u},
+		{0x1e1cu, 64u}, {0x1e14u, (uint32)kModelCursorPhysical}, {0x1e20u, 0x000f000fu},
+		{0x1e24u, 0x000f000fu}, {0x1e28u, 0x00c50062u}, {0x1e10u, 1u}, {0x000u, 0x00048004u}}));
+	assert(sVopWrites[0].first == 0x1e04 && (sVopOverrides[0x1e04] & 0x1f1f0) == ((0xcu << 4) | (0xdu << 12)));
+	assert((sVopOverrides[0x1e08] & 2) != 0 && sVopOverrides[0x1e10] == 1 && sVopOverrides[0x1e28] == 0x00c50062);
+	assert(sVopWrites.size() == 16 && sMappedBases.back() == 0xfdd90000);
+	assert(Control(reader, kGetCursor, &cursorState, sizeof(cursorState)) == B_OK);
+	assert(cursorState.visible == 1 && cursorState.regionControl == 1 && cursorState.displayStart == 0x00c50062);
+	assert(cursorState.address == kModelCursorPhysical && cursorState.mixWords[0] == 0x00ff0125
+		&& cursorState.mixWords[3] == 0x00000074);
+	// Clipped at the top left: the window shrinks and the address skips the
+	// cropped rows and columns.
+	sVopWrites.clear();
+	move.x = -5; move.y = -7;
+	assert(Control(primary, kMoveCursor, &move, sizeof(move)) == B_OK && move.result == kCursorOK);
+	assert(move.polls >= 1 && move.displayStart == 0 && move.address == kModelCursorPhysical + 10 * 256 + 7 * 4);
+	assert(sequenceOf(sVopWrites, {{0x1e14u, (uint32)(kModelCursorPhysical + 10 * 256 + 7 * 4)}, {0x1e20u, 0x00050008u},
+		{0x1e24u, 0x00050008u}, {0x1e28u, 0u}, {0x000u, 0x00048004u}}));
+	assert(sVopWrites.size() == 5); // the settled words are not rewritten
+	// Clipped at the bottom right.
+	sVopWrites.clear();
+	move.x = 1915; move.y = 1075;
+	assert(Control(primary, kMoveCursor, &move, sizeof(move)) == B_OK && move.result == kCursorOK);
+	assert(move.displayStart == ((1072u << 16) | 1913u) && move.address == kModelCursorPhysical);
+	assert(sequenceOf(sVopWrites, {{0x1e14u, (uint32)kModelCursorPhysical}, {0x1e20u, 0x00070006u},
+		{0x1e24u, 0x00070006u}, {0x1e28u, (1072u << 16) | 1913u}, {0x000u, 0x00048004u}}));
+	// Entirely off the frame: the window is disabled but the pointer stays visible.
+	sVopWrites.clear();
+	move.x = 3000; move.y = 3000;
+	assert(Control(primary, kMoveCursor, &move, sizeof(move)) == B_OK && move.result == kCursorOK);
+	assert(move.displayStart == 0 && sequenceOf(sVopWrites, {{0x1e20u, 0u}, {0x1e24u, 0u}, {0x1e28u, 0u}, {0x1e10u, 0u},
+		{0x000u, 0x00048004u}}));
+	assert(Control(reader, kGetCursor, &cursorState, sizeof(cursorState)) == B_OK);
+	assert(cursorState.visible == 1 && cursorState.regionControl == 0 && cursorState.x == 3000);
+	sVopWrites.clear();
+	move.x = 500; move.y = 400;
+	assert(Control(primary, kMoveCursor, &move, sizeof(move)) == B_OK && move.result == kCursorOK);
+	assert(move.displayStart == ((397u << 16) | 498u) && sequenceOf(sVopWrites, {{0x1e10u, 1u}, {0x000u, 0x00048004u}}));
+	// A new bitmap while visible is programmed at once; the hot spot moves the window.
+	sVopWrites.clear();
+	assert(bitmap(64, 32, 63, 31, 256) == kCursorOK && cursorBitmap.polls >= 1);
+	assert(sequenceOf(sVopWrites, {{0x1e20u, 0x001f003fu}, {0x1e28u, (369u << 16) | 437u}, {0x000u, 0x00048004u}}));
+	assert(Control(reader, kGetCursor, &cursorState, sizeof(cursorState)) == B_OK);
+	memcpy(&pixel, cursorState.data + 31 * kCursorBytesPerRow + 63 * 4, 4);
+	assert(pixel == (0x80000000u | (31 << 8) | 63) && cursorState.data[32 * kCursorBytesPerRow] == 0);
+	// The port never takes the commit: a timeout after the poll limit.
+	sVopWrites.clear();
+	sCommitNeverCompletes = true;
+	move.x = 600;
+	assert(Control(primary, kMoveCursor, &move, sizeof(move)) == B_OK && move.result == kCursorTimeout);
+	assert(move.polls == kScanoutPollLimit);
+	sCommitNeverCompletes = false;
+	// The region control never takes: the read-back differs.
+	sCursorStickyControl = true;
+	show.visible = 0;
+	assert(Control(primary, kShowCursor, &show, sizeof(show)) == B_OK && show.result == kCursorVerifyFailed);
+	assert(show.regionControl == 1);
+	sCursorStickyControl = false;
+	assert(Control(primary, kShowCursor, &show, sizeof(show)) == B_OK && show.result == kCursorOK);
+	assert(show.regionControl == 0 && sequenceOf(sVopWrites, {{0x1e10u, 0u}, {0x000u, 0x00048004u}}));
+	// Hidden: moves and bitmaps touch nothing; showing brings the window back.
+	sVopWrites.clear();
+	move.x = 700; move.y = 300;
+	assert(Control(primary, kMoveCursor, &move, sizeof(move)) == B_OK && move.result == kCursorOK && move.polls == 0);
+	assert(sVopWrites.empty() && bitmap(16, 16, 0, 0, 64) == kCursorOK && cursorBitmap.polls == 0);
+	assert(sVopWrites.empty() && sVopOverrides[0x1e10] == 0);
+	show.visible = 1;
+	assert(Control(primary, kShowCursor, &show, sizeof(show)) == B_OK && show.result == kCursorOK);
+	assert(show.regionControl == 1 && sequenceOf(sVopWrites, {{0x1e20u, 0x000f000fu}, {0x1e28u, (300u << 16) | 700u},
+		{0x1e10u, 1u}, {0x000u, 0x00048004u}}));
+	// A mode change re-clips the pointer to the new frame: 1500,300 is off a
+	// 720p frame and back on after the next move.
+	move.x = 1500; move.y = 300;
+	assert(Control(primary, kMoveCursor, &move, sizeof(move)) == B_OK && move.result == kCursorOK);
+	assert(move.displayStart == ((300u << 16) | 1500u));
+	fill(1280, 720, 74250, 1390, 1430, 1650, 725, 730, 750, 4);
+	assert(Control(primary, kSetDisplayMode, &mode, sizeof(mode)) == B_OK && mode.result == kModeOK);
+	assert(sequenceOf(sVopWrites, {{0xe48u, 0x06720028u}, {0x1e10u, 0u}, {0x000u, 0x00048004u}}));
+	assert(Control(reader, kGetCursor, &cursorState, sizeof(cursorState)) == B_OK);
+	assert(cursorState.visible == 1 && cursorState.regionControl == 0 && cursorState.displayStart == 0);
+	sVopWrites.clear();
+	move.x = 1275; move.y = 100;
+	assert(Control(primary, kMoveCursor, &move, sizeof(move)) == B_OK && move.result == kCursorOK);
+	assert(move.displayStart == ((100u << 16) | 1275u) && sequenceOf(sVopWrites, {{0x1e20u, 0x000f0004u},
+		{0x1e10u, 1u}, {0x000u, 0x00048004u}}));
+	fill(1920, 1080, 148500, 2008, 2052, 2200, 1084, 1089, 1125, 16);
+	assert(Control(primary, kSetDisplayMode, &mode, sizeof(mode)) == B_OK && mode.result == kModeOK);
+	assert(sequenceOf(sVopWrites, {{0xe48u, 0x0898002cu}, {0x1e20u, 0x000f000fu}, {0x000u, 0x00048004u}}));
+	// Power off keeps the cursor state; the window comes back with the mode.
+	power.mode = kPowerOff;
+	assert(Control(primary, kSetPowerMode, &power, sizeof(power)) == B_OK && power.result == kModeOK);
+	assert(Control(reader, kGetCursor, &cursorState, sizeof(cursorState)) == B_OK && cursorState.visible == 1);
+	power.mode = kPowerOn;
+	assert(Control(primary, kSetPowerMode, &power, sizeof(power)) == B_OK && power.result == kModeOK);
+	assert(Close(reader) == B_OK && Free(reader) == B_OK);
+	// Release disables the window before the firmware frame buffer returns,
+	// and frees the buffer.
+	sVopWrites.clear();
+	assert(Close(primary) == B_OK && Free(primary) == B_OK && sOwner == NULL);
+	assert(sequenceOf(sVopWrites, {{0x1e10u, 0u}, {0x000u, 0x00048004u}, {kModelAddressOffset, kModelFirmwareAddress}}));
+	assert(sCursorArea < 0 && sCursor.area < 0 && !sCursorProgrammed && sVopOverrides[0x1e10] == 0);
+	// Without the cursor buffer the accelerant does without a hardware cursor.
+	Prepare(); sAllowEdid = true; sAllowScanout = true; sAllowCursor = true; sFailPattern = 3;
+	assert(Open(&controller, "", O_RDWR, &opened) == B_OK);
+	primary = (Handle*)opened;
+	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_OK && sOwner == primary && sCursorArea < 0);
+	assert(Control(primary, kGetAccelerantInfo, &acc, sizeof(acc)) == B_OK && (acc.flags & kAccelerantCursor) == 0);
+	assert((acc.flags & kAccelerantAcquired) != 0 && sPatternAllocations == 3);
+	sVopWrites.clear();
+	assert(Control(primary, kShowCursor, &show, sizeof(show)) == B_OK && show.result == kCursorNotAcquired);
+	assert(bitmap(16, 16, 0, 0, 64) == kCursorNotAcquired && sVopWrites.empty());
+	assert(Close(primary) == B_OK && Free(primary) == B_OK && sOwner == NULL);
+	assert(!sequenceOf(sVopWrites, {{0x1e10u, 0u}}) && sequenceOf(sVopWrites, {{kModelAddressOffset, kModelFirmwareAddress}}));
+	sAllowScanout = false;
+	sAllowModeSet = false;
+	sAllowCursor = false;
+	controller.cursorEnabled = false;
 	assert(sAreas.empty() && sLockDepth == 0);
 	printf("RK3588_DISPLAY_RESOURCES_TEST_PASS faults=%zu\n", faults.size());
 	return 0;

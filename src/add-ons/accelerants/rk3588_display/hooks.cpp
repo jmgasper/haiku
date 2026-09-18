@@ -51,6 +51,17 @@ get_accelerant_hook(uint32 feature, void* data)
 			if (feature == B_DPMS_MODE)
 				return (void*)rk3588_dpms_mode;
 			return (void*)rk3588_set_dpms_mode;
+		case B_SET_CURSOR_BITMAP:
+		case B_MOVE_CURSOR:
+		case B_SHOW_CURSOR:
+			// The hardware cursor window needs the cursor profile.
+			if (gInfo == NULL || (gInfo->info.flags & RK3588Display::kAccelerantCursor) == 0)
+				return NULL;
+			if (feature == B_SET_CURSOR_BITMAP)
+				return (void*)rk3588_set_cursor_bitmap;
+			if (feature == B_MOVE_CURSOR)
+				return (void*)rk3588_move_cursor;
+			return (void*)rk3588_show_cursor;
 	}
 	return NULL;
 }
