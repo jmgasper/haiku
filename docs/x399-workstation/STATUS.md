@@ -11,7 +11,7 @@ listed as verified is untested.
 | Ethernet | I211 up with DHCP | verified: ipro1000 link 1000BASE-T, DHCP lease, HTTP upload and SSH |
 | USB | all controllers and ports enumerate devices | all 5 xHCI controllers start after the PCI fix; NanoKVM device enumerates on the ASM2142; other ports need physical devices |
 | Audio | ALC1220 analog output, HDMI audio | AMD HDA and GP102 HDMI controllers attach (`/dev/audio/hmulti/hda/0,1`); playback untested |
-| Graphics | GTX 1070/1080 Ti accelerated 2D/3D, 3-4 monitors | in progress: two displays (HDMI and DisplayPort) drive one 3840x1080 desktop, Vulkan runs shaders on the GPU (1.4 TFLOP/s compute, 55 Gpixel/s fill), and Haiku's OpenGL kit renders through the GPU: GLTeapot runs at 363 fps against 238 in software, a lit sphere at 800x600 at 170 against 42 |
+| Graphics | GTX 1070/1080 Ti accelerated 2D/3D, 3-4 monitors | in progress: two displays (HDMI and DisplayPort) drive one 3840x1080 desktop, Vulkan runs shaders on the GPU (1.4 TFLOP/s compute, 55 Gpixel/s fill), and Haiku's OpenGL kit renders through the GPU and presents into app_server's bitmap without the CPU: GLTeapot runs at 2390 fps against 238 in software, a lit sphere at 1600x900 at 230 fps using a third less processor time than presenting through the CPU |
 | Sleep | S3 suspend and resume | sleeps and wakes; the display comes back, but the NVMe and the network card usually do not |
 
 ## Log
@@ -182,3 +182,11 @@ listed as verified is untested.
   writes system memory at only 1.6 GB/s (it reads at 6.2). Presenting into the
   screen's own frame buffer in video memory, through Haiku's direct window
   mode, would avoid the bus entirely.
+- 2026-09-18: measured, with the GPU warmed up first, since its clocks only
+  ramp under sustained load. A lit sphere at 1600x900: 230 fps and 1.0 s of
+  processor time per 5 s with the GPU presenting, against 186 fps and 1.6 s
+  when the frame is copied by the CPU - a fifth more frames for two thirds of
+  the processor time, and the gap grows with the window, since the copy the CPU
+  no longer makes is proportional to its area. At 800x600 the frame rates are
+  the same and only the processor time differs (2.0 s against 2.6 s).
+  GLTeapot reaches 2390 fps, against 238 on the software renderer.
