@@ -147,7 +147,97 @@ def edid_transcript(blocks=None, info=None, summary=None):
     return '\n'.join(lines) + '\n'
 
 
+def scanout_transcript(firmware=0xed280000, pattern=0x40100000, port=2, window=2, hold=12, steps=None):
+    lines = ['ROCK5_DISPLAY_WRITE_OPEN_REJECTED', 'ROCK5_DISPLAY_RESOURCE_DESCRIPTION_PASS',
+        'ROCK5_DISPLAY_SCANOUT_REQUEST_CHECKS_PASS']
+    commit = 0x8000 | 1 << port | 1 << (port + 16)
+    steps = steps or [('query', 0, firmware, 0, 0, 0, 0), ('show', 1, firmware, pattern, firmware, pattern, commit),
+        ('query', 1, pattern, 0, firmware, pattern, 0), ('restore', 0, pattern, firmware, firmware, pattern, commit),
+        ('query', 0, firmware, 0, firmware, pattern, 0)]
+    for index, (action, flags, before, after, fw, pat, cfg) in enumerate(steps):
+        lines.append('ROCK5_DISPLAY_SCANOUT action=%s result=0 flags=%d port=%d window=%d before=%08x after=%08x'
+            ' firmware=%08x pattern=%08x region_control=00000001 virtual=1920 active=0437077f display=0437077f'
+            ' start=00000000 if_en=%08x cfg_done=%08x start_us=%d end_us=%d'
+            % (action, flags, port, window, before, after, fw, pat, 0x20 | port << 18, cfg, 5000 + index * 100, 5040 + index * 100))
+        if action == 'show':
+            lines.append('ROCK5_DISPLAY_SCANOUT_HOLD seconds=%d' % hold)
+    lines.append('ROCK5_DISPLAY_SCANOUT_PASS port=%d window=%d firmware=%08x pattern=%08x hold_seconds=%d'
+        ' register_writes=window_address_and_cfg_done' % (port, window, firmware, pattern, hold))
+    return '\n'.join(lines) + '\n'
+
+
+def pattern_image(path, quality=80, blank=False):
+    from PIL import Image, ImageDraw
+    image = Image.new('RGB', (1920, 1080), (66, 110, 150) if blank else check.PATTERN_BORDER)
+    if not blank:
+        draw = ImageDraw.Draw(image)
+        for bar, color in enumerate(check.PATTERN_COLORS):
+            x = 32 + bar * check.PATTERN_BAR_WIDTH
+            draw.rectangle([x, 32, x + check.PATTERN_BAR_WIDTH - 1, 1047], fill=color)
+    image.save(path, format='JPEG', quality=quality)
+
+
 class DisplayValidationTest(unittest.TestCase):
+    def test_scanout_transcript(self):
+        decoded = check.validate_scanout(scanout_transcript())
+        self.assertEqual(decoded['port'], 2)
+        self.assertEqual(decoded['window'], 2)
+        self.assertEqual((decoded['firmware'], decoded['pattern'], decoded['commit']), ('ed280000', '40100000', '00048004'))
+        self.assertEqual(decoded['hold_seconds'], 12)
+        self.assertEqual(decoded['micros'], dict(query_before=40, show=40, query_swapped=40, restore=40, query_after=40))
+        observation = dict(active_ports=[2], windows=dict(esmarts=[dict(region_control=0, address=0)] * 2
+            + [dict(region_control=1, address=0xed280000)] + [dict(region_control=0, address=0)]))
+        self.assertEqual(check.validate_scanout(scanout_transcript(), observation)['status'], 'pass')
+        self.assertEqual(check.validate_scanout(scanout_transcript(port=1, window=0))['commit'], '00028002')
+
+    def test_scanout_rejections(self):
+        body = scanout_transcript()
+        observation = dict(active_ports=[2], windows=dict(esmarts=[dict(region_control=0, address=0)] * 2
+            + [dict(region_control=1, address=0xed280000)] + [dict(region_control=0, address=0)]))
+        cases = [
+            ('checks', body.replace('ROCK5_DISPLAY_SCANOUT_REQUEST_CHECKS_PASS\n', '')),
+            ('abort', body + 'ROCK5_DISPLAY_SCANOUT_ABORT step=restore\n'),
+            ('order', body.replace('action=restore result=0 flags=0', 'action=restore result=0 flags=1')),
+            ('result', body.replace('action=show result=0', 'action=show result=6')),
+            ('same_address', scanout_transcript(pattern=0xed280000)),
+            ('unaligned', scanout_transcript(pattern=0x40100800)),
+            ('geometry', body.replace('virtual=1920', 'virtual=1921', 1)),
+            ('routing', body.replace('if_en=00080020', 'if_en=00040020', 1)),
+            ('commit', body.replace('cfg_done=00048004', 'cfg_done=00048002', 1)),
+            ('restore_target', body.replace('action=restore result=0 flags=0 port=2 window=2 before=40100000 after=ed280000',
+                'action=restore result=0 flags=0 port=2 window=2 before=40100000 after=ed281000')),
+            ('hold', body.replace('ROCK5_DISPLAY_SCANOUT_HOLD seconds=12\n', '')),
+            ('summary', body.replace('hold_seconds=12', 'hold_seconds=13')),
+            ('duration', body.replace('start_us=5100 end_us=5140', 'start_us=5100 end_us=9000000')),
+        ]
+        for name, value in cases:
+            with self.subTest(name=name):
+                with self.assertRaises(check.ValidationError):
+                    check.validate_scanout(value)
+        with self.assertRaises(check.ValidationError):
+            check.validate_scanout(body, dict(observation, active_ports=[1]))
+        with self.assertRaises(check.ValidationError):
+            check.validate_scanout(scanout_transcript(firmware=0xed281000), observation)
+
+    def test_pattern_frame(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            shown = directory + '/pattern.jpg'
+            desktop = directory + '/desktop.jpg'
+            pattern_image(shown)
+            pattern_image(desktop, blank=True)
+            result = check.check_pattern_frame(shown)
+            self.assertTrue(result['pattern_visible'])
+            self.assertEqual(result['mismatches'], 0)
+            self.assertEqual(len(result['samples']), 28)
+            self.assertFalse(check.check_pattern_frame(desktop, expect_pattern=False)['pattern_visible'])
+            with self.assertRaises(check.ValidationError):
+                check.check_pattern_frame(desktop)
+            with self.assertRaises(check.ValidationError):
+                check.check_pattern_frame(shown, expect_pattern=False)
+            pattern_image(shown, quality=30)
+            self.assertTrue(check.check_pattern_frame(shown)['pattern_visible'])
+
     def test_edid_decode(self):
         result = check.validate_edid(edid_transcript())
         self.assertEqual(result['base']['manufacturer'], 'PNL')

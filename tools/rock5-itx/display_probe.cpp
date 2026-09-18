@@ -10,6 +10,7 @@
 #include <OS.h>
 
 #include "DisplayEdid.h"
+#include "DisplayScanout.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -264,6 +265,105 @@ ReadEdid(int fd)
 }
 
 
+static void
+PrintScanout(const char* action, const ScanoutRequest& r)
+{
+	printf("ROCK5_DISPLAY_SCANOUT action=%s result=%" PRIu32 " flags=%" PRIu32 " port=%" PRIu32
+		" window=%" PRIu32 " before=%08" PRIx32 " after=%08" PRIx32 " firmware=%08" PRIx32
+		" pattern=%08" PRIx32 " region_control=%08" PRIx32 " virtual=%" PRIu32 " active=%08" PRIx32
+		" display=%08" PRIx32 " start=%08" PRIx32 " if_en=%08" PRIx32 " cfg_done=%08" PRIx32
+		" start_us=%" PRId64 " end_us=%" PRId64 "\n", action, r.result, r.flags, r.port, r.window,
+		r.addressBefore, r.addressAfter, r.firmwareAddress, r.patternAddress, r.regionControl,
+		r.virtualWidth, r.activeInfo, r.displayInfo, r.displayStart, r.interfaceEnable,
+		r.configDone, r.startedMicros, r.finishedMicros);
+	fflush(stdout);
+}
+
+
+// Opt-in scanout swap: query, show the driver pattern for `hold` seconds so
+// the capture side can look at it, query again, restore and query once more.
+// Closing the device also restores, so an aborted run leaves the desktop.
+static bool
+SwapScanout(int fd, unsigned hold)
+{
+	ScanoutRequest request = {};
+	request.version = kScanoutVersion;
+	if (ioctl(fd, kSwapScanout, &request, sizeof(request) - 1) == 0 || errno != EINVAL) {
+		fprintf(stderr, "Malformed scanout request was not rejected\n");
+		return false;
+	}
+	if (ioctl(fd, kSwapScanout, NULL, sizeof(request)) == 0 || errno != EFAULT) {
+		fprintf(stderr, "Null scanout request was not rejected\n");
+		return false;
+	}
+	request.version = kScanoutVersion + 1;
+	if (ioctl(fd, kSwapScanout, &request, sizeof(request)) == 0 || errno != EINVAL) {
+		fprintf(stderr, "Invalid scanout request version was not rejected\n");
+		return false;
+	}
+	request.version = kScanoutVersion;
+	request.action = kScanoutRestore + 1;
+	if (ioctl(fd, kSwapScanout, &request, sizeof(request)) == 0 || errno != EINVAL) {
+		fprintf(stderr, "Invalid scanout action was not rejected\n");
+		return false;
+	}
+	printf("ROCK5_DISPLAY_SCANOUT_REQUEST_CHECKS_PASS\n");
+	struct Step { uint32_t action; const char* name; uint32_t flags; };
+	static const Step kSteps[] = {
+		{kScanoutQuery, "query", 0}, {kScanoutShowPattern, "show", kScanoutSwapped},
+		{kScanoutQuery, "query", kScanoutSwapped}, {kScanoutRestore, "restore", 0},
+		{kScanoutQuery, "query", 0}};
+	uint32_t firmware = 0, pattern = 0, port = 0, window = 0;
+	for (unsigned i = 0; i < sizeof(kSteps) / sizeof(kSteps[0]); i++) {
+		memset(&request, 0, sizeof(request));
+		request.version = kScanoutVersion;
+		request.action = kSteps[i].action;
+		if (ioctl(fd, kSwapScanout, &request, sizeof(request)) != 0) {
+			perror("display scanout");
+			printf("ROCK5_DISPLAY_SCANOUT_ABORT step=%s\n", kSteps[i].name);
+			return false;
+		}
+		PrintScanout(kSteps[i].name, request);
+		bool ok = request.result == kScanoutOK && request.flags == kSteps[i].flags
+			&& request.version == kScanoutVersion && request.action == kSteps[i].action
+			&& request.finishedMicros >= request.startedMicros;
+		if (i == 0) {
+			firmware = request.addressBefore;
+			port = request.port;
+			window = request.window;
+		} else {
+			ok = ok && request.port == port && request.window == window
+				&& request.firmwareAddress == firmware;
+		}
+		if (kSteps[i].action == kScanoutShowPattern) {
+			pattern = request.patternAddress;
+			ok = ok && request.addressBefore == firmware && request.addressAfter == pattern
+				&& pattern != firmware && pattern != 0 && (pattern & (B_PAGE_SIZE - 1)) == 0;
+		} else if (kSteps[i].action == kScanoutRestore) {
+			ok = ok && request.addressBefore == pattern && request.addressAfter == firmware
+				&& request.patternAddress == pattern;
+		} else if (i > 0) {
+			ok = ok && request.addressBefore == (kSteps[i].flags != 0 ? pattern : firmware);
+		}
+		if (!ok) {
+			fprintf(stderr, "Scanout step %s failed\n", kSteps[i].name);
+			printf("ROCK5_DISPLAY_SCANOUT_ABORT step=%s\n", kSteps[i].name);
+			return false;
+		}
+		if (kSteps[i].action == kScanoutShowPattern) {
+			printf("ROCK5_DISPLAY_SCANOUT_HOLD seconds=%u\n", hold);
+			fflush(stdout);
+			sleep(hold);
+		}
+	}
+	printf("ROCK5_DISPLAY_SCANOUT_PASS port=%" PRIu32 " window=%" PRIu32 " firmware=%08" PRIx32
+		" pattern=%08" PRIx32 " hold_seconds=%u register_writes=window_address_and_cfg_done\n",
+		port, window, firmware, pattern, hold);
+	fflush(stdout);
+	return true;
+}
+
+
 int
 main(int argc, char** argv)
 {
@@ -282,10 +382,15 @@ main(int argc, char** argv)
 		return 0;
 	}
 	bool edid = argc == 2 && strcmp(argv[1], "--edid") == 0;
-	if (argc == 2 && !edid)
+	bool scanout = argc >= 2 && strcmp(argv[1], "--scanout") == 0;
+	unsigned hold = 10;
+	if (scanout && argc == 3)
+		hold = (unsigned)atoi(argv[2]);
+	if (argc == 2 && !edid && !scanout)
 		samples = (unsigned)atoi(argv[1]);
-	if (argc > 2 || samples < 1 || samples > 16) {
-		fprintf(stderr, "usage: %s [samples 1-16 | --absent-device | --edid]\n", argv[0]);
+	if ((scanout ? argc > 3 || hold < 1 || hold > 120 : argc > 2) || samples < 1 || samples > 16) {
+		fprintf(stderr, "usage: %s [samples 1-16 | --absent-device | --edid"
+			" | --scanout [hold-seconds 1-120]]\n", argv[0]);
 		return 2;
 	}
 	int writable = open(kDevice, O_RDWR);
@@ -317,8 +422,8 @@ main(int argc, char** argv)
 	if (!ReportResources(info))
 		return 1;
 	printf("ROCK5_DISPLAY_RESOURCE_DESCRIPTION_PASS\n");
-	if (edid) {
-		bool passed = ReadEdid(fd);
+	if (edid || scanout) {
+		bool passed = edid ? ReadEdid(fd) : SwapScanout(fd, hold);
 		close(fd);
 		return passed ? 0 : 1;
 	}

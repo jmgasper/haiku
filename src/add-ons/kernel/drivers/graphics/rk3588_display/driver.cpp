@@ -6,20 +6,49 @@
 #include <bus/FDT.h>
 #include <KernelExport.h>
 #include <AutoDeleterOS.h>
+#include <boot_item.h>
 #include <driver_settings.h>
+#include <frame_buffer_console.h>
 #include <lock.h>
 #include <util/AutoLock.h>
+#include <vm/vm.h>
+#if defined(__aarch64__)
+#include <arch/arm64/cache_line_size.h>
+#endif
 #include <fcntl.h>
 #include <stdlib.h>
 #include <unistd.h>
 
-#include "DisplayEdid.h"
+#include "DisplayScanout.h"
 
 
 using namespace RK3588Display;
 
 #define DRIVER_NAME "drivers/graphics/rk3588_display/driver_v1"
 #define DEVICE_NAME "drivers/graphics/rk3588_display/device_v1"
+
+// Kernel-only: evict the cached fill of the pattern buffer, then retype the
+// area write-combining so later CPU stores reach RAM before the VOP2 reads
+// it (the Mali client buffer pattern). The host fixture models this call.
+static status_t
+MakePatternNoncacheable(area_id area, void* address, size_t bytes)
+{
+#if defined(__aarch64__)
+	uint64 ctr;
+	asm volatile("mrs %0, ctr_el0" : "=r"(ctr));
+	size_t line = arm64_data_cache_line_size(ctr);
+	for (addr_t p = (addr_t)address; p < (addr_t)address + bytes; p += line)
+		asm volatile("dc civac, %0" :: "r"(p) : "memory");
+	memory_full_barrier();
+	status_t status = vm_set_area_memory_type(area, 0, B_WRITE_COMBINING_MEMORY);
+	memory_full_barrier();
+	return status;
+#else
+	(void)area; (void)address; (void)bytes;
+	return B_NOT_SUPPORTED;
+#endif
+}
+
 
 static device_manager_info* sDeviceManager;
 static mutex sHardwareLock = MUTEX_INITIALIZER("RK3588 display platform");
@@ -28,10 +57,70 @@ struct Controller {
 	device_node* node;
 	ResourceInfo resources;
 	bool edidEnabled;
+	bool scanoutEnabled;
 };
+
+// Driver-owned test pattern for the scanout swap. Physically contiguous below
+// 4 GiB (VOP2 window addresses are 32-bit), filled through the cached alias,
+// evicted and then mapped write-combining like the Mali client buffers.
+struct PatternBuffer {
+	area_id area;
+	void* address;
+	uint32_t physical;
+};
+static PatternBuffer sPattern = {-1, NULL, 0};
+static bool sScanoutSwapped = false;
+static uint32_t sFirmwareAddress = 0;
+static status_t RestoreScanout(Controller* controller);
 
 
 #include "DisplayHardware.h"
+
+
+static void
+ReleasePattern()
+{
+	if (sPattern.area >= B_OK)
+		delete_area(sPattern.area);
+	sPattern.area = -1;
+	sPattern.address = NULL;
+	sPattern.physical = 0;
+}
+
+
+static status_t
+AllocatePattern()
+{
+	if (sPattern.area >= B_OK)
+		return B_OK;
+	virtual_address_restrictions virtualRestrictions = {};
+	physical_address_restrictions physicalRestrictions = {};
+	physicalRestrictions.high_address = 0x100000000ull;
+	physicalRestrictions.alignment = B_PAGE_SIZE;
+	sPattern.area = create_area_etc(B_SYSTEM_TEAM, "RK3588 display pattern", kPatternBytes,
+		B_CONTIGUOUS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, 0, 0,
+		&virtualRestrictions, &physicalRestrictions, &sPattern.address);
+	if (sPattern.area < B_OK)
+		return sPattern.area;
+	physical_entry entry;
+	status_t status = get_memory_map(sPattern.address, kPatternBytes, &entry, 1);
+	if (status == B_OK && (entry.size < kPatternBytes
+			|| entry.address + kPatternBytes > 0x100000000ull)) {
+		status = B_BAD_VALUE;
+	}
+	if (status == B_OK) {
+		sPattern.physical = (uint32_t)entry.address;
+		uint32_t* pixels = (uint32_t*)sPattern.address;
+		for (uint32_t y = 0; y < kPatternHeight; y++) {
+			for (uint32_t x = 0; x < kPatternWidth; x++)
+				pixels[y * kPatternWidth + x] = PatternPixel(x, y);
+		}
+		status = MakePatternNoncacheable(sPattern.area, sPattern.address, kPatternBytes);
+	}
+	if (status != B_OK)
+		ReleasePattern();
+	return status;
+}
 
 
 class FdtNode {
@@ -427,23 +516,30 @@ InitDriver(device_node* node, void** cookie)
 	if (settings != NULL) {
 		const char* profile = get_driver_parameter(settings, "firmware_profile", "", "");
 		controller->edidEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-edid") == 0;
-		unload_driver_settings(settings);
+		controller->scanoutEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-scanout") == 0;
+		controller->edidEnabled = controller->edidEnabled || controller->scanoutEnabled;
 	}
+	if (settings != NULL)
+		unload_driver_settings(settings);
 	dprintf("rk3588_display: validated VOP2 %#" B_PRIx64 " and HDMI TX1 %#" B_PRIx64
-		" resources; observation only; EDID %s\n", controller->resources.vopBase,
-		controller->resources.hdmiBase, controller->edidEnabled ? "enabled" : "disabled");
+		" resources; observation only; EDID %s; scanout %s\n", controller->resources.vopBase,
+		controller->resources.hdmiBase, controller->edidEnabled ? "enabled" : "disabled",
+		controller->scanoutEnabled ? "enabled" : "disabled");
 	*cookie = controller;
 	return B_OK;
 }
 
 
-static void UninitDriver(void* cookie) { free(cookie); }
+static void
+UninitDriver(void* cookie)
+{
+	MutexLocker locker(sHardwareLock);
+	RestoreScanout((Controller*)cookie);
+	ReleasePattern();
+	free(cookie);
+}
 static status_t InitDevice(void* driver, void** device) { *device = driver; return B_OK; }
 static void UninitDevice(void*) {}
-static status_t Close(void*) { return B_OK; }
-static status_t Free(void*) { return B_OK; }
-
-
 static status_t
 PublishDevices(void* cookie)
 {
@@ -464,6 +560,7 @@ Open(void* cookie, const char*, int mode, void** handle)
 
 static status_t Read(void*, off_t, void*, size_t* length) { *length = 0; return B_NOT_ALLOWED; }
 static status_t Write(void*, off_t, const void*, size_t* length) { *length = 0; return B_NOT_ALLOWED; }
+static status_t Free(void*) { return B_OK; }
 
 
 static status_t
@@ -514,6 +611,71 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 			request.bytesRead, request.polls, request.flags);
 		return user_memcpy(buffer, &request, sizeof(request));
 	}
+	if (op == kSwapScanout) {
+		if (length != sizeof(ScanoutRequest))
+			return B_BAD_VALUE;
+		if (buffer == NULL)
+			return B_BAD_ADDRESS;
+		ScanoutRequest request;
+		if (user_memcpy(&request, buffer, sizeof(request)) != B_OK)
+			return B_BAD_ADDRESS;
+		if (request.version != kScanoutVersion || request.action > kScanoutRestore)
+			return B_BAD_VALUE;
+		if (!controller->scanoutEnabled)
+			return B_NOT_ALLOWED;
+		uint32_t action = request.action;
+		memset(&request, 0, sizeof(request));
+		request.version = kScanoutVersion;
+		request.action = action;
+		MutexLocker locker(sHardwareLock);
+		ScanoutHardware hardware;
+		uint32_t result = kScanoutNotReady;
+		status_t status = hardware.Prepare(controller->resources, action != kScanoutQuery,
+			result);
+		if (status != B_OK)
+			return status;
+		request.startedMicros = hardware.Now();
+		if (hardware.Ready())
+			result = LocateScanoutWindow(hardware, request);
+		if (result == kScanoutOK && action == kScanoutShowPattern) {
+			if (!sScanoutSwapped) {
+				frame_buffer_boot_info* bootInfo
+					= (frame_buffer_boot_info*)get_boot_item(FRAME_BUFFER_BOOT_INFO, NULL);
+				if (bootInfo == NULL || bootInfo->physical_frame_buffer != request.addressBefore
+					|| bootInfo->width != (int32)kPatternWidth
+					|| bootInfo->height != (int32)kPatternHeight
+					|| bootInfo->bytes_per_row != (int32)(kPatternWidth * 4)) {
+					result = kScanoutUnexpectedState;
+				} else if (AllocatePattern() != B_OK) {
+					result = kScanoutNoBuffer;
+				} else {
+					sFirmwareAddress = request.addressBefore;
+					result = SwapScanoutAddress(hardware, request, sPattern.physical);
+					sScanoutSwapped = true;
+				}
+			} else if (request.addressBefore != sPattern.physical) {
+				result = kScanoutUnexpectedState;
+			}
+		} else if (result == kScanoutOK && action == kScanoutRestore) {
+			if (!sScanoutSwapped)
+				result = kScanoutNotSwapped;
+			else {
+				result = SwapScanoutAddress(hardware, request, sFirmwareAddress);
+				// A failed read-back keeps the swap pending so Close retries.
+				sScanoutSwapped = result != kScanoutOK;
+			}
+		}
+		request.result = result;
+		request.flags = sScanoutSwapped ? kScanoutSwapped : 0;
+		request.firmwareAddress = sFirmwareAddress;
+		request.patternAddress = sPattern.physical;
+		request.finishedMicros = hardware.Now();
+		dprintf("rk3588_display: scanout action=%" B_PRIu32 " result=%" B_PRIu32 " port=%" B_PRIu32
+			" window=%" B_PRIu32 " before=%#" B_PRIx32 " after=%#" B_PRIx32 " swapped=%u\n",
+			action, result, request.port, request.window, request.addressBefore,
+			request.addressAfter, sScanoutSwapped ? 1 : 0);
+		return user_memcpy(buffer, &request, sizeof(request));
+	}
 	if (op != kGetResources)
 		return B_DEV_INVALID_IOCTL;
 	if (length != sizeof(ResourceInfo))
@@ -521,6 +683,41 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 	if (buffer == NULL)
 		return B_BAD_ADDRESS;
 	return user_memcpy(buffer, &controller->resources, sizeof(ResourceInfo));
+}
+
+
+static status_t
+RestoreScanout(Controller* controller)
+{
+	if (!sScanoutSwapped)
+		return B_OK;
+	ScanoutHardware hardware;
+	uint32_t result = kScanoutNotReady;
+	status_t status = hardware.Prepare(controller->resources, true, result);
+	if (status != B_OK)
+		return status;
+	if (!hardware.Ready())
+		return B_BUSY;
+	ScanoutRequest request = {};
+	result = LocateScanoutWindow(hardware, request);
+	if (result != kScanoutOK)
+		return B_ERROR;
+	result = SwapScanoutAddress(hardware, request, sFirmwareAddress);
+	sScanoutSwapped = result != kScanoutOK;
+	dprintf("rk3588_display: scanout restored to %#" B_PRIx32 " result=%" B_PRIu32 "\n",
+		sFirmwareAddress, result);
+	return result == kScanoutOK ? B_OK : B_ERROR;
+}
+
+
+static status_t
+Close(void* cookie)
+{
+	// A client that swapped the scanout and went away must not leave the
+	// desktop on the pattern buffer.
+	MutexLocker locker(sHardwareLock);
+	RestoreScanout((Controller*)cookie);
+	return B_OK;
 }
 
 

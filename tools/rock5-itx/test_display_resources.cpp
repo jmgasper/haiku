@@ -3,9 +3,10 @@
  * Distributed under the terms of the MIT License.
  */
 
-// Host fixture for the RK3588 display observation driver. The production
-// device-tree traversal, ioctl and read-only observation run against a modeled
-// device manager and guarded register pages; nothing here touches hardware.
+// Host fixture for the RK3588 display driver. The production device-tree
+// traversal, ioctls, read-only observation, EDID transfer and scanout swap run
+// against a modeled device manager and guarded register pages; nothing here
+// touches hardware.
 
 #include <assert.h>
 #include <stdint.h>
@@ -27,12 +28,16 @@ using uint64 = uint64_t;
 using status_t = int32_t;
 static const status_t B_OK = 0, B_BAD_VALUE = -1, B_BAD_ADDRESS = -2,
 	B_DEV_INVALID_IOCTL = -3, B_NO_MEMORY = -4, B_NOT_SUPPORTED = -5,
-	B_NOT_ALLOWED = -6, B_ENTRY_NOT_FOUND = -8;
+	B_NOT_ALLOWED = -6, B_ENTRY_NOT_FOUND = -8, B_ERROR = -9, B_BUSY = -10;
+using area_id = int32_t;
+using team_id = int32_t;
+using addr_t = uintptr_t;
 static const unsigned B_PAGE_SIZE = 4096, B_ANY_KERNEL_ADDRESS = 4,
 	B_UNCACHED_MEMORY = 1u << 28, B_KERNEL_READ_AREA = 1u << 4,
 	B_KERNEL_WRITE_AREA = 1u << 5;
 
 #include "DisplayEdid.h"
+#include "DisplayScanout.h"
 
 using namespace RK3588Display;
 
@@ -45,6 +50,19 @@ static uint32 sRepairStatus = (1u << 16) | (1u << 18);
 static uint32 sGate52, sGate61;
 static bool sAllowEdid;
 static uint32 sHotPlug = (1u << 24) | (1u << 27);
+
+// VOP2 model: firmware-like words for the registers the scanout swap reads,
+// pseudo-random elsewhere. A writable mapping logs every changed word in
+// order; only the located window's address and the commit word may change.
+static std::map<unsigned, uint32> sVopOverrides;
+static uint32* sVopModel;
+static std::vector<uint32> sVopShadow;
+static std::vector<std::pair<unsigned, uint32> > sVopWrites;
+static bool sAllowScanout, sStickyAddress;
+static const unsigned kModelWindow = 2;
+static const unsigned kModelAddressOffset = 0x1800 + kModelWindow * 0x200 + 0x14;
+static const uint32 kModelFirmwareAddress = 0xed280000;
+static const uint64 kModelPatternPhysical = 0x40100000;
 
 struct mutex {};
 #define MUTEX_INITIALIZER(name) {}
@@ -71,9 +89,39 @@ static bool sUnresponsive;
 static unsigned sServed, sResets, sModelSpins;
 static bool sServing;
 
+static uint32 ModelRegister(uint64 base, unsigned offset);
+
+static void
+VopModelStep()
+{
+	if (sVopModel == NULL)
+		return;
+	for (unsigned i = 0; i < sVopShadow.size(); i++) {
+		if (sVopModel[i] == sVopShadow[i])
+			continue;
+		unsigned offset = i * 4;
+		uint32 value = sVopModel[i];
+		sVopWrites.push_back(std::make_pair(offset, value));
+		if (offset == 0x000) {
+			// The commit word self-clears once the port has taken the shadow set.
+			assert((value & 0x8000) != 0);
+			sVopModel[i] = ModelRegister(0xfdd90000, 0);
+		} else if (offset == kModelAddressOffset) {
+			if (sStickyAddress)
+				sVopModel[i] = sVopShadow[i];
+			else
+				sVopOverrides[offset] = value;
+		} else
+			assert(!"unexpected VOP2 register write");
+		sVopShadow[i] = sVopModel[i];
+	}
+}
+
+
 static void
 ModelStep()
 {
+	VopModelStep();
 	if (sHdmiModel == NULL)
 		return;
 	uint32* regs = sHdmiModel;
@@ -128,6 +176,11 @@ ModelRegister(uint64 base, unsigned offset)
 		return sGate61;
 	if (base == 0xfd58c000 && offset == 0x384)
 		return sHotPlug;
+	if (base == 0xfdd90000) {
+		auto found = sVopOverrides.find(offset);
+		if (found != sVopOverrides.end())
+			return found->second;
+	}
 	return (uint32)(base >> 4) ^ (offset * 0x01010101u);
 }
 
@@ -145,9 +198,12 @@ map_physical_memory(const char*, uint64 base, size_t bytes, uint32 spec,
 	bool writable = false;
 	if (control)
 		assert(bytes == B_PAGE_SIZE);
-	else if (base == 0xfdd90000)
+	else if (base == 0xfdd90000) {
 		assert(bytes == kVopMapSize && (sRepairStatus & (1u << 16)) != 0 && (sGate52 & 0x300) == 0);
-	else if (base == 0xfdea0000) {
+		// Only the opt-in scanout swap or restore maps VOP2 writable; queries do not.
+		writable = (protection & B_KERNEL_WRITE_AREA) != 0;
+		assert(!writable || sAllowScanout);
+	} else if (base == 0xfdea0000) {
 		assert((sRepairStatus & (1u << 18)) != 0 && (sGate61 & 4) == 0);
 		// Only the opt-in EDID path maps HDMI TX1 writable, after its own gating.
 		writable = (protection & B_KERNEL_WRITE_AREA) != 0;
@@ -156,7 +212,7 @@ map_physical_memory(const char*, uint64 base, size_t bytes, uint32 spec,
 	} else
 		assert(false);
 	assert(spec == (B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY));
-	// Never a writable mapping of any control block or of VOP2.
+	// Never a writable mapping of any control block.
 	assert(protection == (B_KERNEL_READ_AREA | (writable ? B_KERNEL_WRITE_AREA : 0)));
 	sMappedBases.push_back(base);
 	if (++sMapAttempts == sFailMap)
@@ -168,7 +224,11 @@ map_physical_memory(const char*, uint64 base, size_t bytes, uint32 spec,
 	assert(mprotect(registers, bytes, PROT_READ | PROT_WRITE) == 0);
 	for (unsigned offset = 0; offset < bytes; offset += 4)
 		registers[offset / 4] = ModelRegister(base, offset);
-	if (writable) {
+	if (writable && base == 0xfdd90000) {
+		assert(sVopModel == NULL);
+		sVopModel = registers;
+		sVopShadow.assign(registers, registers + bytes / 4);
+	} else if (writable) {
 		registers[0xf4 / 4] = 0x00000a00; // idle master, slave 0x50 set by firmware
 		registers[0x3020 / 4] = 0;
 		registers[0x3024 / 4] = 0;
@@ -197,6 +257,10 @@ public:
 			assert(sAreas.count(fArea) == 1);
 			if (sHdmiModel != NULL && (char*)sHdmiModel == (char*)sAreas.at(fArea).first + B_PAGE_SIZE)
 				sHdmiModel = NULL;
+			if (sVopModel != NULL && (char*)sVopModel == (char*)sAreas.at(fArea).first + B_PAGE_SIZE) {
+				VopModelStep();
+				sVopModel = NULL;
+			}
 			assert(munmap(sAreas.at(fArea).first, sAreas.at(fArea).second) == 0);
 			sAreas.erase(fArea);
 		}
@@ -356,6 +420,98 @@ user_memcpy(void* output, const void* input, size_t bytes)
 }
 
 
+// Pattern buffer services: contiguous allocation below 4 GiB, its physical
+// address, the cache eviction/retyping step and the framebuffer boot item.
+struct virtual_address_restrictions { void* address; uint32 address_specification; size_t alignment; };
+struct physical_address_restrictions { uint64 low_address, high_address, alignment, boundary; };
+struct physical_entry { uint64 address; uint64 size; };
+static const uint32 B_CONTIGUOUS = 3;
+static const team_id B_SYSTEM_TEAM = 1;
+static void* sPatternAllocation;
+static int sPatternArea = -1;
+static unsigned sPatternAllocations, sFailPattern, sNoncacheableCalls;
+static bool sPatternHighPhysical;
+
+static area_id
+create_area_etc(team_id team, const char* name, size_t size, uint32 lock, uint32 protection,
+	uint32 flags, size_t guardSize, const virtual_address_restrictions* virtualRestrictions,
+	const physical_address_restrictions* physicalRestrictions, void** address)
+{
+	assert(sLockDepth == 1 && team == B_SYSTEM_TEAM && strcmp(name, "RK3588 display pattern") == 0);
+	assert(size == kPatternBytes && lock == B_CONTIGUOUS && flags == 0 && guardSize == 0);
+	assert(protection == (B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA));
+	assert(virtualRestrictions->address == NULL && virtualRestrictions->address_specification == 0);
+	assert(physicalRestrictions->low_address == 0 && physicalRestrictions->high_address == 0x100000000ull);
+	assert(physicalRestrictions->alignment == B_PAGE_SIZE && physicalRestrictions->boundary == 0);
+	assert(sPatternArea < 0);
+	if (++sPatternAllocations == sFailPattern)
+		return B_NO_MEMORY;
+	sPatternAllocation = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	assert(sPatternAllocation != MAP_FAILED);
+	sPatternArea = 900 + (int)sPatternAllocations;
+	*address = sPatternAllocation;
+	return sPatternArea;
+}
+
+
+static status_t
+get_memory_map(const void* address, size_t bytes, physical_entry* table, int32 count)
+{
+	assert(address == sPatternAllocation && bytes == kPatternBytes && count == 1);
+	table->address = sPatternHighPhysical ? 0xffc00000ull : kModelPatternPhysical;
+	table->size = bytes;
+	return B_OK;
+}
+
+
+static status_t
+delete_area(area_id area)
+{
+	assert(area == sPatternArea && sPatternAllocation != NULL);
+	assert(munmap(sPatternAllocation, kPatternBytes) == 0);
+	sPatternAllocation = NULL;
+	sPatternArea = -1;
+	return B_OK;
+}
+
+
+static status_t
+MakePatternNoncacheable(area_id area, void* address, size_t bytes)
+{
+	assert(area == sPatternArea && address == sPatternAllocation && bytes == kPatternBytes);
+	// The whole pattern is filled through the cached alias before retyping.
+	const uint32* pixels = (const uint32*)address;
+	assert(pixels[0] == kPatternBorderColor && pixels[1079 * 1920 + 1919] == kPatternBorderColor);
+	assert(pixels[540 * 1920 + 31] == kPatternBorderColor && pixels[31 * 1920 + 960] == kPatternBorderColor);
+	assert(pixels[540 * 1920 + 32] == 0xffffffff && pixels[540 * 1920 + 1887] == 0xff000000);
+	for (unsigned bar = 0; bar < kPatternBars; bar++) {
+		for (unsigned y = 32; y < 1048; y += 127)
+			assert(pixels[y * 1920 + 32 + bar * 232 + 116] == kPatternColors[bar]);
+	}
+	sNoncacheableCalls++;
+	return B_OK;
+}
+
+
+#define FRAME_BUFFER_BOOT_INFO "frame_buffer/v1"
+struct frame_buffer_boot_info {
+	area_id area;
+	addr_t physical_frame_buffer;
+	addr_t frame_buffer;
+	int32 width, height, depth, bytes_per_row;
+	uint8_t vesa_capabilities;
+};
+static frame_buffer_boot_info sBootInfo;
+static bool sBootInfoPresent;
+
+static void*
+get_boot_item(const char* name, size_t* size)
+{
+	assert(strcmp(name, FRAME_BUFFER_BOOT_INFO) == 0 && size == NULL);
+	return sBootInfoPresent ? &sBootInfo : NULL;
+}
+
+
 #include "driver.inc"
 
 
@@ -492,6 +648,39 @@ Prepare()
 	sUnresponsive = false;
 	sServed = sResets = sModelSpins = 0;
 	sHdmiModel = NULL;
+	sVopModel = NULL;
+	sVopShadow.clear();
+	sVopWrites.clear();
+	sAllowScanout = false;
+	sStickyAddress = false;
+	sVopOverrides.clear();
+	// Firmware state from the qualified +263 observation: HDMI1 fed by video
+	// port 2, ports 0/1/3 in standby, ESMART2 region 0 alone scanning the
+	// 1920x1080 XRGB8888 framebuffer at 0xed280000.
+	sVopOverrides[0x000] = 0;
+	sVopOverrides[0x028] = 0x00080020;
+	sVopOverrides[0xc00] = 0x8000000f;
+	sVopOverrides[0xd00] = 0x8000000f;
+	sVopOverrides[0xe00] = 0x0000000f;
+	sVopOverrides[0xf00] = 0x8000000f;
+	for (unsigned window = 0; window < kVopEsmartCount; window++) {
+		for (unsigned offset : kVopEsmartOffsets)
+			sVopOverrides[kVopEsmartBase + window * kVopEsmartStride + offset] = 0;
+	}
+	sVopOverrides[0x1c00] = 4;
+	sVopOverrides[0x1c10] = 1;
+	sVopOverrides[kModelAddressOffset] = kModelFirmwareAddress;
+	sVopOverrides[0x1c1c] = 1920;
+	sVopOverrides[0x1c20] = 0x0437077f;
+	sVopOverrides[0x1c24] = 0x0437077f;
+	sVopOverrides[0x1c28] = 0;
+	sBootInfoPresent = true;
+	sBootInfo = frame_buffer_boot_info{17, kModelFirmwareAddress, 0, 1920, 1080, 32, 7680, 0};
+	sScanoutSwapped = false;
+	sFirmwareAddress = 0;
+	ReleasePattern();
+	sPatternAllocations = sFailPattern = sNoncacheableCalls = 0;
+	sPatternHighPhysical = false;
 	for (unsigned i = 0; i < 512; i++)
 		sEdid[i] = (uint8_t)(i * 7 + 3);
 	static const uint8_t header[8] = {0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00};
@@ -562,6 +751,8 @@ main()
 	static_assert(sizeof(ResourceInfo) == 304, "Diagnostic ABI layout changed");
 	static_assert(sizeof(EdidRequest) == 192, "EDID ABI layout changed");
 	static_assert(sizeof(DisplaySnapshot) == 784, "Snapshot ABI layout changed");
+	static_assert(sizeof(ScanoutRequest) == 88, "Scanout ABI layout changed");
+	static_assert(kPatternBytes == 1920 * 1080 * 4, "Pattern is the firmware framebuffer size");
 	for (unsigned offset : kVopSystemOffsets) assert(offset + 4 <= kVopMapSize);
 	for (unsigned offset : kVopOverlayOffsets) assert(offset + 4 <= kVopMapSize);
 	assert(kVopPortBase + 3 * kVopPortStride + 0x54 + 4 <= kVopMapSize);
@@ -826,6 +1017,157 @@ main()
 	Prepare(); sAllowEdid = true; sFailMap = 4;
 	assert(Control(&controller, kReadEdid, &edid, sizeof(edid)) == B_NO_MEMORY);
 	assert(sMapAttempts == 4 && sAreas.empty());
+	assert(sLockDepth == 0);
+
+	// Scanout swap: request validation, opt-in gating, power gating, window
+	// location, the two permitted writes, restore, restore-on-close and failures.
+	Prepare();
+	controller.resources = good;
+	controller.scanoutEnabled = false;
+	ScanoutRequest scan = {};
+	scan.version = kScanoutVersion;
+	assert(Control(&controller, kSwapScanout, &scan, sizeof(scan) - 1) == B_BAD_VALUE);
+	assert(Control(&controller, kSwapScanout, NULL, sizeof(scan)) == B_BAD_ADDRESS);
+	scan.version = 2;
+	assert(Control(&controller, kSwapScanout, &scan, sizeof(scan)) == B_BAD_VALUE);
+	scan.version = kScanoutVersion;
+	scan.action = kScanoutRestore + 1;
+	assert(Control(&controller, kSwapScanout, &scan, sizeof(scan)) == B_BAD_VALUE);
+	scan.action = kScanoutQuery;
+	assert(Control(&controller, kSwapScanout, &scan, sizeof(scan)) == B_NOT_ALLOWED);
+	assert(sMapAttempts == 0);
+	controller.scanoutEnabled = true;
+	auto scanout = [&](uint32 action, uint32 expected, bool writable) {
+		sAllowScanout = writable;
+		memset(&scan, 0xa5, sizeof(scan));
+		scan.version = kScanoutVersion;
+		scan.action = action;
+		assert(Control(&controller, kSwapScanout, &scan, sizeof(scan)) == B_OK);
+		assert(scan.result == expected && scan.action == action && scan.version == kScanoutVersion);
+		assert(scan.reserved == 0 && scan.finishedMicros > scan.startedMicros && sAreas.empty());
+		sAllowScanout = false;
+	};
+	// A query never maps VOP2 writable and needs the VOP domain and bus clocks.
+	sRepairStatus = 1u << 18;
+	scanout(kScanoutQuery, kScanoutNotReady, false);
+	assert(sMapAttempts == 2 && scan.port == 0 && scan.addressBefore == 0);
+	Prepare(); sGate52 = 1u << 9;
+	scanout(kScanoutQuery, kScanoutNotReady, false);
+	assert(sMapAttempts == 2);
+	Prepare();
+	scanout(kScanoutQuery, kScanoutOK, false);
+	assert(scan.port == 2 && scan.window == 2 && scan.flags == 0 && sMapAttempts == 3);
+	assert(scan.addressBefore == kModelFirmwareAddress && scan.addressAfter == 0);
+	assert(scan.firmwareAddress == 0 && scan.patternAddress == 0 && scan.configDone == 0);
+	assert(scan.regionControl == 1 && scan.virtualWidth == 1920 && scan.activeInfo == 0x0437077f);
+	assert(scan.displayInfo == 0x0437077f && scan.displayStart == 0 && scan.interfaceEnable == 0x00080020);
+	assert(sVopWrites.empty());
+	// Window location rejects every deviation from the qualified firmware state.
+	Prepare(); sVopOverrides[0x028] = 0x00080000; scanout(kScanoutQuery, kScanoutNoWindow, false); // HDMI1 off
+	Prepare(); sVopOverrides[0x028] = 0x00040020; scanout(kScanoutQuery, kScanoutNoWindow, false); // port 1 (standby)
+	Prepare(); sVopOverrides[0xe00] = 0x8000000f; scanout(kScanoutQuery, kScanoutNoWindow, false); // port 2 standby
+	Prepare(); sVopOverrides[0x1810] = 1; scanout(kScanoutQuery, kScanoutNoWindow, false); // two windows
+	Prepare(); sVopOverrides[0x1c10] = 0; scanout(kScanoutQuery, kScanoutNoWindow, false); // no window
+	Prepare(); sVopOverrides[0x1c10] = 1 | (2 << 1); scanout(kScanoutQuery, kScanoutUnexpectedState, false);
+	Prepare(); sVopOverrides[0x1c1c] = 1921; scanout(kScanoutQuery, kScanoutUnexpectedState, false);
+	Prepare(); sVopOverrides[0x1c20] = 0x0437077e; scanout(kScanoutQuery, kScanoutUnexpectedState, false);
+	Prepare(); sVopOverrides[0x1c24] = 0x0433077f; scanout(kScanoutQuery, kScanoutUnexpectedState, false);
+	Prepare(); sVopOverrides[0x1c28] = 0x00010000; scanout(kScanoutQuery, kScanoutUnexpectedState, false);
+	assert(sVopWrites.empty() && sPatternArea < 0);
+	// Showing the pattern requires the firmware framebuffer to match the boot item.
+	Prepare(); sBootInfoPresent = false; scanout(kScanoutShowPattern, kScanoutUnexpectedState, true);
+	assert(sVopWrites.empty() && sPatternArea < 0 && scan.flags == 0 && sMapAttempts == 3);
+	Prepare(); sBootInfo.physical_frame_buffer = 0xed281000; scanout(kScanoutShowPattern, kScanoutUnexpectedState, true);
+	Prepare(); sBootInfo.width = 1280; scanout(kScanoutShowPattern, kScanoutUnexpectedState, true);
+	Prepare(); sBootInfo.height = 1024; scanout(kScanoutShowPattern, kScanoutUnexpectedState, true);
+	Prepare(); sBootInfo.bytes_per_row = 7684; scanout(kScanoutShowPattern, kScanoutUnexpectedState, true);
+	assert(sVopWrites.empty() && sPatternArea < 0 && sNoncacheableCalls == 0);
+	Prepare(); sFailPattern = 1; scanout(kScanoutShowPattern, kScanoutNoBuffer, true);
+	assert(sVopWrites.empty() && sPatternArea < 0 && sNoncacheableCalls == 0 && scan.flags == 0);
+	Prepare(); sPatternHighPhysical = true; scanout(kScanoutShowPattern, kScanoutNoBuffer, true);
+	assert(sVopWrites.empty() && sPatternArea < 0 && sNoncacheableCalls == 0 && sPatternAllocations == 1);
+	Prepare(); sFailMap = 3; sAllowScanout = true;
+	memset(&scan, 0, sizeof(scan));
+	scan.version = kScanoutVersion;
+	scan.action = kScanoutShowPattern;
+	assert(Control(&controller, kSwapScanout, &scan, sizeof(scan)) == B_NO_MEMORY);
+	assert(sMapAttempts == 3 && sAreas.empty() && sVopWrites.empty() && sPatternArea < 0);
+	// The swap itself: exactly two writes, in order, with a verified read-back.
+	Prepare();
+	scanout(kScanoutShowPattern, kScanoutOK, true);
+	assert(scan.flags == kScanoutSwapped && scan.port == 2 && scan.window == 2 && sMapAttempts == 3);
+	assert(scan.addressBefore == kModelFirmwareAddress && scan.addressAfter == kModelPatternPhysical);
+	assert(scan.firmwareAddress == kModelFirmwareAddress && scan.patternAddress == kModelPatternPhysical);
+	assert(scan.configDone == (0x8000u | (1u << 2) | (1u << 18)));
+	assert(sVopWrites.size() == 2);
+	assert(sVopWrites[0] == std::make_pair(kModelAddressOffset, (uint32)kModelPatternPhysical));
+	assert(sVopWrites[1] == std::make_pair(0x000u, 0x00048004u));
+	assert(sNoncacheableCalls == 1 && sPatternArea >= 0 && sPatternAllocations == 1);
+	// Observation reports the pattern address through its own read-only mapping.
+	sVopWrites.clear();
+	assert(Control(&controller, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
+	CheckSnapshotValues(snapshot, true, true);
+	assert(snapshot.vopEsmart[2][2] == kModelPatternPhysical && sVopWrites.empty());
+	// Showing again is idempotent; a foreign window address is refused.
+	scanout(kScanoutShowPattern, kScanoutOK, true);
+	assert(scan.flags == kScanoutSwapped && scan.addressBefore == kModelPatternPhysical && sVopWrites.empty());
+	sVopOverrides[kModelAddressOffset] = 0x11111000;
+	scanout(kScanoutShowPattern, kScanoutUnexpectedState, true);
+	assert(scan.flags == kScanoutSwapped && sVopWrites.empty());
+	sVopOverrides[kModelAddressOffset] = kModelPatternPhysical;
+	// Restore writes the firmware address back and keeps the buffer for reuse.
+	scanout(kScanoutRestore, kScanoutOK, true);
+	assert(scan.flags == 0 && scan.addressBefore == kModelPatternPhysical && scan.addressAfter == kModelFirmwareAddress);
+	assert(scan.firmwareAddress == kModelFirmwareAddress && scan.patternAddress == kModelPatternPhysical);
+	assert(sVopWrites.size() == 2 && sVopWrites[0] == std::make_pair(kModelAddressOffset, kModelFirmwareAddress));
+	assert(sVopWrites[1] == std::make_pair(0x000u, 0x00048004u) && sPatternArea >= 0 && sNoncacheableCalls == 1);
+	sVopWrites.clear();
+	scanout(kScanoutRestore, kScanoutNotSwapped, true);
+	assert(sVopWrites.empty() && scan.flags == 0 && scan.addressBefore == kModelFirmwareAddress);
+	// Close restores a pending swap and otherwise touches nothing.
+	unsigned attempts = sMapAttempts;
+	assert(Close(&controller) == B_OK && sMapAttempts == attempts && sVopWrites.empty());
+	scanout(kScanoutShowPattern, kScanoutOK, true);
+	assert(sNoncacheableCalls == 1 && sPatternAllocations == 1); // buffer reused, not refilled
+	sVopWrites.clear();
+	sAllowScanout = true;
+	assert(Close(&controller) == B_OK);
+	sAllowScanout = false;
+	assert(sVopWrites.size() == 2 && sVopWrites[0] == std::make_pair(kModelAddressOffset, kModelFirmwareAddress));
+	assert(sAreas.empty());
+	scanout(kScanoutQuery, kScanoutOK, false);
+	assert(scan.flags == 0 && scan.addressBefore == kModelFirmwareAddress);
+	// A swap that cannot be read back stays pending and is retried on close.
+	sVopWrites.clear();
+	sStickyAddress = true;
+	scanout(kScanoutShowPattern, kScanoutVerifyFailed, true);
+	assert(scan.flags == kScanoutSwapped && scan.addressAfter == kModelFirmwareAddress && sVopWrites.size() == 2);
+	sStickyAddress = false;
+	sVopWrites.clear();
+	sAllowScanout = true;
+	assert(Close(&controller) == B_OK);
+	sAllowScanout = false;
+	assert(!sVopWrites.empty() && sVopWrites.back() == std::make_pair(0x000u, 0x00048004u));
+	scanout(kScanoutQuery, kScanoutOK, false);
+	assert(scan.flags == 0 && scan.addressBefore == kModelFirmwareAddress);
+	// With the VOP domain off a pending swap waits for power to return.
+	scanout(kScanoutShowPattern, kScanoutOK, true);
+	sVopWrites.clear();
+	sRepairStatus = 1u << 18;
+	sAllowScanout = true;
+	assert(Close(&controller) == B_OK);
+	assert(sVopWrites.empty() && sAreas.empty());
+	sRepairStatus = (1u << 16) | (1u << 18);
+	scanout(kScanoutQuery, kScanoutOK, false);
+	assert(scan.flags == kScanoutSwapped && scan.addressBefore == kModelPatternPhysical);
+	sAllowScanout = true;
+	assert(Close(&controller) == B_OK);
+	sAllowScanout = false;
+	assert(sVopWrites.size() == 2 && sVopWrites[0] == std::make_pair(kModelAddressOffset, kModelFirmwareAddress));
+	scanout(kScanoutQuery, kScanoutOK, false);
+	assert(scan.flags == 0 && scan.addressBefore == kModelFirmwareAddress);
+	ReleasePattern();
+	assert(sPatternArea < 0 && sPatternAllocation == NULL);
 	assert(sLockDepth == 0);
 	printf("RK3588_DISPLAY_RESOURCES_TEST_PASS faults=%zu\n", faults.size());
 	return 0;

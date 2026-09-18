@@ -6,6 +6,7 @@
 #define RK3588_DISPLAY_HARDWARE_H
 
 #include "DisplayEdid.h"
+#include "DisplayScanout.h"
 
 // Kernel platform adapter; included after the kernel declarations.
 // Host fixtures use the same definitions with modeled kernel services.
@@ -179,6 +180,56 @@ private:
 	volatile uint32* fClock = NULL;
 	volatile uint32* fGrf = NULL;
 	volatile uint32* fHdmi = NULL;
+};
+
+
+// Scanout swap adapter: control blocks read-only for gating, then the VOP2
+// window mapped read-only for a query or writable for a swap. Only the
+// located window's buffer address and the port's configuration-done word are
+// ever written through it.
+class ScanoutHardware {
+public:
+	status_t Prepare(const RK3588Display::ResourceInfo& resources, bool writable,
+		uint32_t& result)
+	{
+		if (!RK3588Display::ResourcesMatch(resources))
+			return B_NOT_SUPPORTED;
+		void* address = NULL;
+		fPmuArea.SetTo(map_physical_memory("RK3588 scanout PMU", resources.pmuBase, B_PAGE_SIZE,
+			B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY, B_KERNEL_READ_AREA, &address));
+		if (fPmuArea.Get() < B_OK)
+			return fPmuArea.Get();
+		fPmu = (volatile uint32*)address;
+		fClockArea.SetTo(map_physical_memory("RK3588 scanout CRU", resources.clockBase, B_PAGE_SIZE,
+			B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY, B_KERNEL_READ_AREA, &address));
+		if (fClockArea.Get() < B_OK)
+			return fClockArea.Get();
+		fClock = (volatile uint32*)address;
+		uint32_t repair = ReadDisplayRegister(fPmu, RK3588Display::kPmuOffsets[RK3588Display::kPmuRepairStatus]);
+		uint32_t gate = ReadDisplayRegister(fClock, RK3588Display::kClockGateOffsets[RK3588Display::kClockGateVop]);
+		if ((repair & RK3588Display::kPmuVopOn) == 0
+			|| (gate & RK3588Display::kClockGateVopMask) != 0) {
+			result = RK3588Display::kScanoutNotReady;
+			return B_OK;
+		}
+		fVopArea.SetTo(map_physical_memory("RK3588 scanout VOP2", resources.vopBase,
+			RK3588Display::kVopMapSize, B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY,
+			B_KERNEL_READ_AREA | (writable ? B_KERNEL_WRITE_AREA : 0), &address));
+		if (fVopArea.Get() < B_OK)
+			return fVopArea.Get();
+		fVop = (volatile uint32*)address;
+		result = RK3588Display::kScanoutOK;
+		return B_OK;
+	}
+	bool Ready() const { return fVop != NULL; }
+	uint32_t ReadVop(uint32_t offset) { return ReadDisplayRegister(fVop, offset); }
+	void WriteVop(uint32_t offset, uint32_t value) { WriteDisplayRegister(fVop, offset, value); }
+	int64_t Now() { return system_time(); }
+private:
+	AreaDeleter fPmuArea, fClockArea, fVopArea;
+	volatile uint32* fPmu = NULL;
+	volatile uint32* fClock = NULL;
+	volatile uint32* fVop = NULL;
 };
 
 #endif // RK3588_DISPLAY_HARDWARE_H

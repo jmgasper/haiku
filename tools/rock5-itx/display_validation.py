@@ -2,9 +2,11 @@
 
 The probe prints raw register words; this module re-derives the video-port
 timing, interface routing and hot-plug state independently of the probe's own
-decoded lines and requires every sample to agree. Nothing here proves scanout
-or a working display; it establishes which firmware-programmed state Haiku
-inherited, with no register writes.
+decoded lines and requires every sample to agree. The observation part proves
+no scanout; it establishes which firmware-programmed state Haiku inherited,
+with no register writes. The scanout part checks the opt-in window swap
+transcript and, with an image library, whether a captured frame shows the
+driver's colour-bar pattern.
 """
 import re
 
@@ -292,3 +294,124 @@ def validate_edid(body):
     return dict(status='pass', base=base, blocks={str(index): b['data'].hex() for index, b in blocks.items()},
         polls={str(index): b['polls'] for index, b in blocks.items()},
         micros={str(index): b['micros'] for index, b in blocks.items()}, preferred_refresh_hz=refresh)
+
+
+SCANOUT_LINE = re.compile(
+    r'^ROCK5_DISPLAY_SCANOUT action=(query|show|restore) result=(\d+) flags=(\d+) port=(\d) window=(\d)'
+    r' before=([0-9a-f]{8}) after=([0-9a-f]{8}) firmware=([0-9a-f]{8}) pattern=([0-9a-f]{8})'
+    r' region_control=([0-9a-f]{8}) virtual=(\d+) active=([0-9a-f]{8}) display=([0-9a-f]{8})'
+    r' start=([0-9a-f]{8}) if_en=([0-9a-f]{8}) cfg_done=([0-9a-f]{8}) start_us=(\d+) end_us=(\d+)$', re.M)
+SCANOUT_STEPS = [('query', 0), ('show', 1), ('query', 1), ('restore', 0), ('query', 0)]
+SCANOUT_GEOMETRY = dict(region_control=1, virtual=1920, active=0x0437077f, display=0x0437077f, start=0)
+# 0xAARRGGBB bar colours of DisplayScanout.h as RGB, then the border grey.
+PATTERN_COLORS = [(255, 255, 255), (255, 255, 0), (0, 255, 255), (0, 255, 0), (255, 0, 255),
+    (255, 0, 0), (0, 0, 255), (0, 0, 0)]
+PATTERN_BORDER = (64, 64, 64)
+PATTERN_BAR_WIDTH = (1920 - 64) // 8
+
+
+def validate_scanout(body, observation=None):
+    """Return the decoded scanout swap from a native --scanout transcript or raise ValidationError.
+
+    `observation` is a decoded observation of the same boot; the swap must
+    have used the window and port it reported and the firmware address it saw.
+    """
+    if 'ROCK5_DISPLAY_SCANOUT_REQUEST_CHECKS_PASS' not in body:
+        raise ValidationError('scanout request boundary checks missing')
+    if body.count('ROCK5_DISPLAY_RESOURCE_DESCRIPTION_PASS') != 1:
+        raise ValidationError('resource description did not pass exactly once')
+    if 'ROCK5_DISPLAY_SCANOUT_ABORT' in body:
+        raise ValidationError('scanout probe aborted')
+    steps = []
+    for match in SCANOUT_LINE.finditer(body):
+        start, end = int(match.group(17)), int(match.group(18))
+        steps.append(dict(action=match.group(1), result=int(match.group(2)), flags=int(match.group(3)),
+            port=int(match.group(4)), window=int(match.group(5)), before=int(match.group(6), 16),
+            after=int(match.group(7), 16), firmware=int(match.group(8), 16), pattern=int(match.group(9), 16),
+            region_control=int(match.group(10), 16), virtual=int(match.group(11)),
+            active=int(match.group(12), 16), display=int(match.group(13), 16), start=int(match.group(14), 16),
+            if_en=int(match.group(15), 16), cfg_done=int(match.group(16), 16), micros=end - start,
+            offset=match.start()))
+    if [(s['action'], s['flags']) for s in steps] != SCANOUT_STEPS:
+        raise ValidationError('scanout steps %r' % [(s['action'], s['flags']) for s in steps])
+    for step in steps:
+        if step['result'] != 0:
+            raise ValidationError('scanout %s result %d' % (step['action'], step['result']))
+        if step['micros'] < 0 or step['micros'] > 5000000:
+            raise ValidationError('implausible scanout %s duration' % step['action'])
+        for key, value in SCANOUT_GEOMETRY.items():
+            if step[key] != value:
+                raise ValidationError('window %s %#x differs from the qualified firmware state' % (key, step[key]))
+    first, show, held, restore, last = steps
+    port, window = first['port'], first['window']
+    if port > 3 or window > 3:
+        raise ValidationError('scanout port %d window %d out of range' % (port, window))
+    if not first['if_en'] >> 5 & 1 or first['if_en'] >> 18 & 3 != port:
+        raise ValidationError('interface enable %#x does not route HDMI1 from port %d' % (first['if_en'], port))
+    for step in steps:
+        if step['port'] != port or step['window'] != window or step['if_en'] != first['if_en']:
+            raise ValidationError('scanout routing changed during the swap')
+    firmware, pattern = first['before'], show['pattern']
+    if not firmware or not pattern or pattern == firmware or pattern & 0xfff or pattern >= 1 << 32:
+        raise ValidationError('implausible addresses firmware %#x pattern %#x' % (firmware, pattern))
+    commit = 0x8000 | 1 << port | 1 << (port + 16)
+    expected = [
+        dict(after=0, cfg_done=0),
+        dict(before=firmware, after=pattern, firmware=firmware, pattern=pattern, cfg_done=commit),
+        dict(before=pattern, after=0, firmware=firmware, pattern=pattern, cfg_done=0),
+        dict(before=pattern, after=firmware, firmware=firmware, pattern=pattern, cfg_done=commit),
+        dict(before=firmware, after=0, firmware=firmware, pattern=pattern, cfg_done=0),
+    ]
+    for step, checks in zip(steps, expected):
+        for key, value in checks.items():
+            if step[key] != value:
+                raise ValidationError('scanout %s %s=%#x, expected %#x' % (step['action'], key, step[key], value))
+    hold = re.search(r'^ROCK5_DISPLAY_SCANOUT_HOLD seconds=(\d+)$', body, re.M)
+    if hold is None or not show['offset'] < hold.start() < held['offset']:
+        raise ValidationError('scanout hold marker missing or out of order')
+    summary = ('ROCK5_DISPLAY_SCANOUT_PASS port=%d window=%d firmware=%08x pattern=%08x hold_seconds=%s'
+        ' register_writes=window_address_and_cfg_done' % (port, window, firmware, pattern, hold.group(1)))
+    if body.count(summary + '\n') != 1 or body.rfind(summary) < last['offset']:
+        raise ValidationError('scanout summary missing or inconsistent')
+    if observation is not None:
+        if observation.get('active_ports') != [port]:
+            raise ValidationError('observation active ports %r, swap used port %d' % (observation.get('active_ports'), port))
+        seen = observation['windows']['esmarts'][window]
+        if seen['region_control'] != 1 or seen['address'] != firmware:
+            raise ValidationError('observation window %d address %#x, swap saw %#x' % (window, seen['address'], firmware))
+    names = ['query_before', 'show', 'query_swapped', 'restore', 'query_after']
+    return dict(status='pass', port=port, window=window, firmware='%08x' % firmware, pattern='%08x' % pattern,
+        hold_seconds=int(hold.group(1)), commit='%08x' % commit,
+        micros={name: step['micros'] for name, step in zip(names, steps)})
+
+
+def _nearest_pattern_color(rgb):
+    candidates = PATTERN_COLORS + [PATTERN_BORDER]
+    return min(range(len(candidates)), key=lambda i: sum((a - b) ** 2 for a, b in zip(candidates[i], rgb)))
+
+
+def check_pattern_frame(path, expect_pattern=True):
+    """Classify a 1920x1080 capture: raise unless it shows (or, with expect_pattern False, does not show) the bars."""
+    from PIL import Image
+    image = Image.open(path).convert('RGB')
+    if image.size != (1920, 1080):
+        raise ValidationError('frame is %dx%d, not 1920x1080' % image.size)
+    samples = []
+    for bar in range(8):
+        x = 32 + bar * PATTERN_BAR_WIDTH + PATTERN_BAR_WIDTH // 2
+        for y in (200, 540, 880):
+            rgb = image.getpixel((x, y))
+            samples.append(dict(x=x, y=y, rgb=list(rgb), expected=bar, nearest=_nearest_pattern_color(rgb)))
+    for x, y in ((16, 540), (1903, 540), (960, 16), (960, 1063)):
+        rgb = image.getpixel((x, y))
+        samples.append(dict(x=x, y=y, rgb=list(rgb), expected=8, nearest=_nearest_pattern_color(rgb)))
+    mismatches = sum(1 for s in samples if s['nearest'] != s['expected'])
+    bright = all(min(s['rgb']) >= 160 for s in samples if s['expected'] == 0)
+    dark = all(max(s['rgb']) <= 90 for s in samples if s['expected'] == 7)
+    visible = mismatches == 0 and bright and dark
+    if expect_pattern and not visible:
+        raise ValidationError('frame does not show the scanout pattern (%d of %d samples off, bright=%s, dark=%s)'
+            % (mismatches, len(samples), bright, dark))
+    if not expect_pattern and visible:
+        raise ValidationError('frame still shows the scanout pattern')
+    return dict(status='pass', pattern_visible=visible, mismatches=mismatches, samples=samples)
