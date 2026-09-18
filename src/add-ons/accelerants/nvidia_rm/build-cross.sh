@@ -66,3 +66,21 @@ $TOOLS-g++ -shared -nostdlib -o "$OUT/add-ons/accelerants/nvidia_rm.accelerant" 
 	"$GCCLIB/crtendS.o" "$OBJ/system/glue/arch/x86_64/crtn.o" \
 	-Wl,--no-undefined -Wl,-rpath-link,"$BUILD"
 echo "built nvidia_rm.accelerant into $OUT"
+
+# Diagnostic tool: dumps NVKMS's view of every dpy (see DpyInfoTest.cpp).
+TOOLDIR=$OBJDIR/nvdpyinfo
+mkdir -p "$TOOLDIR" "$OUT/bin"
+for f in DpyInfoTest sdk/ErrorUtils sdk/NvKmsApi sdk/NvKmsDevice sdk/NvRmApi sdk/NvRmDevice; do
+	$TOOLS-g++ -std=c++20 "${FLAGS[@]}" -c "$SRC/$f.cpp" -o "$TOOLDIR/$(basename $f).o"
+done
+$TOOLS-gcc "${FLAGS[@]}" -c "$OGKM/src/common/shared/nvstatus/nvstatus.c" \
+	-o "$TOOLDIR/nvstatus.o"
+$TOOLS-g++ -nostdlib -o "$OUT/bin/nvdpyinfo" \
+	"$OBJ/system/glue/arch/x86_64/crti.o" "$GCCLIB/crtbegin.o" \
+	"$OBJ/system/glue/start_dyn.o" "$OBJ/system/glue/init_term_dyn.o" \
+	"$TOOLDIR"/*.o \
+	"$OBJ/system/libroot/libroot.so" "$GCC_SYSLIBS_RUNTIME/lib/libstdc++.so" \
+	"$GCC_SYSLIBS_RUNTIME/lib/libgcc_s.so" "$GCCLIB/libgcc.a" \
+	"$GCCLIB/crtend.o" "$OBJ/system/glue/arch/x86_64/crtn.o" \
+	-Wl,--no-undefined -Wl,-rpath-link,"$BUILD"
+echo "built nvdpyinfo into $OUT/bin"
