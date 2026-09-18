@@ -155,6 +155,16 @@ private:
 		std::vector<uint8> data;
 	} fCursorImage;
 
+	// Where NVKMS writes the frame number at every vertical blank, and the
+	// thread that turns that into Haiku's retrace semaphore.
+	NvRmObject fVblankMemory;
+	NvKmsSurface fVblankSurface;
+	NvRmMemoryMapping fVblankMapping;
+	NvKmsVblankSemControlHandle fVblankControl = 0;
+	sem_id fRetraceSem = -1;
+	thread_id fRetraceThread = -1;
+	std::atomic<bool> fQuitRetraceThread {false};
+
 	// Serializes NVKMS state changes between app_server and the resume thread.
 	std::recursive_mutex fLock;
 	thread_id fResumeThread = -1;
@@ -177,6 +187,18 @@ private:
 	bool IsSpanMode(const display_timing &timing) const;
 	void SetSpanningMode(const display_mode &mode);
 	void PublishScanout();
+
+	void StartRetraceThread();
+	void StopRetraceThread();
+	void EnableVblankReports();
+	void DisableVblankReports();
+	static status_t RetraceThreadEntry(void *arg);
+	void RetraceThread();
+
+public:
+	sem_id RetraceSemaphore();
+
+private:
 
 	void UpdateCursor(bool updateImage, bool updatePos);
 
@@ -297,6 +319,10 @@ NvAccelerant::~NvAccelerant()
 	}
 	if (fDisplayRestoredSem >= 0)
 		delete_sem(fDisplayRestoredSem);
+
+	StopRetraceThread();
+	if (fRetraceSem >= 0)
+		delete_sem(fRetraceSem);
 }
 
 status_t NvAccelerant::WaitForDisplayRestore(bigtime_t timeout)
@@ -827,6 +853,13 @@ void NvAccelerant::SetDisplayMode(display_mode* modeToSet)
 	fFramebuffer = std::move(newFramebuffer);
 
 	PublishScanout();
+
+	// The head a mode is driven from can change, and NVKMS stops reporting
+	// blanks for a head that has been shut down, so ask again.
+	if (fRetraceThread >= 0) {
+		DisableVblankReports();
+		EnableVblankReports();
+	}
 }
 
 void NvAccelerant::ApplySpanningMode(NvKmsBitmap &framebuffer)
@@ -886,6 +919,11 @@ void NvAccelerant::SetSpanningMode(const display_mode &mode)
 	fFramebuffer = std::move(newFramebuffer);
 
 	PublishScanout();
+
+	if (fRetraceThread >= 0) {
+		DisableVblankReports();
+		EnableVblankReports();
+	}
 }
 
 void NvAccelerant::GetDisplayMode(display_mode* currentMode)
@@ -898,6 +936,178 @@ void NvAccelerant::GetDisplayMode(display_mode* currentMode)
 	*currentMode = fCurrentHaikuMode;
 	currentMode->flags |= B_PARALLEL_ACCESS;
 }
+
+// Telling the rest of the system when the display is between frames.
+//
+// NVKMS writes the frame number into memory a client registers, at every
+// vertical blank. Nothing here has to ask for it - the frame number is updated
+// whether or not a request is pending - so the thread below only reads, and
+// releases Haiku's retrace semaphore each time the number changes. That is
+// what BScreen::WaitForRetrace() waits on, so every program gets it, not only
+// the one presenting with the GPU.
+void NvAccelerant::EnableVblankReports()
+{
+	if (!fKmsDev.Info().supportsVblankSemControl) {
+		debug_printf("nvidia_rm: the driver will not report vertical blanks\n");
+		return;
+	}
+
+	try {
+		if (!fVblankSurface.IsSet()) {
+			const uint64 size = B_PAGE_SIZE;
+			NvU8 compressible = 0;
+			nvKmsKapiAllocateSystemMemory(fRmDev, fKmsDev, fVblankMemory,
+				NvKmsSurfaceMemoryLayoutPitch, size,
+				NVKMS_KAPI_ALLOCATION_TYPE_OFFSCREEN, &compressible);
+
+			FileDesc memoryFd = fRmDev.ExportObjectToFd(fRmDev.Device().Get(),
+				fVblankMemory.Get());
+
+			NvKmsRegisterSurfaceParams params {};
+			params.request.deviceHandle = fKmsDev.Get();
+			params.request.useFd = true;
+			params.request.planes[0].u.fd = memoryFd.Get();
+			params.request.planes[0].offset = 0;
+			params.request.planes[0].pitch = size;
+			params.request.planes[0].rmObjectSizeInBytes = size;
+			params.request.widthInPixels = size / 4;
+			params.request.heightInPixels = 1;
+			params.request.layout = NvKmsSurfaceMemoryLayoutPitch;
+			params.request.format = NvKmsSurfaceMemoryFormatX8R8G8B8;
+			// Nothing scans this out; it is a place for counters.
+			params.request.noDisplayHardwareAccess = true;
+			params.request.isoType = NVKMS_MEMORY_NISO;
+			CheckErrno(fKms.Control(NVKMS_IOCTL_REGISTER_SURFACE, &params,
+				sizeof(params)));
+			fVblankSurface = NvKmsSurface(fKmsDev, params.reply.surfaceHandle);
+
+			fVblankMapping = fRmDev.MapMemory(fVblankMemory.Get(), true, 0,
+				size, 0);
+			memset(fVblankMapping.Address(), 0,
+				sizeof(NvKmsVblankSemControlData));
+		}
+
+		NvKmsEnableVblankSemControlParams enableParams {};
+		enableParams.request.deviceHandle = fKmsDev.Get();
+		enableParams.request.dispHandle = fDisp;
+		enableParams.request.headMask = 1U << fHead;
+		enableParams.request.surfaceHandle = fVblankSurface.Get();
+		enableParams.request.surfaceOffset = 0;
+		CheckErrno(fKms.Control(NVKMS_IOCTL_ENABLE_VBLANK_SEM_CONTROL,
+			&enableParams, sizeof(enableParams)));
+		fVblankControl = enableParams.reply.vblankSemControlHandle;
+	} catch (const std::system_error &ex) {
+		debug_printf("[!] nvidia_rm: no vertical blank reports: %s\n",
+			ex.what());
+		fVblankControl = 0;
+	}
+}
+
+void NvAccelerant::DisableVblankReports()
+{
+	if (fVblankControl == 0)
+		return;
+
+	NvKmsDisableVblankSemControlParams params {};
+	params.request.deviceHandle = fKmsDev.Get();
+	params.request.dispHandle = fDisp;
+	params.request.vblankSemControlHandle = fVblankControl;
+	fKms.Control(NVKMS_IOCTL_DISABLE_VBLANK_SEM_CONTROL, &params,
+		sizeof(params));
+	fVblankControl = 0;
+}
+
+status_t NvAccelerant::RetraceThreadEntry(void *arg)
+{
+	static_cast<NvAccelerant*>(arg)->RetraceThread();
+	return B_OK;
+}
+
+void NvAccelerant::RetraceThread()
+{
+	auto *data = (volatile NvKmsVblankSemControlData *)fVblankMapping.Address();
+	uint64 previous = 0;
+	bigtime_t lastChange = system_time();
+
+	while (!fQuitRetraceThread.load()) {
+		volatile NvKmsVblankSemControlDataOneHead &one = data->head[fHead];
+		const uint64 count = one.vblankCount;
+
+		if (count != previous) {
+			previous = count;
+			lastChange = system_time();
+
+			// Every program waiting on this blank is let go on this blank,
+			// rather than one of them per blank. B_RELEASE_ALL also leaves the
+			// count at zero, so a semaphore nobody is waiting on does not
+			// build up a stock of stale blanks to hand out later.
+			release_sem_etc(fRetraceSem, 0,
+				B_DO_NOT_RESCHEDULE | B_RELEASE_ALL);
+
+			// The next blank is a frame away; there is no sense looking for it
+			// until most of that frame has gone by.
+			bigtime_t period = 1000000 / MAX(1, (int)CalcRefreshRate(
+				fCurrentHaikuMode.timing));
+			snooze(period > 2000 ? period - 1500 : 0);
+			continue;
+		}
+
+		// Nothing is changing - the display is off, or the head this was
+		// enabled on is no longer driving anything. Stop spinning on it.
+		if (system_time() - lastChange > 500000) {
+			snooze(100000);
+			continue;
+		}
+
+		snooze(200);
+	}
+}
+
+void NvAccelerant::StartRetraceThread()
+{
+	if (fRetraceThread >= 0)
+		return;
+
+	EnableVblankReports();
+	if (fVblankControl == 0)
+		return;
+
+	if (fRetraceSem < 0) {
+		fRetraceSem = create_sem(0, "nvidia_rm retrace");
+		if (fRetraceSem < 0)
+			return;
+	}
+
+	fQuitRetraceThread.store(false);
+	fRetraceThread = spawn_thread(RetraceThreadEntry, "nvidia_rm retrace",
+		B_REAL_TIME_DISPLAY_PRIORITY, this);
+	if (fRetraceThread < 0) {
+		DisableVblankReports();
+		return;
+	}
+	resume_thread(fRetraceThread);
+}
+
+void NvAccelerant::StopRetraceThread()
+{
+	if (fRetraceThread >= 0) {
+		fQuitRetraceThread.store(true);
+		status_t result;
+		wait_for_thread(fRetraceThread, &result);
+		fRetraceThread = -1;
+	}
+	DisableVblankReports();
+}
+
+sem_id NvAccelerant::RetraceSemaphore()
+{
+	std::lock_guard<std::recursive_mutex> lock(fLock);
+	if (fRetraceThread < 0)
+		StartRetraceThread();
+
+	return fRetraceSem >= 0 ? fRetraceSem : B_ERROR;
+}
+
 
 // Let other programs draw straight into the screen.
 //
@@ -1266,6 +1476,18 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 				} catch (const std::system_error &ex) {
 					debug_printf("[!] nvidia_rm: %s\n", ex.what());
 					return ToErrorCode(ex);
+				}
+			};
+			return (void*)fn;
+		}
+
+		case B_ACCELERANT_RETRACE_SEMAPHORE: {
+			accelerant_retrace_semaphore fn = []() -> sem_id {
+				try {
+					return NvAccelerant::Instance()->RetraceSemaphore();
+				} catch (const std::system_error &ex) {
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
+					return B_ERROR;
 				}
 			};
 			return (void*)fn;
