@@ -1,0 +1,237 @@
+/*
+ * Copyright 2026, Haiku, Inc. All rights reserved.
+ * Distributed under the terms of the MIT License.
+ */
+
+// Read-only ROCK 5 ITX display observation. Prints the admitted resource
+// description and three sequential register snapshots of VOP2, HDMI TX1,
+// the HDPTX PHY GRF and the clock/power controllers. Nothing is written.
+
+#include <OS.h>
+
+#include "DisplayObservation.h"
+
+#include <errno.h>
+#include <fcntl.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+
+using namespace RK3588Display;
+
+static const char* kDevice = "/dev/graphics/rk3588_display/0";
+
+
+static bool
+ReportResources(const ResourceInfo& info)
+{
+	printf("ROCK5_DISPLAY_RESOURCES version=%" PRIu32 " flags=%" PRIu32
+		" vop=%#" PRIx64 "/%#" PRIx64 " lut=%#" PRIx64 "/%#" PRIx64
+		" hdmi=%#" PRIx64 "/%#" PRIx64 " hdptx=%#" PRIx64 "/%#" PRIx64
+		" hdptx_grf=%#" PRIx64 "/%#" PRIx64 " sys_grf=%#" PRIx64 "/%#" PRIx64
+		" vop_grf=%#" PRIx64 "/%#" PRIx64 " vo1_grf=%#" PRIx64 "/%#" PRIx64
+		" pmu=%#" PRIx64 "/%#" PRIx64 " cru=%#" PRIx64 "/%#" PRIx64 " gic=%#" PRIx64
+		" vop_irq=%" PRIu32 " hdmi_irqs=%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32
+		" vop_clocks=%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32
+		" hdmi_clocks=%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32
+		" vop_pd=%" PRIu32 " hdmi_pd=%" PRIu32 " phy_phandle=%" PRIu32 " vop_port=%" PRIu32
+		" board=%s\n",
+		info.version, info.flags, info.vopBase, info.vopSize, info.vopLutBase, info.vopLutSize,
+		info.hdmiBase, info.hdmiSize, info.hdptxBase, info.hdptxSize,
+		info.hdptxGrfBase, info.hdptxGrfSize, info.sysGrfBase, info.sysGrfSize,
+		info.vopGrfBase, info.vopGrfSize, info.vo1GrfBase, info.vo1GrfSize,
+		info.pmuBase, info.pmuSize, info.clockBase, info.clockSize, info.interruptBase,
+		info.vopInterrupt, info.hdmiInterrupts[0], info.hdmiInterrupts[1],
+		info.hdmiInterrupts[2], info.hdmiInterrupts[3], info.hdmiInterrupts[4],
+		info.vopClockIds[0], info.vopClockIds[1], info.vopClockIds[2], info.vopClockIds[3],
+		info.vopClockIds[4], info.vopClockIds[5], info.vopClockIds[6],
+		info.hdmiClockIds[0], info.hdmiClockIds[1], info.hdmiClockIds[2],
+		info.hdmiClockIds[3], info.hdmiClockIds[4], info.hdmiClockIds[5],
+		info.vopPowerDomain, info.hdmiPowerDomain, info.hdmiPhyPhandle, info.vopPortIndex,
+		info.boardCompatible);
+	if (!ResourcesMatch(info)) {
+		fprintf(stderr, "Display resource description does not match the recorded board\n");
+		return false;
+	}
+	return true;
+}
+
+
+static void
+PrintWords(const char* label, unsigned index, const uint32_t* words, unsigned count)
+{
+	printf("ROCK5_DISPLAY_%s sample=%u", label, index);
+	for (unsigned i = 0; i < count; i++)
+		printf("%c%08" PRIx32, i == 0 ? ' ' : ',', words[i]);
+	printf("\n");
+}
+
+
+static void
+ReportSnapshot(unsigned index, const DisplaySnapshot& snapshot)
+{
+	printf("ROCK5_DISPLAY_SNAPSHOT sample=%u version=%" PRIu32 " flags=%#" PRIx32
+		" start_us=%" PRId64 " end_us=%" PRId64 "\n", index, snapshot.version,
+		snapshot.flags, snapshot.startedMicros, snapshot.finishedMicros);
+	PrintWords("PMU", index, snapshot.pmu, kPmuCount);
+	PrintWords("CRU_SELECT", index, snapshot.clockSelect, kClockSelectCount);
+	PrintWords("CRU_GATE", index, snapshot.clockGate, kClockGateCount);
+	PrintWords("SYS_GRF", index, snapshot.sysGrf, kSysGrfCount);
+	PrintWords("VOP_GRF", index, &snapshot.vopGrf, 1);
+	PrintWords("VO1_GRF", index, snapshot.vo1Grf, kVo1GrfCount);
+	PrintWords("HDPTX1_GRF", index, snapshot.hdptxGrf, kHdptxGrfCount);
+	if ((snapshot.flags & kSnapshotVopRead) != 0) {
+		PrintWords("VOP_SYS", index, snapshot.vopSystem, kVopSystemCount);
+		PrintWords("VOP_OVL", index, snapshot.vopOverlay, kVopOverlayCount);
+		for (unsigned port = 0; port < kVopPortCount; port++) {
+			char label[16];
+			snprintf(label, sizeof(label), "VOP_VP%u", port);
+			PrintWords(label, index, snapshot.vopPort[port], kVopPortRegisterCount);
+		}
+		for (unsigned window = 0; window < kVopClusterCount; window++) {
+			char label[24];
+			snprintf(label, sizeof(label), "VOP_CLUSTER%u", window);
+			PrintWords(label, index, snapshot.vopCluster[window], kVopClusterRegisterCount);
+		}
+		for (unsigned window = 0; window < kVopEsmartCount; window++) {
+			char label[24];
+			snprintf(label, sizeof(label), "VOP_ESMART%u", window);
+			PrintWords(label, index, snapshot.vopEsmart[window], kVopEsmartRegisterCount);
+		}
+		// Decoded timing for each video port: totals and active ranges.
+		for (unsigned port = 0; port < kVopPortCount; port++) {
+			const uint32_t* vp = snapshot.vopPort[port];
+			uint32_t htotal = vp[kVopPortHTotal] >> 16 & 0x1fff;
+			uint32_t hsEnd = vp[kVopPortHTotal] & 0x1fff;
+			uint32_t hactStart = vp[kVopPortHActive] >> 16 & 0x1fff;
+			uint32_t hactEnd = vp[kVopPortHActive] & 0x1fff;
+			uint32_t vtotal = vp[kVopPortVTotal] >> 16 & 0x1fff;
+			uint32_t vsEnd = vp[kVopPortVTotal] & 0x1fff;
+			uint32_t vactStart = vp[kVopPortVActive] >> 16 & 0x1fff;
+			uint32_t vactEnd = vp[kVopPortVActive] & 0x1fff;
+			printf("ROCK5_DISPLAY_VP_TIMING sample=%u port=%u standby=%u out_mode=%" PRIu32
+				" htotal=%" PRIu32 " hsync_end=%" PRIu32 " hactive=%" PRIu32 "-%" PRIu32
+				" vtotal=%" PRIu32 " vsync_end=%" PRIu32 " vactive=%" PRIu32 "-%" PRIu32
+				" width=%" PRIu32 " height=%" PRIu32 "\n", index, port,
+				vp[kVopPortDisplayControl] >> 31 & 1, vp[kVopPortDisplayControl] & 0xf,
+				htotal, hsEnd, hactStart, hactEnd, vtotal, vsEnd, vactStart, vactEnd,
+				hactEnd > hactStart ? hactEnd - hactStart : 0,
+				vactEnd > vactStart ? vactEnd - vactStart : 0);
+		}
+		uint32_t interfaces = snapshot.vopSystem[kVopSystemInterfaceEnable];
+		printf("ROCK5_DISPLAY_IF sample=%u dp0=%u dp1=%u edp0=%u hdmi0=%u edp1=%u hdmi1=%u"
+			" mipi0=%u mipi1=%u rgb=%u dp0_mux=%u dp1_mux=%u hdmi_edp0_mux=%u hdmi_edp1_mux=%u"
+			" version=%08" PRIx32 "\n", index, interfaces & 1, interfaces >> 1 & 1,
+			interfaces >> 2 & 1, interfaces >> 3 & 1, interfaces >> 4 & 1, interfaces >> 5 & 1,
+			interfaces >> 6 & 1, interfaces >> 7 & 1, interfaces >> 8 & 1,
+			interfaces >> 12 & 3, interfaces >> 14 & 3, interfaces >> 16 & 3, interfaces >> 18 & 3,
+			snapshot.vopSystem[kVopSystemVersion]);
+	}
+	if ((snapshot.flags & kSnapshotHdmiRead) != 0)
+		PrintWords("HDMI1", index, snapshot.hdmi, kHdmiCount);
+	uint32_t status1 = snapshot.sysGrf[2];
+	printf("ROCK5_DISPLAY_HPD sample=%u hdmi0_level=%u hdmi0_int=%u hdmi1_level=%u hdmi1_int=%u"
+		" vop_on=%u vo0_on=%u vo1_on=%u vop_gates=%#" PRIx32 " hdmi_gates=%#" PRIx32
+		" hdptx1_status=%#" PRIx32 "\n", index,
+		status1 >> 19 & 1, status1 >> 16 & 1, status1 >> 27 & 1, status1 >> 24 & 1,
+		snapshot.pmu[kPmuRepairStatus] >> 16 & 1, snapshot.pmu[kPmuRepairStatus] >> 17 & 1,
+		snapshot.pmu[kPmuRepairStatus] >> 18 & 1,
+		snapshot.clockGate[kClockGateVop] & kClockGateVopMask,
+		snapshot.clockGate[kClockGateHdmi] & kClockGateHdmiMask, snapshot.hdptxGrf[1]);
+}
+
+
+int
+main(int argc, char** argv)
+{
+	unsigned samples = 3;
+	if (argc == 2 && strcmp(argv[1], "--absent-device") == 0) {
+		// Emulator fixture: the device tree has no RK3588 VOP2, so the driver
+		// must not publish a device. This proves packaging, not observation.
+		int fd = open(kDevice, O_RDONLY);
+		if (fd >= 0 || errno != ENOENT) {
+			if (fd >= 0)
+				close(fd);
+			fprintf(stderr, "Unexpected display device presence (errno %d)\n", errno);
+			return 1;
+		}
+		printf("ROCK5_DISPLAY_ABSENT_PASS device=%s errno=ENOENT\n", kDevice);
+		return 0;
+	}
+	if (argc == 2)
+		samples = (unsigned)atoi(argv[1]);
+	if (argc > 2 || samples < 1 || samples > 16) {
+		fprintf(stderr, "usage: %s [samples 1-16 | --absent-device]\n", argv[0]);
+		return 2;
+	}
+	int writable = open(kDevice, O_RDWR);
+	if (writable >= 0 || errno != EPERM) {
+		if (writable >= 0)
+			close(writable);
+		fprintf(stderr, "Writable open of %s was not rejected (errno %d)\n", kDevice, errno);
+		return 1;
+	}
+	printf("ROCK5_DISPLAY_WRITE_OPEN_REJECTED\n");
+	int fd = open(kDevice, O_RDONLY);
+	if (fd < 0) {
+		perror(kDevice);
+		return 1;
+	}
+	ResourceInfo info = {};
+	if (ioctl(fd, kGetResources, &info, sizeof(info) - 1) == 0 || errno != EINVAL) {
+		fprintf(stderr, "Malformed resource request was not rejected\n");
+		return 1;
+	}
+	if (ioctl(fd, kGetResources, NULL, sizeof(info)) == 0 || errno != EFAULT) {
+		fprintf(stderr, "Null resource output was not rejected\n");
+		return 1;
+	}
+	if (ioctl(fd, kGetResources, &info, sizeof(info)) != 0) {
+		perror("display resources");
+		return 1;
+	}
+	if (!ReportResources(info))
+		return 1;
+	printf("ROCK5_DISPLAY_RESOURCE_DESCRIPTION_PASS\n");
+	DisplaySnapshot snapshot = {};
+	if (ioctl(fd, kGetSnapshot, &snapshot, sizeof(snapshot) - 1) == 0 || errno != EINVAL) {
+		fprintf(stderr, "Malformed snapshot request was not rejected\n");
+		return 1;
+	}
+	if (ioctl(fd, kGetSnapshot, NULL, sizeof(snapshot)) == 0 || errno != EFAULT) {
+		fprintf(stderr, "Null snapshot output was not rejected\n");
+		return 1;
+	}
+	bool consistent = true;
+	DisplaySnapshot first = {};
+	for (unsigned i = 0; i < samples; i++) {
+		memset(&snapshot, 0, sizeof(snapshot));
+		if (ioctl(fd, kGetSnapshot, &snapshot, sizeof(snapshot)) != 0) {
+			perror("display snapshot");
+			return 1;
+		}
+		if (snapshot.version != kSnapshotVersion
+			|| (snapshot.flags & kSnapshotReadOnly) == 0
+			|| snapshot.finishedMicros < snapshot.startedMicros) {
+			fprintf(stderr, "Invalid snapshot header\n");
+			return 1;
+		}
+		ReportSnapshot(i, snapshot);
+		if (i == 0)
+			first = snapshot;
+		else if (snapshot.flags != first.flags
+			|| memcmp(snapshot.vopPort, first.vopPort, sizeof(first.vopPort)) != 0
+			|| memcmp(snapshot.vopSystem, first.vopSystem, sizeof(first.vopSystem)) != 0
+			|| memcmp(snapshot.pmu, first.pmu, sizeof(first.pmu)) != 0) {
+			consistent = false;
+		}
+	}
+	close(fd);
+	printf("ROCK5_DISPLAY_OBSERVATION_PASS samples=%u register_writes=0 consistent=%u"
+		" vop_read=%u hdmi_read=%u\n", samples, consistent ? 1 : 0,
+		(first.flags & kSnapshotVopRead) != 0, (first.flags & kSnapshotHdmiRead) != 0);
+	return 0;
+}
