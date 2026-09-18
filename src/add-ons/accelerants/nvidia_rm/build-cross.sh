@@ -102,3 +102,21 @@ $TOOLS-g++ -nostdlib -o "$OUT/bin/nvscanout" \
 	"$GCCLIB/crtend.o" "$OBJ/system/glue/arch/x86_64/crtn.o" \
 	-Wl,--no-undefined -Wl,-rpath-link,"$BUILD"
 echo "built nvscanout into $OUT/bin"
+
+# Diagnostic tool: counts the display's vertical blanks (see VblankTest.cpp).
+TOOLDIR=$OBJDIR/nvvblank
+mkdir -p "$TOOLDIR"
+for f in VblankTest sdk/ErrorUtils sdk/NvRmApi sdk/NvRmDevice; do
+	$TOOLS-g++ -std=c++20 "${FLAGS[@]}" -c "$SRC/$f.cpp" -o "$TOOLDIR/$(basename $f).o"
+done
+$TOOLS-gcc "${FLAGS[@]}" -c "$OGKM/src/common/shared/nvstatus/nvstatus.c" \
+	-o "$TOOLDIR/nvstatus.o"
+$TOOLS-g++ -nostdlib -o "$OUT/bin/nvvblank" \
+	"$OBJ/system/glue/arch/x86_64/crti.o" "$GCCLIB/crtbegin.o" \
+	"$OBJ/system/glue/start_dyn.o" "$OBJ/system/glue/init_term_dyn.o" \
+	"$TOOLDIR"/*.o \
+	"$OBJ/system/libroot/libroot.so" "$GCC_SYSLIBS_RUNTIME/lib/libstdc++.so" \
+	"$GCC_SYSLIBS_RUNTIME/lib/libgcc_s.so" "$GCCLIB/libgcc.a" \
+	"$GCCLIB/crtend.o" "$OBJ/system/glue/arch/x86_64/crtn.o" \
+	-Wl,--no-undefined -Wl,-rpath-link,"$BUILD"
+echo "built nvvblank into $OUT/bin"

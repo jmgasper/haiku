@@ -284,6 +284,25 @@ listed as verified is untested.
   driver reports `hda_audio_group_get_widgets failed` and `no active codec` for
   it. Nobody here can listen to the speakers, so what is proven is that the
   stream runs at the hardware's clock, not that sound reaches the jack.
+- 2026-09-18: the GPU's HDMI audio cannot work as Haiku's hda driver stands.
+  The codec enumerates - six pin widgets and four audio outputs, all of them
+  digital - but `hda_audio_group_get_widgets` skips any widget whose
+  capabilities say `AUDIO_CAP_DIGITAL`, so it finds no playback stream and
+  gives up with `no active codec`. Making it work means teaching that driver
+  about digital converters: the pin's digital converter control, and for HDMI
+  the ELD and the audio infoframe. That is upstream Haiku work, not this
+  driver's.
+- 2026-09-18: looked into what it would take to stop the tearing. Resman can
+  say when the display is between frames - a GF100_DISP_SW object takes
+  NV9072_CTRL_CMD_NOTIFY_ON_VBLANK and delivers the answer through an operating
+  system event, which this driver already wakes select() on. But resman only
+  allocates that object underneath a channel, and the accelerant has none: it
+  drives the display through NVKMS and never touches a channel
+  (`nvvblank` demonstrates the refusal). The two ways on are to give the
+  accelerant a channel purely to hang the object off, or to use NVKMS's vblank
+  semaphore control, which writes a counter into a surface at each blank and
+  needs no channel - and which would also let the GPU wait for the blank itself
+  instead of the processor waiting and then submitting.
 - 2026-09-18: all five XHCI controllers - two AMD, one ASMedia, and the
   Thunderbolt 4 host with its USB4 interface - start and publish a root hub.
   Only the KVM is plugged in, so what is left in this area needs someone at the
