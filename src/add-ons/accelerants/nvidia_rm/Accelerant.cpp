@@ -90,6 +90,10 @@ static display_mode ToHaikuMode(const NvKmsMode &nvKmsMode) {
 		.space = B_RGB32,
 		.virtual_width  = nvKmsMode.timings.hVisible,
 		.virtual_height = nvKmsMode.timings.vVisible,
+		// The frame buffer can be written while the GPU is drawing, which is
+		// what lets a window be direct connected: its application then draws
+		// into the screen itself.
+		.flags = B_PARALLEL_ACCESS,
 	};
 	return haikuMode;
 }
@@ -892,6 +896,7 @@ void NvAccelerant::GetDisplayMode(display_mode* currentMode)
 		RaiseErrno(ENOENT);
 	}
 	*currentMode = fCurrentHaikuMode;
+	currentMode->flags |= B_PARALLEL_ACCESS;
 }
 
 // Let other programs draw straight into the screen.

@@ -233,3 +233,22 @@ listed as verified is untested.
   the window's position, clipped to what Haiku's direct window mode reports is
   visible, and fall back to the existing host-memory path when the window is
   not direct-connected.
+- 2026-09-18: OpenGL now presents straight into the screen. A window in Haiku's
+  direct mode is told where it sits and which rectangles of it are visible, so
+  Zink copies the frame into those rectangles with the GPU rather than into the
+  window system's bitmap, which app_server would then have to write to the
+  screen a second time. A lit sphere at 1600x900 went from 210 to 969 frames
+  per second - four and a half times - and a calculator opened over the window
+  stays untouched while the sphere keeps turning around it, so the clipping is
+  honoured. `ZINK_NO_SCANOUT_PRESENT` and `GLTEST_NO_DIRECT` both fall back.
+  The accelerant had to advertise `B_PARALLEL_ACCESS` in its modes: without it
+  `BDirectWindow::SupportsWindowMode()` says no and no window is ever direct
+  connected. The frame buffer really can be written while the GPU draws, so the
+  flag is honest.
+  tools/gl-stress.sh still passes - the test killed three times while the GPU
+  was writing the screen, the machine up and every pinned range released.
+  What is left in this area: a window that stops drawing is not repainted when
+  something uncovers it, because the window system's bitmap has never had a
+  frame in it; the renderer should keep the last frame and put it back on a
+  redraw. Presenting is also not synchronised with the display, so a frame can
+  tear.
