@@ -11,7 +11,7 @@ listed as verified is untested.
 | Ethernet | I211 up with DHCP | verified: ipro1000 link 1000BASE-T, DHCP lease, HTTP upload and SSH |
 | USB | all controllers and ports enumerate devices | all 5 xHCI controllers start after the PCI fix; NanoKVM device enumerates on the ASM2142; other ports need physical devices |
 | Audio | ALC1220 analog output, HDMI audio | AMD HDA and GP102 HDMI controllers attach (`/dev/audio/hmulti/hda/0,1`); playback untested |
-| Graphics | GTX 1080 Ti accelerated 2D/3D, 3-4 monitors | in progress: NVKMS modesetting works; the accelerant spans the desktop over all connected displays (verified with HDMI plus a forced DP-0, 2560x1080); Vulkan runs on the GPU (`vkprobe` copies a buffer and renders a triangle); no display is detected on any DisplayPort connector |
+| Graphics | GTX 1070/1080 Ti accelerated 2D/3D, 3-4 monitors | in progress: two displays (HDMI and DisplayPort) drive one 3840x1080 desktop, and Vulkan runs shaders on the GPU (1.4 TFLOP/s compute, 55 Gpixel/s fill); OpenGL still uses Haiku's software renderer |
 | Sleep | S3 suspend and resume | sleeps and wakes; the display comes back, but the NVMe and the network card usually do not |
 
 ## Log
@@ -102,3 +102,21 @@ listed as verified is untested.
   the monitor rather than at the driver. `nvdpyinfo --watch <seconds>` polls
   both RM and NVKMS and reports every change, to catch a plug event when one
   happens.
+- 2026-09-18: a GTX 1070 (GP104, 0x10de:0x1b81) works with no driver change -
+  the driver binds to any NVIDIA display device rather than a list of
+  identifiers - and its DisplayPort output is detected: a Dell U2414H on DP-4
+  comes up beside the HDMI display, both driven by their own head, for one
+  3840x1080 desktop. So the DisplayPort connectors of the 1080 Ti that never
+  reported a connection were a hardware matter, not a driver one.
+- 2026-09-18: `vkbench` (tests/vkbench.c, built and run by
+  tools/build-vkbench.sh) measures compute throughput, fill rate and copy
+  bandwidth with real SPIR-V shaders. Its first numbers exposed that every
+  submission took exactly one second: NVK waited for the channel's semaphore
+  by polling an RM event with a one second timeout, and resman never delivers
+  that event on this GPU, although GPU interrupts themselves do arrive.
+  Spinning on the semaphore first, with a one millisecond poll behind it,
+  turned 17 GFLOP/s into 1.4 TFLOP/s and 0.41 into 55 Gpixel/s. On the
+  GTX 1070: 1.4 TFLOP/s of fused multiply-adds, 55 Gpixel/s fill,
+  58 GB/s copy within video memory and 6.1 GB/s upload over PCIe.
+  Delivering the completion interrupt to the waiting thread instead of
+  polling is still open.
