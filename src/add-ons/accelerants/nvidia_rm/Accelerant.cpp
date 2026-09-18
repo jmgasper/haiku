@@ -190,6 +190,7 @@ private:
 
 	void StartRetraceThread();
 	void StopRetraceThread();
+	void RefreshVblankReports();
 	void EnableVblankReports();
 	void DisableVblankReports();
 	static status_t RetraceThreadEntry(void *arg);
@@ -385,6 +386,9 @@ void NvAccelerant::RestoreAfterResume()
 		ApplySpanningMode(fFramebuffer);
 	else
 		ApplyMode(fCurrentHaikuMode, fFramebuffer);
+
+	// The display was off; whatever was reporting its blanks is not any more.
+	RefreshVblankReports();
 
 	if (!fCursorImage.data.empty()) {
 		SetCursorBitmap(fCursorImage.width, fCursorImage.height,
@@ -855,12 +859,7 @@ void NvAccelerant::SetDisplayMode(display_mode* modeToSet)
 
 	PublishScanout();
 
-	// The head a mode is driven from can change, and NVKMS stops reporting
-	// blanks for a head that has been shut down, so ask again.
-	if (fRetraceThread >= 0) {
-		DisableVblankReports();
-		EnableVblankReports();
-	}
+	RefreshVblankReports();
 }
 
 void NvAccelerant::ApplySpanningMode(NvKmsBitmap &framebuffer)
@@ -921,10 +920,7 @@ void NvAccelerant::SetSpanningMode(const display_mode &mode)
 
 	PublishScanout();
 
-	if (fRetraceThread >= 0) {
-		DisableVblankReports();
-		EnableVblankReports();
-	}
+	RefreshVblankReports();
 }
 
 void NvAccelerant::GetDisplayMode(display_mode* currentMode)
@@ -946,6 +942,19 @@ void NvAccelerant::GetDisplayMode(display_mode* currentMode)
 // releases Haiku's retrace semaphore each time the number changes. That is
 // what BScreen::WaitForRetrace() waits on, so every program gets it, not only
 // the one presenting with the GPU.
+// NVKMS stops reporting blanks for a head it has shut down, and the head a
+// mode is driven from can change, so anything that sets a mode - including
+// coming back from suspend, where the display was off entirely - has to ask
+// again.
+void NvAccelerant::RefreshVblankReports()
+{
+	if (fRetraceThread < 0)
+		return;
+
+	DisableVblankReports();
+	EnableVblankReports();
+}
+
 void NvAccelerant::EnableVblankReports()
 {
 	if (!fKmsDev.Info().supportsVblankSemControl) {
