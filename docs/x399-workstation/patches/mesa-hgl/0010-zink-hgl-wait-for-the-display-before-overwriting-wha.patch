@@ -1,0 +1,61 @@
+From be8bf6b9e06c065b6a6b20bf647ea2cddd2d0360 Mon Sep 17 00:00:00 2001
+From: jmgasper <jmgasper@gmail.com>
+Date: Fri, 18 Sep 2026 23:27:08 +1000
+Subject: [PATCH 10/14] zink/hgl: wait for the display before overwriting what
+ it is showing
+
+A frame going into the screen itself has to start at the blank: the copy
+takes about a millisecond for a whole screen and the display takes
+sixteen to draw one, so a copy begun at the blank stays well ahead of
+the beam and the frame arrives whole. Waiting afterwards, which is what
+this did, only paced the application - the copy had already happened.
+
+The wait is bounded. A display that has been switched off stops
+reporting blanks, and an application should carry on drawing rather than
+stop dead.
+
+A lit sphere at 1600x900 goes from 957 frames a second to 60.0, and
+three windows at once hold 60.1 each. HGL_VSYNC turns it on for
+programs that do not ask.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ .../targets/haiku-zink/ZinkRenderer.cpp       | 23 +++++++++++++++++--
+ 1 file changed, 21 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/targets/haiku-zink/ZinkRenderer.cpp b/src/gallium/targets/haiku-zink/ZinkRenderer.cpp
+index 1c6631d..199a0d6 100644
+--- a/src/gallium/targets/haiku-zink/ZinkRenderer.cpp
++++ b/src/gallium/targets/haiku-zink/ZinkRenderer.cpp
+@@ -298,10 +298,29 @@ void
+ ZinkRenderer::SwapBuffers(bool vsync)
+ {
+ 	BScreen screen(GLView()->Window());
++
++	// When the frame goes into the screen itself, wait for the display to
++	// finish the frame it is showing before starting to overwrite it. The copy
++	// takes about a millisecond for a whole screen and the display takes
++	// sixteen to draw one, so a copy begun at the blank stays well ahead of
++	// the beam and the frame arrives whole.
++	//
++	// Waiting afterwards, which is what this did, only paces the application:
++	// it does not stop the tearing, because the copy has already happened.
++	// Never wait indefinitely: a display that has been switched off stops
++	// reporting blanks, and an application should carry on drawing rather than
++	// stop dead. Three frames is long enough to be sure one was missed.
++	const bigtime_t kRetraceTimeout = 50000;
++	const bool wait = fPresentedIntoScanout
++		&& (vsync || getenv("HGL_VSYNC") != NULL);
++	if (wait)
++		screen.WaitForRetrace(kRetraceTimeout);
++
+ 	fContextObj->SwapBuffers(fContextID);
+ 	fContextObj->Validate(fWidth, fHeight);
+-	if (vsync)
+-		screen.WaitForRetrace();
++
++	if (vsync && !wait)
++		screen.WaitForRetrace(kRetraceTimeout);
+ }
+ 
+ void

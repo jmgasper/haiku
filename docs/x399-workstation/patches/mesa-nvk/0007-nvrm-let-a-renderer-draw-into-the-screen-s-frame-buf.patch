@@ -1,0 +1,413 @@
+From 6be0ad191f48edd128aae97e0d911464f0bb0b00 Mon Sep 17 00:00:00 2001
+From: jmgasper <jmgasper@gmail.com>
+Date: Fri, 18 Sep 2026 17:54:05 +1000
+Subject: [PATCH 7/7] nvrm: let a renderer draw into the screen's frame buffer
+
+The Haiku driver publishes the frame buffer the accelerant scans out
+from and shares the memory object, so NVK can take a reference to it and
+the GPU can write a finished frame there. Video memory, so the frame
+never crosses the bus: a 1920x1080 frame costs 1.07 ms instead of 2.93.
+
+It rides on the pNext chain of vkAllocateMemory rather than a registered
+extension, which keeps it out of the Vulkan loader's way. The private
+structure lives in vk_haiku_scanout.h, shared with the programs here
+that present with it.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ src/nouveau/vulkan/nvk_device_memory.c        | 29 +++++++++++-
+ src/nouveau/vulkan/nvkmd/nvkmd.h              | 33 +++++++++++++
+ src/nouveau/vulkan/nvkmd/nvrm/nv-haiku.h      | 45 ++++++++++++++++++
+ src/nouveau/vulkan/nvkmd/nvrm/nvRmApi.c       | 21 +++++++++
+ src/nouveau/vulkan/nvkmd/nvrm/nvRmApi.h       |  2 +
+ src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm.h    |  5 ++
+ .../vulkan/nvkmd/nvrm/nvkmd_nvrm_dev.c        |  1 +
+ .../vulkan/nvkmd/nvrm/nvkmd_nvrm_mem.c        | 43 +++++++++++++++++
+ .../vulkan/nvkmd/nvrm/nvkmd_nvrm_pdev.c       |  1 +
+ src/nouveau/vulkan/vk_haiku_scanout.h         | 46 +++++++++++++++++++
+ 10 files changed, 224 insertions(+), 2 deletions(-)
+ create mode 100644 src/nouveau/vulkan/vk_haiku_scanout.h
+
+diff --git a/src/nouveau/vulkan/nvk_device_memory.c b/src/nouveau/vulkan/nvk_device_memory.c
+index 057f5ea..9a097f8 100644
+--- a/src/nouveau/vulkan/nvk_device_memory.c
++++ b/src/nouveau/vulkan/nvk_device_memory.c
+@@ -4,6 +4,8 @@
+  */
+ #include "nvk_device_memory.h"
+ 
++#include "vk_haiku_scanout.h"
++
+ #include "nvk_device.h"
+ #include "nvk_entrypoints.h"
+ #include "nvk_image.h"
+@@ -166,6 +168,12 @@ nvk_AllocateMemory(VkDevice device,
+       vk_find_struct_const(pAllocateInfo->pNext, MEMORY_DEDICATED_ALLOCATE_INFO);
+    const VkImportMemoryHostPointerInfoEXT *host_ptr_info =
+       vk_find_struct_const(pAllocateInfo->pNext, IMPORT_MEMORY_HOST_POINTER_INFO_EXT);
++   /* Our own structure, so vk_find_struct does not know its name. */
++   VkImportScanoutMemoryHAIKU *scanout_info = NULL;
++   vk_foreach_struct(s, (void *)pAllocateInfo->pNext) {
++      if (s->sType == VK_STRUCTURE_TYPE_IMPORT_SCANOUT_MEMORY_HAIKU)
++         scanout_info = (VkImportScanoutMemoryHAIKU *)s;
++   }
+    const VkMemoryType *type =
+       &pdev->mem_types[pAllocateInfo->memoryTypeIndex];
+ 
+@@ -207,8 +215,25 @@ nvk_AllocateMemory(VkDevice device,
+       return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
+ 
+    const bool is_host_ptr_import = host_ptr_info && host_ptr_info->handleType;
+-   const bool is_import = (fd_info && fd_info->handleType) || is_host_ptr_import;
+-   if (is_host_ptr_import) {
++   const bool is_import = (fd_info && fd_info->handleType) ||
++                          is_host_ptr_import || scanout_info != NULL;
++   if (scanout_info != NULL) {
++      if (!nvkmd_dev_can_import_scanout(dev->nvkmd)) {
++         result = vk_error(dev, VK_ERROR_INITIALIZATION_FAILED);
++         goto fail_alloc;
++      }
++
++      struct nvkmd_scanout_info info;
++      result = nvkmd_dev_import_scanout(dev->nvkmd, &dev->vk.base, &info,
++                                        &mem->mem);
++      if (result != VK_SUCCESS)
++         goto fail_alloc;
++
++      scanout_info->width = info.width;
++      scanout_info->height = info.height;
++      scanout_info->rowPitch = info.row_pitch_B;
++      scanout_info->size = info.size_B;
++   } else if (is_host_ptr_import) {
+       assert(host_ptr_info->handleType ==
+                VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT ||
+              host_ptr_info->handleType ==
+diff --git a/src/nouveau/vulkan/nvkmd/nvkmd.h b/src/nouveau/vulkan/nvkmd/nvkmd.h
+index fbe86f7..8d4bb24 100644
+--- a/src/nouveau/vulkan/nvkmd/nvkmd.h
++++ b/src/nouveau/vulkan/nvkmd/nvkmd.h
+@@ -115,12 +115,22 @@ struct nvkmd_info {
+    bool has_dma_buf;
+    /** Memory the application owns can be made visible to the GPU */
+    bool has_import_host_ptr;
++   /** The screen's frame buffer can be drawn into directly */
++   bool has_import_scanout;
+    bool has_get_vram_used;
+    bool has_alloc_tiled;
+    bool has_map_fixed;
+    bool has_overmap;
+ };
+ 
++/* Where the screen's frame buffer is and what shape it has. */
++struct nvkmd_scanout_info {
++   uint32_t width;
++   uint32_t height;
++   uint32_t row_pitch_B;
++   uint64_t size_B;
++};
++
+ struct nvkmd_pdev_ops {
+    void (*destroy)(struct nvkmd_pdev *pdev);
+ 
+@@ -188,6 +198,14 @@ struct nvkmd_dev_ops {
+                                void *ptr, uint64_t size_B,
+                                struct nvkmd_mem **mem_out);
+ 
++   /* Take hold of the screen's frame buffer.  May be NULL, in which case a
++    * frame cannot be presented without going through the host.
++    */
++   VkResult (*import_scanout)(struct nvkmd_dev *dev,
++                              struct vk_object_base *log_obj,
++                              struct nvkmd_scanout_info *info_out,
++                              struct nvkmd_mem **mem_out);
++
+    VkResult (*alloc_va)(struct nvkmd_dev *dev,
+                         struct vk_object_base *log_obj,
+                         enum nvkmd_va_flags flags, uint8_t pte_kind,
+@@ -499,6 +517,21 @@ nvkmd_dev_import_host_ptr(struct nvkmd_dev *dev,
+    return dev->ops->import_host_ptr(dev, log_obj, ptr, size_B, mem_out);
+ }
+ 
++static inline bool
++nvkmd_dev_can_import_scanout(struct nvkmd_dev *dev)
++{
++   return dev->ops->import_scanout != NULL;
++}
++
++static inline VkResult MUST_CHECK
++nvkmd_dev_import_scanout(struct nvkmd_dev *dev,
++                         struct vk_object_base *log_obj,
++                         struct nvkmd_scanout_info *info_out,
++                         struct nvkmd_mem **mem_out)
++{
++   return dev->ops->import_scanout(dev, log_obj, info_out, mem_out);
++}
++
+ VkResult MUST_CHECK
+ nvkmd_dev_alloc_va(struct nvkmd_dev *dev,
+                    struct vk_object_base *log_obj,
+diff --git a/src/nouveau/vulkan/nvkmd/nvrm/nv-haiku.h b/src/nouveau/vulkan/nvkmd/nvrm/nv-haiku.h
+index b9b40f2..1ca868d 100644
+--- a/src/nouveau/vulkan/nvkmd/nvrm/nv-haiku.h
++++ b/src/nouveau/vulkan/nvkmd/nvrm/nv-haiku.h
+@@ -1,8 +1,13 @@
+ #pragma once
+ 
++#include <OS.h>
+ #include <drivers/Drivers.h>
+ 
+ 
++#define NVIDIA_CONTROL_DEVICE_NAME "nvidiactl"
++#define NVIDIA_DEVICE_NAME "graphics/nvidia"
++
++
+ enum {
+ 	NV_HAIKU_BASE = B_DEVICE_OP_CODES_END + 1,
+ };
+@@ -10,8 +15,48 @@ enum {
+ enum {
+ 	NV_HAIKU_GET_COOKIE = 0, // kernel only
+ 	NV_HAIKU_MAP,
++	NV_HAIKU_READ_REGISTER, // development aid
++	NV_HAIKU_READ_VRAM, // development aid
++	NV_HAIKU_WAIT_FOR_RESUME,
++	NV_HAIKU_PUBLISH_SCANOUT,
++	NV_HAIKU_GET_SCANOUT,
+ };
+ 
++// NV_HAIKU_PUBLISH_SCANOUT / NV_HAIKU_GET_SCANOUT: the accelerant says where
++// the screen's frame buffer lives, so that a program drawing with the GPU can
++// put a finished frame there itself instead of sending it through the host.
++// The memory is shared by its owner, and the caller duplicates the handle into
++// its own resman client.
++typedef struct {
++	uint32 client;			// resman client that owns the memory
++	uint32 memory;			// the memory object
++	uint32 width;
++	uint32 height;
++	uint32 bytes_per_row;
++	uint32 color_space;		// Haiku color_space of the frame buffer
++	uint64 size;
++} nv_haiku_scanout_info;
++
++// NV_HAIKU_WAIT_FOR_RESUME: waits until the resume generation differs from
++// the passed one (or the timeout expires) and returns the current one. Display
++// state is lost when resuming from suspend, so clients restore their modes
++// when the generation changes.
++typedef struct {
++	uint32 generation;
++	uint32 reserved;
++	int64 timeout;
++} nv_haiku_resume_params;
++
++typedef struct {
++	uint64 offset;
++	uint32 values[16];
++} nv_haiku_vram_params;
++
++typedef struct {
++	uint32 offset;
++	uint32 value;
++} nv_haiku_register_params;
++
+ 
+ typedef struct {
+ 	char name[B_OS_NAME_LENGTH];
+diff --git a/src/nouveau/vulkan/nvkmd/nvrm/nvRmApi.c b/src/nouveau/vulkan/nvkmd/nvrm/nvRmApi.c
+index face017..1fb2379 100644
+--- a/src/nouveau/vulkan/nvkmd/nvrm/nvRmApi.c
++++ b/src/nouveau/vulkan/nvkmd/nvrm/nvRmApi.c
+@@ -70,6 +70,27 @@ NvU32 nvRmApiFree(NvRmApi *api, NvU32 hObject)
+ 	return p.status;
+ }
+ 
++// Take a reference to an object belonging to another client, which its owner
++// has shared. The copy is ours: freeing it drops our reference only.
++NvU32 nvRmApiDupObject(NvRmApi *api, NvU32 hParent, NvU32 hClientSrc,
++	NvU32 hObjectSrc, NvU32 *hObject)
++{
++	NVOS55_PARAMETERS p = {
++		.hClient = api->hClient,
++		.hParent = hParent,
++		.hObject = 0,
++		.hClientSrc = hClientSrc,
++		.hObjectSrc = hObjectSrc,
++		.flags = 0
++	};
++	int ret = nvRmIoctl(api->fd, NV_ESC_RM_DUP_OBJECT, &p, sizeof(p));
++	if (ret < 0) {
++		return NV_ERR_GENERIC;
++	}
++	*hObject = p.hObject;
++	return p.status;
++}
++
+ // Describe memory the caller already owns to resman, so the GPU can use it.
+ // Resman pins the pages and keeps them until the object is freed.  This goes
+ // to the control node, and resman fills in the page array itself.
+diff --git a/src/nouveau/vulkan/nvkmd/nvrm/nvRmApi.h b/src/nouveau/vulkan/nvkmd/nvrm/nvRmApi.h
+index 8d0e9b0..6cba4ac 100644
+--- a/src/nouveau/vulkan/nvkmd/nvrm/nvRmApi.h
++++ b/src/nouveau/vulkan/nvkmd/nvrm/nvRmApi.h
+@@ -32,6 +32,8 @@ typedef struct NvRmApiMapping {
+ 
+ NvU32 nvRmApiAlloc(NvRmApi *api, NvU32 hParent, NvU32 *hObject, NvU32 hClass, void *pAllocParams);
+ NvU32 nvRmApiFree(NvRmApi *api, NvU32 hObject);
++NvU32 nvRmApiDupObject(NvRmApi *api, NvU32 hParent, NvU32 hClientSrc,
++	NvU32 hObjectSrc, NvU32 *hObject);
+ NvU32 nvRmApiAllocOsDescriptor(NvRmApi *api, NvU32 hParent, NvU32 hMemory,
+ 	void *ptr, NvU64 size);
+ NvU32 nvRmApiControl(NvRmApi *api, NvU32 hObject, NvU32 cmd, void *pParams, NvU32 paramsSize);
+diff --git a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm.h b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm.h
+index b4301cb..e3df695 100644
+--- a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm.h
++++ b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm.h
+@@ -97,6 +97,11 @@ VkResult nvkmd_nvrm_import_host_ptr(struct nvkmd_dev *dev,
+                                     void *ptr, uint64_t size_B,
+                                     struct nvkmd_mem **mem_out);
+ 
++VkResult nvkmd_nvrm_import_scanout(struct nvkmd_dev *dev,
++                                   struct vk_object_base *log_obj,
++                                   struct nvkmd_scanout_info *info_out,
++                                   struct nvkmd_mem **mem_out);
++
+ VkResult nvkmd_nvrm_import_dma_buf(struct nvkmd_dev *dev,
+                                       struct vk_object_base *log_obj,
+                                       int fd, struct nvkmd_mem **mem_out);
+diff --git a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_dev.c b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_dev.c
+index d20b5ce..b5c7aef 100644
+--- a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_dev.c
++++ b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_dev.c
+@@ -77,6 +77,7 @@ const struct nvkmd_dev_ops nvkmd_nvrm_dev_ops = {
+    .alloc_tiled_mem = nvkmd_nvrm_alloc_tiled_mem,
+    .import_dma_buf = nvkmd_nvrm_import_dma_buf,
+    .import_host_ptr = nvkmd_nvrm_import_host_ptr,
++   .import_scanout = nvkmd_nvrm_import_scanout,
+    .alloc_va = nvkmd_nvrm_alloc_va,
+    .create_ctx = nvkmd_nvrm_create_ctx,
+ };
+diff --git a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_mem.c b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_mem.c
+index a0e0020..3bcf1c6 100644
+--- a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_mem.c
++++ b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_mem.c
+@@ -14,6 +14,10 @@
+ #include "util/u_memory.h"
+ #include "util/hash_table.h"
+ 
++#include <sys/ioctl.h>
++
++#include "nv-haiku.h"
++
+ #include "class/cl003e.h" // NV01_MEMORY_SYSTEM
+ #include "class/cl0040.h" // NV01_MEMORY_LOCAL_USER
+ 
+@@ -192,6 +196,45 @@ nvkmd_nvrm_import_host_ptr(struct nvkmd_dev *_dev,
+                                  NVKMD_NVRM_HOST_PTR_ALIGNMENT, mem_out);
+ }
+ 
++// Take hold of the screen's frame buffer, which the accelerant publishes
++// through the driver and shares with anyone who asks. It is a linear surface
++// in video memory, so a frame copied there never crosses the bus.
++VkResult
++nvkmd_nvrm_import_scanout(struct nvkmd_dev *_dev,
++                          struct vk_object_base *log_obj,
++                          struct nvkmd_scanout_info *info_out,
++                          struct nvkmd_mem **mem_out)
++{
++   struct nvkmd_nvrm_dev *dev = nvkmd_nvrm_dev(_dev);
++   struct nvkmd_nvrm_pdev *pdev = nvkmd_nvrm_pdev(dev->base.pdev);
++
++   struct NvRmApi rm;
++   nvkmd_nvrm_dev_api_ctl(pdev, &rm);
++
++   nv_haiku_scanout_info info;
++   if (ioctl(rm.fd, NV_HAIKU_BASE + NV_HAIKU_GET_SCANOUT, &info,
++             sizeof(info)) < 0)
++      return vk_errorf(log_obj, VK_ERROR_INITIALIZATION_FAILED,
++                       "no frame buffer has been published");
++
++   NvHandle hMemory = 0;
++   NV_STATUS nvRes = nvRmApiDupObject(&rm, pdev->hDevice, info.client,
++                                      info.memory, &hMemory);
++   if (nvRes != NV_OK)
++      return vk_errorf(log_obj, VK_ERROR_INITIALIZATION_FAILED,
++                       "resman refused to share the frame buffer: %#x", nvRes);
++
++   info_out->width = info.width;
++   info_out->height = info.height;
++   info_out->row_pitch_B = info.bytes_per_row;
++   info_out->size_B = info.size;
++
++   /* A pitch surface, so the default (pitch) page kind is right. */
++   return create_mem_or_close_bo(dev, log_obj, NVKMD_MEM_LOCAL, hMemory,
++                                 info.size, NVKMD_VA_GART, 0 /* pte_kind */,
++                                 0 /* va_align_B */, mem_out);
++}
++
+ VkResult
+ nvkmd_nvrm_import_dma_buf(struct nvkmd_dev *_dev,
+                              struct vk_object_base *log_obj,
+diff --git a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_pdev.c b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_pdev.c
+index b7b0332..2c43d3a 100644
+--- a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_pdev.c
++++ b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_pdev.c
+@@ -384,6 +384,7 @@ nvkmd_nvrm_create_pdev(struct vk_object_base *log_obj,
+    	.has_get_vram_used = true,
+    	.has_alloc_tiled = true,
+    	.has_import_host_ptr = true,
++   	.has_import_scanout = true,
+    };
+ 
+    pdev->channelClass = nvkmd_nvrm_pdev_find_supported_class(pdev, ARRAY_SIZE(sChannelClasses), sChannelClasses);
+diff --git a/src/nouveau/vulkan/vk_haiku_scanout.h b/src/nouveau/vulkan/vk_haiku_scanout.h
+new file mode 100644
+index 0000000..f0ecd3f
+--- /dev/null
++++ b/src/nouveau/vulkan/vk_haiku_scanout.h
+@@ -0,0 +1,46 @@
++/*
++ * Drawing straight into the screen on Haiku.
++ *
++ * The frame buffer the accelerant scans out from is ordinary video memory, and
++ * the driver lets another program take hold of it. A renderer that copies its
++ * finished frame there never sends it across the bus, which is what presenting
++ * through the host costs today.
++ *
++ * This is a private agreement between NVK and the programs on this machine
++ * that present with it, not a registered Vulkan extension. It rides on the
++ * pNext chain of vkAllocateMemory, so it needs nothing of the loader: pass a
++ * VkImportScanoutMemoryHAIKU and the memory that comes back is the screen,
++ * with its shape filled in for you.
++ *
++ * SPDX-License-Identifier: MIT
++ */
++#ifndef VK_HAIKU_SCANOUT_H
++#define VK_HAIKU_SCANOUT_H
++
++#include <vulkan/vulkan_core.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* Private sType, from the range reserved for unregistered extensions. */
++#define VK_STRUCTURE_TYPE_IMPORT_SCANOUT_MEMORY_HAIKU \
++   ((VkStructureType)1000399000)
++
++typedef struct VkImportScanoutMemoryHAIKU {
++   VkStructureType sType;
++   void *pNext;
++   /* Filled in by the driver: the shape of the frame buffer that came back.
++    * The memory is a linear surface of `height` rows of `rowPitch` bytes.
++    */
++   uint32_t width;
++   uint32_t height;
++   uint32_t rowPitch;
++   VkDeviceSize size;
++} VkImportScanoutMemoryHAIKU;
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* VK_HAIKU_SCANOUT_H */

@@ -1,0 +1,58 @@
+From 7b3485336eb9bf86907867f04388a470e1efb865 Mon Sep 17 00:00:00 2001
+From: x399 <x399@lab>
+Date: Fri, 18 Sep 2026 16:07:00 +1000
+Subject: [PATCH 4/7] nvk: say so when a constant buffer is not aligned enough
+
+An unaligned constant buffer address makes the graphics engine raise a
+class error and the channel stops for good, which is hard to trace back
+from the symptom; the assert only exists in debug builds, so warn in
+release builds too.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ src/nouveau/vulkan/nvk_cmd_buffer.c |  2 ++
+ src/nouveau/vulkan/nvk_cmd_draw.c   | 11 +++++++++++
+ 2 files changed, 13 insertions(+)
+
+diff --git a/src/nouveau/vulkan/nvk_cmd_buffer.c b/src/nouveau/vulkan/nvk_cmd_buffer.c
+index 364fc4c..3f7f5d0 100644
+--- a/src/nouveau/vulkan/nvk_cmd_buffer.c
++++ b/src/nouveau/vulkan/nvk_cmd_buffer.c
+@@ -4,6 +4,8 @@
+  */
+ #include "nvk_cmd_buffer.h"
+ 
++#include <inttypes.h>
++
+ #include "nvk_buffer.h"
+ #include "nvk_cmd_pool.h"
+ #include "nvk_descriptor_set_layout.h"
+diff --git a/src/nouveau/vulkan/nvk_cmd_draw.c b/src/nouveau/vulkan/nvk_cmd_draw.c
+index e534c3d..1c5f092 100644
+--- a/src/nouveau/vulkan/nvk_cmd_draw.c
++++ b/src/nouveau/vulkan/nvk_cmd_draw.c
+@@ -5,6 +5,8 @@
+ #include "nvk_buffer.h"
+ #include "nvk_entrypoints.h"
+ #include "nvk_cmd_buffer.h"
++
++#include <inttypes.h>
+ #include "nvk_device.h"
+ #include "nvk_format.h"
+ #include "nvk_image.h"
+@@ -3555,6 +3557,15 @@ nvk_cmd_flush_gfx_cbufs(struct nvk_cmd_buffer *cmd)
+ 
+          struct nvk_buffer_address ba;
+          if (nvk_cmd_buffer_get_cbuf_addr(cmd, desc, shader, cbuf, &ba)) {
++            /* A constant buffer that is not aligned enough makes the
++             * graphics engine raise a class error, and the channel is dead
++             * from then on, so it is worth saying so even in release builds.
++             */
++            if (unlikely(ba.base_addr % min_cbuf_alignment != 0)) {
++               fprintf(stderr, "nvk: constant buffer %#" PRIx64 " is not %u "
++                  "byte aligned; the draw would kill the channel\n",
++                  ba.base_addr, min_cbuf_alignment);
++            }
+             assert(ba.base_addr % min_cbuf_alignment == 0);
+             ba.size = align(ba.size, min_cbuf_alignment);
+             ba.size = MIN2(ba.size, NVK_MAX_CBUF_SIZE);

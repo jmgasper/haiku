@@ -1,0 +1,225 @@
+From add6ea1704d40899c7a87202e1956697063608ed Mon Sep 17 00:00:00 2001
+From: jmgasper <jmgasper@gmail.com>
+Date: Sat, 19 Sep 2026 02:09:53 +1000
+Subject: [PATCH 12/14] zink/hgl: a moving window leaves the screen to the
+ window system
+
+Dragging a window left a staircase of frames across the desktop, one
+per move, at every position the window had been. It reproduces only on
+the path that draws into the screen; going through the window system's
+bitmap leaves the desktop spotless.
+
+Two guesses were wrong before the tracing settled it. It is not frames
+being sent with stale coordinates - the trace shows presents stop when
+the window system says stop and resume at the new position, with none
+in between - and waiting on the queue from the window's thread does
+nothing, because batches are submitted from a worker thread and are not
+on the queue yet. What actually happens is that a window that moves
+leaves a strip behind for the window system to repaint, and a program
+drawing into the screen at eight hundred frames a second outruns that
+repaint, so the strips linger until it stops.
+
+So a window that has just moved presents through the bitmap until it
+has been still for a quarter of a second. That path is slower and has
+no such trouble, and a window is still almost all of the time.
+
+The present also waits for its copy to have happened rather than only
+to have been sent: batches are submitted from another thread, so
+letting go earlier would let a copy land after the window had moved. It
+costs about six per cent - 911 frames a second at 1600x900 against 970.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ src/gallium/drivers/zink/zink_screen.c        | 11 +++-
+ .../targets/haiku-zink/ZinkRenderer.cpp       | 57 ++++++++++++++++++-
+ src/gallium/targets/haiku-zink/ZinkRenderer.h |  6 ++
+ src/gallium/winsys/sw/hgl/hgl_sw_winsys.h     |  8 ++-
+ 4 files changed, 76 insertions(+), 6 deletions(-)
+
+diff --git a/src/gallium/drivers/zink/zink_screen.c b/src/gallium/drivers/zink/zink_screen.c
+index 01085cb..8a1ffb5 100644
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -1709,10 +1709,17 @@ present_into_scanout(struct zink_screen *screen, struct zink_context *ctx,
+                                res->layout, screen->scanout.buffer,
+                                count, regions);
+ 
+-   /* Nobody reads the result with the processor, so there is nothing to wait
+-    * for: submitting is enough, and the frame appears when the copy runs.
++   /* Wait for it to have happened, not merely to have been sent.
++    *
++    * The copy is aimed at where the window was when its clipping was read,
++    * and the window system is held off only until this returns - it moves
++    * windows the moment a direct window says it has stopped drawing. Batches
++    * are submitted on another thread, so letting go here would let a copy
++    * land after the window had moved, painting the frame where the window
++    * used to be.
+     */
+    ctx->base.flush(&ctx->base, NULL, 0);
++   zink_fence_wait(&ctx->base);
+    screen->scanout.last_present_ns = os_time_get_nano();
+    return true;
+ }
+diff --git a/src/gallium/targets/haiku-zink/ZinkRenderer.cpp b/src/gallium/targets/haiku-zink/ZinkRenderer.cpp
+index 199a0d6..4519bfd 100644
+--- a/src/gallium/targets/haiku-zink/ZinkRenderer.cpp
++++ b/src/gallium/targets/haiku-zink/ZinkRenderer.cpp
+@@ -134,7 +134,8 @@ ZinkRenderer::ZinkRenderer(BGLView *view, ulong options)
+ 	fInfoLocker("info locker"),
+ 	fOptions(options),
+ 	fColorSpace(B_NO_COLOR_SPACE),
+-	fPresentedIntoScanout(false)
++	fPresentedIntoScanout(false),
++	fScanoutTargetHeld(false)
+ {
+ 	CALLED();
+ 
+@@ -219,10 +220,28 @@ ZinkRenderer::UnlockGL()
+ // Where the window is on the screen, so that the renderer can put the frame
+ // there itself. Haiku hands us this in direct mode and keeps it up to date as
+ // the window moves and is covered.
++// How long after a window moves before it is drawn into the screen again. Long
++// enough to outlast the window system's repaint of what the window came off,
++// short enough that letting go of a dragged window feels immediate.
++static const bigtime_t kSettleAfterMove = 250000;
++
++
+ bool
+ ZinkRenderer::ScanoutTarget(struct hgl_scanout_target *target)
+ {
+-	BAutolock lock(fInfoLocker);
++	// Held until PresentedIntoScanout, so that the window cannot move between
++	// its clipping being read and the copy being sent to the screen. Anything
++	// that would move it goes through DirectConnected, which takes the same
++	// lock.
++	fInfoLocker.Lock();
++	fScanoutTargetHeld = true;
++
++	struct Failed {
++		ZinkRenderer &self;
++		bool ok = false;
++		~Failed() { if (!ok) self.ReleaseScanoutTarget(); }
++	} failed {*this};
++
+ 	if (!fDirectModeEnabled || fInfo == NULL)
+ 		return false;
+ 	if ((fInfo->buffer_state & B_DIRECT_MODE_MASK) == B_DIRECT_STOP)
+@@ -239,6 +258,17 @@ ZinkRenderer::ScanoutTarget(struct hgl_scanout_target *target)
+ 	if (fInfo->pixel_format != B_RGB32 && fInfo->pixel_format != B_RGBA32)
+ 		return false;
+ 
++	// A window that has just moved leaves the strip it came off behind for the
++	// window system to repaint, and a program drawing into the screen at a
++	// thousand frames a second outruns that repaint: the strips linger, one
++	// per move, until the window stops. Presenting through the window system's
++	// bitmap instead is slower and has no such trouble, so that is what a
++	// moving window gets. Only while it is moving - a window is still almost
++	// all of the time.
++	if (system_time() - fLastPlacementChange < kSettleAfterMove)
++		return false;
++
++	failed.ok = true;
+ 	target->origin_x = fInfo->window_bounds.left;
+ 	target->origin_y = fInfo->window_bounds.top;
+ 	target->bits = fInfo->bits;
+@@ -254,10 +284,23 @@ ZinkRenderer::ScanoutTarget(struct hgl_scanout_target *target)
+ }
+ 
+ 
++void
++ZinkRenderer::ReleaseScanoutTarget()
++{
++	if (fScanoutTargetHeld) {
++		fScanoutTargetHeld = false;
++		fInfoLocker.Unlock();
++	}
++}
++
++
+ void
+ ZinkRenderer::PresentedIntoScanout(bool presented)
+ {
+ 	fPresentedIntoScanout = presented;
++	if (presented)
++		fPresentCount++;
++	ReleaseScanoutTarget();
+ }
+ 
+ 
+@@ -367,6 +410,8 @@ ZinkRenderer::DirectConnected(direct_buffer_info *info)
+ //	CALLED();
+ 	bool repaint = false;
+ 	{
++		// Taking this waits for any present that is part way through reading
++		// the window's placement and sending its copy.
+ 		BAutolock lock(fInfoLocker);
+ 		if (info) {
+ 			if (!fInfo) {
+@@ -374,6 +419,11 @@ ZinkRenderer::DirectConnected(direct_buffer_info *info)
+ 					DIRECT_BUFFER_INFO_AREA_SIZE);
+ 			}
+ 			memcpy(fInfo, info, DIRECT_BUFFER_INFO_AREA_SIZE);
++			if ((info->buffer_state
++					& (B_BUFFER_MOVED | B_BUFFER_RESIZED | B_CLIPPING_MODIFIED))
++					!= 0) {
++				fLastPlacementChange = system_time();
++			}
+ 			repaint = fPresentedIntoScanout
+ 				&& (info->buffer_state & B_DIRECT_MODE_MASK) != B_DIRECT_STOP;
+ 		} else if (fInfo) {
+@@ -400,6 +450,9 @@ ZinkRenderer::DirectConnected(direct_buffer_info *info)
+ 			info != NULL ? (int)info->window_bounds.bottom : 0,
+ 			info != NULL ? info->bits : NULL,
+ 			info != NULL ? info->bytes_per_row : 0);
++		fprintf(stderr, "       presents since the last one: %" B_PRId32 "\n",
++			fPresentCount);
++		fPresentCount = 0;
+ 	}
+ 	if (repaint)
+ 		fContextObj->Draw(fContextID, BRect());
+diff --git a/src/gallium/targets/haiku-zink/ZinkRenderer.h b/src/gallium/targets/haiku-zink/ZinkRenderer.h
+index 2cac36a..bc946ca 100644
+--- a/src/gallium/targets/haiku-zink/ZinkRenderer.h
++++ b/src/gallium/targets/haiku-zink/ZinkRenderer.h
+@@ -31,6 +31,7 @@ public:
+ 			bool				ScanoutTarget(
+ 									struct hgl_scanout_target* target);
+ 			void				PresentedIntoScanout(bool presented);
++			void				ReleaseScanoutTarget();
+ 
+ 			void				SwapBuffers(bool vsync = false);
+ 			void				Draw(BRect updateRect);
+@@ -55,6 +56,11 @@ private:
+ 			// set while the renderer is writing the screen itself, so that a
+ 			// redraw does not put a stale bitmap over the frame
+ 			bool				fPresentedIntoScanout;
++			// whether ScanoutTarget took fInfoLocker and still holds it
++			bool				fScanoutTargetHeld;
++			int32				fPresentCount = 0;
++			// when the window last moved or its clipping changed
++			bigtime_t			fLastPlacementChange = 0;
+ };
+ 
+ #endif	// ZINKRENDERER_H
+diff --git a/src/gallium/winsys/sw/hgl/hgl_sw_winsys.h b/src/gallium/winsys/sw/hgl/hgl_sw_winsys.h
+index 85d53b9..d46cc1a 100644
+--- a/src/gallium/winsys/sw/hgl/hgl_sw_winsys.h
++++ b/src/gallium/winsys/sw/hgl/hgl_sw_winsys.h
+@@ -60,11 +60,15 @@ class HGLWinsysContext {
+ public:
+ 	virtual void Display(BBitmap *bitmap, BRect *updateRect) = 0;
+ 
+-	// Returning false means present the ordinary way.
++	// Returning false means present the ordinary way. Returning true holds
++	// the window still - its placement cannot change - until
++	// PresentedIntoScanout says what happened, so that a copy cannot be sent
++	// to where the window used to be.
+ 	virtual bool ScanoutTarget(struct hgl_scanout_target *target)
+ 		{ (void)target; return false; }
+ 
+-	// Whether the frame just presented went into the screen itself.
++	// Whether the frame just presented went into the screen itself. Lets the
++	// window move again.
+ 	virtual void PresentedIntoScanout(bool presented)
+ 		{ (void)presented; }
+ };

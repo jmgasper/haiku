@@ -1,0 +1,420 @@
+From 39cafa17abadb96618a924c5c638a050f4623327 Mon Sep 17 00:00:00 2001
+From: x399 <x399@lab>
+Date: Fri, 18 Sep 2026 16:53:49 +1000
+Subject: [PATCH 5/7] nvk/nvrm: let the GPU use memory the application owns
+
+VK_EXT_external_memory_host, implemented with resman's OS descriptors:
+the driver pins the pages and maps them into the GPU's address space, so
+a window's bitmap can be written by the GPU instead of by the CPU.
+
+The wait for a submission also no longer sleeps through poll(), which
+costs a millisecond a time however short a timeout is asked for: it
+spins first and then sleeps in short steps, which took an empty
+submission from 1.08 ms to 13 us.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ src/nouveau/vulkan/nvk_device_memory.c        | 48 ++++++++++++++++++-
+ src/nouveau/vulkan/nvk_physical_device.c      |  7 +++
+ src/nouveau/vulkan/nvkmd/nvkmd.h              | 25 ++++++++++
+ src/nouveau/vulkan/nvkmd/nvrm/nvRmApi.c       | 41 ++++++++++++++++
+ src/nouveau/vulkan/nvkmd/nvrm/nvRmApi.h       |  2 +
+ src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm.h    |  7 +++
+ .../vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c        | 29 +++++++----
+ .../vulkan/nvkmd/nvrm/nvkmd_nvrm_dev.c        |  1 +
+ .../vulkan/nvkmd/nvrm/nvkmd_nvrm_mem.c        | 44 +++++++++++++++++
+ .../vulkan/nvkmd/nvrm/nvkmd_nvrm_pdev.c       |  1 +
+ 10 files changed, 193 insertions(+), 12 deletions(-)
+
+diff --git a/src/nouveau/vulkan/nvk_device_memory.c b/src/nouveau/vulkan/nvk_device_memory.c
+index 19a127a..057f5ea 100644
+--- a/src/nouveau/vulkan/nvk_device_memory.c
++++ b/src/nouveau/vulkan/nvk_device_memory.c
+@@ -58,6 +58,34 @@ nvk_memory_type_flags(const VkMemoryType *type,
+    return flags;
+ }
+ 
++VKAPI_ATTR VkResult VKAPI_CALL
++nvk_GetMemoryHostPointerPropertiesEXT(
++   VkDevice device,
++   VkExternalMemoryHandleTypeFlagBits handleType,
++   const void *pHostPointer,
++   VkMemoryHostPointerPropertiesEXT *pMemoryHostPointerProperties)
++{
++   VK_FROM_HANDLE(nvk_device, dev, device);
++   const struct nvk_physical_device *pdev = nvk_device_physical(dev);
++
++   switch (handleType) {
++   case VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT:
++   case VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_MAPPED_FOREIGN_MEMORY_BIT_EXT:
++      /* Imported host memory is system memory as far as the GPU is
++       * concerned, so every system memory type can back it.
++       */
++      pMemoryHostPointerProperties->memoryTypeBits = 0;
++      for (unsigned i = 0; i < pdev->mem_type_count; i++) {
++         if (!(pdev->mem_types[i].propertyFlags &
++               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
++            pMemoryHostPointerProperties->memoryTypeBits |= BITFIELD_BIT(i);
++      }
++      return VK_SUCCESS;
++   default:
++      return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
++   }
++}
++
+ VKAPI_ATTR VkResult VKAPI_CALL
+ nvk_GetMemoryFdPropertiesKHR(VkDevice device,
+                              VkExternalMemoryHandleTypeFlagBits handleType,
+@@ -136,6 +164,8 @@ nvk_AllocateMemory(VkDevice device,
+       vk_find_struct_const(pAllocateInfo->pNext, EXPORT_MEMORY_ALLOCATE_INFO);
+    const VkMemoryDedicatedAllocateInfo *dedicated_info =
+       vk_find_struct_const(pAllocateInfo->pNext, MEMORY_DEDICATED_ALLOCATE_INFO);
++   const VkImportMemoryHostPointerInfoEXT *host_ptr_info =
++      vk_find_struct_const(pAllocateInfo->pNext, IMPORT_MEMORY_HOST_POINTER_INFO_EXT);
+    const VkMemoryType *type =
+       &pdev->mem_types[pAllocateInfo->memoryTypeIndex];
+ 
+@@ -144,6 +174,8 @@ nvk_AllocateMemory(VkDevice device,
+       handle_types |= export_info->handleTypes;
+    if (fd_info != NULL)
+       handle_types |= fd_info->handleType;
++   if (host_ptr_info != NULL)
++      handle_types |= host_ptr_info->handleType;
+ 
+    const enum nvkmd_mem_flags flags = nvk_memory_type_flags(type, handle_types);
+ 
+@@ -174,8 +206,20 @@ nvk_AllocateMemory(VkDevice device,
+    if (!mem)
+       return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
+ 
+-   const bool is_import = fd_info && fd_info->handleType;
+-   if (is_import) {
++   const bool is_host_ptr_import = host_ptr_info && host_ptr_info->handleType;
++   const bool is_import = (fd_info && fd_info->handleType) || is_host_ptr_import;
++   if (is_host_ptr_import) {
++      assert(host_ptr_info->handleType ==
++               VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT ||
++             host_ptr_info->handleType ==
++               VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_MAPPED_FOREIGN_MEMORY_BIT_EXT);
++
++      result = nvkmd_dev_import_host_ptr(dev->nvkmd, &dev->vk.base,
++                                         host_ptr_info->pHostPointer,
++                                         aligned_size, &mem->mem);
++      if (result != VK_SUCCESS)
++         goto fail_alloc;
++   } else if (fd_info && fd_info->handleType) {
+       assert(fd_info->handleType ==
+                VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT ||
+              fd_info->handleType ==
+diff --git a/src/nouveau/vulkan/nvk_physical_device.c b/src/nouveau/vulkan/nvk_physical_device.c
+index 594cfb6..e9ab382 100644
+--- a/src/nouveau/vulkan/nvk_physical_device.c
++++ b/src/nouveau/vulkan/nvk_physical_device.c
+@@ -123,6 +123,7 @@ static void
+ nvk_get_device_extensions(const struct nvk_instance *instance,
+                           const struct nv_device_info *info,
+                           bool has_tiled_bos,
++                          bool has_import_host_ptr,
+                           struct vk_device_extension_table *ext)
+ {
+    *ext = (struct vk_device_extension_table) {
+@@ -305,6 +306,7 @@ nvk_get_device_extensions(const struct nvk_instance *instance,
+       .EXT_tooling_info = true,
+       /* Debug aid while bringing up pre-Turing GPUs: NVK_NO_XFB=1 hides
+        * transform feedback, which OpenGL drivers use on every draw. */
++      .EXT_external_memory_host = has_import_host_ptr,
+       .EXT_transform_feedback = !debug_get_bool_option("NVK_NO_XFB", false),
+       .EXT_vertex_attribute_divisor = true,
+       .EXT_vertex_input_dynamic_state = true,
+@@ -848,6 +850,10 @@ nvk_get_device_properties(const struct nvk_instance *instance,
+       .viewportSubPixelBits = 8,
+       .minMemoryMapAlignment = os_page_size,
+       .minTexelBufferOffsetAlignment = NVK_MIN_TEXEL_BUFFER_ALIGNMENT,
++
++      /* VK_EXT_external_memory_host */
++      .minImportedHostPointerAlignment = 4096,
++
+       .minUniformBufferOffsetAlignment = nvk_min_cbuf_alignment(info),
+       .minStorageBufferOffsetAlignment = NVK_MIN_SSBO_ALIGNMENT,
+       .minTexelOffset = -8,
+@@ -1393,6 +1399,7 @@ nvk_create_physical_device(struct nvkmd_pdev *nvkmd,
+    struct vk_device_extension_table supported_extensions;
+    nvk_get_device_extensions(instance, &nvkmd->dev_info,
+                              nvkmd->kmd_info.has_alloc_tiled,
++                             nvkmd->kmd_info.has_import_host_ptr,
+                              &supported_extensions);
+ 
+    struct vk_features supported_features;
+diff --git a/src/nouveau/vulkan/nvkmd/nvkmd.h b/src/nouveau/vulkan/nvkmd/nvkmd.h
+index 9204f81..fbe86f7 100644
+--- a/src/nouveau/vulkan/nvkmd/nvkmd.h
++++ b/src/nouveau/vulkan/nvkmd/nvkmd.h
+@@ -113,6 +113,8 @@ enum nvkmd_bind_op {
+ 
+ struct nvkmd_info {
+    bool has_dma_buf;
++   /** Memory the application owns can be made visible to the GPU */
++   bool has_import_host_ptr;
+    bool has_get_vram_used;
+    bool has_alloc_tiled;
+    bool has_map_fixed;
+@@ -178,6 +180,14 @@ struct nvkmd_dev_ops {
+                               struct vk_object_base *log_obj,
+                               int fd, struct nvkmd_mem **mem_out);
+ 
++   /* Make memory the application already owns visible to the GPU.  May be
++    * NULL, in which case VK_EXT_external_memory_host is not supported.
++    */
++   VkResult (*import_host_ptr)(struct nvkmd_dev *dev,
++                               struct vk_object_base *log_obj,
++                               void *ptr, uint64_t size_B,
++                               struct nvkmd_mem **mem_out);
++
+    VkResult (*alloc_va)(struct nvkmd_dev *dev,
+                         struct vk_object_base *log_obj,
+                         enum nvkmd_va_flags flags, uint8_t pte_kind,
+@@ -474,6 +484,21 @@ nvkmd_dev_import_dma_buf(struct nvkmd_dev *dev,
+    return dev->ops->import_dma_buf(dev, log_obj, fd, mem_out);
+ }
+ 
++static inline bool
++nvkmd_dev_can_import_host_ptr(struct nvkmd_dev *dev)
++{
++   return dev->ops->import_host_ptr != NULL;
++}
++
++static inline VkResult MUST_CHECK
++nvkmd_dev_import_host_ptr(struct nvkmd_dev *dev,
++                          struct vk_object_base *log_obj,
++                          void *ptr, uint64_t size_B,
++                          struct nvkmd_mem **mem_out)
++{
++   return dev->ops->import_host_ptr(dev, log_obj, ptr, size_B, mem_out);
++}
++
+ VkResult MUST_CHECK
+ nvkmd_dev_alloc_va(struct nvkmd_dev *dev,
+                    struct vk_object_base *log_obj,
+diff --git a/src/nouveau/vulkan/nvkmd/nvrm/nvRmApi.c b/src/nouveau/vulkan/nvkmd/nvrm/nvRmApi.c
+index d2dd3c5..face017 100644
+--- a/src/nouveau/vulkan/nvkmd/nvrm/nvRmApi.c
++++ b/src/nouveau/vulkan/nvkmd/nvrm/nvRmApi.c
+@@ -1,5 +1,10 @@
++#include <stdlib.h>
++
+ #include "nvRmApi.h"
+ 
++#include "class/cl0071.h" // NV01_MEMORY_SYSTEM_OS_DESCRIPTOR
++#include "nv-unix-nvos-params-wrappers.h"
++
+ #include <stdio.h>
+ #include <errno.h>
+ #include <string.h>
+@@ -65,6 +70,42 @@ NvU32 nvRmApiFree(NvRmApi *api, NvU32 hObject)
+ 	return p.status;
+ }
+ 
++// Describe memory the caller already owns to resman, so the GPU can use it.
++// Resman pins the pages and keeps them until the object is freed.  This goes
++// to the control node, and resman fills in the page array itself.
++NvU32 nvRmApiAllocOsDescriptor(NvRmApi *api, NvU32 hParent, NvU32 hMemory,
++	void *ptr, NvU64 size)
++{
++	NVOS32_PARAMETERS p = {
++		.hRoot = api->hClient,
++		.hObjectParent = hParent,
++		.function = NVOS32_FUNCTION_ALLOC_OS_DESCRIPTOR,
++	};
++	p.data.AllocOsDesc.hMemory = hMemory;
++	p.data.AllocOsDesc.type = NVOS32_TYPE_IMAGE;
++	p.data.AllocOsDesc.flags =
++		NVOS32_ALLOC_FLAGS_MEMORY_HANDLE_PROVIDED |
++		NVOS32_ALLOC_FLAGS_MAP_NOT_REQUIRED;
++	p.data.AllocOsDesc.attr =
++		DRF_DEF(OS32, _ATTR, _PAGE_SIZE, _4KB) |
++		DRF_DEF(OS32, _ATTR, _LOCATION, _PCI) |
++		DRF_DEF(OS32, _ATTR, _COHERENCY, _CACHED) |
++		DRF_DEF(OS32, _ATTR, _FORMAT, _PITCH) |
++		DRF_DEF(OS32, _ATTR, _PHYSICALITY, _NONCONTIGUOUS);
++	p.data.AllocOsDesc.attr2 =
++		DRF_DEF(OS32, _ATTR2, _GPU_CACHEABLE, _NO) |
++		DRF_DEF(OS32, _ATTR2, _PROTECTION_USER, _READ_WRITE);
++	p.data.AllocOsDesc.descriptor = (NvP64)(NvUPtr)ptr;
++	p.data.AllocOsDesc.limit = size - 1;
++	p.data.AllocOsDesc.descriptorType = NVOS32_DESCRIPTOR_TYPE_VIRTUAL_ADDRESS;
++
++	int ret = nvRmIoctl(api->fd, NV_ESC_RM_VID_HEAP_CONTROL, &p, sizeof(p));
++	if (ret < 0) {
++		return NV_ERR_GENERIC;
++	}
++	return p.status;
++}
++
+ NvU32 nvRmApiControl(NvRmApi *api, NvU32 hObject, NvU32 cmd, void *pParams, NvU32 paramsSize)
+ {
+ 	NVOS54_PARAMETERS p = {
+diff --git a/src/nouveau/vulkan/nvkmd/nvrm/nvRmApi.h b/src/nouveau/vulkan/nvkmd/nvrm/nvRmApi.h
+index bf2d1e9..8d0e9b0 100644
+--- a/src/nouveau/vulkan/nvkmd/nvrm/nvRmApi.h
++++ b/src/nouveau/vulkan/nvkmd/nvrm/nvRmApi.h
+@@ -32,6 +32,8 @@ typedef struct NvRmApiMapping {
+ 
+ NvU32 nvRmApiAlloc(NvRmApi *api, NvU32 hParent, NvU32 *hObject, NvU32 hClass, void *pAllocParams);
+ NvU32 nvRmApiFree(NvRmApi *api, NvU32 hObject);
++NvU32 nvRmApiAllocOsDescriptor(NvRmApi *api, NvU32 hParent, NvU32 hMemory,
++	void *ptr, NvU64 size);
+ NvU32 nvRmApiControl(NvRmApi *api, NvU32 hObject, NvU32 cmd, void *pParams, NvU32 paramsSize);
+ NvU32 nvRmApiMapMemoryDma(NvRmApi *api, NvU32 hDevice, NvU32 hDma, NvU32 hMemory, NvU64 offset, NvU64 length, NvU32 flags, NvU64 *dmaOffset);
+ NvU32 nvRmApiUnmapMemoryDma(NvRmApi *api, NvU32 hDevice, NvU32 hDma, NvU32 hMemory, NvU32 flags, NvU64 dmaOffset);
+diff --git a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm.h b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm.h
+index 95c1319..b4301cb 100644
+--- a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm.h
++++ b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm.h
+@@ -90,6 +90,13 @@ VkResult nvkmd_nvrm_alloc_tiled_mem(struct nvkmd_dev *dev,
+                                        enum nvkmd_mem_flags flags,
+                                        struct nvkmd_mem **mem_out);
+ 
++#define NVKMD_NVRM_HOST_PTR_ALIGNMENT 4096
++
++VkResult nvkmd_nvrm_import_host_ptr(struct nvkmd_dev *dev,
++                                    struct vk_object_base *log_obj,
++                                    void *ptr, uint64_t size_B,
++                                    struct nvkmd_mem **mem_out);
++
+ VkResult nvkmd_nvrm_import_dma_buf(struct nvkmd_dev *dev,
+                                       struct vk_object_base *log_obj,
+                                       int fd, struct nvkmd_mem **mem_out);
+diff --git a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c
+index 13413fc..c19c612 100644
+--- a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c
++++ b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c
+@@ -346,10 +346,14 @@ nvkmd_nvrm_exec_ctx_flush(struct nvkmd_ctx *_ctx,
+       *doorbell = submitTokenNotifier->info32;
+    }
+ 
+-   /* Most submissions finish in microseconds, so spin on the semaphore for a
+-    * short while before blocking on the channel's event. */
++   /* Wait for the semaphore.  Resman does not deliver the channel's event on
++    * this GPU, so the wait is a poll: spin first, because a submission often
++    * finishes in microseconds, then sleep in short steps.  Sleeping through
++    * poll() costs a whole millisecond per round even when asking for one, so
++    * it is only used once the work has clearly not finished quickly. */
+    const uint64_t target = hasDoorbell ? ctx->wSeq : (uint32_t)ctx->wSeq;
+-   const int spinLimit = debug_get_num_option("NVK_NVRM_SPIN", 50000);
++   const int spinLimit = debug_get_num_option("NVK_NVRM_SPIN", 200000);
++   const uint64_t sleep_us = debug_get_num_option("NVK_NVRM_SLEEP_US", 50);
+    /* A channel that hit an error never signals its semaphore, so give up
+     * rather than hanging the application for ever. */
+    const uint64_t timeout_us =
+@@ -366,13 +370,18 @@ nvkmd_nvrm_exec_ctx_flush(struct nvkmd_ctx *_ctx,
+ #endif
+          continue;
+       }
+-		struct pollfd pollFds[1] = {
+-			{
+-				.fd = ctx->osEvent,
+-				.events = POLLIN|POLLPRI
+-			}
+-		};
+-		int pollRes = poll(pollFds, 1, 1);
++		int pollRes = 0;
++		if (sleep_us != 0) {
++			os_time_sleep(sleep_us);
++		} else {
++			struct pollfd pollFds[1] = {
++				{
++					.fd = ctx->osEvent,
++					.events = POLLIN|POLLPRI
++				}
++			};
++			pollRes = poll(pollFds, 1, 1);
++		}
+ 		if (timeout_us != 0 && (uint64_t)(os_time_get() - waitStart) > timeout_us) {
+ 			fprintf(stderr, "nvrm: channel %#x did not finish within %" PRIu64
+ 				" ms: rSeq %#" PRIx64 ", wSeq %#" PRIx64 ", GPGet %" PRIu32
+diff --git a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_dev.c b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_dev.c
+index f89bc9c..d20b5ce 100644
+--- a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_dev.c
++++ b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_dev.c
+@@ -76,6 +76,7 @@ const struct nvkmd_dev_ops nvkmd_nvrm_dev_ops = {
+    .alloc_mem = nvkmd_nvrm_alloc_mem,
+    .alloc_tiled_mem = nvkmd_nvrm_alloc_tiled_mem,
+    .import_dma_buf = nvkmd_nvrm_import_dma_buf,
++   .import_host_ptr = nvkmd_nvrm_import_host_ptr,
+    .alloc_va = nvkmd_nvrm_alloc_va,
+    .create_ctx = nvkmd_nvrm_create_ctx,
+ };
+diff --git a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_mem.c b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_mem.c
+index 9af48be..a0e0020 100644
+--- a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_mem.c
++++ b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_mem.c
+@@ -5,6 +5,10 @@
+ 
+ #include "nvkmd_nvrm.h"
+ 
++#include <inttypes.h>
++
++#include "util/u_atomic.h"
++
+ #include "vk_log.h"
+ 
+ #include "util/u_memory.h"
+@@ -148,6 +152,46 @@ nvkmd_nvrm_alloc_tiled_mem(struct nvkmd_dev *_dev,
+                                  mem_out);
+ }
+ 
++// Wrap memory the application already owns in a resman memory object, so the
++// GPU can read and write it in place: what an application's window bitmap
++// needs if the GPU is to draw the frame straight into it.
++VkResult
++nvkmd_nvrm_import_host_ptr(struct nvkmd_dev *_dev,
++                           struct vk_object_base *log_obj,
++                           void *ptr, uint64_t size_B,
++                           struct nvkmd_mem **mem_out)
++{
++   struct nvkmd_nvrm_dev *dev = nvkmd_nvrm_dev(_dev);
++   struct nvkmd_nvrm_pdev *pdev = nvkmd_nvrm_pdev(dev->base.pdev);
++
++   struct NvRmApi rm;
++   nvkmd_nvrm_dev_api_ctl(pdev, &rm);
++
++   if (((uintptr_t)ptr & (NVKMD_NVRM_HOST_PTR_ALIGNMENT - 1)) != 0)
++      return vk_error(log_obj, VK_ERROR_INVALID_EXTERNAL_HANDLE);
++
++   const uint64_t aligned_size_B = align64(size_B, NVKMD_NVRM_HOST_PTR_ALIGNMENT);
++
++   /* Resman needs a handle for the object; it does not make one up for an
++    * OS descriptor, so keep a counter of our own.
++    */
++   static uint32_t next_handle = 0;
++   const NvHandle hMemory = 0xdea70000 | (p_atomic_inc_return(&next_handle) & 0xffff);
++
++   NV_STATUS nvRes = nvRmApiAllocOsDescriptor(&rm, pdev->hDevice, hMemory,
++                                              ptr, aligned_size_B);
++   if (nvRes != NV_OK) {
++      fprintf(stderr, "nvrm: import of %p (%" PRIu64 " bytes) refused: %#x\n",
++              ptr, aligned_size_B, nvRes);
++      return vk_errorf(log_obj, VK_ERROR_INVALID_EXTERNAL_HANDLE,
++                       "resman refused to describe %p: %#x", ptr, nvRes);
++   }
++
++   return create_mem_or_close_bo(dev, log_obj, NVKMD_MEM_GART, hMemory,
++                                 aligned_size_B, NVKMD_VA_GART, 0,
++                                 NVKMD_NVRM_HOST_PTR_ALIGNMENT, mem_out);
++}
++
+ VkResult
+ nvkmd_nvrm_import_dma_buf(struct nvkmd_dev *_dev,
+                              struct vk_object_base *log_obj,
+diff --git a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_pdev.c b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_pdev.c
+index 6d68873..8afb603 100644
+--- a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_pdev.c
++++ b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_pdev.c
+@@ -365,6 +365,7 @@ nvkmd_nvrm_create_pdev(struct vk_object_base *log_obj,
+    pdev->base.kmd_info = (struct nvkmd_info) {
+    	.has_get_vram_used = true,
+    	.has_alloc_tiled = true,
++   	.has_import_host_ptr = true,
+    };
+ 
+    pdev->channelClass = nvkmd_nvrm_pdev_find_supported_class(pdev, ARRAY_SIZE(sChannelClasses), sChannelClasses);
