@@ -444,14 +444,19 @@ FIRMWARE_TIMING = dict(h=(2008, 2052, 2200), v=(1084, 1089, 1125), pixel_khz=148
     port_timing=('0898002c', '00c00840', '04650005', '00290461'))
 
 
-def validate_accelerant(body, observation=None, edid_block0=None):
+def validate_accelerant(body, observation=None, edid_block0=None, mode=(1920, 1080)):
     """Return the decoded accelerant state from a native --accelerant transcript or raise ValidationError.
 
     `observation` is a decoded observation of the same boot taken while the
     accelerant owned the frame buffer: its live window must scan the
     accelerant's buffer. `edid_block0` is the base block read by the EDID
-    inventory, which the shared information must repeat.
+    inventory, which the shared information must repeat. `mode` is the
+    (width, height) the accelerant must report with its CEA timing: the
+    firmware mode, or after a mode change the new mode at the unchanged
+    1920-pixel row pitch of the frame buffer.
     """
+    geometry = (mode[0], mode[1], 7680)
+    expected_timing = shared_timing(*mode)
     if 'ROCK5_DISPLAY_WRITE_OPEN_ALLOWED\n' not in body:
         raise ValidationError('writable open was not admitted')
     if 'ROCK5_DISPLAY_ACCELERANT_REQUEST_CHECKS_PASS' not in body:
@@ -469,8 +474,9 @@ def validate_accelerant(body, observation=None, edid_block0=None):
         raise ValidationError('frame buffer not acquired')
     if not framebuffer or framebuffer == firmware or framebuffer & 0xfff or framebuffer >= 1 << 32:
         raise ValidationError('implausible frame buffer %#x (firmware %#x)' % (framebuffer, firmware))
-    if (width, height, bytes_per_row) != (1920, 1080, 7680):
-        raise ValidationError('frame buffer geometry %dx%d/%d' % (width, height, bytes_per_row))
+    if (width, height, bytes_per_row) != tuple(geometry):
+        raise ValidationError('frame buffer geometry %dx%d/%d, expected %dx%d/%d'
+            % ((width, height, bytes_per_row) + tuple(geometry)))
     if polls > 5000:
         raise ValidationError('implausible acquisition poll count %d' % polls)
     # Probes before the retrace stage print no semaphore or count.
@@ -521,16 +527,18 @@ def validate_accelerant(body, observation=None, edid_block0=None):
         raise ValidationError('shared geometry differs from the driver description')
     timing = dict(h=tuple(int(shared.group(i)) for i in (9, 10, 11)), v=tuple(int(shared.group(i)) for i in (12, 13, 14)),
         pixel_khz=int(shared.group(8)), port_timing=tuple(shared.group(i) for i in (15, 16, 17, 18)))
-    if timing != FIRMWARE_TIMING:
-        raise ValidationError('decoded timing %r differs from the firmware mode' % (timing,))
+    if timing != expected_timing:
+        raise ValidationError('decoded timing %r differs from the %dx%d mode' % ((timing,) + tuple(mode)))
     edid_result = int(shared.group(19))
     edid = shared.group(21)
     if bool(flags & 2) != (edid_result == 0):
         raise ValidationError('EDID flag and result disagree')
     if edid_block0 is not None and (not flags & 2 or edid != edid_block0):
         raise ValidationError('shared EDID block differs from the EDID inventory')
+    # The clone maps the whole frame buffer, which keeps its firmware-mode
+    # size (1920x1080x4) across mode changes.
     clone = ACCELERANT_CLONE.search(body)
-    if clone is None or int(clone.group(2)) != width * height * 4:
+    if clone is None or int(clone.group(2)) != 1920 * 1080 * 4:
         raise ValidationError('frame buffer clone missing or wrong size')
     if 'ROCK5_DISPLAY_ACCELERANT_ACQUIRE_BUSY\n' not in body:
         raise ValidationError('a second acquisition was not refused')
@@ -587,6 +595,25 @@ CEA_TIMINGS = {(1920, 1080): (148500, 2008, 2052, 2200, 1084, 1089, 1125, 16),
     (640, 480): (25175, 656, 752, 800, 490, 492, 525, 1)}
 
 
+def shared_timing(width, height):
+    """Return the shared-information timing the driver publishes for a CEA mode.
+
+    The VOP2 port words hold the total and sync width in the high and low
+    halves, then the active start and end measured from the sync; the driver
+    decodes them into Accelerant.h sync positions (DecodePortTiming), and
+    this is that decode run backwards from the CEA table.
+    """
+    timing = CEA_TIMINGS.get((width, height))
+    if timing is None:
+        raise ValidationError('no CEA timing for %dx%d' % (width, height))
+    clock, hss, hse, htotal, vss, vse, vtotal, _ = timing
+    hend, vend = htotal - (hss - width), vtotal - (vss - height)
+    words = (htotal << 16 | (hse - hss), (hend - width) << 16 | hend,
+        vtotal << 16 | (vse - vss), (vend - height) << 16 | vend)
+    return dict(h=(hss, hse, htotal), v=(vss, vse, vtotal), pixel_khz=clock,
+        port_timing=tuple('%08x' % word for word in words))
+
+
 def validate_modeset(body, width, height):
     """Return the decoded mode change from a native --mode transcript or raise ValidationError."""
     if 'ROCK5_DISPLAY_MODE_REQUEST_CHECKS_PASS' not in body:
@@ -634,22 +661,47 @@ def validate_modeset(body, width, height):
         retraces=int(accelerant.group(4)))
 
 
-def check_desktop_crop(path, width, height):
-    """Raise unless a capture of the given size shows the Haiku workspace with its top-left icons."""
+def check_desktop_crop(path, width, height, capture=(1920, 1080)):
+    """Raise unless the frame shows the top-left width x height crop of the Haiku workspace.
+
+    A frame of the crop's own size is checked directly. The NanoKVM scales
+    every input mode to its 1920x1080 capture, so a 1280x720 mode arrives
+    as that crop enlarged by 1.5: the icons sit lower and further right,
+    and the Deskbar, which app_server draws beyond the crop, is absent from
+    the top right. A scaled frame must show both.
+    """
     from PIL import Image
     image = Image.open(path).convert('RGB')
-    if image.size != (width, height):
-        raise ValidationError('frame is %dx%d, not %dx%d' % (image.size + (width, height)))
+    if image.size == (width, height):
+        scale = 1.0
+    elif image.size == tuple(capture) and capture[0] * height == capture[1] * width and width < capture[0]:
+        scale = capture[0] / float(width)
+    else:
+        raise ValidationError('frame is %dx%d, not %dx%d or its scaled %dx%d capture'
+            % (image.size + (width, height) + tuple(capture)))
+    def blue(rgb):
+        return all(abs(a - b) <= 24 for a, b in zip(rgb, DESKTOP_BLUE))
     samples = []
     for x, y in ((width // 3, height // 3), (width // 2, height * 2 // 3), (width * 3 // 4, height // 4), (width // 8, height * 7 // 8)):
+        x, y = int(x * scale), int(y * scale)
         rgb = image.getpixel((x, y))
-        samples.append(dict(x=x, y=y, rgb=list(rgb), kind='workspace',
-            ok=all(abs(a - b) <= 24 for a, b in zip(rgb, DESKTOP_BLUE))))
+        samples.append(dict(x=x, y=y, rgb=list(rgb), kind='workspace', ok=blue(rgb)))
     # The Haiku, home and Trash icons sit at the top left of the workspace.
-    icons = image.crop((16, 16, 176, 72))
-    distinct = sum(1 for rgb in icons.getdata() if not all(abs(a - b) <= 24 for a, b in zip(rgb, DESKTOP_BLUE)))
-    samples.append(dict(kind='icons', pixels=distinct, ok=distinct >= 600))
+    box = tuple(int(v * scale) for v in (16, 16, 176, 72))
+    distinct = sum(1 for rgb in image.crop(box).getdata() if not blue(rgb))
+    samples.append(dict(kind='icons', box=list(box), pixels=distinct, ok=distinct >= int(600 * scale * scale)))
+    if scale != 1.0:
+        # Enlarged icons reach below and beyond where the unscaled desktop's
+        # icons end (about 172x70), and no Deskbar is drawn at the top right.
+        region = image.crop((0, 0, int(420 * scale), int(220 * scale)))
+        points = [(i % region.width, i // region.width) for i, rgb in enumerate(region.getdata()) if not blue(rgb)]
+        reach = (max(p[0] for p in points), max(p[1] for p in points)) if points else (0, 0)
+        samples.append(dict(kind='icon_reach', x=reach[0], y=reach[1],
+            ok=reach[0] >= int(176 * scale) - 40 and reach[1] >= int(72 * scale) - 24))
+        deskbar = image.crop((image.width - 140, 0, image.width, 110))
+        drawn = sum(1 for rgb in deskbar.getdata() if not blue(rgb))
+        samples.append(dict(kind='deskbar_absent', pixels=drawn, ok=drawn <= 20))
     failed = [s for s in samples if not s['ok']]
     if failed:
-        raise ValidationError('frame does not show the Haiku workspace crop: %r' % failed)
-    return dict(status='pass', samples=samples)
+        raise ValidationError('frame does not show the %dx%d Haiku workspace crop: %r' % (width, height, failed))
+    return dict(status='pass', scale=scale, samples=samples)

@@ -227,6 +227,22 @@ class DisplayValidationTest(unittest.TestCase):
         self.assertEqual(decoded['samples'][3], 'ffdddddd')
         without = check.validate_accelerant(accelerant_transcript(flags=1))
         self.assertEqual((without['flags'], without['edid_result']), (1, 2))
+        # After a mode change the accelerant reports the new mode, its CEA
+        # timing and port words, at the buffer's unchanged row pitch.
+        self.assertEqual(check.shared_timing(1920, 1080), check.FIRMWARE_TIMING)
+        self.assertEqual(check.shared_timing(1280, 720), dict(h=(1390, 1430, 1650), v=(725, 730, 750),
+            pixel_khz=74250, port_timing=('06720028', '01040604', '02ee0005', '001902e9')))
+        changed = accelerant_transcript(flags=15, timing=' pixel_khz=74250 h=1390/1430/1650 v=725/730/750'
+            ' port_timing=06720028,01040604,02ee0005,001902e9').replace(
+            ' width=1920 height=1080 bytes_per_row=7680', ' width=1280 height=720 bytes_per_row=7680').replace(
+            ' size=1920x1080 ', ' size=1280x720 ')
+        self.assertEqual(check.validate_accelerant(changed, mode=(1280, 720))['flags'], 15)
+        for wrong in (changed.replace(' size=1280x720 ', ' size=1920x1080 '), changed.replace('h=1390/', 'h=1391/'),
+                changed.replace('06720028', '06720029'), accelerant_transcript()):
+            with self.assertRaises(check.ValidationError):
+                check.validate_accelerant(wrong, mode=(1280, 720))
+        with self.assertRaises(check.ValidationError):
+            check.validate_accelerant(changed)
         retrace_cases = [
             ('no_sem', accelerant_transcript(retrace_sem=-1)),
             ('missing', accelerant_transcript(retrace='')),
@@ -388,6 +404,34 @@ class DisplayValidationTest(unittest.TestCase):
             real = '/mnt/HaikuWork/artifacts/interactive/20260918T083449Z-28d1a5/frame-007.jpg'
             if os.path.exists(real):
                 self.assertEqual(check.check_desktop_crop(real, 1920, 1080)['status'], 'pass')
+            # The NanoKVM scales a 1280x720 mode to 1920x1080: larger icons, no Deskbar.
+            scaled = directory + '/scaled.jpg'
+            def capture(icons_scale, deskbar):
+                image = Image.new('RGB', (1920, 1080), check.DESKTOP_BLUE)
+                draw = ImageDraw.Draw(image)
+                for x in (20, 80, 140):
+                    draw.rectangle([int(x * icons_scale), int(20 * icons_scale), int((x + 32) * icons_scale),
+                        int(52 * icons_scale)], fill=(230, 200, 60))
+                    draw.rectangle([int(x * icons_scale), int(58 * icons_scale), int((x + 32) * icons_scale),
+                        int(68 * icons_scale)], fill=(20, 20, 20))
+                if deskbar:
+                    draw.rectangle([1785, 0, 1919, 108], fill=(216, 216, 216))
+                image.save(scaled, format='JPEG', quality=80)
+            capture(1.5, False)
+            result = check.check_desktop_crop(scaled, 1280, 720)
+            self.assertEqual((result['status'], result['scale']), ('pass', 1.5))
+            self.assertEqual([s['kind'] for s in result['samples']][-2:], ['icon_reach', 'deskbar_absent'])
+            capture(1.5, True)
+            with self.assertRaises(check.ValidationError):
+                check.check_desktop_crop(scaled, 1280, 720)
+            capture(1.0, False)  # the unscaled 1080p desktop is not the 720p crop
+            with self.assertRaises(check.ValidationError):
+                check.check_desktop_crop(scaled, 1280, 720)
+            session = '/mnt/HaikuWork/artifacts/interactive/20260918T094058Z-81f2a1/'
+            if os.path.exists(session + 'frame-010.jpg'):
+                self.assertEqual(check.check_desktop_crop(session + 'frame-010.jpg', 1280, 720)['scale'], 1.5)
+                with self.assertRaises(check.ValidationError):
+                    check.check_desktop_crop(session + 'frame-009.jpg', 1280, 720)
 
     def test_pattern_frame(self):
         import tempfile
