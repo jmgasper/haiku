@@ -527,6 +527,14 @@ asserts hotplug at present), devices in each USB port, and the serial console.
   The lesson is the same one dragging taught, pointing the other way: check
   whether the test is doing something no program would before believing what it
   says about the code.
+- 2026-09-19: checked the file system after a day of hard power cycles, because
+  two test binaries had come back full of syslog text and that is what a cut of
+  power does to a file written a minute earlier. `checkfs /boot` found the
+  structure sound - 87018 nodes, no block unallocated, none allocated twice -
+  but 2548174 blocks, about 4.7 GiB, leaked by the crashes. It reclaimed them:
+  the volume went from 65.5 GiB used to 60.8, and a second pass with
+  `checkfs -c` reports nothing left to free. Worth running after a run of power
+  cycles; it is not only space, it is the check that nothing worse happened.
 - 2026-09-19: `tools/check-workstation.sh` asks the machine whether it is doing
   what it is supposed to, one line per thing, and comes back 13 working, 0 not.
   Every check in it exists because something looked fine today and was not: a
