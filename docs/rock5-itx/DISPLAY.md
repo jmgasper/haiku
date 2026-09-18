@@ -254,12 +254,59 @@ contiguous allocation landed elsewhere.
 - Independent Linux eMMC readbacks were not run: the ROOBI sudo password is
   not available to this session.
 
+## Stage 3b: board accelerant on a driver-owned frame buffer
+
+The opt-in `rock5-itx-edk2-v1.1-display-accelerant` profile turns the device
+into app_server's graphics device. It then admits writable handles and
+answers `B_GET_ACCELERANT_SIGNATURE` with `rk3588_display.accelerant`, so
+app_server's scan of `/dev/graphics` picks it instead of the EFI framebuffer
+device (the Mali device still rejects writable opens). The primary
+accelerant asks the driver to acquire the frame buffer: the driver checks
+that the live HDMI1 window still scans the firmware buffer the boot item
+describes, reads the sink's EDID base block, decodes the port's timing words
+into sync positions, allocates a black contiguous write-combining buffer of
+the firmware size, swaps the window to it exactly as in stage 3a (waiting for
+the configuration-done bit) and moves the kernel console to the new buffer.
+It publishes a cloneable shared area with the mode, timing and EDID, and
+clones the buffer into app_server on request. Closing the acquiring handle
+swaps the firmware buffer back, returns the console and detaches every
+clone before the areas go away. A second acquisition is refused, the pattern
+swap is refused while the buffer is acquired, and every other profile keeps
+rejecting writable opens, so nothing changes for the earlier stages.
+
+The accelerant itself exports the hooks app_server requires and nothing
+more: one 1920x1080 32-bit mode at the firmware timing (148.5 MHz, sync
+2008/2052/2200 and 1084/1089/1125), the EDID decoded from the shared block,
+the frame buffer configuration and pixel-clock limits. There is no
+acceleration, cursor, retrace semaphore or DPMS yet. The host fixture models
+the shared area, clones, console updates and each refusal and failure
+cleanup; the probe's `--accelerant` mode reads the driver's description
+through a second writable handle, maps the live buffer once and confirms
+that a second acquisition is refused; the validator cross-checks the
+observation (the window must scan the accelerant's buffer), the EDID
+inventory and the captured desktop frame.
+
+## Stage 3c: vertical retrace from the frame-start interrupt
+
+Once the frame buffer is acquired the driver keeps VOP2 mapped, installs a
+handler on the VOP interrupt (GIC 188, SPI 156, shared with nothing Haiku
+drives), clears and enables the live port's frame-start field interrupt in
+its `VP_INT_CLR`/`VP_INT_EN` words, and creates the retrace semaphore the
+accelerant returns for `B_ACCELERANT_RETRACE_SEMAPHORE`. The handler
+acknowledges whatever status the port reports, counts frame starts and
+releases the semaphore only towards threads already waiting on it, so the
+count never runs away while app_server is idle. Release disables the
+interrupt, removes the handler and deletes the semaphore before the buffer
+swap back. If the interrupt or semaphore cannot be set up the frame buffer
+still works without retrace. These three interrupt words are the only VOP2
+registers added to the two of the swap. The probe waits for 24 frame starts
+and reports their spacing and the driver's count; the validator requires a
+60 Hz period and a count that grew with the elapsed frames.
+
 ## Later stages
 
-3. After the swap: a board accelerant that owns the framebuffer at the
-   firmware timing, then a real mode change with HDPTX PHY1 and HDMI TX1
-   reconfiguration, vertical retrace from the VOP2 interrupt, cursor window
-   and power control.
+3. After retrace: a cursor window, power control, and a real mode change
+   with HDPTX PHY1 and HDMI TX1 reconfiguration.
 4. DisplayPort TX1 through USBDP PHY1 and the RA620 bridge for the second
    connector. This needs a sink on that port (a monitor, an HDMI dummy plug,
    or the NanoKVM cable moved) before it can be qualified.
