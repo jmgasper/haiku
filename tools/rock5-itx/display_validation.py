@@ -934,22 +934,37 @@ CURSOR_QUADRANTS = (((16, 16), (255, 255, 255), 'white'), ((48, 16), (0, 0, 0), 
     ((48, 48), tuple(d + (255 - d) * 128 // 255 for d in DESKTOP_BLUE), 'half'))
 
 
-def check_cursor_frame(path, x, y, shown=True, frame=(1920, 1080)):
-    """Raise unless the capture shows the probe's quadrant cursor with its corner at x, y (or, hidden, the plain desktop there).
+def check_cursor_frame(path, x, y, shown=True, frame=(1920, 1080), reference=None):
+    """Raise unless the capture shows the probe's quadrant cursor with its corner at x, y (or, hidden, the background there).
 
-    Only quadrant centres inside the frame are judged; two desktop points
-    just outside the cursor must stay blue either way.
+    `reference` is an earlier capture of the same desktop without a cursor
+    at x, y: the transparent quadrant, the points around the cursor and a
+    hidden cursor must show the reference's pixels, and the half-transparent
+    quadrant their blend with white, whatever windows the desktop carries.
+    Without a reference the plain desktop blue is expected. Only quadrant
+    centres inside the frame are judged.
     """
     from PIL import Image
     image = Image.open(path).convert('RGB')
     if image.size != tuple(frame):
         raise ValidationError('frame is %dx%d, not %dx%d' % (image.size + tuple(frame)))
+    background = Image.open(reference).convert('RGB') if reference is not None else None
+    if background is not None and background.size != image.size:
+        raise ValidationError('reference frame is %dx%d, not %dx%d' % (background.size + image.size))
+    def under(px, py):
+        return background.getpixel((px, py)) if background is not None else DESKTOP_BLUE
     samples = []
     for (dx, dy), colour, kind in CURSOR_QUADRANTS:
         px, py = x + dx, y + dy
         if not (0 <= px < frame[0] and 0 <= py < frame[1]):
             continue
-        expected = colour if shown else DESKTOP_BLUE
+        base = under(px, py)
+        if not shown or kind == 'transparent':
+            expected = base
+        elif kind == 'half':
+            expected = tuple(d + (255 - d) * 128 // 255 for d in base)
+        else:
+            expected = colour
         rgb = image.getpixel((px, py))
         tolerance = 32 if kind == 'half' and shown else 24
         samples.append(dict(x=px, y=py, rgb=list(rgb), kind=kind if shown else 'hidden_' + kind, expected=list(expected),
@@ -960,9 +975,10 @@ def check_cursor_frame(path, x, y, shown=True, frame=(1920, 1080)):
         if not (0 <= px < frame[0] and 0 <= py < frame[1]):
             continue
         rgb = image.getpixel((px, py))
-        samples.append(dict(x=px, y=py, rgb=list(rgb), kind='outside', expected=list(DESKTOP_BLUE),
-            ok=all(abs(a - b) <= 24 for a, b in zip(rgb, DESKTOP_BLUE))))
+        expected = under(px, py)
+        samples.append(dict(x=px, y=py, rgb=list(rgb), kind='outside', expected=list(expected),
+            ok=all(abs(a - b) <= 24 for a, b in zip(rgb, expected))))
     failed = [s for s in samples if not s['ok']]
     if failed:
         raise ValidationError('frame does not show the %s cursor at %d,%d: %r' % ('quadrant' if shown else 'hidden', x, y, failed))
-    return dict(status='pass', x=x, y=y, shown=shown, samples=samples)
+    return dict(status='pass', x=x, y=y, shown=shown, reference=reference, samples=samples)

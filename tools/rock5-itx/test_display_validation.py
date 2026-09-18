@@ -629,6 +629,38 @@ class DisplayValidationTest(unittest.TestCase):
                 check.check_cursor_frame(frame, 200, 200)
             with self.assertRaises(check.ValidationError):
                 check.check_cursor_frame(frame, 3000, 3000)
+            # With a reference capture the desktop may carry windows: the
+            # transparent quadrant and the surroundings must match it, the
+            # half quadrant its blend with white.
+            reference = directory + '/reference.jpg'
+            grey = (202, 202, 202)
+            def windowed(path, x, y, shown=True, quadrants=None):
+                image = Image.new('RGB', (1920, 1080), check.DESKTOP_BLUE)
+                draw = ImageDraw.Draw(image)
+                draw.rectangle([120, 80, 590, 320], fill=grey)
+                draw.rectangle([1784, 0, 1919, 70], fill=(200, 200, 200))
+                if shown:
+                    half_grey = tuple(d + (255 - d) * 128 // 255 for d in grey)
+                    colours = quadrants or ((255, 255, 255), (0, 0, 0), grey, half_grey)
+                    for (dx, dy), colour in zip(((0, 0), (32, 0), (0, 32), (32, 32)), colours):
+                        draw.rectangle([x + dx, y + dy, x + dx + 31, y + dy + 31], fill=colour)
+                image.save(path, format='JPEG', quality=80)
+            windowed(reference, 200, 200, shown=False)
+            windowed(frame, 200, 200)
+            with self.assertRaises(check.ValidationError):
+                check.check_cursor_frame(frame, 200, 200)
+            result = check.check_cursor_frame(frame, 200, 200, reference=reference)
+            self.assertEqual((result['status'], result['reference'], result['samples'][2]['expected']), ('pass', reference, list(grey)))
+            windowed(frame, 200, 200, quadrants=((255, 255, 255), (0, 0, 0), check.DESKTOP_BLUE, half))
+            with self.assertRaises(check.ValidationError):
+                check.check_cursor_frame(frame, 200, 200, reference=reference)
+            windowed(frame, 200, 200, shown=False)
+            self.assertEqual(check.check_cursor_frame(frame, 200, 200, shown=False, reference=reference)['status'], 'pass')
+            with self.assertRaises(check.ValidationError):
+                check.check_cursor_frame(frame, 200, 200, shown=False)
+            Image.new('RGB', (1280, 720), check.DESKTOP_BLUE).save(reference, format='JPEG')
+            with self.assertRaises(check.ValidationError):
+                check.check_cursor_frame(frame, 200, 200, shown=False, reference=reference)
             Image.new('RGB', (1280, 720), check.DESKTOP_BLUE).save(frame, format='JPEG')
             with self.assertRaises(check.ValidationError):
                 check.check_cursor_frame(frame, 200, 200)
