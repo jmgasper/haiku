@@ -127,11 +127,17 @@ int main(int argc, char **argv)
 			one.flags = 0;			// swap interval 0: the very next blank
 			one.requestCounterAccel = request;
 			one.requestCounter = request;
+			// NVKMS expects this counter to be written by a semaphore release
+			// from a channel, not by the processor, so nothing here orders the
+			// write for us: without a fence it can sit in a write buffer and
+			// the display never sees the request.
+			__sync_synchronize();
 
 			bigtime_t deadline = system_time() + 1000000;
 			while ((NvU32)one.semaphore != request) {
 				if (system_time() > deadline) {
-					printf("[!] nothing for a whole second\n");
+					printf("[!] nothing for a whole second, after %" B_PRId64
+						" answers\n", count + 1);
 					lost = true;
 					break;
 				}

@@ -54,21 +54,17 @@ NvBool nvkms_hdmi_deepcolor(void)
 	return NV_FALSE;
 }
 
-// Whether NVKMS may tell a client when the display is between frames, by
-// writing a counter into memory the client registered. That is what a renderer
-// needs to present without tearing, and the Linux driver has it on by default.
+// Let NVKMS tell a client when the display is between frames, by writing a
+// counter into memory the client registered. That is what a renderer needs to
+// present without tearing.
 //
-// It is off here because turning it on wedges the machine. Registering the
-// control succeeds, and the first vertical blank after it never comes back:
-// no network, no console. NVKMS asks resman for the callback through
-// NV9010_VBLANK_CALLBACK, which arms a display interrupt, and nothing in this
-// port appears to service or acknowledge one - an interrupt that re-asserts
-// for ever would look exactly like this. Diagnosing it needs the kernel
-// debugger, which cannot be reached over the KVM's USB keyboard; it wants a
-// serial console.
+// This wedged the machine until the timer queue stopped calling the allocator
+// with interrupts off: NVKMS asks for a timer from inside its vblank callback,
+// which resman calls from the interrupt, and Haiku's allocator cannot be
+// called there. See NvTimerQueue.
 NvBool nvkms_vblank_sem_control(void)
 {
-	return NV_FALSE;
+	return NV_TRUE;
 }
 
 NvBool nvkms_opportunistic_display_sync(void)

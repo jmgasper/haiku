@@ -19,18 +19,20 @@ struct nvkms_timer_t final: public DPCCallback, public NvTimerQueue::TimerListIt
 
 	bool fIsRefPtr: 1;
 	bool fKernelTimer: 1;
+	bool fPooled: 1;			// came from the set-aside timers
 	// fCancel, fComplete are guarded by fQueue.fSpinlock.
 	bool fCancel: 1;
 	bool fComplete: 1;
 
 	nvkms_timer_t(NvTimerQueue &queue, nvkms_timer_proc_t *proc, void *dataPtr,
-			NvU32 dataU32, bool isRefPtr, bool kernelTimer):
+			NvU32 dataU32, bool isRefPtr, bool kernelTimer, bool pooled):
 		fQueue(queue),
 		fProc(proc),
 		fDataPtr(dataPtr),
 		fDataU32(dataU32),
 		fIsRefPtr(isRefPtr),
 		fKernelTimer(kernelTimer),
+		fPooled(pooled),
 		fCancel(false),
 		fComplete(false)
 	{
@@ -99,12 +101,64 @@ void nvkms_timer_t::DoDPC(class DPCQueue *queue)
 	//  - non-ref-ptr canceled timers: Free() abandoned us; we delete.
 	//  - non-ref-ptr completed timers: caller's eventual Free() deletes us.
 	if (fIsRefPtr || cancel) {
-		delete this;
+		fQueue.Destroy(this);
 	}
 }
 
 
 // #pragma mark - NvTimerQueue
+
+// With interrupts off - which is where resman calls NVKMS's vblank callback
+// from - the allocator is out of bounds, so take one of the timers set aside
+// in advance. Anywhere else, allocate as usual and leave the set-aside ones
+// for the callback.
+void *NvTimerQueue::AllocStorage(bool &pooled)
+{
+	if (are_interrupts_enabled()) {
+		pooled = false;
+		return malloc(sizeof(nvkms_timer_t));
+	}
+
+	InterruptsSpinLocker locker(fSpinlock);
+	if (fPoolCount == 0) {
+		pooled = false;
+		return NULL;
+	}
+	pooled = true;
+	return fPool[--fPoolCount];
+}
+
+void NvTimerQueue::FreeStorage(void *storage, bool pooled)
+{
+	if (storage == NULL) {
+		return;
+	}
+	if (!pooled) {
+		free(storage);
+		return;
+	}
+
+	InterruptsSpinLocker locker(fSpinlock);
+	if (fPoolCount < kPoolSize) {
+		fPool[fPoolCount++] = storage;
+		return;
+	}
+	// Cannot happen - nothing hands back more than it took - but not worth
+	// leaking over.
+	locker.Unlock();
+	free(storage);
+}
+
+void NvTimerQueue::Destroy(nvkms_timer_t *timer)
+{
+	if (timer == NULL) {
+		return;
+	}
+	const bool pooled = timer->fPooled;
+	timer->~nvkms_timer_t();
+	FreeStorage(timer, pooled);
+}
+
 
 NvTimerQueue::NvTimerQueue()
 {
@@ -116,6 +170,14 @@ NvTimerQueue::~NvTimerQueue()
 
 status_t NvTimerQueue::Init()
 {
+	for (uint32 i = 0; i < kPoolSize; i++) {
+		void *storage = malloc(sizeof(nvkms_timer_t));
+		if (storage == NULL) {
+			break;
+		}
+		fPool[fPoolCount++] = storage;
+	}
+
 	return fDpcQueue.Init("NvTimerQueue", B_URGENT_DISPLAY_PRIORITY, 0);
 }
 
@@ -168,7 +230,7 @@ restart:
 				auto refPtr = static_cast<struct nvkms_ref_ptr*>(timer->fDataPtr);
 				nvkms_dec_ref(refPtr);
 			}
-			delete timer;
+			Destroy(timer);
 			goto restart;
 		}
 	}
@@ -177,15 +239,26 @@ restart:
 	// DPC to completion, then terminates. Every surviving timer self-deletes
 	// inside DoDPC because we set fCancel above.
 	fDpcQueue.Close(false);
+
+	InterruptsSpinLocker locker(fSpinlock);
+	while (fPoolCount > 0) {
+		void *storage = fPool[--fPoolCount];
+		locker.Unlock();
+		free(storage);
+		locker.Lock();
+	}
 }
 
 
 nvkms_timer_handle_t *NvTimerQueue::Alloc(nvkms_timer_proc_t *proc, void *dataPtr, NvU32 dataU32, NvU64 usec)
 {
-	nvkms_timer_t *timer = new(std::nothrow) nvkms_timer_t(*this, proc, dataPtr, dataU32, false, usec != 0);
-	if (timer == NULL) {
+	bool pooled;
+	void *storage = AllocStorage(pooled);
+	if (storage == NULL) {
 		return NULL;
 	}
+	auto *timer = new(storage) nvkms_timer_t(*this, proc, dataPtr, dataU32,
+		false, usec != 0, pooled);
 
 	// List insertion and scheduling must happen atomically: a parallel Fini()
 	// must either see the timer on the list (and handle it) or not have
@@ -193,7 +266,7 @@ nvkms_timer_handle_t *NvTimerQueue::Alloc(nvkms_timer_proc_t *proc, void *dataPt
 	InterruptsSpinLocker locker(fSpinlock);
 	if (fClosing) {
 		locker.Unlock();
-		delete timer;
+		Destroy(timer);
 		return NULL;
 	}
 
@@ -210,10 +283,13 @@ nvkms_timer_handle_t *NvTimerQueue::Alloc(nvkms_timer_proc_t *proc, void *dataPt
 
 NvBool NvTimerQueue::AllocWithRefPtr(nvkms_timer_proc_t *proc, struct nvkms_ref_ptr *ref_ptr, NvU32 dataU32, NvU64 usec)
 {
-	nvkms_timer_t *timer = new(std::nothrow) nvkms_timer_t(*this, proc, ref_ptr, dataU32, true, usec != 0);
-	if (timer == NULL) {
+	bool pooled;
+	void *storage = AllocStorage(pooled);
+	if (storage == NULL) {
 		return NV_FALSE;
 	}
+	auto *timer = new(storage) nvkms_timer_t(*this, proc, ref_ptr, dataU32,
+		true, usec != 0, pooled);
 
 	// Hold a reference for the lifetime of the timer; DoDPC releases it.
 	nvkms_inc_ref(ref_ptr);
@@ -222,7 +298,7 @@ NvBool NvTimerQueue::AllocWithRefPtr(nvkms_timer_proc_t *proc, struct nvkms_ref_
 	if (fClosing) {
 		locker.Unlock();
 		nvkms_dec_ref(ref_ptr);
-		delete timer;
+		Destroy(timer);
 		return NV_FALSE;
 	}
 
@@ -256,6 +332,6 @@ void NvTimerQueue::Free(nvkms_timer_handle_t *handle)
 	}
 
 	if (destroy) {
-		delete handle;
+		handle->fQueue.Destroy(handle);
 	}
 }
