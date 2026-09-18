@@ -440,6 +440,20 @@ listed as verified is untested.
   putting work on a channel, which means giving the accelerant a channel - the
   same thing the vblank work wanted before NVKMS's own route turned out to
   need none.
+- 2026-09-19: `tools/check-workstation.sh` asks the machine whether it is doing
+  what it is supposed to, one line per thing, and comes back 13 working, 0 not.
+  Every check in it exists because something looked fine today and was not: a
+  build that never installed, a driver the kernel never loaded, a screen saver
+  that quietly turned the GPU path off, a Vulkan driver visible only to a shell
+  with the right variables set. So the programs it runs have nothing set in
+  their environment, which is how anything started from the Deskbar sees the
+  machine, and it asks the device tree rather than the syslog, which is trimmed
+  as it grows.
+  Writing it turned up four wrong assumptions of my own rather than any fault
+  of the machine: `df` prints a block of lines here rather than a table,
+  `ifconfig` puts a space after "inet addr:", `sysinfo` counts threads so
+  sixteen cores read as 32, and the driver's greeting had already been trimmed
+  out of the syslog while the driver was plainly running.
 - 2026-09-19: exercised three displays without having three, using the
   accelerant's own `force_connected` setting - it copies the real monitor's
   EDID onto a connector nothing is plugged into, which is what it is there for.
