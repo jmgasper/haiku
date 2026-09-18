@@ -19,23 +19,12 @@
 using namespace RK3588Display;
 
 
-// CEA-861 video identification codes for the AVI infoframe of the modes the
-// PLL table can drive; other modes send VIC 0.
+// CEA-861 video identification code for the AVI infoframe (0 when the mode
+// is not one the PLL table drives).
 static uint32
 cea_vic(const display_mode& mode)
 {
-	uint32 clock = mode.timing.pixel_clock;
-	if (mode.virtual_width == 1920 && mode.virtual_height == 1080 && clock == 148500)
-		return 16;
-	if (mode.virtual_width == 1280 && mode.virtual_height == 720 && clock == 74250)
-		return 4;
-	if (mode.virtual_width == 720 && mode.virtual_height == 480 && clock == 27000)
-		return 2;
-	if (mode.virtual_width == 720 && mode.virtual_height == 576 && clock == 27000)
-		return 17;
-	if (mode.virtual_width == 640 && mode.virtual_height == 480 && clock == 25175)
-		return 1;
-	return 0;
+	return CeaVideoCode(mode.virtual_width, mode.virtual_height, mode.timing.pixel_clock);
 }
 
 
@@ -77,7 +66,8 @@ current_display_mode(void)
 	mode.timing.v_sync_start = shared.vSyncStart;
 	mode.timing.v_sync_end = shared.vSyncEnd;
 	mode.timing.v_total = shared.vTotal;
-	mode.timing.flags = B_POSITIVE_HSYNC | B_POSITIVE_VSYNC;
+	mode.timing.flags = ((shared.syncFlags & kModePositiveHSync) != 0 ? B_POSITIVE_HSYNC : 0)
+		| ((shared.syncFlags & kModePositiveVSync) != 0 ? B_POSITIVE_VSYNC : 0);
 	mode.space = B_RGB32;
 	mode.virtual_width = shared.width;
 	mode.virtual_height = shared.height;
@@ -218,4 +208,52 @@ rk3588_get_pixel_clock_limits(display_mode* mode, uint32* _low, uint32* _high)
 	if (*_low < 25000)
 		*_low = 25000;
 	return *_low <= *_high ? B_OK : B_ERROR;
+}
+
+
+// DPMS: every off state stops the port and powers the PHY down, which the
+// sink sees as no signal; on repeats the current mode's mode set.
+uint32
+rk3588_dpms_capabilities(void)
+{
+	return B_DPMS_ON | B_DPMS_STAND_BY | B_DPMS_SUSPEND | B_DPMS_OFF;
+}
+
+
+uint32
+rk3588_dpms_mode(void)
+{
+	if (gInfo->shared_info->powerMode == kPowerOn)
+		return B_DPMS_ON;
+	if (gInfo->dpms_mode == B_DPMS_STAND_BY || gInfo->dpms_mode == B_DPMS_SUSPEND)
+		return gInfo->dpms_mode;
+	return B_DPMS_OFF;
+}
+
+
+status_t
+rk3588_set_dpms_mode(uint32 mode)
+{
+	if ((gInfo->info.flags & kAccelerantModeSet) == 0)
+		return B_UNSUPPORTED;
+	PowerRequest request = {};
+	request.version = kPowerVersion;
+	switch (mode) {
+		case B_DPMS_ON:
+			request.mode = kPowerOn;
+			break;
+		case B_DPMS_STAND_BY:
+		case B_DPMS_SUSPEND:
+		case B_DPMS_OFF:
+			request.mode = kPowerOff;
+			break;
+		default:
+			return B_BAD_VALUE;
+	}
+	if (ioctl(gInfo->device, kSetPowerMode, &request, sizeof(request)) != 0)
+		return errno != 0 ? errno : B_ERROR;
+	if (request.result != kModeOK)
+		return B_ERROR;
+	gInfo->dpms_mode = mode;
+	return B_OK;
 }

@@ -492,12 +492,12 @@ CheckAccelerant()
 		" mode_list_area=%" PRId32 " modes=%" PRIu32 " size=%" PRIu32 "x%" PRIu32
 		" bytes_per_row=%" PRIu32 " pixel_khz=%" PRIu32 " h=%" PRIu32 "/%" PRIu32 "/%" PRIu32
 		" v=%" PRIu32 "/%" PRIu32 "/%" PRIu32 " port_timing=%08" PRIx32 ",%08" PRIx32 ",%08" PRIx32
-		",%08" PRIx32 " edid_result=%" PRIu32 " name=%.31s edid=", shared->version, shared->flags,
-		shared->modeListArea, shared->modeCount, shared->width, shared->height,
+		",%08" PRIx32 " edid_result=%" PRIu32 " power=%" PRIu32 " name=%.31s edid=", shared->version,
+		shared->flags, shared->modeListArea, shared->modeCount, shared->width, shared->height,
 		shared->bytesPerRow, shared->pixelClockKHz, shared->hSyncStart, shared->hSyncEnd,
 		shared->hTotal, shared->vSyncStart, shared->vSyncEnd, shared->vTotal,
 		shared->portTiming[0], shared->portTiming[1], shared->portTiming[2],
-		shared->portTiming[3], shared->edidResult, shared->name);
+		shared->portTiming[3], shared->edidResult, shared->powerMode, shared->name);
 	for (unsigned i = 0; i < sizeof(shared->edid); i++)
 		printf("%02x", shared->edid[i]);
 	printf("\n");
@@ -613,6 +613,84 @@ ChangeMode(unsigned width, unsigned height)
 }
 
 
+// DPMS through the driver: off stops the port and powers the PHY down, on
+// repeats the current mode set. The retrace count read twice half a second
+// apart shows whether frames still start.
+static bool
+ChangePower(bool off)
+{
+	int fd = open(kDevice, O_RDWR);
+	if (fd < 0) {
+		perror(kDevice);
+		return false;
+	}
+	PowerRequest request = {};
+	request.version = kPowerVersion;
+	request.mode = off ? kPowerOff : kPowerOn;
+	if (ioctl(fd, kSetPowerMode, &request, sizeof(request) - 1) == 0 || errno != EINVAL) {
+		fprintf(stderr, "Malformed power request was not rejected\n");
+		return false;
+	}
+	if (ioctl(fd, kSetPowerMode, NULL, sizeof(request)) == 0 || errno != EFAULT) {
+		fprintf(stderr, "Null power request was not rejected\n");
+		return false;
+	}
+	request.version = kPowerVersion + 1;
+	if (ioctl(fd, kSetPowerMode, &request, sizeof(request)) == 0 || errno != EINVAL) {
+		fprintf(stderr, "Invalid power request version was not rejected\n");
+		return false;
+	}
+	request.version = kPowerVersion;
+	request.mode = 2;
+	if (ioctl(fd, kSetPowerMode, &request, sizeof(request)) != 0 || request.result != kModeUnsupported) {
+		fprintf(stderr, "Unknown power mode was not refused\n");
+		return false;
+	}
+	printf("ROCK5_DISPLAY_POWER_REQUEST_CHECKS_PASS\n");
+	memset(&request, 0, sizeof(request));
+	request.version = kPowerVersion;
+	request.mode = off ? kPowerOff : kPowerOn;
+	if (ioctl(fd, kSetPowerMode, &request, sizeof(request)) != 0) {
+		perror("display power");
+		close(fd);
+		return false;
+	}
+	printf("ROCK5_DISPLAY_POWER mode=%s result=%" PRIu32 " phase=%" PRIu32 " hold_polls=%" PRIu32
+		" clock_polls=%" PRIu32 " lock_polls=%" PRIu32 " phy_status=%08" PRIx32
+		" control=%08" PRIx32 " previous=%" PRIu32 " micros=%" PRId64 "\n", off ? "off" : "on",
+		request.result, request.phase, request.holdPolls, request.clockPolls, request.lockPolls,
+		request.phyStatus, request.portControl, request.previous,
+		request.finishedMicros - request.startedMicros);
+	AccelerantInfo before = {}, after = {};
+	before.version = after.version = kAccelerantVersion;
+	if (ioctl(fd, kGetAccelerantInfo, &before, sizeof(before)) == 0) {
+		snooze(500000);
+		if (ioctl(fd, kGetAccelerantInfo, &after, sizeof(after)) == 0) {
+			uint32_t power = 99;
+			SharedInfo* shared = NULL;
+			area_id area = clone_area("rock5 display power shared", (void**)&shared, B_ANY_ADDRESS,
+				B_READ_AREA, after.sharedArea);
+			if (area >= 0) {
+				power = shared->powerMode;
+				delete_area(area);
+			}
+			printf("ROCK5_DISPLAY_POWER_ACCELERANT width=%" PRIu32 " height=%" PRIu32 " flags=%"
+				PRIu32 " retraces_before=%" PRIu32 " retraces_after=%" PRIu32 " shared_power=%"
+				PRIu32 "\n", after.width, after.height, after.flags, before.retraces,
+				after.retraces, power);
+		}
+	}
+	close(fd);
+	if (request.result != kModeOK) {
+		fprintf(stderr, "Power change result %" PRIu32 " at phase %" PRIu32 "\n", request.result,
+			request.phase);
+		return false;
+	}
+	printf("ROCK5_DISPLAY_POWER_PASS mode=%s\n", off ? "off" : "on");
+	return true;
+}
+
+
 int
 main(int argc, char** argv)
 {
@@ -641,6 +719,13 @@ main(int argc, char** argv)
 		}
 		return ChangeMode(width, height) ? 0 : 1;
 	}
+	if (argc == 3 && strcmp(argv[1], "--power") == 0) {
+		if (strcmp(argv[2], "off") != 0 && strcmp(argv[2], "on") != 0) {
+			fprintf(stderr, "usage: %s --power off|on\n", argv[0]);
+			return 2;
+		}
+		return ChangePower(strcmp(argv[2], "off") == 0) ? 0 : 1;
+	}
 	unsigned hold = 10;
 	if (scanout && argc == 3)
 		hold = (unsigned)atoi(argv[2]);
@@ -648,7 +733,7 @@ main(int argc, char** argv)
 		samples = (unsigned)atoi(argv[1]);
 	if ((scanout ? argc > 3 || hold < 1 || hold > 120 : argc > 2) || samples < 1 || samples > 16) {
 		fprintf(stderr, "usage: %s [samples 1-16 | --absent-device | --edid | --accelerant"
-			" | --scanout [hold-seconds 1-120] | --mode WIDTHxHEIGHT]\n", argv[0]);
+			" | --scanout [hold-seconds 1-120] | --mode WIDTHxHEIGHT | --power off|on]\n", argv[0]);
 		return 2;
 	}
 	// Only the accelerant profile admits writable handles; opening and

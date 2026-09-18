@@ -35,7 +35,7 @@ static const uint32_t kFrameBytes = kFrameBytesPerRow * kFrameHeight;
 static const uint32_t kAccelerantAcquired = 1; // flags
 static const uint32_t kAccelerantEdid = 2; // shared EDID block is valid
 static const uint32_t kAccelerantRetrace = 4; // frame-start interrupt drives the semaphore
-static const uint32_t kAccelerantModeSet = 8; // native mode changes are admitted
+static const uint32_t kAccelerantModeSet = 8; // native mode changes and power control are admitted
 
 // Video-port interrupt words (VP_INT_EN/CLR/STATUS at 0xa0 + 0x10 per port):
 // the low half holds the bits, the high half the write mask. The frame-start
@@ -103,6 +103,8 @@ struct SharedInfo {
 	uint32_t edidResult;
 	uint8_t edid[128];
 	char name[32];
+	uint32_t powerMode; // kPowerOn or kPowerOff (DisplayModeSet.h)
+	uint32_t syncFlags; // kModePositiveHSync | kModePositiveVSync of the current mode
 };
 
 

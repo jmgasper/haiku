@@ -25,6 +25,7 @@ struct accelerant_info {
 	display_mode* mode_list;
 	area_id frame_buffer_area;
 	void* frame_buffer;
+	uint32 dpms_mode; // the primary's last accepted DPMS request, 0 before any
 };
 
 extern accelerant_info* gInfo;
@@ -48,6 +49,9 @@ status_t rk3588_get_display_mode(display_mode* mode);
 status_t rk3588_get_edid_info(void* info, size_t size, uint32* version);
 status_t rk3588_get_frame_buffer_config(frame_buffer_config* config);
 status_t rk3588_get_pixel_clock_limits(display_mode* mode, uint32* low, uint32* high);
+uint32 rk3588_dpms_capabilities(void);
+uint32 rk3588_dpms_mode(void);
+status_t rk3588_set_dpms_mode(uint32 mode);
 }
 
 #endif // RK3588_DISPLAY_ACCELERANT_PRIVATE_H

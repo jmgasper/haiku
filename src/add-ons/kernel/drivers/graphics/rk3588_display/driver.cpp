@@ -103,9 +103,12 @@ static int64 sLastRetraceMicros = 0;
 static bool sInterruptInstalled = false;
 static int32 sHoldValid = 0; // the port reported standby (DSP_HOLD_VALID)
 static ModeRequest sCurrentMode = {}; // the mode the driver set, if any
+static ModeRequest sFirmwareMode = {}; // the firmware's mode as a request
+static uint32 sPowerMode = kPowerOn;
 static status_t RestoreScanout(Controller* controller);
 static status_t AcquireFrameBuffer(Handle* handle);
 static status_t ChangeDisplayMode(Handle* handle, ModeRequest& request);
+static status_t ChangePowerMode(Handle* handle, PowerRequest& request);
 static int32 RetraceInterrupt(void* data);
 static void ReleaseFrameBuffer(Controller* controller);
 
@@ -676,6 +679,26 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 			return status;
 		return user_memcpy(buffer, &request, sizeof(request));
 	}
+	if (op == kSetPowerMode) {
+		if (!controller->modeSetEnabled)
+			return B_DEV_INVALID_IOCTL;
+		if (!handle->writable)
+			return B_NOT_ALLOWED;
+		if (length != sizeof(PowerRequest))
+			return B_BAD_VALUE;
+		if (buffer == NULL)
+			return B_BAD_ADDRESS;
+		PowerRequest request;
+		if (user_memcpy(&request, buffer, sizeof(request)) != B_OK)
+			return B_BAD_ADDRESS;
+		if (request.version != kPowerVersion)
+			return B_BAD_VALUE;
+		MutexLocker locker(sHardwareLock);
+		status_t status = ChangePowerMode(handle, request);
+		if (status != B_OK)
+			return status;
+		return user_memcpy(buffer, &request, sizeof(request));
+	}
 	if (op == kRearmRetrace) {
 		if (!controller->accelerantEnabled)
 			return B_DEV_INVALID_IOCTL;
@@ -1107,6 +1130,23 @@ AcquireFrameBuffer(Handle* handle)
 		return B_NOT_SUPPORTED;
 	// The firmware runs the port at 60 Hz; the pixel clock follows the totals.
 	shared.pixelClockKHz = shared.hTotal * shared.vTotal * 60 / 1000;
+	shared.powerMode = kPowerOn;
+	shared.syncFlags = kModePositiveHSync | kModePositiveVSync; // CEA 1080p60
+	memset(&sFirmwareMode, 0, sizeof(sFirmwareMode));
+	sFirmwareMode.version = kModeVersion;
+	sFirmwareMode.flags = kModePositiveHSync | kModePositiveVSync;
+	sFirmwareMode.pixelClockKHz = shared.pixelClockKHz;
+	sFirmwareMode.hDisplay = shared.width;
+	sFirmwareMode.hSyncStart = shared.hSyncStart;
+	sFirmwareMode.hSyncEnd = shared.hSyncEnd;
+	sFirmwareMode.hTotal = shared.hTotal;
+	sFirmwareMode.vDisplay = shared.height;
+	sFirmwareMode.vSyncStart = shared.vSyncStart;
+	sFirmwareMode.vSyncEnd = shared.vSyncEnd;
+	sFirmwareMode.vTotal = shared.vTotal;
+	sFirmwareMode.vic = CeaVideoCode(shared.width, shared.height, shared.pixelClockKHz);
+	memset(&sCurrentMode, 0, sizeof(sCurrentMode));
+	sPowerMode = kPowerOn;
 	status = AllocateContiguous(sFrame, "RK3588 display frame buffer", kFrameBytes, false);
 	if (status != B_OK)
 		return status;
@@ -1183,6 +1223,22 @@ ReleaseFrameBuffer(Controller* controller)
 		return;
 	uint32_t result = kScanoutNotReady;
 	ScanoutRequest request = {};
+	if (sVopRegisters != NULL && (sPowerMode == kPowerOff || (sCurrentMode.version != 0
+			&& (sCurrentMode.hDisplay != sFirmwareMode.hDisplay
+				|| sCurrentMode.vDisplay != sFirmwareMode.vDisplay
+				|| sCurrentMode.pixelClockKHz != sFirmwareMode.pixelClockKHz)))) {
+		// The firmware frame buffer wants the firmware's mode, powered on.
+		ModeSetHardware hardware;
+		if (hardware.Prepare(controller->resources, sAccelerant.port) == B_OK) {
+			ModeRequest restore = sFirmwareMode;
+			uint32_t restored = SetDisplayMode(hardware, sAccelerant.port, sAccelerant.window,
+				restore);
+			dprintf("rk3588_display: firmware mode restore result=%" B_PRIu32 " phase=%"
+				B_PRIu32 " power=%" B_PRIu32 "\n", restored, restore.phase, sPowerMode);
+		}
+	}
+	sPowerMode = kPowerOn;
+	memset(&sCurrentMode, 0, sizeof(sCurrentMode));
 	StopRetrace(sAccelerant.port, controller->resources.vopInterrupt);
 	if (sVopRegisters != NULL) {
 		// The persistent mapping serves the restore; the domain stayed on.
@@ -1253,10 +1309,12 @@ ChangeDisplayMode(Handle* handle, ModeRequest& request)
 		sShared->vSyncEnd = request.vSyncEnd;
 		sShared->vTotal = request.vTotal;
 		memcpy(sShared->portTiming, request.timing, sizeof(sShared->portTiming));
-		sShared->flags = (sShared->flags & ~(kModePositiveHSync | kModePositiveVSync)) | request.flags;
+		sShared->syncFlags = request.flags;
 		sAccelerant.width = request.hDisplay;
 		sAccelerant.height = request.vDisplay;
 		sCurrentMode = request;
+		sPowerMode = kPowerOn; // the mode set powers everything on
+		sShared->powerMode = kPowerOn;
 		frame_buffer_update((addr_t)sFrame.address, request.hDisplay, request.vDisplay, 32,
 			kFrameBytesPerRow);
 	}
@@ -1267,6 +1325,61 @@ ChangeDisplayMode(Handle* handle, ModeRequest& request)
 		request.pixelClockKHz, request.vic, request.result, request.phase, request.holdPolls,
 		request.clockPolls, request.lockPolls, request.phyStatus, request.timing[0],
 		request.timing[1], request.timing[2], request.timing[3],
+		request.finishedMicros - request.startedMicros);
+	return B_OK;
+}
+
+
+// DPMS: off stops the port and powers the PHY down; on repeats the mode set
+// of the current mode (the firmware's, if the driver never changed it).
+static status_t
+ChangePowerMode(Handle* handle, PowerRequest& request)
+{
+	uint32_t version = request.version, mode = request.mode;
+	memset(&request, 0, sizeof(request));
+	request.version = version;
+	request.mode = mode;
+	request.previous = sPowerMode;
+	if (sOwner == NULL || sVopRegisters == NULL || sShared == NULL) {
+		request.result = kModeNotAcquired;
+		return B_OK;
+	}
+	if (mode != kPowerOn && mode != kPowerOff) {
+		request.result = kModeUnsupported;
+		return B_OK;
+	}
+	ModeSetHardware hardware;
+	status_t status = hardware.Prepare(handle->controller->resources, sAccelerant.port);
+	if (status != B_OK)
+		return status;
+	request.startedMicros = system_time();
+	if (mode == kPowerOff) {
+		request.result = PowerOff(hardware, sAccelerant.port, request);
+	} else {
+		ModeRequest restore = sCurrentMode.version != 0 ? sCurrentMode : sFirmwareMode;
+		uint32_t action[12];
+		memcpy(action, &restore, sizeof(action)); // inputs only
+		memset(&restore, 0, sizeof(restore));
+		memcpy(&restore, action, sizeof(action));
+		request.result = SetDisplayMode(hardware, sAccelerant.port, sAccelerant.window, restore);
+		request.phase = restore.phase;
+		request.holdPolls = restore.holdPolls;
+		request.clockPolls = restore.clockPolls;
+		request.lockPolls = restore.lockPolls;
+	}
+	request.finishedMicros = system_time();
+	request.phyStatus = hardware.ReadHdptxGrfStatus();
+	request.portControl = hardware.ReadVop(kVopPortBase + sAccelerant.port * kVopPortStride
+		+ kVopPortControlWord);
+	if (request.result == kModeOK) {
+		sPowerMode = mode;
+		sShared->powerMode = mode;
+	}
+	dprintf("rk3588_display: power %s result=%" B_PRIu32 " phase=%" B_PRIu32 " hold=%" B_PRIu32
+		" clock=%" B_PRIu32 " lock=%" B_PRIu32 " status=%#" B_PRIx32 " control=%#" B_PRIx32
+		" previous=%" B_PRIu32 " micros=%" B_PRId64 "\n", mode == kPowerOff ? "off" : "on",
+		request.result, request.phase, request.holdPolls, request.clockPolls, request.lockPolls,
+		request.phyStatus, request.portControl, request.previous,
 		request.finishedMicros - request.startedMicros);
 	return B_OK;
 }

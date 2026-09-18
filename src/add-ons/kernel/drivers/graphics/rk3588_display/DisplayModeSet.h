@@ -36,6 +36,48 @@ static const uint32_t kModeVerifyFailed = 6; // timing read-back differs
 static const uint32_t kModePositiveHSync = 1; // flags
 static const uint32_t kModePositiveVSync = 2;
 
+// Power control (DPMS): off stops the video port and powers the HDPTX PHY
+// down, so the sink loses its TMDS clock and sleeps; on runs the full mode
+// set for the current mode again. Results reuse the kMode* codes.
+static const uint32_t kSetPowerMode = 0x5244490a; // writable handle, frame buffer acquired
+static const uint32_t kPowerVersion = 1;
+static const uint32_t kPowerOn = 0;
+static const uint32_t kPowerOff = 1;
+
+struct PowerRequest {
+	uint32_t version; // in
+	uint32_t mode; // in: kPowerOn or kPowerOff
+	uint32_t result;
+	uint32_t phase; // kPhasePhyOff after a power-off, kPhaseInfoframes after a power-on
+	uint32_t holdPolls;
+	uint32_t clockPolls;
+	uint32_t lockPolls;
+	uint32_t phyStatus; // HDPTX GRF status after the change
+	uint32_t portControl; // DSP_CTRL read back: bit 31 standby
+	uint32_t previous; // the power mode before the change
+	int64_t startedMicros;
+	int64_t finishedMicros;
+};
+
+
+// CEA-861 video identification codes of the modes the PLL table drives, for
+// the AVI infoframe; other modes send VIC 0.
+inline uint32_t
+CeaVideoCode(uint32_t width, uint32_t height, uint32_t clockKHz)
+{
+	if (width == 1920 && height == 1080 && clockKHz == 148500)
+		return 16;
+	if (width == 1280 && height == 720 && clockKHz == 74250)
+		return 4;
+	if (width == 720 && height == 480 && clockKHz == 27000)
+		return 2;
+	if (width == 720 && height == 576 && clockKHz == 27000)
+		return 17;
+	if (width == 640 && height == 480 && clockKHz == 25175)
+		return 1;
+	return 0;
+}
+
 // Phases reached, for diagnostics.
 static const uint32_t kPhaseStopped = 1;
 static const uint32_t kPhasePhyOff = 2;
@@ -406,6 +448,25 @@ StopPort(Hardware& hardware, uint32_t port, ModeRequest& request)
 	}
 	hardware.WriteVop(interrupt + kVopPortInterruptEnable, HiWord(kVopInterruptHoldValid, 0));
 	return result;
+}
+
+
+// DPMS off: the port to standby (vop2_crtc_atomic_disable) and the PHY
+// powered down (rk_hdptx_phy_power_off); nothing else is touched, so a
+// later mode set or power-on starts from the same state as a mode change.
+template<class Hardware>
+uint32_t
+PowerOff(Hardware& hardware, uint32_t port, PowerRequest& request)
+{
+	ModeRequest stop = {};
+	uint32_t result = StopPort(hardware, port, stop);
+	request.holdPolls = stop.holdPolls;
+	request.phase = kPhaseStopped;
+	if (result != kModeOK)
+		return result;
+	DisablePhy(hardware);
+	request.phase = kPhasePhyOff;
+	return kModeOK;
 }
 
 

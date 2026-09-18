@@ -437,7 +437,7 @@ ACCELERANT_SHARED = re.compile(
     r'^ROCK5_DISPLAY_ACCELERANT_SHARED version=(\d+) flags=(\d+) mode_list_area=(-?\d+) modes=(\d+)'
     r' size=(\d+)x(\d+) bytes_per_row=(\d+) pixel_khz=(\d+) h=(\d+)/(\d+)/(\d+) v=(\d+)/(\d+)/(\d+)'
     r' port_timing=([0-9a-f]{8}),([0-9a-f]{8}),([0-9a-f]{8}),([0-9a-f]{8}) edid_result=(\d+)'
-    r' name=(.+?) edid=([0-9a-f]{256})$', re.M)
+    r'(?: power=(\d+))? name=(.+?) edid=([0-9a-f]{256})$', re.M)
 ACCELERANT_CLONE = re.compile(
     r'^ROCK5_DISPLAY_ACCELERANT_CLONE area=(\d+) size=(\d+) samples=([0-9a-f]{8}),([0-9a-f]{8}),([0-9a-f]{8}),([0-9a-f]{8})$', re.M)
 FIRMWARE_TIMING = dict(h=(2008, 2052, 2200), v=(1084, 1089, 1125), pixel_khz=148500,
@@ -530,7 +530,10 @@ def validate_accelerant(body, observation=None, edid_block0=None, mode=(1920, 10
     if timing != expected_timing:
         raise ValidationError('decoded timing %r differs from the %dx%d mode' % ((timing,) + tuple(mode)))
     edid_result = int(shared.group(19))
-    edid = shared.group(21)
+    edid = shared.group(22)
+    power = int(shared.group(20)) if shared.group(20) is not None else None
+    if power not in (None, 0):
+        raise ValidationError('accelerant probe ran with the port powered off (%d)' % power)
     if bool(flags & 2) != (edid_result == 0):
         raise ValidationError('EDID flag and result disagree')
     if edid_block0 is not None and (not flags & 2 or edid != edid_block0):
@@ -554,7 +557,80 @@ def validate_accelerant(body, observation=None, edid_block0=None, mode=(1920, 10
             raise ValidationError('observation window %d scans %#x, accelerant buffer is %#x' % (window, seen['address'], framebuffer))
     return dict(status='pass', flags=flags, framebuffer='%08x' % framebuffer, firmware='%08x' % firmware,
         port=port, window=window, polls=polls, modes=int(shared.group(4)), edid_result=edid_result,
-        name=shared.group(20), samples=[clone.group(i) for i in (3, 4, 5, 6)], retrace=retrace)
+        name=shared.group(21), samples=[clone.group(i) for i in (3, 4, 5, 6)], retrace=retrace,
+        power=power)
+
+
+POWER_LINE = re.compile(
+    r'^ROCK5_DISPLAY_POWER mode=(off|on) result=(\d+) phase=(\d+) hold_polls=(\d+) clock_polls=(\d+)'
+    r' lock_polls=(\d+) phy_status=([0-9a-f]{8}) control=([0-9a-f]{8}) previous=(\d+) micros=(\d+)$', re.M)
+POWER_ACCELERANT = re.compile(
+    r'^ROCK5_DISPLAY_POWER_ACCELERANT width=(\d+) height=(\d+) flags=(\d+) retraces_before=(\d+)'
+    r' retraces_after=(\d+) shared_power=(\d+)$', re.M)
+
+
+def validate_power(body, mode, previous=None):
+    """Return the decoded power change from a native --power transcript or raise ValidationError.
+
+    Off leaves the port in standby with no frame starts over the half second
+    the probe waits; on brings the full mode set back (phase 6, PLL locked,
+    frames starting again at 60 Hz).
+    """
+    if mode not in ('off', 'on'):
+        raise ValueError(mode)
+    if 'ROCK5_DISPLAY_POWER_REQUEST_CHECKS_PASS' not in body:
+        raise ValidationError('power request boundary checks missing')
+    line = POWER_LINE.search(body)
+    if line is None:
+        raise ValidationError('power line missing')
+    if line.group(1) != mode:
+        raise ValidationError('power line is for %s, not %s' % (line.group(1), mode))
+    result, phase = int(line.group(2)), int(line.group(3))
+    if result != 0:
+        raise ValidationError('power change result %d at phase %d' % (result, phase))
+    hold, clock, lock = int(line.group(4)), int(line.group(5)), int(line.group(6))
+    phy_status, control = int(line.group(7), 16), int(line.group(8), 16)
+    before = int(line.group(9))
+    if previous is not None and before != previous:
+        raise ValidationError('previous power mode %d, expected %d' % (before, previous))
+    micros = int(line.group(10))
+    accelerant = POWER_ACCELERANT.search(body)
+    if accelerant is None:
+        raise ValidationError('accelerant state after the power change missing')
+    width, height, flags = int(accelerant.group(1)), int(accelerant.group(2)), int(accelerant.group(3))
+    retraces_before, retraces_after = int(accelerant.group(4)), int(accelerant.group(5))
+    shared_power = int(accelerant.group(6))
+    if flags & 9 != 9:
+        raise ValidationError('accelerant flags %d lack acquisition or mode control' % flags)
+    if mode == 'off':
+        if phase != 2 or control & 0x80000000 == 0:
+            raise ValidationError('port not in standby after power-off (phase %d, control %#x)' % (phase, control))
+        if hold < 1 or hold > 60 or clock or lock:
+            raise ValidationError('power-off polls hold %d clock %d lock %d' % (hold, clock, lock))
+        if retraces_after != retraces_before:
+            raise ValidationError('frames still start while off (%d -> %d)' % (retraces_before, retraces_after))
+        if shared_power != 1:
+            raise ValidationError('shared power mode %d after power-off' % shared_power)
+    else:
+        if phase != 6 or control & 0x80000000 or control & 0xf != 0xf:
+            raise ValidationError('port not running after power-on (phase %d, control %#x)' % (phase, control))
+        if phy_status != 0xe:
+            raise ValidationError('PHY status %#x after power-on' % phy_status)
+        if hold or clock > 100 or lock > 50:
+            raise ValidationError('power-on polls hold %d clock %d lock %d' % (hold, clock, lock))
+        grown = retraces_after - retraces_before
+        if grown < 20 or grown > 40:
+            raise ValidationError('frame starts grew by %d in half a second after power-on' % grown)
+        if shared_power != 0:
+            raise ValidationError('shared power mode %d after power-on' % shared_power)
+    if micros > 2000000:
+        raise ValidationError('power change took %d us' % micros)
+    if body.count('ROCK5_DISPLAY_POWER_PASS mode=%s\n' % mode) != 1:
+        raise ValidationError('power summary missing or inconsistent')
+    return dict(status='pass', mode=mode, phase=phase, hold_polls=hold, clock_polls=clock, lock_polls=lock,
+        phy_status='%08x' % phy_status, control='%08x' % control, previous=before, micros=micros,
+        width=width, height=height, flags=flags, retraces_before=retraces_before,
+        retraces_after=retraces_after, shared_power=shared_power)
 
 
 # The Haiku desktop as the NanoKVM captures it: the default blue workspace

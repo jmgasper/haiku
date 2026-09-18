@@ -40,6 +40,17 @@ get_accelerant_hook(uint32 feature, void* data)
 			return (void*)rk3588_get_frame_buffer_config;
 		case B_GET_PIXEL_CLOCK_LIMITS:
 			return (void*)rk3588_get_pixel_clock_limits;
+		case B_DPMS_CAPABILITIES:
+		case B_DPMS_MODE:
+		case B_SET_DPMS_MODE:
+			// Power control rides on the mode-set profile's PHY and port paths.
+			if (gInfo == NULL || (gInfo->info.flags & RK3588Display::kAccelerantModeSet) == 0)
+				return NULL;
+			if (feature == B_DPMS_CAPABILITIES)
+				return (void*)rk3588_dpms_capabilities;
+			if (feature == B_DPMS_MODE)
+				return (void*)rk3588_dpms_mode;
+			return (void*)rk3588_set_dpms_mode;
 	}
 	return NULL;
 }

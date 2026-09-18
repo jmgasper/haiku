@@ -1638,7 +1638,7 @@ main()
 	// releasing the frame buffer, clones, refusals and failure cleanup.
 	static_assert(sizeof(AccelerantInfo) == 80, "Accelerant ABI layout changed");
 	static_assert(sizeof(RetraceRearm) == 32, "Re-arm ABI layout changed");
-	static_assert(sizeof(SharedInfo) == 236, "Shared info ABI layout changed");
+	static_assert(sizeof(SharedInfo) == 244, "Shared info ABI layout changed");
 	Prepare();
 	controller.resources = good;
 	controller.accelerantEnabled = false;
@@ -1959,6 +1959,7 @@ main()
 	assert(shared->hSyncStart == 1390 && shared->hSyncEnd == 1430 && shared->hTotal == 1650);
 	assert(shared->vSyncStart == 725 && shared->vSyncEnd == 730 && shared->vTotal == 750);
 	assert(shared->portTiming[0] == 0x06720028 && shared->bytesPerRow == 7680);
+	assert(shared->flags == kAccelerantEdid && shared->syncFlags == (kModePositiveHSync | kModePositiveVSync));
 	assert(Control(reader, kGetAccelerantInfo, &acc, sizeof(acc)) == B_OK && acc.width == 1280 && acc.height == 720);
 	assert(sConsole.width == 1280 && sConsole.height == 720 && sConsole.bytesPerRow == 7680);
 	// A port that never reports standby: nothing beyond the stop is touched.
@@ -1991,9 +1992,77 @@ main()
 	assert(mode.timing[0] == 0x0898002c && mode.timing[3] == 0x00290461);
 	assert(sequenceOf(sHdmiWrites, {{0xbe4u, 0x0000025du}, {0xbe8u, 16u}}));
 	assert(shared->width == 1920 && shared->height == 1080 && sConsole.width == 1920);
+
+	// Power control: off stops the port and powers the PHY down, a second
+	// off repeats only the PHY part, on runs the current mode's mode set.
+	static_assert(sizeof(PowerRequest) == 56, "Power ABI layout changed");
+	PowerRequest power = {};
+	power.version = kPowerVersion;
+	power.mode = kPowerOff;
+	assert(Control(reader, kSetPowerMode, &power, sizeof(power)) == B_NOT_ALLOWED);
+	assert(Control(primary, kSetPowerMode, &power, sizeof(power) - 1) == B_BAD_VALUE);
+	assert(Control(primary, kSetPowerMode, NULL, sizeof(power)) == B_BAD_ADDRESS);
+	power.version = kPowerVersion + 1;
+	assert(Control(primary, kSetPowerMode, &power, sizeof(power)) == B_BAD_VALUE);
+	power.version = kPowerVersion;
+	power.mode = 2;
+	sVopWrites.clear(); sPhyWrites.clear(); sGrfWrites.clear(); sCruWrites.clear(); sHdmiWrites.clear();
+	assert(Control(primary, kSetPowerMode, &power, sizeof(power)) == B_OK && power.result == kModeUnsupported);
+	assert(power.previous == kPowerOn && sVopWrites.empty() && sPhyWrites.empty() && shared->powerMode == kPowerOn);
+	power.mode = kPowerOff;
+	assert(Control(primary, kSetPowerMode, &power, sizeof(power)) == B_OK && power.result == kModeOK);
+	assert(power.phase == kPhasePhyOff && power.previous == kPowerOn && power.holdPolls >= 1 && power.holdPolls <= 4);
+	assert(power.clockPolls == 0 && power.lockPolls == 0 && (power.portControl & kVopPortStandby) != 0);
+	assert(power.finishedMicros > power.startedMicros && power.phyStatus == 0x0e);
+	// Hold-valid armed, standby, the handler's acknowledgement, hold-valid disarmed.
+	assert(sVopWrites.size() == 5 && sVopWrites[2] == std::make_pair(0xe00u, 0x80000000u)
+		&& sVopWrites.back() == std::make_pair(0xc0u, 0x00400000u));
+	assert(sPhyWrites.size() == 7 && adjacent(sPhyWrites, {{0xc00u, 0x82u}, {0x43cu, 0xc1u}, {0x440u, 0x01u},
+		{0xc04u, 0x80u}, {0x1004u, 0x80u}, {0x1404u, 0x80u}, {0x1804u, 0x80u}}));
+	assert(sCruWrites.size() == 5 && sCruWrites.back() == std::make_pair(0x30a0cu, 0x80008000u));
+	assert(sGrfWrites.size() == 1 && sGrfWrites[0] == std::make_pair(0u, 0x00e00000u));
+	assert(sHdmiWrites.empty() && shared->powerMode == kPowerOff && shared->width == 1920);
+	assert(Control(reader, kGetAccelerantInfo, &acc, sizeof(acc)) == B_OK && acc.width == 1920);
+	sVopWrites.clear(); sPhyWrites.clear(); sGrfWrites.clear(); sCruWrites.clear();
+	assert(Control(primary, kSetPowerMode, &power, sizeof(power)) == B_OK && power.result == kModeOK);
+	assert(power.holdPolls == 0 && power.previous == kPowerOff && power.phase == kPhasePhyOff);
+	assert(sVopWrites.empty() && sPhyWrites.size() == 7 && sCruWrites.size() == 5 && sGrfWrites.size() == 1);
+	// A mode set while off works from the stopped state and powers on.
+	fill(1280, 720, 74250, 1390, 1430, 1650, 725, 730, 750, 4);
+	assert(Control(primary, kSetDisplayMode, &mode, sizeof(mode)) == B_OK && mode.result == kModeOK);
+	assert(mode.holdPolls == 0 && shared->powerMode == kPowerOn && shared->width == 1280);
+	power.mode = kPowerOff;
+	assert(Control(primary, kSetPowerMode, &power, sizeof(power)) == B_OK && power.result == kModeOK);
+	assert(power.previous == kPowerOn && power.holdPolls >= 1 && shared->powerMode == kPowerOff);
+	// On: the current 720p60 mode again, from the stopped port.
+	sVopWrites.clear(); sPhyWrites.clear(); sGrfWrites.clear(); sCruWrites.clear(); sHdmiWrites.clear();
+	power.mode = kPowerOn;
+	assert(Control(primary, kSetPowerMode, &power, sizeof(power)) == B_OK && power.result == kModeOK);
+	assert(power.phase == kPhaseInfoframes && power.previous == kPowerOff && power.holdPolls == 0);
+	assert(power.clockPolls == 0 && power.lockPolls == 0 && power.phyStatus == 0x0e);
+	assert((power.portControl & kVopPortStandby) == 0 && (power.portControl & 0xf) == 0xf);
+	// The timing words still hold the 720p values, so only the restart shows in the diff model.
+	assert(sequenceOf(sVopWrites, {{0xe00u, 0x0000000fu}}) && sVopOverrides[0xe48] == 0x06720028);
+	assert(sequenceOf(sPhyWrites, {{0xc00u, 0x82u}, {0x144u, 0x7cu}, {0x800u, 0x06u}, {0x81cu, 0x0fu}}));
+	assert(sequenceOf(sHdmiWrites, {{0xbe8u, 4u}, {0xaacu, 2u}}) && sGrfWrites.size() == 6);
+	assert(shared->powerMode == kPowerOn && shared->width == 1280 && sConsole.width == 1280);
+	assert(Control(reader, kGetAccelerantInfo, &acc, sizeof(acc)) == B_OK && acc.width == 1280);
+	// On again: the same sequence, this time stopping a running port first.
+	sVopWrites.clear();
+	assert(Control(primary, kSetPowerMode, &power, sizeof(power)) == B_OK && power.result == kModeOK);
+	assert(power.previous == kPowerOn && power.holdPolls >= 1 && sVopWrites[2] == std::make_pair(0xe00u, 0x80000000u));
 	assert(Close(reader) == B_OK && Free(reader) == B_OK);
+	// Releasing a powered-off port at 720p brings the firmware mode back for
+	// the firmware frame buffer before the scanout returns to it.
+	power.mode = kPowerOff;
+	assert(Control(primary, kSetPowerMode, &power, sizeof(power)) == B_OK && power.result == kModeOK);
+	sVopWrites.clear(); sPhyWrites.clear(); sGrfWrites.clear(); sCruWrites.clear(); sHdmiWrites.clear();
 	sAllowScanout = true;
 	assert(Close(primary) == B_OK && Free(primary) == B_OK && sOwner == NULL);
+	assert(sequenceOf(sVopWrites, {{0xe48u, 0x0898002cu}, {0x1c20u, 0x0437077fu}, {0xe00u, 0x0000000fu},
+		{kModelAddressOffset, kModelFirmwareAddress}}));
+	assert(sequenceOf(sHdmiWrites, {{0xbe8u, 16u}, {0xaacu, 2u}}) && sPowerMode == kPowerOn);
+	assert(sCurrentMode.version == 0 && sConsole.width == 1920);
 	sAllowScanout = false;
 	sAllowModeSet = false;
 	assert(sAreas.empty() && sLockDepth == 0);

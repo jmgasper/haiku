@@ -385,6 +385,53 @@ class DisplayValidationTest(unittest.TestCase):
                     else:
                         check.validate_modeset(value, 1280, 720)
 
+    def test_power_transcript(self):
+        def transcript(mode, phase=None, control=None, before=1800, after=None, shared=None, previous=None, extra=''):
+            off = mode == 'off'
+            phase = 2 if off else 6 if phase is None else phase
+            control = ('80000000' if off else '0000000f') if control is None else control
+            after = (before if off else before + 30) if after is None else after
+            shared = (1 if off else 0) if shared is None else shared
+            previous = (0 if off else 1) if previous is None else previous
+            return '\n'.join(['ROCK5_DISPLAY_POWER_REQUEST_CHECKS_PASS',
+                'ROCK5_DISPLAY_POWER mode=%s result=0 phase=%d hold_polls=%d clock_polls=%d lock_polls=%d'
+                ' phy_status=0000000e control=%s previous=%d micros=%d'
+                % (mode, phase, 14 if off else 0, 0 if off else 5, 0 if off else 1, control, previous, 12000),
+                'ROCK5_DISPLAY_POWER_ACCELERANT width=1920 height=1080 flags=15 retraces_before=%d'
+                ' retraces_after=%d shared_power=%d' % (before, after, shared),
+                'ROCK5_DISPLAY_POWER_PASS mode=%s' % mode, extra]) + '\n'
+        off = check.validate_power(transcript('off'), 'off', previous=0)
+        self.assertEqual((off['phase'], off['control'], off['retraces_after'], off['shared_power']), (2, '80000000', 1800, 1))
+        on = check.validate_power(transcript('on'), 'on', previous=1)
+        self.assertEqual((on['phase'], on['control'], on['retraces_after'] - on['retraces_before'], on['clock_polls']), (6, '0000000f', 30, 5))
+        with self.assertRaises(ValueError):
+            check.validate_power(transcript('on'), 'standby')
+        cases = [
+            ('other_mode', transcript('on'), 'off', None),
+            ('previous', transcript('on'), 'on', 0),
+            ('frames_while_off', transcript('off', after=1803), 'off', None),
+            ('not_standby', transcript('off', control='0000000f'), 'off', None),
+            ('shared_off', transcript('off', shared=0), 'off', None),
+            ('frames_stalled', transcript('on', after=1805), 'on', None),
+            ('still_standby', transcript('on', control='8000000f'), 'on', None),
+            ('phase', transcript('on', phase=5), 'on', None),
+            ('phy', transcript('on').replace('phy_status=0000000e', 'phy_status=0000000c'), 'on', None),
+            ('result', transcript('on').replace('result=0 phase=6', 'result=4 phase=2'), 'on', None),
+            ('checks', transcript('on').replace('ROCK5_DISPLAY_POWER_REQUEST_CHECKS_PASS\n', ''), 'on', None),
+            ('summary', transcript('on').replace('ROCK5_DISPLAY_POWER_PASS mode=on', 'ROCK5_DISPLAY_POWER_PASS mode=off'), 'on', None),
+            ('flags', transcript('on').replace('flags=15', 'flags=7'), 'on', None),
+        ]
+        for name, body, mode, previous in cases:
+            with self.subTest(name):
+                with self.assertRaises(check.ValidationError):
+                    check.validate_power(body, mode, previous=previous)
+        # The accelerant probe reports the shared power mode when the probe prints it.
+        powered = accelerant_transcript().replace(' name=RK3588', ' power=0 name=RK3588')
+        self.assertEqual(check.validate_accelerant(powered)['power'], 0)
+        self.assertIsNone(check.validate_accelerant(accelerant_transcript())['power'])
+        with self.assertRaises(check.ValidationError):
+            check.validate_accelerant(accelerant_transcript().replace(' name=RK3588', ' power=1 name=RK3588'))
+
     def test_desktop_crop(self):
         import tempfile
         from PIL import Image, ImageDraw
