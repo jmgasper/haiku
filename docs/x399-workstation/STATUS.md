@@ -247,8 +247,25 @@ listed as verified is untested.
   flag is honest.
   tools/gl-stress.sh still passes - the test killed three times while the GPU
   was writing the screen, the machine up and every pinned range released.
-  What is left in this area: a window that stops drawing is not repainted when
-  something uncovers it, because the window system's bitmap has never had a
-  frame in it; the renderer should keep the last frame and put it back on a
-  redraw. Presenting is also not synchronised with the display, so a frame can
-  tear.
+  What is left in this area: presenting is not synchronised with the display,
+  so a frame can tear.
+- 2026-09-18: a window that had stopped drawing is repainted again. Nothing is
+  in the window system's bitmap on this path, so there was a hole wherever
+  something had covered the window; the front buffer still holds the last
+  frame, so the renderer puts that back. Haiku says a direct window has been
+  uncovered through DirectConnected rather than a redraw request, so that is
+  where it happens - on the window's thread, with a command buffer of its own
+  and no part of the application's context, and only once the application has
+  been quiet for a tenth of a second, since while it draws its own next frame
+  repairs the window and its context owns the image.
+  Two things cost an hour between them and are worth remembering:
+  * The workstation's clock runs a few minutes ahead of this machine, so tar
+    preserving timestamps made ninja decide that freshly copied sources were
+    older than the objects built from the last ones. Two builds silently kept
+    the previous binary. The sync scripts now extract with `-m`.
+  * The screen saver blanks the display after a few idle minutes, and a blanked
+    desktop makes app_server report that no part of any window is visible - no
+    clipping rectangles, so no window is presented into the screen and the
+    frame rate quietly returns to the old path. It also stops the KVM
+    capturing, which is the quickest way to notice. Kill `screen_blanker`
+    before measuring.
