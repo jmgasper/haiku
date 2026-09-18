@@ -125,6 +125,10 @@ static const phys_addr_t kWakeupCodePage = 0x81000;
 static const phys_addr_t kWakeupPML4 = 0x82000;
 static const phys_addr_t kWakeupPDPT = 0x83000;
 static const phys_addr_t kWakeupPageDirectory = 0x84000;
+static const phys_addr_t kTracePage = 0x85000;
+	// the trace of the last resume is kept here, so that it can be printed
+	// after rebooting when the machine could not report it otherwise
+static const uint32 kTraceMagic = 0x53555350;	// 'SUSP'
 	// the trampoline stores its progress at this offset of the argument page
 static const size_t kProgressOffset = 0xff0;
 
@@ -143,6 +147,29 @@ static bool sHasDECfg;
 static bool sHasPAT;
 
 static uint32 sPowerOffCheckpoint;
+
+// AMD's IOMMU is set up by the firmware and forgets its configuration while
+// the system sleeps. Without restoring it, devices can neither access memory
+// nor deliver interrupts after resuming.
+static const uint32 kIommuDeviceTableBase	= 0x00;
+static const uint32 kIommuCommandBufferBase	= 0x08;
+static const uint32 kIommuEventLogBase		= 0x10;
+static const uint32 kIommuControl			= 0x18;
+static const uint32 kIommuExclusionBase		= 0x20;
+static const uint32 kIommuExclusionLimit	= 0x28;
+static const uint32 kIommuCommandHead		= 0x2000;
+static const uint32 kIommuCommandTail		= 0x2008;
+static const uint32 kIommuEventHead			= 0x2010;
+static const uint32 kIommuEventTail			= 0x2018;
+
+static area_id sIommuArea = -1;
+static volatile uint8* sIommuRegisters;
+static uint64 sIommuDeviceTable;
+static uint64 sIommuCommandBuffer;
+static uint64 sIommuEventLog;
+static uint64 sIommuExclusionBase;
+static uint64 sIommuExclusionLimit;
+static uint64 sIommuControl;
 
 static mutex sSuspendLock = MUTEX_INITIALIZER("x86 suspend");
 
@@ -218,6 +245,138 @@ static inline void*
 physical_page(phys_addr_t address)
 {
 	return (void*)(KERNEL_PMAP_BASE + address);
+}
+
+
+static void
+save_trace_to_memory()
+{
+	uint32* page = (uint32*)physical_page(kTracePage);
+	char* text = (char*)(page + 2);
+	size_t length = device_manager_get_suspend_trace(text, B_PAGE_SIZE - 8);
+	page[0] = kTraceMagic;
+	page[1] = (uint32)length;
+}
+
+
+static void
+print_saved_trace()
+{
+	uint32* page = (uint32*)physical_page(kTracePage);
+	if (page[0] != kTraceMagic)
+		return;
+
+	page[0] = 0;
+	uint32 length = page[1];
+	if (length >= B_PAGE_SIZE - 8)
+		return;
+
+	char* text = (char*)(page + 2);
+	text[length] = '\0';
+	dprintf("suspend: trace of the last resume:\n%s", text);
+}
+
+
+static inline uint64
+iommu_read(uint32 offset)
+{
+	return *(volatile uint64*)(sIommuRegisters + offset);
+}
+
+
+static inline void
+iommu_write(uint32 offset, uint64 value)
+{
+	*(volatile uint64*)(sIommuRegisters + offset) = value;
+}
+
+
+/*!	Maps the registers of the first IOMMU described by the IVRS table. */
+static void
+iommu_init(acpi_module_info* acpi)
+{
+	if (sIommuArea >= 0 || acpi == NULL)
+		return;
+
+	void* table;
+	if (acpi->get_table("IVRS", 0, &table) != B_OK)
+		return;
+
+	uint8* ivrs = (uint8*)table;
+	uint32 length = *(uint32*)(ivrs + 4);
+	phys_addr_t base = 0;
+
+	for (uint32 offset = 48; offset + 24 <= length;) {
+		uint8 type = ivrs[offset];
+		uint16 entryLength = *(uint16*)(ivrs + offset + 2);
+		if (entryLength == 0)
+			break;
+
+		// IVHD entries describe an IOMMU and carry its base address
+		if (type == 0x10 || type == 0x11 || type == 0x40) {
+			base = *(uint64*)(ivrs + offset + 8);
+			if (base != 0)
+				break;
+		}
+		offset += entryLength;
+	}
+
+	if (base == 0)
+		return;
+
+	void* address;
+	sIommuArea = map_physical_memory("amd iommu", base, 0x3000,
+		B_ANY_KERNEL_ADDRESS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
+		&address);
+	if (sIommuArea < 0) {
+		INFO("mapping the IOMMU at %#" B_PRIxPHYSADDR " failed: %s\n", base,
+			strerror(sIommuArea));
+		return;
+	}
+
+	sIommuRegisters = (volatile uint8*)address;
+	INFO("IOMMU at %#" B_PRIxPHYSADDR ", control %#" B_PRIx64 "\n", base,
+		iommu_read(kIommuControl));
+}
+
+
+static void
+iommu_save()
+{
+	if (sIommuRegisters == NULL)
+		return;
+
+	sIommuDeviceTable = iommu_read(kIommuDeviceTableBase);
+	sIommuCommandBuffer = iommu_read(kIommuCommandBufferBase);
+	sIommuEventLog = iommu_read(kIommuEventLogBase);
+	sIommuExclusionBase = iommu_read(kIommuExclusionBase);
+	sIommuExclusionLimit = iommu_read(kIommuExclusionLimit);
+	sIommuControl = iommu_read(kIommuControl);
+}
+
+
+static void
+iommu_restore()
+{
+	if (sIommuRegisters == NULL)
+		return;
+
+	// Disable it while its tables are set up again, then start over with
+	// empty command and event rings.
+	iommu_write(kIommuControl, 0);
+
+	iommu_write(kIommuDeviceTableBase, sIommuDeviceTable);
+	iommu_write(kIommuCommandBufferBase, sIommuCommandBuffer);
+	iommu_write(kIommuEventLogBase, sIommuEventLog);
+	iommu_write(kIommuExclusionBase, sIommuExclusionBase);
+	iommu_write(kIommuExclusionLimit, sIommuExclusionLimit);
+
+	iommu_write(kIommuCommandHead, 0);
+	iommu_write(kIommuCommandTail, 0);
+	iommu_write(kIommuEventHead, 0);
+	iommu_write(kIommuEventTail, 0);
+
+	iommu_write(kIommuControl, sIommuControl);
 }
 
 
@@ -480,6 +639,7 @@ x86_suspend_enter_s3(const x86_suspend_s3_args* args)
 
 	sPowerOffCheckpoint = args->power_off_checkpoint;
 	sACPI = acpi;
+	iommu_init(acpi);
 	device_manager_set_suspend_verbose((flags & X86_SUSPEND_VERBOSE) != 0);
 
 	// Write out everything while all CPUs are still running.
@@ -517,6 +677,11 @@ x86_suspend_enter_s3(const x86_suspend_s3_args* args)
 
 	if (status == B_OK) {
 		verbose_step(flags, "devices suspended");
+
+		// Give the devices a moment to settle: without it, hardware that
+		// still has transfers in flight (the network card in particular)
+		// does not come back reliably.
+		snooze(500000);
 		status = acpi->prepare_sleep_state(ACPI_POWER_STATE_SLEEP_S3,
 			(void (*)(void))(addr_t)kWakeupCodePage, 0);
 		if (status != B_OK)
@@ -566,6 +731,8 @@ x86_suspend_enter_s3(const x86_suspend_s3_args* args)
 		save_msrs(context, 0);
 		ioapic_suspend();
 
+		iommu_save();
+
 		sAdjustTSC = true;
 		context->tsc = x86_read_msr(IA32_MSR_TSC);
 		prepare_wakeup_trampoline(x86_read_cr3(), context);
@@ -580,6 +747,7 @@ x86_suspend_enter_s3(const x86_suspend_s3_args* args)
 	}
 
 	if (resumed) {
+		iommu_restore();
 		checkpoint(2);
 
 		// Mask the legacy PICs again, the firmware may have unmasked them.
@@ -648,6 +816,28 @@ x86_suspend_enter_s3(const x86_suspend_s3_args* args)
 	if (resumed)
 		checkpoint(11);
 
+	if (resumed && (flags & X86_SUSPEND_POWER_OFF_ON_CPU_ERROR) != 0
+		&& restartedCount != parkedCount - 1) {
+		// The only way to report this on a machine whose devices did not
+		// come back: power off, so that the failure is visible from outside.
+		INFO("only %" B_PRId32 " of %" B_PRId32 " application processors "
+			"restarted, powering off\n", restartedCount, parkedCount - 1);
+		snooze(2000000);
+		acpi->prepare_sleep_state(ACPI_POWER_STATE_OFF, NULL, 0);
+		acpi->enter_sleep_state(ACPI_POWER_STATE_OFF);
+	}
+
+	if (resumed) {
+		save_trace_to_memory();
+
+		if ((flags & X86_SUSPEND_REBOOT_AFTER_RESUME) != 0) {
+			INFO("rebooting after resume\n");
+			snooze(15000000);
+			save_trace_to_memory();
+			arch_cpu_shutdown(true);
+		}
+	}
+
 	if (resumed && (flags & X86_SUSPEND_POWER_OFF_AFTER_RESUME) != 0) {
 		snooze(5000000);
 		INFO("powering off after resume\n");
@@ -709,6 +899,8 @@ status_t
 x86_suspend_init(void)
 {
 	STATIC_ASSERT(offsetof(x86_suspend_context, gdtr) == 128);
+
+	print_saved_trace();
 
 	uint8 marker = read_resume_marker();
 	if (marker != 0) {

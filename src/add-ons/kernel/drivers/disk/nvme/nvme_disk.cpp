@@ -19,6 +19,7 @@
 #include <util/AutoLock.h>
 
 #include <fs/devfs.h>
+#include <kdevice_manager.h>
 #include <bus/PCI.h>
 #include <vm/vm.h>
 
@@ -1247,7 +1248,9 @@ nvme_disk_resume(void* _cookie)
 		return B_OK;
 
 	status_t status = B_OK;
-	if (nvme_ctrlr_resume(info->ctrlr) != 0) {
+	int result = nvme_ctrlr_resume(info->ctrlr);
+	device_manager_suspend_trace("nvme: controller reset returned %d", result);
+	if (result != 0) {
 		TRACE_ERROR("resuming the controller failed!\n");
 		status = B_IO_ERROR;
 	} else

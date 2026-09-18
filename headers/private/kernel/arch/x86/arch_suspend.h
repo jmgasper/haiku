@@ -42,6 +42,11 @@ enum {
 		// don't call the drivers registered outside the device tree
 	X86_SUSPEND_SKIP_DEVICE_TREE		= 0x10,
 		// don't suspend and resume the device tree
+	X86_SUSPEND_REBOOT_AFTER_RESUME		= 0x20,
+		// reboot a few seconds after resuming; the trace of the resume is
+		// kept in memory and printed by the next boot
+	X86_SUSPEND_POWER_OFF_ON_CPU_ERROR	= 0x40,
+		// power off when an application processor did not come back
 	X86_SUSPEND_VERBOSE					= 0x04,
 		// log every step and pause afterwards, so that the log is written
 		// before a step that hangs

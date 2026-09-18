@@ -2881,6 +2881,10 @@ PCI::RestoreConfiguration()
 		if (fDomainData[i].bus != NULL)
 			_RestoreConfiguration(fDomainData[i].bus);
 	}
+
+	// Give the devices time to become ready again before their drivers
+	// start talking to them.
+	snooze(100000);
 }
 
 

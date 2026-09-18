@@ -7,6 +7,8 @@
  */
 
 
+#include <sys/sockio.h>
+
 #include <syscalls.h>
 
 #include "device.h"
@@ -607,6 +609,32 @@ suspend_resume_devices(bool resume)
 			dprintf("%s: resumed %s: %d\n", gDriverName,
 				device_get_nameunit(child), error);
 		}
+	}
+
+	if (!resume)
+		return;
+
+	// Restart the interfaces the same way they are started when opened:
+	// resuming alone does not always get the hardware going again.
+	for (int32 i = 0; i < gDeviceCount; i++) {
+		struct ifnet *ifp = gDevices[i];
+		if (ifp == NULL || ifp->if_ioctl == NULL
+			|| (ifp->flags & DEVICE_CLOSED) != 0) {
+			continue;
+		}
+
+		struct ifreq request;
+		ifp->if_flags &= ~IFF_UP;
+		ifp->if_ioctl(ifp, SIOCSIFFLAGS, NULL);
+
+		memset(&request, 0, sizeof(request));
+		request.ifr_media = IFM_MAKEWORD(IFM_ETHER, IFM_AUTO, 0, 0);
+		ifp->if_ioctl(ifp, SIOCSIFMEDIA, (caddr_t)&request);
+
+		ifp->if_flags |= IFF_UP;
+		ifp->if_ioctl(ifp, SIOCSIFFLAGS, NULL);
+
+		dprintf("%s: restarted %s\n", gDriverName, ifp->device_name);
 	}
 }
 

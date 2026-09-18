@@ -2565,6 +2565,10 @@ resume_node(device_node* node)
 		device_manager_suspend_trace("resuming %s", node->ModuleName());
 		suspend_step("device_manager: resuming %s\n", node->ModuleName());
 
+		// Give the hardware time between the steps: several devices need a
+		// moment after their configuration was restored.
+		snooze(200000);
+
 		status_t status = driver->resume(node->DriverData());
 		device_manager_suspend_trace("resumed %s: %s", node->ModuleName(),
 			strerror(status));
