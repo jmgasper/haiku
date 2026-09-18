@@ -277,6 +277,7 @@ def validate_edid(body):
     refresh = None
     if base['pixel_khz'] and base['width'] and base['height']:
         refresh = base['pixel_khz'] * 1000 / ((base['width'] + base['hblank']) * (base['height'] + base['vblank']))
-    return dict(status='pass', base=base, blocks={index: b['data'].hex() for index, b in blocks.items()},
-        polls={index: b['polls'] for index, b in blocks.items()},
-        micros={index: b['micros'] for index, b in blocks.items()}, preferred_refresh_hz=refresh)
+    # String keys keep the result identical across a JSON round trip.
+    return dict(status='pass', base=base, blocks={str(index): b['data'].hex() for index, b in blocks.items()},
+        polls={str(index): b['polls'] for index, b in blocks.items()},
+        micros={str(index): b['micros'] for index, b in blocks.items()}, preferred_refresh_hz=refresh)

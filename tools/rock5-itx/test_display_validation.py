@@ -155,7 +155,7 @@ class DisplayValidationTest(unittest.TestCase):
         self.assertEqual((result['base']['width'], result['base']['height']), (1920, 1080))
         self.assertEqual(result['base']['pixel_khz'], 148500)
         self.assertAlmostEqual(result['preferred_refresh_hz'], 60.0, places=1)
-        self.assertEqual(sorted(result['blocks']), [0, 1])
+        self.assertEqual(sorted(result['blocks']), ['0', '1'])
 
     def test_edid_rejections(self):
         base, ext = edid_blocks()
