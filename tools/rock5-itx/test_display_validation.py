@@ -23,7 +23,7 @@ def port_words(width, height, standby=0, mode=0):
 
 
 def transcript(samples=3, vop=True, hdmi=True, vop_on=True, vo1_on=True, hdmi_gated=False,
-        consistent=True, flags=None):
+        consistent=True, flags=None, status_jitter=0):
     lines = ['ROCK5_DISPLAY_WRITE_OPEN_REJECTED',
         'ROCK5_DISPLAY_RESOURCES version=1 flags=1 vop=0xfdd90000/0x4200 lut=0xfdd95000/0x1000'
         ' hdmi=0xfdea0000/0x20000 hdptx=0xfed70000/0x2000 hdptx_grf=0xfd5e4000/0x100'
@@ -47,7 +47,7 @@ def transcript(samples=3, vop=True, hdmi=True, vop_on=True, vo1_on=True, hdmi_ga
         lines.append('ROCK5_DISPLAY_PMU sample=%d %s' % (index, words(pmu)))
         lines.append('ROCK5_DISPLAY_CRU_SELECT sample=%d %s' % (index, words([0x1234, 0x0a00, 0, 0])))
         lines.append('ROCK5_DISPLAY_CRU_GATE sample=%d %s' % (index, words(gate)))
-        lines.append('ROCK5_DISPLAY_SYS_GRF sample=%d %s' % (index, words([0, 0x3000, status1])))
+        lines.append('ROCK5_DISPLAY_SYS_GRF sample=%d %s' % (index, words([0, 0x3000, status1 | (status_jitter * index)])))
         lines.append('ROCK5_DISPLAY_VOP_GRF sample=%d %s' % (index, words([0x2])))
         lines.append('ROCK5_DISPLAY_VO1_GRF sample=%d %s' % (index, words([0x0, 0x0])))
         lines.append('ROCK5_DISPLAY_HDPTX1_GRF sample=%d %s' % (index, words([0xe0, 0xf])))
@@ -188,6 +188,12 @@ class DisplayValidationTest(unittest.TestCase):
         self.assertEqual(result['hdptx1']['pll_lock'], 1)
         self.assertEqual(result['windows']['esmarts'][1]['address'], 0xed3a0000)
         self.assertTrue(result['vop_read'] and result['hdmi_read'])
+
+    def test_volatile_status_bits_are_tolerated(self):
+        result = check.validate(transcript(status_jitter=0x10))
+        self.assertEqual(result['hpd']['hdmi1_level'], 1)
+        with self.assertRaises(check.ValidationError):
+            check.validate(transcript(status_jitter=0x10000))
 
     def test_skipped_blocks_match_power_words(self):
         result = check.validate(transcript(vop=False, vop_on=False))

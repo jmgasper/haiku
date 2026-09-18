@@ -112,21 +112,25 @@ def validate(body, expected_samples=3):
     if int(summary.group(3)) != vop_read or int(summary.group(4)) != hdmi_read:
         raise ValidationError('summary flags disagree with snapshot flags')
 
-    def collect(label, count, required=True):
+    def collect(label, count, required=True, stable_masks=None):
         samples = _samples(body, label)
         if sorted(samples) != list(range(expected_samples)):
             if required:
                 raise ValidationError('%s samples incomplete: %s' % (label, sorted(samples)))
             return None
         decoded = [_words(samples[i], count) for i in range(expected_samples)]
-        if any(sample != decoded[0] for sample in decoded[1:]):
-            raise ValidationError('%s differs between samples' % label)
+        masks = stable_masks or [0xffffffff] * count
+        for sample in decoded[1:]:
+            if any((a & m) != (b & m) for a, b, m in zip(sample, decoded[0], masks)):
+                raise ValidationError('%s differs between samples' % label)
         return decoded[0]
 
     pmu = collect('PMU', PMU_COUNT)
     cru_select = collect('CRU_SELECT', CRU_SELECT_COUNT)
     cru_gate = collect('CRU_GATE', CRU_GATE_COUNT)
-    sys_grf = collect('SYS_GRF', SYS_GRF_COUNT)
+    # SOC_STATUS1 carries live status in its low half; only the HDMI hot-plug
+    # bits (16-31) must agree between samples.
+    sys_grf = collect('SYS_GRF', SYS_GRF_COUNT, stable_masks=[0xffffffff, 0xffffffff, 0xffff0000])
     vop_grf = collect('VOP_GRF', 1)
     vo1_grf = collect('VO1_GRF', 2)
     hdptx_grf = collect('HDPTX1_GRF', 2)
