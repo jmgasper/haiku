@@ -6,6 +6,7 @@
 #include <errno.h>
 
 #include <AutoDeleter.h>
+#include <util/AutoLock.h>
 #include <kdevice_manager.h>
 
 #include "nv-include.h"
@@ -44,7 +45,7 @@ static bool ParseUint32(const char *str, char *&strEnd, uint32 &res)
 
 static bool ParseDeviceName(const char *name, uint32 &index)
 {
-	const char *deviceNamePrefix = NVIDIA_DEVIVE_NAME;
+	const char *deviceNamePrefix = NVIDIA_DEVICE_NAME;
 	size_t deviceNamePrefixLen = strlen(deviceNamePrefix);
 	if (strncmp(deviceNamePrefix, name, deviceNamePrefixLen) != 0) {
 		return false;
@@ -133,13 +134,13 @@ status_t NvHaikuDriver::Init()
 	}
 
 	CHECK_RET(fDeviceNamesArray.Init(1 + fDevices.Count()));
-	fDeviceNamesArray.SetName(0, NVIDIA_CONTROL_DEVIVE_NAME);
+	fDeviceNamesArray.SetName(0, NVIDIA_CONTROL_DEVICE_NAME);
 
 	if (device_manager_add_power_hook(PowerHook, this, "nvidia_rm") == B_OK)
 		fPowerHookAdded = true;
 	for (int32 i = 0; i < fDevices.Count(); i++) {
 		char name[128];
-		sprintf(name, NVIDIA_DEVIVE_NAME "%" B_PRId32, i);
+		sprintf(name, NVIDIA_DEVICE_NAME "%" B_PRId32, i);
 		fDeviceNamesArray.SetName(1 + i, name);
 	}
 
@@ -174,6 +175,28 @@ status_t NvHaikuDriver::PowerHook(void *cookie, bool resume, int32 state)
 	}
 
 	return result;
+}
+
+
+// The accelerant tells us where the screen's frame buffer is; anyone drawing
+// with the GPU can then ask for it and put finished frames there directly.
+void NvHaikuDriver::PublishScanout(const nv_haiku_scanout_info &info)
+{
+	MutexLocker _(&fScanoutLock);
+	fScanout = info;
+	dprintf("nvidia_rm: scanout published: %" B_PRIu32 "x%" B_PRIu32 ", %" B_PRIu32
+		" bytes per row, client %#" B_PRIx32 ", memory %#" B_PRIx32 "\n",
+		info.width, info.height, info.bytes_per_row, info.client, info.memory);
+}
+
+status_t NvHaikuDriver::GetScanout(nv_haiku_scanout_info &info)
+{
+	MutexLocker _(&fScanoutLock);
+	if (fScanout.memory == 0)
+		return B_DEV_NOT_READY;
+
+	info = fScanout;
+	return B_OK;
 }
 
 
@@ -215,7 +238,7 @@ const char **NvHaikuDriver::PublishDevices()
 
 DevfsNodeInstance NvHaikuDriver::FindDevice(const char *name)
 {
-	if (strcmp(name, NVIDIA_CONTROL_DEVIVE_NAME) == 0) {
+	if (strcmp(name, NVIDIA_CONTROL_DEVICE_NAME) == 0) {
 		return DevfsNodeInstance(&gNvHaikuControlDeviceClass, Instance().fControlDevice);
 	}
 	uint32 index;

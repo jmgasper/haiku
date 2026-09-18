@@ -64,6 +64,25 @@ NvHandle NvRmApi::Alloc(NvV32 hClass, NvHandle hParent, void *params, NvU32 para
 	return p.hObjectNew;
 }
 
+// Take a reference to an object belonging to another client, which its owner
+// has shared; the copy lives under hParent in this client and is freed like
+// any other object of ours.
+NvHandle NvRmApi::DupObject(NvHandle hParent, NvHandle hClientSrc, NvHandle hObjectSrc)
+{
+	NVOS55_PARAMETERS p {
+		.hClient = fClient.Get(),
+		.hParent = hParent,
+		.hObject = 0,
+		.hClientSrc = hClientSrc,
+		.hObjectSrc = hObjectSrc,
+		.flags = 0
+	};
+	int ret = NvRmIoctl(fFd.Get(), NV_ESC_RM_DUP_OBJECT, &p, sizeof(p));
+	CheckErrno(ret);
+	CheckNvStatus(p.status);
+	return p.hObject;
+}
+
 void NvRmApi::Free(NvHandle hObject)
 {
 	NVOS00_PARAMETERS p {

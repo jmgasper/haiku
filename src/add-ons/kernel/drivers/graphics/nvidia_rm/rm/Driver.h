@@ -11,6 +11,7 @@
 #include "DeviceNamesArray.h"
 
 #include "IntrSafePool.h"
+#include "nv-haiku.h"
 
 
 class NvHaikuControlDevice;
@@ -37,6 +38,10 @@ private:
 	std::atomic<uint32> fResumeGeneration {};
 	ConditionVariable fResumeCondition;
 
+	// Where the screen's frame buffer lives, as published by the accelerant.
+	mutex fScanoutLock = MUTEX_INITIALIZER("nvidia_rm scanout");
+	nv_haiku_scanout_info fScanout {};
+
 	NvHaikuControlDevice *fControlDevice {};
 	Vector<NvHaikuDevice*> fDevices;
 	DeviceNamesArray fDeviceNamesArray;
@@ -59,6 +64,9 @@ public:
 		{return fModesetCallbacks;}
 
 	status_t WaitForResume(uint32 &generation, bigtime_t timeout);
+
+	void PublishScanout(const nv_haiku_scanout_info &info);
+	status_t GetScanout(nv_haiku_scanout_info &info);
 
 	uint32 DeviceCount() {return fDevices.Count();}
 	NvHaikuDevice *DeviceAt(uint32 index) {return fDevices[index];}

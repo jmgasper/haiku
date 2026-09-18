@@ -212,3 +212,24 @@ listed as verified is untested.
   Copies into memory the application owns went from 1.6 GB/s to 4.6, and
   reading a frame back from 1.6 to 2.8; `nvdpyinfo --rm` reports the link, and
   `--pcie-speed <gen>` retrains it by hand.
+- 2026-09-18: a program other than the accelerant can now draw straight into
+  the screen. The accelerant's frame buffer is an ordinary resman memory object
+  in video memory, so after each mode set it shares that object
+  (`NV0000_CTRL_CMD_CLIENT_SHARE_OBJECT`, giving away the right to duplicate it)
+  and tells the driver where it is; anyone can then ask the driver for it
+  (`NV_HAIKU_GET_SCANOUT`) and duplicate the handle into its own client
+  (`NV_ESC_RM_DUP_OBJECT`). `nvscanout` proves the mechanism from a plain
+  program: it duplicates the handle, maps it and paints a band that appears on
+  the monitor.
+  NVK imports the same memory through a private agreement on the pNext chain of
+  `vkAllocateMemory` (`VkImportScanoutMemoryHAIKU`, in `vk_haiku_scanout.h`),
+  which needs nothing of the Vulkan loader. `vkbench scanout` then has the GPU
+  copy a frame into it at 7.8 GB/s - a whole 1920x1080 frame in 1.07 ms,
+  against 2.93 ms to send the same frame to system memory. The screen turned
+  the colour the GPU filled it with, which is the proof and also the warning:
+  writing the whole frame buffer tramples what app_server drew, so the renderer
+  must copy only the window's visible rectangles.
+  What is left in this area: Zink has to use it - present into the scanout at
+  the window's position, clipped to what Haiku's direct window mode reports is
+  visible, and fall back to the existing host-memory path when the window is
+  not direct-connected.

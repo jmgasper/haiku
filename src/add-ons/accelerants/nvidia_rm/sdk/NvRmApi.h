@@ -54,6 +54,7 @@ public:
 	const NvRmObject &Client() const {return fClient;}
 
 	NvHandle Alloc(NvV32 hClass, NvHandle hParent, void *params, NvU32 paramsSize = 0);
+	NvHandle DupObject(NvHandle hParent, NvHandle hClientSrc, NvHandle hObjectSrc);
 	void Free(NvHandle hObject);
 	void Control(NvHandle hObject, NvV32 cmd, void *params, NvU32 paramsSize, NvU32 flags = 0);
 	void MapMemory(NvU32 hDevice, NvU32 hMemory, NvU64 offset, NvU64 length, void *&pLinearAddress, NvU32 flags, int memFd);

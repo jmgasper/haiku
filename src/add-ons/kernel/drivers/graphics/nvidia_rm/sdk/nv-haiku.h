@@ -18,7 +18,24 @@ enum {
 	NV_HAIKU_READ_REGISTER, // development aid
 	NV_HAIKU_READ_VRAM, // development aid
 	NV_HAIKU_WAIT_FOR_RESUME,
+	NV_HAIKU_PUBLISH_SCANOUT,
+	NV_HAIKU_GET_SCANOUT,
 };
+
+// NV_HAIKU_PUBLISH_SCANOUT / NV_HAIKU_GET_SCANOUT: the accelerant says where
+// the screen's frame buffer lives, so that a program drawing with the GPU can
+// put a finished frame there itself instead of sending it through the host.
+// The memory is shared by its owner, and the caller duplicates the handle into
+// its own resman client.
+typedef struct {
+	uint32 client;			// resman client that owns the memory
+	uint32 memory;			// the memory object
+	uint32 width;
+	uint32 height;
+	uint32 bytes_per_row;
+	uint32 color_space;		// Haiku color_space of the frame buffer
+	uint64 size;
+} nv_haiku_scanout_info;
 
 // NV_HAIKU_WAIT_FOR_RESUME: waits until the resume generation differs from
 // the passed one (or the timeout expires) and returns the current one. Display

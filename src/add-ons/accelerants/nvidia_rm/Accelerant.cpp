@@ -22,6 +22,8 @@
 
 extern "C" {
 #include "ctrl/ctrl2080/ctrl2080gpu.h" // NV2080_CTRL_CMD_GPU_GET_NAME_STRING
+#include "ctrl/ctrl0000/ctrl0000client.h" // NV0000_CTRL_CMD_CLIENT_SHARE_OBJECT
+#include "rs_access.h"
 }
 
 #include "common/edid.h"
@@ -170,6 +172,7 @@ private:
 	void BuildSpanMode();
 	bool IsSpanMode(const display_timing &timing) const;
 	void SetSpanningMode(const display_mode &mode);
+	void PublishScanout();
 
 	void UpdateCursor(bool updateImage, bool updatePos);
 
@@ -818,6 +821,8 @@ void NvAccelerant::SetDisplayMode(display_mode* modeToSet)
 
 	fOldFramebuffer = std::move(fFramebuffer);
 	fFramebuffer = std::move(newFramebuffer);
+
+	PublishScanout();
 }
 
 void NvAccelerant::ApplySpanningMode(NvKmsBitmap &framebuffer)
@@ -875,6 +880,8 @@ void NvAccelerant::SetSpanningMode(const display_mode &mode)
 
 	fOldFramebuffer = std::move(fFramebuffer);
 	fFramebuffer = std::move(newFramebuffer);
+
+	PublishScanout();
 }
 
 void NvAccelerant::GetDisplayMode(display_mode* currentMode)
@@ -886,6 +893,45 @@ void NvAccelerant::GetDisplayMode(display_mode* currentMode)
 	}
 	*currentMode = fCurrentHaikuMode;
 }
+
+// Let other programs draw straight into the screen.
+//
+// The frame buffer is video memory, so a program rendering with the GPU can
+// write its finished frame there without it ever crossing the bus. Sharing the
+// memory object lets such a program duplicate the handle into its own resman
+// client; the driver keeps the description so that it can be asked for.
+void NvAccelerant::PublishScanout()
+{
+	nv_haiku_scanout_info info {};
+	if (fFramebuffer.IsSet()) {
+		try {
+			NV0000_CTRL_CLIENT_SHARE_OBJECT_PARAMS shareParams {};
+			shareParams.hObject = fFramebuffer.Memory().Get();
+			shareParams.sharePolicy.type = RS_SHARE_TYPE_ALL;
+			RS_ACCESS_MASK_ADD(&shareParams.sharePolicy.accessMask,
+				RS_ACCESS_DUP_OBJECT);
+			fRm.Client().Control(NV0000_CTRL_CMD_CLIENT_SHARE_OBJECT,
+				&shareParams, sizeof(shareParams));
+		} catch (const std::system_error &ex) {
+			debug_printf("[!] NvAccelerant: sharing the frame buffer failed\n");
+			return;
+		}
+
+		info.client = fRm.Client().Get();
+		info.memory = fFramebuffer.Memory().Get();
+		info.width = fFramebuffer.Width();
+		info.height = fFramebuffer.Height();
+		info.bytes_per_row = fFramebuffer.BytesPerRow();
+		info.color_space = fFramebuffer.ColorSpace();
+		info.size = (uint64)fFramebuffer.BytesPerRow() * fFramebuffer.Height();
+	}
+
+	if (ioctl(fDevFd.Get(), NV_HAIKU_BASE + NV_HAIKU_PUBLISH_SCANOUT, &info,
+			sizeof(info)) < 0) {
+		debug_printf("[!] NvAccelerant: publishing the frame buffer failed\n");
+	}
+}
+
 
 void NvAccelerant::GetFrameBufferConfig(frame_buffer_config* frameBuffer)
 {

@@ -178,6 +178,21 @@ status_t NvHaikuBaseDeviceHandle::Control(uint32 op, void *data, size_t len)
 				params.timeout));
 			return user_memcpy(data, &params, sizeof(params));
 		}
+		case NV_HAIKU_PUBLISH_SCANOUT: {
+			nv_haiku_scanout_info info;
+			if (len != sizeof(info))
+				return EINVAL;
+			CHECK_RET(user_memcpy(&info, data, sizeof(info)));
+			NvHaikuDriver::Instance().PublishScanout(info);
+			return B_OK;
+		}
+		case NV_HAIKU_GET_SCANOUT: {
+			nv_haiku_scanout_info info;
+			if (len != sizeof(info))
+				return EINVAL;
+			CHECK_RET(NvHaikuDriver::Instance().GetScanout(info));
+			return user_memcpy(data, &info, sizeof(info));
+		}
 		case NV_HAIKU_MAP: {
 			nv_haiku_map_params params;
 			if (len != sizeof(params)) {
