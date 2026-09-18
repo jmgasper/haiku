@@ -4,6 +4,29 @@ Target: an Asus Prime X399-A workstation running this AI-assisted Haiku fork
 natively from its NVMe drive. This work lives on the `x399-workstation` branch
 and must not change ARM64/ROCK 5 behaviour (see `docs/rock5-itx`).
 
+## What is here
+
+`STATUS.md` says what the machine does and how that was established. Every
+number in it comes from one of the programs in `tests/`, run by one of the
+scripts in `tools/`, so a claim can be checked rather than taken on trust.
+
+The ones worth knowing about:
+
+| | |
+| --- | --- |
+| `tools/check-workstation.sh` | asks the machine about everything at once; should say 13 working, 0 not |
+| `tools/gl-soak.sh` | works the OpenGL present path the way that has broken it before |
+| `tests/gltest.cpp` | draws through the OpenGL kit; `GLTEST_MOVE`, `GLTEST_RESIZE`, `GLTEST_HIDE`, `HGL_VSYNC` reproduce what those cost |
+| `tests/vkbench.c` | what the GPU does through Vulkan, including into the screen itself |
+| `tests/drawtest.cpp` | what ordinary 2D drawing costs on the screen against in memory |
+| `tests/soundtest.cpp`, `tests/audioout.cpp` | whether an output clocks its stream, and which one the system uses |
+| `tests/retracetest.cpp` | whether the display reports its blanks |
+
+They expect the workstation reachable as `ws-haiku` over the ssh configuration
+in `x399/ssh/`, and the built programs in `/boot/home/tests` on it. Nothing here
+holds a credential; the scripts that need one read it from the environment or
+from `x399/state/`, which is deliberately not in the repository.
+
 ## Hardware inventory
 
 Captured with SystemRescue 13.02 (Linux) on 2026-09-17. Raw captures are kept
