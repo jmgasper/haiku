@@ -343,6 +343,12 @@ mt7922_dma_setup(mt7922_dev* device)
 	if (status != B_OK)
 		goto fail;
 
+	status = mt7922_rx_ring_init(device, &device->dataRing,
+		MT_RX_DATA_RING_BASE, MT7922_RXQ_BAND0, MT7922_RX_DATA_RING_SIZE,
+		"mt7922 data ring");
+	if (status != B_OK)
+		goto fail;
+
 	/* One buffer for the command being sent and one for the piece of firmware
 	 * being sent. Both are reused, so each is refilled only once the card has
 	 * finished reading the last thing put there.
@@ -383,6 +389,8 @@ mt7922_dma_teardown(mt7922_dev* device)
 	mt7922_dma_free(&device->eventRing.buffers);
 	mt7922_ring_free(&device->lateEventRing);
 	mt7922_dma_free(&device->lateEventRing.buffers);
+	mt7922_ring_free(&device->dataRing);
+	mt7922_dma_free(&device->dataRing.buffers);
 	mt7922_dma_free(&device->commandBuffer);
 	mt7922_dma_free(&device->firmwareBuffer);
 	device->ringsReady = false;

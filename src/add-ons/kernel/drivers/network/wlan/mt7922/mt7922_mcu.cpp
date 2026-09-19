@@ -19,6 +19,7 @@
  * Distributed under the terms of the MIT License.
  */
 
+#include <stdio.h>
 #include <string.h>
 
 #include <util/AutoLock.h>
@@ -1146,4 +1147,108 @@ mt7922_mcu_scan(mt7922_dev* device)
 
 	ERROR("the radio never said it had finished looking\n");
 	return B_TIMED_OUT;
+}
+
+
+/* Show what arrived on the air, as it arrived.
+ *
+ * Every received frame is preceded by a description of itself whose length
+ * depends on what it chose to say, so where the frame proper begins is not a
+ * constant and is not written down anywhere reachable. It can be found by
+ * looking: a beacon starts with a known pair of bytes and is addressed to
+ * everybody, and that pattern in a buffer is the frame, whatever came before
+ * it.
+ */
+void
+mt7922_dump_air(mt7922_dev* device, int wanted)
+{
+	mt7922_ring* ring = &device->dataRing;
+	int shown = 0;
+
+	for (uint16 i = 0; i < ring->count && shown < wanted; i++) {
+		mt7922_desc* descriptor
+			= &((mt7922_desc*)ring->descriptors.address)[i];
+
+		if ((descriptor->ctrl & MT_DMA_CTL_DMA_DONE) == 0)
+			continue;
+
+		size_t got = (descriptor->ctrl & MT_DMA_CTL_SD_LEN0_MASK)
+			>> MT_DMA_CTL_SD_LEN0_SHIFT;
+		if (got < 40 || got > MT7922_RX_BUFFER_SIZE)
+			continue;
+
+		const uint8* data = (const uint8*)ring->buffers.address
+			+ (size_t)i * MT7922_RX_BUFFER_SIZE;
+
+		/* A beacon: management frame, subtype beacon, to everyone. */
+		for (size_t at = 0; at + 24 <= got; at += 2) {
+			if (data[at] != 0x80 || data[at + 1] != 0x00)
+				continue;
+			if (data[at + 4] != 0xff || data[at + 9] != 0xff)
+				continue;
+
+			TRACE("heard a beacon %" B_PRIuSIZE " bytes in, from "
+				"%02x:%02x:%02x:%02x:%02x:%02x\n", at,
+				data[at + 10], data[at + 11], data[at + 12],
+				data[at + 13], data[at + 14], data[at + 15]);
+
+			/* After the header and the fixed fields, the first thing a
+			 * beacon says is what network it belongs to.
+			 */
+			size_t ies = at + 24 + 12;
+			if (ies + 2 <= got && data[ies] == 0) {
+				uint8 nameLength = data[ies + 1];
+				char name[33];
+
+				if (ies + 2 + nameLength <= got && nameLength < sizeof(name)) {
+					memcpy(name, data + ies + 2, nameLength);
+					name[nameLength] = 0;
+					TRACE("  it calls itself \"%s\"\n",
+						nameLength > 0 ? name : "(no name)");
+				}
+			}
+
+			shown++;
+			break;
+		}
+	}
+
+	if (shown == 0) {
+		/* Tell "nothing arrived" apart from "something arrived that I could
+		 * not read", which look identical from here and want different fixes.
+		 */
+		int filled = 0;
+		size_t first = 0;
+		uint16 firstAt = 0;
+
+		for (uint16 i = 0; i < ring->count; i++) {
+			mt7922_desc* descriptor
+				= &((mt7922_desc*)ring->descriptors.address)[i];
+			if ((descriptor->ctrl & MT_DMA_CTL_DMA_DONE) == 0)
+				continue;
+			if (filled == 0) {
+				firstAt = i;
+				first = (descriptor->ctrl & MT_DMA_CTL_SD_LEN0_MASK)
+					>> MT_DMA_CTL_SD_LEN0_SHIFT;
+			}
+			filled++;
+		}
+
+		TRACE("nothing recognised on the air: %d of %u descriptors used, "
+			"card at %" B_PRIu32 ", we are at %u\n", filled, ring->count,
+			mt7922_read32(device, ring->registers + MT_RING_DMA_INDEX),
+			ring->head);
+
+		if (filled > 0) {
+			const uint8* data = (const uint8*)ring->buffers.address
+				+ (size_t)firstAt * MT7922_RX_BUFFER_SIZE;
+			char line[160];
+			size_t show = first < 48 ? first : 48;
+
+			for (size_t i = 0; i < show; i++)
+				sprintf(line + i * 3, "%02x ", data[i]);
+
+			TRACE("the first is %" B_PRIuSIZE " bytes: %s\n", first, line);
+		}
+	}
 }

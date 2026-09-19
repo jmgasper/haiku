@@ -162,6 +162,10 @@ struct mt7922_dma_mem {
 #define MT7922_TX_FWDL_RING_SIZE	128
 #define MT7922_RX_MCU_RING_SIZE		8
 #define MT7922_RX_LATE_RING_SIZE	512
+#define MT7922_RX_DATA_RING_SIZE	256
+	/* Fewer than the vendor uses. This only has to hold what a sweep of the
+	 * channels turns up, not a working network's traffic.
+	 */
 #define MT7922_RX_WA_RING_SIZE		512
 #define MT7922_RX_RING_SIZE		1536
 
@@ -243,6 +247,7 @@ struct mt7922_dev {
 	mt7922_ring	commandRing;	/* commands, outbound */
 	mt7922_ring	eventRing;	/* what it says back before firmware */
 	mt7922_ring	lateEventRing;	/* and after: the part changes rings */
+	mt7922_ring	dataRing;	/* what it hears on the air */
 	mt7922_dma_mem	commandBuffer;	/* one command at a time */
 	mt7922_dma_mem	firmwareBuffer;	/* one piece of firmware at a time */
 	uint8		sequence;	/* ties an answer to what was asked */
@@ -273,6 +278,7 @@ status_t mt7922_mcu_start_firmware(mt7922_dev* device);
 status_t mt7922_mcu_read_capability(mt7922_dev* device);
 status_t mt7922_mcu_prepare(mt7922_dev* device);
 status_t mt7922_mcu_scan(mt7922_dev* device);
+void mt7922_dump_air(mt7922_dev* device, int wanted);
 
 status_t mt7922_setup(mt7922_dev* device);
 void mt7922_teardown(mt7922_dev* device);
