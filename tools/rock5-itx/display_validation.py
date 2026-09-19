@@ -610,8 +610,10 @@ def validate_accelerant(body, observation=None, edid_block0=None, mode=(1920, 10
         if observation.get('active_ports') != (ports if ports is not None else [port]):
             raise ValidationError('observation active ports %r, accelerant port %d' % (observation.get('active_ports'), port))
         seen = observation['windows']['esmarts'][window]
-        if seen['region_control'] != 1 or seen['address'] != framebuffer:
-            raise ValidationError('observation window %d scans %#x, accelerant buffer is %#x' % (window, seen['address'], framebuffer))
+        # The accelerant's port scans the right half of a spanning buffer.
+        expected = framebuffer + (7680 if span else 0)
+        if seen['region_control'] != 1 or seen['address'] != expected:
+            raise ValidationError('observation window %d scans %#x, accelerant buffer is %#x' % (window, seen['address'], expected))
     return dict(status='pass', flags=flags, framebuffer='%08x' % framebuffer, firmware='%08x' % firmware,
         port=port, window=window, polls=polls, modes=int(shared.group(4)), edid_result=edid_result,
         name=shared.group(21), samples=[clone.group(i) for i in (3, 4, 5, 6)], retrace=retrace,
