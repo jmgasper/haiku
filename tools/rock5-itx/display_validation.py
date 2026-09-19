@@ -733,6 +733,38 @@ def check_span_right_frame(path):
     return result
 
 
+def check_span_left_frame(path):
+    """Raise unless an HDMI1 capture shows the left half of the spanning desktop: the blue workspace,
+    Tracker's desktop icons at the left edge, and no Deskbar (it sits at the right edge of the whole
+    desktop, on DP1)."""
+    from PIL import Image
+    image = Image.open(path).convert('RGB')
+    if image.size != (1920, 1080):
+        raise ValidationError('frame is %dx%d, not 1920x1080' % image.size)
+    near = lambda p: all(abs(a - b) <= 24 for a, b in zip(p, DESKTOP_BLUE))
+    workspace = [(1500, 300), (960, 800), (1300, 950), (1850, 37), (1800, 10)]
+    samples = [dict(x=x, y=y, rgb=list(image.getpixel((x, y))), ok=near(image.getpixel((x, y)))) for x, y in workspace]
+    icons = image.crop((0, 0, 200, 90)).resize((20, 9))
+    blue = sum(1 for p in icons.getdata() if near(p))
+    result = dict(status='pass', samples=samples, icon_area_blue=blue)
+    if not all(s['ok'] for s in samples) or blue > 0.9 * 20 * 9:
+        result['status'] = 'fail'
+        raise ValidationError('frame does not show the left half of the spanning desktop: %r' % result)
+    return result
+
+
+def check_teapot_frame(path, box=(0, 0, 960, 700), minimum=2000):
+    """Raise unless a capture shows a rendered red teapot (many saturated red pixels) inside box."""
+    from PIL import Image
+    region = Image.open(path).convert('RGB').crop(box)
+    red = sum(1 for r, g, b in region.getdata() if r > 110 and g < 70 and b < 90 and r > 2 * g)
+    result = dict(status='pass', box=list(box), red_pixels=red, minimum=minimum)
+    if red < minimum:
+        result['status'] = 'fail'
+        raise ValidationError('no rendered teapot in %r: %r' % (box, result))
+    return result
+
+
 MODE_LINE = re.compile(
     r'^ROCK5_DISPLAY_MODE width=(\d+) height=(\d+) clock=(\d+) vic=(\d+) result=(\d+) phase=(\d+)'
     r' hold_polls=(\d+) clock_polls=(\d+) lock_polls=(\d+) phy_status=([0-9a-f]{8})'

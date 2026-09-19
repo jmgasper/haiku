@@ -916,6 +916,26 @@ class DisplayValidationTest(unittest.TestCase):
             with self.assertRaises(check.ValidationError):
                 check.check_span_right_frame(path)
 
+    def test_span_left_and_teapot_frames(self):
+        import tempfile
+        from pathlib import Path
+        from PIL import Image, ImageDraw
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'frame.png'
+            image = Image.new('RGB', (1920, 1080), check.DESKTOP_BLUE)
+            draw = ImageDraw.Draw(image)
+            draw.rectangle((20, 20, 60, 60), fill=(200, 200, 60))
+            draw.rectangle((40, 100, 440, 400), fill=(0, 0, 0))
+            draw.ellipse((150, 180, 330, 330), fill=(180, 30, 40))
+            image.save(path)
+            self.assertEqual(check.check_span_left_frame(path)['status'], 'pass')
+            self.assertGreater(check.check_teapot_frame(path)['red_pixels'], 2000)
+            Image.new('RGB', (1920, 1080), check.DESKTOP_BLUE).save(path)
+            with self.assertRaises(check.ValidationError):
+                check.check_span_left_frame(path)
+            with self.assertRaises(check.ValidationError):
+                check.check_teapot_frame(path)
+
     def test_colour_frame(self):
         import tempfile
         from pathlib import Path
