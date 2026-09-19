@@ -26,6 +26,13 @@ emulator gates show the software fallback without a device. It is not
 qualified: the independent Linux eMMC readbacks need the ROOBI sudo
 password, which is not on record.
 
+The +315 USB image completes the [dual-display desktop](DISPLAY.md): one
+3840x1080 app_server desktop across both HDMI ports, with a hardware cursor
+window on each port. A pointer on the seam shows half on each screen. On
+both native boots the NanoKVM on the DisplayPort-bridged port captures the
+right half with the probe's cursor on it. The owner confirmed the left half
+on a monitor attached to HDMI1.
+
 The +313 USB image gives app_server [one desktop spanning both HDMI
 ports](DISPLAY.md): a 3840x1080 frame buffer whose left half HDMI1 scans
 (its port raised to 1080p by the driver's mode set) and whose right half

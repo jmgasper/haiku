@@ -984,6 +984,48 @@ port.
 - Open: a picture check of HDMI1's half needs a monitor or dummy plug on
   HDMI1 (only one NanoKVM).
 
+### Qualified +315 spanning desktop with a hardware cursor per port (stage 5b)
+
+With the `rock5-itx-edk2-v1.1-display-dp-span-cursor` profile, the spanning
+desktop gets app_server's pointer on one cursor window per port. HDMI1's
+qualified ESMART3 (mixer 6) covers the left screen. ESMART1, overlay layer 3
+of video port 1 with mixer 2, covers the right one, with the pointer shifted
+by 1920. Each window is clipped to its own screen, so a pointer on the seam
+shows its halves on both ports. Hiding and release cover both windows, and
+the DP profiles never admit HDMI1's mode set or power control.
+
+By then a monitor was attached to HDMI1, and EDK2 started HDMI1 at 1080p
+(firmware buffer `0xed280000`) instead of the sink-less 640x480
+(`0xed940000`). The span code needed no change, and the controllers now
+accept either firmware state.
+
+The `hrev60097+315` image (source `9bf36a3e87`, SHA-256
+`1be8daa51fa390e55975404a718612da210b2800382e7591929de637cc04a127`) passes
+the host checks, both QEMU modes and two native boots with normal reboot,
+verified shutdown and automatic ROOBI recovery. The first board attempt
+recovered normally but failed the old 640x480-only syslog check; its image
+is archived as `display-dp-span-cursor-315-hdmi1-sink-check`. On both
+qualified boots:
+
+- the accelerant reports flags 55 (acquired, EDID, retrace, cursor, cursor
+  hooks), and app_server's 22x22 pointer goes to the cursor windows;
+- HDMI1's port is at 1080p, its window on the buffer's left half at the
+  3840 pitch, and DP1's on the right half;
+- the probe's quadrant cursor, placed at desktop (2900, 500), shows on DP1
+  at (980, 500) over the right half of the desktop in the NanoKVM capture;
+- the owner watched the HDMI1 monitor during the run and reported "Yes, I
+  see the left half of the desktop" (`state/hdmi1-owner-observation.json`,
+  also in the qualification). This is the picture evidence for HDMI1's half,
+  which no capture device sees.
+
+- Native evidence: `artifacts/automated-display-dp-span-cursor/20260919T063337Z-e07d1f`.
+- Session: `artifacts/interactive/20260919T063339Z-c765eb`; recovery boot
+  `c0c62cf6-5138-4553-bd50-0c2a81f41235`; image archive
+  `artifacts/nanokvm-image-archive/20260919T064114Z-f1e689`.
+- QEMU EL2/EL1: `artifacts/qemu-shell/20260919T061812Z-47de6a` and
+  `20260919T062039Z-bb4994`; build `artifacts/build-20260919T061754Z.log`.
+- Stage: `artifacts/display-dp-span-cursor/20260919T061616Z-39c30a`.
+
 ## Later stages
 
 3. Modes beyond the PLL table (the fractional-rate calculation) or the
