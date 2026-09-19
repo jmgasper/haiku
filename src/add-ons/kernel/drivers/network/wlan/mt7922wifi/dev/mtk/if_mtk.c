@@ -272,8 +272,10 @@ mtk_newstate(struct ieee80211vap* vap, enum ieee80211_state state, int arg)
 	 * talking to the network it has chosen, or the part wanders off the
 	 * channel mid-handshake.
 	 */
-	if (state != IEEE80211_S_SCAN && state != IEEE80211_S_INIT)
+	if (state != IEEE80211_S_SCAN && state != IEEE80211_S_INIT) {
 		sc->sc_scanning = 0;
+		mtk_keep_awake(sc);
+	}
 
 	error = mvp->newstate(vap, state, arg);
 

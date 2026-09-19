@@ -394,6 +394,7 @@ int		mtk_dma_setup(struct mtk_softc*);
 int		mtk_firmware_start(struct mtk_softc*);
 int		mtk_radio_init(struct mtk_softc*);
 int		mtk_hw_scan(struct mtk_softc*, uint8_t only);
+int		mtk_keep_awake(struct mtk_softc*);
 void		mtk_receive_frame(struct mtk_softc*, const uint8_t*, size_t, int, int);
 int		mtk_tune(struct mtk_softc*, uint8_t channel);
 int		mtk_send_frame(struct mtk_softc*, struct mbuf*);

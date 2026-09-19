@@ -27,8 +27,11 @@ NO_HAIKU_FIRMWARE_NAME_MAP();
 int
 HAIKU_CHECK_DISABLE_INTERRUPTS(device_t dev)
 {
-	/* Nothing shares this card's interrupt, so everything it raises is
-	 * ours to handle.
+	/* Never ours. The card's interrupt gate is never opened - frames are
+	 * collected by polling - so anything arriving on this line belongs to
+	 * whatever else sits on it. Claiming it said we had masked an
+	 * interrupt we then never re-enabled, which stops that line for every
+	 * other device sharing it.
 	 */
-	return 1;
+	return 0;
 }

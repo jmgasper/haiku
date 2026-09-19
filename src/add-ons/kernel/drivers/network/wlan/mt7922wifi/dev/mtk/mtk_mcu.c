@@ -871,6 +871,25 @@ mtk_set_channels(struct mtk_softc* sc)
  * itself until a scan is running - so a driver that leaves the looking to the
  * stack hears thousands of frames and not one beacon.
  */
+/* Say again that the part is not to sleep. It is told this once during
+ * radio setup, but leaving a scan behind is where the firmware would other-
+ * wise start saving power - and a register read while it is asleep does not
+ * come back, which stops the processor with interrupts off and takes the
+ * whole machine with it, debugger and keyboard included.
+ */
+int
+mtk_keep_awake(struct mtk_softc* sc)
+{
+	uint8_t config[328];
+
+	memset(config, 0, sizeof(config));
+	strcpy((char*)config + 8, "KeepFullPwr 1");
+
+	return mtk_mcu_send(sc, MTK_MCU_CE_CHIP_CONFIG, MTK_MCU_Q_SET, config,
+		sizeof(config), NULL, NULL);
+}
+
+
 int
 mtk_hw_scan(struct mtk_softc* sc, uint8_t only)
 {
