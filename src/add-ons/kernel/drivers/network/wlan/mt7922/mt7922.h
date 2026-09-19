@@ -91,6 +91,22 @@
 #define MT_WTBLOFF_TOP_RSCR		0x820e9008
 
 /* What the receiver throws away before we ever see it. */
+/* Whether the radio is allowed to transmit and receive at all. Nothing else
+ * in this driver touches these, and nothing clears them at reset - they are
+ * cleared by the routine that sets the air timings, which is why a radio that
+ * has never had its timings set hears nothing.
+ */
+#define MT_ARB_SCR			0x820e3080
+#define MT_ARB_SCR_TX_DISABLE		(1 << 8)
+#define MT_ARB_SCR_RX_DISABLE		(1 << 9)
+
+/* The air timings themselves. */
+#define MT_TMAC_CDTR			0x820e4090
+#define MT_TMAC_ODTR			0x820e4094
+#define MT_TMAC_ICR0			0x820e40a4
+#define MT_AGG_ACR0			0x820e2084
+#define MT_AGG_ACR_CFEND_RATE		0x3fff
+
 #define MT_MDP_BNRCFR0			0x820cd070
 #define MT_WF_RFCR			0x820e5000
 #define MT_RFCR_DROP_OTHER_BEACON	(1 << 11)
@@ -301,6 +317,11 @@ struct mt7922_dev {
 	int		management;
 	int		packetKind[32];
 	int		beacons;
+	int		badFrames;
+	int		tooShort;
+	int		badKind[16];
+	int		badBeacons;
+	int		framesOnEvents;
 	bool		ringsReady;
 };
 
@@ -323,6 +344,7 @@ status_t mt7922_mcu_start_firmware(mt7922_dev* device);
 status_t mt7922_mcu_read_capability(mt7922_dev* device);
 status_t mt7922_mcu_prepare(mt7922_dev* device);
 status_t mt7922_mcu_scan(mt7922_dev* device);
+void mt7922_mac_set_timing(mt7922_dev* device);
 void mt7922_dump_air(mt7922_dev* device, int wanted);
 
 status_t mt7922_setup(mt7922_dev* device);

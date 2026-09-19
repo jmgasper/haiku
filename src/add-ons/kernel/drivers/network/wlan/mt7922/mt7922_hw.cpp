@@ -62,6 +62,8 @@ static const fixed_block kFixedBlocks[] = {
 	 */
 	{ 0x820cd000, 0x00f000, 0x1000 },	/* packet handling */
 	{ 0x820d4000, 0x034000, 0x1000 },	/* the station table */
+	{ 0x820e2000, 0x020800, 0x0400 },	/* aggregation, first radio */
+	{ 0x820e3000, 0x020c00, 0x0400 },	/* arbitration, first radio */
 	{ 0x820e4000, 0x021000, 0x1000 },	/* transmit, first radio */
 	{ 0x820e5000, 0x021400, 0x1000 },	/* receive, first radio */
 	{ 0x820e7000, 0x021e00, 0x1000 },	/* transfer, first radio */
@@ -324,6 +326,41 @@ mt7922_mac_init(mt7922_dev* device)
 		mt7922_read32(device, MT_MDP_DCR1),
 		mt7922_read32(device, MT_DMA_DCR0),
 		mt7922_read32(device, MT_MDP_DCR0));
+}
+
+
+/* Set the timings the air runs on, and in doing so let the radio transmit and
+ * receive at all.
+ *
+ * The two bits that allow it are held down for the duration and released at
+ * the end. Nothing else in this part clears them, so a radio whose timings
+ * have never been set is a radio that has never been switched on - which is
+ * not how it looks from outside, because it will still do a sweep when asked.
+ */
+void
+mt7922_mac_set_timing(mt7922_dev* device)
+{
+	uint32 before = mt7922_read32(device, MT_ARB_SCR);
+	TRACE("transmit and receive gate reads %#" B_PRIx32 " (%s)\n", before,
+		(before & (MT_ARB_SCR_TX_DISABLE | MT_ARB_SCR_RX_DISABLE)) != 0
+			? "shut" : "open");
+
+	mt7922_modify32(device, MT_ARB_SCR, 0,
+		MT_ARB_SCR_TX_DISABLE | MT_ARB_SCR_RX_DISABLE);
+	snooze(1);
+
+	/* Down low, in twenty megahertz, with the ordinary slot time. */
+	mt7922_write32(device, MT_TMAC_CDTR, 0x003000e7);
+	mt7922_write32(device, MT_TMAC_ODTR, 0x001c003c);
+	mt7922_write32(device, MT_TMAC_ICR0, 0x090a0968);
+
+	mt7922_modify32(device, MT_AGG_ACR0, MT_AGG_ACR_CFEND_RATE, 0x0049);
+
+	mt7922_modify32(device, MT_ARB_SCR,
+		MT_ARB_SCR_TX_DISABLE | MT_ARB_SCR_RX_DISABLE, 0);
+
+	TRACE("the gate is now %#" B_PRIx32 "\n",
+		mt7922_read32(device, MT_ARB_SCR));
 }
 
 

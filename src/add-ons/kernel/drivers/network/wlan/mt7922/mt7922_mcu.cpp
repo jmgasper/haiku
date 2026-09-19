@@ -56,6 +56,8 @@
 #define MCU_UNI_CMD_BSS_INFO_UPDATE	0x02
 
 #define MCU_EXT_CMD_SET_RX_PATH		0x4e
+#define MCU_EXT_CMD_CHANNEL_SWITCH	0x08
+#define MT7922_HOME_CHANNEL		1
 
 /* What it says when it has finished looking around. */
 #define MCU_EVENT_SCAN_DONE		0x0d
@@ -278,6 +280,9 @@ mt7922_ring_take(mt7922_dev* device, mt7922_ring* ring, uint8* buffer,
  * another once that firmware is running, and nothing says exactly when it
  * changes over. Watching both costs one extra read and removes the question.
  */
+static void mt7922_inspect(mt7922_dev* device, const uint8* data, size_t got);
+
+
 static status_t
 mt7922_event_read(mt7922_dev* device, uint8* buffer, size_t* length,
 	bigtime_t timeout)
@@ -287,12 +292,14 @@ mt7922_event_read(mt7922_dev* device, uint8* buffer, size_t* length,
 	while (true) {
 		size_t got = *length;
 		if (mt7922_ring_take(device, &device->eventRing, buffer, &got)) {
+			mt7922_inspect(device, buffer, got);
 			*length = got;
 			return B_OK;
 		}
 
 		got = *length;
 		if (mt7922_ring_take(device, &device->lateEventRing, buffer, &got)) {
+			mt7922_inspect(device, buffer, got);
 			*length = got;
 			return B_OK;
 		}
@@ -1083,23 +1090,29 @@ mt7922_mcu_set_channels(mt7922_dev* device)
 }
 
 
+/* Where to listen. Said twice, in two commands that take the same description
+ * of a channel and differ in one field: the first sets up which aerials are
+ * used and wants them as a mask, the second actually tunes the radio and wants
+ * how many there are. Getting that the wrong way round is silently accepted.
+ */
 static status_t
-mt7922_mcu_set_channel(mt7922_dev* device)
+mt7922_mcu_set_channel(mt7922_dev* device, uint8 channel, bool tune)
 {
 	uint8 request[76];
 	memset(request, 0, sizeof(request));
 
-	request[0] = 1;			/* sit on channel one to begin with */
-	request[1] = 1;
+	request[0] = channel;
+	request[1] = channel;
 	request[2] = 0;			/* 20 MHz */
 	request[3] = device->streams;
-	request[4] = (1 << device->streams) - 1;
-	request[5] = 0;			/* no particular reason */
+	request[4] = tune ? device->streams : (1 << device->streams) - 1;
+	request[5] = 0;			/* for no particular reason */
 	request[6] = 0;
 	request[0x0a] = 0;		/* down low */
 
-	return mt7922_mcu_send_ext(device, MCU_EXT_CMD_SET_RX_PATH, request,
-		sizeof(request), true);
+	return mt7922_mcu_send_ext(device,
+		tune ? MCU_EXT_CMD_CHANNEL_SWITCH : MCU_EXT_CMD_SET_RX_PATH,
+		request, sizeof(request), true);
 }
 
 
@@ -1157,11 +1170,22 @@ mt7922_mcu_scan(mt7922_dev* device)
 		return status;
 	}
 
-	status = mt7922_mcu_set_channel(device);
+	status = mt7922_mcu_set_channel(device, MT7922_HOME_CHANNEL, false);
 	if (status != B_OK) {
-		ERROR("it would not settle on a channel: %s\n", strerror(status));
+		ERROR("it would not take the aerial layout: %s\n", strerror(status));
 		return status;
 	}
+
+	/* And now actually tune to it, which is a different command, and set the
+	 * air timings - which is what opens the radio's own gate.
+	 */
+	status = mt7922_mcu_set_channel(device, MT7922_HOME_CHANNEL, true);
+	if (status != B_OK) {
+		ERROR("it would not tune to a channel: %s\n", strerror(status));
+		return status;
+	}
+
+	mt7922_mac_set_timing(device);
 
 	status = mt7922_mcu_announce(device);
 	if (status != B_OK)
@@ -1172,10 +1196,21 @@ mt7922_mcu_scan(mt7922_dev* device)
 
 	request[0] = 1;			/* this is scan number one */
 	request[1] = 0;			/* on behalf of our station */
-	request[2] = 0;			/* listening, not asking */
-	request[3] = 1;			/* for anyone at all */
+
+	/* Ask rather than wait. Waiting means sitting on each channel long
+	 * enough for an announcement to come round on its own, and how long
+	 * that is was left to the part, which evidently chose too short. Asking
+	 * gets an answer at once from anything that is listening.
+	 */
+	request[2] = 1;			/* asking */
+	request[3] = 1;			/* of anyone at all */
+	request[4] = 1;			/* one name to ask after */
+	request[5] = 2;			/* asked twice per channel */
 	request[6] = 1 << 5;		/* in more than one go */
 	request[7] = 1;			/* and the later fields are meant */
+
+	/* The one name is the empty one, which everybody answers to. */
+	write_le32(request + 8, 0);
 	request[0x9e] = 4;		/* these channels, named below */
 
 	size_t count = sizeof(kChannels2GHz) + sizeof(kChannels5GHz);
@@ -1217,7 +1252,18 @@ mt7922_mcu_scan(mt7922_dev* device)
 		}
 
 		if (got >= MCU_RXD_SIZE && event[0x1c] == MCU_EVENT_SCAN_DONE) {
-			TRACE("the radio finished looking\n");
+			/* The part counts what it heard whether or not it passed any of
+			 * it on, which settles whether a silent ring means a deaf radio
+			 * or a driver that is not being given what the radio heard.
+			 */
+			if (got >= MCU_RXD_SIZE + 0x15c) {
+				TRACE("the radio finished looking, having heard %" B_PRIu32
+					" announcements down low and %" B_PRIu32 " up high\n",
+					read_le32(event + MCU_RXD_SIZE + 0x154),
+					read_le32(event + MCU_RXD_SIZE + 0x158));
+			} else
+				TRACE("the radio finished looking\n");
+
 			return B_OK;
 		}
 	}
@@ -1235,6 +1281,69 @@ mt7922_mcu_scan(mt7922_dev* device)
  * pieces named in the second word, then however many bytes of padding the
  * third word admits to.
  */
+/* Whatever a ring hands over may be the part talking about itself or a frame
+ * off the air that came this way instead. Waiting for one and discarding the
+ * other loses exactly the frames that are hardest to find.
+ */
+static void
+mt7922_inspect(mt7922_dev* device, const uint8* data, size_t got)
+{
+	if (got < 64)
+		return;
+
+	uint32 word0 = read_le32(data);
+	uint32 word1 = read_le32(data + 4);
+	uint32 word2 = read_le32(data + 8);
+	uint32 type = (word0 >> 27) & 0x1f;
+
+	if (type != MT_RX_TYPE_NORMAL && type != MT_RX_TYPE_NORMAL_MCU) {
+		if (type != MT_RX_TYPE_EVENT || ((word0 >> 16) & 0xf) != 1)
+			return;
+	}
+
+	device->framesOnEvents++;
+
+	size_t at = MT_RXD_FIXED_SIZE;
+	if ((word1 & MT_RXD1_GROUP_4) != 0)
+		at += 16;
+	if ((word1 & MT_RXD1_GROUP_1) != 0)
+		at += 16;
+	if ((word1 & MT_RXD1_GROUP_2) != 0)
+		at += 8;
+	if ((word1 & MT_RXD1_GROUP_3) != 0) {
+		at += 8;
+		if ((word1 & MT_RXD1_GROUP_5) != 0)
+			at += 72;
+	}
+	at += 2 * ((word2 >> 14) & 0x3);
+
+	if (at + 36 > got)
+		return;
+
+	const uint8* frame = data + at;
+	if (frame[0] != MT_FRAME_BEACON)
+		return;
+
+	const uint8* elements = frame + 24 + 12;
+	size_t remaining = got - at - 24 - 12;
+	char name[33];
+
+	strcpy(name, "(hidden)");
+	if (remaining >= 2 && elements[0] == 0 && elements[1] > 0
+		&& elements[1] < sizeof(name)
+		&& (size_t)elements[1] + 2 <= remaining) {
+		memcpy(name, elements + 2, elements[1]);
+		name[elements[1]] = 0;
+	}
+
+	if (device->beacons < 12) {
+		TRACE("heard \"%s\" from %02x:%02x:%02x:%02x:%02x:%02x\n", name,
+			frame[16], frame[17], frame[18], frame[19], frame[20], frame[21]);
+	}
+	device->beacons++;
+}
+
+
 static int
 mt7922_ring_used(mt7922_dev* device, mt7922_ring* ring)
 {
@@ -1264,8 +1373,10 @@ mt7922_dump_ring(mt7922_dev* device, mt7922_ring* ring, const char* which,
 
 		size_t got = (descriptor->ctrl & MT_DMA_CTL_SD_LEN0_MASK)
 			>> MT_DMA_CTL_SD_LEN0_SHIFT;
-		if (got < 64 || got > MT7922_RX_BUFFER_SIZE)
+		if (got < 64 || got > MT7922_RX_BUFFER_SIZE) {
+			device->tooShort++;
 			continue;
+		}
 
 		const uint8* data = (const uint8*)ring->buffers.address
 			+ (size_t)i * MT7922_RX_BUFFER_SIZE;
@@ -1288,8 +1399,9 @@ mt7922_dump_ring(mt7922_dev* device, mt7922_ring* ring, const char* which,
 			if (type != MT_RX_TYPE_EVENT || ((word0 >> 16) & 0xf) != 1)
 				continue;
 		}
-		if ((word1 & MT_RXD1_FCS_ERROR) != 0)
-			continue;
+		bool damaged = (word1 & MT_RXD1_FCS_ERROR) != 0;
+		if (damaged)
+			device->badFrames++;
 
 		size_t at = MT_RXD_FIXED_SIZE;
 		if ((word1 & MT_RXD1_GROUP_4) != 0)
@@ -1324,6 +1436,13 @@ mt7922_dump_ring(mt7922_dev* device, mt7922_ring* ring, const char* which,
 			device->beacons++;
 		if ((frame[0] & 0x0c) == 0)
 			device->management++;
+
+		if (damaged) {
+			device->badKind[frame[0] >> 4]++;
+			if (frame[0] == MT_FRAME_BEACON)
+				device->badBeacons++;
+			continue;
+		}
 
 		if (device->framesShown < 4) {
 			char line[80];
@@ -1374,8 +1493,15 @@ mt7922_dump_air(mt7922_dev* device, int wanted)
 	 * part's own processor instead of to us, which looks from here exactly
 	 * like a radio that hears traffic but never hears a network.
 	 */
-	TRACE("frames are routed by %#" B_PRIx32 "\n",
-		mt7922_read32(device, MT_MDP_BNRCFR0));
+	/* Read these again rather than trusting what was set earlier: the part's
+	 * own firmware is at liberty to put back whatever it prefers once it
+	 * starts doing things, and a setting that did not survive is
+	 * indistinguishable from one that never worked.
+	 */
+	TRACE("routing %#" B_PRIx32 ", filter %#" B_PRIx32 ", gate %#" B_PRIx32
+		"\n", mt7922_read32(device, MT_MDP_BNRCFR0),
+		mt7922_read32(device, MT_WF_RFCR),
+		mt7922_read32(device, MT_ARB_SCR));
 
 	int heard = mt7922_dump_ring(device, &device->dataRing, "the air", wanted);
 	heard += mt7922_dump_ring(device, &device->lateEventRing, "the processor",
@@ -1387,7 +1513,20 @@ mt7922_dump_air(mt7922_dev* device, int wanted)
 			mt7922_ring_used(device, &device->dataRing),
 			mt7922_ring_used(device, &device->lateEventRing),
 			device->management);
-		TRACE("%d of them announced a network\n", device->beacons);
+		TRACE("%d announced a network, %d were damaged, %d were too short,"
+			" %d frames came by way of the processor\n", device->beacons,
+			device->badFrames, device->tooShort, device->framesOnEvents);
+
+		char damagedLine[160];
+		int damagedAt = 0;
+		for (int k = 0; k < 16; k++) {
+			if (device->badKind[k] != 0) {
+				damagedAt += sprintf(damagedLine + damagedAt, "%x_:%d ", k,
+					device->badKind[k]);
+			}
+		}
+		TRACE("the damaged ones were: %s (%d of them announcements)\n",
+			damagedAt > 0 ? damagedLine : "none", device->badBeacons);
 
 		char line[160];
 		int at = 0;
