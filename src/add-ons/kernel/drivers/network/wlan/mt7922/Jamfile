@@ -1,0 +1,8 @@
+SubDir HAIKU_TOP src add-ons kernel drivers network wlan mt7922 ;
+
+UsePrivateKernelHeaders ;
+
+KernelAddon mt7922 :
+	driver.cpp
+	mt7922_hw.cpp
+	;
