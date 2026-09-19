@@ -744,10 +744,11 @@ def check_span_left_frame(path):
     near = lambda p: all(abs(a - b) <= 24 for a, b in zip(p, DESKTOP_BLUE))
     workspace = [(1500, 300), (960, 800), (1300, 950), (1850, 37), (1800, 10)]
     samples = [dict(x=x, y=y, rgb=list(image.getpixel((x, y))), ok=near(image.getpixel((x, y)))) for x, y in workspace]
-    icons = image.crop((0, 0, 200, 90)).resize((20, 9))
-    blue = sum(1 for p in icons.getdata() if near(p))
-    result = dict(status='pass', samples=samples, icon_area_blue=blue)
-    if not all(s['ok'] for s in samples) or blue > 0.9 * 20 * 9:
+    # Full resolution: the three icons and their labels cover about 14 % of this area on a real capture.
+    icons = image.crop((0, 0, 200, 90))
+    marked = sum(1 for p in icons.getdata() if not near(p))
+    result = dict(status='pass', samples=samples, icon_area_marked=marked)
+    if not all(s['ok'] for s in samples) or marked < 900:
         result['status'] = 'fail'
         raise ValidationError('frame does not show the left half of the spanning desktop: %r' % result)
     return result
