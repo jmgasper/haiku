@@ -214,6 +214,35 @@ mtk_receive_frame(struct mtk_softc* sc, const uint8_t* data, size_t got,
 
 	length = got - at;
 
+	/* A beacon or probe response is kept by the stack as a list of
+	 * information elements, and every scan afterwards walks that list. If
+	 * the frame was cut short, the walk runs off the end of it - which is
+	 * not the stack's mistake to make, it is ours for handing over
+	 * something that does not describe itself properly. Check the elements
+	 * fit inside the frame before letting it go any further.
+	 */
+	{
+		uint8_t kind = (data + at)[0];
+
+		if ((kind & 0x0c) == 0x00
+				&& ((kind & 0xf0) == 0x80 || (kind & 0xf0) == 0x50)) {
+			size_t ie = MTK_MGMT_HEADER + 12;	/* fixed fields */
+
+			while (ie + 2 <= length) {
+				size_t next = ie + 2 + (data + at)[ie + 1];
+
+				if (next > length)
+					break;
+				ie = next;
+			}
+
+			if (ie != length) {
+				sc->sc_ragged++;
+				return;
+			}
+		}
+	}
+
 	m = m_get2(length, M_NOWAIT, MT_DATA, M_PKTHDR);
 	if (m == NULL)
 		return;
@@ -255,12 +284,12 @@ mtk_receive_frame(struct mtk_softc* sc, const uint8_t* data, size_t got,
 		if (++sc->sc_received % 500 == 0) {
 			device_printf(sc->sc_dev, "rings %u/%u/%u; %u beacons,"
 				" %u probe resp; dropped %u of types"
-				" %#x; in: %u mgmt, %u data, %u ctrl;"
+				" %#x, %u ragged; in: %u mgmt, %u data, %u ctrl;"
 				" subtypes %u %u %u %u %u %u %u %u %u %u %u %u"
 				" %u %u %u %u\n",
 				sc->sc_raw[0], sc->sc_raw[1], sc->sc_raw[2],
 				sc->sc_subtype[8], sc->sc_subtype[5],
-				sc->sc_dropped, sc->sc_typemask,
+				sc->sc_dropped, sc->sc_typemask, sc->sc_ragged,
 				sc->sc_mgmt, sc->sc_data, sc->sc_ctrl,
 				sc->sc_subtype[0], sc->sc_subtype[1], sc->sc_subtype[2],
 				sc->sc_subtype[3], sc->sc_subtype[4], sc->sc_subtype[5],

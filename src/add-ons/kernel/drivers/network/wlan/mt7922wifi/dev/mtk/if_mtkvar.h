@@ -311,6 +311,7 @@ struct mtk_softc {
 	int			sc_scanning;
 	int			sc_scan_at;
 	int			sc_join_at;
+	int			sc_joining;
 
 	/* While the part is sweeping, the radio is its. The stack is stepped
 	 * through its channel list from our own thread instead of being let
@@ -364,6 +365,7 @@ struct mtk_softc {
 	uint32_t		sc_shown[3];
 	uint32_t		sc_raw[3];
 	uint32_t		sc_dropped;
+	uint32_t		sc_ragged;
 	uint32_t		sc_typemask;
 
 	/* The MCU replies on a ring mtk_receive also drains, so the two

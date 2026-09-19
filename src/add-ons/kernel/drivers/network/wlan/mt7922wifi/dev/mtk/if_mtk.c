@@ -443,9 +443,11 @@ mtk_scan_start(struct ieee80211com* ic)
 				&& (sc->sc_join_at == 0
 					|| (int)(ticks - sc->sc_join_at) > 5 * hz)) {
 			sc->sc_join_at = ticks;
+			sc->sc_joining = 1;
 			device_printf(sc->sc_dev, "letting this scan join\n");
 			ss->ss_flags &= ~IEEE80211_SCAN_NOJOIN;
-		}
+		} else
+			sc->sc_joining = 0;
 	}
 
 	sc->sc_scanning = 1;
