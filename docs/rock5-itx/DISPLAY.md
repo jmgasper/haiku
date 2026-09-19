@@ -857,6 +857,50 @@ their images are archived (`display-dp-aux-304-stale-driver`,
   `20260919T042716Z-b05ad0`; build `artifacts/build-20260919T042402Z.log`.
 - Stage: `artifacts/display-dp-video/20260919T042226Z-297c09`.
 
+### Qualified +308 desktop window on the second connector (stage 4d)
+
+With `--dp edid train video window` (`kDpProbeWindow`, request version 3),
+after the background the probe lets ESMART0 scan the firmware's desktop
+buffer on video port 1. ESMART0 is overlay layer 2, inside video port 1's
+range of the firmware's layer map (`OVL_LAYER_SEL` `0x76543210`,
+`OVL_PORT_SEL` `0xa5a47738`), above the disabled Cluster0/1. It takes the
+desktop window's buffer, stride, size, format, AXI bus and pipeline delay.
+Its read ids sit four above the desktop's, and the cursor keeps the two in
+between. It also copies the mixer words the firmware left for the desktop's
+equivalent position on video port 2 (MIX4/MIX5 into MIX0/MIX1). As in Linux,
+automatic clock gating is cleared before the window is enabled. With no
+sink on HDMI1, EDK2 runs video port 2 at 640x480 from a 640x480 XRGB buffer
+at `0xed940000`, which is the desktop app_server draws on.
+
+The `hrev60097+308` image (source `df0b291e69`, SHA-256
+`10f18fa231a23b2bee44e34af7829232bf1438cc44d28423d7487147fe662070`) passes
+the host checks (172 tests), both QEMU modes and two native boots with
+normal reboot, verified shutdown and automatic ROOBI recovery. On both boots
+the NanoKVM captures Haiku's desktop from the second connector: Tracker's
+icons, the Deskbar and the pointer fill the top-left 640x480. The magenta
+background covers the rest of the 1920x1080 frame, with every sampled
+pixel outside the window at the background colour and none inside it.
+Video port 2 and its window are unchanged.
+
+| Item | Boot 1 and boot 2 |
+| --- | --- |
+| Link | 5.4 Gb/s × 2 lanes, first attempt |
+| Desktop window | ESMART2, `0xed940000`, stride 640 pixels, 640x480, XRGB8888 |
+| ESMART0 | region control `0x1`, read ids `0x10`/`0x11` (`CTRL1` `0x00011100`), AXI bus 1 |
+| Mixers MIX0/MIX1/MIX4/MIX5 | all zero as the firmware leaves them (no blending set up; the bottom window is opaque) |
+| `SMART_DLY_NUM` | `0x17171717` (already equal) |
+| `SYS_AUTO_GATING_CTRL` | `0xffffffff` → `0x7fffffff` |
+| Commit | 833 polls of 20 µs (about one frame) |
+| Probe time | ~168 ms |
+
+- Native evidence: `artifacts/automated-display-dp-window/20260919T050545Z-1c8e2b`.
+- Session: `artifacts/interactive/20260919T050547Z-2872a2`; recovery boot
+  `ba64fc97-397d-4d25-beef-dd39515870fd`; image archive
+  `artifacts/nanokvm-image-archive/20260919T051335Z-db6de6`.
+- QEMU EL2/EL1: `artifacts/qemu-shell/20260919T050056Z-062acd` and
+  `20260919T050323Z-570016`; build `artifacts/build-20260919T050038Z.log`.
+- Stage: `artifacts/display-dp-window/20260919T045911Z-1ebab0`.
+
 ## Later stages
 
 3. Modes beyond the PLL table (the fractional-rate calculation) or the

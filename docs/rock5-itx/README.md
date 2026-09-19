@@ -19,6 +19,14 @@ emulator gates show the software fallback without a device. It is not
 qualified: the independent Linux eMMC readbacks need the ROOBI sudo
 password, which is not on record.
 
+The +308 USB image shows [Haiku's desktop on the second connector](DISPLAY.md):
+after training DP1 and starting video port 1, a second VOP2 window
+(ESMART0) on that port scans the desktop's frame buffer. On both native
+boots the NanoKVM captures Tracker, the Deskbar and the pointer on the
+DisplayPort-bridged HDMI port. The desktop is still the firmware's 640x480
+buffer, shown over the port's 1080p background. app_server driving that
+port at its own mode, and one wide desktop spanning both ports, come next.
+
 The +306 USB image puts the [first picture on the second connector](DISPLAY.md):
 Haiku brings DisplayPort TX1 and USBDP PHY1 up itself, reads the sink's
 DPCD and EDID over AUX through the RA620 bridge, and trains the link at
