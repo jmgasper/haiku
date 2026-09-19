@@ -316,6 +316,12 @@ struct mtk_softc {
 	 * retune underneath the sweep.
 	 */
 	int			sc_startall;
+
+	/* Set while the stack is changing state. Our own threads call into it
+	 * and take its lock; staying out of the way while it moves between
+	 * states removes us from a window we have no business being in.
+	 */
+	int			sc_settling;
 	uint32_t		sc_scan_starts;
 	uint32_t		sc_scan_ends;
 

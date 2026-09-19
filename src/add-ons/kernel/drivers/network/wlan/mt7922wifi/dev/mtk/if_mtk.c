@@ -263,11 +263,24 @@ mtk_newstate(struct ieee80211vap* vap, enum ieee80211_state state, int arg)
 {
 	struct mtk_vap* mvp = MTK_VAP(vap);
 	struct mtk_softc* sc = vap->iv_ic->ic_softc;
+	int error;
 
 	device_printf(sc->sc_dev, "state now %s\n",
 		ieee80211_state_name[state]);
 
-	return mvp->newstate(vap, state, arg);
+	/* Leaving the scan behind: stop sweeping before the stack starts
+	 * talking to the network it has chosen, or the part wanders off the
+	 * channel mid-handshake.
+	 */
+	if (state != IEEE80211_S_SCAN && state != IEEE80211_S_INIT)
+		sc->sc_scanning = 0;
+
+	error = mvp->newstate(vap, state, arg);
+
+	device_printf(sc->sc_dev, "state %s settled (%d)\n",
+		ieee80211_state_name[state], error);
+
+	return error;
 }
 
 
@@ -396,8 +409,15 @@ mtk_scan_start(struct ieee80211com* ic)
 		 * and everything else on this system asks for scans that must
 		 * not join - so once the network preferences have looked around
 		 * once, the stack is told never to join again. Clearing that
-		 * here does let it try, but associating still stops the whole
-		 * stack, so it stays as it is until that is understood.
+		 * here lets it try, which is the only way it will ever join
+		 * anything.
+		 */
+		/* Clearing IEEE80211_SCAN_NOJOIN here is what lets the stack
+		 * join at all - every scan on this system inherits that flag
+		 * from whoever asked last, and nothing else ever clears it.
+		 * It reaches select_bss and picks the right network, and then
+		 * associating stops the whole stack, so it stays off until
+		 * that is understood:
 		 *
 		 *	ss->ss_flags &= ~IEEE80211_SCAN_NOJOIN;
 		 */

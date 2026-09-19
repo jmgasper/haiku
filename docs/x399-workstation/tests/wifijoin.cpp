@@ -52,6 +52,25 @@ request(int socket, const char* device, int set, uint16_t type, void* data,
 }
 
 
+/* Several of these are plain values carried in i_val rather than in a
+ * buffer, so they need reading back differently.
+ */
+static int
+value_of(int socket, const char* device, uint16_t type)
+{
+	struct ieee80211req ireq;
+
+	memset(&ireq, 0, sizeof(ireq));
+	strlcpy(ireq.i_name, device, IFNAMSIZ);
+	ireq.i_type = type;
+
+	if (ioctl(socket, SIOCG80211, &ireq, sizeof(ireq)) < 0)
+		return -1;
+
+	return ireq.i_val;
+}
+
+
 static void
 report(int socket, const char* device)
 {
@@ -68,6 +87,17 @@ report(int socket, const char* device)
 	else {
 		ssid[length] = '\0';
 		printf("  ssid: \"%s\"\n", length > 0 ? ssid : "(none set)");
+	}
+
+	{
+		uint16_t got = 0;
+		int privacy = -1, wpa = -1;
+
+		if (request(socket, device, 0, IEEE80211_IOC_PRIVACY, &privacy,
+				sizeof(privacy), 0, &got) == 0)
+			privacy = value_of(socket, device, IEEE80211_IOC_PRIVACY);
+		wpa = value_of(socket, device, IEEE80211_IOC_WPA);
+		printf("  privacy: %d, wpa mode: %d\n", privacy, wpa);
 	}
 
 	memset(bssid, 0, sizeof(bssid));
