@@ -670,12 +670,60 @@ pixels over the desktop in the box at the pointer's position, plain desktop
 around it) judges the captures after inventory, the restore, the return to
 1080p and power-on.
 
+### Qualified +297 app_server's pointer on the hardware cursor (stage 3g)
+
+The `hrev60097+297` image (source `5428293910`, the +294 driver with the
+`rock5-itx-edk2-v1.1-display-cursor-desktop` profile; SHA-256
+`da1dda49f68b7a96440fb1bcfe3723dbd636d507e237e49b1ffc791052760a82`) passes
+the host checks (168 tests), both two-boot QEMU modes and two native boots
+with normal reboot, verified shutdown and automatic ROOBI recovery. On both
+boots app_server handed its 22x22 pointer (hot spot 1,1) to the window at
+start: the driver logged the bitmap and the show, the observation read
+ESMART3 back enabled with 64-pixel rows, a 22x22 region and the start
+0x021a03be (958,538, the desktop centre less the hot spot), the frame
+buffer's centre pixel was the desktop blue (no software pointer drawn
+there), and the NanoKVM captured Haiku's hand pointer at the centre. The
+probe's placements, clipping and hide of its quadrant bitmap passed as on
++294, and its restore brought app_server's bitmap back at 959,539 with the
+pointer visible again. Through the 720p change the pointer window stayed
+enabled at the same start (958,538 lies inside a 1280x720 frame; the scaled
+capture shows the pointer enlarged) and it read back enabled after the
+return to 1080p and after DPMS on, with the pointer in every capture; the
+mode-change, DPMS, retrace, observation and EDID checks passed unchanged. A
+visual review of the captures agrees.
+
+| Boot | Frame buffer | Pointer show polls | Restore show polls | Off: hold polls, time | On: time, frame starts |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `0x104d6000` | 496 | 411 | 6, 6.0 ms | 0.62 ms, 5000 → 5030 |
+| 2 | `0x0fd11000` | 668 | 507 | 4, 4.0 ms | 0.59 ms, 5098 → 5128 |
+
+- Native evidence: `artifacts/automated-display-cursor-desktop/20260919T000434Z-d3ebe7`
+  (`qualification.json` with `pointers` and `cursors`, `cursor*-boot{1,2}.json`,
+  `desktop-*-boot{1,2}.json` with the pointer classifier's samples, the
+  desktop reviews, driver syslog extracts, FDT captures).
+- Session: `artifacts/interactive/20260919T000435Z-4ef8ec`; recovery boot
+  `37964857-f1a1-4769-b0d2-84f68d347bb9` after verified shutdown.
+- QEMU EL2/EL1: `artifacts/qemu-shell/20260918T234806Z-edac25` and
+  `20260918T235025Z-febe41`; build `artifacts/build-20260918T234749Z.log`.
+- Stage: `artifacts/display-cursor-desktop/20260918T234552Z-84f213` (its
+  first run, `…automated-display-cursor-desktop/20260918T235251Z-5974de`,
+  passed every board check and stopped on the controller's expectation that
+  the pointer window be disabled at 720p; the controls were corrected and
+  the cycle rerun on the same image).
+- Independent Linux eMMC readbacks were not run: the ROOBI sudo password is
+  not available to this session.
+
+With this image the HDMI1 "2D" set is complete: EDID, a driver-owned frame
+buffer, vertical retrace, mode changes, DPMS and a hardware cursor carrying
+app_server's pointer. No drawing is accelerated: app_server's blits and
+fills stay on the CPU.
+
 ## Later stages
 
-3. app_server's own pointer on the hardware cursor window (the
-   `rock5-itx-edk2-v1.1-display-cursor-desktop` profile, which exports the
-   accelerant's cursor hooks), then modes beyond the PLL table (the
-   fractional-rate calculation) or the frame buffer size.
+3. Modes beyond the PLL table (the fractional-rate calculation) or the
+   frame buffer size, and accelerated blits and fills (app_server's
+   `B_FILL_RECTANGLE`/`B_SCREEN_TO_SCREEN_BLIT` hooks) on the RGA or the
+   GPU, which nothing here provides yet.
 4. DisplayPort TX1 through USBDP PHY1 and the RA620 bridge for the second
    connector. This needs a sink on that port (a monitor, an HDMI dummy plug,
    or the NanoKVM cable moved) before it can be qualified.

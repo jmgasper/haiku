@@ -26,6 +26,18 @@ emulator gates show the software fallback without a device. It is not
 qualified: the independent Linux eMMC readbacks need the ROOBI sudo
 password, which is not on record.
 
+The +297 USB image qualifies [app_server's pointer on the hardware cursor](DISPLAY.md)
+on two native boots: on the desktop cursor profile the accelerant exports
+the cursor hooks, app_server hands its 22x22 pointer to the driver's second
+VOP2 window at start and stops drawing it into the frame buffer, the window
+reads back at the desktop's centre, survives the 720p/1080p mode changes
+and DPMS, and the NanoKVM captures show Haiku's hand pointer there; the
+probe's own placements, clipping, hide and restore of app_server's bitmap
+pass on the same boots. The HDMI1 "2D" set (EDID, own frame buffer,
+retrace, mode changes, DPMS, hardware cursor) is complete; drawing itself
+is not accelerated, and the second (DisplayPort-bridged) HDMI port and a
+spanning desktop remain open.
+
 The +294 USB image qualifies a [hardware cursor on HDMI1](DISPLAY.md) on
 two native boots: on the probe-only cursor profile the driver programs a
 second VOP2 window (ESMART3, blended by the port's alpha mixer) with a
