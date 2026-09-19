@@ -255,13 +255,12 @@ mtk_receive_frame(struct mtk_softc* sc, const uint8_t* data, size_t got,
 		if (++sc->sc_received % 500 == 0) {
 			device_printf(sc->sc_dev, "rings %u/%u/%u; %u beacons,"
 				" %u probe resp; dropped %u of types"
-				" %#x; filter %#x; in: %u mgmt, %u data, %u ctrl;"
+				" %#x; in: %u mgmt, %u data, %u ctrl;"
 				" subtypes %u %u %u %u %u %u %u %u %u %u %u %u"
 				" %u %u %u %u\n",
 				sc->sc_raw[0], sc->sc_raw[1], sc->sc_raw[2],
 				sc->sc_subtype[8], sc->sc_subtype[5],
 				sc->sc_dropped, sc->sc_typemask,
-				mtk_read(sc, MTK_WF_RFCR),
 				sc->sc_mgmt, sc->sc_data, sc->sc_ctrl,
 				sc->sc_subtype[0], sc->sc_subtype[1], sc->sc_subtype[2],
 				sc->sc_subtype[3], sc->sc_subtype[4], sc->sc_subtype[5],
