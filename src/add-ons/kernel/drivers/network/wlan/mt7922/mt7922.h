@@ -278,6 +278,18 @@ struct mt7922_firmware {
 };
 
 
+/* A network the radio has heard, and where to find it again. */
+struct mt7922_network {
+	char	name[33];
+	uint8	address[6];
+	uint8	channel;
+	int8	strength;
+	bool	answered;	/* it replied to us, so it hears us too */
+};
+
+#define MT7922_MAX_NETWORKS	32
+
+
 struct mt7922_dev {
 	pci_info	pci;
 	char		name[32];
@@ -329,6 +341,10 @@ struct mt7922_dev {
 	 */
 	char		wanted[33];
 	char		secret[64];
+
+	mt7922_network	network[MT7922_MAX_NETWORKS];
+	int		networks;
+	int		chosen;
 	bool		ringsReady;
 };
 

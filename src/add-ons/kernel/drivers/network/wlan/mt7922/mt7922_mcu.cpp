@@ -1162,6 +1162,45 @@ mt7922_mcu_announce(mt7922_dev* device)
  * built - so for now the question this answers is only whether the radio will
  * go and listen when asked.
  */
+/* Of everything heard, which one we were asked to join. Where a network is
+ * carried by several radios - as most now are - prefer one that has answered
+ * us, since that is the only one known to hear us back.
+ */
+static void
+mt7922_choose(mt7922_dev* device)
+{
+	TRACE("%d network%s in earshot\n", device->networks,
+		device->networks == 1 ? "" : "s");
+
+	if (device->wanted[0] == 0)
+		return;
+
+	int best = -1;
+	for (int i = 0; i < device->networks; i++) {
+		if (strcmp(device->network[i].name, device->wanted) != 0)
+			continue;
+		if (best < 0 || (device->network[i].answered
+				&& !device->network[best].answered)) {
+			best = i;
+		}
+	}
+
+	if (best < 0) {
+		ERROR("\"%s\" was not among them\n", device->wanted);
+		return;
+	}
+
+	device->chosen = best;
+	TRACE("would join \"%s\" at %02x:%02x:%02x:%02x:%02x:%02x on channel %u"
+		"%s\n", device->network[best].name,
+		device->network[best].address[0], device->network[best].address[1],
+		device->network[best].address[2], device->network[best].address[3],
+		device->network[best].address[4], device->network[best].address[5],
+		device->network[best].channel,
+		device->network[best].answered ? ", which hears us" : "");
+}
+
+
 status_t
 mt7922_mcu_scan(mt7922_dev* device)
 {
@@ -1276,6 +1315,7 @@ mt7922_mcu_scan(mt7922_dev* device)
 			} else
 				TRACE("the radio finished looking\n");
 
+			mt7922_choose(device);
 			return B_OK;
 		}
 	}
@@ -1354,16 +1394,41 @@ mt7922_inspect(mt7922_dev* device, const uint8* data, size_t got)
 		name[elements[1]] = 0;
 	}
 
-	if (device->beacons + device->answers < 14) {
-		TRACE("%s \"%s\" from %02x:%02x:%02x:%02x:%02x:%02x\n",
-			answered ? "was answered by" : "heard", name,
-			frame[16], frame[17], frame[18], frame[19], frame[20], frame[21]);
-	}
-
 	if (answered)
 		device->answers++;
 	else
 		device->beacons++;
+
+	/* Keep each network once, remembering where it was heard and whether it
+	 * has ever answered us - the last being the only evidence that a
+	 * particular radio can hear this one.
+	 */
+	uint32 channel = (read_le32(data + 12) >> 8) & 0xff;
+
+	for (int k = 0; k < device->networks; k++) {
+		if (memcmp(device->network[k].address, frame + 16, 6) != 0)
+			continue;
+
+		if (answered)
+			device->network[k].answered = true;
+		if (device->network[k].channel == 0)
+			device->network[k].channel = channel;
+		return;
+	}
+
+	if (device->networks >= MT7922_MAX_NETWORKS)
+		return;
+
+	mt7922_network* found = &device->network[device->networks++];
+	strlcpy(found->name, name, sizeof(found->name));
+	memcpy(found->address, frame + 16, 6);
+	found->channel = channel;
+	found->answered = answered;
+
+	TRACE("%s \"%s\" on channel %" B_PRIu32 " at "
+		"%02x:%02x:%02x:%02x:%02x:%02x\n",
+		answered ? "was answered by" : "heard", name, channel,
+		frame[16], frame[17], frame[18], frame[19], frame[20], frame[21]);
 }
 
 
