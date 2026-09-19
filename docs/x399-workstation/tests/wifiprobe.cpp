@@ -31,6 +31,99 @@
 
 static int sPoke = -1;
 
+/* The chip keeps its register domain asleep until the host asks for it, and a
+ * sleeping domain reads back as zeroes rather than as nothing at all. The
+ * asking is done through one register that is always reachable, at a fixed
+ * place in the window - no remapping needed, which is what makes it safe to do
+ * before anything else.
+ */
+#define MT_CONN_ON_LPCTL	0x0e0010
+#define LPCTL_HOST_SET_OWN	(1 << 0)
+#define LPCTL_HOST_CLR_OWN	(1 << 1)
+#define LPCTL_HOST_OWN_SYNC	(1 << 2)
+
+/* Everything else in the part is reached through a 64 KiB window that the host
+ * points at whatever it wants to see. The upper half of the target address is
+ * written into the LOWER half of the control register - the one place this is
+ * easy to get backwards.
+ */
+#define MT_HIF_REMAP_L1		0x0fe24c
+#define MT_HIF_REMAP_BASE_L1	0x040000
+
+#define MT_HW_CHIPID		0x70010200
+#define MT_HW_REV		0x70010204
+
+
+static bool
+PollRegister(volatile uint32* registers, size_t offset, uint32 mask,
+	uint32 wanted, int milliseconds)
+{
+	for (int i = 0; i <= milliseconds; i++) {
+		if ((registers[offset / 4] & mask) == wanted)
+			return true;
+		snooze(1000);
+	}
+	return false;
+}
+
+
+/* Take the register domain from the firmware. The chip is first pushed into
+ * firmware-own whatever state it was left in, so that what follows is a clean
+ * handover rather than a guess about where it started.
+ */
+static bool
+TakeOwnership(volatile uint32* registers)
+{
+	const int kRetries = 10;
+
+	for (int i = 0; i < kRetries; i++) {
+		registers[MT_CONN_ON_LPCTL / 4] = LPCTL_HOST_SET_OWN;
+		if (PollRegister(registers, MT_CONN_ON_LPCTL, LPCTL_HOST_OWN_SYNC,
+				LPCTL_HOST_OWN_SYNC, 50)) {
+			break;
+		}
+		if (i == kRetries - 1) {
+			printf("  the firmware would not take the registers back\n");
+			return false;
+		}
+	}
+	printf("  firmware owns the registers\n");
+
+	for (int i = 0; i < kRetries; i++) {
+		registers[MT_CONN_ON_LPCTL / 4] = LPCTL_HOST_CLR_OWN;
+		/* A link that can go to sleep needs a moment before it answers. */
+		snooze(3000);
+		if (PollRegister(registers, MT_CONN_ON_LPCTL, LPCTL_HOST_OWN_SYNC, 0,
+				50)) {
+			printf("  we own the registers\n");
+			return true;
+		}
+	}
+
+	printf("  the firmware would not hand the registers over\n");
+	return false;
+}
+
+
+/* Point the window at an address and give back where to read it. The write
+ * that moves the window is posted, so it is read back to make sure it has
+ * landed before anything is read through it.
+ */
+static size_t
+MapThroughWindow(volatile uint32* registers, uint32 address)
+{
+	uint32 base = address >> 16;
+	uint32 offset = address & 0xffff;
+
+	uint32 control = registers[MT_HIF_REMAP_L1 / 4];
+	registers[MT_HIF_REMAP_L1 / 4] = (control & 0xffff0000) | base;
+	(void)registers[MT_HIF_REMAP_L1 / 4];
+
+	return MT_HIF_REMAP_BASE_L1 + offset;
+}
+
+
+
 
 static status_t
 FindCard(pci_info* found)
@@ -106,6 +199,86 @@ main(int argc, char** argv)
 		return 1;
 	}
 
+	/* Where every device's windows sit. A window has to live in the hole the
+	 * chipset leaves for them, above the memory; one that lands in the middle
+	 * of RAM was never really assigned, and reads of it go to memory rather
+	 * than to the card - which looks exactly like a card that answers with
+	 * zeroes.
+	 */
+	if (argc > 1 && strcmp(argv[1], "bars") == 0) {
+		for (uint8 index = 0; index < 255; index++) {
+			pci_info one;
+			pci_info_args args;
+
+			memset(&one, 0, sizeof(one));
+			args.signature = POKE_SIGNATURE;
+			args.index = index;
+			args.info = &one;
+			args.status = B_OK;
+
+			if (ioctl(sPoke, POKE_GET_NTH_PCI_INFO, &args, sizeof(args)) < 0
+				|| args.status != B_OK) {
+				break;
+			}
+			/* A bridge forwards only the range it was given. A device window
+			 * outside its bridge's range is never reached, however good the
+			 * address looks.
+			 */
+			if ((one.header_type & PCI_header_type_mask)
+					== PCI_header_type_PCI_to_PCI_bridge) {
+				/* The bottom four bits of each of these are not part of the
+				 * address: they say whether the window can reach above four
+				 * gigabytes. Reading them as address makes a window look
+				 * shifted, and a device inside one look as though it is
+				 * outside.
+				 */
+				uint64 memoryBase = ((uint64)(one.u.h1.memory_base & 0xfff0))
+					<< 16;
+				uint64 memoryLimit
+					= (((uint64)(one.u.h1.memory_limit & 0xfff0)) << 16)
+						| 0xfffff;
+				uint64 fetchBase
+					= ((uint64)(one.u.h1.prefetchable_memory_base & 0xfff0))
+						<< 16;
+				uint64 fetchLimit
+					= (((uint64)(one.u.h1.prefetchable_memory_limit & 0xfff0))
+						<< 16) | 0xfffff;
+
+				if ((one.u.h1.prefetchable_memory_base & 0xf) == 1) {
+					fetchBase |= ((uint64)one.u.h1
+						.prefetchable_memory_base_upper32) << 32;
+					fetchLimit |= ((uint64)one.u.h1
+						.prefetchable_memory_limit_upper32) << 32;
+				}
+
+				printf("%04x:%04x  %2d:%d:%d  bridge to bus %d, memory "
+					"%#012" B_PRIx64 "-%#012" B_PRIx64 ", prefetchable "
+					"%#012" B_PRIx64 "-%#012" B_PRIx64 "\n",
+					one.vendor_id, one.device_id, one.bus, one.device,
+					one.function, one.u.h1.secondary_bus,
+					memoryBase, memoryLimit, fetchBase, fetchLimit);
+				continue;
+			}
+
+			if ((one.header_type & PCI_header_type_mask) != 0)
+				continue;
+
+			for (int i = 0; i < 6; i++) {
+				if (one.u.h0.base_register_sizes[i] == 0)
+					continue;
+				if ((one.u.h0.base_register_flags[i] & PCI_address_space) != 0)
+					continue;
+				printf("%04x:%04x  %2d:%d:%d  BAR %d  %#012" B_PRIxPHYSADDR
+					"  %#9" B_PRIxSIZE "\n", one.vendor_id, one.device_id,
+					one.bus, one.device, one.function, i,
+					one.u.h0.base_registers[i],
+					(size_t)one.u.h0.base_register_sizes[i]);
+			}
+		}
+		close(sPoke);
+		return 0;
+	}
+
 	pci_info info;
 	if (FindCard(&info) != B_OK) {
 		fprintf(stderr, "[!] no %04x:%04x on this machine\n", MTK_VENDOR,
@@ -170,6 +343,36 @@ main(int argc, char** argv)
 		}
 	}
 
+	/* What the card itself says its windows are. A window that can reach above
+	 * four gigabytes is written as two registers, and reading only the first
+	 * of them gives an address that looks plausible and points at memory
+	 * instead of at the card.
+	 */
+	uint64 trueAddress[6] = { 0, 0, 0, 0, 0, 0 };
+
+	printf("  base address registers, as the card has them:\n");
+	for (int i = 0; i < 6; i++) {
+		uint32 low = ReadConfig(info, PCI_base_registers + i * 4, 4);
+		if (low == 0)
+			continue;
+
+		bool is64 = (low & PCI_address_space) == 0
+			&& (low & PCI_address_type) == PCI_address_type_64;
+		uint64 address = low & PCI_address_memory_32_mask;
+
+		if (is64) {
+			uint32 high = ReadConfig(info, PCI_base_registers + (i + 1) * 4, 4);
+			address |= ((uint64)high) << 32;
+			printf("    %d: %#012" B_PRIx64 " (64 bit, upper half %#x)\n",
+				i, address, (unsigned)high);
+			trueAddress[i] = address;
+			i++;
+		} else {
+			printf("    %d: %#012" B_PRIx64 "\n", i, address);
+			trueAddress[i] = address;
+		}
+	}
+
 	/* Which window to look through; the first memory one unless told. */
 	int bar = -1;
 	const char* wanted = getenv("WIFIPROBE_BAR");
@@ -202,7 +405,18 @@ main(int argc, char** argv)
 	memset(&map, 0, sizeof(map));
 	map.signature = POKE_SIGNATURE;
 	map.name = "mt7922 registers";
-	map.physical_address = info.u.h0.base_registers[bar];
+	/* What the card says, not what was remembered about it: a window that can
+	 * reach above four gigabytes is two registers wide, and an upper half
+	 * dropped somewhere along the way leaves an address that points at memory.
+	 */
+	uint64 remembered = info.u.h0.base_registers[bar];
+	if ((info.u.h0.base_register_flags[bar] & PCI_address_type)
+			== PCI_address_type_64 && bar < 5) {
+		remembered |= ((uint64)info.u.h0.base_registers[bar + 1]) << 32;
+	}
+
+	map.physical_address = remembered;
+	printf("  mapping %#012" B_PRIx64 "\n", remembered);
 	map.size = info.u.h0.base_register_sizes[bar];
 	map.flags = B_ANY_ADDRESS;
 	map.protection = B_READ_AREA | B_WRITE_AREA;
@@ -219,6 +433,40 @@ main(int argc, char** argv)
 
 	volatile uint32* registers = (volatile uint32*)map.address;
 	printf("\nmapped BAR %d at %p\n", bar, map.address);
+
+	/* Wake the chip and ask it who it is. This is the whole question: a part
+	 * that names itself is a part a driver can be written for.
+	 */
+	if (argc > 1 && strcmp(argv[1], "chipid") == 0) {
+		if (!TakeOwnership(registers)) {
+			printf("\nwithout the registers there is nothing to ask.\n");
+		} else {
+			size_t at = MapThroughWindow(registers, MT_HW_CHIPID);
+			uint32 chipId = registers[at / 4];
+
+			at = MapThroughWindow(registers, MT_HW_REV);
+			uint32 revision = registers[at / 4];
+
+			printf("\n  chip id  %#010x\n", (unsigned)chipId);
+			printf("  revision %#010x\n", (unsigned)revision);
+
+			if ((chipId & 0xffff) == 0x7922) {
+				printf("\nthe Wi-Fi side names itself MT%04x, revision %#x.\n",
+					(unsigned)(chipId & 0xffff),
+					(unsigned)(revision & 0xff));
+			} else {
+				printf("\nthat is not a part number we expected.\n");
+			}
+		}
+
+		mem_map_args unmapId;
+		memset(&unmapId, 0, sizeof(unmapId));
+		unmapId.signature = POKE_SIGNATURE;
+		unmapId.area = map.area;
+		ioctl(sPoke, POKE_UNMAP_MEMORY, &unmapId, sizeof(unmapId));
+		close(sPoke);
+		return 0;
+	}
 
 	/* Sweep the whole window for anything that is not zero. Reading a register
 	 * is harmless where writing one is not, and knowing which parts of the
