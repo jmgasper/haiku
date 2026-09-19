@@ -153,6 +153,27 @@ struct mt7922_ring {
 	uint16		tail;		/* the next one to reclaim */
 };
 
+/* One piece of a firmware file: where it is in the file, and where the part
+ * wants it put.
+ */
+struct mt7922_region {
+	uint32	offset;		/* where it starts in the file */
+	uint32	size;		/* how much of the file it takes */
+	uint32	address;	/* where it goes in the part */
+	uint32	length;		/* how much is sent there */
+	uint32	keyIndex;
+	uint32	features;
+};
+
+
+struct mt7922_firmware {
+	uint8*		data;
+	size_t		size;
+	uint32		count;
+	mt7922_region	region[16];
+};
+
+
 struct mt7922_dev {
 	pci_info	pci;
 	char		name[32];
@@ -178,6 +199,12 @@ extern pci_module_info* gPci;
 status_t mt7922_dma_alloc(const char* name, size_t size,
 	mt7922_dma_mem* memory);
 void mt7922_dma_free(mt7922_dma_mem* memory);
+
+status_t mt7922_firmware_read_patch(mt7922_dev* device,
+	mt7922_firmware* firmware);
+status_t mt7922_firmware_read_ram(mt7922_dev* device,
+	mt7922_firmware* firmware);
+void mt7922_firmware_free(mt7922_firmware* firmware);
 
 status_t mt7922_setup(mt7922_dev* device);
 void mt7922_teardown(mt7922_dev* device);

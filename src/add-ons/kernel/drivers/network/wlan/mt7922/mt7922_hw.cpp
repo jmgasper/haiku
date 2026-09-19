@@ -319,6 +319,22 @@ mt7922_setup(mt7922_dev* device)
 		mt7922_dma_free(&probe);
 	}
 
+	/* Read what it will be given, before there is anywhere to put it. A file
+	 * that does not add up is better found now than halfway through sending
+	 * it.
+	 */
+	{
+		mt7922_firmware patch;
+		memset(&patch, 0, sizeof(patch));
+		if (mt7922_firmware_read_patch(device, &patch) == B_OK)
+			mt7922_firmware_free(&patch);
+
+		mt7922_firmware ram;
+		memset(&ram, 0, sizeof(ram));
+		if (mt7922_firmware_read_ram(device, &ram) == B_OK)
+			mt7922_firmware_free(&ram);
+	}
+
 	/* Next: the transfer rings, and the firmware that goes over them. Until
 	 * that is here the part is awake and addressable but does nothing.
 	 */
