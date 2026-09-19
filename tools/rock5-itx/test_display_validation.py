@@ -763,15 +763,15 @@ class DisplayValidationTest(unittest.TestCase):
         dpcd = bytes([0x12, 0x0a, 0x82, 0x01, 0x00, 0x15, 0x01, 0x81, 0x02, 0x00, 0x06, 0, 0, 0, 0, 0])
         def transcript(result=0, phase=7, pin_after='00000050', hpd_after='00000f02', refclk='00000000',
                 resets_after='00000000,00000000,00000000,00000000', usbdp_after='00006000', vo0_after='00000040',
-                cctl_after='00000000', pma_after='000000cc,00000018,00000000,000000c0,00000003,00000008,00000000',
+                cctl_after='00000000', aux_after='00004a00', pma_after='000000cc,00000018,00000000,000000c0,00000003,00000008,00000000',
                 dpcd_bytes=dpcd, edid=base, summary=None, count=16):
             lines = ['ROCK5_DISPLAY_DP_REQUEST_CHECKS_PASS',
                 'ROCK5_DISPLAY_DP result=%d phase=%d pin=00000000,%s level=1 hpd=00000000,%s hpd_polls=17 refclk=%s'
                 ' lcpll_polls=0 aux=12,0,40 aux_status=00000000 dpcd_count=%d sinks=41 edid_bytes=%d micros=41000'
                 % (result, phase, pin_after, hpd_after, refclk, count, 128 if edid else 0),
                 'ROCK5_DISPLAY_DP_WORDS resets=00000000,00000000,00000000,00000000/%s usbdp_grf=00006000,%s'
-                ' vo0_grf=000000e4,%s cctl=00000004,%s pma_before=00000000,00000000,00000000,000000c0,00000000,00000000,00000000'
-                ' pma_after=%s' % (resets_after, usbdp_after, vo0_after, cctl_after, pma_after),
+                ' vo0_grf=000000e4,%s cctl=00000004,%s aux_clock=00000000,%s pma_before=00000000,00000000,00000000,000000c0,00000000,00000000,00000000'
+                ' pma_after=%s' % (resets_after, usbdp_after, vo0_after, cctl_after, aux_after, pma_after),
                 'ROCK5_DISPLAY_DP_DPCD ' + dpcd_bytes.hex()]
             if edid:
                 lines.append('ROCK5_DISPLAY_DP_EDID ' + edid.hex())
@@ -797,6 +797,7 @@ class DisplayValidationTest(unittest.TestCase):
             ('grf', transcript(usbdp_after='00004000'), True),
             ('lanes', transcript(vo0_after='000000e4'), True),
             ('cctl', transcript(cctl_after='00000004'), True),
+            ('aux_clock', transcript(aux_after='00000000'), True),
             ('pma', transcript(pma_after='000000c0,00000018,00000000,000000c0,00000003,00000008,00000000'), True),
             ('lcpll', transcript(pma_after='000000cc,00000018,00000000,00000000,00000003,00000008,00000000'), True),
             ('dpcd', transcript(dpcd_bytes=bytes(16)), True),

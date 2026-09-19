@@ -69,6 +69,7 @@ struct DpProbeRequest {
 	uint32_t usbdpGrfBefore, usbdpGrfAfter; // USBDP PHY1 GRF CON1
 	uint32_t vo0GrfBefore, vo0GrfAfter; // VO0 GRF CON2 (PHY1 lanes, AUX, HPD select)
 	uint32_t cctlBefore, cctlAfter;
+	uint32_t auxClockBefore, auxClockAfter; // CRU CLKSEL_CON117 (clk_aux16m_1 divider in 15:8)
 	uint32_t lcpllPolls;
 	uint32_t auxTransfers, auxRetries, auxPolls;
 	uint32_t auxStatus; // AUX_STATUS of the last transfer
@@ -102,6 +103,11 @@ static const uint32_t kCruPhyPmaApbReset = 0xb20; // SOFTRST_CON72 bit 4
 static const uint32_t kCruPhyPmaApbBit = 1u << 4;
 static const uint32_t kCruRefclkSelect = 0x30000 + 0x300 + 14 * 4; // PMU CRU CLKSEL_CON14
 static const uint32_t kCruRefclkMask = (3u << 7) | 0x7f; // mux 8:7 (0 = xin24m), divider 6:0
+// clk_aux16m_1 = GPLL (1188 MHz) / (field + 1): Linux assigns 16 MHz, which its
+// divider rounding (never above the request) makes 1188 / 75 = 15.84 MHz.
+static const uint32_t kCruAuxClockSelect = 0x300 + 117 * 4; // CLKSEL_CON117
+static const uint32_t kCruAuxClockMask = 0xff00;
+static const uint32_t kCruAuxClockDivider = 74u << 8;
 
 // USBDP PHY PMA (phy base + 0x8000).
 static const uint32_t kPmaBase = 0x8000;
@@ -137,7 +143,7 @@ static const uint32_t kAuxEdidAddress = 0x50;
 static const unsigned kDpResetPauseMicros = 10000;
 static const unsigned kDpAuxReadyMicros = 10000;
 static const unsigned kDpPollMicros = 200;
-static const uint32_t kDpHotPlugPollLimit = 1000; // 200 ms
+static const uint32_t kDpHotPlugPollLimit = 2500; // 500 ms (the board took 198 ms)
 static const uint32_t kDpLcpllPollLimit = 500; // 100 ms
 static const unsigned kDpAuxPollMicros = 50;
 static const uint32_t kDpAuxPollLimit = 200; // 10 ms per transfer
@@ -289,8 +295,13 @@ DpProbeSink(Hardware& hardware, DpProbeRequest& request)
 	}
 	request.pinMuxAfter = hardware.ReadIoc(kIocGpio3dHigh);
 
-	// dw_dp_init_hw: no fast link training, hot-plug and AUX reply events.
+	// The AUX clock at Linux' 16 MHz assignment, then dw_dp_init_hw: no
+	// fast link training, hot-plug and AUX reply events.
 	request.phase = kDpPhaseController;
+	request.auxClockBefore = hardware.ReadCru(kCruAuxClockSelect);
+	if ((request.auxClockBefore & kCruAuxClockMask) != kCruAuxClockDivider)
+		hardware.WriteCru(kCruAuxClockSelect, HiWord(kCruAuxClockMask, kCruAuxClockDivider));
+	request.auxClockAfter = hardware.ReadCru(kCruAuxClockSelect);
 	hardware.WriteDp(kDpCctl, request.cctlBefore & ~kDpCctlFastLinkTrain);
 	hardware.WriteDp(kDpHotPlugInterruptEnable,
 		hardware.ReadDp(kDpHotPlugInterruptEnable) | 0x7);

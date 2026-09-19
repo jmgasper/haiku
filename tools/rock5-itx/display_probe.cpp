@@ -1006,12 +1006,13 @@ ProbeDisplayPort(bool edid)
 		request.finishedMicros - request.startedMicros);
 	printf("ROCK5_DISPLAY_DP_WORDS resets=%08" PRIx32 ",%08" PRIx32 ",%08" PRIx32 ",%08" PRIx32
 		"/%08" PRIx32 ",%08" PRIx32 ",%08" PRIx32 ",%08" PRIx32 " usbdp_grf=%08" PRIx32 ",%08" PRIx32
-		" vo0_grf=%08" PRIx32 ",%08" PRIx32 " cctl=%08" PRIx32 ",%08" PRIx32 " pma_before=",
+		" vo0_grf=%08" PRIx32 ",%08" PRIx32 " cctl=%08" PRIx32 ",%08" PRIx32 " aux_clock=%08" PRIx32
+		",%08" PRIx32 " pma_before=",
 		request.resetsBefore[0], request.resetsBefore[1], request.resetsBefore[2],
 		request.resetsBefore[3], request.resetsAfter[0], request.resetsAfter[1],
 		request.resetsAfter[2], request.resetsAfter[3], request.usbdpGrfBefore,
 		request.usbdpGrfAfter, request.vo0GrfBefore, request.vo0GrfAfter, request.cctlBefore,
-		request.cctlAfter);
+		request.cctlAfter, request.auxClockBefore, request.auxClockAfter);
 	for (unsigned i = 0; i < kDpPmaWordCount; i++)
 		printf("%s%08" PRIx32, i == 0 ? "" : ",", request.pmaBefore[i]);
 	printf(" pma_after=");

@@ -298,7 +298,7 @@ ModeSetModelStep()
 		sGrfModel[0x80 / 4] = sGrfShadow[0x80 / 4] = sPhyStatusModel;
 	}
 	if (sCruModel != NULL) {
-		static const unsigned kResetOffsets[] = {0xb20, 0x30a0c, 0x30a10, 0xa08, 0xa0c};
+		static const unsigned kResetOffsets[] = {0xb20, 0x30a0c, 0x30a10, 0xa08, 0xa0c, 0x4d4};
 		for (unsigned i = 0; i < sCruShadow.size(); i++) {
 			if (sCruModel[i] == sCruShadow[i])
 				continue;
@@ -509,6 +509,8 @@ ModelRegister(uint64 base, unsigned offset)
 		return offset == 0x200 ? 0x4 : 0;
 	if (base == 0xfd7c0000 && offset == 0x30338)
 		return sRefclkSelect;
+	if (base == 0xfd7c0000 && offset == 0x4d4)
+		return 0; // clk_aux16m_0/1 dividers as the firmware leaves them (unknown; zero here)
 	if (base == 0xfd7c0000 && (offset == 0xa08 || offset == 0xa0c || offset == 0xae0 || offset == 0xb20))
 		return 0; // every reset of the path deasserted by the firmware
 	if (base == 0xfed98000 && offset == 0x350)
@@ -2782,6 +2784,7 @@ main()
 	assert(dp.cctlBefore == 0x4 && dp.cctlAfter == 0x0);
 	assert(dp.refclkSelect == 0 && dp.resetsBefore[3] == 0 && dp.pmaBefore[0] == 0 && dp.pmaBefore[3] == 0xc0);
 	// Resets asserted, the PMA APB and PCS released, then init, cmn and lane.
+	assert(sCruWrites[0] == std::make_pair(0x4d4u, 0xff004a00u) && dp.auxClockBefore == 0 && dp.auxClockAfter == 0x4a00);
 	assert(sequenceOf(sCruWrites, {{0xa08u, 0x80008000u}, {0xa0cu, 0x00070007u}, {0xb20u, 0x00100010u},
 		{0xb20u, 0x00100000u}, {0xa0cu, 0x00040000u}, {0xa08u, 0x80000000u}, {0xa0cu, 0x00030000u}}));
 	assert(sequenceOf(sHiwordWrites, {{0x5cc004u, 0x40004000u}, {0x5cc004u, 0x20002000u}, {0x5a6008u, 0x03ff0040u}}));
@@ -2808,8 +2811,8 @@ main()
 	assert(probe(0) == kDpAuxNack && dp.phase == kDpPhaseDpcd && dp.auxTransfers == 8);
 	// No sink: no hot-plug after 200 ms and nothing of the PHY is touched.
 	Prepare(); sAllowDp = true; sSinkPresent = false;
-	assert(probe(kDpProbeEdid) == kDpNoHotPlug && dp.phase == kDpPhaseHotPlug && dp.hpdPolls == 1000);
-	assert(sCruWrites.empty() && sPmaWrites.empty() && sAuxLog.empty());
+	assert(probe(kDpProbeEdid) == kDpNoHotPlug && dp.phase == kDpPhaseHotPlug && dp.hpdPolls == 2500);
+	assert(sCruWrites.size() == 1 && sPmaWrites.empty() && sAuxLog.empty());
 	// Past a missing hot-plug on request: the controller's AUX timeout.
 	Prepare(); sAllowDp = true; sSinkPresent = false;
 	assert(probe(kDpProbeIgnoreHotPlug) == kDpAuxTimeout && dp.phase == kDpPhaseDpcd && sAuxLog.size() == 1);
@@ -2821,7 +2824,7 @@ main()
 	Prepare(); sAllowDp = true; sLcpllNeverLocks = true;
 	assert(probe(0) == kDpLcpllTimeout && dp.phase == kDpPhasePhy && dp.lcpllPolls == 500 && sAuxLog.empty());
 	Prepare(); sAllowDp = true; sRefclkSelect = 1u << 7;
-	assert(probe(0) == kDpRefclkUnsupported && dp.refclkSelect == (1u << 7) && sCruWrites.empty());
+	assert(probe(0) == kDpRefclkUnsupported && dp.refclkSelect == (1u << 7) && sCruWrites.size() == 1);
 	// A corrupted EDID.
 	Prepare(); sAllowDp = true; sSinkEdid[20] ^= 1;
 	assert(probe(kDpProbeEdid) == kDpEdidInvalid && dp.edidBytes == 128);

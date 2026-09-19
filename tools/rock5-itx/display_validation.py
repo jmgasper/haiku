@@ -1072,6 +1072,7 @@ DP_LINE = re.compile(
 DP_WORDS = re.compile(
     r'^ROCK5_DISPLAY_DP_WORDS resets=((?:[0-9a-f]{8},){3}[0-9a-f]{8})/((?:[0-9a-f]{8},){3}[0-9a-f]{8})'
     r' usbdp_grf=([0-9a-f]{8}),([0-9a-f]{8}) vo0_grf=([0-9a-f]{8}),([0-9a-f]{8}) cctl=([0-9a-f]{8}),([0-9a-f]{8})'
+    r' aux_clock=([0-9a-f]{8}),([0-9a-f]{8})'
     r' pma_before=((?:[0-9a-f]{8},){6}[0-9a-f]{8}) pma_after=((?:[0-9a-f]{8},){6}[0-9a-f]{8})$', re.M)
 DP_DPCD = re.compile(r'^ROCK5_DISPLAY_DP_DPCD ([0-9a-f]{32})$', re.M)
 DP_EDID = re.compile(r'^ROCK5_DISPLAY_DP_EDID ([0-9a-f]{256})$', re.M)
@@ -1125,7 +1126,9 @@ def validate_dp_probe(body, edid=False):
         raise ValidationError('DP lanes not routed to PHY lanes 2 and 3 (VO0 GRF %#x)' % vo0_after)
     if int(words.group(8), 16) & (1 << 2):
         raise ValidationError('fast link training left enabled')
-    pma_after = [int(w, 16) for w in words.group(10).split(',')]
+    if (int(words.group(10), 16) >> 8) & 0xff != 74:
+        raise ValidationError('DP AUX clock divider %#x is not GPLL/75' % int(words.group(10), 16))
+    pma_after = [int(w, 16) for w in words.group(12).split(',')]
     if pma_after[0] & 0xff != 0xcc or not pma_after[5] & (1 << 3) or pma_after[3] & 0xc0 != 0xc0:
         raise ValidationError('PHY lane mux/enable, DP init reset or LCPLL wrong: %r' % ['%08x' % w for w in pma_after])
     dpcd_line = DP_DPCD.search(body)
@@ -1152,6 +1155,7 @@ def validate_dp_probe(body, edid=False):
         aux_polls=int(line.group(13)), sink_count=int(line.group(16), 16), micros=int(line.group(18)),
         resets_before=words.group(1).split(','), resets_after=words.group(2).split(','),
         usbdp_grf=[words.group(3), words.group(4)], vo0_grf=[words.group(5), words.group(6)],
-        cctl=[words.group(7), words.group(8)], pma_before=words.group(9).split(','), pma_after=words.group(10).split(','),
+        cctl=[words.group(7), words.group(8)], aux_clock=[words.group(9), words.group(10)],
+        pma_before=words.group(11).split(','), pma_after=words.group(12).split(','),
         dpcd=dpcd.hex(), dpcd_decoded=decoded, edid=edid_block.hex() if edid_block else None,
         edid_base=decode_edid_base(edid_block) if edid_block else None)
