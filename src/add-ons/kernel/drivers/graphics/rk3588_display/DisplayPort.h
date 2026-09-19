@@ -981,6 +981,35 @@ DpShowWindow(Hardware& hardware, DpProbeRequest& request)
 }
 
 
+// Points ESMART0 on video port 1 at another buffer of the window's format
+// (the desktop's own frame buffer, or back to the firmware desktop) and sets
+// the port's background; one commit of port 1 takes both.
+template<class Hardware>
+uint32_t
+DpSwapWindow(Hardware& hardware, uint32_t address, uint32_t virtualWidth, uint32_t active,
+	uint32_t background, uint32_t& polls)
+{
+	uint32_t base = kVopEsmartBase + kDpWindow * kVopEsmartStride;
+	hardware.WriteVop(base + kVopEsmartRegionVirtual, virtualWidth);
+	hardware.WriteVop(base + kVopEsmartRegionAddress, address);
+	hardware.WriteVop(base + kVopEsmartRegionActive, active);
+	hardware.WriteVop(base + kVopEsmartRegionDisplay, active);
+	hardware.WriteVop(kVopPort1Base + 0x2c, background);
+	hardware.WriteVop(kVopConfigDone, kVopConfigDoneEnable | (1u << kVopPort1) | ((1u << kVopPort1) << 16));
+	polls = 0;
+	while ((hardware.ReadVop(kVopConfigDone) & (1u << kVopPort1)) != 0) {
+		if (polls >= kScanoutPollLimit)
+			return kDpPortTimeout;
+		polls++;
+		hardware.Pause(kScanoutPollMicros);
+	}
+	if (hardware.ReadVop(base + kVopEsmartRegionAddress) != address
+		|| hardware.ReadVop(base + kVopEsmartRegionActive) != active)
+		return kDpWindowVerifyFailed;
+	return kDpOK;
+}
+
+
 template<class Hardware>
 void
 DpProbeFinish(Hardware& hardware, DpProbeRequest& request)

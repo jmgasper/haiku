@@ -500,7 +500,7 @@ FIRMWARE_TIMING = dict(h=(2008, 2052, 2200), v=(1084, 1089, 1125), pixel_khz=148
     port_timing=('0898002c', '00c00840', '04650005', '00290461'))
 
 
-def validate_accelerant(body, observation=None, edid_block0=None, mode=(1920, 1080)):
+def validate_accelerant(body, observation=None, edid_block0=None, mode=(1920, 1080), ports=None):
     """Return the decoded accelerant state from a native --accelerant transcript or raise ValidationError.
 
     `observation` is a decoded observation of the same boot taken while the
@@ -606,7 +606,7 @@ def validate_accelerant(body, observation=None, edid_block0=None, mode=(1920, 10
     if body.count(summary + '\n') != 1:
         raise ValidationError('accelerant summary missing or inconsistent')
     if observation is not None:
-        if observation.get('active_ports') != [port]:
+        if observation.get('active_ports') != (ports if ports is not None else [port]):
             raise ValidationError('observation active ports %r, accelerant port %d' % (observation.get('active_ports'), port))
         seen = observation['windows']['esmarts'][window]
         if seen['region_control'] != 1 or seen['address'] != framebuffer:

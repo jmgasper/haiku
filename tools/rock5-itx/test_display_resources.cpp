@@ -226,7 +226,8 @@ VopModelStep()
 				sVopHoldCountdown = sHoldNever ? -1 : 3;
 		} else if (sAllowDp && ((offset >= 0xd00 && offset <= 0xd54) || offset == 0x74 || offset == 0x6e4
 				|| offset == 0x028 || offset == 0x030 || (offset >= 0x1800 && offset < 0x1900)
-				|| (offset >= 0x650 && offset < 0x670) || offset == 0x6f8 || offset == 0x008)) {
+				|| (offset >= 0x650 && offset < 0x670) || offset == 0x6f8 || offset == 0x008
+				|| offset == 0xb0 || offset == 0xb4)) {
 			// Video port 1 for the DP probe: timing, background and the interface mux are plain words.
 			sVopOverrides[offset] = value;
 		} else
@@ -3001,7 +3002,47 @@ main()
 	// The port never takes its configuration.
 	Prepare(); sAllowDp = true; sCommitNeverCompletes = true;
 	assert(probe(kDpProbeTrain | kDpProbeVideo) == kDpPortTimeout && dp.commitPolls == kScanoutPollLimit);
-	assert(Close(reader) == B_OK && Free(reader) == B_OK && Close(primary) == B_OK && Free(primary) == B_OK);
+	// The DP desktop profile: the accelerant's frame buffer on DP1. The first
+	// acquisition runs the whole bring-up with the cloned window, then swaps
+	// ESMART0 to the driver's 1080p buffer over black, moves the console and
+	// arms video port 1's frame-start interrupt; release clones the firmware
+	// desktop again.
+	controller.dpDesktopEnabled = true;
+	controller.accelerantEnabled = true;
+	Prepare(); sAllowDp = true; sBootInfo = frame_buffer_boot_info{17, 0xed940000, 0xffff000012340000ull, 640, 480, 32, 2560, 0};
+	sVopOverrides[0x1c14] = 0xed940000; sVopOverrides[0x1c1c] = 640; sVopOverrides[0x1c20] = 0x01df027f;
+	sVopWrites.clear();
+	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_OK && sOwner == primary && sDpDesktop && sDpLinkUp);
+	assert(sVopOverrides[0x1814] == kModelFramePhysical && sVopOverrides[0x181c] == 1920);
+	assert(sVopOverrides[0x1820] == 0x0437077f && sVopOverrides[0x1824] == 0x0437077f && sVopOverrides[0x1810] == 1);
+	assert(sVopOverrides[0xd2c] == 0 && sVopOverrides[0xd00] == 0xf && sVopOverrides[0x1c14] == 0xed940000);
+	assert(logged(sVopWrites, 0x1814, 0xed940000) && logged(sVopWrites, 0x1814, kModelFramePhysical));
+	assert(sConsole.address != 0 && sConsole.width == 1920 && sConsole.height == 1080 && sConsole.bytesPerRow == 7680);
+	assert(sHandler != NULL && (sVopOverrides[0xb0] & 0x20) != 0);
+	acc = {}; acc.version = kAccelerantVersion;
+	assert(Control(primary, kGetAccelerantInfo, &acc, sizeof(acc)) == B_OK);
+	assert(acc.port == 1 && acc.window == 0 && acc.width == 1920 && acc.firmwareAddress == 0xed940000);
+	assert((acc.flags & (kAccelerantAcquired | kAccelerantEdid | kAccelerantRetrace)) == (kAccelerantAcquired | kAccelerantEdid | kAccelerantRetrace));
+	assert((acc.flags & (kAccelerantModeSet | kAccelerantCursor)) == 0 && acc.frameBufferPhysical == kModelFramePhysical);
+	assert(sShared != NULL && strcmp(sShared->name, "RK3588 VOP2 DP TX1") == 0 && sShared->pixelClockKHz == 148500);
+	assert(sShared->hTotal == 2200 && sShared->vSyncStart == 1084 && memcmp(sShared->edid, sSinkEdid, 128) == 0);
+	assert(sShared->portTiming[0] == ((2200u << 16) | 44));
+	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_BUSY);
+	// Release: the firmware desktop again, the console back on the boot buffer, the interrupt off.
+	assert(Close(primary) == B_OK && sOwner == NULL && !sDpDesktop);
+	assert(sVopOverrides[0x1814] == 0xed940000 && sVopOverrides[0x181c] == 640 && sVopOverrides[0x1820] == 0x01df027f);
+	assert(sConsole.width == 640 && sHandler == NULL && (sVopOverrides[0xb0] & 0x20) == 0 && sFrameArea < 0);
+	assert(Free(primary) == B_OK && sAreas.empty());
+	// A second acquisition (app_server restarted) only moves the window.
+	assert(Open(&controller, "", O_RDWR, &opened) == B_OK);
+	primary = (Handle*)opened;
+	sDpWrites.clear(); sVopWrites.clear();
+	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_OK && sDpWrites.empty());
+	assert(sVopOverrides[0x1814] == kModelFramePhysical && !logged(sVopWrites, 0xd00, 0xf));
+	assert(Close(primary) == B_OK && sVopOverrides[0x1814] == 0xed940000);
+	controller.dpDesktopEnabled = false;
+	sDpLinkUp = false;
+	assert(Close(reader) == B_OK && Free(reader) == B_OK && Free(primary) == B_OK);
 	controller.dpAuxEnabled = false;
 	sAllowDp = false;
 	controller = dpController;
