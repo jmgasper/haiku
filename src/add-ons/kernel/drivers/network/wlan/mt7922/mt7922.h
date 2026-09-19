@@ -272,6 +272,7 @@ void mt7922_firmware_free(mt7922_firmware* firmware);
 status_t mt7922_mcu_start_firmware(mt7922_dev* device);
 status_t mt7922_mcu_read_capability(mt7922_dev* device);
 status_t mt7922_mcu_prepare(mt7922_dev* device);
+status_t mt7922_mcu_scan(mt7922_dev* device);
 
 status_t mt7922_setup(mt7922_dev* device);
 void mt7922_teardown(mt7922_dev* device);

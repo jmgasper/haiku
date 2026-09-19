@@ -44,6 +44,23 @@
  */
 #define MCU_CE_CMD_GET_NIC_CAPAB	0x8a
 #define MCU_CE_CMD_CHIP_CONFIG		0xca
+#define MCU_CE_CMD_SET_CHAN_DOMAIN	0x0f
+#define MCU_CE_CMD_START_HW_SCAN	0x03
+
+/* Commands with a shorter header of their own. */
+#define MCU_UNI_TXD_SIZE		48
+#define MCU_UNI_EXT_ACK			7
+#define MCU_UNI_CMD_DEV_INFO_UPDATE	0x01
+#define MCU_UNI_CMD_BSS_INFO_UPDATE	0x02
+
+#define MCU_EXT_CMD_SET_RX_PATH		0x4e
+
+/* What it says when it has finished looking around. */
+#define MCU_EVENT_SCAN_DONE		0x0d
+
+#define MT7922_STATION_INDEX		19
+#define MT7922_SCAN_REQUEST_SIZE	1186
+#define MT7922_SCAN_TIMEOUT		15000000
 
 /* Commands that carry a second identifier beside the first. */
 #define MCU_CMD_EXT_CID			0xed
@@ -894,4 +911,239 @@ mt7922_mcu_prepare(mt7922_dev* device)
 
 	TRACE("the radio is prepared\n");
 	return B_OK;
+}
+
+
+/* A fourth kind of command, with a shorter header of its own and its real
+ * arguments wrapped in yet another header inside the payload.
+ */
+static status_t
+mt7922_mcu_send_uni(mt7922_dev* device, uint16 command, const void* payload,
+	size_t payloadLength)
+{
+	device->sequence = (device->sequence + 1) & 0xf;
+	if (device->sequence == 0)
+		device->sequence = 1;
+
+	uint8* packet = (uint8*)device->commandBuffer.address;
+	size_t total = MCU_UNI_TXD_SIZE + payloadLength;
+
+	memset(packet, 0, MCU_UNI_TXD_SIZE);
+	write_le32(packet, (uint32)(total & MT_TXD0_TX_BYTES_MASK)
+		| ((uint32)MT_TX_TYPE_CMD << MT_TXD0_PKT_FMT_SHIFT)
+		| ((uint32)MT_TX_MCU_PORT_RX_Q0 << MT_TXD0_Q_IDX_SHIFT));
+	write_le32(packet + 4, MT_TXD1_LONG_FORMAT
+		| ((uint32)MT_HDR_FORMAT_CMD << MT_TXD1_HDR_FORMAT_SHIFT));
+
+	uint16 length = (uint16)(total - 32);
+	packet[0x20] = length & 0xff;
+	packet[0x21] = length >> 8;
+	packet[0x22] = command & 0xff;
+	packet[0x23] = command >> 8;
+	packet[0x25] = MCU_PKT_ID;
+	packet[0x27] = device->sequence;
+	packet[0x2a] = MCU_S2D_H2N;
+	packet[0x2b] = MCU_UNI_EXT_ACK;
+
+	memcpy(packet + MCU_UNI_TXD_SIZE, payload, payloadLength);
+
+	status_t status = mt7922_ring_submit(device, &device->commandRing,
+		device->commandBuffer.physical, total);
+	if (status != B_OK)
+		return status;
+
+	status = mt7922_ring_drain(device, &device->commandRing,
+		MCU_RESPONSE_TIMEOUT);
+	if (status != B_OK)
+		return status;
+
+	bigtime_t deadline = system_time() + MCU_RESPONSE_TIMEOUT;
+	while (system_time() < deadline) {
+		uint8 event[1024];
+		size_t got = sizeof(event);
+
+		status = mt7922_event_read(device, event, &got, MCU_RESPONSE_TIMEOUT);
+		if (status != B_OK)
+			return status;
+		if (got >= MCU_RXD_SIZE && event[0x1d] == device->sequence)
+			return B_OK;
+	}
+
+	return B_TIMED_OUT;
+}
+
+
+/* Which channels exist here at all. Nothing is scanned that is not in this
+ * list, so it is the shortest useful one: the channels everybody has.
+ */
+static const uint8 kChannels2GHz[] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 };
+static const uint8 kChannels5GHz[] = { 36, 40, 44, 48, 149, 153, 157, 161 };
+
+
+static status_t
+mt7922_mcu_set_channels(mt7922_dev* device)
+{
+	uint8 request[12 + (sizeof(kChannels2GHz) + sizeof(kChannels5GHz)) * 8];
+	memset(request, 0, sizeof(request));
+
+	request[0] = '0';
+	request[1] = '0';
+	request[4] = 0;			/* 20 and 40 MHz down low */
+	request[5] = 3;			/* and everything up high */
+	request[6] = 3;
+	request[8] = sizeof(kChannels2GHz);
+	request[9] = sizeof(kChannels5GHz);
+
+	size_t at = 12;
+	for (size_t i = 0; i < sizeof(kChannels2GHz); i++, at += 8)
+		request[at] = kChannels2GHz[i];
+	for (size_t i = 0; i < sizeof(kChannels5GHz); i++, at += 8)
+		request[at] = kChannels5GHz[i];
+
+	return mt7922_mcu_send_etc(device, MCU_CE_CMD_SET_CHAN_DOMAIN, MCU_Q_SET,
+		request, sizeof(request), NULL, NULL);
+}
+
+
+static status_t
+mt7922_mcu_set_channel(mt7922_dev* device)
+{
+	uint8 request[76];
+	memset(request, 0, sizeof(request));
+
+	request[0] = 1;			/* sit on channel one to begin with */
+	request[1] = 1;
+	request[2] = 0;			/* 20 MHz */
+	request[3] = device->streams;
+	request[4] = (1 << device->streams) - 1;
+	request[5] = 0;			/* no particular reason */
+	request[6] = 0;
+	request[0x0a] = 0;		/* down low */
+
+	return mt7922_mcu_send_ext(device, MCU_EXT_CMD_SET_RX_PATH, request,
+		sizeof(request), true);
+}
+
+
+/* Announce ourselves: first as a radio with an address, then as a station
+ * that has not joined anything yet. A scan is asked for on behalf of the
+ * second, so it has to exist first.
+ */
+static status_t
+mt7922_mcu_announce(mt7922_dev* device)
+{
+	uint8 self[16];
+	memset(self, 0, sizeof(self));
+	self[6] = 12;			/* the length of this piece */
+	self[8] = 1;			/* and it is active */
+	memcpy(self + 10, device->address, 6);
+
+	status_t status = mt7922_mcu_send_uni(device, MCU_UNI_CMD_DEV_INFO_UPDATE,
+		self, sizeof(self));
+	if (status != B_OK) {
+		ERROR("it would not take our address: %s\n", strerror(status));
+		return status;
+	}
+
+	uint8 station[36];
+	memset(station, 0, sizeof(station));
+	station[6] = 32;
+	station[8] = 1;			/* active */
+	write_le32(station + 0x0c, 0x00010001);	/* a station on an ordinary network */
+	station[0x10] = 1;
+	station[0x18] = MT7922_STATION_INDEX;
+	station[0x1e] = MT7922_STATION_INDEX;
+
+	status = mt7922_mcu_send_uni(device, MCU_UNI_CMD_BSS_INFO_UPDATE, station,
+		sizeof(station));
+	if (status != B_OK)
+		ERROR("it would not take our station: %s\n", strerror(status));
+
+	return status;
+}
+
+
+/* Look around.
+ *
+ * What comes back of this is one event saying it has finished. What it heard
+ * arrives separately, as ordinary received frames, which is a road not yet
+ * built - so for now the question this answers is only whether the radio will
+ * go and listen when asked.
+ */
+status_t
+mt7922_mcu_scan(mt7922_dev* device)
+{
+	status_t status = mt7922_mcu_set_channels(device);
+	if (status != B_OK) {
+		ERROR("it would not take the channel list: %s\n", strerror(status));
+		return status;
+	}
+
+	status = mt7922_mcu_set_channel(device);
+	if (status != B_OK) {
+		ERROR("it would not settle on a channel: %s\n", strerror(status));
+		return status;
+	}
+
+	status = mt7922_mcu_announce(device);
+	if (status != B_OK)
+		return status;
+
+	uint8 request[MT7922_SCAN_REQUEST_SIZE];
+	memset(request, 0, sizeof(request));
+
+	request[0] = 1;			/* this is scan number one */
+	request[1] = 0;			/* on behalf of our station */
+	request[2] = 0;			/* listening, not asking */
+	request[3] = 1;			/* for anyone at all */
+	request[6] = 1 << 5;		/* in more than one go */
+	request[7] = 1;			/* and the later fields are meant */
+	request[0x9e] = 4;		/* these channels, named below */
+
+	size_t count = sizeof(kChannels2GHz) + sizeof(kChannels5GHz);
+	request[0x9f] = (uint8)count;
+
+	size_t at = 0xa0;
+	for (size_t i = 0; i < sizeof(kChannels2GHz); i++, at += 2) {
+		request[at] = 1;	/* down low */
+		request[at + 1] = kChannels2GHz[i];
+	}
+	for (size_t i = 0; i < sizeof(kChannels5GHz); i++, at += 2) {
+		request[at] = 2;	/* up high */
+		request[at + 1] = kChannels5GHz[i];
+	}
+
+	memset(request + 0x456, 0xff, 6);	/* addressed to everyone */
+
+	status = mt7922_mcu_send_etc(device, MCU_CE_CMD_START_HW_SCAN, MCU_Q_SET,
+		request, sizeof(request), NULL, NULL);
+	if (status != B_OK) {
+		ERROR("it would not start looking: %s\n", strerror(status));
+		return status;
+	}
+
+	TRACE("the radio is listening on %" B_PRIuSIZE " channels\n", count);
+
+	/* It says when it has finished of its own accord, rather than in answer
+	 * to anything, so this is recognised by what it is and not by what it
+	 * replies to.
+	 */
+	bigtime_t deadline = system_time() + MT7922_SCAN_TIMEOUT;
+	while (system_time() < deadline) {
+		uint8 event[1024];
+		size_t got = sizeof(event);
+
+		if (mt7922_event_read(device, event, &got, MT7922_SCAN_TIMEOUT)
+				!= B_OK) {
+			break;
+		}
+
+		if (got >= MCU_RXD_SIZE && event[0x1c] == MCU_EVENT_SCAN_DONE) {
+			TRACE("the radio finished looking\n");
+			return B_OK;
+		}
+	}
+
+	ERROR("the radio never said it had finished looking\n");
+	return B_TIMED_OUT;
 }
