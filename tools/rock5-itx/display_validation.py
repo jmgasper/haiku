@@ -1076,8 +1076,12 @@ DP_WORDS = re.compile(
     r' pma_before=((?:[0-9a-f]{8},){6}[0-9a-f]{8}) pma_after=((?:[0-9a-f]{8},){6}[0-9a-f]{8})$', re.M)
 DP_DPCD = re.compile(r'^ROCK5_DISPLAY_DP_DPCD ([0-9a-f]{32})$', re.M)
 DP_EDID = re.compile(r'^ROCK5_DISPLAY_DP_EDID ([0-9a-f]{256})$', re.M)
+DP_TRAIN = re.compile(
+    r'^ROCK5_DISPLAY_DP_TRAIN rate=([0-9a-f]{2}) lanes=(\d) enhanced=(\d) ssc=(\d) pattern=(\d) attempts=(\d+)'
+    r' cr_loops=(\d+) eq_loops=(\d+) ropll_polls=(\d+) swing=(\d),(\d) pre=(\d),(\d) phyif=([0-9a-f]{8})'
+    r' cctl=([0-9a-f]{8}) status=([0-9a-f]{12})$', re.M)
 DP_RESULTS = {0: 'ok', 1: 'not_ready', 2: 'no_hot_plug', 3: 'refclk_unsupported', 4: 'lcpll_timeout',
-    5: 'aux_timeout', 6: 'aux_nack', 7: 'aux_short', 8: 'edid_invalid'}
+    5: 'aux_timeout', 6: 'aux_nack', 7: 'aux_short', 8: 'edid_invalid', 9: 'ropll_timeout', 10: 'training_failed'}
 DP_LINK_RATES = {0x06: 1.62, 0x0a: 2.7, 0x14: 5.4, 0x1e: 8.1}
 
 
@@ -1089,7 +1093,7 @@ def decode_dpcd(data):
         downstream_type=(data[5] >> 1) & 3, downstream_ports=data[7] & 0xf, training_interval=data[0xe])
 
 
-def validate_dp_probe(body, edid=False):
+def validate_dp_probe(body, edid=False, train=False):
     """Return the decoded DP probe from a native --dp transcript or raise ValidationError.
 
     A pass means the path came up to the AUX channel exactly as the driver
@@ -1106,7 +1110,7 @@ def validate_dp_probe(body, edid=False):
     result, phase = int(line.group(1)), int(line.group(2))
     if result != 0:
         raise ValidationError('DP probe result %s at phase %d' % (DP_RESULTS.get(result, result), phase))
-    if phase != (7 if edid else 6):
+    if phase != (8 if train else 7 if edid else 6):
         raise ValidationError('DP probe ended at phase %d' % phase)
     pin_before, pin_after = int(line.group(3), 16), int(line.group(4), 16)
     if (pin_after >> 4) & 0xf != 5:
@@ -1147,7 +1151,31 @@ def validate_dp_probe(body, edid=False):
         edid_block = bytes.fromhex(edid_line.group(1))
         if edid_block[:8] != EDID_HEADER or sum(edid_block) % 256:
             raise ValidationError('EDID block header or checksum wrong')
-    if body.count('ROCK5_DISPLAY_DP_PASS edid=%d\n' % (1 if edid else 0)) != 1:
+    training = None
+    if train:
+        trained = DP_TRAIN.search(body)
+        if trained is None:
+            raise ValidationError('link training line missing')
+        rate, lanes = int(trained.group(1), 16), int(trained.group(2))
+        status = bytes.fromhex(trained.group(16))
+        phyif, cctl = int(trained.group(14), 16), int(trained.group(15), 16)
+        if rate not in DP_LINK_RATES or lanes not in (1, 2) or lanes > decoded['max_lanes']:
+            raise ValidationError('implausible trained link %#x x%d' % (rate, lanes))
+        for lane in range(lanes):
+            if (status[lane // 2] >> (4 * (lane & 1))) & 7 != 7:
+                raise ValidationError('lane %d not trained (status %s)' % (lane, status.hex()))
+        if not status[2] & 1:
+            raise ValidationError('interlane alignment not done (status %s)' % status.hex())
+        if phyif & (0xf << 17) or (phyif >> 8) & 0xf != (1 << lanes) - 1 or (phyif >> 6) & 3 != lanes // 2 or phyif & 0xf:
+            raise ValidationError('PHY interface %#x not transmitting %d lanes without a pattern' % (phyif, lanes))
+        if cctl & 1 or bool(cctl & 2) != bool(int(trained.group(3))):
+            raise ValidationError('controller left scrambling off or framing mismatched (CCTL %#x)' % cctl)
+        training = dict(rate_code=rate, rate_gbps=DP_LINK_RATES[rate], lanes=lanes, enhanced=int(trained.group(3)),
+            ssc=int(trained.group(4)), pattern=int(trained.group(5)), attempts=int(trained.group(6)),
+            cr_loops=int(trained.group(7)), eq_loops=int(trained.group(8)), ropll_polls=int(trained.group(9)),
+            swing=[int(trained.group(10)), int(trained.group(11))], pre=[int(trained.group(12)), int(trained.group(13))],
+            phyif='%08x' % phyif, cctl='%08x' % cctl, status=status.hex())
+    if body.count('ROCK5_DISPLAY_DP_PASS edid=%d train=%d\n' % (1 if edid else 0, 1 if train else 0)) != 1:
         raise ValidationError('DP summary missing or inconsistent')
     return dict(status='pass', result=result, phase=phase, pin_before='%08x' % pin_before, pin_after='%08x' % pin_after,
         gpio_level=int(line.group(5)), hpd_before=line.group(6), hpd_after=line.group(7), hpd_polls=int(line.group(8)),
@@ -1157,5 +1185,5 @@ def validate_dp_probe(body, edid=False):
         usbdp_grf=[words.group(3), words.group(4)], vo0_grf=[words.group(5), words.group(6)],
         cctl=[words.group(7), words.group(8)], aux_clock=[words.group(9), words.group(10)],
         pma_before=words.group(11).split(','), pma_after=words.group(12).split(','),
-        dpcd=dpcd.hex(), dpcd_decoded=decoded, edid=edid_block.hex() if edid_block else None,
+        dpcd=dpcd.hex(), dpcd_decoded=decoded, edid=edid_block.hex() if edid_block else None, training=training,
         edid_base=decode_edid_base(edid_block) if edid_block else None)

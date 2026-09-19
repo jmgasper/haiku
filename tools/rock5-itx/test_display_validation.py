@@ -764,7 +764,7 @@ class DisplayValidationTest(unittest.TestCase):
         def transcript(result=0, phase=7, pin_after='00000050', hpd_after='00000f02', refclk='00000000',
                 resets_after='00000000,00000000,00000000,00000000', usbdp_after='00006000', vo0_after='00000040',
                 cctl_after='00000000', aux_after='00004a00', pma_after='000000cc,00000018,00000000,000000c0,00000003,00000008,00000000',
-                dpcd_bytes=dpcd, edid=base, summary=None, count=16):
+                dpcd_bytes=dpcd, edid=base, summary=None, count=16, train=None):
             lines = ['ROCK5_DISPLAY_DP_REQUEST_CHECKS_PASS',
                 'ROCK5_DISPLAY_DP result=%d phase=%d pin=00000000,%s level=1 hpd=00000000,%s hpd_polls=17 refclk=%s'
                 ' lcpll_polls=0 aux=12,0,40 aux_status=00000000 dpcd_count=%d sinks=41 edid_bytes=%d micros=41000'
@@ -775,7 +775,9 @@ class DisplayValidationTest(unittest.TestCase):
                 'ROCK5_DISPLAY_DP_DPCD ' + dpcd_bytes.hex()]
             if edid:
                 lines.append('ROCK5_DISPLAY_DP_EDID ' + edid.hex())
-            lines.append(summary if summary is not None else 'ROCK5_DISPLAY_DP_PASS edid=%d' % (1 if edid else 0))
+            if train is not None:
+                lines.append('ROCK5_DISPLAY_DP_TRAIN ' + train)
+            lines.append(summary if summary is not None else 'ROCK5_DISPLAY_DP_PASS edid=%d train=%d' % (1 if edid else 0, 1 if train else 0))
             return '\n'.join(lines) + '\n'
         result = check.validate_dp_probe(transcript(), edid=True)
         self.assertEqual(result['dpcd_decoded'], dict(revision='1.2', max_link_rate_gbps=2.7, max_link_rate_code=0x0a,
@@ -804,13 +806,34 @@ class DisplayValidationTest(unittest.TestCase):
             ('dpcd_count', transcript(count=0), True),
             ('edid_missing', transcript(edid=None), True),
             ('edid_checksum', transcript(edid=bytes(broken)), True),
-            ('summary', transcript(summary='ROCK5_DISPLAY_DP_PASS edid=0'), True),
+            ('summary', transcript(summary='ROCK5_DISPLAY_DP_PASS edid=0 train=0'), True),
             ('checks', transcript().replace('ROCK5_DISPLAY_DP_REQUEST_CHECKS_PASS\n', ''), True),
         ]
         for name, body, with_edid in cases:
             with self.subTest(name):
                 with self.assertRaises(check.ValidationError):
                     check.validate_dp_probe(body, edid=with_edid)
+        good = ('rate=14 lanes=2 enhanced=1 ssc=1 pattern=3 attempts=1 cr_loops=2 eq_loops=2 ropll_polls=1'
+            ' swing=1,1 pre=1,1 phyif=00000340 cctl=00000002 status=770001000000')
+        trained = check.validate_dp_probe(transcript(phase=8, train=good), edid=True, train=True)
+        self.assertEqual((trained['training']['rate_gbps'], trained['training']['lanes'], trained['training']['status']),
+            (5.4, 2, '770001000000'))
+        bad = [
+            ('lane', good.replace('status=770001000000', 'status=370001000000')),
+            ('align', good.replace('status=770001000000', 'status=770000000000')),
+            ('powerdown', good.replace('phyif=00000340', 'phyif=00060340')),
+            ('transmit', good.replace('phyif=00000340', 'phyif=00000140')),
+            ('pattern', good.replace('phyif=00000340', 'phyif=00000341')),
+            ('scramble', good.replace('cctl=00000002', 'cctl=00000003')),
+            ('framing', good.replace('cctl=00000002', 'cctl=00000000')),
+            ('rate', good.replace('rate=14', 'rate=15')),
+        ]
+        for name, line in bad:
+            with self.subTest(name):
+                with self.assertRaises(check.ValidationError):
+                    check.validate_dp_probe(transcript(phase=8, train=line), edid=True, train=True)
+        with self.assertRaises(check.ValidationError):
+            check.validate_dp_probe(transcript(phase=8), edid=True, train=True)
 
     def test_pattern_frame(self):
         import tempfile

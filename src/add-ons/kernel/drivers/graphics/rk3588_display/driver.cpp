@@ -1803,7 +1803,7 @@ DpControl(Handle* handle, void* buffer, size_t length)
 	if (user_memcpy(&request, buffer, sizeof(request)) != B_OK)
 		return B_BAD_ADDRESS;
 	if (request.version != kDpVersion
-		|| (request.flags & ~(kDpProbeEdid | kDpProbeIgnoreHotPlug)) != 0) {
+		|| (request.flags & ~(kDpProbeEdid | kDpProbeIgnoreHotPlug | kDpProbeTrain)) != 0) {
 		return B_BAD_VALUE;
 	}
 	uint32_t flags = request.flags;
@@ -1826,12 +1826,14 @@ DpControl(Handle* handle, void* buffer, size_t length)
 	dprintf("rk3588_display: dp probe result=%" B_PRIu32 " phase=%" B_PRIu32 " pin=%#" B_PRIx32
 		"->%#" B_PRIx32 " level=%" B_PRIu32 " hpd=%#" B_PRIx32 "->%#" B_PRIx32 " polls=%" B_PRIu32
 		" lcpll=%" B_PRIu32 " aux=%" B_PRIu32 "/%" B_PRIu32 " status=%#" B_PRIx32 " dpcd=%02x%02x%02x%02x"
-		" sinks=%" B_PRIu32 " edid=%" B_PRIu32 " micros=%" B_PRId64 "\n", request.result, request.phase,
+		" sinks=%" B_PRIu32 " edid=%" B_PRIu32 " link=%#" B_PRIx32 "x%" B_PRIu32 " cr=%" B_PRIu32 " eq=%"
+		B_PRIu32 " status=%02x%02x%02x micros=%" B_PRId64 "\n", request.result, request.phase,
 		request.pinMuxBefore, request.pinMuxAfter, request.gpioLevel, request.hpdStatusBefore,
 		request.hpdStatusAfter, request.hpdPolls, request.lcpllPolls, request.auxTransfers,
 		request.auxRetries, request.auxStatus, request.dpcd[0], request.dpcd[1], request.dpcd[2],
-		request.dpcd[3], request.sinkCount, request.edidBytes,
-		request.finishedMicros - request.startedMicros);
+		request.dpcd[3], request.sinkCount, request.edidBytes, request.linkRate, request.laneCount,
+		request.clockRecoveryLoops, request.equalizationLoops, request.linkStatus[0],
+		request.linkStatus[1], request.linkStatus[2], request.finishedMicros - request.startedMicros);
 	return user_memcpy(buffer, &request, sizeof(request));
 }
 

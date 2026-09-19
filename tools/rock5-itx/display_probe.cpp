@@ -963,7 +963,7 @@ PrintBytes(const char* label, const uint8_t* bytes, unsigned count)
 
 
 static bool
-ProbeDisplayPort(bool edid)
+ProbeDisplayPort(bool edid, bool train)
 {
 	int fd = open(kDevice, O_RDWR);
 	if (fd < 0) {
@@ -988,7 +988,7 @@ ProbeDisplayPort(bool edid)
 	printf("ROCK5_DISPLAY_DP_REQUEST_CHECKS_PASS\n");
 	memset(&request, 0, sizeof(request));
 	request.version = kDpVersion;
-	request.flags = edid ? kDpProbeEdid : 0;
+	request.flags = (edid ? kDpProbeEdid : 0) | (train ? kDpProbeTrain : 0);
 	if (ioctl(fd, kDpProbe, &request, sizeof(request)) != 0) {
 		perror("dp probe");
 		close(fd);
@@ -1022,12 +1022,25 @@ ProbeDisplayPort(bool edid)
 	PrintBytes("ROCK5_DISPLAY_DP_DPCD ", request.dpcd, 16);
 	if (request.edidBytes > 0)
 		PrintBytes("ROCK5_DISPLAY_DP_EDID ", request.edid, 128);
+	if (train) {
+		printf("ROCK5_DISPLAY_DP_TRAIN rate=%02" PRIx32 " lanes=%" PRIu32 " enhanced=%" PRIu32 " ssc=%" PRIu32
+			" pattern=%" PRIu32 " attempts=%" PRIu32 " cr_loops=%" PRIu32 " eq_loops=%" PRIu32
+			" ropll_polls=%" PRIu32 " swing=%" PRIu32 ",%" PRIu32 " pre=%" PRIu32 ",%" PRIu32
+			" phyif=%08" PRIx32 " cctl=%08" PRIx32 " status=", request.linkRate, request.laneCount,
+			request.enhancedFraming, request.spreadSpectrum, request.trainingPattern, request.attempts,
+			request.clockRecoveryLoops, request.equalizationLoops, request.ropllPolls, request.swing[0],
+			request.swing[1], request.preEmphasis[0], request.preEmphasis[1], request.phyifAfter,
+			request.cctlTrained);
+		for (unsigned i = 0; i < 6; i++)
+			printf("%02x", request.linkStatus[i]);
+		printf("\n");
+	}
 	if (request.result != kDpOK) {
 		fprintf(stderr, "DP probe result %" PRIu32 " at phase %" PRIu32 "\n", request.result,
 			request.phase);
 		return false;
 	}
-	printf("ROCK5_DISPLAY_DP_PASS edid=%u\n", edid ? 1 : 0);
+	printf("ROCK5_DISPLAY_DP_PASS edid=%u train=%u\n", edid ? 1 : 0, train ? 1 : 0);
 	return true;
 }
 
@@ -1075,12 +1088,21 @@ main(int argc, char** argv)
 	}
 	if (argc == 2 && (strcmp(argv[1], "--cursor-hide") == 0 || strcmp(argv[1], "--cursor-restore") == 0))
 		return ControlCursor(argv[1] + strlen("--cursor-"), 0, 0) ? 0 : 1;
-	if ((argc == 2 || argc == 3) && strcmp(argv[1], "--dp") == 0) {
-		if (argc == 3 && strcmp(argv[2], "edid") != 0) {
-			fprintf(stderr, "usage: %s --dp [edid]\n", argv[0]);
+	if (argc >= 2 && argc <= 4 && strcmp(argv[1], "--dp") == 0) {
+		bool edid = false, train = false, valid = true;
+		for (int i = 2; i < argc; i++) {
+			if (strcmp(argv[i], "edid") == 0 && !edid)
+				edid = true;
+			else if (strcmp(argv[i], "train") == 0 && !train)
+				train = true;
+			else
+				valid = false;
+		}
+		if (!valid) {
+			fprintf(stderr, "usage: %s --dp [edid] [train]\n", argv[0]);
 			return 2;
 		}
-		return ProbeDisplayPort(argc == 3) ? 0 : 1;
+		return ProbeDisplayPort(edid, train) ? 0 : 1;
 	}
 	if (argc == 3 && strcmp(argv[1], "--power") == 0) {
 		if (strcmp(argv[2], "off") != 0 && strcmp(argv[2], "on") != 0) {
@@ -1097,7 +1119,7 @@ main(int argc, char** argv)
 	if ((scanout ? argc > 3 || hold < 1 || hold > 120 : argc > 2) || samples < 1 || samples > 16) {
 		fprintf(stderr, "usage: %s [samples 1-16 | --absent-device | --edid | --accelerant"
 			" | --scanout [hold-seconds 1-120] | --mode WIDTHxHEIGHT | --power off|on"
-			" | --cursor X Y | --cursor-hide | --cursor-restore | --dp [edid]]\n", argv[0]);
+			" | --cursor X Y | --cursor-hide | --cursor-restore | --dp [edid] [train]]\n", argv[0]);
 		return 2;
 	}
 	// Only the accelerant profile admits writable handles; opening and

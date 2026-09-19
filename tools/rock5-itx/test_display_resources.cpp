@@ -80,11 +80,14 @@ static uint32* sPmaModel;
 static std::vector<uint32> sPmaShadow;
 static std::vector<std::pair<unsigned, uint32> > sPmaWrites, sDpWrites, sHiwordWrites;
 static std::map<uint64, std::pair<uint32*, std::vector<uint32> > > sHiwordModels; // base -> (registers, shadow)
-static uint8_t sDpcd[0x300];
+static uint8_t sDpcd[0x700];
 static uint8_t sSinkEdid[128];
 static bool sSinkPresent = true; // the RA620 drives hot-plug and answers AUX
 static uint32 sAuxDeferReplies; // replies to answer with DEFER first
 static bool sAuxNeverReplies, sLcpllNeverLocks;
+static bool sRopllNeverLocks, sLinkNeverRecovers;
+static uint32 sHighestRecoveringRate; // the sink only recovers the clock at or below this rate code
+static std::vector<std::pair<unsigned, uint32> > sDpcdWrites;
 static uint32 sRefclkSelect; // PMU CLKSEL_CON14
 static unsigned sHotPlugDebounce; // model steps until the controller reports PLUG
 static unsigned sAuxCommands;
@@ -316,6 +319,41 @@ ModeSetModelStep()
 }
 
 
+// The sink's link status: clock recovery needs swing 1 under pattern 1 (and
+// a rate the sink recovers at), equalization pre-emphasis 1 under TPS2/3/4.
+static void
+SinkLinkStatus()
+{
+	uint8_t pattern = sDpcd[0x102] & 7;
+	unsigned lanes = sDpcd[0x101] & 0x1f;
+	bool rateOk = !sLinkNeverRecovers && sDpcd[0x100] <= sHighestRecoveringRate;
+	uint8_t laneStatus[2] = {0, 0};
+	uint8_t adjust = 0;
+	bool aligned = true;
+	for (unsigned lane = 0; lane < 2; lane++) {
+		uint8_t set = sDpcd[0x103 + lane];
+		uint8_t swing = set & 3, pre = (set >> 3) & 3;
+		uint8_t bits = 0;
+		if (lane < lanes && pattern != 0 && rateOk && swing >= 1) {
+			bits |= 1;
+			if (pattern >= 2 && pre >= 1)
+				bits |= 6;
+		}
+		if ((bits & 6) != 6)
+			aligned = false;
+		laneStatus[lane] = bits;
+		uint8_t want = (uint8_t)(1 | ((pattern >= 2 ? 1 : 0) << 2)); // swing 1, pre 1 once equalizing
+		adjust |= want << (4 * lane);
+	}
+	sDpcd[0x202] = (uint8_t)(laneStatus[0] | (laneStatus[1] << 4));
+	sDpcd[0x203] = 0;
+	sDpcd[0x204] = aligned && pattern >= 2 ? 1 : 0;
+	sDpcd[0x205] = 0;
+	sDpcd[0x206] = adjust;
+	sDpcd[0x207] = 0;
+}
+
+
 static void
 DpModelStep()
 {
@@ -345,6 +383,9 @@ DpModelStep()
 		}
 		uint32 lock = sLcpllNeverLocks ? 0 : 0xc0;
 		sPmaModel[0x350 / 4] = sPmaShadow[0x350 / 4] = lock;
+		// ROPLL locks while the DP common reset is released.
+		uint32 ropll = !sRopllNeverLocks && (sPmaModel[0x38c / 4] & 4) != 0 ? 3 : 0;
+		sPmaModel[0x354 / 4] = sPmaShadow[0x354 / 4] = ropll;
 	}
 	if (sDpModel == NULL)
 		return;
@@ -379,7 +420,16 @@ DpModelStep()
 				static uint32 sEdidOffset;
 				if (type == 0x9) {
 					assert(address + size <= sizeof(sDpcd));
+					if (address == 0x202)
+						SinkLinkStatus();
 					memcpy(data, sDpcd + address, size);
+				} else if (type == 0x8) {
+					assert(address + size <= sizeof(sDpcd) && size > 0);
+					for (unsigned b = 0; b < size; b++) {
+						uint8_t byte = (uint8_t)(dp[(0xb08 + (b / 4) * 4) / 4] >> (8 * (b % 4)));
+						sDpcd[address + b] = byte;
+						sDpcdWrites.push_back(std::make_pair(address + b, byte));
+					}
 				} else if ((type & ~0x4u) == 0x0) {
 					assert(address == 0x50 && (size == 1 || size == 0));
 					if (size == 1)
@@ -410,7 +460,8 @@ DpModelStep()
 			for (unsigned w = 0; w < 4; w++)
 				sDpShadow[(0xb08 + w * 4) / 4] = dp[(0xb08 + w * 4) / 4];
 		} else {
-			assert(offset == 0x200 || offset == 0xd04 || offset == 0xd0c || (offset >= 0xb08 && offset <= 0xb14));
+			assert(offset == 0x200 || offset == 0xa00 || offset == 0xd04 || offset == 0xd0c
+				|| (offset >= 0xb08 && offset <= 0xb14));
 		}
 		sDpShadow[i] = dp[i];
 	}
@@ -1326,6 +1377,9 @@ Prepare()
 	sAuxNeverReplies = sLcpllNeverLocks = false;
 	sRefclkSelect = 0;
 	sHotPlugDebounce = 20;
+	sRopllNeverLocks = sLinkNeverRecovers = false;
+	sHighestRecoveringRate = 0x1e;
+	sDpcdWrites.clear();
 	sAuxCommands = 0;
 	sAuxLog.clear();
 	memset(sDpcd, 0, sizeof(sDpcd));
@@ -2746,7 +2800,7 @@ main()
 	dp.version = kDpVersion + 1;
 	assert(Control(primary, kDpProbe, &dp, sizeof(dp)) == B_BAD_VALUE);
 	dp.version = kDpVersion;
-	dp.flags = 4;
+	dp.flags = 8;
 	assert(Control(primary, kDpProbe, &dp, sizeof(dp)) == B_BAD_VALUE);
 	assert(sMapAttempts == 0);
 	auto probe = [&](uint32 flags) {
@@ -2828,6 +2882,36 @@ main()
 	// A corrupted EDID.
 	Prepare(); sAllowDp = true; sSinkEdid[20] ^= 1;
 	assert(probe(kDpProbeEdid) == kDpEdidInvalid && dp.edidBytes == 128);
+	// Link training at the sink's 2.7 Gb/s over the two lanes: the power-up,
+	// the link words, TPS1 until the swing request is met, TPS2 until the
+	// pre-emphasis request is met, the pattern off; the drive tables applied
+	// to PHY lanes 2 and 3.
+	Prepare(); sAllowDp = true;
+	assert(probe(kDpProbeEdid | kDpProbeTrain) == kDpOK && dp.phase == kDpPhaseTrain);
+	assert(dp.linkRate == 0x0a && dp.laneCount == 2 && dp.enhancedFraming == 1 && dp.spreadSpectrum == 1);
+	assert(dp.trainingPattern == 2 && dp.attempts == 1 && dp.clockRecoveryLoops == 2 && dp.equalizationLoops == 2);
+	assert(dp.swing[0] == 1 && dp.swing[1] == 1 && dp.preEmphasis[0] == 1 && dp.preEmphasis[1] == 1);
+	assert(dp.linkStatus[0] == 0x77 && dp.linkStatus[2] == 1 && dp.ropllPolls == 0);
+	assert(sDpcd[0x600] == 1 && sDpcd[0x100] == 0x0a && sDpcd[0x101] == 0x82 && sDpcd[0x107] == 0x10 && sDpcd[0x108] == 1);
+	assert(sDpcd[0x102] == 0 && sDpcd[0x103] == 0x09 && sDpcd[0x104] == 0x09);
+	assert(sequenceOf(sDpcdWrites, {{0x600u, 1u}, {0x100u, 0x0au}, {0x101u, 0x82u}, {0x102u, 0x21u}, {0x103u, 0u},
+		{0x103u, 1u}, {0x102u, 0x22u}, {0x103u, 1u}, {0x103u, 9u}, {0x102u, 0u}}));
+	assert(sequenceOf(sPmaWrites, {{0x28cu, 0x38u}, {0x38cu, 0x0cu}}));
+	// Swing 1 / pre-emphasis 1 at HBR on PHY lanes 2 and 3 (0x810 + 0x800 * lane), nothing on lanes 0 and 1.
+	assert(logged(sPmaWrites, 0x1810, 0x2a) && logged(sPmaWrites, 0x2010, 0x2a) && logged(sPmaWrites, 0x2014, 0x17));
+	assert(!logged(sPmaWrites, 0x1010, 0x2a) && !logged(sPmaWrites, 0x0810, 0x2a));
+	assert((dp.phyifAfter & 0x1e0000) == 0 && ((dp.phyifAfter >> 8) & 0xf) == 3 && ((dp.phyifAfter >> 6) & 3) == 1);
+	assert((dp.phyifAfter & 0xf) == 0 && (dp.cctlTrained & 3) == 2);
+	// The sink only recovers at RBR: one downgrade from its 2.7 Gb/s.
+	Prepare(); sAllowDp = true; sHighestRecoveringRate = 0x06;
+	assert(probe(kDpProbeTrain) == kDpOK && dp.linkRate == 0x06 && dp.attempts == 2);
+	assert(logged(sPmaWrites, 0x28c, 0x18) && sDpcd[0x100] == 0x06);
+	// Never recovers: every rate fails, the pattern ends disabled.
+	Prepare(); sAllowDp = true; sLinkNeverRecovers = true;
+	assert(probe(kDpProbeTrain) == kDpTrainingFailed && dp.attempts == 2 && sDpcd[0x102] == 0);
+	// ROPLL never locks.
+	Prepare(); sAllowDp = true; sRopllNeverLocks = true;
+	assert(probe(kDpProbeTrain) == kDpRopllTimeout && dp.ropllPolls == 50);
 	assert(Close(reader) == B_OK && Free(reader) == B_OK && Close(primary) == B_OK && Free(primary) == B_OK);
 	controller.dpAuxEnabled = false;
 	sAllowDp = false;

@@ -26,6 +26,7 @@ static const uint32_t kDpProbe = 0x52444910; // writable handle
 static const uint32_t kDpVersion = 1;
 static const uint32_t kDpProbeEdid = 1; // also read EDID block 0 over I2C-over-AUX
 static const uint32_t kDpProbeIgnoreHotPlug = 2; // continue without a hot-plug
+static const uint32_t kDpProbeTrain = 4; // also train the main link (no video)
 
 static const uint32_t kDpOK = 0;
 static const uint32_t kDpNotReady = 1; // VO0 off or a DP/PHY bus clock gated
@@ -36,6 +37,8 @@ static const uint32_t kDpAuxTimeout = 5; // no reply event, or the controller's 
 static const uint32_t kDpAuxNack = 6; // a reply other than ACK after the retries
 static const uint32_t kDpAuxShort = 7; // fewer bytes than asked for
 static const uint32_t kDpEdidInvalid = 8;
+static const uint32_t kDpRopllTimeout = 9;
+static const uint32_t kDpTrainingFailed = 10; // clock recovery or equalization failed at the lowest rate
 
 static const uint32_t kDpPhaseNone = 0;
 static const uint32_t kDpPhasePin = 1;
@@ -45,6 +48,7 @@ static const uint32_t kDpPhasePhy = 4;
 static const uint32_t kDpPhaseLanes = 5;
 static const uint32_t kDpPhaseDpcd = 6;
 static const uint32_t kDpPhaseEdid = 7;
+static const uint32_t kDpPhaseTrain = 8;
 
 static const unsigned kDpPmaWordCount = 7;
 static const uint32_t kDpPmaOffsets[kDpPmaWordCount] = {0x288, 0x28c, 0x2d0, 0x350, 0x354,
@@ -78,6 +82,17 @@ struct DpProbeRequest {
 	uint32_t sinkCount; // DPCD 0x200
 	uint32_t edidBytes;
 	uint8_t edid[128];
+	// Link training (kDpProbeTrain).
+	uint32_t linkRate; // DPCD bandwidth code the link trained at (6, 0x0a, 0x14, 0x1e)
+	uint32_t laneCount;
+	uint32_t enhancedFraming, spreadSpectrum, trainingPattern;
+	uint32_t attempts; // rates tried
+	uint32_t clockRecoveryLoops, equalizationLoops;
+	uint32_t ropllPolls;
+	uint32_t swing[2], preEmphasis[2];
+	uint8_t linkStatus[6]; // DPCD 0x202-0x207 after equalization
+	uint8_t reserved[2];
+	uint32_t phyifAfter, cctlTrained;
 	int64_t startedMicros, finishedMicros;
 };
 
@@ -138,6 +153,7 @@ static const uint32_t kAuxI2cWrite = 0x0;
 static const uint32_t kAuxI2cRead = 0x1;
 static const uint32_t kAuxI2cMot = 0x4;
 static const uint32_t kAuxNativeRead = 0x9;
+static const uint32_t kAuxNativeWrite = 0x8;
 static const uint32_t kAuxEdidAddress = 0x50;
 
 static const unsigned kDpResetPauseMicros = 10000;
@@ -148,6 +164,45 @@ static const uint32_t kDpLcpllPollLimit = 500; // 100 ms
 static const unsigned kDpAuxPollMicros = 50;
 static const uint32_t kDpAuxPollLimit = 200; // 10 ms per transfer
 static const uint32_t kDpAuxRetryLimit = 7;
+
+// DW DP PHY interface and PMA rate words.
+static const uint32_t kDpPhyInterface = 0xa00; // 20:17 power-down, 11:8 transmit, 7:6 lanes/2, 3:0 pattern
+static const uint32_t kDpPhyPowerDownMask = 0xfu << 17;
+static const uint32_t kDpPhyTransmitMask = 0xfu << 8;
+static const uint32_t kDpPhyLanesMask = 3u << 6;
+static const uint32_t kDpPhyPatternMask = 0xf;
+static const uint32_t kDpCctlEnhancedFraming = 1u << 1;
+static const uint32_t kDpCctlScrambleDisable = 1u << 0;
+static const uint32_t kPmaDpLink = 0x28c; // 6:5 link bandwidth
+static const uint32_t kPmaSsc = 0x2d0; // bit 1 ROPLL spread spectrum
+static const uint32_t kPmaDpCmnRstn = 1u << 2; // in kPmaDpReset
+static const uint32_t kPmaRopllDone = 0x354; // bit 1 lock, bit 0 AFC done
+static const uint32_t kDpRopllPollLimit = 50; // 1 ms
+static const unsigned kDpPhyLane[2] = {2, 3}; // PHY lanes of DP lanes 0 and 1
+
+struct DpDrive {
+	uint8_t reg0204, reg0205, reg0206, reg0207;
+};
+
+// Linux rk3588_dp_tx_drv_ctrl_rbr_hbr / _hbr2 / _hbr3 [swing][pre-emphasis].
+static const DpDrive kDpDriveRbrHbr[4][4] = {
+	{{0x20, 0x10, 0x42, 0xe5}, {0x26, 0x14, 0x42, 0xe5}, {0x29, 0x18, 0x42, 0xe5}, {0x2b, 0x1c, 0x43, 0xe7}},
+	{{0x23, 0x10, 0x42, 0xe7}, {0x2a, 0x17, 0x43, 0xe7}, {0x2b, 0x1a, 0x43, 0xe7}},
+	{{0x27, 0x10, 0x42, 0xe7}, {0x2b, 0x17, 0x43, 0xe7}},
+	{{0x29, 0x10, 0x43, 0xe7}},
+};
+static const DpDrive kDpDriveHbr2[4][4] = {
+	{{0x21, 0x10, 0x42, 0xe5}, {0x26, 0x14, 0x42, 0xe5}, {0x26, 0x16, 0x43, 0xe5}, {0x2a, 0x19, 0x43, 0xe7}},
+	{{0x24, 0x10, 0x42, 0xe7}, {0x2a, 0x17, 0x43, 0xe7}, {0x2b, 0x1a, 0x43, 0xe7}},
+	{{0x28, 0x10, 0x42, 0xe7}, {0x2b, 0x17, 0x43, 0xe7}},
+	{{0x28, 0x10, 0x43, 0xe7}},
+};
+static const DpDrive kDpDriveHbr3[4][4] = {
+	{{0x21, 0x10, 0x42, 0xe5}, {0x26, 0x14, 0x42, 0xe5}, {0x26, 0x16, 0x43, 0xe5}, {0x29, 0x18, 0x43, 0xe7}},
+	{{0x24, 0x10, 0x42, 0xe7}, {0x2a, 0x18, 0x43, 0xe7}, {0x2b, 0x1b, 0x43, 0xe7}},
+	{{0x27, 0x10, 0x42, 0xe7}, {0x2b, 0x18, 0x43, 0xe7}},
+	{{0x28, 0x10, 0x43, 0xe7}},
+};
 
 // Linux rk_udphy_init_sequence and rk_udphy_24m_refclk_cfg (PMA offsets).
 static const RegisterValue kUdphyInitSequence[] = {
@@ -400,7 +455,260 @@ DpProbeSink(Hardware& hardware, DpProbeRequest& request)
 		if (memcmp(request.edid, kHeader, 8) != 0 || sum != 0)
 			return kDpEdidInvalid;
 	}
+	if ((request.flags & kDpProbeTrain) != 0)
+		return DpTrainLink(hardware, request);
 	return kDpOK;
+}
+
+
+inline uint32_t
+DpBandwidthIndex(uint32_t code)
+{
+	return code == 0x1e ? 3 : code == 0x14 ? 2 : code == 0x0a ? 1 : 0;
+}
+
+
+inline uint32_t
+DpLowerRate(uint32_t code)
+{
+	return code == 0x1e ? 0x14 : code == 0x14 ? 0x0a : code == 0x0a ? 0x06 : 0;
+}
+
+
+inline uint32_t
+DpVoltageMax(uint32_t preEmphasis)
+{
+	return preEmphasis >= 3 ? 0 : 3 - preEmphasis;
+}
+
+
+template<class Hardware>
+uint32_t
+DpWriteDpcd(Hardware& hardware, DpProbeRequest& request, uint32_t address, const uint8_t* data,
+	uint32_t size)
+{
+	uint8_t buffer[16];
+	memcpy(buffer, data, size);
+	return DpAuxTransfer(hardware, request, kAuxNativeWrite, address, buffer, size);
+}
+
+
+// rk_udphy_dp_set_voltage and the DPCD TRAINING_LANEx_SET words
+// (dw_dp_link_train_update_vs_emph).
+template<class Hardware>
+uint32_t
+DpApplyDrive(Hardware& hardware, DpProbeRequest& request, bool swingMax[2], bool preMax[2])
+{
+	uint32_t index = DpBandwidthIndex(request.linkRate);
+	const DpDrive (*table)[4] = index == 3 ? kDpDriveHbr3 : index == 2 ? kDpDriveHbr2 : kDpDriveRbrHbr;
+	uint8_t lanes[2];
+	for (uint32_t lane = 0; lane < request.laneCount; lane++) {
+		uint32_t offset = 0x800 * kDpPhyLane[lane];
+		uint32_t clock = hardware.ReadPma(0x854 + offset);
+		// TXCLK inversion follows the lane's DP mux at RBR and HBR, off above.
+		clock = index <= 1 ? (clock | 2u) : (clock & ~2u);
+		hardware.WritePma(0x854 + offset, clock);
+		const DpDrive& drive = table[request.swing[lane]][request.preEmphasis[lane]];
+		hardware.WritePma(0x810 + offset, drive.reg0204);
+		hardware.WritePma(0x814 + offset, drive.reg0205);
+		hardware.WritePma(0x818 + offset, drive.reg0206);
+		hardware.WritePma(0x81c + offset, drive.reg0207);
+		lanes[lane] = (uint8_t)(request.swing[lane] | (request.preEmphasis[lane] << 3)
+			| (swingMax[lane] ? 1u << 2 : 0) | (preMax[lane] ? 1u << 5 : 0));
+	}
+	return DpWriteDpcd(hardware, request, 0x103, lanes, request.laneCount);
+}
+
+
+// dw_dp_link_get_adjustments: the sink's requested swing and pre-emphasis,
+// clamped as Linux does. Returns whether anything changed.
+inline bool
+DpAdjust(DpProbeRequest& request, const uint8_t status[6], bool swingMax[2], bool preMax[2])
+{
+	bool changed = false;
+	for (uint32_t lane = 0; lane < request.laneCount; lane++) {
+		uint8_t request8 = status[4 + lane / 2] >> (4 * (lane & 1));
+		uint32_t swing = request8 & 3, pre = (request8 >> 2) & 3;
+		if (swing != request.swing[lane] || pre != request.preEmphasis[lane])
+			changed = true;
+		preMax[lane] = pre >= 3;
+		request.preEmphasis[lane] = pre >= 3 ? 3 : pre;
+		uint32_t limit = DpVoltageMax(request.preEmphasis[lane]);
+		if (swing > limit)
+			swing = limit;
+		swingMax[lane] = swing >= 3;
+		request.swing[lane] = swing >= 3 ? 3 : swing;
+	}
+	return changed;
+}
+
+
+inline bool
+DpClockRecovered(const uint8_t status[6], uint32_t lanes)
+{
+	for (uint32_t lane = 0; lane < lanes; lane++) {
+		if (((status[lane / 2] >> (4 * (lane & 1))) & 1) == 0)
+			return false;
+	}
+	return true;
+}
+
+
+inline bool
+DpEqualized(const uint8_t status[6], uint32_t lanes)
+{
+	if ((status[2] & 1) == 0) // INTERLANE_ALIGN_DONE
+		return false;
+	for (uint32_t lane = 0; lane < lanes; lane++) {
+		if (((status[lane / 2] >> (4 * (lane & 1))) & 7) != 7)
+			return false;
+	}
+	return true;
+}
+
+
+template<class Hardware>
+uint32_t
+DpSetPattern(Hardware& hardware, DpProbeRequest& request, uint32_t pattern)
+{
+	uint32_t cctl = hardware.ReadDp(kDpCctl);
+	bool scrambleOff = pattern != 0 && pattern != 4;
+	hardware.WriteDp(kDpCctl, scrambleOff ? (cctl | kDpCctlScrambleDisable) : (cctl & ~kDpCctlScrambleDisable));
+	hardware.WriteDp(kDpPhyInterface, (hardware.ReadDp(kDpPhyInterface) & ~kDpPhyPatternMask) | pattern);
+	uint8_t value = (uint8_t)((pattern == 4 ? 7 : pattern) | (scrambleOff ? 0x20 : 0));
+	return DpWriteDpcd(hardware, request, 0x102, &value, 1);
+}
+
+
+// dw_dp_link_configure: the PHY at the rate (P3, ROPLL relock, P0), the
+// lanes transmitting, framing, and the sink told the rate and lane count.
+template<class Hardware>
+uint32_t
+DpConfigureLink(Hardware& hardware, DpProbeRequest& request)
+{
+	hardware.WriteDp(kDpPhyInterface,
+		(hardware.ReadDp(kDpPhyInterface) & ~kDpPhyPowerDownMask) | (3u << 17));
+	hardware.WritePma(kPmaDpReset, hardware.ReadPma(kPmaDpReset) & ~kPmaDpCmnRstn);
+	hardware.WritePma(kPmaDpLink, (hardware.ReadPma(kPmaDpLink) & ~(3u << 5))
+		| (DpBandwidthIndex(request.linkRate) << 5));
+	hardware.WritePma(kPmaSsc, (hardware.ReadPma(kPmaSsc) & ~2u) | (request.spreadSpectrum ? 2u : 0));
+	hardware.WritePma(kPmaDpReset, hardware.ReadPma(kPmaDpReset) | kPmaDpCmnRstn);
+	request.ropllPolls = 0;
+	while ((hardware.ReadPma(kPmaRopllDone) & 3) != 3) {
+		if (request.ropllPolls >= kDpRopllPollLimit)
+			return kDpRopllTimeout;
+		request.ropllPolls++;
+		hardware.Pause(20);
+	}
+	uint32_t phy = hardware.ReadDp(kDpPhyInterface);
+	phy = (phy & ~kDpPhyLanesMask) | ((request.laneCount / 2) << 6);
+	hardware.WriteDp(kDpPhyInterface, phy);
+	phy &= ~kDpPhyPowerDownMask;
+	hardware.WriteDp(kDpPhyInterface, phy);
+	hardware.WriteDp(kDpPhyInterface, (phy & ~kDpPhyTransmitMask) | (((1u << request.laneCount) - 1) << 8));
+	uint32_t cctl = hardware.ReadDp(kDpCctl);
+	hardware.WriteDp(kDpCctl, request.enhancedFraming ? (cctl | kDpCctlEnhancedFraming)
+		: (cctl & ~kDpCctlEnhancedFraming));
+	uint8_t link[2] = {(uint8_t)request.linkRate,
+		(uint8_t)(request.laneCount | (request.enhancedFraming ? 0x80 : 0))};
+	uint32_t result = DpWriteDpcd(hardware, request, 0x100, link, 2);
+	if (result != kDpOK)
+		return result;
+	uint8_t spread[2] = {(uint8_t)(request.spreadSpectrum ? 0x10 : 0),
+		(uint8_t)((request.dpcd[6] & 1) != 0 ? 1 : 0)};
+	return DpWriteDpcd(hardware, request, 0x107, spread, 2);
+}
+
+
+// dw_dp_link_train_full with the rate downgrade, from the sink's
+// capabilities: at most the two lanes the board wires.
+template<class Hardware>
+uint32_t
+DpTrainLink(Hardware& hardware, DpProbeRequest& request)
+{
+	request.phase = kDpPhaseTrain;
+	uint8_t powerUp = 1;
+	uint32_t result = DpWriteDpcd(hardware, request, 0x600, &powerUp, 1);
+	if (result != kDpOK)
+		return result;
+	DpPause(hardware, 1000);
+	uint32_t rate = request.dpcd[1];
+	if (rate != 0x06 && rate != 0x0a && rate != 0x14 && rate != 0x1e)
+		rate = 0x0a;
+	uint32_t lanes = request.dpcd[2] & 0x1f;
+	request.laneCount = lanes >= 2 ? 2 : 1;
+	request.enhancedFraming = (request.dpcd[2] >> 7) & 1;
+	request.spreadSpectrum = request.dpcd[3] & 1;
+	uint32_t interval = request.dpcd[0xe] & 0x7f;
+	unsigned crDelay = interval == 0 ? 100 : (interval > 4 ? 4 : interval) * 4000;
+	unsigned eqDelay = interval == 0 ? 400 : (interval > 4 ? 4 : interval) * 4000;
+	uint32_t eqPattern = (request.dpcd[3] & 0x80) != 0 ? 4 : (request.dpcd[2] & 0x40) != 0 ? 3 : 2;
+	request.trainingPattern = eqPattern;
+	for (; rate != 0; rate = DpLowerRate(rate)) {
+		request.attempts++;
+		request.linkRate = rate;
+		for (uint32_t lane = 0; lane < 2; lane++)
+			request.swing[lane] = request.preEmphasis[lane] = 0;
+		bool swingMax[2] = {false, false}, preMax[2] = {false, false};
+		result = DpConfigureLink(hardware, request);
+		if (result != kDpOK)
+			return result;
+		result = DpSetPattern(hardware, request, 1);
+		if (result != kDpOK)
+			return result;
+		bool recovered = false;
+		uint32_t unchanged = 0;
+		for (uint32_t loop = 0; loop < 32 && !recovered; loop++) {
+			request.clockRecoveryLoops++;
+			result = DpApplyDrive(hardware, request, swingMax, preMax);
+			if (result == kDpOK) {
+				DpPause(hardware, crDelay);
+				result = DpAuxTransfer(hardware, request, kAuxNativeRead, 0x202, request.linkStatus, 6);
+			}
+			if (result != kDpOK)
+				break;
+			if (DpClockRecovered(request.linkStatus, request.laneCount)) {
+				recovered = true;
+				break;
+			}
+			if (DpAdjust(request, request.linkStatus, swingMax, preMax))
+				unchanged = 0;
+			else if (++unchanged == 5)
+				break;
+		}
+		bool equalized = false;
+		if (result == kDpOK && recovered) {
+			result = DpSetPattern(hardware, request, eqPattern);
+			for (uint32_t tries = 1; result == kDpOK && tries < 5; tries++) {
+				request.equalizationLoops++;
+				result = DpApplyDrive(hardware, request, swingMax, preMax);
+				if (result == kDpOK) {
+					DpPause(hardware, eqDelay);
+					result = DpAuxTransfer(hardware, request, kAuxNativeRead, 0x202, request.linkStatus, 6);
+				}
+				if (result != kDpOK || !DpClockRecovered(request.linkStatus, request.laneCount))
+					break;
+				if (DpEqualized(request.linkStatus, request.laneCount)) {
+					equalized = true;
+					break;
+				}
+				DpAdjust(request, request.linkStatus, swingMax, preMax);
+			}
+		}
+		uint32_t disabled = DpSetPattern(hardware, request, 0);
+		if (result != kDpOK)
+			return result;
+		if (disabled != kDpOK)
+			return disabled;
+		if (equalized) {
+			request.phyifAfter = hardware.ReadDp(kDpPhyInterface);
+			request.cctlTrained = hardware.ReadDp(kDpCctl);
+			return kDpOK;
+		}
+	}
+	request.phyifAfter = hardware.ReadDp(kDpPhyInterface);
+	request.cctlTrained = hardware.ReadDp(kDpCctl);
+	return kDpTrainingFailed;
 }
 
 
