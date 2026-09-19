@@ -213,7 +213,7 @@ struct mt7922_dma_mem {
 #define MT7922_RXQ_BAND0		0
 #define MT7922_RXQ_MCU_WM		0
 
-#define MT7922_TX_RING_SIZE		2048
+#define MT7922_TX_RING_SIZE		256
 #define MT7922_TX_MCU_RING_SIZE		256
 #define MT7922_TX_FWDL_RING_SIZE	128
 #define MT7922_RX_MCU_RING_SIZE		8
@@ -318,6 +318,10 @@ struct mt7922_dev {
 	mt7922_ring	dataRing;	/* what it hears on the air */
 	mt7922_dma_mem	commandBuffer;	/* one command at a time */
 	mt7922_dma_mem	firmwareBuffer;	/* one piece of firmware at a time */
+	mt7922_ring	transmitRing;	/* frames of our own */
+	mt7922_dma_mem	transmitHeader;	/* what the card is told about one */
+	mt7922_dma_mem	transmitFrame;	/* and the frame itself */
+	uint16		token;
 	uint8		sequence;	/* ties an answer to what was asked */
 
 	uint8		address[6];	/* what this radio answers to */
@@ -345,6 +349,9 @@ struct mt7922_dev {
 	mt7922_network	network[MT7922_MAX_NETWORKS];
 	int		networks;
 	int		chosen;
+	bool		joined;
+	int		sent;
+	int		unacknowledged;
 	bool		ringsReady;
 };
 
@@ -367,6 +374,7 @@ status_t mt7922_mcu_start_firmware(mt7922_dev* device);
 status_t mt7922_mcu_read_capability(mt7922_dev* device);
 status_t mt7922_mcu_prepare(mt7922_dev* device);
 status_t mt7922_mcu_scan(mt7922_dev* device);
+status_t mt7922_join(mt7922_dev* device);
 void mt7922_mac_set_timing(mt7922_dev* device);
 void mt7922_dump_air(mt7922_dev* device, int wanted);
 

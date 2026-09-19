@@ -65,6 +65,7 @@
 /* Reading a frame off the air. */
 #define MT_RXD_FIXED_SIZE		24
 #define MT_RX_TYPE_NORMAL		2
+#define MT_RX_TYPE_SENT			6
 #define MT_RX_TYPE_EVENT		7
 #define MT_RX_TYPE_NORMAL_MCU		8
 #define MT_RXD1_GROUP_1			(1 << 11)
@@ -75,6 +76,25 @@
 #define MT_RXD1_FCS_ERROR		(1 << 27)
 #define MT_FRAME_BEACON			0x80
 #define MT_FRAME_PROBE_RESPONSE		0x50
+#define MT_FRAME_AUTHENTICATE		0xb0
+#define MT_SUBTYPE_AUTHENTICATE		0x0b
+
+/* Describing a frame we are sending. */
+#define MT7922_TXD_HEADER		32
+#define MT7922_TXD_SIZE			64
+#define MT7922_MGMT_HEADER		24
+
+#define MT_LMAC_ALTX0			0x10
+#define MT_TXD1_TID_MGMT		7
+#define MT_TXD1_TID_SHIFT		20
+#define MT_HDR_FORMAT_802_11		2
+#define MT_TXD1_HDR_INFO_SHIFT		11
+#define MT_TXD2_FIX_RATE		(1u << 31)
+#define MT_TXD2_HTC_VLD			(1 << 13)
+#define MT_TXD3_BA_DISABLE		(1 << 28)
+#define MT_TXD3_REM_TX_COUNT_SHIFT	11
+#define MT_TXD6_FIXED_BW		(1 << 2)
+#define MT_TXD7_SUB_TYPE_SHIFT		16
 
 #define MT7922_STATION_INDEX		19
 #define MT7922_SCAN_REQUEST_SIZE	1186
@@ -1348,6 +1368,36 @@ mt7922_inspect(mt7922_dev* device, const uint8* data, size_t got)
 	uint32 word2 = read_le32(data + 8);
 	uint32 type = (word0 >> 27) & 0x1f;
 
+	/* The card says what became of a frame we gave it: whether it went out,
+	 * how many attempts it took, and whether anyone acknowledged it. Without
+	 * this, a frame that was never transmitted and one that was transmitted
+	 * and ignored look exactly the same.
+	 */
+	if (type == MT_RX_TYPE_SENT) {
+		size_t at = 8;
+		while (at + 4 <= got) {
+			uint32 entry = read_le32(data + at);
+			at += 4;
+
+			if ((entry & (1u << 31)) != 0)
+				continue;	/* names a station, not a frame */
+
+			uint32 result = (entry >> 13) & 0x3;
+			uint32 tries = entry & 0x1fff;
+
+			device->sent++;
+			if (result != 0)
+				device->unacknowledged++;
+
+			if (device->sent <= 4) {
+				TRACE("a frame of ours %s after %" B_PRIu32 " attempt%s\n",
+					result == 0 ? "was acknowledged" : "went unanswered",
+					tries, tries == 1 ? "" : "s");
+			}
+		}
+		return;
+	}
+
 	if (type != MT_RX_TYPE_NORMAL && type != MT_RX_TYPE_NORMAL_MCU) {
 		if (type != MT_RX_TYPE_EVENT || ((word0 >> 16) & 0xf) != 1)
 			return;
@@ -1378,6 +1428,21 @@ mt7922_inspect(mt7922_dev* device, const uint8* data, size_t got)
 	 * when asked. The second only happens if this radio's asking is getting
 	 * out, so the two are worth telling apart.
 	 */
+	/* An answer to our asking to be let in is addressed to this card alone,
+	 * and is the only frame here that is about us rather than about a
+	 * network in general.
+	 */
+	if (frame[0] == MT_FRAME_AUTHENTICATE
+		&& memcmp(frame + 4, device->address, 6) == 0) {
+		uint16 result = frame[28] | (frame[29] << 8);
+		TRACE("%02x:%02x:%02x:%02x:%02x:%02x answered: %s\n",
+			frame[10], frame[11], frame[12], frame[13], frame[14], frame[15],
+			result == 0 ? "we may join" : "refused");
+		if (result == 0)
+			device->joined = true;
+		return;
+	}
+
 	bool answered = frame[0] == MT_FRAME_PROBE_RESPONSE;
 	if (frame[0] != MT_FRAME_BEACON && !answered)
 		return;
@@ -1461,13 +1526,20 @@ mt7922_dump_ring(mt7922_dev* device, mt7922_ring* ring, const char* which,
 
 		size_t got = (descriptor->ctrl & MT_DMA_CTL_SD_LEN0_MASK)
 			>> MT_DMA_CTL_SD_LEN0_SHIFT;
+
+		const uint8* data = (const uint8*)ring->buffers.address
+			+ (size_t)i * MT7922_RX_BUFFER_SIZE;
+
+		/* Count what it is before deciding it is too short to look at: a
+		 * report about a frame we sent is shorter than any frame.
+		 */
+		if (got >= 8)
+			device->packetKind[(read_le32(data) >> 27) & 0x1f]++;
+
 		if (got < 64 || got > MT7922_RX_BUFFER_SIZE) {
 			device->tooShort++;
 			continue;
 		}
-
-		const uint8* data = (const uint8*)ring->buffers.address
-			+ (size_t)i * MT7922_RX_BUFFER_SIZE;
 
 		uint32 word0 = read_le32(data);
 		uint32 word1 = read_le32(data + 4);
@@ -1481,7 +1553,6 @@ mt7922_dump_ring(mt7922_dev* device, mt7922_ring* ring, const char* which,
 		 * dressed as something it said itself.
 		 */
 		uint32 type = (word0 >> 27) & 0x1f;
-		device->packetKind[type & 0x1f]++;
 
 		if (type != MT_RX_TYPE_NORMAL && type != MT_RX_TYPE_NORMAL_MCU) {
 			if (type != MT_RX_TYPE_EVENT || ((word0 >> 16) & 0xf) != 1)
@@ -1635,4 +1706,177 @@ mt7922_dump_air(mt7922_dev* device, int wanted)
 			at > 0 ? line : "nothing");
 	} else
 		TRACE("%d network%s heard\n", heard, heard == 1 ? "" : "s");
+}
+
+
+/* Send one frame of our own.
+ *
+ * A frame does not travel on the ring. What travels is a sixty-four byte
+ * description of it - half telling the radio how to send it, half saying
+ * where it is - and the card fetches the frame itself from the address that
+ * description carries. Getting that wrong sends whatever happens to be at the
+ * address instead, at whatever length was claimed.
+ */
+static status_t
+mt7922_transmit(mt7922_dev* device, const uint8* frame, size_t length,
+	uint8 subtype)
+{
+	if (length > 384)
+		return B_BAD_VALUE;
+
+	memcpy(device->transmitFrame.address, frame, length);
+
+	uint8* description = (uint8*)device->transmitHeader.address;
+	memset(description, 0, MT7922_TXD_SIZE);
+
+	/* How much is being sent counts the first half of this description but
+	 * not the second, which is a distinction with no outward logic to it.
+	 */
+	write_le32(description, ((uint32)MT_LMAC_ALTX0 << MT_TXD0_Q_IDX_SHIFT)
+		| (uint32)(length + MT7922_TXD_HEADER));
+
+	write_le32(description + 4, MT_TXD1_LONG_FORMAT
+		| ((uint32)MT_TXD1_TID_MGMT << MT_TXD1_TID_SHIFT)
+		| ((uint32)MT_HDR_FORMAT_802_11 << MT_TXD1_HDR_FORMAT_SHIFT)
+		| ((uint32)(MT7922_MGMT_HEADER / 2) << MT_TXD1_HDR_INFO_SHIFT)
+		| MT7922_STATION_INDEX);
+
+	/* Anything that is not ordinary traffic goes at a rate we choose rather
+	 * than one the radio picks, because there is no history yet to pick from.
+	 */
+	write_le32(description + 8, MT_TXD2_FIX_RATE | MT_TXD2_HTC_VLD
+		| (uint32)subtype);
+
+	write_le32(description + 12, MT_TXD3_BA_DISABLE
+		| ((uint32)15 << MT_TXD3_REM_TX_COUNT_SHIFT));
+
+	/* Nothing about encryption, and no request to be told how it went. */
+	write_le32(description + 16, 0);
+	write_le32(description + 20, 0);
+
+	/* The slowest rate there is, which is the one most likely to be heard. */
+	write_le32(description + 24, MT_TXD6_FIXED_BW);
+	write_le32(description + 28, (uint32)subtype << MT_TXD7_SUB_TYPE_SHIFT);
+
+	/* And where the frame actually is. */
+	uint8* where = description + MT7922_TXD_HEADER;
+	memset(where, 0, MT7922_TXD_HEADER);
+
+	uint16 token = ++device->token & 0x7fff;
+	where[0] = token & 0xff;
+	where[1] = (token >> 8) | 0x80;		/* and it is a real one */
+
+	write_le32(where + 8, (uint32)device->transmitFrame.physical);
+	where[12] = length & 0xff;
+	where[13] = (length >> 8) | 0x80;	/* and it is the last piece */
+
+	return mt7922_ring_submit(device, &device->transmitRing,
+		device->transmitHeader.physical, MT7922_TXD_SIZE);
+}
+
+
+/* Ask a network to let us in.
+ *
+ * This is the first thing this driver has said on the air of its own accord
+ * rather than at the firmware's prompting, and the reply - if it comes - is
+ * addressed to this card by name.
+ */
+status_t
+mt7922_join(mt7922_dev* device)
+{
+	if (device->chosen < 0) {
+		ERROR("there is nothing to join\n");
+		return B_ENTRY_NOT_FOUND;
+	}
+
+	mt7922_network* network = &device->network[device->chosen];
+
+	/* Go to where it is. A sweep leaves the radio back on the channel it
+	 * started from, and a request sent from there is sent where nobody we
+	 * are addressing is listening.
+	 */
+	if (network->channel != 0) {
+		TRACE("moving to channel %u, where it is\n", network->channel);
+
+		status_t moved = mt7922_mcu_set_channel(device, network->channel,
+			false);
+		if (moved == B_OK) {
+			moved = mt7922_mcu_set_channel(device, network->channel, true);
+		}
+		if (moved != B_OK) {
+			ERROR("could not move there: %s\n", strerror(moved));
+			return moved;
+		}
+
+		mt7922_mac_set_timing(device);
+		snooze(50000);
+	}
+
+	uint8 frame[30];
+	memset(frame, 0, sizeof(frame));
+
+	frame[0] = MT_FRAME_AUTHENTICATE;
+	memcpy(frame + 4, network->address, 6);		/* to that radio */
+	memcpy(frame + 10, device->address, 6);		/* from this one */
+	memcpy(frame + 16, network->address, 6);	/* on its network */
+
+	/* Open system, first exchange. What proves we may join comes later and
+	 * not from here.
+	 */
+	frame[24] = 0;
+	frame[26] = 1;
+
+	TRACE("asking %02x:%02x:%02x:%02x:%02x:%02x to let us in\n",
+		network->address[0], network->address[1], network->address[2],
+		network->address[3], network->address[4], network->address[5]);
+
+	status_t status = mt7922_transmit(device, frame, sizeof(frame),
+		MT_SUBTYPE_AUTHENTICATE);
+	if (status != B_OK) {
+		ERROR("the request would not go out: %s\n", strerror(status));
+		return status;
+	}
+
+	status = mt7922_ring_drain(device, &device->transmitRing, 2000000);
+	if (status != B_OK) {
+		ERROR("the card never took the request\n");
+		return status;
+	}
+
+	TRACE("the card took the request; listening\n");
+
+	bigtime_t deadline = system_time() + 3000000;
+	while (system_time() < deadline) {
+		uint8 event[1024];
+		size_t got = sizeof(event);
+
+		if (mt7922_event_read(device, event, &got, 500000) != B_OK)
+			continue;
+	}
+
+	/* The report may be waiting on a ring this was not watching. Look
+	 * everywhere before concluding the frame was never sent.
+	 */
+	mt7922_dump_ring(device, &device->dataRing, "the air", 0);
+	mt7922_dump_ring(device, &device->lateEventRing, "the processor", 0);
+	mt7922_dump_ring(device, &device->eventRing, "the loader", 0);
+
+	char kinds[160];
+	int kindAt = 0;
+	for (int k = 0; k < 32; k++) {
+		if (device->packetKind[k] != 0) {
+			kindAt += sprintf(kinds + kindAt, "%d:%d ", k,
+				device->packetKind[k]);
+		}
+	}
+
+	TRACE("%d of our frames were sent, %d unacknowledged; what the rings"
+		" hold: %s\n", device->sent, device->unacknowledged,
+		kindAt > 0 ? kinds : "nothing");
+
+	if (device->joined)
+		return B_OK;
+
+	ERROR("no answer came\n");
+	return B_TIMED_OUT;
 }

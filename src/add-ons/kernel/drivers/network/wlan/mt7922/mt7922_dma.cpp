@@ -256,7 +256,11 @@ mt7922_dma_prefetch(mt7922_dev* device)
 {
 	const uint32 depth = 0x4;
 
-	mt7922_write32(device, MT_WFDMA0_TX_RING_EXT_CTRL, depth);
+	/* The ring ordinary traffic goes out on needs its own window like every
+	 * other; giving it only a depth and no place to read ahead into leaves
+	 * it unable to move anything.
+	 */
+	mt7922_write32(device, MT_WFDMA0_TX_RING_EXT_CTRL, (0x140u << 16) | depth);
 
 	/* The two high-numbered outbound rings sit apart from the others. */
 	mt7922_write32(device, MT_WFDMA0_TX_RING_EXT_CTRL + 0x40,
@@ -331,6 +335,14 @@ mt7922_dma_setup(mt7922_dev* device)
 	if (status != B_OK)
 		goto fail;
 
+	/* And one for frames of our own, which is a different ring from the one
+	 * commands go out on.
+	 */
+	status = mt7922_ring_init(device, &device->transmitRing, MT_TX_RING_BASE,
+		MT7922_TXQ_BAND0, MT7922_TX_RING_SIZE, "mt7922 transmit ring");
+	if (status != B_OK)
+		goto fail;
+
 	status = mt7922_rx_ring_init(device, &device->eventRing,
 		MT_RX_EVENT_RING_BASE, MT7922_RXQ_MCU_WM, MT7922_RX_MCU_RING_SIZE,
 		"mt7922 event ring");
@@ -367,6 +379,19 @@ mt7922_dma_setup(mt7922_dev* device)
 	if (status != B_OK)
 		goto fail;
 
+	/* A frame of ours goes out as two pieces of memory: a description of it
+	 * that sits on the ring, and the frame itself, which the card fetches
+	 * from wherever that description points.
+	 */
+	status = mt7922_dma_alloc("mt7922 frame description", 256,
+		&device->transmitHeader);
+	if (status != B_OK)
+		goto fail;
+
+	status = mt7922_dma_alloc("mt7922 frame", 512, &device->transmitFrame);
+	if (status != B_OK)
+		goto fail;
+
 	mt7922_dma_enable(device);
 
 	TRACE("transfer engine now %#" B_PRIx32 "\n",
@@ -395,7 +420,10 @@ mt7922_dma_teardown(mt7922_dev* device)
 	mt7922_dma_free(&device->lateEventRing.buffers);
 	mt7922_ring_free(&device->dataRing);
 	mt7922_dma_free(&device->dataRing.buffers);
+	mt7922_ring_free(&device->transmitRing);
 	mt7922_dma_free(&device->commandBuffer);
 	mt7922_dma_free(&device->firmwareBuffer);
+	mt7922_dma_free(&device->transmitHeader);
+	mt7922_dma_free(&device->transmitFrame);
 	device->ringsReady = false;
 }

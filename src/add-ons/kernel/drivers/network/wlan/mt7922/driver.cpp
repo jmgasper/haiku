@@ -88,6 +88,7 @@ init_driver(void)
 		memset(device, 0, sizeof(mt7922_dev));
 		device->pci = info;
 		device->registersArea = -1;
+		device->chosen = -1;
 		/* Not under net/ yet. The network stack takes anything published
 		 * there for a working interface and sets about trying to configure
 		 * it, and this card cannot carry a packet until it has its firmware
