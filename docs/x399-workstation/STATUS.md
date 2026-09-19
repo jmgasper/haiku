@@ -22,7 +22,7 @@ a Bluetooth device to pair with.
 | Audio | ALC1220 analog output, HDMI audio | verified both: two outputs, each clocking its stream at the hardware's own rate (48322 and 48321 frames a second against the 48000 asked for). The graphics card's codec needed a change to Haiku's hda driver, which discarded any codec whose converters are all digital. The monitor reports it takes stereo. What nobody here can check is whether a speaker makes a sound |
 | Graphics | GTX 1070/1080 Ti accelerated 2D/3D, 3-4 monitors | 3D verified: Vulkan on the GPU (1.4 TFLOP/s compute, 57 Gpixel/s fill) and OpenGL 4.5 through it, with frames copied straight into the screen's own frame buffer in video memory rather than sent through the host - a lit sphere at 1600x900 goes from 209 to 970 frames a second. Vertical sync works (locks to 60.0) now that the accelerant hands out a retrace semaphore. Any program gets the GPU, with nothing set in its environment. Three heads driving one spanning desktop is verified, but with the third and second forced rather than plugged in. 2D is not accelerated at all: it runs four to eight times slower than drawing in memory, which is still far more than a desktop needs at one monitor |
 | Bluetooth | TP-Link Archer TX55E, working adapter and discovery | verified: the adapter answers as `90:74:ae:33:d7:cb` "MTK MT7922 #1" and an inquiry finds devices nearby, from a cold boot with nothing done by hand. The radio is a MediaTek MT7922 on USB, which runs a bootloader rather than a Bluetooth controller until it is given firmware - it takes the HCI Reset every stack opens with and never answers. The driver now hands it that firmware at open. Three further faults were in the way: `h2generic` took its event endpoint from the last interface that had one, which on this radio is MediaTek's audio interface, so it listened where no reply is ever sent; it stood isochronous transfers on the SCO endpoints at open, which nothing wants until there is a call; and the server never answered a request for a command the controller refuses outright, which hung the first program to ask for an adapter. Remote name lookup still fails, so discovered devices show an address and no name. Pairing and audio profiles are untried |
-| Wi-Fi | TP-Link Archer TX55E | a driver exists and brings the card up; it cannot carry traffic yet. `mt7922` is native, against Haiku's own PCI - it finds the card, switches on the memory space and bus mastering firmware leaves off for a device nobody wants, maps its window, takes the registers from the card's own firmware, reads back MT7922 revision `0x10`, and puts the Wi-Fi subsystem through its own reset, all from a cold boot. Doing that leaves Bluetooth working, so the two functions on the die do not contend. What remains before the firmware runs is six DMA rings and an MCU command layer, and the download over them; after that the 802.11 driver itself on net80211 - scanning, association, keys and a data path - which is the larger half. It publishes outside `net/` until it can carry a packet, so the network stack does not take it for a working interface. A `mt76` port is not the route: that driver needs LinuxKPI and `linuxkpi_wlan`, emulating Linux's mac80211, where Haiku has FreeBSD 12.0's own net80211 and no LinuxKPI. An Intel AX200 or AX210 is served by the `iaxwifi200` Haiku already ships |
+| Wi-Fi | TP-Link Archer TX55E | the firmware runs; the card cannot carry traffic yet. `mt7922` is native, against Haiku's own PCI. From a cold boot it finds the card, switches on the memory space and bus mastering firmware leaves off, maps its window at the real address, takes the registers from the card's firmware, reads back MT7922 revision `0x10`, resets the Wi-Fi subsystem, builds three transfer rings, and hands the part its firmware: the patch and all five downloadable regions of the RAM image, the sixth skipped as it asks to be, after which the part reports that what it was given is running. Bluetooth is unaffected throughout. What remains is the 802.11 driver itself on net80211 - asking the running firmware what it is, then scanning, associating, keys and a data path - which is the larger half. A `mt76` port is not the route: that driver needs LinuxKPI and `linuxkpi_wlan`, emulating Linux's mac80211, where Haiku has FreeBSD 12.0's own net80211 and no LinuxKPI |
 | Sleep | S3 suspend and resume | sleeps and wakes; the display comes back, but the NVMe and the network card usually do not. Paused until a serial console arrives, which is also what the one untested path in the vertical sync work needs |
 
 ## Log
@@ -710,3 +710,23 @@ a Bluetooth device to pair with.
 
   The ring setup is committed unrun. It is complete enough to resume from and
   has never met the hardware; the commit says so.
+- 2026-09-19: the MT7922's Wi-Fi firmware runs. The patch goes in, all five
+  downloadable regions of the RAM image follow, the sixth is skipped as it
+  asks to be, and the part reports that what it was given is running - from a
+  cold boot, with Bluetooth unaffected and all sixteen checks still passing.
+
+  Two of the three things in the way were found by reading what had been
+  written against the protocol while the machine was unreachable, and both
+  were needed before a single command could be sent: a second claim of
+  ownership, made through the moveable window once the rings exist and quite
+  distinct from the one that wakes the registers, and saying which mode the
+  firmware should come up in, which has to be said before it is sent.
+
+  The third was found on the hardware and is the one worth remembering.
+  Commands were being taken and nothing ever came back: the part's processor
+  restarted on command and said so, so sending was demonstrably working,
+  while every answer went nowhere. What was missing was the prefetch
+  configuration - each ring gets a slice of the engine's own buffer to read
+  ahead into, and a ring without one has nowhere to stage what it fetches. On
+  this engine that stops receiving and leaves sending looking healthy, which
+  is as misleading a symptom as this part has produced so far.
