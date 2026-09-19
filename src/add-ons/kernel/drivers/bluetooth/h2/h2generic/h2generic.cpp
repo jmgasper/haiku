@@ -333,11 +333,24 @@ device_added(usb_device dev, void** cookie)
 	// Find endpoints that we need
 	for (size_t i = 0; i < config->interface_count; i++) {
 		uif = config->interface[i].active;
+
+		// Events and ACL data are spoken on the first interface, and only
+		// there. Anything further along belongs to something else: SCO on the
+		// second, and on the newer radios a third carrying isochronous audio
+		// over endpoints that look just like the ones we want. Taking those
+		// leaves us listening for replies where none are ever sent.
+		bool primary = uif->descr->interface_number == 0;
+
 		for (e = 0; e < uif->descr->num_endpoints; e++) {
 
 			ep = &uif->endpoint[e];
 			switch (ep->descr->attributes & USB_ENDPOINT_ATTR_MASK) {
 				case USB_ENDPOINT_ATTR_INTERRUPT:
+					if (!primary) {
+						TRACE("%s: INT on interface %d, not ours\n", __func__,
+							uif->descr->interface_number);
+						break;
+					}
 					if (ep->descr->endpoint_address & USB_ENDPOINT_ADDR_DIR_IN) {
 						new_bt_dev->intr_in_ep = ep;
 						new_bt_dev->max_packet_size_intr_in = ep->descr->max_packet_size;
@@ -348,6 +361,11 @@ device_added(usb_device dev, void** cookie)
 					break;
 
 				case USB_ENDPOINT_ATTR_BULK:
+					if (!primary) {
+						TRACE("%s: BULK on interface %d, not ours\n", __func__,
+							uif->descr->interface_number);
+						break;
+					}
 					if (ep->descr->endpoint_address & USB_ENDPOINT_ADDR_DIR_IN) {
 						new_bt_dev->bulk_in_ep = ep;
 						new_bt_dev->max_packet_size_bulk_in = ep->descr->max_packet_size;
@@ -751,17 +769,13 @@ device_control(void* cookie, uint32 msg, void* params, size_t size)
 			}
 			#endif
 
-			// TODO: Do this only when SCO is needed
-			if ((bdev->driver_info & BT_SCO_NOT_WORKING) == 0) {
-				for (i = 0; i < MAX_SCO_IN_WINDOW; i++) {
-					err = submit_rx_sco(bdev);
-					if (err != B_OK && i == 0) {
-						bdev->state &= ~ANCILLYANT;
-						ERROR("%s: Queuing failed at submit_rx_sco()\n", __func__);
-						break;
-					}
-				}
-			}
+			// SCO carries voice, and nothing here asks for voice until a
+			// connection wants it. Listening for it anyway means standing
+			// isochronous transfers on an endpoint whose alternate setting
+			// reserves bandwidth every frame, which the bus honours whether
+			// or not anything is said - and on this controller that is enough
+			// to keep the events we do need from getting through. Wait until
+			// a SCO connection exists, as the note here has long asked.
 
 			bdev->state |= RUNNING;
 
