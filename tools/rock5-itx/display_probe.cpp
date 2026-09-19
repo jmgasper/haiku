@@ -15,6 +15,7 @@
 #include "DisplayAccelerant.h"
 #include "DisplayModeSet.h"
 #include "DisplayCursor.h"
+#include "DisplayPort.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -949,6 +950,87 @@ ControlCursor(const char* action, int x, int y)
 }
 
 
+// --dp [edid]: bring the second connector's path up to its AUX channel and
+// read the sink's DPCD (and EDID block 0), reporting every word it touched.
+static void
+PrintBytes(const char* label, const uint8_t* bytes, unsigned count)
+{
+	printf("%s", label);
+	for (unsigned i = 0; i < count; i++)
+		printf("%02x", bytes[i]);
+	printf("\n");
+}
+
+
+static bool
+ProbeDisplayPort(bool edid)
+{
+	int fd = open(kDevice, O_RDWR);
+	if (fd < 0) {
+		perror(kDevice);
+		return false;
+	}
+	DpProbeRequest request = {};
+	request.version = kDpVersion;
+	if (ioctl(fd, kDpProbe, &request, sizeof(request) - 1) == 0 || errno != EINVAL) {
+		fprintf(stderr, "Malformed DP request was not rejected\n");
+		return false;
+	}
+	if (ioctl(fd, kDpProbe, NULL, sizeof(request)) == 0 || errno != EFAULT) {
+		fprintf(stderr, "Null DP request was not rejected\n");
+		return false;
+	}
+	request.version = kDpVersion + 1;
+	if (ioctl(fd, kDpProbe, &request, sizeof(request)) == 0 || errno != EINVAL) {
+		fprintf(stderr, "Invalid DP request version was not rejected\n");
+		return false;
+	}
+	printf("ROCK5_DISPLAY_DP_REQUEST_CHECKS_PASS\n");
+	memset(&request, 0, sizeof(request));
+	request.version = kDpVersion;
+	request.flags = edid ? kDpProbeEdid : 0;
+	if (ioctl(fd, kDpProbe, &request, sizeof(request)) != 0) {
+		perror("dp probe");
+		close(fd);
+		return false;
+	}
+	close(fd);
+	printf("ROCK5_DISPLAY_DP result=%" PRIu32 " phase=%" PRIu32 " pin=%08" PRIx32 ",%08" PRIx32
+		" level=%" PRIu32 " hpd=%08" PRIx32 ",%08" PRIx32 " hpd_polls=%" PRIu32 " refclk=%08" PRIx32
+		" lcpll_polls=%" PRIu32 " aux=%" PRIu32 ",%" PRIu32 ",%" PRIu32 " aux_status=%08" PRIx32
+		" dpcd_count=%" PRIu32 " sinks=%02" PRIx32 " edid_bytes=%" PRIu32 " micros=%" PRId64 "\n",
+		request.result, request.phase, request.pinMuxBefore, request.pinMuxAfter, request.gpioLevel,
+		request.hpdStatusBefore, request.hpdStatusAfter, request.hpdPolls, request.refclkSelect,
+		request.lcpllPolls, request.auxTransfers, request.auxRetries, request.auxPolls,
+		request.auxStatus, request.dpcdCount, request.sinkCount, request.edidBytes,
+		request.finishedMicros - request.startedMicros);
+	printf("ROCK5_DISPLAY_DP_WORDS resets=%08" PRIx32 ",%08" PRIx32 ",%08" PRIx32 ",%08" PRIx32
+		"/%08" PRIx32 ",%08" PRIx32 ",%08" PRIx32 ",%08" PRIx32 " usbdp_grf=%08" PRIx32 ",%08" PRIx32
+		" vo0_grf=%08" PRIx32 ",%08" PRIx32 " cctl=%08" PRIx32 ",%08" PRIx32 " pma_before=",
+		request.resetsBefore[0], request.resetsBefore[1], request.resetsBefore[2],
+		request.resetsBefore[3], request.resetsAfter[0], request.resetsAfter[1],
+		request.resetsAfter[2], request.resetsAfter[3], request.usbdpGrfBefore,
+		request.usbdpGrfAfter, request.vo0GrfBefore, request.vo0GrfAfter, request.cctlBefore,
+		request.cctlAfter);
+	for (unsigned i = 0; i < kDpPmaWordCount; i++)
+		printf("%s%08" PRIx32, i == 0 ? "" : ",", request.pmaBefore[i]);
+	printf(" pma_after=");
+	for (unsigned i = 0; i < kDpPmaWordCount; i++)
+		printf("%s%08" PRIx32, i == 0 ? "" : ",", request.pmaAfter[i]);
+	printf("\n");
+	PrintBytes("ROCK5_DISPLAY_DP_DPCD ", request.dpcd, 16);
+	if (request.edidBytes > 0)
+		PrintBytes("ROCK5_DISPLAY_DP_EDID ", request.edid, 128);
+	if (request.result != kDpOK) {
+		fprintf(stderr, "DP probe result %" PRIu32 " at phase %" PRIu32 "\n", request.result,
+			request.phase);
+		return false;
+	}
+	printf("ROCK5_DISPLAY_DP_PASS edid=%u\n", edid ? 1 : 0);
+	return true;
+}
+
+
 int
 main(int argc, char** argv)
 {
@@ -992,6 +1074,13 @@ main(int argc, char** argv)
 	}
 	if (argc == 2 && (strcmp(argv[1], "--cursor-hide") == 0 || strcmp(argv[1], "--cursor-restore") == 0))
 		return ControlCursor(argv[1] + strlen("--cursor-"), 0, 0) ? 0 : 1;
+	if ((argc == 2 || argc == 3) && strcmp(argv[1], "--dp") == 0) {
+		if (argc == 3 && strcmp(argv[2], "edid") != 0) {
+			fprintf(stderr, "usage: %s --dp [edid]\n", argv[0]);
+			return 2;
+		}
+		return ProbeDisplayPort(argc == 3) ? 0 : 1;
+	}
 	if (argc == 3 && strcmp(argv[1], "--power") == 0) {
 		if (strcmp(argv[2], "off") != 0 && strcmp(argv[2], "on") != 0) {
 			fprintf(stderr, "usage: %s --power off|on\n", argv[0]);
@@ -1007,7 +1096,7 @@ main(int argc, char** argv)
 	if ((scanout ? argc > 3 || hold < 1 || hold > 120 : argc > 2) || samples < 1 || samples > 16) {
 		fprintf(stderr, "usage: %s [samples 1-16 | --absent-device | --edid | --accelerant"
 			" | --scanout [hold-seconds 1-120] | --mode WIDTHxHEIGHT | --power off|on"
-			" | --cursor X Y | --cursor-hide | --cursor-restore]\n", argv[0]);
+			" | --cursor X Y | --cursor-hide | --cursor-restore | --dp [edid]]\n", argv[0]);
 		return 2;
 	}
 	// Only the accelerant profile admits writable handles; opening and

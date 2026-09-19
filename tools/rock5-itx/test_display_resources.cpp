@@ -29,7 +29,8 @@ using uint64 = uint64_t;
 using status_t = int32_t;
 static const status_t B_OK = 0, B_BAD_VALUE = -1, B_BAD_ADDRESS = -2,
 	B_DEV_INVALID_IOCTL = -3, B_NO_MEMORY = -4, B_NOT_SUPPORTED = -5,
-	B_NOT_ALLOWED = -6, B_ENTRY_NOT_FOUND = -8, B_ERROR = -9, B_BUSY = -10, B_NO_INIT = -11;
+	B_NOT_ALLOWED = -6, B_ENTRY_NOT_FOUND = -8, B_ERROR = -9, B_BUSY = -10, B_NO_INIT = -11,
+	B_DEV_NOT_READY = -12;
 using int64 = int64_t;
 using area_id = int32_t;
 using team_id = int32_t;
@@ -55,6 +56,7 @@ static void atomic_set(int32* value, int32 newValue) { __atomic_store_n(value, n
 #include "DisplayAccelerant.h"
 #include "DisplayModeSet.h"
 #include "DisplayCursor.h"
+#include "DisplayPort.h"
 
 using namespace RK3588Display;
 
@@ -68,6 +70,27 @@ static uint32 sGate52, sGate61;
 static uint32 sGate2, sGate17, sGate56; // CLKGATE_CON(2), (17), (56): USBDP immortal, GPIO3, DP1
 static uint32 sGpioPort; // GPIO3 external port: bit 29 is the DP1 hot-plug pin
 static uint32 sIocMux = 0x50; // GPIO3D_IOMUX_SEL_H: D5 as dp1_hpdin_m0 (function 5)
+// The DisplayPort path model: a sink behind the RA620 with its DPCD and EDID,
+// the controller's hot-plug and AUX engine, the PHY PMA, and hiword-masked
+// GRF, IOC and CRU words. Writes are found by diffing against a shadow.
+static bool sAllowDp;
+static uint32* sDpModel;
+static std::vector<uint32> sDpShadow;
+static uint32* sPmaModel;
+static std::vector<uint32> sPmaShadow;
+static std::vector<std::pair<unsigned, uint32> > sPmaWrites, sDpWrites, sHiwordWrites;
+static std::map<uint64, std::pair<uint32*, std::vector<uint32> > > sHiwordModels; // base -> (registers, shadow)
+static uint8_t sDpcd[0x300];
+static uint8_t sSinkEdid[128];
+static bool sSinkPresent = true; // the RA620 drives hot-plug and answers AUX
+static uint32 sAuxDeferReplies; // replies to answer with DEFER first
+static bool sAuxNeverReplies, sLcpllNeverLocks;
+static uint32 sRefclkSelect; // PMU CLKSEL_CON14
+static unsigned sHotPlugDebounce; // model steps until the controller reports PLUG
+static unsigned sAuxCommands;
+static std::vector<uint32> sAuxLog;
+static const uint32 kModelAuxMarker = 1u << 6; // a bit the driver never writes in AUX_CMD
+static const uint32 kModelEventMarker = 1u << 31; // marks a raised event in GENERAL_INTERRUPT
 static bool sAllowEdid;
 static uint32 sHotPlug = (1u << 24) | (1u << 27);
 
@@ -275,7 +298,7 @@ ModeSetModelStep()
 		sGrfModel[0x80 / 4] = sGrfShadow[0x80 / 4] = sPhyStatusModel;
 	}
 	if (sCruModel != NULL) {
-		static const unsigned kResetOffsets[] = {0xb20, 0x30a0c, 0x30a10};
+		static const unsigned kResetOffsets[] = {0xb20, 0x30a0c, 0x30a10, 0xa08, 0xa0c};
 		for (unsigned i = 0; i < sCruShadow.size(); i++) {
 			if (sCruModel[i] == sCruShadow[i])
 				continue;
@@ -294,10 +317,122 @@ ModeSetModelStep()
 
 
 static void
+DpModelStep()
+{
+	// Hiword-masked words: IOC, USBDP GRF, VO0 GRF.
+	for (auto& model : sHiwordModels) {
+		uint32* registers = model.second.first;
+		std::vector<uint32>& shadow = model.second.second;
+		for (unsigned i = 0; i < shadow.size(); i++) {
+			if (registers[i] == shadow[i])
+				continue;
+			uint32 value = registers[i];
+			sHiwordWrites.push_back(std::make_pair((unsigned)(model.first & 0xffffff) + i * 4, value));
+			uint32 mask = value >> 16;
+			registers[i] = (shadow[i] & ~mask & 0xffff) | (value & mask);
+			shadow[i] = registers[i];
+			if (model.first == 0xfd5f8000 && i * 4 == 0x7c)
+				sIocMux = registers[i];
+		}
+	}
+	if (sPmaModel != NULL) {
+		for (unsigned i = 0; i < sPmaShadow.size(); i++) {
+			if (sPmaModel[i] == sPmaShadow[i])
+				continue;
+			assert(i * 4 != 0x350 && i * 4 != 0x354);
+			sPmaWrites.push_back(std::make_pair(i * 4, sPmaModel[i]));
+			sPmaShadow[i] = sPmaModel[i];
+		}
+		uint32 lock = sLcpllNeverLocks ? 0 : 0xc0;
+		sPmaModel[0x350 / 4] = sPmaShadow[0x350 / 4] = lock;
+	}
+	if (sDpModel == NULL)
+		return;
+	uint32* dp = sDpModel;
+	for (unsigned i = 0; i < sDpShadow.size(); i++) {
+		if (dp[i] == sDpShadow[i])
+			continue;
+		unsigned offset = i * 4;
+		uint32 value = dp[i];
+		sDpWrites.push_back(std::make_pair(offset, value));
+		if (offset == 0xd00) {
+			// Write one to clear.
+			uint32 before = sDpShadow[i] & ~kModelEventMarker;
+			dp[i] = before & ~(value & ~kModelEventMarker);
+		} else if (offset == 0xb00) {
+			sAuxCommands++;
+			sAuxLog.push_back(value);
+			uint32 type = value >> 28, address = (value >> 8) & 0xfffff;
+			bool addressOnly = (value & (1u << 4)) != 0;
+			uint32 size = addressOnly ? 0 : (value & 0xf) + 1;
+			bool pinned = ((sIocMux >> 4) & 0xf) == 5;
+			if (sAuxNeverReplies || !sSinkPresent || !pinned) {
+				dp[0xb04 / 4] = 1u << 17; // the controller's own timeout, no reply event
+				if (!sAuxNeverReplies)
+					dp[0xd00 / 4] |= 2 | kModelEventMarker;
+			} else if (sAuxDeferReplies > 0) {
+				sAuxDeferReplies--;
+				dp[0xb04 / 4] = 2u << 4; // DEFER
+				dp[0xd00 / 4] |= 2 | kModelEventMarker;
+			} else {
+				uint8_t data[16] = {};
+				static uint32 sEdidOffset;
+				if (type == 0x9) {
+					assert(address + size <= sizeof(sDpcd));
+					memcpy(data, sDpcd + address, size);
+				} else if ((type & ~0x4u) == 0x0) {
+					assert(address == 0x50 && (size == 1 || size == 0));
+					if (size == 1)
+						sEdidOffset = dp[0xb08 / 4] & 0xff;
+				} else if ((type & ~0x4u) == 0x1) {
+					assert(address == 0x50);
+					if (size > 0) {
+						assert(sEdidOffset + size <= 128);
+						memcpy(data, sSinkEdid + sEdidOffset, size);
+						sEdidOffset += size;
+					}
+				} else
+					assert(!"unexpected AUX request");
+				for (unsigned w = 0; w < 4; w++) {
+					uint32 word = 0;
+					for (unsigned b = 0; b < 4; b++)
+						word |= (uint32)data[w * 4 + b] << (b * 8);
+					if ((type & 1) != 0)
+						dp[(0xb08 + w * 4) / 4] = word;
+				}
+				dp[0xb04 / 4] = (type & 1) != 0 && size > 0 ? (size + 1) << 19 : 0; // ACK
+				dp[0xd00 / 4] |= 2 | kModelEventMarker;
+			}
+			// The next identical command must still show as a write.
+			dp[i] = value ^ kModelAuxMarker;
+			sDpShadow[0xb04 / 4] = dp[0xb04 / 4];
+			sDpShadow[0xd00 / 4] = dp[0xd00 / 4];
+			for (unsigned w = 0; w < 4; w++)
+				sDpShadow[(0xb08 + w * 4) / 4] = dp[(0xb08 + w * 4) / 4];
+		} else {
+			assert(offset == 0x200 || offset == 0xd04 || offset == 0xd0c || (offset >= 0xb08 && offset <= 0xb14));
+		}
+		sDpShadow[i] = dp[i];
+	}
+	sDpShadow[0xd00 / 4] = dp[0xd00 / 4];
+	// Hot-plug: the pin, muxed to the controller, raises PLUG after a debounce.
+	bool pinned = ((sIocMux >> 4) & 0xf) == 5;
+	if (pinned && sSinkPresent) {
+		if (sHotPlugDebounce > 0)
+			sHotPlugDebounce--;
+		else
+			dp[0xd08 / 4] = (7u << 9) | (1u << 8) | (1u << 1);
+	}
+	sDpShadow[0xd08 / 4] = dp[0xd08 / 4];
+}
+
+
+static void
 ModelStep()
 {
 	VopModelStep();
 	ModeSetModelStep();
+	DpModelStep();
 	// The VOP interrupt line: an installed handler runs while enabled status is pending.
 	if (sHandler != NULL && sVopModel != NULL && (sVopModel[0xc8 / 4] & 0xffff) != 0)
 		sHandler(sHandlerData);
@@ -369,6 +504,21 @@ ModelRegister(uint64 base, unsigned offset)
 		return 0x14110600; // DW DP version 1.41
 	if (base == 0xfde60000 && offset == 0xd08)
 		return 0x0; // hot-plug status: nothing plugged
+	if (base == 0xfde60000 && (offset == 0x200 || offset == 0x204 || offset == 0xb00 || offset == 0xb04
+			|| (offset >= 0xb08 && offset <= 0xb14) || offset == 0xd00 || offset == 0xd04 || offset == 0xd0c))
+		return offset == 0x200 ? 0x4 : 0;
+	if (base == 0xfd7c0000 && offset == 0x30338)
+		return sRefclkSelect;
+	if (base == 0xfd7c0000 && (offset == 0xa08 || offset == 0xa0c || offset == 0xae0 || offset == 0xb20))
+		return 0; // every reset of the path deasserted by the firmware
+	if (base == 0xfed98000 && offset == 0x350)
+		return 0xc0; // LCPLL locked (EDK2 runs USB3 on the PHY)
+	if (base == 0xfed98000 && (offset == 0x288 || offset == 0x38c))
+		return 0;
+	if (base == 0xfd5cc000 && offset == 0x4)
+		return 0x6000;
+	if (base == 0xfd5a6000 && offset == 0x8)
+		return 0xe4;
 	if (base == 0xfd58c000 && offset == 0x384)
 		return sHotPlug;
 	if (base == 0xfd5e4000 && offset == 0x00)
@@ -391,6 +541,7 @@ map_physical_memory(const char*, uint64 base, size_t bytes, uint32 spec,
 	assert(sLockDepth == 1);
 	static const uint64 kControl[] = {0xfd8d8000, 0xfd7c0000, 0xfd58c000,
 		0xfd5a4000, 0xfd5a8000, 0xfd5e4000, 0xfd5cc000, 0xfd5a6000, 0xfd5f8000};
+	static const uint64 kDpWritable[] = {0xfd5cc000, 0xfd5a6000, 0xfd5f8000};
 	bool control = false;
 	for (uint64 candidate : kControl)
 		control |= candidate == base;
@@ -398,11 +549,15 @@ map_physical_memory(const char*, uint64 base, size_t bytes, uint32 spec,
 	if (control) {
 		// The mode set maps the HDPTX GRF page and the whole CRU writable.
 		writable = (protection & B_KERNEL_WRITE_AREA) != 0;
+		bool dpWritable = false;
+		for (uint64 candidate : kDpWritable)
+			dpWritable |= candidate == base;
 		if (base == 0xfd7c0000 && bytes == 0x5c000)
-			assert(writable && sAllowModeSet);
+			assert(writable && (sAllowModeSet || sAllowDp));
 		else
 			assert(bytes == B_PAGE_SIZE);
-		assert(!writable || (sAllowModeSet && (base == 0xfd5e4000 || base == 0xfd7c0000)));
+		assert(!writable || (sAllowModeSet && (base == 0xfd5e4000 || base == 0xfd7c0000))
+			|| (sAllowDp && (dpWritable || base == 0xfd7c0000)));
 	} else if (base == 0xfed70000) {
 		assert(sAllowModeSet && bytes == kPhyMapSize && (protection & B_KERNEL_WRITE_AREA) != 0);
 		writable = true;
@@ -421,8 +576,14 @@ map_physical_memory(const char*, uint64 base, size_t bytes, uint32 spec,
 		// GPIO3 only while its APB clock is ungated, read-only.
 		assert(bytes == B_PAGE_SIZE && (sGate17 & 4) == 0);
 	} else if (base == 0xfde60000) {
-		// DisplayPort TX1 only with VO0 on and its APB clock ungated, read-only.
+		// DisplayPort TX1 only with VO0 on and its APB clock ungated; writable only for the probe.
 		assert(bytes == kDpMapSize && (sRepairStatus & (1u << 17)) != 0 && (sGate56 & 0x20) == 0);
+		writable = (protection & B_KERNEL_WRITE_AREA) != 0;
+		assert(!writable || sAllowDp);
+	} else if (base == 0xfed98000) {
+		// The USBDP PHY1 PMA window, for the probe only.
+		assert(sAllowDp && bytes == 0x3000 && (protection & B_KERNEL_WRITE_AREA) != 0);
+		writable = true;
 	} else
 		assert(false);
 	assert(spec == (B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY));
@@ -460,6 +621,17 @@ map_physical_memory(const char*, uint64 base, size_t bytes, uint32 spec,
 		assert(sCruModel == NULL);
 		sCruModel = registers;
 		sCruShadow.assign(registers, registers + bytes / 4);
+	} else if (writable && base == 0xfde60000) {
+		assert(sDpModel == NULL);
+		sDpModel = registers;
+		sDpShadow.assign(registers, registers + bytes / 4);
+	} else if (writable && base == 0xfed98000) {
+		assert(sPmaModel == NULL);
+		sPmaModel = registers;
+		sPmaShadow.assign(registers, registers + bytes / 4);
+	} else if (writable && (base == 0xfd5cc000 || base == 0xfd5a6000 || base == 0xfd5f8000)) {
+		assert(sHiwordModels.count(base) == 0);
+		sHiwordModels[base] = std::make_pair(registers, std::vector<uint32>(registers, registers + bytes / 4));
 	} else if (writable) {
 		registers[0xf4 / 4] = 0x00000a00; // idle master, slave 0x50 set by firmware
 		registers[0x3020 / 4] = 0;
@@ -504,6 +676,15 @@ public:
 			if ((char*)sGrfModel == page) sGrfModel = NULL;
 			if ((char*)sCruModel == page) sCruModel = NULL;
 			if ((char*)sHdmiModel == page) sHdmiShadow.clear();
+			DpModelStep();
+			if ((char*)sDpModel == page) sDpModel = NULL;
+			if ((char*)sPmaModel == page) sPmaModel = NULL;
+			for (auto it = sHiwordModels.begin(); it != sHiwordModels.end(); ) {
+				if ((char*)it->second.first == page)
+					it = sHiwordModels.erase(it);
+				else
+					++it;
+			}
 			assert(munmap(sAreas.at(fArea).first, sAreas.at(fArea).second) == 0);
 			sAreas.erase(fArea);
 		}
@@ -1134,6 +1315,33 @@ Prepare()
 	sGate2 = sGate17 = sGate56 = 0;
 	sGpioPort = 0;
 	sIocMux = 0x50;
+	sAllowDp = false;
+	assert(sDpModel == NULL && sPmaModel == NULL && sHiwordModels.empty());
+	sDpShadow.clear(); sPmaShadow.clear();
+	sPmaWrites.clear(); sDpWrites.clear(); sHiwordWrites.clear();
+	sSinkPresent = true;
+	sAuxDeferReplies = 0;
+	sAuxNeverReplies = sLcpllNeverLocks = false;
+	sRefclkSelect = 0;
+	sHotPlugDebounce = 20;
+	sAuxCommands = 0;
+	sAuxLog.clear();
+	memset(sDpcd, 0, sizeof(sDpcd));
+	// DPCD of a DP 1.2 branch device (the RA620): 2.7 Gb/s, two lanes, enhanced framing.
+	static const uint8_t kReceiverCaps[16] = {0x12, 0x0a, 0x82, 0x01, 0x00, 0x15, 0x01, 0x81,
+		0x02, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00};
+	memcpy(sDpcd, kReceiverCaps, 16);
+	sDpcd[0x200] = 0x41;
+	memset(sSinkEdid, 0, sizeof(sSinkEdid));
+	static const uint8_t kEdidHeader[8] = {0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00};
+	memcpy(sSinkEdid, kEdidHeader, 8);
+	sSinkEdid[8] = 0x5a; sSinkEdid[9] = 0x63; // a manufacturer id
+	for (unsigned i = 10; i < 127; i++)
+		sSinkEdid[i] = (uint8_t)(i * 13);
+	unsigned edidSum = 0;
+	for (unsigned i = 0; i < 127; i++)
+		edidSum += sSinkEdid[i];
+	sSinkEdid[127] = (uint8_t)(0x100 - (edidSum & 0xff));
 	sMapAttempts = 0;
 	sFailMap = 0;
 	sMappedBases.clear();
@@ -2507,6 +2715,120 @@ main()
 	sAllowModeSet = false;
 	sAllowCursor = false;
 	controller.cursorEnabled = false;
+
+	// DisplayPort probe: gating and refusals, the full path up to the AUX
+	// channel with DPCD and EDID, and every way it stops early.
+	static_assert(sizeof(DpProbeRequest) <= 512, "DP request must stay small on the kernel stack");
+	Prepare();
+	Controller dpController = controller;
+	controller.dpAuxEnabled = false;
+	controller.accelerantEnabled = controller.modeSetEnabled = controller.cursorEnabled = false;
+	controller.cursorHooksEnabled = false;
+	DpProbeRequest dp = {};
+	dp.version = kDpVersion;
+	assert(Open(&controller, "", O_RDWR, &opened) == B_NOT_ALLOWED);
+	controller.accelerantEnabled = true;
+	assert(Open(&controller, "", O_RDWR, &opened) == B_OK);
+	primary = (Handle*)opened;
+	assert(Control(primary, kDpProbe, &dp, sizeof(dp)) == B_DEV_INVALID_IOCTL);
+	assert(Close(primary) == B_OK && Free(primary) == B_OK);
+	controller.accelerantEnabled = false;
+	controller.dpAuxEnabled = true;
+	assert(Open(&controller, "", O_RDWR, &opened) == B_OK);
+	primary = (Handle*)opened;
+	assert(Open(&controller, "", O_RDONLY, &opened) == B_OK);
+	reader = (Handle*)opened;
+	assert(Control(reader, kDpProbe, &dp, sizeof(dp)) == B_NOT_ALLOWED);
+	assert(Control(primary, kDpProbe, &dp, sizeof(dp) - 1) == B_BAD_VALUE);
+	assert(Control(primary, kDpProbe, NULL, sizeof(dp)) == B_BAD_ADDRESS);
+	dp.version = kDpVersion + 1;
+	assert(Control(primary, kDpProbe, &dp, sizeof(dp)) == B_BAD_VALUE);
+	dp.version = kDpVersion;
+	dp.flags = 4;
+	assert(Control(primary, kDpProbe, &dp, sizeof(dp)) == B_BAD_VALUE);
+	assert(sMapAttempts == 0);
+	auto probe = [&](uint32 flags) {
+		memset(&dp, 0xa5, sizeof(dp));
+		dp.version = kDpVersion;
+		dp.flags = flags;
+		sDpWrites.clear(); sPmaWrites.clear(); sHiwordWrites.clear(); sCruWrites.clear(); sAuxLog.clear();
+		assert(Control(primary, kDpProbe, &dp, sizeof(dp)) == B_OK);
+		assert(sAreas.empty() && sDpModel == NULL && sPmaModel == NULL && sHiwordModels.empty());
+		return dp.result;
+	};
+	auto logged = [](const std::vector<std::pair<unsigned, uint32> >& log, unsigned offset, uint32 value) {
+		for (auto& item : log) {
+			if (item.first == offset && item.second == value)
+				return true;
+		}
+		return false;
+	};
+	// VO0 off or a clock gated: nothing of the path is mapped.
+	sAllowDp = true; sRepairStatus = (1u << 16) | (1u << 18);
+	assert(probe(kDpProbeEdid) == kDpNotReady && sMapAttempts == 2 && dp.phase == 0 && sCruWrites.empty());
+	sRepairStatus = (1u << 16) | (1u << 17) | (1u << 18);
+	for (uint32* gate : {&sGate56, &sGate17, &sGate2}) {
+		Prepare(); sAllowDp = true; sRepairStatus = (1u << 16) | (1u << 17) | (1u << 18);
+		*gate = gate == &sGate56 ? (1u << 3) : gate == &sGate17 ? (1u << 2) : (1u << 15);
+		assert(probe(0) == kDpNotReady && sMapAttempts == 2);
+	}
+	// The full path with the pin muxed as a GPIO by the firmware.
+	Prepare(); sAllowDp = true; sIocMux = 0; sGpioPort = 1u << 29;
+	assert(probe(kDpProbeEdid) == kDpOK && dp.phase == kDpPhaseEdid);
+	assert(sMapAttempts == 8 && sMappedBases[2] == 0xfde60000 && sMappedBases[3] == 0xfed98000);
+	assert(dp.pinMuxBefore == 0 && dp.pinMuxAfter == 0x50 && dp.gpioLevel == 1);
+	assert(logged(sHiwordWrites, 0x5f807c, 0x00f00050));
+	assert(dp.hpdStatusBefore == 0 && ((dp.hpdStatusAfter >> 9) & 7) == 7 && dp.hpdPolls >= 1 && dp.hpdPolls < 1000);
+	assert(dp.cctlBefore == 0x4 && dp.cctlAfter == 0x0);
+	assert(dp.refclkSelect == 0 && dp.resetsBefore[3] == 0 && dp.pmaBefore[0] == 0 && dp.pmaBefore[3] == 0xc0);
+	// Resets asserted, the PMA APB and PCS released, then init, cmn and lane.
+	assert(sequenceOf(sCruWrites, {{0xa08u, 0x80008000u}, {0xa0cu, 0x00070007u}, {0xb20u, 0x00100010u},
+		{0xb20u, 0x00100000u}, {0xa0cu, 0x00040000u}, {0xa08u, 0x80000000u}, {0xa0cu, 0x00030000u}}));
+	assert(sequenceOf(sHiwordWrites, {{0x5cc004u, 0x40004000u}, {0x5cc004u, 0x20002000u}, {0x5a6008u, 0x03ff0040u}}));
+	assert(sPmaWrites.size() == 65 + 72 + 3 && sPmaWrites[0] == std::make_pair(0x104u, 0x44u));
+	assert(sequenceOf(sPmaWrites, {{0x024u, 0x6eu}, {0x090u, 0x68u}, {0x1a64u, 0xa8u}, {0x288u, 0xc0u},
+		{0x38cu, 0x08u}, {0x288u, 0xccu}}));
+	assert(dp.lcpllPolls == 0 && dp.pmaAfter[0] == 0xcc && dp.pmaAfter[5] == 0x08);
+	assert(dp.usbdpGrfAfter == 0x6000 && dp.vo0GrfAfter == 0x40);
+	assert(memcmp(dp.dpcd, sDpcd, 16) == 0 && dp.dpcdCount == 16 && dp.sinkCount == 0x41);
+	assert(memcmp(dp.edid, sSinkEdid, 128) == 0 && dp.edidBytes == 128);
+	assert(sAuxLog.size() == 12 && sAuxLog[0] == 0x9000000fu && sAuxLog[1] == 0x90020000u);
+	assert(sAuxLog[2] == 0x40005000u && sAuxLog[3] == 0x5000500fu && sAuxLog[10] == 0x5000500fu);
+	assert(sAuxLog[11] == 0x10005010u && dp.auxTransfers == 12 && dp.auxRetries == 0);
+	assert(dp.resetsAfter[0] == 0 && dp.resetsAfter[1] == 0 && dp.resetsAfter[3] == 0);
+	assert(dp.finishedMicros > dp.startedMicros && sLockDepth == 0);
+	// Without EDID only the DPCD is read.
+	Prepare(); sAllowDp = true;
+	assert(probe(0) == kDpOK && dp.phase == kDpPhaseDpcd && sAuxLog.size() == 2 && dp.edidBytes == 0);
+	assert(dp.pinMuxBefore == 0x50 && !logged(sHiwordWrites, 0x5f807c, 0x00f00050));
+	// Deferred replies are retried.
+	Prepare(); sAllowDp = true; sAuxDeferReplies = 3;
+	assert(probe(kDpProbeEdid) == kDpOK && dp.auxRetries == 3 && dp.auxTransfers == 15);
+	Prepare(); sAllowDp = true; sAuxDeferReplies = 8;
+	assert(probe(0) == kDpAuxNack && dp.phase == kDpPhaseDpcd && dp.auxTransfers == 8);
+	// No sink: no hot-plug after 200 ms and nothing of the PHY is touched.
+	Prepare(); sAllowDp = true; sSinkPresent = false;
+	assert(probe(kDpProbeEdid) == kDpNoHotPlug && dp.phase == kDpPhaseHotPlug && dp.hpdPolls == 1000);
+	assert(sCruWrites.empty() && sPmaWrites.empty() && sAuxLog.empty());
+	// Past a missing hot-plug on request: the controller's AUX timeout.
+	Prepare(); sAllowDp = true; sSinkPresent = false;
+	assert(probe(kDpProbeIgnoreHotPlug) == kDpAuxTimeout && dp.phase == kDpPhaseDpcd && sAuxLog.size() == 1);
+	assert((dp.auxStatus & (1u << 17)) != 0 && !sCruWrites.empty());
+	// No reply event at all.
+	Prepare(); sAllowDp = true; sAuxNeverReplies = true;
+	assert(probe(0) == kDpAuxTimeout && dp.auxPolls == 200);
+	// The PHY PLL never locks; the reference clock is not 24 MHz.
+	Prepare(); sAllowDp = true; sLcpllNeverLocks = true;
+	assert(probe(0) == kDpLcpllTimeout && dp.phase == kDpPhasePhy && dp.lcpllPolls == 500 && sAuxLog.empty());
+	Prepare(); sAllowDp = true; sRefclkSelect = 1u << 7;
+	assert(probe(0) == kDpRefclkUnsupported && dp.refclkSelect == (1u << 7) && sCruWrites.empty());
+	// A corrupted EDID.
+	Prepare(); sAllowDp = true; sSinkEdid[20] ^= 1;
+	assert(probe(kDpProbeEdid) == kDpEdidInvalid && dp.edidBytes == 128);
+	assert(Close(reader) == B_OK && Free(reader) == B_OK && Close(primary) == B_OK && Free(primary) == B_OK);
+	controller.dpAuxEnabled = false;
+	sAllowDp = false;
+	controller = dpController;
 	assert(sAreas.empty() && sLockDepth == 0);
 	printf("RK3588_DISPLAY_RESOURCES_TEST_PASS faults=%zu\n", faults.size());
 	return 0;

@@ -1063,3 +1063,95 @@ def check_pointer_frame(path, x, y, size=24, frame=(1920, 1080)):
         result['status'] = 'fail'
         raise ValidationError('frame does not show a pointer at %d,%d: %r' % (x, y, result))
     return result
+
+
+DP_LINE = re.compile(
+    r'^ROCK5_DISPLAY_DP result=(\d+) phase=(\d+) pin=([0-9a-f]{8}),([0-9a-f]{8}) level=(\d) hpd=([0-9a-f]{8}),([0-9a-f]{8})'
+    r' hpd_polls=(\d+) refclk=([0-9a-f]{8}) lcpll_polls=(\d+) aux=(\d+),(\d+),(\d+) aux_status=([0-9a-f]{8})'
+    r' dpcd_count=(\d+) sinks=([0-9a-f]{2}) edid_bytes=(\d+) micros=(\d+)$', re.M)
+DP_WORDS = re.compile(
+    r'^ROCK5_DISPLAY_DP_WORDS resets=((?:[0-9a-f]{8},){3}[0-9a-f]{8})/((?:[0-9a-f]{8},){3}[0-9a-f]{8})'
+    r' usbdp_grf=([0-9a-f]{8}),([0-9a-f]{8}) vo0_grf=([0-9a-f]{8}),([0-9a-f]{8}) cctl=([0-9a-f]{8}),([0-9a-f]{8})'
+    r' pma_before=((?:[0-9a-f]{8},){6}[0-9a-f]{8}) pma_after=((?:[0-9a-f]{8},){6}[0-9a-f]{8})$', re.M)
+DP_DPCD = re.compile(r'^ROCK5_DISPLAY_DP_DPCD ([0-9a-f]{32})$', re.M)
+DP_EDID = re.compile(r'^ROCK5_DISPLAY_DP_EDID ([0-9a-f]{256})$', re.M)
+DP_RESULTS = {0: 'ok', 1: 'not_ready', 2: 'no_hot_plug', 3: 'refclk_unsupported', 4: 'lcpll_timeout',
+    5: 'aux_timeout', 6: 'aux_nack', 7: 'aux_short', 8: 'edid_invalid'}
+DP_LINK_RATES = {0x06: 1.62, 0x0a: 2.7, 0x14: 5.4, 0x1e: 8.1}
+
+
+def decode_dpcd(data):
+    """Decode the DPCD receiver capability bytes 0x000-0x00f."""
+    return dict(revision='%d.%d' % (data[0] >> 4, data[0] & 0xf), max_link_rate_gbps=DP_LINK_RATES.get(data[1]),
+        max_link_rate_code=data[1], max_lanes=data[2] & 0x1f, enhanced_framing=(data[2] >> 7) & 1,
+        tps3=(data[2] >> 6) & 1, max_downspread=data[3] & 1, downstream_port_present=data[5] & 1,
+        downstream_type=(data[5] >> 1) & 3, downstream_ports=data[7] & 0xf, training_interval=data[0xe])
+
+
+def validate_dp_probe(body, edid=False):
+    """Return the decoded DP probe from a native --dp transcript or raise ValidationError.
+
+    A pass means the path came up to the AUX channel exactly as the driver
+    programs it (hot-plug pin muxed to the controller and in its PLUG state,
+    the PHY's resets released and its PLL locked, DP lanes 2 and 3 routed and
+    enabled) and the sink answered with plausible DPCD capabilities and, when
+    asked, a valid EDID base block.
+    """
+    if 'ROCK5_DISPLAY_DP_REQUEST_CHECKS_PASS' not in body:
+        raise ValidationError('DP request boundary checks missing')
+    line, words = DP_LINE.search(body), DP_WORDS.search(body)
+    if line is None or words is None:
+        raise ValidationError('DP probe lines missing')
+    result, phase = int(line.group(1)), int(line.group(2))
+    if result != 0:
+        raise ValidationError('DP probe result %s at phase %d' % (DP_RESULTS.get(result, result), phase))
+    if phase != (7 if edid else 6):
+        raise ValidationError('DP probe ended at phase %d' % phase)
+    pin_before, pin_after = int(line.group(3), 16), int(line.group(4), 16)
+    if (pin_after >> 4) & 0xf != 5:
+        raise ValidationError('hot-plug pin muxed to %d, not dp1_hpdin_m0' % ((pin_after >> 4) & 0xf))
+    hpd_after = int(line.group(7), 16)
+    if (hpd_after >> 9) & 7 != 7 or not (hpd_after >> 8) & 1:
+        raise ValidationError('controller hot-plug state %#x is not PLUG' % hpd_after)
+    if int(line.group(9), 16) & 0x1ff:
+        raise ValidationError('PHY reference clock is not the 24 MHz oscillator')
+    resets_after = [int(w, 16) for w in words.group(2).split(',')]
+    if resets_after[0] & (1 << 15) or resets_after[1] & 0x7 or resets_after[3] & (1 << 4):
+        raise ValidationError('a PHY reset is still asserted: %r' % ['%08x' % w for w in resets_after])
+    usbdp_after, vo0_after = int(words.group(4), 16), int(words.group(6), 16)
+    if usbdp_after & 0x6000 != 0x6000:
+        raise ValidationError('PHY not powered (USBDP GRF CON1 %#x)' % usbdp_after)
+    if vo0_after & 0x3ff != 0x40:
+        raise ValidationError('DP lanes not routed to PHY lanes 2 and 3 (VO0 GRF %#x)' % vo0_after)
+    if int(words.group(8), 16) & (1 << 2):
+        raise ValidationError('fast link training left enabled')
+    pma_after = [int(w, 16) for w in words.group(10).split(',')]
+    if pma_after[0] & 0xff != 0xcc or not pma_after[5] & (1 << 3) or pma_after[3] & 0xc0 != 0xc0:
+        raise ValidationError('PHY lane mux/enable, DP init reset or LCPLL wrong: %r' % ['%08x' % w for w in pma_after])
+    dpcd_line = DP_DPCD.search(body)
+    if dpcd_line is None or int(line.group(15)) != 16:
+        raise ValidationError('DPCD capabilities missing')
+    dpcd = bytes.fromhex(dpcd_line.group(1))
+    decoded = decode_dpcd(dpcd)
+    if dpcd[0] not in (0x10, 0x11, 0x12, 0x13, 0x14) or decoded['max_link_rate_gbps'] is None \
+            or decoded['max_lanes'] not in (1, 2, 4):
+        raise ValidationError('implausible DPCD capabilities %s' % dpcd.hex())
+    edid_block = None
+    if edid:
+        edid_line = DP_EDID.search(body)
+        if edid_line is None or int(line.group(17)) != 128:
+            raise ValidationError('EDID block missing')
+        edid_block = bytes.fromhex(edid_line.group(1))
+        if edid_block[:8] != EDID_HEADER or sum(edid_block) % 256:
+            raise ValidationError('EDID block header or checksum wrong')
+    if body.count('ROCK5_DISPLAY_DP_PASS edid=%d\n' % (1 if edid else 0)) != 1:
+        raise ValidationError('DP summary missing or inconsistent')
+    return dict(status='pass', result=result, phase=phase, pin_before='%08x' % pin_before, pin_after='%08x' % pin_after,
+        gpio_level=int(line.group(5)), hpd_before=line.group(6), hpd_after=line.group(7), hpd_polls=int(line.group(8)),
+        lcpll_polls=int(line.group(10)), aux_transfers=int(line.group(11)), aux_retries=int(line.group(12)),
+        aux_polls=int(line.group(13)), sink_count=int(line.group(16), 16), micros=int(line.group(18)),
+        resets_before=words.group(1).split(','), resets_after=words.group(2).split(','),
+        usbdp_grf=[words.group(3), words.group(4)], vo0_grf=[words.group(5), words.group(6)],
+        cctl=[words.group(7), words.group(8)], pma_before=words.group(9).split(','), pma_after=words.group(10).split(','),
+        dpcd=dpcd.hex(), dpcd_decoded=decoded, edid=edid_block.hex() if edid_block else None,
+        edid_base=decode_edid_base(edid_block) if edid_block else None)

@@ -27,6 +27,7 @@
 #include "DisplayAccelerant.h"
 #include "DisplayModeSet.h"
 #include "DisplayCursor.h"
+#include "DisplayPort.h"
 
 
 using namespace RK3588Display;
@@ -69,6 +70,7 @@ struct Controller {
 	bool modeSetEnabled;
 	bool cursorEnabled;
 	bool cursorHooksEnabled; // app_server's pointer goes to the window, not only the probe's
+	bool dpAuxEnabled; // the second connector's DP path may be brought up to its AUX channel
 };
 
 // One open file handle. Only writable handles (the accelerant profile) may
@@ -119,6 +121,7 @@ static status_t AcquireFrameBuffer(Handle* handle);
 static status_t ChangeDisplayMode(Handle* handle, ModeRequest& request);
 static status_t ChangePowerMode(Handle* handle, PowerRequest& request);
 static status_t CursorControl(Handle* handle, uint32 op, void* buffer, size_t length);
+static status_t DpControl(Handle* handle, void* buffer, size_t length);
 static uint32_t ProgramCursor(uint32_t& polls);
 static int32 RetraceInterrupt(void* data);
 static void ReleaseFrameBuffer(Controller* controller);
@@ -624,6 +627,9 @@ InitDriver(device_node* node, void** cookie)
 		// profile also hands app_server's pointer to it.
 		controller->cursorHooksEnabled
 			= strcmp(profile, "rock5-itx-edk2-v1.1-display-cursor-desktop") == 0;
+		// The DP AUX profile touches only the second connector's path; HDMI1
+		// stays with the firmware.
+		controller->dpAuxEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-dp-aux") == 0;
 		controller->cursorEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-cursor") == 0
 			|| controller->cursorHooksEnabled;
 		controller->modeSetEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-modeset") == 0
@@ -639,14 +645,15 @@ InitDriver(device_node* node, void** cookie)
 		unload_driver_settings(settings);
 	dprintf("rk3588_display: validated VOP2 %#" B_PRIx64 " and HDMI TX1 %#" B_PRIx64
 		" resources; observation only; EDID %s; scanout %s; accelerant %s; modeset %s; cursor %s;"
-		" cursor hooks %s\n",
+		" cursor hooks %s; dp aux %s\n",
 		controller->resources.vopBase, controller->resources.hdmiBase,
 		controller->edidEnabled ? "enabled" : "disabled",
 		controller->scanoutEnabled ? "enabled" : "disabled",
 		controller->accelerantEnabled ? "enabled" : "disabled",
 		controller->modeSetEnabled ? "enabled" : "disabled",
 		controller->cursorEnabled ? "enabled" : "disabled",
-		controller->cursorHooksEnabled ? "enabled" : "disabled");
+		controller->cursorHooksEnabled ? "enabled" : "disabled",
+		controller->dpAuxEnabled ? "enabled" : "disabled");
 	*cookie = controller;
 	return B_OK;
 }
@@ -832,6 +839,8 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 			return area;
 		return _user_get_area_info(area, (area_info*)buffer);
 	}
+	if (op == kDpProbe)
+		return DpControl(handle, buffer, length);
 	if (op == kSetCursorBitmap || op == kMoveCursor || op == kShowCursor || op == kGetCursor)
 		return CursorControl(handle, op, buffer, length);
 	if (op == kGetSnapshot) {
@@ -1693,12 +1702,146 @@ CursorControl(Handle* handle, uint32 op, void* buffer, size_t length)
 }
 
 
+// The second connector's blocks, mapped writable only for the probe: the
+// DP controller, the USBDP PHY1 PMA window, its GRF, the VO0 GRF, the bus
+// IOC page and the whole CRU (its soft resets and the PMU CRU's reference
+// clock selector); GPIO3 and the PMU read-only.
+class DpHardware {
+public:
+	status_t Prepare(const ResourceInfo& resources)
+	{
+		status_t status = Map(fPmuArea, "RK3588 DP PMU", resources.pmuBase, B_PAGE_SIZE, false,
+			&fPmu);
+		if (status == B_OK)
+			status = Map(fCruArea, "RK3588 DP CRU", resources.clockBase, resources.clockSize, true, &fCru);
+		if (status != B_OK)
+			return status;
+		// The domain and the bus clocks are checked before any block of the path is mapped.
+		uint32_t repair = ReadDisplayRegister(fPmu, kPmuOffsets[kPmuRepairStatus]);
+		if ((repair & kPmuVo0On) == 0
+			|| (ReadDisplayRegister(fCru, kClockGateOffsets[kClockGateDp])
+				& (kClockGateDpMask | kClockGateDpAuxMask)) != 0
+			|| (ReadDisplayRegister(fCru, kClockGateOffsets[kClockGateUsbdp]) & kClockGateUsbdpMask) != 0
+			|| (ReadDisplayRegister(fCru, kClockGateOffsets[kClockGateImmortal]) & kClockGateImmortalMask) != 0
+			|| (ReadDisplayRegister(fCru, kClockGateOffsets[kClockGateGpio]) & kClockGateGpioMask) != 0) {
+			return B_DEV_NOT_READY;
+		}
+		status = Map(fDpArea, "RK3588 DP TX1", resources.dpBase, resources.dpSize, true, &fDp);
+		if (status == B_OK) {
+			status = Map(fPmaArea, "RK3588 DP USBDP1 PMA", resources.usbdpPhyBase + kPmaBase,
+				kPmaMapSize, true, &fPma);
+		}
+		if (status == B_OK) {
+			status = Map(fUsbdpGrfArea, "RK3588 DP USBDP1 GRF", resources.usbdpGrfBase, B_PAGE_SIZE,
+				true, &fUsbdpGrf);
+		}
+		if (status == B_OK) {
+			status = Map(fVo0GrfArea, "RK3588 DP VO0 GRF", resources.vo0GrfBase, B_PAGE_SIZE, true,
+				&fVo0Grf);
+		}
+		if (status == B_OK) {
+			status = Map(fIocArea, "RK3588 DP BUS IOC", resources.iocBase + kIocBusOffset,
+				B_PAGE_SIZE, true, &fIoc);
+		}
+		if (status == B_OK)
+			status = Map(fGpioArea, "RK3588 DP GPIO3", resources.gpio3Base, B_PAGE_SIZE, false, &fGpio);
+		return status;
+	}
+	uint32_t ReadDp(uint32_t offset) { return ReadDisplayRegister(fDp, offset); }
+	void WriteDp(uint32_t offset, uint32_t value) { WriteDisplayRegister(fDp, offset, value); }
+	uint32_t ReadPma(uint32_t offset) { return ReadDisplayRegister(fPma, offset); }
+	void WritePma(uint32_t offset, uint32_t value) { WriteDisplayRegister(fPma, offset, value); }
+	uint32_t ReadUsbdpGrf(uint32_t offset) { return ReadDisplayRegister(fUsbdpGrf, offset); }
+	void WriteUsbdpGrf(uint32_t offset, uint32_t value) { WriteDisplayRegister(fUsbdpGrf, offset, value); }
+	uint32_t ReadVo0Grf(uint32_t offset) { return ReadDisplayRegister(fVo0Grf, offset); }
+	void WriteVo0Grf(uint32_t offset, uint32_t value) { WriteDisplayRegister(fVo0Grf, offset, value); }
+	uint32_t ReadIoc(uint32_t offset) { return ReadDisplayRegister(fIoc, offset); }
+	void WriteIoc(uint32_t offset, uint32_t value) { WriteDisplayRegister(fIoc, offset, value); }
+	uint32_t ReadGpio(uint32_t offset) { return ReadDisplayRegister(fGpio, offset); }
+	uint32_t ReadCru(uint32_t offset) { return ReadDisplayRegister(fCru, offset); }
+	void WriteCru(uint32_t offset, uint32_t value) { WriteDisplayRegister(fCru, offset, value); }
+	void Pause(unsigned micros) { spin(micros); }
+	int64_t Now() { return system_time(); }
+private:
+	status_t Map(AreaDeleter& area, const char* name, uint64_t base, size_t size, bool writable,
+		volatile uint32** registers)
+	{
+		void* address = NULL;
+		area.SetTo(map_physical_memory(name, base, size, B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY,
+			B_KERNEL_READ_AREA | (writable ? B_KERNEL_WRITE_AREA : 0), &address));
+		if (area.Get() < B_OK)
+			return area.Get();
+		*registers = (volatile uint32*)address;
+		return B_OK;
+	}
+	AreaDeleter fPmuArea, fCruArea, fDpArea, fPmaArea, fUsbdpGrfArea, fVo0GrfArea, fIocArea,
+		fGpioArea;
+	volatile uint32* fPmu = NULL;
+	volatile uint32* fCru = NULL;
+	volatile uint32* fDp = NULL;
+	volatile uint32* fPma = NULL;
+	volatile uint32* fUsbdpGrf = NULL;
+	volatile uint32* fVo0Grf = NULL;
+	volatile uint32* fIoc = NULL;
+	volatile uint32* fGpio = NULL;
+};
+
+
+static status_t
+DpControl(Handle* handle, void* buffer, size_t length)
+{
+	Controller* controller = handle->controller;
+	if (!controller->dpAuxEnabled)
+		return B_DEV_INVALID_IOCTL;
+	if (!handle->writable)
+		return B_NOT_ALLOWED;
+	if (length != sizeof(DpProbeRequest))
+		return B_BAD_VALUE;
+	if (buffer == NULL)
+		return B_BAD_ADDRESS;
+	DpProbeRequest request;
+	if (user_memcpy(&request, buffer, sizeof(request)) != B_OK)
+		return B_BAD_ADDRESS;
+	if (request.version != kDpVersion
+		|| (request.flags & ~(kDpProbeEdid | kDpProbeIgnoreHotPlug)) != 0) {
+		return B_BAD_VALUE;
+	}
+	uint32_t flags = request.flags;
+	memset(&request, 0, sizeof(request));
+	request.version = kDpVersion;
+	request.flags = flags;
+	MutexLocker locker(sHardwareLock);
+	if (!ResourcesMatch(controller->resources))
+		return B_NOT_SUPPORTED;
+	DpHardware hardware;
+	status_t status = hardware.Prepare(controller->resources);
+	if (status == B_DEV_NOT_READY) {
+		request.result = kDpNotReady;
+	} else if (status != B_OK) {
+		return status;
+	} else {
+		request.result = DpProbeSink(hardware, request);
+		DpProbeFinish(hardware, request);
+	}
+	dprintf("rk3588_display: dp probe result=%" B_PRIu32 " phase=%" B_PRIu32 " pin=%#" B_PRIx32
+		"->%#" B_PRIx32 " level=%" B_PRIu32 " hpd=%#" B_PRIx32 "->%#" B_PRIx32 " polls=%" B_PRIu32
+		" lcpll=%" B_PRIu32 " aux=%" B_PRIu32 "/%" B_PRIu32 " status=%#" B_PRIx32 " dpcd=%02x%02x%02x%02x"
+		" sinks=%" B_PRIu32 " edid=%" B_PRIu32 " micros=%" B_PRId64 "\n", request.result, request.phase,
+		request.pinMuxBefore, request.pinMuxAfter, request.gpioLevel, request.hpdStatusBefore,
+		request.hpdStatusAfter, request.hpdPolls, request.lcpllPolls, request.auxTransfers,
+		request.auxRetries, request.auxStatus, request.dpcd[0], request.dpcd[1], request.dpcd[2],
+		request.dpcd[3], request.sinkCount, request.edidBytes,
+		request.finishedMicros - request.startedMicros);
+	return user_memcpy(buffer, &request, sizeof(request));
+}
+
+
 static status_t
 Open(void* cookie, const char*, int mode, void** _handle)
 {
 	Controller* controller = (Controller*)cookie;
 	bool writable = (mode & O_ACCMODE) != O_RDONLY;
-	if (writable && !controller->accelerantEnabled)
+	if (writable && !controller->accelerantEnabled && !controller->dpAuxEnabled)
 		return B_NOT_ALLOWED;
 	Handle* handle = (Handle*)malloc(sizeof(Handle));
 	if (handle == NULL)

@@ -758,6 +758,59 @@ class DisplayValidationTest(unittest.TestCase):
                 with self.assertRaises(check.ValidationError):
                     check.validate(body)
 
+    def test_dp_probe_transcript(self):
+        base, _ = edid_blocks()
+        dpcd = bytes([0x12, 0x0a, 0x82, 0x01, 0x00, 0x15, 0x01, 0x81, 0x02, 0x00, 0x06, 0, 0, 0, 0, 0])
+        def transcript(result=0, phase=7, pin_after='00000050', hpd_after='00000f02', refclk='00000000',
+                resets_after='00000000,00000000,00000000,00000000', usbdp_after='00006000', vo0_after='00000040',
+                cctl_after='00000000', pma_after='000000cc,00000018,00000000,000000c0,00000003,00000008,00000000',
+                dpcd_bytes=dpcd, edid=base, summary=None, count=16):
+            lines = ['ROCK5_DISPLAY_DP_REQUEST_CHECKS_PASS',
+                'ROCK5_DISPLAY_DP result=%d phase=%d pin=00000000,%s level=1 hpd=00000000,%s hpd_polls=17 refclk=%s'
+                ' lcpll_polls=0 aux=12,0,40 aux_status=00000000 dpcd_count=%d sinks=41 edid_bytes=%d micros=41000'
+                % (result, phase, pin_after, hpd_after, refclk, count, 128 if edid else 0),
+                'ROCK5_DISPLAY_DP_WORDS resets=00000000,00000000,00000000,00000000/%s usbdp_grf=00006000,%s'
+                ' vo0_grf=000000e4,%s cctl=00000004,%s pma_before=00000000,00000000,00000000,000000c0,00000000,00000000,00000000'
+                ' pma_after=%s' % (resets_after, usbdp_after, vo0_after, cctl_after, pma_after),
+                'ROCK5_DISPLAY_DP_DPCD ' + dpcd_bytes.hex()]
+            if edid:
+                lines.append('ROCK5_DISPLAY_DP_EDID ' + edid.hex())
+            lines.append(summary if summary is not None else 'ROCK5_DISPLAY_DP_PASS edid=%d' % (1 if edid else 0))
+            return '\n'.join(lines) + '\n'
+        result = check.validate_dp_probe(transcript(), edid=True)
+        self.assertEqual(result['dpcd_decoded'], dict(revision='1.2', max_link_rate_gbps=2.7, max_link_rate_code=0x0a,
+            max_lanes=2, enhanced_framing=1, tps3=0, max_downspread=1, downstream_port_present=1, downstream_type=2,
+            downstream_ports=1, training_interval=0))
+        self.assertEqual((result['sink_count'], result['aux_transfers'], result['edid_base']['manufacturer']), (0x41, 12, check.decode_edid_base(base)['manufacturer']))
+        plain = check.validate_dp_probe(transcript(phase=6, edid=None))
+        self.assertIsNone(plain['edid'])
+        broken = bytearray(base)
+        broken[20] ^= 1
+        cases = [
+            ('result', transcript(result=5, phase=6), True),
+            ('phase', transcript(phase=6), True),
+            ('pin', transcript(pin_after='00000000'), True),
+            ('hpd', transcript(hpd_after='00000000'), True),
+            ('refclk', transcript(refclk='00000080'), True),
+            ('reset', transcript(resets_after='00008000,00000000,00000000,00000000'), True),
+            ('pma_reset', transcript(resets_after='00000000,00000000,00000000,00000010'), True),
+            ('grf', transcript(usbdp_after='00004000'), True),
+            ('lanes', transcript(vo0_after='000000e4'), True),
+            ('cctl', transcript(cctl_after='00000004'), True),
+            ('pma', transcript(pma_after='000000c0,00000018,00000000,000000c0,00000003,00000008,00000000'), True),
+            ('lcpll', transcript(pma_after='000000cc,00000018,00000000,00000000,00000003,00000008,00000000'), True),
+            ('dpcd', transcript(dpcd_bytes=bytes(16)), True),
+            ('dpcd_count', transcript(count=0), True),
+            ('edid_missing', transcript(edid=None), True),
+            ('edid_checksum', transcript(edid=bytes(broken)), True),
+            ('summary', transcript(summary='ROCK5_DISPLAY_DP_PASS edid=0'), True),
+            ('checks', transcript().replace('ROCK5_DISPLAY_DP_REQUEST_CHECKS_PASS\n', ''), True),
+        ]
+        for name, body, with_edid in cases:
+            with self.subTest(name):
+                with self.assertRaises(check.ValidationError):
+                    check.validate_dp_probe(body, edid=with_edid)
+
     def test_pattern_frame(self):
         import tempfile
         with tempfile.TemporaryDirectory() as directory:
