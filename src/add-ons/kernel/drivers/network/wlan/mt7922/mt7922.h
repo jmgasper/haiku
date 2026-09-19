@@ -71,6 +71,88 @@ struct mt7922_dma_mem {
 };
 
 
+
+/* The transfer engine. Everything here is already where it appears in the
+ * window, so none of it needs the window moved.
+ */
+#define MT_WFDMA0_BASE			0x000d4000
+#define MT_WFDMA0_RST			0x000d4100
+#define MT_WFDMA0_RST_LOGIC_RST		(1 << 4)
+#define MT_WFDMA0_RST_DMASHDL_ALL_RST	(1 << 5)
+
+#define MT_WFDMA0_HOST_INT_STA		0x000d4200
+#define MT_WFDMA0_HOST_INT_ENA		0x000d4204
+#define MT_MCU2HOST_SW_INT_ENA		0x000d41f4
+#define MT_MCU_CMD_WAKE_RX_PCIE		(1 << 0)
+
+#define MT_WFDMA0_GLO_CFG		0x000d4208
+#define MT_WFDMA0_TX_DMA_EN		(1 << 0)
+#define MT_WFDMA0_TX_DMA_BUSY		(1 << 1)
+#define MT_WFDMA0_RX_DMA_EN		(1 << 2)
+#define MT_WFDMA0_RX_DMA_BUSY		(1 << 3)
+#define MT_WFDMA0_DMA_SIZE_SHIFT	4
+#define MT_WFDMA0_DMA_SIZE_MASK		0x00000030
+#define MT_WFDMA0_TX_WB_DDONE		(1 << 6)
+#define MT_WFDMA0_FIFO_DIS_CHECK	(1 << 11)
+#define MT_WFDMA0_FIFO_LITTLE_ENDIAN	(1 << 12)
+#define MT_WFDMA0_RX_WB_DDONE		(1 << 13)
+#define MT_WFDMA0_CSR_DISP_BASE_PTR_CHAIN_EN	(1 << 15)
+#define MT_WFDMA0_OMIT_RX_INFO_PFET2	(1 << 21)
+#define MT_WFDMA0_OMIT_TX_INFO		(1 << 28)
+#define MT_WFDMA0_CLK_GAT_DIS		(1 << 30)
+
+#define MT_WFDMA0_RST_DTX_PTR		0x000d420c
+#define MT_WFDMA0_GLO_CFG_EXT0		0x000d42b0
+#define MT_WFDMA0_CSR_TX_DMASHDL_EN	(1 << 6)
+#define MT_WFDMA0_PRI_DLY_INT_CFG0	0x000d42f0
+
+/* Where each ring's four registers live: descriptor address, how many there
+ * are, where we have got to, and where the card has got to.
+ */
+#define MT_TX_RING_BASE			0x000d4300
+#define MT_RX_EVENT_RING_BASE		0x000d4500
+#define MT_RX_DATA_RING_BASE		0x000d4520
+#define MT_RX_WA_RING_BASE		0x000d4540
+#define MT_RING_SIZE			0x10
+#define MT_RING_DESC_BASE		0x00
+#define MT_RING_COUNT			0x04
+#define MT_RING_CPU_INDEX		0x08
+#define MT_RING_DMA_INDEX		0x0c
+
+#define MT_WFDMA0_TX_RING_EXT_CTRL	0x000d4600
+#define MT_WFDMA0_RX_RING_EXT_CTRL	0x000d4680
+
+#define MT_DMASHDL_SW_CONTROL		0x7c026004
+#define MT_DMASHDL_BYPASS		(1 << 28)
+
+#define MT_WFDMA_DUMMY_CR		0x54000120
+#define MT_WFDMA_NEED_REINIT		(1 << 1)
+
+/* Which rings this part uses, and how deep each is. */
+#define MT7922_TXQ_BAND0		0
+#define MT7922_TXQ_FWDL			16
+#define MT7922_TXQ_MCU_WM		17
+#define MT7922_RXQ_BAND0		0
+#define MT7922_RXQ_MCU_WM		0
+
+#define MT7922_TX_RING_SIZE		2048
+#define MT7922_TX_MCU_RING_SIZE		256
+#define MT7922_TX_FWDL_RING_SIZE	128
+#define MT7922_RX_MCU_RING_SIZE		8
+#define MT7922_RX_WA_RING_SIZE		512
+#define MT7922_RX_RING_SIZE		1536
+
+
+/* One ring: the descriptors the card walks, and where we think it has got to.
+ */
+struct mt7922_ring {
+	mt7922_dma_mem	descriptors;
+	uint32		registers;	/* where its four registers are */
+	uint16		count;
+	uint16		head;		/* the next one we will fill */
+	uint16		tail;		/* the next one to reclaim */
+};
+
 struct mt7922_dev {
 	pci_info	pci;
 	char		name[32];
