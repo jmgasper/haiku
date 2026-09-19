@@ -22,7 +22,7 @@ a Bluetooth device to pair with.
 | Audio | ALC1220 analog output, HDMI audio | verified both: two outputs, each clocking its stream at the hardware's own rate (48322 and 48321 frames a second against the 48000 asked for). The graphics card's codec needed a change to Haiku's hda driver, which discarded any codec whose converters are all digital. The monitor reports it takes stereo. What nobody here can check is whether a speaker makes a sound |
 | Graphics | GTX 1070/1080 Ti accelerated 2D/3D, 3-4 monitors | 3D verified: Vulkan on the GPU (1.4 TFLOP/s compute, 57 Gpixel/s fill) and OpenGL 4.5 through it, with frames copied straight into the screen's own frame buffer in video memory rather than sent through the host - a lit sphere at 1600x900 goes from 209 to 970 frames a second. Vertical sync works (locks to 60.0) now that the accelerant hands out a retrace semaphore. Any program gets the GPU, with nothing set in its environment. Three heads driving one spanning desktop is verified, but with the third and second forced rather than plugged in. 2D is not accelerated at all: it runs four to eight times slower than drawing in memory, which is still far more than a desktop needs at one monitor |
 | Bluetooth | TP-Link Archer TX55E, working adapter and discovery | verified: the adapter answers as `90:74:ae:33:d7:cb` "MTK MT7922 #1" and an inquiry finds devices nearby, from a cold boot with nothing done by hand. The radio is a MediaTek MT7922 on USB, which runs a bootloader rather than a Bluetooth controller until it is given firmware - it takes the HCI Reset every stack opens with and never answers. The driver now hands it that firmware at open. Three further faults were in the way: `h2generic` took its event endpoint from the last interface that had one, which on this radio is MediaTek's audio interface, so it listened where no reply is ever sent; it stood isochronous transfers on the SCO endpoints at open, which nothing wants until there is a call; and the server never answered a request for a command the controller refuses outright, which hung the first program to ask for an adapter. Remote name lookup still fails, so discovered devices show an address and no name. Pairing and audio profiles are untried |
-| Wi-Fi | TP-Link Archer TX55E | the firmware runs; the card cannot carry traffic yet. `mt7922` is native, against Haiku's own PCI. From a cold boot it finds the card, switches on the memory space and bus mastering firmware leaves off, maps its window at the real address, takes the registers from the card's firmware, reads back MT7922 revision `0x10`, resets the Wi-Fi subsystem, builds three transfer rings, and hands the part its firmware: the patch and all five downloadable regions of the RAM image, the sixth skipped as it asks to be, after which the part reports that what it was given is running. Bluetooth is unaffected throughout. What remains is the 802.11 driver itself on net80211 - asking the running firmware what it is, then scanning, associating, keys and a data path - which is the larger half. A `mt76` port is not the route: that driver needs LinuxKPI and `linuxkpi_wlan`, emulating Linux's mac80211, where Haiku has FreeBSD 12.0's own net80211 and no LinuxKPI |
+| Wi-Fi | TP-Link Archer TX55E | the card scans and lists networks; it cannot carry traffic yet. `mt7922` is native, against Haiku's own PCI, and from a cold boot it brings the part up, loads its firmware, tunes a channel, sweeps for networks and reads what it hears: twenty-two in earshot by name, address and channel. It transmits, proven by asking after a network by name and being answered twenty-five times - an answer addressed to us can only follow a question we sent. What remains is joining one: host-side transmission of management frames, then association and keys. The last is best not done here at all - Haiku's wireless drivers present themselves through `net80211`, and its `wpa_supplicant` already does the handshake and key management, which is both far larger than this driver and the part where a mistake is a security mistake rather than a silent one. The network to join and the secret for it come from a settings file on the machine, never from this source, and the secret is never logged |
 | Sleep | S3 suspend and resume | sleeps and wakes; the display comes back, but the NVMe and the network card usually do not. Paused until a serial console arrives, which is also what the one untested path in the vertical sync work needs |
 
 ## Log
@@ -730,3 +730,36 @@ a Bluetooth device to pair with.
   ahead into, and a ring without one has nowhere to stage what it fetches. On
   this engine that stops receiving and leaves sending looking healthy, which
   is as misleading a symptom as this part has produced so far.
+- 2026-09-19: the Wi-Fi card scans and lists networks. Twenty-two in earshot,
+  by name, address and channel, from a cold boot with nothing done by hand.
+  The radio transmits as well as listens: asked after a network by name, it
+  was answered twenty-five times, and an answer addressed to us can only
+  follow a question we sent.
+
+  Three things were in the way after the firmware came up, and the last was
+  the longest-lived. The receiver's maximum frame length is kept in two
+  registers, both left at zero by the firmware, so every frame was
+  over-length and discarded before anyone saw it; neither register is
+  reachable through the moveable window, so both needed entries in the table
+  of fixed mappings, and the writes are read back because a wrong entry there
+  writes elsewhere in silence.
+
+  Then ordinary traffic arrived and no announcements at all, from radios that
+  plainly must send both. The cause was here rather than in the part:
+  announcements do not come up the ring ordinary traffic uses, they come by
+  way of the part's own processor, and the code waiting there for answers to
+  commands read everything, kept what carried the sequence number it wanted
+  and discarded the rest - which was exactly the frames being looked for.
+  Ruled out first, each by measurement: the receive filter, cleared outright;
+  the routing register, which says the host; the transmit and receive gate,
+  already open; and a passive sweep being too brief.
+
+  The counting that found it is worth keeping, and one part of it had to be
+  fixed first: frames were bucketed by the top half of their control byte,
+  which makes a QoS data frame look like an announcement.
+
+  What remains is joining a network, and the plan is not to do most of it
+  here. Haiku's own wireless drivers present themselves through `net80211`,
+  which is what `SIOCS80211` reaches and what `wpa_supplicant` drives; the
+  handshake and key management already exist there. The work is to wrap this
+  driver in that shape, not to reimplement them.
