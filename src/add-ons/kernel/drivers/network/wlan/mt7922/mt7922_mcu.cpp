@@ -548,6 +548,28 @@ done:
 status_t
 mt7922_mcu_start_firmware(mt7922_dev* device)
 {
+	/* A second claim of ownership, different from the one that woke the
+	 * registers and no substitute for it: that one is made through a register
+	 * always in reach, this one through the moveable window, and it is made
+	 * once there are rings and before anything goes over them.
+	 */
+	mt7922_write32(device, MT_TOP_LPCR_HOST_BAND0, LPCR_HOST_DRV_OWN);
+
+	bigtime_t owned = system_time() + 500000;
+	while ((mt7922_read32(device, MT_TOP_LPCR_HOST_BAND0)
+			& LPCR_HOST_FW_OWN) != 0) {
+		if (system_time() >= owned) {
+			ERROR("the part would not hand over before firmware\n");
+			return B_TIMED_OUT;
+		}
+		snooze(MCU_POLL_INTERVAL);
+	}
+
+	/* Say which mode the firmware is to come up in. This has to be said
+	 * before it is sent, not after.
+	 */
+	mt7922_write32(device, MT_SWDEF_MODE, MT_SWDEF_NORMAL_MODE);
+
 	/* Tell the part to restart its processor before handing it anything. */
 	uint8 power[4] = { 1, 0, 0, 0 };
 	mt7922_mcu_send(device, MCU_CMD_NIC_POWER_CTRL, power, sizeof(power),

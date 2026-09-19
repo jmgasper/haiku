@@ -43,6 +43,21 @@
 #define MT_TOP_MISC2_FW_PWR_ON	(1 << 0)
 #define MT_TOP_MISC2_FW_N9_RDY	0x00000003
 
+/* Which mode the part's firmware comes up in. Normal is zero, and it has to
+ * be said before the firmware is sent rather than after.
+ */
+#define MT_SWDEF_MODE			0x0041f23c
+#define MT_SWDEF_NORMAL_MODE		0
+
+/* A second, different claim of ownership, made once the rings exist and
+ * before the firmware goes over them. This is not the one that wakes the
+ * registers - that is MT_CONN_ON_LPCTL above, and this is no substitute for
+ * it.
+ */
+#define MT_TOP_LPCR_HOST_BAND0		0x18060010
+#define LPCR_HOST_FW_OWN		(1 << 0)
+#define LPCR_HOST_DRV_OWN		(1 << 1)
+
 /* The Wi-Fi subsystem's own reset. */
 #define MT_WFSYS_SW_RST_B	0x18000140
 #define WFSYS_SW_RST_B		(1 << 0)
