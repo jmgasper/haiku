@@ -297,28 +297,6 @@ mt7922_setup(mt7922_dev* device)
 
 	TRACE("the Wi-Fi subsystem is reset and running\n");
 
-	/* Before building anything on it, check the memory the card needs can
-	 * actually be had. This machine has far more memory than the card can
-	 * address, so "contiguous and below four gigabytes" is a real constraint
-	 * rather than a formality, and finding out here beats finding out from a
-	 * ring that never advances.
-	 */
-	{
-		mt7922_dma_mem probe;
-		status_t probeStatus = mt7922_dma_alloc("mt7922 reach check",
-			2048 * 16, &probe);
-
-		if (probeStatus != B_OK) {
-			ERROR("the card cannot be given memory it can reach\n");
-			status = probeStatus;
-			goto release;
-		}
-
-		TRACE("memory the card can reach: %" B_PRIuSIZE " bytes at %#"
-			B_PRIxPHYSADDR "\n", probe.size, probe.physical);
-		mt7922_dma_free(&probe);
-	}
-
 	/* Read what it will be given, before there is anywhere to put it. A file
 	 * that does not add up is better found now than halfway through sending
 	 * it.
@@ -335,12 +313,17 @@ mt7922_setup(mt7922_dev* device)
 			mt7922_firmware_free(&ram);
 	}
 
-	/* Next: the transfer rings, and the firmware that goes over them. Until
-	 * that is here the part is awake and addressable but does nothing.
+	status = mt7922_dma_setup(device);
+	if (status != B_OK)
+		goto release;
+
+	/* Next: the firmware itself, over the rings that now exist. Until it is
+	 * running the part is awake and addressable but does nothing.
 	 */
 	return B_OK;
 
 release:
+	mt7922_dma_teardown(device);
 	mt7922_release_ownership(device);
 unmap:
 	delete_area(device->registersArea);
@@ -357,6 +340,7 @@ mt7922_teardown(mt7922_dev* device)
 	if (device->registers == NULL)
 		return;
 
+	mt7922_dma_teardown(device);
 	mt7922_release_ownership(device);
 
 	delete_area(device->registersArea);

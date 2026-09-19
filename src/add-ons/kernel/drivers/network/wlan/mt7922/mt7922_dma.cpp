@@ -91,3 +91,236 @@ mt7922_dma_free(mt7922_dma_mem* memory)
 	memory->physical = 0;
 	memory->size = 0;
 }
+
+
+/* Set a ring up and tell the card where it is.
+ *
+ * The order of these writes is the card's, not ours: the descriptors are made
+ * ready first, then the indices are zeroed, then how many there are, and the
+ * address of them last - because that write is what the card acts on.
+ */
+static status_t
+mt7922_ring_init(mt7922_dev* device, mt7922_ring* ring, uint32 base,
+	uint32 index, uint16 count, const char* name)
+{
+	status_t status = mt7922_dma_alloc(name, count * MT7922_DESC_SIZE,
+		&ring->descriptors);
+	if (status != B_OK)
+		return status;
+
+	ring->registers = base + index * MT_RING_SIZE;
+	ring->count = count;
+
+	/* A descriptor marked done is one the card has finished with, which is
+	 * how an empty ring looks to it.
+	 */
+	mt7922_desc* descriptors = (mt7922_desc*)ring->descriptors.address;
+	for (uint16 i = 0; i < count; i++)
+		descriptors[i].ctrl = MT_DMA_CTL_DMA_DONE;
+
+	mt7922_write32(device, ring->registers + MT_RING_CPU_INDEX, 0);
+	mt7922_write32(device, ring->registers + MT_RING_DMA_INDEX, 0);
+	mt7922_write32(device, ring->registers + MT_RING_COUNT, count);
+	mt7922_write32(device, ring->registers + MT_RING_DESC_BASE,
+		(uint32)ring->descriptors.physical);
+
+	/* Start from wherever the card says it is rather than from zero. */
+	uint32 where = mt7922_read32(device, ring->registers + MT_RING_DMA_INDEX);
+	if (where >= count)
+		where = 0;
+
+	ring->head = where;
+	ring->tail = where;
+
+	TRACE("%s: %u descriptors at %#" B_PRIxPHYSADDR ", card is at %" B_PRIu32
+		"\n", name, count, ring->descriptors.physical, where);
+
+	return B_OK;
+}
+
+
+static void
+mt7922_ring_free(mt7922_ring* ring)
+{
+	mt7922_dma_free(&ring->descriptors);
+	ring->count = 0;
+	ring->head = 0;
+	ring->tail = 0;
+}
+
+
+/* Hand every descriptor of a receiving ring an empty buffer. Clearing the
+ * done bit is what gives it to the card; it sets the bit again when it has
+ * put something there.
+ */
+static void
+mt7922_ring_fill(mt7922_ring* ring)
+{
+	mt7922_desc* descriptors = (mt7922_desc*)ring->descriptors.address;
+
+	for (uint16 i = 0; i < ring->count; i++) {
+		phys_addr_t buffer = ring->buffers.physical
+			+ (phys_addr_t)i * MT7922_RX_BUFFER_SIZE;
+
+		descriptors[i].buf0 = (uint32)buffer;
+		descriptors[i].buf1 = 0;
+		descriptors[i].info = 0;
+		descriptors[i].ctrl = (uint32)MT7922_RX_BUFFER_SIZE
+			<< MT_DMA_CTL_SD_LEN0_SHIFT;
+	}
+
+	ring->head = ring->count - 1;
+}
+
+
+static status_t
+mt7922_rx_ring_init(mt7922_dev* device, mt7922_ring* ring, uint32 base,
+	uint32 index, uint16 count, const char* name)
+{
+	status_t status = mt7922_dma_alloc(name, count * MT7922_DESC_SIZE,
+		&ring->descriptors);
+	if (status != B_OK)
+		return status;
+
+	status = mt7922_dma_alloc("mt7922 receive buffers",
+		(size_t)count * MT7922_RX_BUFFER_SIZE, &ring->buffers);
+	if (status != B_OK) {
+		mt7922_dma_free(&ring->descriptors);
+		return status;
+	}
+
+	ring->registers = base + index * MT_RING_SIZE;
+	ring->count = count;
+
+	mt7922_ring_fill(ring);
+
+	mt7922_write32(device, ring->registers + MT_RING_CPU_INDEX, 0);
+	mt7922_write32(device, ring->registers + MT_RING_DMA_INDEX, 0);
+	mt7922_write32(device, ring->registers + MT_RING_COUNT, count);
+	mt7922_write32(device, ring->registers + MT_RING_DESC_BASE,
+		(uint32)ring->descriptors.physical);
+
+	ring->tail = 0;
+
+	/* Everything written before the card is told how far we have got has to
+	 * have landed in memory first.
+	 */
+	memory_write_barrier();
+	mt7922_write32(device, ring->registers + MT_RING_CPU_INDEX, ring->head);
+
+	TRACE("%s: %u buffers at %#" B_PRIxPHYSADDR "\n", name, count,
+		ring->buffers.physical);
+
+	return B_OK;
+}
+
+
+/* Quiet the transfer engine before rearranging what it works from. */
+static void
+mt7922_dma_disable(mt7922_dev* device)
+{
+	uint32 config = mt7922_read32(device, MT_WFDMA0_GLO_CFG);
+
+	config &= ~(MT_WFDMA0_TX_DMA_EN | MT_WFDMA0_RX_DMA_EN
+		| MT_WFDMA0_CSR_DISP_BASE_PTR_CHAIN_EN | MT_WFDMA0_OMIT_TX_INFO
+		| MT_WFDMA0_OMIT_RX_INFO | MT_WFDMA0_OMIT_RX_INFO_PFET2);
+	mt7922_write32(device, MT_WFDMA0_GLO_CFG, config);
+
+	for (int i = 0; i < 100; i++) {
+		config = mt7922_read32(device, MT_WFDMA0_GLO_CFG);
+		if ((config & (MT_WFDMA0_TX_DMA_BUSY | MT_WFDMA0_RX_DMA_BUSY)) == 0)
+			break;
+		snooze(1000);
+	}
+
+	/* The scheduler has opinions about which ring may send when. Nothing here
+	 * wants them yet.
+	 */
+	uint32 scheduler = mt7922_read32(device, MT_DMASHDL_SW_CONTROL);
+	mt7922_write32(device, MT_DMASHDL_SW_CONTROL,
+		scheduler | MT_DMASHDL_BYPASS);
+
+	uint32 extended = mt7922_read32(device, MT_WFDMA0_GLO_CFG_EXT0);
+	mt7922_write32(device, MT_WFDMA0_GLO_CFG_EXT0,
+		extended & ~MT_WFDMA0_CSR_TX_DMASHDL_EN);
+}
+
+
+static void
+mt7922_dma_enable(mt7922_dev* device)
+{
+	mt7922_write32(device, MT_WFDMA0_RST_DTX_PTR, ~0u);
+	mt7922_write32(device, MT_WFDMA0_PRI_DLY_INT_CFG0, 0);
+
+	uint32 config = mt7922_read32(device, MT_WFDMA0_GLO_CFG);
+	config &= ~MT_WFDMA0_DMA_SIZE_MASK;
+	config |= MT_WFDMA0_TX_WB_DDONE
+		| MT_WFDMA0_FIFO_DIS_CHECK
+		| MT_WFDMA0_FIFO_LITTLE_ENDIAN
+		| MT_WFDMA0_RX_WB_DDONE
+		| MT_WFDMA0_CSR_DISP_BASE_PTR_CHAIN_EN
+		| MT_WFDMA0_OMIT_RX_INFO_PFET2
+		| MT_WFDMA0_OMIT_TX_INFO
+		| MT_WFDMA0_CLK_GAT_DIS
+		| (3u << MT_WFDMA0_DMA_SIZE_SHIFT);
+	mt7922_write32(device, MT_WFDMA0_GLO_CFG, config);
+
+	config |= MT_WFDMA0_TX_DMA_EN | MT_WFDMA0_RX_DMA_EN;
+	mt7922_write32(device, MT_WFDMA0_GLO_CFG, config);
+
+	uint32 dummy = mt7922_read32(device, MT_WFDMA_DUMMY_CR);
+	mt7922_write32(device, MT_WFDMA_DUMMY_CR, dummy | MT_WFDMA_NEED_REINIT);
+}
+
+
+status_t
+mt7922_dma_setup(mt7922_dev* device)
+{
+	TRACE("transfer engine starts at %#" B_PRIx32 "\n",
+		mt7922_read32(device, MT_WFDMA0_GLO_CFG));
+
+	mt7922_dma_disable(device);
+
+	status_t status = mt7922_ring_init(device, &device->firmwareRing,
+		MT_TX_RING_BASE, MT7922_TXQ_FWDL, MT7922_TX_FWDL_RING_SIZE,
+		"mt7922 firmware ring");
+	if (status != B_OK)
+		return status;
+
+	status = mt7922_ring_init(device, &device->commandRing, MT_TX_RING_BASE,
+		MT7922_TXQ_MCU_WM, MT7922_TX_MCU_RING_SIZE, "mt7922 command ring");
+	if (status != B_OK)
+		goto fail;
+
+	status = mt7922_rx_ring_init(device, &device->eventRing,
+		MT_RX_EVENT_RING_BASE, MT7922_RXQ_MCU_WM, MT7922_RX_MCU_RING_SIZE,
+		"mt7922 event ring");
+	if (status != B_OK)
+		goto fail;
+
+	mt7922_dma_enable(device);
+
+	TRACE("transfer engine now %#" B_PRIx32 "\n",
+		mt7922_read32(device, MT_WFDMA0_GLO_CFG));
+
+	device->ringsReady = true;
+	return B_OK;
+
+fail:
+	mt7922_dma_teardown(device);
+	return status;
+}
+
+
+void
+mt7922_dma_teardown(mt7922_dev* device)
+{
+	if (device->registers != NULL)
+		mt7922_dma_disable(device);
+
+	mt7922_ring_free(&device->firmwareRing);
+	mt7922_ring_free(&device->commandRing);
+	mt7922_ring_free(&device->eventRing);
+	mt7922_dma_free(&device->eventRing.buffers);
+	device->ringsReady = false;
+}

@@ -98,6 +98,7 @@ struct mt7922_dma_mem {
 #define MT_WFDMA0_RX_WB_DDONE		(1 << 13)
 #define MT_WFDMA0_CSR_DISP_BASE_PTR_CHAIN_EN	(1 << 15)
 #define MT_WFDMA0_OMIT_RX_INFO_PFET2	(1 << 21)
+#define MT_WFDMA0_OMIT_RX_INFO		(1 << 27)
 #define MT_WFDMA0_OMIT_TX_INFO		(1 << 28)
 #define MT_WFDMA0_CLK_GAT_DIS		(1 << 30)
 
@@ -143,10 +144,31 @@ struct mt7922_dma_mem {
 #define MT7922_RX_RING_SIZE		1536
 
 
+/* One descriptor. The card walks an array of these; note that the control
+ * word is the second of the four, not the last, and that writing it is what
+ * hands a descriptor over - so it is always written last.
+ */
+struct mt7922_desc {
+	uint32	buf0;
+	uint32	ctrl;
+	uint32	buf1;
+	uint32	info;
+} _PACKED;
+
+#define MT_DMA_CTL_SD_LEN0_SHIFT	16
+#define MT_DMA_CTL_SD_LEN0_MASK		0x3fff0000
+#define MT_DMA_CTL_LAST_SEC0		(1u << 30)
+#define MT_DMA_CTL_DMA_DONE		(1u << 31)
+
+#define MT7922_RX_BUFFER_SIZE		2048
+#define MT7922_DESC_SIZE		16
+
+
 /* One ring: the descriptors the card walks, and where we think it has got to.
  */
 struct mt7922_ring {
 	mt7922_dma_mem	descriptors;
+	mt7922_dma_mem	buffers;	/* for a ring the card writes into */
 	uint32		registers;	/* where its four registers are */
 	uint16		count;
 	uint16		head;		/* the next one we will fill */
@@ -191,6 +213,14 @@ struct mt7922_dev {
 	uint32		revision;
 
 	bool		owned;
+
+	/* The rings the firmware travels over. The data rings come later; these
+	 * are what it takes to talk to the part's own processor.
+	 */
+	mt7922_ring	firmwareRing;	/* firmware payload, outbound */
+	mt7922_ring	commandRing;	/* commands, outbound */
+	mt7922_ring	eventRing;	/* what it says back */
+	bool		ringsReady;
 };
 
 
@@ -198,6 +228,8 @@ extern pci_module_info* gPci;
 
 status_t mt7922_dma_alloc(const char* name, size_t size,
 	mt7922_dma_mem* memory);
+status_t mt7922_dma_setup(mt7922_dev* device);
+void mt7922_dma_teardown(mt7922_dev* device);
 void mt7922_dma_free(mt7922_dma_mem* memory);
 
 status_t mt7922_firmware_read_patch(mt7922_dev* device,
