@@ -901,6 +901,43 @@ Video port 2 and its window are unchanged.
   `20260919T050323Z-570016`; build `artifacts/build-20260919T050038Z.log`.
 - Stage: `artifacts/display-dp-window/20260919T045911Z-1ebab0`.
 
+### Qualified +310 app_server on the second connector (stage 4e)
+
+The `rock5-itx-edk2-v1.1-display-dp-desktop` profile sends the accelerant's
+frame buffer to DP1. When app_server acquires it, the driver brings the path
+up as the probe does and first clones the firmware desktop, which is the
+qualified +308 state. It then swaps ESMART0 to its own 1920x1080 buffer over
+a black background, moves the kernel console there, and arms video port 1's
+frame-start interrupt for the retrace semaphore. The shared information
+carries the CEA 1080p timing (the same port words as HDMI1 at 1080p) and the
+sink's EDID read over AUX. On release, ESMART0 goes back to the firmware
+desktop. A later acquisition in the same boot only moves the window. HDMI1's
+port and window are never touched. Mode changes, power control and the
+cursor stay off on this profile.
+
+The `hrev60097+310` image (source `9524dfb16b`, SHA-256
+`92c01dea6673128acf7e985ae7b086f641723d01bafee42db54990d6fc95ffee`) passes
+the host checks, both QEMU modes and two native boots with normal reboot,
+verified shutdown and automatic ROOBI recovery. On both boots app_server
+runs the 1920x1080 desktop on the DisplayPort-bridged HDMI port, and the
+NanoKVM captures the full desktop with Tracker and the Deskbar at first try.
+
+| Item | Boot 1 | Boot 2 |
+| --- | --- | --- |
+| Driver log | `dp desktop probe result=0 phase=10 link=0x14x2 edid=128 ... swap=0 polls=833` | same |
+| Frame buffer | `0x104dc000`, port 1, window 0, firmware `0xed940000` | `0x0f832000`, same |
+| Accelerant flags | 7 (acquired, EDID, retrace), 1 mode, "RK3588 VOP2 DP TX1" | same |
+| Retrace | 24 waits, period 16666 µs, count +24 over 398 ms, 0 spurious | 24 waits, 16666 µs, +24 over 385 ms, 0 spurious |
+| Observations | ports 1 and 2 active, DP1 muxed to port 1, ESMART0 on the buffer, ESMART2 on the firmware desktop | same |
+
+- Native evidence: `artifacts/automated-display-dp-desktop/20260919T053124Z-d3a4d1`.
+- Session: `artifacts/interactive/20260919T053126Z-5d7b84`; recovery boot
+  `d89100de-db4a-4288-845d-6a6d3d3e5de1`; image archive
+  `artifacts/nanokvm-image-archive/20260919T053848Z-3ab800`.
+- QEMU EL2/EL1: `artifacts/qemu-shell/20260919T052636Z-8edfc1` and
+  `20260919T052859Z-f2338a`; build `artifacts/build-20260919T052618Z.log`.
+- Stage: `artifacts/display-dp-desktop/20260919T052432Z-82a73f`.
+
 ## Later stages
 
 3. Modes beyond the PLL table (the fractional-rate calculation) or the
