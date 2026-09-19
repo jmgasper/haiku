@@ -88,10 +88,9 @@ each boot were actually reviewed. `review-polygon.py native`,
 software captures, 112 shared frame comparisons, 137 git files, 268 frozen
 files). `qualify-native.py` passes every native check, including the
 system-launch interval, and then stops at the independent Linux eMMC
-readbacks, which need the ROOBI sudo password in the trial's own recovery
-boot; that password is not on record. **The candidate is therefore not
-qualified**; the +256 image remains the qualified Mesa result and this
-image is the working system-default candidate.
+readbacks, which needed the ROOBI sudo password in the trial's own recovery
+boot; that password was not on record, so this 2026-09-18 run was not
+qualified.
 
 The first native run (`…automated-mali-system-opengl/20260918T134041Z-5316b7`)
 is retained: the board side passed identically, but the host validator
@@ -101,5 +100,48 @@ for its host-side files (the image's source revision is unchanged). Used
 images: `artifacts/nanokvm-image-archive/20260918T135734Z-c0f791-mali-system-opengl-validator`
 and the second run's archive named `mali-system-opengl-native-pass`.
 
-Open: the readbacks and qualification; broader application coverage
-beyond GLTeapot; a packaged (rather than non-packaged) install.
+### Qualified on 2026-09-19 with the Debian recovery OS
+
+The same `hrev60097+254` image (SHA-256 `65c4c51c445d…`) is qualified by
+`artifacts/automated-mali-system-opengl/20260919T124336Z-d49da9/qualification.json`
+(stage status `qualified_recovered_archived`). The owner installed Radxa
+Debian 11 on an SD card, and the lab now recovers into it through EDK2; see
+[RECOVERY.md](RECOVERY.md). Its sudo runs the eMMC readbacks. The run passed
+every native check on two boots again (NanoKVM on HDMI1). Recovery landed in
+Debian boot `71982a56-4ac4-49ea-8492-1d904b717fcc`, and both readbacks ran in
+that boot:
+
+- The files readback shows the Haiku-written FAT fixture on eMMC partition 2
+  intact (`7eabc57f…`). The board hash, the lab host's copy and the fixture
+  agree. Two earlier attempts in the same boot were corrupted in transit, with
+  the correct board hash and a wrong host copy (see the Debian finding in
+  RECOVERY.md); they are recorded as `failed_attempts`.
+- The regions readback shows the eMMC's first, 5 GiB and last 8 MiB equal to a
+  baseline recorded from Debian before this trial
+  (`state/linux-emmc-regions-baseline.json`). The 2026-09-15 reference no
+  longer applies: the owner's installation through ROOBI, whose root
+  filesystem lives on the eMMC (UUID `b055efba…`), rewrote the eMMC loader
+  area and wrote to that root.
+
+The qualifier and readbacks are Debian copies of the stage's pinned scripts.
+`qualify-native-debian.py` differs only in accepting the Debian launcher as
+the recovery image and in comparing the regions with the new baseline. The
+readbacks read the host and sudo password from the lab, hash in plain C on
+the board, and retry up to five times. The application, polygon, desktop,
+window and OpenGL Kit captures of both boots were inspected again (the
+polygon sheets are byte-identical to the previous run's).
+
+Runs in between that did not qualify, each with its image archived:
+- `…20260919T072629Z-8f3c9d`: EDK2's NVRAM defaults after the SPI restore
+  (table mode 3), and Haiku hung after ExitBootServices.
+- `…20260919T074043Z-2e004a`: the NanoKVM was still on the DP-bridged port,
+  so there was no HDMI1 capture.
+- `…20260919T113748Z-03ae53`: every native check passed, but the regions
+  still had the stale reference; this run motivated the new baseline.
+- `…20260919T120849Z-e178e0`: all checks passed, but every HDMI1 capture on
+  boot 2 had uniformly shifted colours. That is an open HDMI colour finding,
+  not a rendering fault: the rendered-buffer checks passed. The captures were
+  not accepted as desktop reviews.
+
+Open: broader application coverage beyond GLTeapot; a packaged (rather than
+non-packaged) install; the intermittent HDMI1 colour shift.

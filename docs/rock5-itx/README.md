@@ -15,9 +15,10 @@ launch environment on two native boots: the Mesa backend takes the Mali
 device and its firmware from installed defaults, the CPU polygon path is on
 by default, and the GLVND/Mesa libraries and EGL vendor file are installed
 system-wide. Every earlier Mesa fixture passes on the same boots and the
-emulator gates show the software fallback without a device. It is not
-qualified: the independent Linux eMMC readbacks need the ROOBI sudo
-password, which is not on record.
+emulator gates show the software fallback without a device. It is
+qualified (2026-09-19, `…automated-mali-system-opengl/20260919T124336Z-d49da9`)
+with the independent Linux eMMC readbacks now run from the owner's SD-card
+Debian, the lab's new recovery OS.
 
 The +315 USB image completes the [dual-display desktop](DISPLAY.md): one
 3840x1080 app_server desktop across both HDMI ports, with a hardware cursor

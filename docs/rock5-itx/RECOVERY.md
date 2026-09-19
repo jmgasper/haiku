@@ -139,3 +139,48 @@ The workstation currently uses a narrowly scoped, temporary udev rule in
 to `2207:350b`. It expires when the workstation reboots. The prepared local
 installer is `nanokvm/tools/enable-rockchip-usb.sh`; running it with workstation
 sudo is a one-time host setup step, independent of target deployments.
+
+## SD-card Debian recovery OS (2026-09-19)
+
+The owner installed Radxa Debian 11 (`5.10.110-37-rockchip`, user `radxa`
+with sudo) on an SD card (`mmcblk1`; the eMMC stays `mmcblk0`). The
+installation, most likely run through ROOBI (Radxa's installer, whose root
+filesystem `b055efba…` lives on the eMMC), also changed the board:
+
+- **SPI:** it replaced EDK2 v1.1 in the 16 MiB SPI flash with Radxa U-Boot.
+  The overwritten flash is saved in `artifacts/spi-inspection/`. EDK2 v1.1
+  was written back from Debian through `/dev/mtdblock0`
+  (`artifacts/firmware/rock-5-itx_UEFI_Release_v1.1-spi16MiB.img`), and the
+  read-back matches `a54d4474…`.
+- **EDK2 settings:** the restore also brought back EDK2's default NVRAM.
+  `ConfigTableMode` went back to 3 (ACPI plus DT), and Haiku hung right after
+  ExitBootServices. It was set to 2 again from Debian through efivarfs, as
+  above (`state/rock5-dt-only-reapplied-20260919.json`).
+- **SD loader:** EDK2's own SPL tries the SD card first ("Trying to boot from
+  MMC2") and started the SD's U-Boot FIT. The SD's loader area (sectors
+  64–32767, idbloader and u-boot.itb, before the first partition at 32768)
+  was saved to
+  `artifacts/debian-sd-recovery/20260919T071535Z-fd86c8/sd-loader-sectors-64-32767.bin`
+  and zeroed. Writing it back restores the SD's standalone boot.
+- **eMMC:** it rewrote the eMMC loader area and wrote to ROOBI's root. The
+  Mesa readbacks therefore compare with a new baseline,
+  `state/linux-emmc-regions-baseline.json`.
+
+The recovery image is now `debian-sd-recovery`: the lab's ROOBI EFI loader
+starts Debian's own EFI-stub kernel, initrd and `rk3588-rock-5-itx.dtb`,
+with `root=UUID=9e383de3-…` on the SD card and `acpi=off`. `state/lab.json`
+has `recovery_ssh` set to `rock5-debian` (key login; the sudo password is in
+`nanokvm/.debian-sd-password`, mode 0600) and keeps the ROOBI image as
+`roobi_fallback_image`. Debian came up in 66 s and stayed stable
+(`artifacts/debian-sd-recovery/20260919T071535Z-fd86c8/result.json`).
+
+**Finding: data corruption during I/O on Debian under EDK2.** While
+streaming the 300 MB eMMC partition over SSH, some attempts produced a wrong
+board-side SHA-256 and others a corrupted copy on the lab host. Several
+different wrong values appeared, while the eMMC data itself (hashed with
+coreutils, and with direct and buffered reads) was always right. A 2 GiB
+pattern scan over a minute and 30 in-memory hashes of 64 MiB showed nothing.
+The cause is not yet known. Candidates are the BSP kernel booting under EDK2
+instead of Radxa U-Boot, and firmware-left device DMA. Readbacks therefore
+retry. A pass requires the board hash, the host copy's hash and the expected
+value to agree, which corruption cannot produce.
