@@ -18,6 +18,7 @@ KernelAddon mt7922wifi :
 	if_mtk.c
 	mtk_dma.c
 	mtk_mcu.c
+	mtk_tx.c
 	glue.c
 	:
 	freebsd_wlan.a

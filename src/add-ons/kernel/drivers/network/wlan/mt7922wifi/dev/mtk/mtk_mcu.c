@@ -180,14 +180,61 @@ mtk_event_read(struct mtk_softc* sc, uint8_t* buffer, size_t* length,
 }
 
 
+
+/* Wait for the answer to the command just sent. Before the ring drain is
+ * running - during firmware load - there is nobody else to read the rings, so
+ * read them here. Once it is running it is the only reader, and it leaves the
+ * answer where this can find it.
+ */
+static int
+mtk_wait_reply(struct mtk_softc* sc, uint8_t* buffer, size_t* length,
+	int milliseconds)
+{
+	int i;
+
+	if (sc->sc_draining == 0) {
+		for (i = 0; i <= milliseconds; i++) {
+			size_t got = *length;
+
+			if (mtk_event_read(sc, buffer, &got, 1) == 0) {
+				if (got >= MTK_MCU_RXD_SIZE
+						&& buffer[0x1d] == sc->sc_seq) {
+					*length = got;
+					return 0;
+				}
+				mtk_receive_frame(sc, buffer, got, -1, -1);
+			}
+		}
+
+		return ETIMEDOUT;
+	}
+
+	for (i = 0; i <= milliseconds; i++) {
+		if (sc->sc_replyready != 0) {
+			rmb();
+			if (sc->sc_replylen < *length)
+				*length = sc->sc_replylen;
+			memcpy(buffer, sc->sc_reply, *length);
+			sc->sc_replyready = 0;
+			return 0;
+		}
+
+		DELAY(1000);
+	}
+
+	return ETIMEDOUT;
+}
+
+
 /* One command. The two lengths in the header overlap - one counts everything
  * after it, the other counts from partway in - which is easy to get wrong.
  */
 static int
-mtk_mcu_send(struct mtk_softc* sc, uint8_t command, uint8_t setQuery,
+mtk_mcu_send_locked(struct mtk_softc* sc, uint8_t command, uint8_t setQuery,
 	const void* payload, size_t payloadLength, uint8_t* reply,
 	size_t* replyLength)
 {
+	int waited;
 	uint8_t* packet = (uint8_t*)sc->sc_cmdbuf.addr;
 	size_t total = MTK_MCU_TXD_SIZE + payloadLength;
 	uint16_t length, port;
@@ -232,31 +279,57 @@ mtk_mcu_send(struct mtk_softc* sc, uint8_t command, uint8_t setQuery,
 	if (error != 0 || reply == NULL)
 		return error;
 
-	/* Answers to other things may arrive first; keep reading until one
-	 * carries our sequence number.
-	 */
-	for (i = 0; i < 3000; i++) {
-		uint8_t event[1024];
-		size_t got = sizeof(event);
+	/* The answer is left for us by whoever is draining the rings. */
+	{
+		size_t got = *replyLength;
 
-		if (mtk_event_read(sc, event, &got, 100) != 0)
-			continue;
-		if (got < MTK_MCU_RXD_SIZE || event[0x1d] != sc->sc_seq)
-			continue;
+		if (mtk_wait_reply(sc, reply, &got, 2000) != 0)
+			return ETIMEDOUT;
 
-		if (got < *replyLength)
-			*replyLength = got;
-		memcpy(reply, event, *replyLength);
+		*replyLength = got;
 		return 0;
 	}
 
-	return ETIMEDOUT;
 }
 
 
 /* Firmware payload carries no header: the raw bytes go on a ring of their own
  * and nothing is expected back.
  */
+static int mtk_mcu_send_ext_locked(struct mtk_softc* sc, uint8_t extended,
+	const void* payload, size_t payloadLength);
+
+
+static int
+mtk_mcu_send(struct mtk_softc* sc, uint8_t command, uint8_t setQuery,
+	const void* payload, size_t payloadLength, uint8_t* reply,
+	size_t* replyLength)
+{
+	int error;
+
+	sc->sc_mcu_busy++;
+	error = mtk_mcu_send_locked(sc, command, setQuery, payload,
+		payloadLength, reply, replyLength);
+	sc->sc_mcu_busy--;
+
+	return error;
+}
+
+
+static int
+mtk_mcu_send_ext(struct mtk_softc* sc, uint8_t extended, const void* payload,
+	size_t payloadLength)
+{
+	int error;
+
+	sc->sc_mcu_busy++;
+	error = mtk_mcu_send_ext_locked(sc, extended, payload, payloadLength);
+	sc->sc_mcu_busy--;
+
+	return error;
+}
+
+
 static int
 mtk_mcu_send_firmware(struct mtk_softc* sc, const uint8_t* data, size_t length)
 {
@@ -583,6 +656,343 @@ mtk_read_capability(struct mtk_softc* sc)
 		at += size;
 	}
 
+	return 0;
+}
+
+
+/* A command carrying a second identifier beside the first, which says so
+ * twice: once by setting it and once by acknowledging that it has.
+ */
+static int
+mtk_mcu_send_ext_locked(struct mtk_softc* sc, uint8_t extended,
+	const void* payload, size_t payloadLength)
+{
+	int waited;
+	uint8_t* packet = (uint8_t*)sc->sc_cmdbuf.addr;
+	size_t total = MTK_MCU_TXD_SIZE + payloadLength;
+	uint16_t length, port;
+	int error, i;
+
+	if (total > sc->sc_cmdbuf.size)
+		return EINVAL;
+
+	sc->sc_seq = (sc->sc_seq + 1) & 0xf;
+	if (sc->sc_seq == 0)
+		sc->sc_seq = 1;
+
+	memset(packet, 0, MTK_MCU_TXD_SIZE);
+	mtk_put32(packet, (uint32_t)(total & 0xffff)
+		| ((uint32_t)MTK_TX_TYPE_CMD << 23)
+		| ((uint32_t)MTK_TX_MCU_PORT_RX_Q0 << 25));
+	mtk_put32(packet + 4, MTK_TXD1_LONG_FORMAT
+		| ((uint32_t)MTK_HDR_FORMAT_CMD << 16));
+
+	length = (uint16_t)(total - 32);
+	packet[0x20] = length & 0xff;
+	packet[0x21] = length >> 8;
+	port = (1 << 15) | (MTK_TX_MCU_PORT_RX_Q0 << 10);
+	packet[0x22] = port & 0xff;
+	packet[0x23] = port >> 8;
+	packet[0x24] = MTK_MCU_CMD_EXT_CID;
+	packet[0x25] = MTK_MCU_PKT_ID;
+	packet[0x26] = MTK_MCU_Q_SET;
+	packet[0x27] = sc->sc_seq;
+	packet[0x29] = extended;
+	packet[0x2a] = MTK_MCU_S2D_H2N;
+	packet[0x2b] = 1;
+
+	if (payloadLength > 0)
+		memcpy(packet + MTK_MCU_TXD_SIZE, payload, payloadLength);
+
+	error = mtk_ring_submit(sc, &sc->sc_cmdq, sc->sc_cmdbuf.paddr, total);
+	if (error != 0)
+		return error;
+
+	error = mtk_ring_drain(sc, &sc->sc_cmdq, 3000);
+	if (error != 0)
+		return error;
+
+	{
+		uint8_t event[1024];
+		size_t got = sizeof(event);
+
+		if (mtk_wait_reply(sc, event, &got, 2000) != 0)
+			return ETIMEDOUT;
+
+		return 0;
+	}
+
+	return ETIMEDOUT;
+}
+
+
+static void
+mtk_modify(struct mtk_softc* sc, uint32_t address, uint32_t mask,
+	uint32_t value)
+{
+	mtk_write(sc, address, (mtk_read(sc, address) & ~mask) | value);
+}
+
+
+/* Tell the radio what to do with what it hears. The one that matters is the
+ * longest frame it will accept, kept in two places and left at zero by the
+ * firmware - at which every frame is over-length and thrown away before
+ * anyone sees it, which looks exactly like a radio that hears nothing.
+ */
+static void
+mtk_mac_init(struct mtk_softc* sc)
+{
+	const uint32_t frame = 1536 << 3;
+	const uint32_t frameMask = 0xfff8;
+	uint32_t band, i;
+
+	mtk_modify(sc, MTK_MDP_DCR1, frameMask, frame);
+	mtk_modify(sc, MTK_MDP_DCR0, 0, MTK_MDP_DCR0_DAMSDU_EN);
+
+	for (i = 0; i < MTK_STATION_COUNT; i++) {
+		int wait;
+
+		mtk_modify(sc, MTK_WTBL_UPDATE, MTK_WTBL_UPDATE_INDEX_MASK,
+			i | MTK_WTBL_UPDATE_CLEAR);
+		for (wait = 0; wait < 500; wait++) {
+			if ((mtk_read(sc, MTK_WTBL_UPDATE) & MTK_WTBL_UPDATE_BUSY) == 0)
+				break;
+			DELAY(10);
+		}
+	}
+
+	for (band = 0; band < 2; band++) {
+		uint32_t at = band * MTK_BAND_STRIDE;
+
+		mtk_modify(sc, MTK_TMAC_CTCR0 + at, 0x3f, 0x3f);
+		mtk_modify(sc, MTK_TMAC_CTCR0 + at, 0,
+			MTK_TMAC_CTCR0_VHT_SMPDU_EN | MTK_TMAC_CTCR0_DDLMT_EN);
+		mtk_modify(sc, MTK_RMAC_MIB_TIME0 + at, 0, MTK_RMAC_MIB_RXTIME_EN);
+		mtk_modify(sc, MTK_RMAC_MIB_AIRTIME0 + at, 0, MTK_RMAC_MIB_RXTIME_EN);
+		mtk_modify(sc, MTK_MIB_SCR1 + at, 0,
+			MTK_MIB_TXDUR_EN | MTK_MIB_RXDUR_EN);
+		mtk_modify(sc, MTK_DMA_DCR0 + at, frameMask, frame);
+		mtk_modify(sc, MTK_DMA_DCR0 + at, MTK_DMA_DCR0_RXD_G5_EN, 0);
+		mtk_modify(sc, MTK_WTBLOFF_TOP_RSCR + at, 0xc3000000, 0x03000000);
+	}
+}
+
+
+/* Set the timings the air runs on, and in doing so let the radio transmit and
+ * receive at all: the two bits that allow it are held down for the duration
+ * and released at the end, and nothing else here clears them.
+ */
+static void
+mtk_set_timing(struct mtk_softc* sc)
+{
+	mtk_modify(sc, MTK_ARB_SCR, 0,
+		MTK_ARB_SCR_TX_DISABLE | MTK_ARB_SCR_RX_DISABLE);
+	DELAY(1);
+
+	mtk_write(sc, MTK_TMAC_CDTR, 0x003000e7);
+	mtk_write(sc, MTK_TMAC_ODTR, 0x001c003c);
+	mtk_write(sc, MTK_TMAC_ICR0, 0x090a0968);
+	mtk_modify(sc, MTK_AGG_ACR0, 0x3fff, 0x0049);
+
+	mtk_modify(sc, MTK_ARB_SCR,
+		MTK_ARB_SCR_TX_DISABLE | MTK_ARB_SCR_RX_DISABLE, 0);
+}
+
+
+/* Where to listen. Said twice, in two commands taking the same description of
+ * a channel and differing in one field: the first arranges the aerials and
+ * wants them as a mask, the second tunes the radio and wants how many there
+ * are. The wrong way round is silently accepted.
+ */
+int
+mtk_tune(struct mtk_softc* sc, uint8_t channel)
+{
+	uint8_t request[76];
+	int error;
+
+	memset(request, 0, sizeof(request));
+	request[0] = channel;
+	request[1] = channel;
+	request[3] = sc->sc_streams;
+	request[4] = (1 << sc->sc_streams) - 1;
+
+	error = mtk_mcu_send_ext(sc, MTK_EXT_CMD_SET_RX_PATH, request,
+		sizeof(request));
+	if (error != 0)
+		return error;
+
+	request[4] = sc->sc_streams;
+	error = mtk_mcu_send_ext(sc, MTK_EXT_CMD_CHANNEL_SWITCH, request,
+		sizeof(request));
+	if (error != 0)
+		return error;
+
+	mtk_set_timing(sc);
+	return 0;
+}
+
+
+/* Get the radio from "running firmware" to "willing to listen". */
+/* The same three the stack is told about, so a sweep comes back round to
+ * whichever one it is dwelling on in well under a second.
+ */
+static const uint8_t mtk_channels_2ghz[] = { 1, 6, 11 };
+
+
+/* Which channels exist at all. Without this the part has no list to look
+ * through and answers a scan request by doing nothing.
+ */
+static int
+mtk_set_channels(struct mtk_softc* sc)
+{
+	uint8_t request[12 + sizeof(mtk_channels_2ghz) * 8];
+	size_t i, at;
+
+	memset(request, 0, sizeof(request));
+	request[0] = '0';
+	request[1] = '0';
+	request[4] = 0;			/* 20 and 40 MHz down low */
+	request[5] = 3;			/* and everything up high */
+	request[6] = 3;
+	request[8] = sizeof(mtk_channels_2ghz);
+	request[9] = 0;
+
+	at = 12;
+	for (i = 0; i < sizeof(mtk_channels_2ghz); i++, at += 8)
+		request[at] = mtk_channels_2ghz[i];
+
+	return mtk_mcu_send(sc, MTK_MCU_CE_SET_CHAN_DOMAIN, MTK_MCU_Q_SET,
+		request, sizeof(request), NULL, NULL);
+}
+
+
+/* Ask rather than wait. The part hands over ordinary traffic and answers to
+ * authentication without being told anything, but it keeps announcements to
+ * itself until a scan is running - so a driver that leaves the looking to the
+ * stack hears thousands of frames and not one beacon.
+ */
+int
+mtk_hw_scan(struct mtk_softc* sc, uint8_t only)
+{
+	uint8_t request[MTK_SCAN_REQUEST_SIZE];
+	size_t i, at, count;
+
+	memset(request, 0, sizeof(request));
+
+	request[0] = 1;			/* this is scan number one */
+	request[1] = 0;			/* on behalf of our station */
+	request[2] = 1;			/* asking */
+	request[3] = 1;			/* of anyone at all */
+	request[4] = 1;			/* one name to ask after */
+	request[5] = 2;			/* asked twice per channel */
+	request[6] = 1 << 5;		/* in more than one go */
+	request[7] = 1;			/* and the later fields are meant */
+
+	mtk_put32(request + 8, 0);	/* the empty name, which all answer to */
+
+	request[0x9e] = 4;		/* these channels, named below */
+	at = 0xa0;
+
+	/* One channel, not nineteen. This net80211 has no way to say which
+	 * channel a frame arrived on, so it credits every one to wherever it
+	 * last parked us. Letting the part wander turns the scan table into
+	 * guesswork and the stack rescans for ever; asking only about the
+	 * channel we are actually on makes what it records true.
+	 */
+	if (only != 0) {
+		count = 1;
+		request[at] = only <= 14 ? 1 : 2;
+		request[at + 1] = only;
+	} else {
+		count = sizeof(mtk_channels_2ghz);
+		for (i = 0; i < sizeof(mtk_channels_2ghz); i++, at += 2) {
+			request[at] = 1;	/* down low */
+			request[at + 1] = mtk_channels_2ghz[i];
+		}
+	}
+
+	request[0x9f] = (uint8_t)count;
+
+	memset(request + 0x456, 0xff, 6);	/* addressed to everyone */
+
+	if (only == 0)
+		device_printf(sc->sc_dev, "asking %zu channels who is there\n", count);
+
+	return mtk_mcu_send(sc, MTK_MCU_CE_START_HW_SCAN, MTK_MCU_Q_SET,
+		request, sizeof(request), NULL, NULL);
+}
+
+
+int
+mtk_radio_init(struct mtk_softc* sc)
+{
+	uint8_t buffer[4] = { 0, 1, 0, 0 };
+	uint8_t protect[12];
+	uint8_t config[328];
+	uint8_t mac[4] = { 1, 0, 0, 0 };
+	uint8_t filter[68];
+	int error;
+
+	mtk_mac_init(sc);
+
+	error = mtk_mcu_send_ext(sc, MTK_EXT_CMD_EFUSE_BUFFER_MODE, buffer,
+		sizeof(buffer));
+	if (error != 0)
+		return error;
+
+	memset(protect, 0, sizeof(protect));
+	protect[0] = 1;
+	mtk_put32(protect + 4, 0x92b);
+	mtk_put32(protect + 8, 0x2);
+	error = mtk_mcu_send_ext(sc, MTK_EXT_CMD_PROTECT_CTRL, protect,
+		sizeof(protect));
+	if (error != 0)
+		return error;
+
+	/* Keep the part awake: the power saving it would otherwise do brings a
+	 * handshake with it that nothing here is ready for.
+	 */
+	memset(config, 0, sizeof(config));
+	strcpy((char*)config + 8, "KeepFullPwr 1");
+	mtk_mcu_send(sc, MTK_MCU_CE_CHIP_CONFIG, MTK_MCU_Q_SET, config,
+		sizeof(config), NULL, NULL);
+
+	error = mtk_mcu_send_ext(sc, MTK_EXT_CMD_MAC_INIT_CTRL, mac, sizeof(mac));
+	if (error != 0)
+		return error;
+
+	/* And stop throwing away what it hears. Until this is said the radio is
+	 * listening but discarding, which is indistinguishable from deafness.
+	 */
+	memset(filter, 0, sizeof(filter));
+	filter[4] = 1;
+	mtk_put32(filter + 8, MTK_FILTER_ENABLE | MTK_FILTER_OTHER_BSS);
+	mtk_mcu_send(sc, MTK_MCU_CE_SET_RX_FILTER, MTK_MCU_Q_SET, filter,
+		sizeof(filter), NULL, NULL);
+
+	/* And specifically stop throwing away the announcements of networks we
+	 * are not part of. Without this the radio hears management frames by
+	 * the thousand and not one beacon, so there is nothing to scan.
+	 */
+	memset(filter, 0, sizeof(filter));
+	filter[4] = 2;			/* by bit, not by rule */
+	mtk_put32(filter + 12, MTK_RFCR_DROP_OTHER_BEACON);
+	filter[16] = 1 << 1;		/* and the bit is to be cleared */
+	mtk_mcu_send(sc, MTK_MCU_CE_SET_RX_FILTER, MTK_MCU_Q_SET, filter,
+		sizeof(filter), NULL, NULL);
+
+	DELAY(20000);
+
+	/* The firmware leaves bits set here whose meaning is not written down,
+	 * and some of them discard every announcement while letting ordinary
+	 * traffic through. Say plainly what is wanted: discard nothing.
+	 */
+	mtk_write(sc, MTK_WF_RFCR, 0);
+
+	mtk_set_channels(sc);
+
+	device_printf(sc->sc_dev, "radio ready, filter %#x\n",
+		mtk_read(sc, MTK_WF_RFCR));
 	return 0;
 }
 

@@ -19,6 +19,7 @@
 #include <sys/mutex.h>
 #include <sys/rman.h>
 #include <sys/socket.h>
+#include <sys/taskqueue.h>
 
 #include <machine/bus.h>
 
@@ -43,6 +44,10 @@ struct mtk_fixed {
 	uint32_t	mapped;
 	uint32_t	size;
 };
+
+static void mtk_tick(void* arg);
+static void mtk_work(void* arg, int pending);
+
 
 static const struct mtk_fixed mtk_fixed_map[] = {
 	{ 0x7c000000, 0x0f0000, 0x10000 },
@@ -234,10 +239,19 @@ mtk_getradiocaps(struct ieee80211com* ic, int maxchans, int* nchans,
 {
 	uint8_t bands[IEEE80211_MODE_BYTES];
 
+	/* Only the three channels that do not overlap. The stack dwells on
+	 * each in turn while the part sweeps the band on its own schedule, and
+	 * the two only line up often enough to keep the scan table fresh if
+	 * there are few channels to get through. Widen this once a connection
+	 * is reliable.
+	 */
+	static const uint8_t wanted[] = { 1, 6, 11 };
+
 	memset(bands, 0, sizeof(bands));
 	setbit(bands, IEEE80211_MODE_11B);
 	setbit(bands, IEEE80211_MODE_11G);
-	ieee80211_add_channels_default_2ghz(chans, maxchans, nchans, bands, 0);
+	ieee80211_add_channel_list_2ghz(chans, maxchans, nchans, wanted,
+		nitems(wanted), bands, 0);
 }
 
 
@@ -273,6 +287,13 @@ mtk_vap_create(struct ieee80211com* ic, const char name[IFNAMSIZ], int unit,
 		free(mvp, M_80211_VAP);
 		return NULL;
 	}
+
+	/* The stack knows exactly why it turns a network down; it just does
+	 * not say so unless asked. Ask. (After setup, which clears this.)
+	 */
+	vap->iv_debug = IEEE80211_MSG_SCAN | IEEE80211_MSG_ASSOC
+		| IEEE80211_MSG_AUTH | IEEE80211_MSG_STATE | IEEE80211_MSG_ROAM
+		| IEEE80211_MSG_NODE;
 
 	/* Watch the comings and goings, but let the stack decide them. */
 	mvp->newstate = vap->iv_newstate;
@@ -312,16 +333,47 @@ mtk_parent(struct ieee80211com* ic)
 	device_printf(sc->sc_dev, "asked to be %s\n", wanted ? "up" : "down");
 	sc->sc_running = wanted;
 
-	if (wanted)
+	if (wanted) {
+		sc->sc_draining = 1;
+		callout_reset(&sc->sc_poll, hz / 100, mtk_tick, sc);
 		ieee80211_start_all(ic);
+	} else {
+		sc->sc_draining = 0;
+		callout_drain(&sc->sc_poll);
+		device_printf(sc->sc_dev, "%u interrupts, %u frames in, %u out,"
+			" %u refused\n", sc->sc_interrupts, sc->sc_received,
+			sc->sc_sent, sc->sc_refused);
+	}
 }
 
 
 static void
 mtk_scan_start(struct ieee80211com* ic)
 {
+	/* The stack moves us from channel to channel, but that alone is not
+	 * enough: until the part is asked to scan it forwards no announcements
+	 * at all, so the stack would be looking at an empty channel.
+	 */
 	struct mtk_softc* sc = ic->ic_softc;
-	device_printf(sc->sc_dev, "asked to start looking\n");
+
+	struct ieee80211_scan_state* ss = ic->ic_scan;
+
+	/* Long enough for the part's sweep of the whole band to come back to
+	 * whichever channel this is. The usual 200ms means the sweep is almost
+	 * always somewhere else when a beacon finally arrives.
+	 */
+	if (ss != NULL) {
+		ss->ss_mindwell = hz / 2;
+		ss->ss_maxdwell = 3 * hz / 2;
+	}
+
+	sc->sc_scanning = 1;
+	sc->sc_want_scan = 1;
+	if (++sc->sc_scan_starts % 10 == 1) {
+		device_printf(sc->sc_dev, "the stack has begun %u scans and"
+			" finished %u\n", sc->sc_scan_starts, sc->sc_scan_ends);
+	}
+	taskqueue_enqueue(sc->sc_tq, &sc->sc_work);
 }
 
 
@@ -329,7 +381,9 @@ static void
 mtk_scan_end(struct ieee80211com* ic)
 {
 	struct mtk_softc* sc = ic->ic_softc;
-	device_printf(sc->sc_dev, "asked to stop looking\n");
+
+	sc->sc_scanning = 0;
+	sc->sc_scan_ends++;
 }
 
 
@@ -337,9 +391,13 @@ static void
 mtk_set_channel(struct ieee80211com* ic)
 {
 	struct mtk_softc* sc = ic->ic_softc;
+	uint8_t channel = ieee80211_chan2ieee(ic, ic->ic_curchan);
 
-	device_printf(sc->sc_dev, "asked for channel %d\n",
-		ieee80211_chan2ieee(ic, ic->ic_curchan));
+	/* Recorded, not done: tuning is a command, and a command must not be
+	 * sent from a thread the stack is holding locks on.
+	 */
+	sc->sc_want_channel = channel;
+	taskqueue_enqueue(sc->sc_tq, &sc->sc_work);
 }
 
 
@@ -353,10 +411,10 @@ static int
 mtk_transmit(struct ieee80211com* ic, struct mbuf* m)
 {
 	struct mtk_softc* sc = ic->ic_softc;
+	int error = mtk_send_frame(sc, m);
 
-	device_printf(sc->sc_dev, "asked to send ordinary traffic\n");
 	m_freem(m);
-	return ENXIO;
+	return error;
 }
 
 
@@ -365,10 +423,102 @@ mtk_raw_xmit(struct ieee80211_node* ni, struct mbuf* m,
 	const struct ieee80211_bpf_params* params)
 {
 	struct mtk_softc* sc = ni->ni_ic->ic_softc;
+	int error = mtk_send_frame(sc, m);
 
-	device_printf(sc->sc_dev, "asked to send a frame of its own\n");
+	if (error == 0)
+		sc->sc_sent++;
+	else
+		sc->sc_refused++;
+
 	m_freem(m);
-	return ENXIO;
+	if (error != 0)
+		ieee80211_free_node(ni);
+
+	return error;
+}
+
+
+/* A safety net, not the intended path: the rings are known to fill whether
+ * or not the card raises a line, so this keeps frames moving while the
+ * counters say which of the two actually did the work.
+ */
+/* Our own thread: the one place allowed to wait for the part. */
+static void
+mtk_work(void* arg, int pending)
+{
+	struct mtk_softc* sc = arg;
+
+	/* The stack only files what it hears while its own scan is running, so
+	 * the part's sweep has to start when that window opens, not on some
+	 * timer of our own. Asking again while a sweep is in flight is
+	 * harmless; missing the window is not.
+	 */
+	if (sc->sc_want_channel != 0 && sc->sc_want_channel != sc->sc_channel) {
+		uint8_t channel = sc->sc_want_channel;
+
+		if (mtk_tune(sc, channel) == 0) {
+			sc->sc_channel = channel;
+			sc->sc_want_scan = sc->sc_scanning;
+		}
+	}
+
+	/* The part hands over no beacon at all unless it is sweeping, and it
+	 * only accepts a sweep of the whole band. That sweep wanders off the
+	 * channel the stack is listening on, so it is kept running for as long
+	 * as the stack is scanning and the stack is made to dwell long enough
+	 * that the sweep comes back round while it is still listening.
+	 */
+	if (sc->sc_scanning != 0 && (sc->sc_scan_at == 0
+			|| (int)(ticks - sc->sc_scan_at) > hz)) {
+		sc->sc_want_scan = 0;
+		sc->sc_scan_at = ticks;
+		mtk_hw_scan(sc, 0);
+	}
+
+}
+
+
+static void
+mtk_tick(void* arg)
+{
+	struct mtk_softc* sc = arg;
+
+	/* Draining the rings is cheap and must happen at a steady rate, so it
+	 * stays here. It sends no commands and waits for nothing, so it cannot
+	 * stall the thread this shares with every other compat driver.
+	 *
+	 * Commands go to our own thread instead. They were once enqueued from
+	 * here every tick, but a task already queued is not queued twice, so
+	 * every tick that landed during a nineteen-channel sweep was lost and
+	 * the rings overran.
+	 */
+	mtk_receive(sc);
+
+	if (sc->sc_want_scan != 0 || sc->sc_want_channel != sc->sc_channel)
+		taskqueue_enqueue(sc->sc_tq, &sc->sc_work);
+
+	callout_reset(&sc->sc_poll, hz / 100, mtk_tick, sc);
+}
+
+
+/* The card says when it has something. Everything it has is taken at once,
+ * because leaving any of it is how a ring stops moving.
+ */
+static void
+mtk_intr(void* arg)
+{
+	struct mtk_softc* sc = arg;
+	uint32_t status;
+
+	status = mtk_read(sc, MTK_WFDMA0_HOST_INT_STA);
+	if (status == 0)
+		return;
+
+	if (sc->sc_interrupts++ == 0)
+		device_printf(sc->sc_dev, "the card is talking to us (%#x)\n", status);
+
+	mtk_write(sc, MTK_WFDMA0_HOST_INT_STA, status);
+	mtk_receive(sc);
 }
 
 
@@ -397,6 +547,12 @@ mtk_attach(device_t dev)
 	int error, rid;
 
 	sc->sc_dev = dev;
+	callout_init(&sc->sc_poll, 1);
+	sc->sc_tq = taskqueue_create_fast("mtk_taskq", M_NOWAIT,
+		taskqueue_thread_enqueue, &sc->sc_tq);
+	taskqueue_start_threads(&sc->sc_tq, 1, PI_NET, "%s taskq",
+		device_get_nameunit(dev));
+	TASK_INIT(&sc->sc_work, 0, mtk_work, sc);
 	mtx_init(&sc->sc_mtx, device_get_nameunit(dev), MTX_NETWORK_LOCK,
 		MTX_DEF);
 
@@ -475,6 +631,27 @@ mtk_attach(device_t dev)
 	if (error != 0)
 		goto fail;
 
+	error = mtk_radio_init(sc);
+	if (error != 0)
+		goto fail;
+
+	/* Now that the card will say when it has something, listen for it. */
+	rid = 0;
+	sc->sc_irq = bus_alloc_resource_any(dev, SYS_RES_IRQ, &rid,
+		RF_ACTIVE | RF_SHAREABLE);
+	if (sc->sc_irq == NULL) {
+		device_printf(dev, "the card has no way to get our attention\n");
+		error = ENXIO;
+		goto fail;
+	}
+
+	error = bus_setup_intr(dev, sc->sc_irq, INTR_TYPE_NET | INTR_MPSAFE,
+		NULL, mtk_intr, sc, &sc->sc_ih);
+	if (error != 0) {
+		device_printf(dev, "cannot listen for it: %d\n", error);
+		goto fail;
+	}
+
 	IEEE80211_ADDR_COPY(ic->ic_macaddr, sc->sc_macaddr);
 
 	device_printf(dev, "attached to the wireless stack\n");
@@ -499,6 +676,22 @@ mtk_detach(device_t dev)
 
 	if (sc->sc_ic.ic_softc == sc)
 		ieee80211_ifdetach(&sc->sc_ic);
+
+	callout_drain(&sc->sc_poll);
+	if (sc->sc_tq != NULL) {
+		taskqueue_drain(sc->sc_tq, &sc->sc_work);
+		taskqueue_free(sc->sc_tq);
+		sc->sc_tq = NULL;
+	}
+
+	if (sc->sc_ih != NULL) {
+		bus_teardown_intr(dev, sc->sc_irq, sc->sc_ih);
+		sc->sc_ih = NULL;
+	}
+	if (sc->sc_irq != NULL) {
+		bus_release_resource(dev, SYS_RES_IRQ, 0, sc->sc_irq);
+		sc->sc_irq = NULL;
+	}
 
 	mtk_dma_teardown(sc);
 

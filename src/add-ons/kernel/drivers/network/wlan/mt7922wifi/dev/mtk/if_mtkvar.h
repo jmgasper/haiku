@@ -29,8 +29,14 @@
 /* The transfer engine. All of this is already where it appears in the window.
  */
 #define MTK_WFDMA0_RST			0x000d4100
+#define MTK_WFDMA0_HOST_INT_STA		0x000d4200
 #define MTK_WFDMA0_HOST_INT_ENA		0x000d4204
 #define MTK_MCU2HOST_SW_INT_ENA		0x000d41f4
+
+/* The PCIe wrapper has its own gate. With this shut the rings still fill,
+ * but the card never raises a line, so the host hears nothing.
+ */
+#define MTK_PCIE_MAC_INT_ENABLE		0x74030188
 #define MTK_MCU_CMD_WAKE_RX_PCIE	(1 << 0)
 #define MTK_INTERRUPTS_ALL		0x2c7ffff5
 
@@ -88,6 +94,13 @@
 #define MTK_RX_DATA_RING_COUNT		256
 
 #define MTK_RX_BUFFER_SIZE		2048
+
+/* Half decibels above the noise floor. Until the real figure is read out of
+ * the descriptor this is a placeholder, chosen to be comfortably above the
+ * stack's minimum rather than to be true.
+ */
+#define MTK_RSSI			40
+#define MTK_NOISE_FLOOR			(-95)
 #define MTK_DESC_SIZE			16
 
 #define MTK_DMA_CTL_LEN_SHIFT		16
@@ -95,6 +108,35 @@
 #define MTK_DMA_CTL_LAST_SEC0		(1u << 30)
 #define MTK_DMA_CTL_DMA_DONE		(1u << 31)
 
+
+/* Sending a frame of our own. What travels on the ring is a description of
+ * the frame, not the frame: half says how to send it, half says where it is.
+ */
+#define MTK_TXD_HEADER			32
+#define MTK_TXD_SIZE			64
+#define MTK_TXBUF_SIZE			2112
+#define MTK_MGMT_HEADER			24
+
+#define MTK_LMAC_ALTX0			0x10
+#define MTK_TXD1_TID_MGMT		7
+#define MTK_HDR_FORMAT_802_11		2
+#define MTK_TXD2_FIX_RATE		(1u << 31)
+#define MTK_TXD2_HTC_VLD		(1 << 13)
+#define MTK_TXD3_BA_DISABLE		(1 << 28)
+#define MTK_TXD6_FIXED_BW		(1 << 2)
+
+/* Reading a frame off the air. */
+#define MTK_RXD_FIXED			24
+#define MTK_RX_TYPE_NORMAL		2
+#define MTK_RX_TYPE_SENT		6
+#define MTK_RX_TYPE_EVENT		7
+#define MTK_RX_TYPE_NORMAL_MCU		8
+#define MTK_RXD1_GROUP_1		(1 << 11)
+#define MTK_RXD1_GROUP_2		(1 << 12)
+#define MTK_RXD1_GROUP_3		(1 << 13)
+#define MTK_RXD1_GROUP_4		(1 << 14)
+#define MTK_RXD1_GROUP_5		(1 << 15)
+#define MTK_RXD1_FCS_ERROR		(1 << 27)
 
 /* Talking to the part's own processor. */
 #define MTK_MCU_TXD_SIZE		64
@@ -143,6 +185,61 @@
 
 #define MTK_PATCH_NAME			"WIFI_MT7922_patch_mcu_1_1_hdr.bin"
 #define MTK_RAM_NAME			"WIFI_RAM_CODE_MT7922_1.bin"
+
+/* Commands that carry a second identifier beside the first. */
+#define MTK_MCU_CMD_EXT_CID		0xed
+#define MTK_EXT_CMD_CHANNEL_SWITCH	0x08
+#define MTK_EXT_CMD_EFUSE_BUFFER_MODE	0x21
+#define MTK_EXT_CMD_PROTECT_CTRL	0x3e
+#define MTK_EXT_CMD_MAC_INIT_CTRL	0x46
+#define MTK_EXT_CMD_SET_RX_PATH		0x4e
+#define MTK_MCU_CE_CHIP_CONFIG		0xca
+#define MTK_MCU_CE_SET_RX_FILTER	0x0a
+#define MTK_MCU_CE_SET_CHAN_DOMAIN	0x0f
+#define MTK_MCU_CE_START_HW_SCAN	0x03
+#define MTK_SCAN_REQUEST_SIZE		1186
+
+#define MTK_FILTER_ENABLE		(1u << 31)
+#define MTK_FILTER_OTHER_BSS		(1 << 6)
+
+/* What the radio does with what it hears. The first radio's blocks are named
+ * here; the second's are the same, one stride along.
+ */
+#define MTK_BAND_STRIDE			0x10000
+#define MTK_STATION_COUNT		20
+
+#define MTK_MDP_DCR0			0x820cd000
+#define MTK_MDP_DCR0_DAMSDU_EN		(1 << 15)
+#define MTK_MDP_DCR1			0x820cd004
+#define MTK_WTBL_UPDATE			0x820d4230
+#define MTK_WTBL_UPDATE_INDEX_MASK	0x3ff
+#define MTK_WTBL_UPDATE_CLEAR		(1 << 12)
+#define MTK_WTBL_UPDATE_BUSY		(1u << 31)
+#define MTK_TMAC_CTCR0			0x820e40f4
+#define MTK_TMAC_CTCR0_DDLMT_EN		(1 << 17)
+#define MTK_TMAC_CTCR0_VHT_SMPDU_EN	(1 << 18)
+#define MTK_RMAC_MIB_AIRTIME0		0x820e5380
+#define MTK_RMAC_MIB_TIME0		0x820e53c4
+#define MTK_RMAC_MIB_RXTIME_EN		(1u << 30)
+#define MTK_MIB_SCR1			0x820ed004
+#define MTK_MIB_TXDUR_EN		(1 << 8)
+#define MTK_MIB_RXDUR_EN		(1 << 9)
+#define MTK_DMA_DCR0			0x820e7000
+#define MTK_DMA_DCR0_RXD_G5_EN		(1 << 23)
+#define MTK_WTBLOFF_TOP_RSCR		0x820e9008
+#define MTK_WF_RFCR			0x820e5000
+#define MTK_RFCR_DROP_OTHER_BEACON	(1 << 11)
+
+/* The gate that lets the radio transmit and receive at all, and the timings
+ * whose setting is the only thing that opens it.
+ */
+#define MTK_ARB_SCR			0x820e3080
+#define MTK_ARB_SCR_TX_DISABLE		(1 << 8)
+#define MTK_ARB_SCR_RX_DISABLE		(1 << 9)
+#define MTK_TMAC_CDTR			0x820e4090
+#define MTK_TMAC_ODTR			0x820e4094
+#define MTK_TMAC_ICR0			0x820e40a4
+#define MTK_AGG_ACR0			0x820e2084
 
 /* A second claim of ownership, made once the rings exist. */
 #define MTK_TOP_LPCR_HOST_BAND0		0x18060010
@@ -193,6 +290,20 @@ struct mtk_softc {
 	 * through it must not be interrupted by anyone else aiming it.
 	 */
 	struct mtx		sc_mtx;
+	struct callout		sc_poll;
+
+	/* Everything that touches the part blocks: register reads spin, and a
+	 * command waits for an answer. None of that may happen on a thread the
+	 * stack owns, so it all happens on this one.
+	 */
+	struct taskqueue*	sc_tq;
+	struct task		sc_work;
+	uint8_t			sc_want_channel;
+	int			sc_want_scan;
+	int			sc_scanning;
+	int			sc_scan_at;
+	uint32_t		sc_scan_starts;
+	uint32_t		sc_scan_ends;
 
 	uint8_t			sc_macaddr[6];
 	int			sc_running;
@@ -205,7 +316,43 @@ struct mtk_softc {
 	struct mtk_ring		sc_dataq;	/* what the air brings */
 	struct mtk_dma_mem	sc_cmdbuf;	/* one command at a time */
 	struct mtk_dma_mem	sc_fwbuf;	/* one piece of firmware */
+	struct mtk_dma_mem	sc_txbuf;	/* frames of ours, one per slot */
+	uint16_t		sc_token;
+	uint8_t			sc_peer;	/* the radio we address */
+	uint8_t			sc_channel;
+
+	/* Enough to tell "nothing is arriving" from "nothing is being sent"
+	 * from "the card never says it has anything", which look alike.
+	 */
+	uint32_t		sc_interrupts;
+	uint32_t		sc_received;
+	uint32_t		sc_sent;
+	uint32_t		sc_refused;
+	uint32_t		sc_mgmt;
+	uint32_t		sc_beacons;
+	uint32_t		sc_data;
+	uint32_t		sc_ctrl;
+	uint32_t		sc_subtype[16];
+	uint32_t		sc_shown[3];
+	uint32_t		sc_raw[3];
+	uint32_t		sc_dropped;
+	uint32_t		sc_typemask;
+
+	/* The MCU replies on a ring mtk_receive also drains, so the two
+	 * cannot run at once without answers going missing.
+	 */
+	int			sc_mcu_busy;
+	uint8_t			sc_frame[MTK_RX_BUFFER_SIZE];
 	uint8_t			sc_seq;
+
+	/* One drainer, one place answers are left. Two consumers on the same
+	 * ring lose each other's frames, and an answer taken by the wrong one
+	 * is an answer that never arrives.
+	 */
+	int			sc_draining;
+	int			sc_replyready;
+	size_t			sc_replylen;
+	uint8_t			sc_reply[1024];
 	uint8_t			sc_streams;
 	int			sc_rings;
 
@@ -218,6 +365,12 @@ uint32_t	mtk_read(struct mtk_softc*, uint32_t);
 void		mtk_write(struct mtk_softc*, uint32_t, uint32_t);
 int		mtk_dma_setup(struct mtk_softc*);
 int		mtk_firmware_start(struct mtk_softc*);
+int		mtk_radio_init(struct mtk_softc*);
+int		mtk_hw_scan(struct mtk_softc*, uint8_t only);
+void		mtk_receive_frame(struct mtk_softc*, const uint8_t*, size_t, int, int);
+int		mtk_tune(struct mtk_softc*, uint8_t channel);
+int		mtk_send_frame(struct mtk_softc*, struct mbuf*);
+void		mtk_receive(struct mtk_softc*);
 void		mtk_dma_teardown(struct mtk_softc*);
 
 #define MTK_LOCK(sc)		mtx_lock(&(sc)->sc_mtx)

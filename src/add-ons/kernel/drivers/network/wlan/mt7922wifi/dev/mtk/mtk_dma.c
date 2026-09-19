@@ -270,6 +270,13 @@ mtk_dma_enable(struct mtk_softc* sc)
 	mtk_write(sc, MTK_MCU2HOST_SW_INT_ENA,
 		mtk_read(sc, MTK_MCU2HOST_SW_INT_ENA) | MTK_MCU_CMD_WAKE_RX_PCIE);
 	mtk_write(sc, MTK_WFDMA0_HOST_INT_ENA, MTK_INTERRUPTS_ALL);
+
+	/* MTK_PCIE_MAC_INT_ENABLE, the gate on the PCIe wrapper, stays shut.
+	 * This runs during attach, before there is a handler to take what
+	 * comes through it, and a shared line nobody answers wedges the boot
+	 * hard enough to need the boot loader to get back in. Frames are
+	 * collected by mtk_tick instead until the handler is in place.
+	 */
 }
 
 
@@ -325,6 +332,16 @@ mtk_dma_setup(struct mtk_softc* sc)
 	if (error != 0)
 		goto fail;
 
+	/* One slot per place on the transmit ring, each holding a frame's
+	 * description and the frame behind it, so a frame handed over stays
+	 * put until the card has finished with that slot.
+	 */
+	error = mtk_dma_alloc(sc, &sc->sc_txbuf,
+		(bus_size_t)MTK_TX_RING_COUNT * MTK_TXBUF_SIZE,
+		"the transmit buffers");
+	if (error != 0)
+		goto fail;
+
 	mtk_dma_enable(sc);
 	sc->sc_rings = 1;
 
@@ -353,5 +370,6 @@ mtk_dma_teardown(struct mtk_softc* sc)
 	mtk_ring_free(&sc->sc_dataq);
 	mtk_dma_free(&sc->sc_cmdbuf);
 	mtk_dma_free(&sc->sc_fwbuf);
+	mtk_dma_free(&sc->sc_txbuf);
 	sc->sc_rings = 0;
 }
