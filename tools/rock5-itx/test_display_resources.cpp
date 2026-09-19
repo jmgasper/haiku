@@ -226,7 +226,8 @@ VopModelStep()
 				sVopHoldCountdown = sHoldNever ? -1 : 3;
 		} else if (sAllowDp && ((offset >= 0xd00 && offset <= 0xd54) || offset == 0x74 || offset == 0x6e4
 				|| offset == 0x028 || offset == 0x030 || (offset >= 0x1800 && offset < 0x1900)
-				|| (offset >= 0x650 && offset < 0x670) || offset == 0x6f8 || offset == 0x008
+				|| (offset >= 0x650 && offset < 0x680) || offset == 0x6f8 || offset == 0x008
+				|| (offset >= 0x1a00 && offset < 0x1b00)
 				|| offset == 0xb0 || offset == 0xb4 || offset == 0x1c1c || offset == 0x1c20 || offset == 0x1c24)) {
 			// Video port 1 for the DP probe: timing, background and the interface mux are plain words.
 			sVopOverrides[offset] = value;
@@ -3078,6 +3079,53 @@ main()
 	assert(sVopOverrides[0xe48] == ((800u << 16) | 96) && sVopOverrides[0xe54] == ((35u << 16) | 515));
 	assert(sVopOverrides[0x1814] == 0xed940000 && sConsole.width == 640 && sHandler == NULL);
 	assert(sAreas.empty());
+	// The span cursor: app_server's pointer on one window per port, each
+	// clipped to its own screen; hidden on both at release.
+	controller.cursorEnabled = controller.cursorHooksEnabled = true;
+	assert(Free(primary) == B_OK);
+	assert(Open(&controller, "", O_RDWR, &opened) == B_OK);
+	primary = (Handle*)opened;
+	Prepare(); sAllowDp = true; sAllowModeSet = true; sAllowCursor = true;
+	sBootInfo = frame_buffer_boot_info{17, 0xed940000, 0xffff000012340000ull, 640, 480, 32, 2560, 0};
+	sVopOverrides[0x1c14] = 0xed940000; sVopOverrides[0x1c1c] = 640; sVopOverrides[0x1c20] = 0x01df027f;
+	sVopOverrides[0x1c24] = 0x01df027f;
+	sVopOverrides[0xe48] = (800u << 16) | 96; sVopOverrides[0xe4c] = (144u << 16) | 784;
+	sVopOverrides[0xe50] = (525u << 16) | 2; sVopOverrides[0xe54] = (35u << 16) | 515;
+	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_OK && sSpanHdmi);
+	acc = {}; acc.version = kAccelerantVersion;
+	assert(Control(primary, kGetAccelerantInfo, &acc, sizeof(acc)) == B_OK);
+	assert((acc.flags & (kAccelerantCursor | kAccelerantCursorHooks)) == (kAccelerantCursor | kAccelerantCursorHooks));
+	assert((acc.flags & kAccelerantModeSet) == 0 && sCursorState.window == 3 && sCursorRight.window == 1);
+	CursorBitmap* spanBitmap = new CursorBitmap();
+	spanBitmap->version = kCursorVersion; spanBitmap->width = spanBitmap->height = 22; spanBitmap->bytesPerRow = 88;
+	memset(spanBitmap->data, 0xff, sizeof(spanBitmap->data));
+	assert(Control(primary, kSetCursorBitmap, spanBitmap, sizeof(*spanBitmap)) == B_OK && spanBitmap->result == kCursorOK);
+	delete spanBitmap;
+	CursorMove spanMove = {}; spanMove.version = kCursorVersion; spanMove.x = 1910; spanMove.y = 500;
+	assert(Control(primary, kMoveCursor, &spanMove, sizeof(spanMove)) == B_OK && spanMove.result == kCursorOK);
+	CursorShow spanShow = {}; spanShow.version = kCursorVersion; spanShow.visible = 1;
+	assert(Control(primary, kShowCursor, &spanShow, sizeof(spanShow)) == B_OK && spanShow.result == kCursorOK);
+	// Straddling the seam: ten columns on HDMI1, the other twelve on DP1.
+	assert(sVopOverrides[0x1e10] == 1 && sVopOverrides[0x1e28] == ((500u << 16) | 1910));
+	assert(sVopOverrides[0x1e20] == ((21u << 16) | 9));
+	assert(sVopOverrides[0x1a10] == 1 && sVopOverrides[0x1a28] == (500u << 16));
+	assert(sVopOverrides[0x1a20] == ((21u << 16) | 11) && sVopOverrides[0x1a14] == sCursorRight.address);
+	assert(sCursorRight.address == sCursorState.address + 40 && sCursorRight.x == -10);
+	assert(sVopOverrides[0x670] == kVopMixerSourceColor && sVopOverrides[0x6b0] == kVopMixerSourceColor);
+	assert(((sVopOverrides[0x1a04] >> 4) & 0x1f) == ((((sVopOverrides[0x1804] >> 4) & 0x1f) + 2) & 0x1f));
+	// All on DP1, then hidden.
+	spanMove.x = 3000;
+	assert(Control(primary, kMoveCursor, &spanMove, sizeof(spanMove)) == B_OK && spanMove.result == kCursorOK);
+	assert(sVopOverrides[0x1e10] == 0 && sVopOverrides[0x1a10] == 1 && sVopOverrides[0x1a28] == ((500u << 16) | 1080));
+	spanShow.visible = 0;
+	assert(Control(primary, kShowCursor, &spanShow, sizeof(spanShow)) == B_OK && spanShow.result == kCursorOK);
+	assert(sVopOverrides[0x1e10] == 0 && sVopOverrides[0x1a10] == 0);
+	spanShow.visible = 1;
+	assert(Control(primary, kShowCursor, &spanShow, sizeof(spanShow)) == B_OK && sVopOverrides[0x1a10] == 1);
+	assert(Close(primary) == B_OK && sVopOverrides[0x1a10] == 0 && sVopOverrides[0x1e10] == 0 && !sSpanHdmi);
+	assert(sAreas.empty());
+	controller.cursorEnabled = controller.cursorHooksEnabled = false;
+	sAllowCursor = false;
 	sAllowModeSet = false;
 	controller.dpDesktopEnabled = controller.dpSpanEnabled = false;
 	sDpLinkUp = false;

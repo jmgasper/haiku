@@ -117,6 +117,11 @@ static uint32 sPowerMode = kPowerOn;
 static ContiguousBuffer sCursor = {-1, NULL, 0};
 static CursorState sCursorState = {};
 static bool sCursorProgrammed = false; // the cursor window was written since acquisition
+// The spanning desktop's right-hand cursor window (DP1's port): the pointer
+// state shifted by the left screen's width.
+static CursorState sCursorRight = {};
+static const uint32_t kDpCursorWindow = 1; // ESMART1, overlay layer 3 of video port 1
+static const uint32_t kDpCursorMixer = 2;
 static uint32_t sAutoGatingBefore = 0; // SYS_AUTO_GATING_CTRL as the firmware left it
 // The DisplayPort desktop: the window, geometry and address of the firmware
 // desktop that ESMART0 cloned before it took the driver's frame buffer.
@@ -643,20 +648,24 @@ InitDriver(device_node* node, void** cookie)
 		// interrupt; both run the accelerant with retrace.
 		// The cursor profile admits the window to the probe; the desktop
 		// profile also hands app_server's pointer to it.
+		// The span cursor profile runs the spanning desktop with app_server's
+		// pointer on one cursor window per port.
+		bool spanCursor = strcmp(profile, "rock5-itx-edk2-v1.1-display-dp-span-cursor") == 0;
 		controller->cursorHooksEnabled
-			= strcmp(profile, "rock5-itx-edk2-v1.1-display-cursor-desktop") == 0;
+			= strcmp(profile, "rock5-itx-edk2-v1.1-display-cursor-desktop") == 0 || spanCursor;
 		// The DP AUX profile touches only the second connector's path; HDMI1
 		// stays with the firmware.
 		controller->dpAuxEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-dp-aux") == 0;
 		// The DP desktop profile hands app_server a 1080p frame buffer on the
 		// second connector; HDMI1's port and window stay with the firmware.
-		controller->dpSpanEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-dp-span") == 0;
+		controller->dpSpanEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-dp-span") == 0 || spanCursor;
 		controller->dpDesktopEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-dp-desktop") == 0
 			|| controller->dpSpanEnabled;
 		controller->cursorEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-cursor") == 0
 			|| controller->cursorHooksEnabled;
-		controller->modeSetEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-modeset") == 0
-			|| controller->cursorEnabled;
+		// Mode changes and power control drive HDMI1 alone: not on the DP desktops.
+		controller->modeSetEnabled = (strcmp(profile, "rock5-itx-edk2-v1.1-display-modeset") == 0
+			|| controller->cursorEnabled) && !controller->dpDesktopEnabled;
 		controller->accelerantEnabled
 			= strcmp(profile, "rock5-itx-edk2-v1.1-display-accelerant") == 0
 			|| strcmp(profile, "rock5-itx-edk2-v1.1-display-retrace") == 0
@@ -1588,8 +1597,35 @@ ProgramCursor(uint32_t& polls)
 		LogCursorRegisters(hardware, "before");
 	}
 	uint32_t enabledBefore = sCursorState.regionControl;
-	uint32_t result = ApplyCursor(hardware, sCursorState, sCursor.physical, sAccelerant.port,
-		sAccelerant.window, sAccelerant.width, sAccelerant.height, polls);
+	uint32_t result;
+	if (sDpDesktop && sSpanHdmi) {
+		// One window per port, each clipped to its own 1920x1080 screen: the
+		// left one on HDMI1's port over its window, the right one on DP1's.
+		result = ApplyCursor(hardware, sCursorState, sCursor.physical, sSpanPort, sSpanWindow,
+			kFrameWidth, kFrameHeight, polls);
+		uint32_t rightEnabledBefore = sCursorRight.regionControl;
+		uint32_t window = sCursorRight.window, mixer = sCursorRight.mixer, regionControl
+			= sCursorRight.regionControl, displayStart = sCursorRight.displayStart, address = sCursorRight.address;
+		memcpy(&sCursorRight, &sCursorState, sizeof(sCursorRight));
+		sCursorRight.window = window;
+		sCursorRight.mixer = mixer;
+		sCursorRight.regionControl = regionControl;
+		sCursorRight.displayStart = displayStart;
+		sCursorRight.address = address;
+		sCursorRight.x = sCursorState.x - (int32_t)kFrameWidth;
+		uint32_t rightPolls = 0;
+		uint32_t right = ApplyCursor(hardware, sCursorRight, sCursor.physical, kVopPort1, kDpWindow,
+			kFrameWidth, kFrameHeight, rightPolls);
+		polls += rightPolls;
+		if (result == kCursorOK)
+			result = right;
+		if (sCursorRight.regionControl != rightEnabledBefore)
+			enabledBefore = ~sCursorState.regionControl; // log the change below
+	} else {
+		// The single DP desktop's window scans the port's whole screen.
+		result = ApplyCursor(hardware, sCursorState, sCursor.physical, sAccelerant.port,
+			sAccelerant.window, sDpDesktop ? kFrameWidth : sAccelerant.width, sAccelerant.height, polls);
+	}
 	sCursorProgrammed = true;
 	if (first || sCursorState.regionControl != enabledBefore || result != kCursorOK)
 		LogCursorRegisters(hardware, result == kCursorOK ? "after" : "failed");
@@ -1603,7 +1639,8 @@ static bool
 CursorWindowLive()
 {
 	return sCursorState.visible != 0
-		|| (sCursorState.regionControl & kVopEsmartRegionEnable) != 0;
+		|| (sCursorState.regionControl & kVopEsmartRegionEnable) != 0
+		|| (sDpDesktop && sSpanHdmi && (sCursorRight.regionControl & kVopEsmartRegionEnable) != 0);
 }
 
 
@@ -2162,6 +2199,21 @@ AcquireDpFrameBuffer(Handle* handle)
 	sAccelerant.version = kAccelerantVersion;
 	sAccelerant.flags = kAccelerantAcquired | (shared.flags & kAccelerantEdid);
 	sCursorProgrammed = false;
+	memset(&sCursorState, 0, sizeof(sCursorState));
+	sCursorState.version = kCursorVersion;
+	// The spanning desktop's left screen keeps HDMI1's qualified cursor
+	// window; DP1's screen uses ESMART1 above ESMART0.
+	sCursorState.window = controller->dpSpanEnabled ? kVopCursorWindow : kDpCursorWindow;
+	sCursorState.mixer = controller->dpSpanEnabled ? kVopCursorMixer : kDpCursorMixer;
+	memset(&sCursorRight, 0, sizeof(sCursorRight));
+	sCursorRight.version = kCursorVersion;
+	sCursorRight.window = kDpCursorWindow;
+	sCursorRight.mixer = kDpCursorMixer;
+	if (controller->cursorEnabled && AllocateContiguous(sCursor, "RK3588 display cursor",
+			kCursorBufferBytes, false) == B_OK) {
+		sAccelerant.flags |= kAccelerantCursor
+			| (controller->cursorHooksEnabled ? kAccelerantCursorHooks : 0);
+	}
 	sAccelerant.retraceSemaphore = -1;
 	sAccelerant.port = kVopPort1;
 	sAccelerant.window = kDpWindow;
@@ -2211,6 +2263,15 @@ ReleaseDpFrameBuffer(Controller* controller)
 {
 	StopRetrace(sAccelerant.port, controller->resources.vopInterrupt);
 	uint32_t result = kDpNotReady, polls = 0;
+	if (sCursorProgrammed && sVopRegisters != NULL) {
+		sCursorState.visible = 0;
+		uint32_t cursorPolls = 0;
+		uint32_t hidden = ProgramCursor(cursorPolls);
+		dprintf("rk3588_display: cursor windows disabled result=%" B_PRIu32 " polls=%" B_PRIu32 "\n",
+			hidden, cursorPolls);
+	}
+	sCursorProgrammed = false;
+	ReleaseContiguous(sCursor);
 	if (sSpanHdmi && sVopRegisters != NULL)
 		StopHdmiSpan(controller);
 	if (sVopRegisters != NULL) {
