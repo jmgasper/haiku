@@ -206,6 +206,17 @@ main(int argc, char** argv)
 		}
 	}
 
+	/* Configure it while it is down. Every one of these settings returns
+	 * ENETRESET, and the stack acts on that by putting a *running* vap
+	 * through ieee80211_init - which is the thing that ends with the
+	 * machine stopped. Down, it just stores the setting.
+	 */
+	if (request(socket, device, 1, IEEE80211_IOC_HAIKU_COMPAT_WLAN_DOWN,
+			NULL, 0, 0, NULL) != 0)
+		printf("could not put it down first\n");
+	else
+		printf("put it down to be configured\n");
+
 	if (argc > 3 && (strcmp(argv[3], "wpa") == 0
 			|| strcmp(argv[3], "priv") == 0)) {
 		int error;
@@ -233,6 +244,13 @@ main(int argc, char** argv)
 		} else
 			printf("privacy only, no WPA mode\n");
 	}
+
+	/* Now bring it up, already knowing what it is looking for. */
+	if (request(socket, device, 1, IEEE80211_IOC_HAIKU_COMPAT_WLAN_UP,
+			NULL, 0, 0, NULL) != 0)
+		printf("could not bring it back up\n");
+	else
+		printf("brought it up configured\n");
 
 	/* Watch it settle rather than looking once and leaving: the whole
 	 * point is to still be holding the device while it associates.
