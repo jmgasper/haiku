@@ -297,6 +297,28 @@ mt7922_setup(mt7922_dev* device)
 
 	TRACE("the Wi-Fi subsystem is reset and running\n");
 
+	/* Before building anything on it, check the memory the card needs can
+	 * actually be had. This machine has far more memory than the card can
+	 * address, so "contiguous and below four gigabytes" is a real constraint
+	 * rather than a formality, and finding out here beats finding out from a
+	 * ring that never advances.
+	 */
+	{
+		mt7922_dma_mem probe;
+		status_t probeStatus = mt7922_dma_alloc("mt7922 reach check",
+			2048 * 16, &probe);
+
+		if (probeStatus != B_OK) {
+			ERROR("the card cannot be given memory it can reach\n");
+			status = probeStatus;
+			goto release;
+		}
+
+		TRACE("memory the card can reach: %" B_PRIuSIZE " bytes at %#"
+			B_PRIxPHYSADDR "\n", probe.size, probe.physical);
+		mt7922_dma_free(&probe);
+	}
+
 	/* Next: the transfer rings, and the firmware that goes over them. Until
 	 * that is here the part is awake and addressable but does nothing.
 	 */

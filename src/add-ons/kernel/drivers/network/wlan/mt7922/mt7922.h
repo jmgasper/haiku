@@ -60,6 +60,17 @@
 #define MT_DIRECT_LIMIT		0x00100000
 
 
+/* A block of memory the card fetches from by itself: where it is to us, where
+ * it is to the card, and the area holding it.
+ */
+struct mt7922_dma_mem {
+	area_id		area;
+	void*		address;
+	phys_addr_t	physical;
+	size_t		size;
+};
+
+
 struct mt7922_dev {
 	pci_info	pci;
 	char		name[32];
@@ -81,6 +92,10 @@ struct mt7922_dev {
 
 
 extern pci_module_info* gPci;
+
+status_t mt7922_dma_alloc(const char* name, size_t size,
+	mt7922_dma_mem* memory);
+void mt7922_dma_free(mt7922_dma_mem* memory);
 
 status_t mt7922_setup(mt7922_dev* device);
 void mt7922_teardown(mt7922_dev* device);
