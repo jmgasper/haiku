@@ -16,6 +16,7 @@ SEARCH_SOURCE += [ FDirName $(SUBDIR) dev mtk ] ;
 
 KernelAddon mt7922wifi :
 	if_mtk.c
+	mtk_dma.c
 	glue.c
 	:
 	freebsd_wlan.a

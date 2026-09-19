@@ -127,7 +127,7 @@ mtk_translate(struct mtk_softc* sc, uint32_t address)
 }
 
 
-static uint32_t
+uint32_t
 mtk_read(struct mtk_softc* sc, uint32_t address)
 {
 	uint32_t value;
@@ -140,7 +140,7 @@ mtk_read(struct mtk_softc* sc, uint32_t address)
 }
 
 
-static void
+void
 mtk_write(struct mtk_softc* sc, uint32_t address, uint32_t value)
 {
 	MTK_LOCK(sc);
@@ -468,6 +468,10 @@ mtk_attach(device_t dev)
 	ic->ic_vap_create = mtk_vap_create;
 	ic->ic_vap_delete = mtk_vap_delete;
 
+	error = mtk_dma_setup(sc);
+	if (error != 0)
+		goto fail;
+
 	device_printf(dev, "attached to the wireless stack\n");
 
 	/* Next: the transfer rings and the firmware, behind these. */
@@ -490,6 +494,8 @@ mtk_detach(device_t dev)
 
 	if (sc->sc_ic.ic_softc == sc)
 		ieee80211_ifdetach(&sc->sc_ic);
+
+	mtk_dma_teardown(sc);
 
 	if (sc->sc_mem != NULL) {
 		mtk_release_ownership(sc);
