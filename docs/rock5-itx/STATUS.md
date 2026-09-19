@@ -17,6 +17,16 @@ emulator gates show the software fallback without a device. It is not
 qualified: the independent Linux eMMC readbacks need the ROOBI sudo
 password, which is not on record.
 
+The +300 USB image adds a read-only [observation of the second connector's
+DisplayPort path](DISPLAY.md) to the qualified desktop-cursor cycle: on
+two native boots the DisplayPort TX1 block is powered, clocked and idle
+with its PHY interface parked, the USBDP PHY1 is in low power, and the
+hot-plug pin is a plain input reading low with nothing on the connector;
+every word agreed between samples and boots. Bringing that path up (PHY,
+link training through the RA620 bridge, a second video port) needs a
+monitor or an HDMI dummy plug on the second connector, which is not
+attached.
+
 The +297 USB image qualifies [app_server's pointer on the hardware cursor](DISPLAY.md)
 on two native boots: on the desktop cursor profile the accelerant exports
 the cursor hooks, app_server hands its 22x22 pointer to the driver's second

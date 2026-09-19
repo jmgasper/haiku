@@ -745,6 +745,49 @@ this observation; what it records - whether the firmware leaves the block
 clocked, what the pin mux is, and the hot-plug level without a sink - sets
 the bring-up stage's starting point.
 
+### Observed +300 DisplayPort path (stage 4a)
+
+The `hrev60097+300` image (source `ba1e072979`, SHA-256
+`aaeec1267d393d3c0f0d1bb612da49f7704cc2dbec7188e333946b1ee94a91e3`) passes
+the host checks (170 tests), both two-boot QEMU modes and two native boots
+of the desktop-cursor cycle (every check of +297 again) with normal reboot,
+verified shutdown and automatic ROOBI recovery, and the observation reads
+the DisplayPort path on both boots without touching it. As the firmware
+leaves it, with nothing on the second connector:
+
+| Item | Boot 1 and boot 2 |
+| --- | --- |
+| VO0 domain | on |
+| `pclk_dp1`, AUX 16 MHz, `clk_dp1`, `pclk_usbdpphy1`, immortal, `pclk_gpio3` | all ungated |
+| DP TX1 version words | `0x3231312a`, `0x65613038` (ASCII "211*", "ea08"), id `0x900116c3` |
+| DP TX1 configuration | `0x0221250d`, `0x08001000`, `0x0000016c`; CCTL `0x4`; soft reset `0` |
+| DP TX1 PHY interface | `0x0006f000`: power-down state 3, lanes busy, transmit off; power-down word `0` |
+| DP TX1 AUX status, interrupts, hot-plug status | `0`, `0`, `0` (no hot-plug) |
+| USBDP PHY1 GRF | CON1 `0x6000` (low power and LFPS bits), the rest `0` |
+| VO0 GRF | `0x40`, `0`, `0xe4` (lane order 3,2,1,0) |
+| GPIO3_D5 (hot-plug) | mux 0 (GPIO, not `dp1_hpdin`), input, level 0 |
+| GPIO3 | data/direction `0x8100`, external port `0x0d7ca98f`, version `0x0101157c` |
+
+The block is powered, clocked and idle, its PHY interface parked, the PHY
+in low power, and the hot-plug pin muxed as a plain input reading low:
+the firmware never touched this path, and without a sink the RA620 does
+not raise hot-plug (whether it does with one is the first thing to learn
+once a monitor or dummy plug is on that connector). Every value agreed
+between the inventory's three samples, the observation after the EDID
+read and both boots.
+
+- Native evidence: `artifacts/automated-display-dp-observe/20260919T004036Z-633120`
+  (`qualification.json` with `dp_path`, `display-boot{1,2}.json` with the
+  decoded `dp1`, `gpio3`, `dp_pin`, GRF and IOC words, the cursor, mode,
+  power and desktop records as in +297).
+- Session: `artifacts/interactive/20260919T004037Z-523fe8`; recovery boot
+  `251c8c12-f46c-47f9-8ef0-80594a76cc20` after verified shutdown.
+- QEMU EL2/EL1: `artifacts/qemu-shell/20260919T003537Z-b2f988` and
+  `20260919T003804Z-eb45af`; build `artifacts/build-20260919T003518Z.log`.
+- Stage: `artifacts/display-dp-observe/20260919T003356Z-6a9bf5`.
+- Independent Linux eMMC readbacks were not run: the ROOBI sudo password is
+  not available to this session.
+
 ## Later stages
 
 3. Modes beyond the PLL table (the fractional-rate calculation) or the
