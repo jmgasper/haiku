@@ -54,6 +54,33 @@
 #define MCU_UNI_EXT_ACK			7
 #define MCU_UNI_CMD_DEV_INFO_UPDATE	0x01
 #define MCU_UNI_CMD_BSS_INFO_UPDATE	0x02
+#define MCU_UNI_CMD_STA_REC_UPDATE	0x03
+#define MCU_UNI_CMD_ROC			0x27
+#define MCU_UNI_EVENT_ROC		0x27
+#define MT7922_ROC_ACQUIRE		0
+#define MT7922_ROC_TO_JOIN		0
+
+/* Describing a radio we mean to talk to. */
+#define STA_REC_BASIC			0x00
+#define STA_REC_RA			0x01
+#define STA_REC_STATE			0x07
+#define STA_REC_WTBL			0x0d
+#define STA_REC_PHY			0x15
+
+#define WTBL_GENERIC			0x00
+#define WTBL_RX				0x01
+#define WTBL_HDR_TRANS			0x06
+#define WTBL_SMPS			0x0d
+
+#define MT7922_WTBL_RESET_AND_SET	1
+#define MT7922_CONN_STATE_SECURE	2
+#define MT7922_CONNECTION_INFRA_AP	0x00010002
+#define MT7922_EXTRA_INFO_VER		(1 << 0)
+#define MT7922_EXTRA_INFO_NEW		(1 << 1)
+#define MT7922_PHY_TYPE_2GHZ		0x03
+
+/* Entry zero is spoken for; ours is the first after it. */
+#define MT7922_PEER_INDEX		1
 
 #define MCU_EXT_CMD_SET_RX_PATH		0x4e
 #define MCU_EXT_CMD_CHANNEL_SWITCH	0x08
@@ -302,6 +329,9 @@ mt7922_ring_take(mt7922_dev* device, mt7922_ring* ring, uint8* buffer,
  * changes over. Watching both costs one extra read and removes the question.
  */
 static void mt7922_inspect(mt7922_dev* device, const uint8* data, size_t got);
+static status_t mt7922_mcu_add_station(mt7922_dev* device,
+	const uint8* address, uint8 index);
+static status_t mt7922_mcu_take_channel(mt7922_dev* device, uint8 channel);
 
 
 static status_t
@@ -1360,6 +1390,14 @@ mt7922_mcu_scan(mt7922_dev* device)
 static void
 mt7922_inspect(mt7922_dev* device, const uint8* data, size_t got)
 {
+	/* The grant for the air is an announcement of the firmware's own, so it
+	 * is recognised by what it is rather than by anything it answers.
+	 */
+	if (got >= MCU_RXD_SIZE && data[0x1c] == MCU_UNI_EVENT_ROC) {
+		device->granted = true;
+		return;
+	}
+
 	if (got < 64)
 		return;
 
@@ -1739,7 +1777,7 @@ mt7922_transmit(mt7922_dev* device, const uint8* frame, size_t length,
 		| ((uint32)MT_TXD1_TID_MGMT << MT_TXD1_TID_SHIFT)
 		| ((uint32)MT_HDR_FORMAT_802_11 << MT_TXD1_HDR_FORMAT_SHIFT)
 		| ((uint32)(MT7922_MGMT_HEADER / 2) << MT_TXD1_HDR_INFO_SHIFT)
-		| MT7922_STATION_INDEX);
+		| (device->peer != 0 ? device->peer : MT7922_STATION_INDEX));
 
 	/* Anything that is not ordinary traffic goes at a rate we choose rather
 	 * than one the radio picks, because there is no history yet to pick from.
@@ -1769,6 +1807,22 @@ mt7922_transmit(mt7922_dev* device, const uint8* frame, size_t length,
 	write_le32(where + 8, (uint32)device->transmitFrame.physical);
 	where[12] = length & 0xff;
 	where[13] = (length >> 8) | 0x80;	/* and it is the last piece */
+
+	/* Say exactly what is being handed over. Every field of this was taken
+	 * from a description of what the hardware expects, and the only way to
+	 * know it was built as intended is to read it back.
+	 */
+	char line[200];
+	int at = 0;
+	for (int i = 0; i < 8; i++)
+		at += sprintf(line + at, "%08x ", read_le32(description + i * 4));
+	TRACE("sending: %s\n", line);
+
+	at = 0;
+	for (int i = 0; i < 16; i++)
+		at += sprintf(line + at, "%02x ", description[32 + i]);
+	TRACE("  pointing at: %s(frame at %#" B_PRIxPHYSADDR ")\n", line,
+		device->transmitFrame.physical);
 
 	return mt7922_ring_submit(device, &device->transmitRing,
 		device->transmitHeader.physical, MT7922_TXD_SIZE);
@@ -1826,6 +1880,20 @@ mt7922_join(mt7922_dev* device)
 	frame[24] = 0;
 	frame[26] = 1;
 
+	status_t air = mt7922_mcu_take_channel(device, network->channel);
+	if (air != B_OK)
+		return air;
+
+	status_t known = mt7922_mcu_add_station(device, network->address,
+		MT7922_PEER_INDEX);
+	if (known != B_OK) {
+		ERROR("the firmware would not take a description of it: %s\n",
+			strerror(known));
+		return known;
+	}
+	device->peer = MT7922_PEER_INDEX;
+	TRACE("the firmware knows of it now\n");
+
 	TRACE("asking %02x:%02x:%02x:%02x:%02x:%02x to let us in\n",
 		network->address[0], network->address[1], network->address[2],
 		network->address[3], network->address[4], network->address[5]);
@@ -1879,4 +1947,161 @@ mt7922_join(mt7922_dev* device)
 
 	ERROR("no answer came\n");
 	return B_TIMED_OUT;
+}
+
+
+/* Tell the firmware about the radio we intend to talk to.
+ *
+ * Until it has an entry of its own, a network is something this card can hear
+ * but not address. The entry the card made for our own side when the network
+ * was described is for broadcasts and for us; sending to a particular radio
+ * needs one for that radio, and a frame aimed at an entry that does not exist
+ * is taken from the ring and quietly dropped - with no complaint, and no
+ * report of it having been sent.
+ */
+static status_t
+mt7922_mcu_add_station(mt7922_dev* device, const uint8* address, uint8 index)
+{
+	uint8 request[128];
+	memset(request, 0, sizeof(request));
+
+	/* Which network it belongs to, which entry it is, and how many pieces
+	 * of description follow.
+	 */
+	request[0] = 0;			/* our only network */
+	request[1] = index;
+	request[2] = 5;			/* five pieces */
+	request[4] = 1;			/* and they do follow */
+
+	size_t at = 8;
+
+	/* Who it is, and what it is to us. */
+	request[at] = STA_REC_BASIC;
+	request[at + 2] = 20;
+	write_le32(request + at + 4, MT7922_CONNECTION_INFRA_AP);
+	request[at + 8] = MT7922_CONN_STATE_SECURE;
+	request[at + 9] = 1;		/* it does quality of service */
+	memcpy(request + at + 12, address, 6);
+	request[at + 18] = MT7922_EXTRA_INFO_VER | MT7922_EXTRA_INFO_NEW;
+	at += 20;
+
+	/* How it transmits, roughly. */
+	request[at] = STA_REC_PHY;
+	request[at + 2] = 12;
+	request[at + 6] = MT7922_PHY_TYPE_2GHZ;
+	at += 12;
+
+	/* And at what rates. */
+	request[at] = STA_REC_RA;
+	request[at + 2] = 16;
+	at += 16;
+
+	/* Where it stands with us: nowhere, yet. */
+	request[at] = STA_REC_STATE;
+	request[at + 2] = 12;
+	at += 12;
+
+	/* Then the entry in the table the radio itself keeps, which is a set of
+	 * pieces inside a piece.
+	 */
+	request[at] = STA_REC_WTBL;
+	request[at + 2] = 60;
+	size_t inner = at + 4;
+
+	request[inner] = index;
+	request[inner + 1] = MT7922_WTBL_RESET_AND_SET;
+	request[inner + 2] = 4;		/* four pieces within */
+	inner += 8;
+
+	request[inner] = WTBL_GENERIC;
+	request[inner + 2] = 20;
+	memcpy(request + inner + 4, address, 6);
+	request[inner + 13] = 1;	/* quality of service */
+	inner += 20;
+
+	request[inner] = WTBL_RX;
+	request[inner + 2] = 12;
+	request[inner + 5] = 1;		/* accept what it sends us */
+	request[inner + 6] = 1;
+	request[inner + 7] = 1;
+	inner += 12;
+
+	request[inner] = WTBL_HDR_TRANS;
+	request[inner + 2] = 8;
+	request[inner + 4] = 1;		/* we are a station, it is not */
+	request[inner + 6] = 1;		/* and leave the headers alone */
+	inner += 8;
+
+	request[inner] = WTBL_SMPS;
+	request[inner + 2] = 8;
+	inner += 8;
+
+	return mt7922_mcu_send_uni(device, MCU_UNI_CMD_STA_REC_UPDATE, request,
+		128);
+}
+
+
+/* Ask the firmware for the air.
+ *
+ * The part arbitrates its own radio, and a host that simply starts
+ * transmitting is a host talking over whatever the firmware had planned. So
+ * the channel is requested, and the request is granted - by an announcement
+ * rather than a reply, since the grant arrives when the firmware is ready
+ * rather than when we asked.
+ */
+static status_t
+mt7922_mcu_take_channel(mt7922_dev* device, uint8 channel)
+{
+	uint8 request[32];
+	memset(request, 0, sizeof(request));
+
+	/* Four bytes of nothing, then the request itself. */
+	request[4] = MT7922_ROC_ACQUIRE;
+	request[6] = 28;
+
+	request[8] = 0;				/* our only network */
+	request[9] = ++device->roc;		/* which asking this is */
+	request[10] = channel;
+	request[11] = 0;			/* no wider than one channel */
+	request[12] = 1;			/* down low */
+	request[13] = 0;			/* twenty megahertz */
+	request[14] = channel;
+	request[17] = 0;			/* as the network has it */
+	request[18] = channel;
+	request[20] = MT7922_ROC_TO_JOIN;
+
+	write_le32(request + 24, 1000);		/* for a second */
+	request[28] = 0xff;			/* whichever radio suits */
+
+	device->granted = false;
+
+	status_t status = mt7922_mcu_send_uni(device, MCU_UNI_CMD_ROC, request,
+		sizeof(request));
+	if (status != B_OK) {
+		ERROR("the firmware would not take the request: %s\n",
+			strerror(status));
+		return status;
+	}
+
+	/* The grant is announced, not answered, so it is waited for by reading
+	 * whatever arrives until it does.
+	 */
+	bigtime_t deadline = system_time() + 1000000;
+	while (system_time() < deadline) {
+		uint8 event[1024];
+		size_t got = sizeof(event);
+
+		if (mt7922_event_read(device, event, &got, 200000) != B_OK)
+			continue;
+		if (device->granted)
+			break;
+	}
+
+	if (!device->granted) {
+		ERROR("the firmware did not grant the air\n");
+		return B_TIMED_OUT;
+	}
+
+	TRACE("the firmware granted the air\n");
+	return B_OK;
 }

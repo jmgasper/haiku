@@ -156,6 +156,11 @@ struct mt7922_dma_mem {
 #define MT_MCU2HOST_SW_INT_ENA		0x000d41f4
 #define MT_MCU_CMD_WAKE_RX_PCIE		(1 << 0)
 
+/* Everything the engine can report: frames in on all three rings, frames out
+ * on all of ours, and the part's own remarks.
+ */
+#define MT7922_INTERRUPTS_ALL		0x2c7ffff5
+
 #define MT_WFDMA0_GLO_CFG		0x000d4208
 #define MT_WFDMA0_TX_DMA_EN		(1 << 0)
 #define MT_WFDMA0_TX_DMA_BUSY		(1 << 1)
@@ -322,6 +327,9 @@ struct mt7922_dev {
 	mt7922_dma_mem	transmitHeader;	/* what the card is told about one */
 	mt7922_dma_mem	transmitFrame;	/* and the frame itself */
 	uint16		token;
+	uint8		peer;		/* the radio we are addressing */
+	uint8		roc;		/* which asking for the air this is */
+	bool		granted;
 	uint8		sequence;	/* ties an answer to what was asked */
 
 	uint8		address[6];	/* what this radio answers to */

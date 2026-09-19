@@ -313,6 +313,13 @@ mt7922_dma_enable(mt7922_dev* device)
 	uint32 interrupt = mt7922_read32(device, MT_MCU2HOST_SW_INT_ENA);
 	mt7922_write32(device, MT_MCU2HOST_SW_INT_ENA,
 		interrupt | MT_MCU_CMD_WAKE_RX_PCIE);
+
+	/* Nothing here waits on an interrupt - the rings are read by looking.
+	 * These are set anyway because it is not certain from anywhere whether
+	 * the mask only quietens the signal or also stops the engine bothering
+	 * to write, and the difference costs one register to rule out.
+	 */
+	mt7922_write32(device, MT_WFDMA0_HOST_INT_ENA, MT7922_INTERRUPTS_ALL);
 }
 
 
