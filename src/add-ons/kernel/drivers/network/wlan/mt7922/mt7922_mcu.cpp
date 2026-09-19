@@ -553,6 +553,7 @@ mt7922_mcu_start_firmware(mt7922_dev* device)
 	 * always in reach, this one through the moveable window, and it is made
 	 * once there are rings and before anything goes over them.
 	 */
+	TRACE("firmware: claiming ownership\n");
 	mt7922_write32(device, MT_TOP_LPCR_HOST_BAND0, LPCR_HOST_DRV_OWN);
 
 	bigtime_t owned = system_time() + 500000;
@@ -568,12 +569,16 @@ mt7922_mcu_start_firmware(mt7922_dev* device)
 	/* Say which mode the firmware is to come up in. This has to be said
 	 * before it is sent, not after.
 	 */
+	TRACE("firmware: owned, setting mode\n");
 	mt7922_write32(device, MT_SWDEF_MODE, MT_SWDEF_NORMAL_MODE);
 
 	/* Tell the part to restart its processor before handing it anything. */
+	TRACE("firmware: restarting the part's processor\n");
 	uint8 power[4] = { 1, 0, 0, 0 };
-	mt7922_mcu_send(device, MCU_CMD_NIC_POWER_CTRL, power, sizeof(power),
-		false, NULL);
+	status_t powerStatus = mt7922_mcu_send(device, MCU_CMD_NIC_POWER_CTRL,
+		power, sizeof(power), false, NULL);
+	TRACE("firmware: that command %s\n",
+		powerStatus == B_OK ? "was taken" : strerror(powerStatus));
 
 	bigtime_t deadline = system_time() + 1000000;
 	while (system_time() < deadline) {
@@ -582,6 +587,9 @@ mt7922_mcu_start_firmware(mt7922_dev* device)
 			break;
 		snooze(MCU_POLL_INTERVAL);
 	}
+
+	TRACE("firmware: the part reports %#" B_PRIx32 ", sending the patch\n",
+		mt7922_read32(device, MT_CONN_ON_MISC));
 
 	status_t status = mt7922_load_patch(device);
 	if (status != B_OK) {

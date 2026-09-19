@@ -246,9 +246,35 @@ mt7922_dma_disable(mt7922_dev* device)
 }
 
 
+/* Each ring gets a slice of the engine's own buffer to read ahead into. A
+ * ring with no slice has nowhere to stage what it fetches, and the traffic
+ * that needs staging is what stops - which is why sending can look healthy
+ * while nothing ever comes back.
+ */
+static void
+mt7922_dma_prefetch(mt7922_dev* device)
+{
+	const uint32 depth = 0x4;
+
+	mt7922_write32(device, MT_WFDMA0_TX_RING_EXT_CTRL, depth);
+
+	/* The two high-numbered outbound rings sit apart from the others. */
+	mt7922_write32(device, MT_WFDMA0_TX_RING_EXT_CTRL + 0x40,
+		(0x340u << 16) | depth);
+	mt7922_write32(device, MT_WFDMA0_TX_RING_EXT_CTRL + 0x44,
+		(0x380u << 16) | depth);
+
+	mt7922_write32(device, MT_WFDMA0_RX_RING_EXT_CTRL, (0x0u << 16) | depth);
+	mt7922_write32(device, MT_WFDMA0_RX_RING_EXT_CTRL + 0x08,
+		(0x40u << 16) | depth);
+}
+
+
 static void
 mt7922_dma_enable(mt7922_dev* device)
 {
+	mt7922_dma_prefetch(device);
+
 	mt7922_write32(device, MT_WFDMA0_RST_DTX_PTR, ~0u);
 	mt7922_write32(device, MT_WFDMA0_PRI_DLY_INT_CFG0, 0);
 
@@ -270,6 +296,13 @@ mt7922_dma_enable(mt7922_dev* device)
 
 	uint32 dummy = mt7922_read32(device, MT_WFDMA_DUMMY_CR);
 	mt7922_write32(device, MT_WFDMA_DUMMY_CR, dummy | MT_WFDMA_NEED_REINIT);
+
+	/* Let the part's processor prod the host side awake when it has put
+	 * something in a receiving ring.
+	 */
+	uint32 interrupt = mt7922_read32(device, MT_MCU2HOST_SW_INT_ENA);
+	mt7922_write32(device, MT_MCU2HOST_SW_INT_ENA,
+		interrupt | MT_MCU_CMD_WAKE_RX_PCIE);
 }
 
 
