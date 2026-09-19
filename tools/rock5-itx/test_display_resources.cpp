@@ -74,6 +74,7 @@ static uint32 sIocMux = 0x50; // GPIO3D_IOMUX_SEL_H: D5 as dp1_hpdin_m0 (functio
 // the controller's hot-plug and AUX engine, the PHY PMA, and hiword-masked
 // GRF, IOC and CRU words. Writes are found by diffing against a shadow.
 static bool sAllowDp;
+static uint32 sGpllCon1 = 0x42; // p = 2, s = 1: 1188 MHz with m = 198
 static uint32* sDpModel;
 static std::vector<uint32> sDpShadow;
 static uint32* sPmaModel;
@@ -223,6 +224,10 @@ VopModelStep()
 			sVopOverrides[offset] = value;
 			if (offset == 0xe00 && (value & 0x80000000u) != 0)
 				sVopHoldCountdown = sHoldNever ? -1 : 3;
+		} else if (sAllowDp && ((offset >= 0xd00 && offset <= 0xd54) || offset == 0x74 || offset == 0x6e4
+				|| offset == 0x028 || offset == 0x030)) {
+			// Video port 1 for the DP probe: timing, background and the interface mux are plain words.
+			sVopOverrides[offset] = value;
 		} else
 			assert(!"unexpected VOP2 register write");
 		sVopShadow[i] = sVopModel[i];
@@ -301,7 +306,8 @@ ModeSetModelStep()
 		sGrfModel[0x80 / 4] = sGrfShadow[0x80 / 4] = sPhyStatusModel;
 	}
 	if (sCruModel != NULL) {
-		static const unsigned kResetOffsets[] = {0xb20, 0x30a0c, 0x30a10, 0xa08, 0xa0c, 0x4d4};
+		static const unsigned kResetOffsets[] = {0xb20, 0x30a0c, 0x30a10, 0xa08, 0xa0c, 0x4d4, 0x4bc, 0x4c0,
+			0x8d0, 0x8d4};
 		for (unsigned i = 0; i < sCruShadow.size(); i++) {
 			if (sCruModel[i] == sCruShadow[i])
 				continue;
@@ -461,7 +467,7 @@ DpModelStep()
 				sDpShadow[(0xb08 + w * 4) / 4] = dp[(0xb08 + w * 4) / 4];
 		} else {
 			assert(offset == 0x200 || offset == 0xa00 || offset == 0xd04 || offset == 0xd0c
-				|| (offset >= 0xb08 && offset <= 0xb14));
+				|| (offset >= 0xb08 && offset <= 0xb14) || (offset >= 0x300 && offset <= 0x330));
 		}
 		sDpShadow[i] = dp[i];
 	}
@@ -560,6 +566,16 @@ ModelRegister(uint64 base, unsigned offset)
 		return offset == 0x200 ? 0x4 : 0;
 	if (base == 0xfd7c0000 && offset == 0x30338)
 		return sRefclkSelect;
+	if (base == 0xfd7c0000 && offset == 0x1c0)
+		return 0xc6; // GPLL m = 198
+	if (base == 0xfd7c0000 && offset == 0x1c4)
+		return sGpllCon1;
+	if (base == 0xfd7c0000 && offset == 0x1c8)
+		return 0; // integer mode
+	if (base == 0xfd7c0000 && offset == 0x4bc)
+		return 0x201; // dclk_vop1_src: GPLL / 2 as the firmware leaves it
+	if (base == 0xfde60000 && offset >= 0x300 && offset <= 0x330)
+		return 0; // video stream off
 	if (base == 0xfd7c0000 && offset == 0x4d4)
 		return 0; // clk_aux16m_0/1 dividers as the firmware leaves them (unknown; zero here)
 	if (base == 0xfd7c0000 && (offset == 0xa08 || offset == 0xa0c || offset == 0xae0 || offset == 0xb20))
@@ -618,7 +634,7 @@ map_physical_memory(const char*, uint64 base, size_t bytes, uint32 spec,
 		assert(bytes == kVopMapSize && (sRepairStatus & (1u << 16)) != 0 && (sGate52 & 0x300) == 0);
 		// Only the opt-in scanout swap or restore maps VOP2 writable; queries do not.
 		writable = (protection & B_KERNEL_WRITE_AREA) != 0;
-		assert(!writable || sAllowScanout);
+		assert(!writable || sAllowScanout || sAllowDp);
 	} else if (base == 0xfdea0000) {
 		assert((sRepairStatus & (1u << 18)) != 0 && (sGate61 & 4) == 0);
 		// Only the opt-in EDID path maps HDMI TX1 writable, after its own gating.
@@ -2774,7 +2790,7 @@ main()
 
 	// DisplayPort probe: gating and refusals, the full path up to the AUX
 	// channel with DPCD and EDID, and every way it stops early.
-	static_assert(sizeof(DpProbeRequest) <= 512, "DP request must stay small on the kernel stack");
+	static_assert(sizeof(DpProbeRequest) <= 640, "DP request must stay small on the kernel stack");
 	Prepare();
 	Controller dpController = controller;
 	controller.dpAuxEnabled = false;
@@ -2800,14 +2816,16 @@ main()
 	dp.version = kDpVersion + 1;
 	assert(Control(primary, kDpProbe, &dp, sizeof(dp)) == B_BAD_VALUE);
 	dp.version = kDpVersion;
-	dp.flags = 8;
+	dp.flags = 16;
+	assert(Control(primary, kDpProbe, &dp, sizeof(dp)) == B_BAD_VALUE);
+	dp.flags = kDpProbeVideo; // video needs a trained link
 	assert(Control(primary, kDpProbe, &dp, sizeof(dp)) == B_BAD_VALUE);
 	assert(sMapAttempts == 0);
 	auto probe = [&](uint32 flags) {
 		memset(&dp, 0xa5, sizeof(dp));
 		dp.version = kDpVersion;
 		dp.flags = flags;
-		sDpWrites.clear(); sPmaWrites.clear(); sHiwordWrites.clear(); sCruWrites.clear(); sAuxLog.clear();
+		sDpWrites.clear(); sPmaWrites.clear(); sHiwordWrites.clear(); sCruWrites.clear(); sAuxLog.clear(); sVopWrites.clear();
 		assert(Control(primary, kDpProbe, &dp, sizeof(dp)) == B_OK);
 		assert(sAreas.empty() && sDpModel == NULL && sPmaModel == NULL && sHiwordModels.empty());
 		return dp.result;
@@ -2912,6 +2930,44 @@ main()
 	// ROPLL never locks.
 	Prepare(); sAllowDp = true; sRopllNeverLocks = true;
 	assert(probe(kDpProbeTrain) == kDpRopllTimeout && dp.ropllPolls == 50);
+	// Video: VP1 at 1080p60 from GPLL / 8 with a magenta background, DP1 muxed
+	// to it with positive syncs, the stream configured for 2 x 2.7 Gb/s.
+	Prepare(); sAllowDp = true;
+	assert(probe(kDpProbeTrain | kDpProbeVideo) == kDpOK && dp.phase == kDpPhaseVideo);
+	assert(dp.gpll[0] == 0xc6 && dp.gpll[1] == 0x42 && dp.dclkSelectBefore == 0x201);
+	assert(logged(sCruWrites, 0x4bc, 0xfe000e00u) && dp.dclkSelectAfter == 0x0e01);
+	assert(logged(sCruWrites, 0x4c0, 0x06000000u) && logged(sCruWrites, 0x8d0, 0x08000000u)
+		&& logged(sCruWrites, 0x8d4, 0x00010000u));
+	assert(dp.dclkGatesAfter[0] == (sGate52 & ~0x800u) && (dp.dclkMuxAfter & 0x600) == 0);
+	assert(dp.portControlBefore == 0x8000000f && dp.portControlAfter == 0xf && sVopOverrides[0xd00] == 0xf);
+	assert(sVopOverrides[0xd0c] == 0xa && sVopOverrides[0xd48] == ((2200u << 16) | 44));
+	assert(sVopOverrides[0xd4c] == ((192u << 16) | 2112) && sVopOverrides[0xd54] == ((41u << 16) | 1121));
+	assert(sVopOverrides[0xd50] == ((1125u << 16) | 5) && sVopOverrides[0x74] == ((1121u << 16) | 1121));
+	assert(sVopOverrides[0x6e4] == (54u << 24) && sVopOverrides[0xd2c] == kDpBackground);
+	assert(sVopOverrides[0xd30] == (((54u + 959) << 16) | 44));
+	assert(dp.interfaceEnableBefore == 0x00080020 && dp.interfaceEnableAfter == (0x00080020u | 2 | (1u << 14)));
+	assert(((dp.interfacePolarityAfter >> 12) & 7) == 3 && (dp.interfacePolarityAfter & (1u << 28)) != 0);
+	assert(logged(sVopWrites, 0x000, 0x8000u | 2 | (2u << 16)) && dp.commitPolls >= 1);
+	// The DP port runs RGB 8 bpc quad pixel: HSTART 192, VSTART 41, TU 52.8, threshold 40, hblank 127.
+	assert(dp.msa[0] == ((41u << 16) | 192) && dp.msa[1] == 0x20000000u && dp.msa[2] == 0);
+	assert(dp.videoConfig[0] == ((1920u << 16) | (280u << 2)) && dp.videoConfig[1] == ((45u << 16) | 1080));
+	assert(dp.videoConfig[2] == ((44u << 16) | 88) && dp.videoConfig[3] == ((5u << 16) | 4));
+	assert(dp.videoConfig[4] == ((8u << 16) | (40u << 7) | 52) && dp.hblankInterval == 0x1007f);
+	assert(logged(sDpWrites, 0x30c, 3) && logged(sDpWrites, 0x320, dp.videoConfig[4]));
+	assert(dp.vsampleAfter == ((2u << 21) | (1u << 16) | (1u << 5)));
+	assert(sequenceOf(sDpWrites, {{0x300u, (2u << 21) | (1u << 16)}, {0x330u, 0x1007fu},
+		{0x300u, (2u << 21) | (1u << 16) | (1u << 5)}}));
+	// A GPLL that is not 1188 MHz: nothing of the port is touched.
+	Prepare(); sAllowDp = true; sGpllCon1 = 0x43;
+	assert(probe(kDpProbeTrain | kDpProbeVideo) == kDpGpllUnexpected && sVopWrites.empty());
+	assert(!logged(sCruWrites, 0x4bc, 0xfe000e00u));
+	sGpllCon1 = 0x42;
+	// Video port 1 already running.
+	Prepare(); sAllowDp = true; sVopOverrides[0xd00] = 0xf;
+	assert(probe(kDpProbeTrain | kDpProbeVideo) == kDpPortBusy && sVopWrites.empty() && sCruWrites.size() > 0);
+	// The port never takes its configuration.
+	Prepare(); sAllowDp = true; sCommitNeverCompletes = true;
+	assert(probe(kDpProbeTrain | kDpProbeVideo) == kDpPortTimeout && dp.commitPolls == kScanoutPollLimit);
 	assert(Close(reader) == B_OK && Free(reader) == B_OK && Close(primary) == B_OK && Free(primary) == B_OK);
 	controller.dpAuxEnabled = false;
 	sAllowDp = false;

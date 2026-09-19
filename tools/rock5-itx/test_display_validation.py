@@ -834,6 +834,57 @@ class DisplayValidationTest(unittest.TestCase):
                     check.validate_dp_probe(transcript(phase=8, train=line), edid=True, train=True)
         with self.assertRaises(check.ValidationError):
             check.validate_dp_probe(transcript(phase=8), edid=True, train=True)
+        # The legacy summary (no video field) is accepted only without video.
+        legacy = transcript(phase=8, train=good)
+        self.assertIn('train=1\n', legacy)
+        modern = legacy.replace('train=1\n', 'train=1 video=0\n')
+        self.assertEqual(check.validate_dp_probe(modern, edid=True, train=True)['phase'], 8)
+        video = ('gpll=000000c6,00000042,00000000 dclk=00000201,00000e01 mux=00000000,00000000'
+            ' gates=00000800,00000001/00000000,00000000 port=8000000f,0000000f if_en=00080020,00084022'
+            ' if_pol=00000000,10003000 clk=0000000a background=%08x commit_polls=4'
+            ' config=07800460,002d0438,002c0058,00050004,00081434 msa=00290000c0,20000000,00000000'
+            ' hblank=0001007f vsample=00410020' % check.DP_BACKGROUND).replace('00290000c0', '002900c0')
+        def with_video(line, summary='video=1'):
+            body = transcript(phase=9, train=good).replace('train=1\n', 'train=1 %s\n' % summary)
+            return body.replace('ROCK5_DISPLAY_DP_PASS', 'ROCK5_DISPLAY_DP_VIDEO ' + line + '\nROCK5_DISPLAY_DP_PASS')
+        started = check.validate_dp_probe(with_video(video), edid=True, train=True, video=True)
+        self.assertEqual((started['video']['clock'], started['video']['commit_polls']), ('0000000a', 4))
+        broken_video = [
+            ('gpll', video.replace('00000042,', '00000043,', 1)),
+            ('divider', video.replace('dclk=00000201,00000e01', 'dclk=00000201,00000201')),
+            ('mux', video.replace('mux=00000000,00000000', 'mux=00000000,00000200')),
+            ('gate', video.replace('/00000000,00000000', '/00000800,00000000')),
+            ('standby', video.replace('port=8000000f,0000000f', 'port=8000000f,8000000f')),
+            ('busy', video.replace('port=8000000f,', 'port=0000000f,')),
+            ('if_en', video.replace('if_en=00080020,00084022', 'if_en=00080020,00088022')),
+            ('polarity', video.replace('if_pol=00000000,10003000', 'if_pol=00000000,10000000')),
+            ('clock', video.replace('clk=0000000a', 'clk=00000005')),
+            ('background', video.replace('background=%08x' % check.DP_BACKGROUND, 'background=00000000')),
+            ('timing', video.replace('config=07800460', 'config=05000460')),
+            ('vsample', video.replace('vsample=00410020', 'vsample=00410000')),
+            ('hblank', video.replace('hblank=0001007f', 'hblank=0000007f')),
+        ]
+        for name, line in broken_video:
+            with self.subTest(name):
+                with self.assertRaises(check.ValidationError):
+                    check.validate_dp_probe(with_video(line), edid=True, train=True, video=True)
+        for name, body in [('missing', transcript(phase=9, train=good).replace('train=1\n', 'train=1 video=1\n')),
+                ('summary', with_video(video, 'video=0')), ('legacy', with_video(video).replace(' video=1', ''))]:
+            with self.subTest(name):
+                with self.assertRaises(check.ValidationError):
+                    check.validate_dp_probe(body, edid=True, train=True, video=True)
+
+    def test_colour_frame(self):
+        import tempfile
+        from pathlib import Path
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'frame.png'
+            Image.new('RGB', (1920, 1080), (250, 70, 245)).save(path)
+            self.assertEqual(check.check_colour_frame(path, (255, 64, 255))['status'], 'pass')
+            Image.new('RGB', (1920, 1080), (0, 0, 0)).save(path)
+            with self.assertRaises(check.ValidationError):
+                check.check_colour_frame(path, (255, 64, 255))
 
     def test_pattern_frame(self):
         import tempfile

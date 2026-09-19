@@ -1080,9 +1080,72 @@ DP_TRAIN = re.compile(
     r'^ROCK5_DISPLAY_DP_TRAIN rate=([0-9a-f]{2}) lanes=(\d) enhanced=(\d) ssc=(\d) pattern=(\d) attempts=(\d+)'
     r' cr_loops=(\d+) eq_loops=(\d+) ropll_polls=(\d+) swing=(\d),(\d) pre=(\d),(\d) phyif=([0-9a-f]{8})'
     r' cctl=([0-9a-f]{8}) status=([0-9a-f]{12})$', re.M)
+DP_VIDEO = re.compile(
+    r'^ROCK5_DISPLAY_DP_VIDEO gpll=([0-9a-f]{8}),([0-9a-f]{8}),([0-9a-f]{8}) dclk=([0-9a-f]{8}),([0-9a-f]{8})'
+    r' mux=([0-9a-f]{8}),([0-9a-f]{8}) gates=([0-9a-f]{8}),([0-9a-f]{8})/([0-9a-f]{8}),([0-9a-f]{8})'
+    r' port=([0-9a-f]{8}),([0-9a-f]{8}) if_en=([0-9a-f]{8}),([0-9a-f]{8}) if_pol=([0-9a-f]{8}),([0-9a-f]{8})'
+    r' clk=([0-9a-f]{8}) background=([0-9a-f]{8}) commit_polls=(\d+) config=((?:[0-9a-f]{8},){4}[0-9a-f]{8})'
+    r' msa=((?:[0-9a-f]{8},){2}[0-9a-f]{8}) hblank=([0-9a-f]{8}) vsample=([0-9a-f]{8})$', re.M)
+DP_BACKGROUND = (0x3ff << 20) | (0x100 << 10) | 0x3ff
 DP_RESULTS = {0: 'ok', 1: 'not_ready', 2: 'no_hot_plug', 3: 'refclk_unsupported', 4: 'lcpll_timeout',
-    5: 'aux_timeout', 6: 'aux_nack', 7: 'aux_short', 8: 'edid_invalid', 9: 'ropll_timeout', 10: 'training_failed'}
+    5: 'aux_timeout', 6: 'aux_nack', 7: 'aux_short', 8: 'edid_invalid', 9: 'ropll_timeout', 10: 'training_failed',
+    11: 'gpll_unexpected', 12: 'port_busy', 13: 'port_timeout'}
 DP_LINK_RATES = {0x06: 1.62, 0x0a: 2.7, 0x14: 5.4, 0x1e: 8.1}
+
+
+def decode_dp_video(body):
+    """Check the video step of a --dp train video transcript: VP1 at 1080p60 from GPLL / 8 on DP1."""
+    line = DP_VIDEO.search(body)
+    if line is None:
+        raise ValidationError('DP video line missing')
+    g = [line.group(i) for i in range(1, 25)]
+    word = lambda i: int(g[i - 1], 16)
+    m, pre, post = word(1) & 0x3ff, word(2) & 0x3f, (word(2) >> 6) & 7
+    if not pre or word(3) & 0xffff or (24000 * m // pre) >> post != 1188000:
+        raise ValidationError('GPLL words %s,%s,%s are not 1188 MHz' % tuple(g[0:3]))
+    if (word(5) >> 9) & 0x1f != 7 or (word(5) >> 14) & 3:
+        raise ValidationError('dclk_vop1_src %#x is not GPLL / 8' % word(5))
+    if (word(7) >> 9) & 3:
+        raise ValidationError('dclk_vop1 mux %#x does not select dclk_vop1_src' % word(7))
+    if word(10) & (1 << 11) or word(11) & 1:
+        raise ValidationError('dclk_vop1 gated (%s,%s)' % (g[9], g[10]))
+    if word(12) & (1 << 31) == 0:
+        raise ValidationError('video port 1 was not in standby before (%s)' % g[11])
+    if word(13) & (1 << 31) or word(13) & 0xf != 0xf:
+        raise ValidationError('video port 1 control %s not running RGB AAAA' % g[12])
+    if not word(15) & 2 or (word(15) >> 14) & 3 != 1:
+        raise ValidationError('DP1 not enabled from video port 1 (DSP_IF_EN %s)' % g[14])
+    if (word(17) >> 12) & 7 != 3:
+        raise ValidationError('DP1 sync polarity %s not positive' % g[16])
+    if word(18) != 0xa or word(19) != DP_BACKGROUND:
+        raise ValidationError('port clock %s or background %s wrong' % (g[17], g[18]))
+    config = [int(w, 16) for w in g[20].split(',')]
+    msa = [int(w, 16) for w in g[21].split(',')]
+    vsample = word(24)
+    if config[0] >> 16 != 1920 or config[1] & 0xffff != 1080 or msa[0] != ((41 << 16) | 192) or msa[1] != 0x20 << 24:
+        raise ValidationError('DP video timing or MSA wrong: %s msa %s' % (g[20], g[21]))
+    if not vsample & (1 << 5) or (vsample >> 21) & 3 != 2 or (vsample >> 16) & 0x1f != 1:
+        raise ValidationError('DP stream not enabled as quad-pixel RGB 8 bpc (VSAMPLE %s)' % g[23])
+    if not word(23) & (1 << 16):
+        raise ValidationError('horizontal blanking interval not enabled (%s)' % g[22])
+    return dict(gpll=g[0:3], dclk=g[3:5], mux=g[5:7], gates=[g[7:9], g[9:11]], port=g[11:13], if_en=g[13:15],
+        if_pol=g[15:17], clock=g[17], background=g[18], commit_polls=int(g[19]), config=g[20].split(','),
+        msa=g[21].split(','), hblank=g[22], vsample=g[23])
+
+
+def check_colour_frame(path, rgb, tolerance=40, share=0.9):
+    """Check that a captured frame is (almost) uniformly one colour, as a plain background shows."""
+    from PIL import Image
+    image = Image.open(path).convert('RGB')
+    small = image.resize((64, 36))
+    pixels = list(small.getdata())
+    near = sum(1 for p in pixels if all(abs(a - b) <= tolerance for a, b in zip(p, rgb)))
+    mean = [round(sum(p[i] for p in pixels) / len(pixels)) for i in range(3)]
+    result = dict(status='pass', size=list(image.size), near=near, pixels=len(pixels), mean=mean, expected=list(rgb))
+    if near < share * len(pixels):
+        result['status'] = 'fail'
+        raise ValidationError('frame is not the expected colour: %r' % result)
+    return result
 
 
 def decode_dpcd(data):
@@ -1093,7 +1156,7 @@ def decode_dpcd(data):
         downstream_type=(data[5] >> 1) & 3, downstream_ports=data[7] & 0xf, training_interval=data[0xe])
 
 
-def validate_dp_probe(body, edid=False, train=False):
+def validate_dp_probe(body, edid=False, train=False, video=False):
     """Return the decoded DP probe from a native --dp transcript or raise ValidationError.
 
     A pass means the path came up to the AUX channel exactly as the driver
@@ -1110,7 +1173,7 @@ def validate_dp_probe(body, edid=False, train=False):
     result, phase = int(line.group(1)), int(line.group(2))
     if result != 0:
         raise ValidationError('DP probe result %s at phase %d' % (DP_RESULTS.get(result, result), phase))
-    if phase != (8 if train else 7 if edid else 6):
+    if phase != (9 if video else 8 if train else 7 if edid else 6):
         raise ValidationError('DP probe ended at phase %d' % phase)
     pin_before, pin_after = int(line.group(3), 16), int(line.group(4), 16)
     if (pin_after >> 4) & 0xf != 5:
@@ -1175,7 +1238,13 @@ def validate_dp_probe(body, edid=False, train=False):
             cr_loops=int(trained.group(7)), eq_loops=int(trained.group(8)), ropll_polls=int(trained.group(9)),
             swing=[int(trained.group(10)), int(trained.group(11))], pre=[int(trained.group(12)), int(trained.group(13))],
             phyif='%08x' % phyif, cctl='%08x' % cctl, status=status.hex())
-    if body.count('ROCK5_DISPLAY_DP_PASS edid=%d train=%d\n' % (1 if edid else 0, 1 if train else 0)) != 1:
+    started = None
+    if video:
+        started = decode_dp_video(body)
+    summary = 'ROCK5_DISPLAY_DP_PASS edid=%d train=%d' % (1 if edid else 0, 1 if train else 0)
+    # Probes before the video step (hrev60097+304 and older) print no video field.
+    summaries = body.count(summary + ' video=%d\n' % (1 if video else 0)) + (0 if video else body.count(summary + '\n'))
+    if summaries != 1 or body.count('ROCK5_DISPLAY_DP_PASS ') != 1:
         raise ValidationError('DP summary missing or inconsistent')
     return dict(status='pass', result=result, phase=phase, pin_before='%08x' % pin_before, pin_after='%08x' % pin_after,
         gpio_level=int(line.group(5)), hpd_before=line.group(6), hpd_after=line.group(7), hpd_polls=int(line.group(8)),
@@ -1185,5 +1254,5 @@ def validate_dp_probe(body, edid=False, train=False):
         usbdp_grf=[words.group(3), words.group(4)], vo0_grf=[words.group(5), words.group(6)],
         cctl=[words.group(7), words.group(8)], aux_clock=[words.group(9), words.group(10)],
         pma_before=words.group(11).split(','), pma_after=words.group(12).split(','),
-        dpcd=dpcd.hex(), dpcd_decoded=decoded, edid=edid_block.hex() if edid_block else None, training=training,
+        dpcd=dpcd.hex(), dpcd_decoded=decoded, edid=edid_block.hex() if edid_block else None, training=training, video=started,
         edid_base=decode_edid_base(edid_block) if edid_block else None)

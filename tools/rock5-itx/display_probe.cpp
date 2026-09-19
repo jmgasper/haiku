@@ -963,7 +963,7 @@ PrintBytes(const char* label, const uint8_t* bytes, unsigned count)
 
 
 static bool
-ProbeDisplayPort(bool edid, bool train)
+ProbeDisplayPort(bool edid, bool train, bool video)
 {
 	int fd = open(kDevice, O_RDWR);
 	if (fd < 0) {
@@ -988,7 +988,7 @@ ProbeDisplayPort(bool edid, bool train)
 	printf("ROCK5_DISPLAY_DP_REQUEST_CHECKS_PASS\n");
 	memset(&request, 0, sizeof(request));
 	request.version = kDpVersion;
-	request.flags = (edid ? kDpProbeEdid : 0) | (train ? kDpProbeTrain : 0);
+	request.flags = (edid ? kDpProbeEdid : 0) | (train ? kDpProbeTrain : 0) | (video ? kDpProbeVideo : 0);
 	if (ioctl(fd, kDpProbe, &request, sizeof(request)) != 0) {
 		perror("dp probe");
 		close(fd);
@@ -1035,12 +1035,28 @@ ProbeDisplayPort(bool edid, bool train)
 			printf("%02x", request.linkStatus[i]);
 		printf("\n");
 	}
+	if (video) {
+		printf("ROCK5_DISPLAY_DP_VIDEO gpll=%08" PRIx32 ",%08" PRIx32 ",%08" PRIx32 " dclk=%08" PRIx32 ",%08" PRIx32
+			" mux=%08" PRIx32 ",%08" PRIx32 " gates=%08" PRIx32 ",%08" PRIx32 "/%08" PRIx32 ",%08" PRIx32
+			" port=%08" PRIx32 ",%08" PRIx32 " if_en=%08" PRIx32 ",%08" PRIx32 " if_pol=%08" PRIx32 ",%08" PRIx32
+			" clk=%08" PRIx32 " background=%08" PRIx32 " commit_polls=%" PRIu32 " config=",
+			request.gpll[0], request.gpll[1], request.gpll[2], request.dclkSelectBefore, request.dclkSelectAfter,
+			request.dclkMuxBefore, request.dclkMuxAfter, request.dclkGatesBefore[0], request.dclkGatesBefore[1],
+			request.dclkGatesAfter[0], request.dclkGatesAfter[1], request.portControlBefore,
+			request.portControlAfter, request.interfaceEnableBefore, request.interfaceEnableAfter,
+			request.interfacePolarityBefore, request.interfacePolarityAfter, request.portClock,
+			request.background, request.commitPolls);
+		for (unsigned i = 0; i < 5; i++)
+			printf("%s%08" PRIx32, i == 0 ? "" : ",", request.videoConfig[i]);
+		printf(" msa=%08" PRIx32 ",%08" PRIx32 ",%08" PRIx32 " hblank=%08" PRIx32 " vsample=%08" PRIx32 "\n",
+			request.msa[0], request.msa[1], request.msa[2], request.hblankInterval, request.vsampleAfter);
+	}
 	if (request.result != kDpOK) {
 		fprintf(stderr, "DP probe result %" PRIu32 " at phase %" PRIu32 "\n", request.result,
 			request.phase);
 		return false;
 	}
-	printf("ROCK5_DISPLAY_DP_PASS edid=%u train=%u\n", edid ? 1 : 0, train ? 1 : 0);
+	printf("ROCK5_DISPLAY_DP_PASS edid=%u train=%u video=%u\n", edid ? 1 : 0, train ? 1 : 0, video ? 1 : 0);
 	return true;
 }
 
@@ -1088,21 +1104,23 @@ main(int argc, char** argv)
 	}
 	if (argc == 2 && (strcmp(argv[1], "--cursor-hide") == 0 || strcmp(argv[1], "--cursor-restore") == 0))
 		return ControlCursor(argv[1] + strlen("--cursor-"), 0, 0) ? 0 : 1;
-	if (argc >= 2 && argc <= 4 && strcmp(argv[1], "--dp") == 0) {
-		bool edid = false, train = false, valid = true;
+	if (argc >= 2 && argc <= 5 && strcmp(argv[1], "--dp") == 0) {
+		bool edid = false, train = false, video = false, valid = true;
 		for (int i = 2; i < argc; i++) {
 			if (strcmp(argv[i], "edid") == 0 && !edid)
 				edid = true;
 			else if (strcmp(argv[i], "train") == 0 && !train)
 				train = true;
+			else if (strcmp(argv[i], "video") == 0 && !video)
+				video = true;
 			else
 				valid = false;
 		}
-		if (!valid) {
-			fprintf(stderr, "usage: %s --dp [edid] [train]\n", argv[0]);
+		if (!valid || (video && !train)) {
+			fprintf(stderr, "usage: %s --dp [edid] [train [video]]\n", argv[0]);
 			return 2;
 		}
-		return ProbeDisplayPort(edid, train) ? 0 : 1;
+		return ProbeDisplayPort(edid, train, video) ? 0 : 1;
 	}
 	if (argc == 3 && strcmp(argv[1], "--power") == 0) {
 		if (strcmp(argv[2], "off") != 0 && strcmp(argv[2], "on") != 0) {

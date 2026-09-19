@@ -1708,7 +1708,7 @@ CursorControl(Handle* handle, uint32 op, void* buffer, size_t length)
 // clock selector); GPIO3 and the PMU read-only.
 class DpHardware {
 public:
-	status_t Prepare(const ResourceInfo& resources)
+	status_t Prepare(const ResourceInfo& resources, bool video)
 	{
 		status_t status = Map(fPmuArea, "RK3588 DP PMU", resources.pmuBase, B_PAGE_SIZE, false,
 			&fPmu);
@@ -1719,6 +1719,8 @@ public:
 		// The domain and the bus clocks are checked before any block of the path is mapped.
 		uint32_t repair = ReadDisplayRegister(fPmu, kPmuOffsets[kPmuRepairStatus]);
 		if ((repair & kPmuVo0On) == 0
+			|| (video && ((repair & kPmuVopOn) == 0
+				|| (ReadDisplayRegister(fCru, kClockGateOffsets[kClockGateVop]) & kClockGateVopMask) != 0))
 			|| (ReadDisplayRegister(fCru, kClockGateOffsets[kClockGateDp])
 				& (kClockGateDpMask | kClockGateDpAuxMask)) != 0
 			|| (ReadDisplayRegister(fCru, kClockGateOffsets[kClockGateUsbdp]) & kClockGateUsbdpMask) != 0
@@ -1745,8 +1747,14 @@ public:
 		}
 		if (status == B_OK)
 			status = Map(fGpioArea, "RK3588 DP GPIO3", resources.gpio3Base, B_PAGE_SIZE, false, &fGpio);
+		if (status == B_OK && video) {
+			// Video port 1 for the second connector; the VOP domain and bus clocks were checked above.
+			status = Map(fVopArea, "RK3588 DP VOP2", resources.vopBase, kVopMapSize, true, &fVop);
+		}
 		return status;
 	}
+	uint32_t ReadVop(uint32_t offset) { return ReadDisplayRegister(fVop, offset); }
+	void WriteVop(uint32_t offset, uint32_t value) { WriteDisplayRegister(fVop, offset, value); }
 	uint32_t ReadDp(uint32_t offset) { return ReadDisplayRegister(fDp, offset); }
 	void WriteDp(uint32_t offset, uint32_t value) { WriteDisplayRegister(fDp, offset, value); }
 	uint32_t ReadPma(uint32_t offset) { return ReadDisplayRegister(fPma, offset); }
@@ -1775,7 +1783,8 @@ private:
 		return B_OK;
 	}
 	AreaDeleter fPmuArea, fCruArea, fDpArea, fPmaArea, fUsbdpGrfArea, fVo0GrfArea, fIocArea,
-		fGpioArea;
+		fGpioArea, fVopArea;
+	volatile uint32* fVop = NULL;
 	volatile uint32* fPmu = NULL;
 	volatile uint32* fCru = NULL;
 	volatile uint32* fDp = NULL;
@@ -1803,7 +1812,8 @@ DpControl(Handle* handle, void* buffer, size_t length)
 	if (user_memcpy(&request, buffer, sizeof(request)) != B_OK)
 		return B_BAD_ADDRESS;
 	if (request.version != kDpVersion
-		|| (request.flags & ~(kDpProbeEdid | kDpProbeIgnoreHotPlug | kDpProbeTrain)) != 0) {
+		|| (request.flags & ~(kDpProbeEdid | kDpProbeIgnoreHotPlug | kDpProbeTrain | kDpProbeVideo)) != 0
+		|| ((request.flags & kDpProbeVideo) != 0 && (request.flags & kDpProbeTrain) == 0)) {
 		return B_BAD_VALUE;
 	}
 	uint32_t flags = request.flags;
@@ -1814,7 +1824,7 @@ DpControl(Handle* handle, void* buffer, size_t length)
 	if (!ResourcesMatch(controller->resources))
 		return B_NOT_SUPPORTED;
 	DpHardware hardware;
-	status_t status = hardware.Prepare(controller->resources);
+	status_t status = hardware.Prepare(controller->resources, (flags & kDpProbeVideo) != 0);
 	if (status == B_DEV_NOT_READY) {
 		request.result = kDpNotReady;
 	} else if (status != B_OK) {

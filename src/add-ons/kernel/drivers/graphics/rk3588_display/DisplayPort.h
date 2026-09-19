@@ -23,10 +23,11 @@ namespace RK3588Display {
 // over I2C-over-AUX. It never enables the main link: no training pattern, no
 // video.
 static const uint32_t kDpProbe = 0x52444910; // writable handle
-static const uint32_t kDpVersion = 1;
+static const uint32_t kDpVersion = 2; // 2: video fields
 static const uint32_t kDpProbeEdid = 1; // also read EDID block 0 over I2C-over-AUX
 static const uint32_t kDpProbeIgnoreHotPlug = 2; // continue without a hot-plug
 static const uint32_t kDpProbeTrain = 4; // also train the main link (no video)
+static const uint32_t kDpProbeVideo = 8; // then run video port 1 at 1080p60 on the link (background colour)
 
 static const uint32_t kDpOK = 0;
 static const uint32_t kDpNotReady = 1; // VO0 off or a DP/PHY bus clock gated
@@ -39,6 +40,9 @@ static const uint32_t kDpAuxShort = 7; // fewer bytes than asked for
 static const uint32_t kDpEdidInvalid = 8;
 static const uint32_t kDpRopllTimeout = 9;
 static const uint32_t kDpTrainingFailed = 10; // clock recovery or equalization failed at the lowest rate
+static const uint32_t kDpGpllUnexpected = 11; // the general PLL is not 1188 MHz
+static const uint32_t kDpPortBusy = 12; // video port 1 is not in standby: somebody else uses it
+static const uint32_t kDpPortTimeout = 13; // video port 1 never took its configuration
 
 static const uint32_t kDpPhaseNone = 0;
 static const uint32_t kDpPhasePin = 1;
@@ -49,6 +53,7 @@ static const uint32_t kDpPhaseLanes = 5;
 static const uint32_t kDpPhaseDpcd = 6;
 static const uint32_t kDpPhaseEdid = 7;
 static const uint32_t kDpPhaseTrain = 8;
+static const uint32_t kDpPhaseVideo = 9;
 
 static const unsigned kDpPmaWordCount = 7;
 static const uint32_t kDpPmaOffsets[kDpPmaWordCount] = {0x288, 0x28c, 0x2d0, 0x350, 0x354,
@@ -93,6 +98,16 @@ struct DpProbeRequest {
 	uint8_t linkStatus[6]; // DPCD 0x202-0x207 after equalization
 	uint8_t reserved[2];
 	uint32_t phyifAfter, cctlTrained;
+	// Video (kDpProbeVideo).
+	uint32_t gpll[3]; // CRU PLL_CON112-114
+	uint32_t dclkSelectBefore, dclkSelectAfter; // CLKSEL_CON111 (dclk_vop1_src)
+	uint32_t dclkMuxBefore, dclkMuxAfter; // CLKSEL_CON112 (dclk_vop1 mux 10:9, shared with VP0/VP2)
+	uint32_t dclkGatesBefore[2], dclkGatesAfter[2]; // CLKGATE_CON52 bit11, CON53 bit0
+	uint32_t portControlBefore, portControlAfter; // VP1 DSP_CTRL
+	uint32_t interfaceEnableBefore, interfaceEnableAfter; // DSP_IF_EN
+	uint32_t interfacePolarityBefore, interfacePolarityAfter; // DSP_IF_POL
+	uint32_t portClock, background, commitPolls;
+	uint32_t videoConfig[5], msa[3], hblankInterval, vsampleAfter;
 	int64_t startedMicros, finishedMicros;
 };
 
@@ -455,8 +470,12 @@ DpProbeSink(Hardware& hardware, DpProbeRequest& request)
 		if (memcmp(request.edid, kHeader, 8) != 0 || sum != 0)
 			return kDpEdidInvalid;
 	}
-	if ((request.flags & kDpProbeTrain) != 0)
-		return DpTrainLink(hardware, request);
+	if ((request.flags & kDpProbeTrain) != 0) {
+		uint32_t trained = DpTrainLink(hardware, request);
+		if (trained != kDpOK || (request.flags & kDpProbeVideo) == 0)
+			return trained;
+		return DpStartVideo(hardware, request);
+	}
 	return kDpOK;
 }
 
@@ -709,6 +728,150 @@ DpTrainLink(Hardware& hardware, DpProbeRequest& request)
 	request.phyifAfter = hardware.ReadDp(kDpPhyInterface);
 	request.cctlTrained = hardware.ReadDp(kDpCctl);
 	return kDpTrainingFailed;
+}
+
+
+// The first picture on the second connector: CEA 1920x1080@60 (148.5 MHz)
+// on video port 1 with a magenta background (no window), dclk_vop1 from the
+// GPLL, DP1 muxed to the port, and the DW DP stream configured as
+// dw_dp_video_enable does (RGB 8 bpc, quad pixel).
+static const uint32_t kVopPort1 = 1;
+static const uint32_t kVopPort1Base = 0xd00;
+static const uint32_t kVopPort1BackgroundDelay = 54; // pre_scan_max_dly[3] of VP1
+static const uint32_t kVopInterfaceEnable = 0x028;
+static const uint32_t kVopInterfacePolarity = 0x030;
+static const uint32_t kVopDp1Enable = 1u << 1;
+static const uint32_t kVopDp1MuxShift = 14;
+static const uint32_t kVopDp1PolarityShift = 12;
+static const uint32_t kVopConfigDoneImmediate = 1u << 28;
+static const uint32_t kVopPortClockControl = 0x0c;
+static const uint32_t kDpBackground = (0x3ffu << 20) | (0x100u << 10) | 0x3ffu; // R and B full, G quarter
+static const uint32_t kCruGpll = 0x1c0; // PLL_CON112
+static const uint32_t kCruDclkVop1Select = 0x300 + 111 * 4; // mux 15:14, divider 13:9
+static const uint32_t kCruDclkVopMux = 0x300 + 112 * 4; // dclk_vop1 mux 10:9 (0 = dclk_vop1_src)
+static const uint32_t kCruDclkVop1Gates[2] = {0x800 + 52 * 4, 0x800 + 53 * 4};
+static const uint32_t kCruDclkVop1GateBits[2] = {1u << 11, 1u << 0};
+static const uint32_t kDpVsampleControl = 0x300;
+static const uint32_t kDpVideoPolarity = 0x30c;
+static const uint32_t kDpVideoConfig1 = 0x310;
+static const uint32_t kDpVideoMsa1 = 0x324;
+static const uint32_t kDpHblankInterval = 0x330;
+
+struct DpTiming {
+	uint32_t clock, hDisplay, hSyncStart, hSyncEnd, hTotal, vDisplay, vSyncStart, vSyncEnd, vTotal;
+};
+static const DpTiming kDp1080p60 = {148500, 1920, 2008, 2052, 2200, 1080, 1084, 1089, 1125};
+
+
+inline uint32_t
+DpLinkRateTenKbps(uint32_t code)
+{
+	return code == 0x1e ? 810000 : code == 0x14 ? 540000 : code == 0x0a ? 270000 : 162000;
+}
+
+
+template<class Hardware>
+uint32_t
+DpStartVideo(Hardware& hardware, DpProbeRequest& request)
+{
+	request.phase = kDpPhaseVideo;
+	const DpTiming& mode = kDp1080p60;
+	uint32_t base = kVopPort1Base;
+	request.portControlBefore = hardware.ReadVop(base);
+	if ((request.portControlBefore & (1u << 31)) == 0)
+		return kDpPortBusy;
+	for (unsigned i = 0; i < 3; i++)
+		request.gpll[i] = hardware.ReadCru(kCruGpll + i * 4);
+	uint32_t m = request.gpll[0] & 0x3ff, pre = request.gpll[1] & 0x3f, post = (request.gpll[1] >> 6) & 7;
+	if (pre == 0 || (request.gpll[2] & 0xffff) != 0 || (24000u * m / pre) >> post != 1188000u)
+		return kDpGpllUnexpected;
+	// dclk_vop1_src = GPLL / 8 = 148.5 MHz, dclk_vop1 selecting it, both ungated.
+	request.dclkSelectBefore = hardware.ReadCru(kCruDclkVop1Select);
+	hardware.WriteCru(kCruDclkVop1Select, HiWord(0xfe00, 7u << 9));
+	request.dclkSelectAfter = hardware.ReadCru(kCruDclkVop1Select);
+	request.dclkMuxBefore = hardware.ReadCru(kCruDclkVopMux);
+	hardware.WriteCru(kCruDclkVopMux, HiWord(3u << 9, 0));
+	request.dclkMuxAfter = hardware.ReadCru(kCruDclkVopMux);
+	for (unsigned i = 0; i < 2; i++) {
+		request.dclkGatesBefore[i] = hardware.ReadCru(kCruDclkVop1Gates[i]);
+		hardware.WriteCru(kCruDclkVop1Gates[i], HiWord(kCruDclkVop1GateBits[i], 0));
+		request.dclkGatesAfter[i] = hardware.ReadCru(kCruDclkVop1Gates[i]);
+	}
+	// VP1: dclk_core = dclk_out = dclk / 4 (rk3588_calc_cru_cfg for DP).
+	request.portClock = (2u << 2) | 2u;
+	hardware.WriteVop(base + kVopPortClockControl, request.portClock);
+	uint32_t hSyncLen = mode.hSyncEnd - mode.hSyncStart, vSyncLen = mode.vSyncEnd - mode.vSyncStart;
+	uint32_t hActStart = mode.hTotal - mode.hSyncStart, hActEnd = hActStart + mode.hDisplay;
+	uint32_t vActStart = mode.vTotal - mode.vSyncStart, vActEnd = vActStart + mode.vDisplay;
+	hardware.WriteVop(base + 0x48, (mode.hTotal << 16) | hSyncLen);
+	hardware.WriteVop(base + 0x4c, (hActStart << 16) | hActEnd);
+	hardware.WriteVop(base + 0x54, (vActStart << 16) | vActEnd);
+	hardware.WriteVop(0x70 + kVopPort1 * 4, (vActEnd << 16) | vActEnd);
+	hardware.WriteVop(base + 0x50, (mode.vTotal << 16) | vSyncLen);
+	hardware.WriteVop(base + 0x04, 0);
+	hardware.WriteVop(0x6e0 + kVopPort1 * 4, kVopPort1BackgroundDelay << 24);
+	hardware.WriteVop(base + 0x30, ((kVopPort1BackgroundDelay + (mode.hDisplay >> 1) - 1) << 16) | hSyncLen);
+	hardware.WriteVop(base + 0x34, (hActStart << 16) | hActEnd);
+	hardware.WriteVop(base + 0x38, (vActStart << 16) | vActEnd);
+	hardware.WriteVop(base + 0x3c, 0x10001000);
+	hardware.WriteVop(base + 0x40, 0);
+	request.background = kDpBackground;
+	hardware.WriteVop(base + 0x2c, request.background);
+	// DP1 fed by VP1, positive syncs (rk3588_set_intf_mux).
+	request.interfaceEnableBefore = hardware.ReadVop(kVopInterfaceEnable);
+	hardware.WriteVop(kVopInterfaceEnable, (request.interfaceEnableBefore & ~(3u << kVopDp1MuxShift))
+		| kVopDp1Enable | (kVopPort1 << kVopDp1MuxShift));
+	request.interfacePolarityBefore = hardware.ReadVop(kVopInterfacePolarity);
+	hardware.WriteVop(kVopInterfacePolarity, (request.interfacePolarityBefore & ~(7u << kVopDp1PolarityShift))
+		| (3u << kVopDp1PolarityShift) | kVopConfigDoneImmediate);
+	hardware.WriteVop(kVopConfigDone, kVopConfigDoneEnable | (1u << kVopPort1) | ((1u << kVopPort1) << 16));
+	hardware.WriteVop(base, kVopOutputModeAAAA);
+	request.commitPolls = 0;
+	while ((hardware.ReadVop(kVopConfigDone) & (1u << kVopPort1)) != 0) {
+		if (request.commitPolls >= kScanoutPollLimit)
+			return kDpPortTimeout;
+		request.commitPolls++;
+		hardware.Pause(kScanoutPollMicros);
+	}
+	request.portControlAfter = hardware.ReadVop(base);
+	request.interfaceEnableAfter = hardware.ReadVop(kVopInterfaceEnable);
+	request.interfacePolarityAfter = hardware.ReadVop(kVopInterfacePolarity);
+
+	// dw_dp_video_enable.
+	uint32_t rate = DpLinkRateTenKbps(request.linkRate);
+	uint32_t vsample = hardware.ReadDp(kDpVsampleControl);
+	vsample = (vsample & ~((3u << 21) | (0x1fu << 16))) | (2u << 21) | (1u << 16);
+	hardware.WriteDp(kDpVsampleControl, vsample);
+	uint32_t hBlank = mode.hTotal - mode.hDisplay;
+	request.msa[0] = ((mode.vTotal - mode.vSyncStart) << 16) | (mode.hTotal - mode.hSyncStart);
+	request.msa[1] = 0x20u << 24; // RGB, 8 bits per component
+	request.msa[2] = 0;
+	for (unsigned i = 0; i < 3; i++)
+		hardware.WriteDp(kDpVideoMsa1 + i * 4, request.msa[i]);
+	hardware.WriteDp(kDpVideoPolarity, (1u << 1) | 1u);
+	request.videoConfig[0] = (mode.hDisplay << 16) | (hBlank << 2);
+	request.videoConfig[1] = ((mode.vTotal - mode.vDisplay) << 16) | mode.vDisplay;
+	request.videoConfig[2] = ((mode.hSyncEnd - mode.hSyncStart) << 16) | (mode.hSyncStart - mode.hDisplay);
+	request.videoConfig[3] = ((mode.vSyncEnd - mode.vSyncStart) << 16) | (mode.vSyncStart - mode.vDisplay);
+	uint32_t peak = mode.clock * 24 / 8;
+	uint32_t linkBandwidth = (rate / 1000) * request.laneCount;
+	uint32_t ts = peak * 64 / linkBandwidth;
+	uint32_t average = ts / 1000, fraction = ts / 100 - average * 10;
+	uint32_t t1 = (3000 / 16) * request.laneCount;
+	uint32_t t2 = (rate / 4) * 1000 / mode.clock;
+	uint32_t t3 = fraction != 0 ? average + 1 : average;
+	uint32_t threshold = (uint32_t)((uint64_t)t1 * t2 * t3 / (1000 * 1000));
+	if (threshold <= 16 || average < 10)
+		threshold = 40;
+	request.videoConfig[4] = ((threshold >> 6) << 21) | (fraction << 16) | ((threshold & 0x7f) << 7)
+		| (average & 0x7f);
+	for (unsigned i = 0; i < 5; i++)
+		hardware.WriteDp(kDpVideoConfig1 + i * 4, request.videoConfig[i]);
+	request.hblankInterval = (1u << 16) | (hBlank * (rate / 4) / mode.clock);
+	hardware.WriteDp(kDpHblankInterval, request.hblankInterval);
+	hardware.WriteDp(kDpVsampleControl, vsample | (1u << 5));
+	request.vsampleAfter = hardware.ReadDp(kDpVsampleControl);
+	return kDpOK;
 }
 
 
