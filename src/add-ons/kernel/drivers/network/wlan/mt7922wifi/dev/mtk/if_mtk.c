@@ -274,7 +274,11 @@ mtk_newstate(struct ieee80211vap* vap, enum ieee80211_state state, int arg)
 	 */
 	if (state != IEEE80211_S_SCAN && state != IEEE80211_S_INIT) {
 		sc->sc_scanning = 0;
-		mtk_keep_awake(sc);
+		/* Not from here: this is the stack's thread, and the command
+		 * buffer belongs to ours.
+		 */
+		sc->sc_want_awake = 1;
+		taskqueue_enqueue(sc->sc_tq, &sc->sc_work);
 	}
 
 	error = mvp->newstate(vap, state, arg);
@@ -552,6 +556,11 @@ mtk_work(void* arg, int pending)
 	 * timer of our own. Asking again while a sweep is in flight is
 	 * harmless; missing the window is not.
 	 */
+	if (sc->sc_want_awake != 0) {
+		sc->sc_want_awake = 0;
+		mtk_keep_awake(sc);
+	}
+
 	if (sc->sc_want_channel != 0 && sc->sc_want_channel != sc->sc_channel) {
 		uint8_t channel = sc->sc_want_channel;
 
@@ -645,6 +654,7 @@ mtk_attach(device_t dev)
 	int error, rid;
 
 	sc->sc_dev = dev;
+	mtx_init(&sc->sc_cmdmtx, "mtk commands", MTX_NETWORK_LOCK, MTX_DEF);
 	callout_init(&sc->sc_poll, 1);
 	sc->sc_tq = taskqueue_create_fast("mtk_taskq", M_NOWAIT,
 		taskqueue_thread_enqueue, &sc->sc_tq);
@@ -768,6 +778,7 @@ fail:
 		bus_release_resource(dev, SYS_RES_MEMORY, PCIR_BAR(0), sc->sc_mem);
 		sc->sc_mem = NULL;
 	}
+	mtx_destroy(&sc->sc_cmdmtx);
 	mtx_destroy(&sc->sc_mtx);
 	return error;
 }
@@ -810,6 +821,7 @@ mtk_detach(device_t dev)
 		sc->sc_mem = NULL;
 	}
 
+	mtx_destroy(&sc->sc_cmdmtx);
 	mtx_destroy(&sc->sc_mtx);
 	return 0;
 }

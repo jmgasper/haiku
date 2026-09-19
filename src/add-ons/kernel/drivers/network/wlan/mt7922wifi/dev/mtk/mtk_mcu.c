@@ -307,10 +307,12 @@ mtk_mcu_send(struct mtk_softc* sc, uint8_t command, uint8_t setQuery,
 {
 	int error;
 
+	mtx_lock(&sc->sc_cmdmtx);
 	sc->sc_mcu_busy++;
 	error = mtk_mcu_send_locked(sc, command, setQuery, payload,
 		payloadLength, reply, replyLength);
 	sc->sc_mcu_busy--;
+	mtx_unlock(&sc->sc_cmdmtx);
 
 	return error;
 }
@@ -322,9 +324,11 @@ mtk_mcu_send_ext(struct mtk_softc* sc, uint8_t extended, const void* payload,
 {
 	int error;
 
+	mtx_lock(&sc->sc_cmdmtx);
 	sc->sc_mcu_busy++;
 	error = mtk_mcu_send_ext_locked(sc, extended, payload, payloadLength);
 	sc->sc_mcu_busy--;
+	mtx_unlock(&sc->sc_cmdmtx);
 
 	return error;
 }

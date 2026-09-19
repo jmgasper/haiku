@@ -312,6 +312,13 @@ struct mtk_softc {
 	int			sc_scan_at;
 	int			sc_join_at;
 	int			sc_joining;
+	int			sc_want_awake;
+
+	/* One command at a time. There is a single command buffer and a
+	 * single sequence number behind mtk_mcu_send, and two threads in it
+	 * at once put two half-written descriptions on the ring.
+	 */
+	struct mtx		sc_cmdmtx;
 
 	/* While the part is sweeping, the radio is its. The stack is stepped
 	 * through its channel list from our own thread instead of being let
