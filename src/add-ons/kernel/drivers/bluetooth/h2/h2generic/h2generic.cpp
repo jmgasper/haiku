@@ -22,6 +22,7 @@
 #include "bluetooth/HCI/btHCI_transport.h"
 #include "h2cfg.h"
 #include "h2debug.h"
+#include "h2mediatek.h"
 #include "h2transactions.h"
 #include "h2util.h"
 #include "snet_buffer.h"
@@ -560,6 +561,20 @@ device_open(const char* name, uint32 flags, void **cookie)
 	if (TEST_AND_SET(&bdev->state, RUNNING)) {
 		ERROR("%s: dev already running! - reOpened device!\n", __func__);
 		return B_ERROR;
+	}
+
+	// Some radios are not Bluetooth controllers at all until they have been
+	// given their firmware, and answer nothing whatsoever until they are.
+	// This has to happen before the stack is told there is an adapter here,
+	// or the stack's first command goes unanswered for ever. It is done at
+	// open rather than when the device turns up because the firmware is read
+	// from disk, which is not mounted that early.
+	err = mediatek_setup(bdev);
+	if (err != B_OK) {
+		ERROR("%s: the radio could not be made ready: %s\n", __func__,
+			strerror(err));
+		TEST_AND_CLEAR(&bdev->state, RUNNING);
+		return err;
 	}
 
 	acquire_sem(bdev->lock);
