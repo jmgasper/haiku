@@ -28,6 +28,8 @@
 #include <AutoDeleter.h>
 #include <util/AutoLock.h>
 
+#include <driver_settings.h>
+
 #include "mt7922.h"
 
 
@@ -364,10 +366,44 @@ mt7922_mac_set_timing(mt7922_dev* device)
 }
 
 
+/* What network to join, and how to prove we may.
+ *
+ * These come from a settings file on the machine rather than from anywhere in
+ * this source, and the secret among them is never written to the log - not
+ * while debugging, not at any trace level. A password that has been printed
+ * once is a password that has been given away.
+ */
+static void
+mt7922_read_settings(mt7922_dev* device)
+{
+	void* settings = load_driver_settings("mt7922");
+	if (settings == NULL)
+		return;
+
+	const char* network = get_driver_parameter(settings, "network", NULL,
+		NULL);
+	if (network != NULL)
+		strlcpy(device->wanted, network, sizeof(device->wanted));
+
+	const char* secret = get_driver_parameter(settings, "password", NULL,
+		NULL);
+	if (secret != NULL)
+		strlcpy(device->secret, secret, sizeof(device->secret));
+
+	unload_driver_settings(settings);
+
+	TRACE("asked to join \"%s\"%s\n",
+		device->wanted[0] != 0 ? device->wanted : "(nothing named)",
+		device->secret[0] != 0 ? " with a password" : "");
+}
+
+
 status_t
 mt7922_setup(mt7922_dev* device)
 {
 	pci_info& pci = device->pci;
+
+	mt7922_read_settings(device);
 
 	mutex_init(&device->windowLock, "mt7922 register window");
 

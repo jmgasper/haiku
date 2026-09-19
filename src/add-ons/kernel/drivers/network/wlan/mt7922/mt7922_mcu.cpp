@@ -74,6 +74,7 @@
 #define MT_RXD1_GROUP_5			(1 << 15)
 #define MT_RXD1_FCS_ERROR		(1 << 27)
 #define MT_FRAME_BEACON			0x80
+#define MT_FRAME_PROBE_RESPONSE		0x50
 
 #define MT7922_STATION_INDEX		19
 #define MT7922_SCAN_REQUEST_SIZE	1186
@@ -1209,8 +1210,19 @@ mt7922_mcu_scan(mt7922_dev* device)
 	request[6] = 1 << 5;		/* in more than one go */
 	request[7] = 1;			/* and the later fields are meant */
 
-	/* The one name is the empty one, which everybody answers to. */
-	write_le32(request + 8, 0);
+	/* Either the empty name, which everybody answers to, or a particular
+	 * one. Asking after a particular network is the plainest proof that
+	 * this radio's transmitting works: an answer addressed to us can only
+	 * follow a question we asked.
+	 */
+	size_t nameLength = strlen(device->wanted);
+	if (nameLength > 0 && nameLength <= 32) {
+		write_le32(request + 8, (uint32)nameLength);
+		memcpy(request + 12, device->wanted, nameLength);
+		request[3] = 1 << 2;	/* a named one, and anyone else */
+		TRACE("asking after \"%s\"\n", device->wanted);
+	} else
+		write_le32(request + 8, 0);
 	request[0x9e] = 4;		/* these channels, named below */
 
 	size_t count = sizeof(kChannels2GHz) + sizeof(kChannels5GHz);
@@ -1321,7 +1333,13 @@ mt7922_inspect(mt7922_dev* device, const uint8* data, size_t got)
 		return;
 
 	const uint8* frame = data + at;
-	if (frame[0] != MT_FRAME_BEACON)
+
+	/* A network says who it is in two circumstances: of its own accord, and
+	 * when asked. The second only happens if this radio's asking is getting
+	 * out, so the two are worth telling apart.
+	 */
+	bool answered = frame[0] == MT_FRAME_PROBE_RESPONSE;
+	if (frame[0] != MT_FRAME_BEACON && !answered)
 		return;
 
 	const uint8* elements = frame + 24 + 12;
@@ -1336,11 +1354,16 @@ mt7922_inspect(mt7922_dev* device, const uint8* data, size_t got)
 		name[elements[1]] = 0;
 	}
 
-	if (device->beacons < 12) {
-		TRACE("heard \"%s\" from %02x:%02x:%02x:%02x:%02x:%02x\n", name,
+	if (device->beacons + device->answers < 14) {
+		TRACE("%s \"%s\" from %02x:%02x:%02x:%02x:%02x:%02x\n",
+			answered ? "was answered by" : "heard", name,
 			frame[16], frame[17], frame[18], frame[19], frame[20], frame[21]);
 	}
-	device->beacons++;
+
+	if (answered)
+		device->answers++;
+	else
+		device->beacons++;
 }
 
 
@@ -1513,9 +1536,9 @@ mt7922_dump_air(mt7922_dev* device, int wanted)
 			mt7922_ring_used(device, &device->dataRing),
 			mt7922_ring_used(device, &device->lateEventRing),
 			device->management);
-		TRACE("%d announced a network, %d were damaged, %d were too short,"
-			" %d frames came by way of the processor\n", device->beacons,
-			device->badFrames, device->tooShort, device->framesOnEvents);
+		TRACE("%d announced themselves, %d answered when asked, %d were"
+			" damaged\n", device->beacons, device->answers,
+			device->badFrames);
 
 		char damagedLine[160];
 		int damagedAt = 0;

@@ -322,6 +322,13 @@ struct mt7922_dev {
 	int		badKind[16];
 	int		badBeacons;
 	int		framesOnEvents;
+	int		answers;
+
+	/* A network to join, from the driver's settings. The second of these is
+	 * a secret and is never logged.
+	 */
+	char		wanted[33];
+	char		secret[64];
 	bool		ringsReady;
 };
 
