@@ -47,6 +47,7 @@
 #define MCU_CE_CMD_CHIP_CONFIG		0xca
 #define MCU_CE_CMD_SET_CHAN_DOMAIN	0x0f
 #define MCU_CE_CMD_START_HW_SCAN	0x03
+#define MCU_CE_CMD_SET_RX_FILTER	0x0a
 
 /* Commands with a shorter header of their own. */
 #define MCU_UNI_TXD_SIZE		48
@@ -58,6 +59,19 @@
 
 /* What it says when it has finished looking around. */
 #define MCU_EVENT_SCAN_DONE		0x0d
+
+/* Reading a frame off the air. */
+#define MT_RXD_FIXED_SIZE		24
+#define MT_RX_TYPE_NORMAL		2
+#define MT_RX_TYPE_EVENT		7
+#define MT_RX_TYPE_NORMAL_MCU		8
+#define MT_RXD1_GROUP_1			(1 << 11)
+#define MT_RXD1_GROUP_2			(1 << 12)
+#define MT_RXD1_GROUP_3			(1 << 13)
+#define MT_RXD1_GROUP_4			(1 << 14)
+#define MT_RXD1_GROUP_5			(1 << 15)
+#define MT_RXD1_FCS_ERROR		(1 << 27)
+#define MT_FRAME_BEACON			0x80
 
 #define MT7922_STATION_INDEX		19
 #define MT7922_SCAN_REQUEST_SIZE	1186
@@ -132,6 +146,14 @@
 
 #define MCU_RESPONSE_TIMEOUT		3000000
 #define MCU_POLL_INTERVAL		1000
+
+
+static uint32
+read_le32(const uint8* from)
+{
+	return from[0] | ((uint32)from[1] << 8) | ((uint32)from[2] << 16)
+		| ((uint32)from[3] << 24);
+}
 
 
 static void
@@ -910,6 +932,61 @@ mt7922_mcu_prepare(mt7922_dev* device)
 		return status;
 	}
 
+	/* And stop throwing away what it hears. Until this is said the radio is
+	 * listening but discarding, which is indistinguishable from deafness.
+	 */
+	TRACE("the receive filter starts at %#" B_PRIx32 "\n",
+		mt7922_read32(device, MT_WF_RFCR));
+
+	uint8 filter[68];
+	memset(filter, 0, sizeof(filter));
+	filter[4] = 1;			/* by rule, not by bit */
+
+	/* Hear other people's networks as well as our own. Without that a scan
+	 * turns up only the traffic of a network we have not joined, which is
+	 * exactly as useless as it sounds.
+	 */
+	write_le32(filter + 8, MT7922_FILTER_ENABLE | MT7922_FILTER_OTHER_BSS);
+
+	status = mt7922_mcu_send_etc(device, MCU_CE_CMD_SET_RX_FILTER, MCU_Q_SET,
+		filter, sizeof(filter), NULL, NULL);
+	if (status != B_OK) {
+		ERROR("it would not open its receive filter: %s\n", strerror(status));
+		return status;
+	}
+
+	/* And specifically stop throwing away the announcements of networks we
+	 * are not part of, which are the whole point of looking around.
+	 */
+	memset(filter, 0, sizeof(filter));
+	filter[4] = 2;			/* by bit, not by rule */
+	write_le32(filter + 12, MT_RFCR_DROP_OTHER_BEACON);
+	filter[16] = 1 << 1;		/* and the bit is to be cleared */
+
+	status = mt7922_mcu_send_etc(device, MCU_CE_CMD_SET_RX_FILTER, MCU_Q_SET,
+		filter, sizeof(filter), NULL, NULL);
+	if (status != B_OK) {
+		ERROR("it would not stop dropping beacons: %s\n", strerror(status));
+		return status;
+	}
+
+	snooze(20000);
+
+	/* The firmware leaves bits set here whose meaning is not written down
+	 * anywhere reachable, and some of them are evidently discarding every
+	 * announcement while letting ordinary traffic through. Since this
+	 * register is reachable directly, say plainly what is wanted: discard
+	 * nothing, and let the driver decide what to ignore.
+	 */
+	TRACE("the receive filter is %#" B_PRIx32 ", clearing it\n",
+		mt7922_read32(device, MT_WF_RFCR));
+
+	mt7922_write32(device, MT_WF_RFCR, 0);
+	snooze(1000);
+
+	TRACE("the receive filter is now %#" B_PRIx32 "\n",
+		mt7922_read32(device, MT_WF_RFCR));
+
 	TRACE("the radio is prepared\n");
 	return B_OK;
 }
@@ -1150,22 +1227,35 @@ mt7922_mcu_scan(mt7922_dev* device)
 }
 
 
-/* Show what arrived on the air, as it arrived.
+/* Show what arrived on the air.
  *
- * Every received frame is preceded by a description of itself whose length
- * depends on what it chose to say, so where the frame proper begins is not a
- * constant and is not written down anywhere reachable. It can be found by
- * looking: a beacon starts with a known pair of bytes and is addressed to
- * everybody, and that pattern in a buffer is the frame, whatever came before
- * it.
+ * Each frame is preceded by a description of itself whose length depends on
+ * which parts it chose to include, so where the frame proper begins has to be
+ * worked out rather than assumed: a fixed opening, then a run of optional
+ * pieces named in the second word, then however many bytes of padding the
+ * third word admits to.
  */
-void
-mt7922_dump_air(mt7922_dev* device, int wanted)
+static int
+mt7922_ring_used(mt7922_dev* device, mt7922_ring* ring)
 {
-	mt7922_ring* ring = &device->dataRing;
-	int shown = 0;
+	int filled = 0;
+	for (uint16 i = 0; i < ring->count; i++) {
+		mt7922_desc* descriptor
+			= &((mt7922_desc*)ring->descriptors.address)[i];
+		if ((descriptor->ctrl & MT_DMA_CTL_DMA_DONE) != 0)
+			filled++;
+	}
+	return filled;
+}
 
-	for (uint16 i = 0; i < ring->count && shown < wanted; i++) {
+
+static int
+mt7922_dump_ring(mt7922_dev* device, mt7922_ring* ring, const char* which,
+	int wanted)
+{
+	int heard = 0;
+
+	for (uint16 i = 0; i < ring->count && heard < wanted; i++) {
 		mt7922_desc* descriptor
 			= &((mt7922_desc*)ring->descriptors.address)[i];
 
@@ -1174,81 +1264,148 @@ mt7922_dump_air(mt7922_dev* device, int wanted)
 
 		size_t got = (descriptor->ctrl & MT_DMA_CTL_SD_LEN0_MASK)
 			>> MT_DMA_CTL_SD_LEN0_SHIFT;
-		if (got < 40 || got > MT7922_RX_BUFFER_SIZE)
+		if (got < 64 || got > MT7922_RX_BUFFER_SIZE)
 			continue;
 
 		const uint8* data = (const uint8*)ring->buffers.address
 			+ (size_t)i * MT7922_RX_BUFFER_SIZE;
 
-		/* A beacon: management frame, subtype beacon, to everyone. */
-		for (size_t at = 0; at + 24 <= got; at += 2) {
-			if (data[at] != 0x80 || data[at + 1] != 0x00)
-				continue;
-			if (data[at + 4] != 0xff || data[at + 9] != 0xff)
-				continue;
+		uint32 word0 = read_le32(data);
+		uint32 word1 = read_le32(data + 4);
+		uint32 word2 = read_le32(data + 8);
+		uint32 word3 = read_le32(data + 12);
 
-			TRACE("heard a beacon %" B_PRIuSIZE " bytes in, from "
-				"%02x:%02x:%02x:%02x:%02x:%02x\n", at,
-				data[at + 10], data[at + 11], data[at + 12],
-				data[at + 13], data[at + 14], data[at + 15]);
-
-			/* After the header and the fixed fields, the first thing a
-			 * beacon says is what network it belongs to.
-			 */
-			size_t ies = at + 24 + 12;
-			if (ies + 2 <= got && data[ies] == 0) {
-				uint8 nameLength = data[ies + 1];
-				char name[33];
-
-				if (ies + 2 + nameLength <= got && nameLength < sizeof(name)) {
-					memcpy(name, data + ies + 2, nameLength);
-					name[nameLength] = 0;
-					TRACE("  it calls itself \"%s\"\n",
-						nameLength > 0 ? name : "(no name)");
-				}
-			}
-
-			shown++;
-			break;
-		}
-	}
-
-	if (shown == 0) {
-		/* Tell "nothing arrived" apart from "something arrived that I could
-		 * not read", which look identical from here and want different fixes.
+		/* Only ordinary frames off the air; the rest is the part talking
+		 * about itself.
 		 */
-		int filled = 0;
-		size_t first = 0;
-		uint16 firstAt = 0;
+		/* An ordinary frame off the air, or one the part has handed over
+		 * dressed as something it said itself.
+		 */
+		uint32 type = (word0 >> 27) & 0x1f;
+		device->packetKind[type & 0x1f]++;
 
-		for (uint16 i = 0; i < ring->count; i++) {
-			mt7922_desc* descriptor
-				= &((mt7922_desc*)ring->descriptors.address)[i];
-			if ((descriptor->ctrl & MT_DMA_CTL_DMA_DONE) == 0)
+		if (type != MT_RX_TYPE_NORMAL && type != MT_RX_TYPE_NORMAL_MCU) {
+			if (type != MT_RX_TYPE_EVENT || ((word0 >> 16) & 0xf) != 1)
 				continue;
-			if (filled == 0) {
-				firstAt = i;
-				first = (descriptor->ctrl & MT_DMA_CTL_SD_LEN0_MASK)
-					>> MT_DMA_CTL_SD_LEN0_SHIFT;
-			}
-			filled++;
+		}
+		if ((word1 & MT_RXD1_FCS_ERROR) != 0)
+			continue;
+
+		size_t at = MT_RXD_FIXED_SIZE;
+		if ((word1 & MT_RXD1_GROUP_4) != 0)
+			at += 16;
+		if ((word1 & MT_RXD1_GROUP_1) != 0)
+			at += 16;
+		if ((word1 & MT_RXD1_GROUP_2) != 0)
+			at += 8;
+		if ((word1 & MT_RXD1_GROUP_3) != 0) {
+			at += 8;
+			if ((word1 & MT_RXD1_GROUP_5) != 0)
+				at += 72;
 		}
 
-		TRACE("nothing recognised on the air: %d of %u descriptors used, "
-			"card at %" B_PRIu32 ", we are at %u\n", filled, ring->count,
-			mt7922_read32(device, ring->registers + MT_RING_DMA_INDEX),
-			ring->head);
+		at += 2 * ((word2 >> 14) & 0x3);
 
-		if (filled > 0) {
-			const uint8* data = (const uint8*)ring->buffers.address
-				+ (size_t)firstAt * MT7922_RX_BUFFER_SIZE;
-			char line[160];
-			size_t show = first < 48 ? first : 48;
+		if (at + 36 > got)
+			continue;
 
-			for (size_t i = 0; i < show; i++)
-				sprintf(line + i * 3, "%02x ", data[i]);
+		const uint8* frame = data + at;
 
-			TRACE("the first is %" B_PRIuSIZE " bytes: %s\n", first, line);
+		/* Count what kinds arrive. "No beacons" and "no management frames at
+		 * all" want different answers, and so does "plenty of both but my
+		 * reading of them is wrong".
+		 */
+		/* By the whole control byte, not half of it: a beacon is 0x80 and a
+		 * QoS data frame is 0x88, and bucketing by the top nibble makes the
+		 * second look like the first.
+		 */
+		device->frameKind[frame[0] >> 4]++;
+		if (frame[0] == MT_FRAME_BEACON)
+			device->beacons++;
+		if ((frame[0] & 0x0c) == 0)
+			device->management++;
+
+		if (device->framesShown < 4) {
+			char line[80];
+			for (int k = 0; k < 16; k++)
+				sprintf(line + k * 3, "%02x ", frame[k]);
+			TRACE("frame type %#x groups %#x pad %" B_PRIu32 " at %" B_PRIuSIZE
+				" of %" B_PRIuSIZE ": %s\n", (unsigned)((word0 >> 27) & 0x1f),
+				(unsigned)((word1 >> 11) & 0x1f), (word2 >> 14) & 3, at, got,
+				line);
+			device->framesShown++;
 		}
+
+		/* Beacons only: management frames that announce a network. */
+		if (frame[0] != MT_FRAME_BEACON)
+			continue;
+
+		uint32 channel = (word3 >> 8) & 0xff;
+
+		/* The name is the first thing said after the header and the fixed
+		 * fields that follow it.
+		 */
+		const uint8* elements = frame + 24 + 12;
+		size_t remaining = got - at - 24 - 12;
+		char name[33];
+
+		strcpy(name, "(hidden)");
+		if (remaining >= 2 && elements[0] == 0 && elements[1] > 0
+			&& elements[1] < sizeof(name) && (size_t)elements[1] + 2 <= remaining) {
+			memcpy(name, elements + 2, elements[1]);
+			name[elements[1]] = 0;
+		}
+
+		TRACE("heard \"%s\" on channel %" B_PRIu32 " from "
+			"%02x:%02x:%02x:%02x:%02x:%02x (%s)\n", name, channel, which,
+			frame[16], frame[17], frame[18], frame[19], frame[20], frame[21]);
+
+		heard++;
 	}
+
+	return heard;
+}
+
+
+void
+mt7922_dump_air(mt7922_dev* device, int wanted)
+{
+	/* Where the part sends what it hears. Announcements can be routed to the
+	 * part's own processor instead of to us, which looks from here exactly
+	 * like a radio that hears traffic but never hears a network.
+	 */
+	TRACE("frames are routed by %#" B_PRIx32 "\n",
+		mt7922_read32(device, MT_MDP_BNRCFR0));
+
+	int heard = mt7922_dump_ring(device, &device->dataRing, "the air", wanted);
+	heard += mt7922_dump_ring(device, &device->lateEventRing, "the processor",
+		wanted - heard);
+
+	if (heard == 0) {
+		TRACE("no networks heard; %d frames on the air, %d from the"
+			" processor, %d of them management\n",
+			mt7922_ring_used(device, &device->dataRing),
+			mt7922_ring_used(device, &device->lateEventRing),
+			device->management);
+		TRACE("%d of them announced a network\n", device->beacons);
+
+		char line[160];
+		int at = 0;
+		for (int k = 0; k < 16; k++) {
+			if (device->frameKind[k] != 0) {
+				at += sprintf(line + at, "%x0:%d ", k,
+					device->frameKind[k]);
+			}
+		}
+		TRACE("what arrived, by kind: %s\n", at > 0 ? line : "nothing");
+
+		at = 0;
+		for (int k = 0; k < 32; k++) {
+			if (device->packetKind[k] != 0)
+				at += sprintf(line + at, "%d:%d ", k, device->packetKind[k]);
+		}
+		TRACE("and by what the part called them: %s\n",
+			at > 0 ? line : "nothing");
+	} else
+		TRACE("%d network%s heard\n", heard, heard == 1 ? "" : "s");
 }

@@ -54,6 +54,24 @@ static const fixed_block kFixedBlocks[] = {
 	{ 0x40000000, 0x070000, 0x10000 },	/* UMAC system RAM */
 	{ 0x54000000, 0x002000, 0x01000 },	/* WFDMA, MCU DMA 0 */
 	{ 0x74030000, 0x010000, 0x10000 },	/* PCIe MAC */
+
+	/* The blocks that decide what the radio does with what it hears. None of
+	 * these is reachable through the moveable window - it does not cover this
+	 * part of the address space at all - so without them here a write goes
+	 * somewhere else entirely and says nothing about having done so.
+	 */
+	{ 0x820cd000, 0x00f000, 0x1000 },	/* packet handling */
+	{ 0x820d4000, 0x034000, 0x1000 },	/* the station table */
+	{ 0x820e4000, 0x021000, 0x1000 },	/* transmit, first radio */
+	{ 0x820e5000, 0x021400, 0x1000 },	/* receive, first radio */
+	{ 0x820e7000, 0x021e00, 0x1000 },	/* transfer, first radio */
+	{ 0x820e9000, 0x023400, 0x1000 },	/* station table, first radio */
+	{ 0x820ed000, 0x024800, 0x1000 },	/* counters, first radio */
+	{ 0x820f4000, 0x0a1000, 0x1000 },	/* and the same for the second */
+	{ 0x820f5000, 0x0a1400, 0x1000 },
+	{ 0x820f7000, 0x0a1e00, 0x1000 },
+	{ 0x820f9000, 0x0a3400, 0x1000 },
+	{ 0x820fd000, 0x0a4800, 0x1000 },
 };
 
 
@@ -228,6 +246,87 @@ mt7922_reset_subsystem(mt7922_dev* device)
 }
 
 
+static void
+mt7922_modify32(mt7922_dev* device, uint32 address, uint32 mask, uint32 value)
+{
+	uint32 was = mt7922_read32(device, address);
+	mt7922_write32(device, address, (was & ~mask) | value);
+}
+
+
+/* Tell the radio what to do with what it hears.
+ *
+ * The one that matters is the longest frame it will accept, in two places.
+ * Left at zero - which is how the firmware leaves it - every frame is longer
+ * than allowed and is thrown away before it reaches us, which looks from the
+ * outside exactly like a radio that hears nothing at all.
+ */
+static void
+mt7922_mac_init(mt7922_dev* device)
+{
+	const uint32 kMaxFrame = 1536 << 3;
+	const uint32 kMaxFrameMask = 0xfff8;
+
+	mt7922_modify32(device, MT_MDP_DCR1, kMaxFrameMask, kMaxFrame);
+
+	/* Take apart the aggregates the air arrives in. Not the header
+	 * translation that usually comes with it: that turns some frames into a
+	 * shape this driver would then have to turn back.
+	 */
+	mt7922_modify32(device, MT_MDP_DCR0, 0, MT_MDP_DCR0_DAMSDU_EN);
+
+	/* Start each station's counters from nothing. */
+	for (uint32 i = 0; i < MT7922_STATION_COUNT; i++) {
+		mt7922_modify32(device, MT_WTBL_UPDATE, MT_WTBL_UPDATE_INDEX_MASK,
+			i | MT_WTBL_UPDATE_CLEAR);
+
+		for (int wait = 0; wait < 500; wait++) {
+			if ((mt7922_read32(device, MT_WTBL_UPDATE)
+					& MT_WTBL_UPDATE_BUSY) == 0) {
+				break;
+			}
+			snooze(10);
+		}
+	}
+
+	for (uint32 band = 0; band < 2; band++) {
+		uint32 at = band * MT7922_BAND_STRIDE;
+
+		mt7922_modify32(device, MT_TMAC_CTCR0 + at, 0x3f, 0x3f);
+		mt7922_modify32(device, MT_TMAC_CTCR0 + at, 0,
+			MT_TMAC_CTCR0_VHT_SMPDU_EN | MT_TMAC_CTCR0_DDLMT_EN);
+
+		mt7922_modify32(device, MT_WF_RMAC_MIB_TIME0 + at, 0,
+			MT_RMAC_MIB_RXTIME_EN);
+		mt7922_modify32(device, MT_WF_RMAC_MIB_AIRTIME0 + at, 0,
+			MT_RMAC_MIB_RXTIME_EN);
+
+		mt7922_modify32(device, MT_MIB_SCR1 + at, 0,
+			MT_MIB_TXDUR_EN | MT_MIB_RXDUR_EN);
+
+		/* The other half of the length gate, and the one the receiver
+		 * itself consults.
+		 */
+		mt7922_modify32(device, MT_DMA_DCR0 + at, kMaxFrameMask, kMaxFrame);
+		mt7922_modify32(device, MT_DMA_DCR0 + at, MT_DMA_DCR0_RXD_G5_EN, 0);
+
+		mt7922_modify32(device, MT_WTBLOFF_TOP_RSCR + at, 0xc3000000,
+			0x03000000);
+	}
+
+	/* Read them back. These registers are reached through a table of fixed
+	 * mappings rather than the moveable window, and a wrong entry there
+	 * writes somewhere else entirely without complaining - so the only way
+	 * to know the writes landed is to look.
+	 */
+	TRACE("packet length reads %#" B_PRIx32 ", receiver length %#" B_PRIx32
+		", aggregation %#" B_PRIx32 "\n",
+		mt7922_read32(device, MT_MDP_DCR1),
+		mt7922_read32(device, MT_DMA_DCR0),
+		mt7922_read32(device, MT_MDP_DCR0));
+}
+
+
 status_t
 mt7922_setup(mt7922_dev* device)
 {
@@ -325,11 +424,22 @@ mt7922_setup(mt7922_dev* device)
 	if (status != B_OK)
 		goto release;
 
+	mt7922_mac_init(device);
+
 	status = mt7922_mcu_prepare(device);
 	if (status != B_OK)
 		goto release;
 
+	/* Listen where we already are, without asking for a sweep. If
+	 * announcements arrive here but not during a sweep, the sweep is the
+	 * problem; if they arrive in neither, receiving them is.
+	 */
+	snooze(5000000);
+	TRACE("after listening quietly for five seconds:\n");
+	mt7922_dump_air(device, 8);
+
 	mt7922_mcu_scan(device);
+	TRACE("and after a sweep:\n");
 	mt7922_dump_air(device, 8);
 
 	/* Next: the 802.11 driver proper. The part is now running its own

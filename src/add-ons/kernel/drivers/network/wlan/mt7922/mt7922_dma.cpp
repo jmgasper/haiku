@@ -267,8 +267,12 @@ mt7922_dma_prefetch(mt7922_dev* device)
 	mt7922_write32(device, MT_WFDMA0_RX_RING_EXT_CTRL, (0x0u << 16) | depth);
 	mt7922_write32(device, MT_WFDMA0_RX_RING_EXT_CTRL + 0x08,
 		(0x40u << 16) | depth);
+	mt7922_write32(device, MT_WFDMA0_RX_RING_EXT_CTRL + 0x0c,
+		(0x80u << 16) | depth);
 	mt7922_write32(device, MT_WFDMA0_RX_RING_EXT_CTRL + 0x10,
 		(0xc0u << 16) | depth);
+	mt7922_write32(device, MT_WFDMA0_RX_RING_EXT_CTRL + 0x14,
+		(0x100u << 16) | depth);
 }
 
 

@@ -58,6 +58,46 @@
 #define LPCR_HOST_FW_OWN		(1 << 0)
 #define LPCR_HOST_DRV_OWN		(1 << 1)
 
+/* What the radio does with what it hears. The first radio's blocks are named
+ * here; the second's are the same, one stride along.
+ */
+#define MT7922_BAND_STRIDE		0x10000
+#define MT7922_STATION_COUNT		20
+
+#define MT_MDP_DCR0			0x820cd000
+#define MT_MDP_DCR0_DAMSDU_EN		(1 << 15)
+#define MT_MDP_DCR1			0x820cd004
+
+#define MT_WTBL_UPDATE			0x820d4230
+#define MT_WTBL_UPDATE_INDEX_MASK	0x3ff
+#define MT_WTBL_UPDATE_CLEAR		(1 << 12)
+#define MT_WTBL_UPDATE_BUSY		(1u << 31)
+
+#define MT_TMAC_CTCR0			0x820e40f4
+#define MT_TMAC_CTCR0_DDLMT_EN		(1 << 17)
+#define MT_TMAC_CTCR0_VHT_SMPDU_EN	(1 << 18)
+
+#define MT_WF_RMAC_MIB_AIRTIME0		0x820e5380
+#define MT_WF_RMAC_MIB_TIME0		0x820e53c4
+#define MT_RMAC_MIB_RXTIME_EN		(1u << 30)
+
+#define MT_MIB_SCR1			0x820ed004
+#define MT_MIB_TXDUR_EN			(1 << 8)
+#define MT_MIB_RXDUR_EN			(1 << 9)
+
+#define MT_DMA_DCR0			0x820e7000
+#define MT_DMA_DCR0_RXD_G5_EN		(1 << 23)
+
+#define MT_WTBLOFF_TOP_RSCR		0x820e9008
+
+/* What the receiver throws away before we ever see it. */
+#define MT_MDP_BNRCFR0			0x820cd070
+#define MT_WF_RFCR			0x820e5000
+#define MT_RFCR_DROP_OTHER_BEACON	(1 << 11)
+
+#define MT7922_FILTER_ENABLE		(1u << 31)
+#define MT7922_FILTER_OTHER_BSS		(1 << 6)
+
 /* The Wi-Fi subsystem's own reset. */
 #define MT_WFSYS_SW_RST_B	0x18000140
 #define WFSYS_SW_RST_B		(1 << 0)
@@ -256,6 +296,11 @@ struct mt7922_dev {
 	bool		hasAddress;
 	uint8		streams;
 	uint8		bands;		/* 1 is 2.4 GHz, 2 is 5 GHz */
+	int		framesShown;
+	int		frameKind[16];
+	int		management;
+	int		packetKind[32];
+	int		beacons;
 	bool		ringsReady;
 };
 
