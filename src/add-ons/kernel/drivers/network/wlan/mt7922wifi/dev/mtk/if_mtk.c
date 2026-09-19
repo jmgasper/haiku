@@ -31,6 +31,8 @@
 #include <net/if_media.h>
 
 #include <net80211/ieee80211_var.h>
+#include <net80211/ieee80211_ratectl.h>
+#include <net80211/ieee80211_scan.h>
 
 #include "if_mtkvar.h"
 
@@ -47,6 +49,7 @@ struct mtk_fixed {
 
 static void mtk_tick(void* arg);
 static void mtk_work(void* arg, int pending);
+static void mtk_rxwork(void* arg, int pending);
 
 
 static const struct mtk_fixed mtk_fixed_map[] = {
@@ -288,16 +291,24 @@ mtk_vap_create(struct ieee80211com* ic, const char name[IFNAMSIZ], int unit,
 		return NULL;
 	}
 
-	/* The stack knows exactly why it turns a network down; it just does
-	 * not say so unless asked. Ask. (After setup, which clears this.)
+	/* Only what a state change says, and nothing per frame or per scan
+	 * entry. The stack prints those a character at a time, and the flood
+	 * blocks the thread writing it while it holds the stack's own lock -
+	 * which stops every card in the machine, not just this one.
 	 */
-	vap->iv_debug = IEEE80211_MSG_SCAN | IEEE80211_MSG_ASSOC
-		| IEEE80211_MSG_AUTH | IEEE80211_MSG_STATE | IEEE80211_MSG_ROAM
-		| IEEE80211_MSG_NODE;
+	vap->iv_debug = IEEE80211_MSG_STATE | IEEE80211_MSG_AUTH
+		| IEEE80211_MSG_ASSOC;
 
 	/* Watch the comings and goings, but let the stack decide them. */
 	mvp->newstate = vap->iv_newstate;
 	vap->iv_newstate = mtk_newstate;
+
+	/* Pick a rate control scheme. Joining a network calls through
+	 * vap->iv_rate->ir_node_init, which without this is a null pointer:
+	 * the stack faults the moment it settles on a network to join, taking
+	 * its own lock down with it. Every other card's driver does this here.
+	 */
+	ieee80211_ratectl_init(vap);
 
 	ieee80211_vap_attach(vap, ieee80211_media_change, ieee80211_media_status,
 		mac);
@@ -336,10 +347,18 @@ mtk_parent(struct ieee80211com* ic)
 	if (wanted) {
 		sc->sc_draining = 1;
 		callout_reset(&sc->sc_poll, hz / 100, mtk_tick, sc);
-		ieee80211_start_all(ic);
+
+		/* Not from here. This runs as the stack's parent task, and the
+		 * stack waits for that task to finish while holding the very
+		 * lock ieee80211_start_all wants. Doing it inline stops the
+		 * whole stack, which takes the wired card down with it.
+		 */
+		sc->sc_startall = 1;
+		taskqueue_enqueue(sc->sc_tq, &sc->sc_work);
 	} else {
 		sc->sc_draining = 0;
-		callout_drain(&sc->sc_poll);
+		sc->sc_startall = 0;
+		callout_stop(&sc->sc_poll);
 		device_printf(sc->sc_dev, "%u interrupts, %u frames in, %u out,"
 			" %u refused\n", sc->sc_interrupts, sc->sc_received,
 			sc->sc_sent, sc->sc_refused);
@@ -365,6 +384,23 @@ mtk_scan_start(struct ieee80211com* ic)
 	if (ss != NULL) {
 		ss->ss_mindwell = hz / 2;
 		ss->ss_maxdwell = 3 * hz / 2;
+
+		/* Whoever asked for a scan last leaves their flags on the vap,
+		 * and everything else on this system asks for scans that must
+		 * not join anything - so once the network preferences have
+		 * looked around once, the stack is told never to join again and
+		 * quietly spends the rest of its life scanning. If a network
+		 * has actually been asked for, this scan is allowed to join it.
+		 */
+		/* Whoever asked for a scan last leaves their flags on the vap,
+		 * and everything else on this system asks for scans that must
+		 * not join - so once the network preferences have looked around
+		 * once, the stack is told never to join again. Clearing that
+		 * here does let it try, but associating still stops the whole
+		 * stack, so it stays as it is until that is understood.
+		 *
+		 *	ss->ss_flags &= ~IEEE80211_SCAN_NOJOIN;
+		 */
 	}
 
 	sc->sc_scanning = 1;
@@ -442,11 +478,26 @@ mtk_raw_xmit(struct ieee80211_node* ni, struct mbuf* m,
  * or not the card raises a line, so this keeps frames moving while the
  * counters say which of the two actually did the work.
  */
+/* Draining, on a thread of its own. */
+static void
+mtk_rxwork(void* arg, int pending)
+{
+	struct mtk_softc* sc = arg;
+
+	mtk_receive(sc);
+}
+
+
 /* Our own thread: the one place allowed to wait for the part. */
 static void
 mtk_work(void* arg, int pending)
 {
 	struct mtk_softc* sc = arg;
+
+	if (sc->sc_startall != 0) {
+		sc->sc_startall = 0;
+		ieee80211_start_all(&sc->sc_ic);
+	}
 
 	/* The stack only files what it hears while its own scan is running, so
 	 * the part's sweep has to start when that window opens, not on some
@@ -474,7 +525,6 @@ mtk_work(void* arg, int pending)
 		sc->sc_scan_at = ticks;
 		mtk_hw_scan(sc, 0);
 	}
-
 }
 
 
@@ -492,7 +542,7 @@ mtk_tick(void* arg)
 	 * every tick that landed during a nineteen-channel sweep was lost and
 	 * the rings overran.
 	 */
-	mtk_receive(sc);
+	taskqueue_enqueue(sc->sc_rxtq, &sc->sc_rxwork);
 
 	if (sc->sc_want_scan != 0 || sc->sc_want_channel != sc->sc_channel)
 		taskqueue_enqueue(sc->sc_tq, &sc->sc_work);
@@ -553,6 +603,12 @@ mtk_attach(device_t dev)
 	taskqueue_start_threads(&sc->sc_tq, 1, PI_NET, "%s taskq",
 		device_get_nameunit(dev));
 	TASK_INIT(&sc->sc_work, 0, mtk_work, sc);
+
+	sc->sc_rxtq = taskqueue_create_fast("mtk_rxq", M_NOWAIT,
+		taskqueue_thread_enqueue, &sc->sc_rxtq);
+	taskqueue_start_threads(&sc->sc_rxtq, 1, PI_NET, "%s rxq",
+		device_get_nameunit(dev));
+	TASK_INIT(&sc->sc_rxwork, 0, mtk_rxwork, sc);
 	mtx_init(&sc->sc_mtx, device_get_nameunit(dev), MTX_NETWORK_LOCK,
 		MTX_DEF);
 
@@ -682,6 +738,11 @@ mtk_detach(device_t dev)
 		taskqueue_drain(sc->sc_tq, &sc->sc_work);
 		taskqueue_free(sc->sc_tq);
 		sc->sc_tq = NULL;
+	}
+	if (sc->sc_rxtq != NULL) {
+		taskqueue_drain(sc->sc_rxtq, &sc->sc_rxwork);
+		taskqueue_free(sc->sc_rxtq);
+		sc->sc_rxtq = NULL;
 	}
 
 	if (sc->sc_ih != NULL) {

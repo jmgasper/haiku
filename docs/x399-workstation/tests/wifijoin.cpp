@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 #include <net/if.h>
 #include <sys/ioctl.h>
@@ -86,6 +87,8 @@ main(int argc, char** argv)
 {
 	const char* device;
 	int socket;
+	int held;
+	int waited;
 
 	if (argc < 2) {
 		fprintf(stderr, "usage: %s <device> [<ssid>]\n", argv[0]);
@@ -93,30 +96,23 @@ main(int argc, char** argv)
 	}
 
 	device = argv[1];
+
+	/* Hold the device open for as long as this runs. Haiku builds the vap
+	 * when the device is opened and tears it down again when the last
+	 * handle closes, so anything configured on a vap nobody is holding is
+	 * thrown away within seconds - which is why the name and the crypto
+	 * flags kept coming back unset.
+	 */
+	held = open(device, O_RDWR);
+	if (held < 0)
+		printf("could not hold the device open: %s\n", strerror(errno));
+	else
+		printf("holding the device open\n");
+
 	socket = ::socket(AF_INET, SOCK_DGRAM, 0);
 	if (socket < 0) {
 		fprintf(stderr, "no socket: %s\n", strerror(errno));
 		return 1;
-	}
-
-	if (argc > 3 && strcmp(argv[3], "wpa") == 0) {
-		int error;
-
-		/* What wpa_supplicant would say on our behalf. Without it the
-		 * stack refuses every encrypted network out of hand, which looks
-		 * from outside exactly like a scan that found nothing.
-		 */
-		error = request(socket, device, 1, IEEE80211_IOC_PRIVACY, NULL, 0,
-			1, NULL);
-		if (error != 0)
-			printf("privacy refused: %s\n", strerror(error));
-
-		error = request(socket, device, 1, IEEE80211_IOC_WPA, NULL, 0, 2,
-			NULL);
-		if (error != 0)
-			printf("wpa mode refused: %s\n", strerror(error));
-		else
-			printf("told the stack this network is WPA2\n");
 	}
 
 	if (argc > 2) {
@@ -142,24 +138,27 @@ main(int argc, char** argv)
 
 		printf("asked for \"%s\"\n", ssid);
 
-		/* Setting the name alone changes nothing: every scan the stack
-		 * was running came from ifconfig and carried "nojoin", so it
-		 * looked around for ever and never tried to join anything. Ask
-		 * for a scan that is allowed to pick and join.
+		/* Asking for a scan outright cancels whatever is running and
+		 * starts another, and that path wedges the whole stack. Only do
+		 * it when told to; otherwise leave the vap's own scan to find
+		 * the network, which it is already doing.
 		 */
-		{
+		if (argc > 4 && strcmp(argv[4], "scan") == 0) {
 			struct ieee80211_scan_req req;
 
-			/* One is always already running, and the stack refuses a
-			 * second. Stop it first or the request never lands.
+			/* Look at what has already been heard rather than asking
+			 * for a fresh sweep. Starting one means cancelling the
+			 * one in flight, and that path takes the whole stack
+			 * down. This one joins straight from the scan cache.
+			 *
+			 * The absence of NOJOIN is the point: the flags of the
+			 * last request stick to the vap, and everything else on
+			 * the system asks for scans that must not join, so the
+			 * stack had been told never to join anything.
 			 */
-			request(socket, device, 1, IEEE80211_IOC_SCAN_CANCEL,
-				NULL, 0, 0, NULL);
-			usleep(300000);
-
 			memset(&req, 0, sizeof(req));
 			req.sr_flags = IEEE80211_IOC_SCAN_ACTIVE
-				| IEEE80211_IOC_SCAN_FLUSH;
+				| IEEE80211_IOC_SCAN_CHECK;
 			req.sr_duration = IEEE80211_IOC_SCAN_FOREVER;
 			req.sr_mindwell = 500;
 			req.sr_maxdwell = 1500;
@@ -177,9 +176,46 @@ main(int argc, char** argv)
 		}
 	}
 
-	printf("the stack says:\n");
-	report(socket, device);
+	if (argc > 3 && (strcmp(argv[3], "wpa") == 0
+			|| strcmp(argv[3], "priv") == 0)) {
+		int error;
+
+		/* After the name, not before: setting the name resets the vap
+		 * and the crypto flags do not survive it, so the stack went on
+		 * refusing every encrypted network on privacy grounds.
+		 *
+		 * What wpa_supplicant would say on our behalf. Without it the
+		 * stack refuses every encrypted network out of hand, which looks
+		 * from outside exactly like a scan that found nothing.
+		 */
+		error = request(socket, device, 1, IEEE80211_IOC_PRIVACY, NULL, 0,
+			1, NULL);
+		if (error != 0)
+			printf("privacy refused: %s\n", strerror(error));
+
+		if (strcmp(argv[3], "wpa") == 0) {
+			error = request(socket, device, 1, IEEE80211_IOC_WPA, NULL, 0,
+				2, NULL);
+			if (error != 0)
+				printf("wpa mode refused: %s\n", strerror(error));
+			else
+				printf("told the stack this network is WPA2\n");
+		} else
+			printf("privacy only, no WPA mode\n");
+	}
+
+	/* Watch it settle rather than looking once and leaving: the whole
+	 * point is to still be holding the device while it associates.
+	 */
+	for (waited = 0; waited < 60; waited += 5) {
+		printf("after %ds:\n", waited);
+		report(socket, device);
+		sleep(5);
+	}
 
 	close(socket);
+	if (held >= 0)
+		close(held);
+
 	return 0;
 }

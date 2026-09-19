@@ -298,10 +298,24 @@ struct mtk_softc {
 	 */
 	struct taskqueue*	sc_tq;
 	struct task		sc_work;
+
+	/* Draining gets a thread of its own. It calls into the stack, which
+	 * can block on the stack's own lock for as long as a state change
+	 * takes, and that must never happen on a thread other drivers share.
+	 * It also must not queue behind a command that waits seconds.
+	 */
+	struct taskqueue*	sc_rxtq;
+	struct task		sc_rxwork;
 	uint8_t			sc_want_channel;
 	int			sc_want_scan;
 	int			sc_scanning;
 	int			sc_scan_at;
+
+	/* While the part is sweeping, the radio is its. The stack is stepped
+	 * through its channel list from our own thread instead of being let
+	 * retune underneath the sweep.
+	 */
+	int			sc_startall;
 	uint32_t		sc_scan_starts;
 	uint32_t		sc_scan_ends;
 
