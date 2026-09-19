@@ -310,6 +310,7 @@ struct mtk_softc {
 	int			sc_want_scan;
 	int			sc_scanning;
 	int			sc_scan_at;
+	int			sc_join_at;
 
 	/* While the part is sweeping, the radio is its. The stack is stepped
 	 * through its channel list from our own thread instead of being let

@@ -414,38 +414,37 @@ mtk_scan_start(struct ieee80211com* ic)
 		 * here lets it try, which is the only way it will ever join
 		 * anything.
 		 */
-		/* Clearing IEEE80211_SCAN_NOJOIN here is what lets the stack
-		 * join at all - every scan on this system inherits that flag
-		 * from whoever asked last, and nothing else ever clears it.
-		 * It reaches select_bss and picks the right network, and then
-		 * associating stops the whole stack, so it stays off until
-		 * that is understood:
+		/* Every scan inherits IEEE80211_SCAN_NOJOIN from whoever asked
+		 * for one last, and everything else on this system asks for
+		 * scans that must not join - so once the network preferences
+		 * have looked around once, the stack is told never to join and
+		 * quietly scans for ever.
 		 *
+		 * Clearing it is what lets it join, but only clear it once a
+		 * network has actually been configured. With nothing to match,
+		 * the stack finds no candidate, and without NOJOIN that path
+		 * returns "restart the scan" instead of "stop": a tight loop
+		 * firing a command at the part for every turn of it, which is
+		 * what was stopping the machine half a minute after boot.
+		 *
+		 * So only one scan in every five seconds is allowed to join -
+		 * and even that is held off (the 0 && below) until associating
+		 * itself stops taking the machine with it, because configuring
+		 * a network is then all it takes.
+		 *
+		 * So only one scan in every five seconds is allowed to join.
+		 * The rest keep the flag and stop cleanly when they find
+		 * nothing, which is what bounds the loop. The vap's own state
+		 * cannot be used to decide this instead: both iv_des_nssid and
+		 * the privacy flag read back as unset on the very vap whose
+		 * iv_des_ssid reads back as the wanted network.
 		 */
-		{
-			struct ieee80211vap* vap = TAILQ_FIRST(&ic->ic_vaps);
-
-			if (sc->sc_scan_starts % 8 == 1) {
-				device_printf(sc->sc_dev, "scan start: scan's vap %p"
-					" wants %d, our vap %p wants %d, flags %#x\n",
-					ss->ss_vap, ss->ss_vap != NULL
-						? ss->ss_vap->iv_des_nssid : -1,
-					vap, vap != NULL ? vap->iv_des_nssid : -1,
-					ss->ss_flags);
-			}
-
-			/* Clearing IEEE80211_SCAN_NOJOIN here is what lets the
-			 * stack join at all, and it does reach select_bss and
-			 * pick the right network. It is off because the machine
-			 * then stops answering and the log of that boot never
-			 * reaches disk, so there is nothing to go on:
-			 *
-			 *	ss->ss_flags &= ~IEEE80211_SCAN_NOJOIN;
-			 *
-			 * iv_des_nssid cannot be used to decide when to do it:
-			 * it reads back zero on the same vap whose iv_des_ssid
-			 * reads back correctly as the wanted network.
-			 */
+		if (0 && (ss->ss_flags & IEEE80211_SCAN_NOJOIN) != 0
+				&& (sc->sc_join_at == 0
+					|| (int)(ticks - sc->sc_join_at) > 5 * hz)) {
+			sc->sc_join_at = ticks;
+			device_printf(sc->sc_dev, "letting this scan join\n");
+			ss->ss_flags &= ~IEEE80211_SCAN_NOJOIN;
 		}
 	}
 
