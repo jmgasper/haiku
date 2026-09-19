@@ -22,7 +22,7 @@ a Bluetooth device to pair with.
 | Audio | ALC1220 analog output, HDMI audio | verified both: two outputs, each clocking its stream at the hardware's own rate (48322 and 48321 frames a second against the 48000 asked for). The graphics card's codec needed a change to Haiku's hda driver, which discarded any codec whose converters are all digital. The monitor reports it takes stereo. What nobody here can check is whether a speaker makes a sound |
 | Graphics | GTX 1070/1080 Ti accelerated 2D/3D, 3-4 monitors | 3D verified: Vulkan on the GPU (1.4 TFLOP/s compute, 57 Gpixel/s fill) and OpenGL 4.5 through it, with frames copied straight into the screen's own frame buffer in video memory rather than sent through the host - a lit sphere at 1600x900 goes from 209 to 970 frames a second. Vertical sync works (locks to 60.0) now that the accelerant hands out a retrace semaphore. Any program gets the GPU, with nothing set in its environment. Three heads driving one spanning desktop is verified, but with the third and second forced rather than plugged in. 2D is not accelerated at all: it runs four to eight times slower than drawing in memory, which is still far more than a desktop needs at one monitor |
 | Bluetooth | TP-Link Archer TX55E, working adapter and discovery | verified: the adapter answers as `90:74:ae:33:d7:cb` "MTK MT7922 #1" and an inquiry finds devices nearby, from a cold boot with nothing done by hand. The radio is a MediaTek MT7922 on USB, which runs a bootloader rather than a Bluetooth controller until it is given firmware - it takes the HCI Reset every stack opens with and never answers. The driver now hands it that firmware at open. Three further faults were in the way: `h2generic` took its event endpoint from the last interface that had one, which on this radio is MediaTek's audio interface, so it listened where no reply is ever sent; it stood isochronous transfers on the SCO endpoints at open, which nothing wants until there is a call; and the server never answered a request for a command the controller refuses outright, which hung the first program to ask for an adapter. Remote name lookup still fails, so discovered devices show an address and no name. Pairing and audio profiles are untried |
-| Wi-Fi | TP-Link Archer TX55E | out of reach without building a layer Haiku does not have. Its Wi-Fi half is a MediaTek MT7922 (`14c3:7922`); nothing claims it, and Haiku has no MediaTek wireless driver. A driver does exist elsewhere: FreeBSD carries `mt76` in CURRENT, ported from Linux, and MT7922 passes traffic there - but it runs on LinuxKPI and `linuxkpi_wlan`, which emulate Linux's mac80211. Haiku's wireless support is FreeBSD 12.0's own net80211 (`__FreeBSD_version 1200086`) with no LinuxKPI at all, so that driver is not one Haiku can host. Supplying the missing layer is the hard part rather than the driver: it is what still blocks FreeBSD's own mt76, which is not production ready there as of early 2026. An Intel AX200 or AX210 card is served by the `iaxwifi200` Haiku already ships |
+| Wi-Fi | TP-Link Archer TX55E | reachable and driveable; no driver yet. The part is a MediaTek MT7922 (`14c3:7922`) that nothing claimed - firmware had left it with memory space and bus mastering switched off. With those on, its register domain woken from its firmware, and its remapping window pointed at the right place, it names itself: chip id `0x7922`, revision `0x8a10`, the same revision the Bluetooth half of the same die reports. Its subsystem can be driven through its own reset and comes back saying it has started, and doing that leaves Bluetooth working, so the two functions do not contend. What remains is the driver: six DMA rings, an MCU command layer, firmware download (patch and RAM, with the encrypted-section handling this generation needs), and then an 802.11 driver on Haiku's net80211. A `mt76` port is not the route - that driver is built on LinuxKPI and `linuxkpi_wlan`, emulating Linux's mac80211, where Haiku has FreeBSD 12.0's own net80211 and no LinuxKPI. An Intel AX200 or AX210 is served by the `iaxwifi200` Haiku already ships |
 | Sleep | S3 suspend and resume | sleeps and wakes; the display comes back, but the NVMe and the network card usually do not. Paused until a serial console arrives, which is also what the one untested path in the vertical sync work needs |
 
 ## Log
@@ -637,3 +637,48 @@ a Bluetooth device to pair with.
   page-pool work in LinuxKPI is what still blocks FreeBSD's own mt76, which
   is not production ready there as of early 2026. An Intel AX200 or AX210
   card is driven by the `iaxwifi200` that Haiku already ships.
+- 2026-09-19: the Wi-Fi half of the Archer TX55E can be reached and driven,
+  which an earlier note here said was not the case. Two claims in that note
+  were wrong and are corrected above: FreeBSD does carry an `mt76` driver, in
+  CURRENT, and the MT7922 passes traffic there; and nothing about this card
+  makes it unreachable.
+
+  What is true is narrower. That driver is built on LinuxKPI and
+  `linuxkpi_wlan`, which emulate Linux's mac80211, where Haiku's wireless
+  support is FreeBSD 12.0's own net80211 (`__FreeBSD_version 1200086`) with no
+  LinuxKPI at all, so it is not a driver Haiku can host. Supplying that layer
+  is harder than the driver, and it is what still blocks FreeBSD's own mt76.
+
+  Asked directly, the hardware is cooperative. `wifiprobe` reaches it through
+  the poke driver, which hands userland PCI configuration and a mapping of any
+  physical address, so this needed no kernel code and a wrong guess cost a
+  rerun. The card sits at 15:0:0 with memory space and bus mastering switched
+  off, which is how firmware leaves a device nobody wants. Its register window
+  can reach above four gigabytes, so it is written as two registers and
+  remembered as two slots with the high half in the one after the low: take
+  only the first and the address looks plausible, points into memory instead
+  of at the card, and reads back as zeroes. A sleeping card reads as zeroes
+  too, which made those two easy to confuse - and reading the window before
+  waking the card does not return at all, and takes the machine with it.
+
+  Woken properly - the register domain is the firmware's until the host asks
+  for it, through a register reachable without the remapping window - the part
+  names itself: chip id `0x7922`, revision `0x8a10`. That is the same revision
+  the Bluetooth function reports, which is the two halves of one die agreeing.
+  Its subsystem can then be driven through its own reset and comes back saying
+  it has started, and Bluetooth still works afterwards, so the two functions do
+  not share a power domain in any way that matters.
+
+  That is four of the six steps to a running firmware: PCI setup, the
+  ownership handshake, the chip id, and the subsystem reset. The two left are
+  six WFDMA rings and an MCU command layer, and then firmware download over
+  them - `WIFI_MT7922_patch_mcu_1_1_hdr.bin` and `WIFI_RAM_CODE_MT7922_1.bin`,
+  the patch in big-endian and the RAM image little-endian with its table at the
+  end, in 4096 byte pieces, with the encrypted-section handling this
+  generation requires. There is no simpler register path: every MCU command,
+  including the first, goes over the rings.
+
+  A running firmware is still not a working network card. After it comes the
+  802.11 driver itself on net80211 - scanning, association, keys, and a data
+  path - which is the larger half of the work and the part with no reference
+  to check against on this system.

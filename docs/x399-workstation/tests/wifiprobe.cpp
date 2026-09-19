@@ -50,6 +50,14 @@ static int sPoke = -1;
 #define MT_HIF_REMAP_L1		0x0fe24c
 #define MT_HIF_REMAP_BASE_L1	0x040000
 
+/* The Wi-Fi subsystem's own reset. Held low, then released, then it says when
+ * it has finished starting itself. This part is a connac2, so the register is
+ * the 0x18000000 one rather than the older 0x7c000000.
+ */
+#define MT_WFSYS_SW_RST_B	0x18000140
+#define WFSYS_SW_RST_B		(1 << 0)
+#define WFSYS_SW_INIT_DONE	(1 << 4)
+
 #define MT_HW_CHIPID		0x70010200
 #define MT_HW_REV		0x70010204
 
@@ -433,6 +441,44 @@ main(int argc, char** argv)
 
 	volatile uint32* registers = (volatile uint32*)map.address;
 	printf("\nmapped BAR %d at %p\n", bar, map.address);
+
+	/* Drive the Wi-Fi subsystem through its own reset. Reading tells us the
+	 * part is there; this tells us it can be made to do something, which is a
+	 * different question and the one a driver depends on.
+	 */
+	if (argc > 1 && strcmp(argv[1], "reset") == 0) {
+		if (!TakeOwnership(registers)) {
+			printf("\nwithout the registers there is nothing to drive.\n");
+		} else {
+			size_t at = MapThroughWindow(registers, MT_WFSYS_SW_RST_B);
+			uint32 before = registers[at / 4];
+			printf("  reset register starts at %#010x\n", (unsigned)before);
+
+			registers[at / 4] = before & ~WFSYS_SW_RST_B;
+			snooze(50000);
+
+			at = MapThroughWindow(registers, MT_WFSYS_SW_RST_B);
+			registers[at / 4] = registers[at / 4] | WFSYS_SW_RST_B;
+
+			at = MapThroughWindow(registers, MT_WFSYS_SW_RST_B);
+			bool done = PollRegister(registers, at, WFSYS_SW_INIT_DONE,
+				WFSYS_SW_INIT_DONE, 500);
+
+			printf("  reset register now %#010x\n",
+				(unsigned)registers[at / 4]);
+			printf("\nthe Wi-Fi subsystem %s\n", done
+				? "reset and says it has started"
+				: "never said it had started");
+		}
+
+		mem_map_args unmapReset;
+		memset(&unmapReset, 0, sizeof(unmapReset));
+		unmapReset.signature = POKE_SIGNATURE;
+		unmapReset.area = map.area;
+		ioctl(sPoke, POKE_UNMAP_MEMORY, &unmapReset, sizeof(unmapReset));
+		close(sPoke);
+		return 0;
+	}
 
 	/* Wake the chip and ask it who it is. This is the whole question: a part
 	 * that names itself is a part a driver can be written for.
