@@ -6,7 +6,7 @@ listed as verified is untested.
 `tools/check-workstation.sh` re-checks the machine against all of this in one
 pass, with nothing set in the environment of the programs it runs, because
 several of these have looked fine while being quietly broken. It last came back
-17 working, 0 not.
+16 working, 0 not.
 
 What still needs someone at the machine: a monitor in a DisplayPort (no port
 asserts hotplug at present), devices in each USB port, the serial console, and

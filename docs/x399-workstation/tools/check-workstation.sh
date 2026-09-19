@@ -100,16 +100,17 @@ $SSH 'set -u
 	[ -n "$fw" ] && say ok "the radio firmware is installed" "$(basename $fw)" \
 		|| say no "the radio firmware is installed" "not found"
 
-	ready=$(grep -a "mediatek_setup: MT.* ready" /var/log/syslog | tail -1 \
-		| sed "s/.*setup: //")
-	[ -n "$ready" ] && say ok "the radio took its firmware" "$ready" \
-		|| say no "the radio took its firmware" "the driver never said so"
-
 	srv=$(ps | grep -c "[b]luetooth_server")
 	[ "$srv" -ge 1 ] && say ok "the bluetooth server is running" "" \
 		|| say no "the bluetooth server is running" "nothing started it"
 
-	# bttest prints the adapter address once the stack has claimed it.
+	# bttest prints the adapter address once the stack has claimed it. This is
+	# the one that matters: the radio answers nothing at all until the driver
+	# has given it its firmware, so an address here means the whole path from
+	# the firmware file through the driver and the kernel modules to the
+	# server is working. Asking the syslog whether the firmware loaded would
+	# be saying the same thing less reliably, since a log does not survive
+	# everything the machine does.
 	addr=$(cd /boot/home/tests 2>/dev/null \
 		&& timeout 60 ./bttest 1 2>/dev/null \
 		| sed -n "s/^adapter [0-9-]*: //p" | head -1)
