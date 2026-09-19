@@ -27,8 +27,18 @@ if __name__ == '__main__':
         save(pending, {'inputs': inputs(), 'target': sys.argv[2], 'started_utc': timestamp()})
     elif sys.argv[1] == 'finish':
         record = json.loads(pending.read_text())
-        if inputs() != record['inputs']:
-            raise RuntimeError('Sources changed during the build. Rebuild before packaging.')
+        current = inputs()
+        if current != record['inputs']:
+            # An object compiled from a file being edited can end up newer than
+            # the file's final save, and jam would then reuse it: make every
+            # file that changed since the build started newer than any object.
+            changed = run(['git', '-C', str(SOURCE), 'diff', '--name-only', record['inputs']['source_revision']]).splitlines()
+            changed += run(['git', '-C', str(SOURCE), 'ls-files', '--others', '--exclude-standard']).splitlines()
+            for name in sorted(set(changed)):
+                if (SOURCE / name).is_file():
+                    (SOURCE / name).touch()
+            raise RuntimeError('Sources changed during the build (%d files touched so jam rebuilds them). '
+                'Rebuild before packaging.' % len(set(changed)))
         image = OUTPUT / 'haiku-arm64-mmc.image'
         record.update({'image': str(image), 'sha256': digest(image), 'finished_utc': timestamp(),
                        'layout': validate_image(image),
