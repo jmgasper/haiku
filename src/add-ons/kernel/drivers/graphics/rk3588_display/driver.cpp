@@ -2023,6 +2023,14 @@ StartHdmiSpan(Controller* controller, uint32_t window)
 		request.vTotal = kDp1080p60.vTotal;
 		request.vic = 16;
 		sSpanModeResult = SetDisplayMode(hardware, sSpanPort, sSpanWindow, request);
+		if (sSpanModeResult == kModeOK) {
+			// Some sinks keep the colorimetry of the firmware's own infoframe when the mode changes
+			// under them (captures then show uniformly shifted colours): re-send the AVI infoframe
+			// once the new mode is running, so the sink re-reads RGB.
+			for (unsigned i = 0; i < 50; i++)
+				hardware.Pause(1000);
+			ConfigureHdmiTx(hardware, request.vic);
+		}
 		dprintf("rk3588_display: span hdmi1 port=%" B_PRIu32 " window=%" B_PRIu32 " firmware=%#" B_PRIx32
 			" %" B_PRIu32 " %#" B_PRIx32 " mode result=%" B_PRIu32 " phase=%" B_PRIu32 " timing=%08" B_PRIx32
 			",%08" B_PRIx32 ",%08" B_PRIx32 ",%08" B_PRIx32 "\n", sSpanPort, sSpanWindow, sSpanFirmware[0],
