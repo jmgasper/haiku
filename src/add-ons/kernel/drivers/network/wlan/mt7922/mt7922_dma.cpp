@@ -267,6 +267,8 @@ mt7922_dma_prefetch(mt7922_dev* device)
 	mt7922_write32(device, MT_WFDMA0_RX_RING_EXT_CTRL, (0x0u << 16) | depth);
 	mt7922_write32(device, MT_WFDMA0_RX_RING_EXT_CTRL + 0x08,
 		(0x40u << 16) | depth);
+	mt7922_write32(device, MT_WFDMA0_RX_RING_EXT_CTRL + 0x10,
+		(0xc0u << 16) | depth);
 }
 
 
@@ -331,6 +333,16 @@ mt7922_dma_setup(mt7922_dev* device)
 	if (status != B_OK)
 		goto fail;
 
+	/* The part stops answering on that ring once its firmware is running and
+	 * starts answering on this one instead. Both are kept, because nothing
+	 * says precisely when it changes over.
+	 */
+	status = mt7922_rx_ring_init(device, &device->lateEventRing,
+		MT_RX_LATE_RING_BASE, MT7922_RXQ_MCU_WM, MT7922_RX_LATE_RING_SIZE,
+		"mt7922 late event ring");
+	if (status != B_OK)
+		goto fail;
+
 	/* One buffer for the command being sent and one for the piece of firmware
 	 * being sent. Both are reused, so each is refilled only once the card has
 	 * finished reading the last thing put there.
@@ -369,6 +381,8 @@ mt7922_dma_teardown(mt7922_dev* device)
 	mt7922_ring_free(&device->commandRing);
 	mt7922_ring_free(&device->eventRing);
 	mt7922_dma_free(&device->eventRing.buffers);
+	mt7922_ring_free(&device->lateEventRing);
+	mt7922_dma_free(&device->lateEventRing.buffers);
 	mt7922_dma_free(&device->commandBuffer);
 	mt7922_dma_free(&device->firmwareBuffer);
 	device->ringsReady = false;

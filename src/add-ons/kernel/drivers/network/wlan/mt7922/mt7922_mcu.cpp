@@ -39,6 +39,16 @@
 #define MCU_CMD_PATCH_SEM_CONTROL	0x10
 #define MCU_CMD_FW_SCATTER		0xee
 
+/* Commands of the other kind. They differ on the wire in one byte only: they
+ * say they are a setting rather than saying nothing at all.
+ */
+#define MCU_CE_CMD_GET_NIC_CAPAB	0x8a
+#define MCU_Q_SET			1
+
+/* What the firmware may say about itself. */
+#define MT_NIC_CAP_MAC_ADDR		0x07
+#define MT_NIC_CAP_PHY			0x08
+
 /* The header on an outbound command. */
 #define MT_TXD0_TX_BYTES_MASK		0x0000ffff
 #define MT_TX_TYPE_CMD			2
@@ -174,14 +184,11 @@ mt7922_ring_drain(mt7922_dev* device, mt7922_ring* ring, bigtime_t timeout)
 /* Collect one thing the part has said. A receiving descriptor is the card's
  * until it marks it done; taking it back means clearing that mark again.
  */
-static status_t
-mt7922_event_read(mt7922_dev* device, uint8* buffer, size_t* length,
-	bigtime_t timeout)
+static bool
+mt7922_ring_take(mt7922_dev* device, mt7922_ring* ring, uint8* buffer,
+	size_t* length)
 {
-	mt7922_ring* ring = &device->eventRing;
-	bigtime_t deadline = system_time() + timeout;
-
-	while (true) {
+	{
 		mt7922_desc* descriptor
 			= &((mt7922_desc*)ring->descriptors.address)[ring->tail];
 
@@ -212,6 +219,34 @@ mt7922_event_read(mt7922_dev* device, uint8* buffer, size_t* length,
 			mt7922_write32(device, ring->registers + MT_RING_CPU_INDEX,
 				ring->head);
 
+			return true;
+		}
+	}
+
+	return false;
+}
+
+
+/* The part answers on one ring while it is being given its firmware and on
+ * another once that firmware is running, and nothing says exactly when it
+ * changes over. Watching both costs one extra read and removes the question.
+ */
+static status_t
+mt7922_event_read(mt7922_dev* device, uint8* buffer, size_t* length,
+	bigtime_t timeout)
+{
+	bigtime_t deadline = system_time() + timeout;
+
+	while (true) {
+		size_t got = *length;
+		if (mt7922_ring_take(device, &device->eventRing, buffer, &got)) {
+			*length = got;
+			return B_OK;
+		}
+
+		got = *length;
+		if (mt7922_ring_take(device, &device->lateEventRing, buffer, &got)) {
+			*length = got;
 			return B_OK;
 		}
 
@@ -230,9 +265,12 @@ mt7922_event_read(mt7922_dev* device, uint8* buffer, size_t* length,
  * zero would make an announcement look like an answer.
  */
 static status_t
-mt7922_mcu_send(mt7922_dev* device, uint8 command, const void* payload,
-	size_t payloadLength, bool wantAnswer, uint8* answer)
+mt7922_mcu_send_etc(mt7922_dev* device, uint8 command, uint8 setQuery,
+	const void* payload, size_t payloadLength, uint8* reply,
+	size_t* replyLength)
 {
+	bool wantAnswer = reply != NULL;
+
 	if (payloadLength + MCU_TXD_SIZE > device->commandBuffer.size)
 		return B_BAD_VALUE;
 
@@ -264,7 +302,7 @@ mt7922_mcu_send(mt7922_dev* device, uint8 command, const void* payload,
 
 	packet[0x24] = command;
 	packet[0x25] = MCU_PKT_ID;
-	packet[0x26] = MCU_Q_NA;
+	packet[0x26] = setQuery;
 	packet[0x27] = device->sequence;
 	packet[0x2a] = MCU_S2D_H2N;
 
@@ -290,7 +328,7 @@ mt7922_mcu_send(mt7922_dev* device, uint8 command, const void* payload,
 	bigtime_t deadline = system_time() + MCU_RESPONSE_TIMEOUT;
 
 	while (system_time() < deadline) {
-		uint8 event[512];
+		uint8 event[1024];
 		size_t got = sizeof(event);
 
 		status = mt7922_event_read(device, event, &got, MCU_RESPONSE_TIMEOUT);
@@ -304,13 +342,32 @@ mt7922_mcu_send(mt7922_dev* device, uint8 command, const void* payload,
 		if (event[0x1d] != device->sequence)
 			continue;
 
-		if (answer != NULL)
-			*answer = got > MCU_STATUS_OFFSET ? event[MCU_STATUS_OFFSET] : 0;
-
+		size_t copy = got < *replyLength ? got : *replyLength;
+		memcpy(reply, event, copy);
+		*replyLength = got;
 		return B_OK;
 	}
 
 	return B_TIMED_OUT;
+}
+
+
+static status_t
+mt7922_mcu_send(mt7922_dev* device, uint8 command, const void* payload,
+	size_t payloadLength, bool wantAnswer, uint8* answer)
+{
+	uint8 reply[256];
+	size_t replyLength = sizeof(reply);
+
+	status_t status = mt7922_mcu_send_etc(device, command, MCU_Q_NA, payload,
+		payloadLength, wantAnswer ? reply : NULL, &replyLength);
+
+	if (status == B_OK && answer != NULL) {
+		*answer = replyLength > MCU_STATUS_OFFSET
+			? reply[MCU_STATUS_OFFSET] : 0;
+	}
+
+	return status;
 }
 
 
@@ -618,4 +675,83 @@ mt7922_mcu_start_firmware(mt7922_dev* device)
 		}
 		snooze(MCU_POLL_INTERVAL);
 	}
+}
+
+
+/* Ask the running firmware what it is.
+ *
+ * The answer is a count and then that many pieces, each headed by what it is
+ * and how long it is. The length counts the piece and not its header, which is
+ * the sort of thing that is only wrong once.
+ *
+ * Among the pieces is the address this radio answers to - the Wi-Fi side's
+ * equivalent of the Bluetooth half's, and the first thing this part says about
+ * itself that is of any use to anyone.
+ */
+status_t
+mt7922_mcu_read_capability(mt7922_dev* device)
+{
+	uint8 reply[1024];
+	size_t length = sizeof(reply);
+
+	status_t status = mt7922_mcu_send_etc(device, MCU_CE_CMD_GET_NIC_CAPAB,
+		MCU_Q_SET, NULL, 0, reply, &length);
+	if (status != B_OK) {
+		ERROR("the firmware would not say what it is: %s\n", strerror(status));
+		return status;
+	}
+
+	if (length < MCU_RXD_SIZE + 4) {
+		ERROR("what it said about itself is too short (%" B_PRIuSIZE ")\n",
+			length);
+		return B_IO_ERROR;
+	}
+
+	uint32 count = reply[MCU_RXD_SIZE] | (reply[MCU_RXD_SIZE + 1] << 8);
+	size_t at = MCU_RXD_SIZE + 4;
+
+	TRACE("the firmware says %" B_PRIu32 " things about itself\n", count);
+
+	for (uint32 i = 0; i < count && at + 8 <= length; i++) {
+		uint32 tag = reply[at] | ((uint32)reply[at + 1] << 8)
+			| ((uint32)reply[at + 2] << 16) | ((uint32)reply[at + 3] << 24);
+		uint32 size = reply[at + 4] | ((uint32)reply[at + 5] << 8)
+			| ((uint32)reply[at + 6] << 16) | ((uint32)reply[at + 7] << 24);
+
+		at += 8;
+		if (at + size > length)
+			break;
+
+		switch (tag) {
+			case MT_NIC_CAP_MAC_ADDR:
+				if (size >= 6) {
+					memcpy(device->address, reply + at, 6);
+					device->hasAddress = true;
+				}
+				break;
+
+			case MT_NIC_CAP_PHY:
+				if (size >= 12) {
+					device->streams = reply[at + 4];
+					device->bands = reply[at + 10];
+				}
+				break;
+		}
+
+		at += size;
+	}
+
+	if (!device->hasAddress) {
+		ERROR("the firmware never said what address this radio answers to\n");
+		return B_ERROR;
+	}
+
+	TRACE("radio %02x:%02x:%02x:%02x:%02x:%02x, %u stream%s, %s%s\n",
+		device->address[0], device->address[1], device->address[2],
+		device->address[3], device->address[4], device->address[5],
+		device->streams, device->streams == 1 ? "" : "s",
+		(device->bands & 1) != 0 ? "2.4 GHz" : "",
+		(device->bands & 2) != 0 ? " and 5 GHz" : "");
+
+	return B_OK;
 }

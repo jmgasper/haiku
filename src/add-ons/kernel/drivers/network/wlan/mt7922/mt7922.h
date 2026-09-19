@@ -138,6 +138,12 @@ struct mt7922_dma_mem {
 #define MT_WFDMA0_TX_RING_EXT_CTRL	0x000d4600
 #define MT_WFDMA0_RX_RING_EXT_CTRL	0x000d4680
 
+/* The part answers on one ring while it is being given its firmware and on
+ * another once that firmware is running. Both have the same hardware index
+ * and are told apart only by where their registers live.
+ */
+#define MT_RX_LATE_RING_BASE		0x000d4540
+
 #define MT_DMASHDL_SW_CONTROL		0x7c026004
 #define MT_DMASHDL_BYPASS		(1 << 28)
 
@@ -155,6 +161,7 @@ struct mt7922_dma_mem {
 #define MT7922_TX_MCU_RING_SIZE		256
 #define MT7922_TX_FWDL_RING_SIZE	128
 #define MT7922_RX_MCU_RING_SIZE		8
+#define MT7922_RX_LATE_RING_SIZE	512
 #define MT7922_RX_WA_RING_SIZE		512
 #define MT7922_RX_RING_SIZE		1536
 
@@ -234,10 +241,16 @@ struct mt7922_dev {
 	 */
 	mt7922_ring	firmwareRing;	/* firmware payload, outbound */
 	mt7922_ring	commandRing;	/* commands, outbound */
-	mt7922_ring	eventRing;	/* what it says back */
+	mt7922_ring	eventRing;	/* what it says back before firmware */
+	mt7922_ring	lateEventRing;	/* and after: the part changes rings */
 	mt7922_dma_mem	commandBuffer;	/* one command at a time */
 	mt7922_dma_mem	firmwareBuffer;	/* one piece of firmware at a time */
 	uint8		sequence;	/* ties an answer to what was asked */
+
+	uint8		address[6];	/* what this radio answers to */
+	bool		hasAddress;
+	uint8		streams;
+	uint8		bands;		/* 1 is 2.4 GHz, 2 is 5 GHz */
 	bool		ringsReady;
 };
 
@@ -257,6 +270,7 @@ status_t mt7922_firmware_read_ram(mt7922_dev* device,
 void mt7922_firmware_free(mt7922_firmware* firmware);
 
 status_t mt7922_mcu_start_firmware(mt7922_dev* device);
+status_t mt7922_mcu_read_capability(mt7922_dev* device);
 
 status_t mt7922_setup(mt7922_dev* device);
 void mt7922_teardown(mt7922_dev* device);
