@@ -504,6 +504,7 @@ mtk_rxwork(void* arg, int pending)
 {
 	struct mtk_softc* sc = arg;
 
+	sc->sc_beat++;
 	mtk_receive(sc);
 }
 

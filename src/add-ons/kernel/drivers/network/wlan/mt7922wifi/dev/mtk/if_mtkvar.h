@@ -321,7 +321,14 @@ struct mtk_softc {
 	 * and take its lock; staying out of the way while it moves between
 	 * states removes us from a window we have no business being in.
 	 */
-	int			sc_settling;
+	/* A heartbeat from the receive thread, watched by the callout. When
+	 * the stack seizes up that thread stops, and nothing reaches the log
+	 * because nothing gets flushed - so the driver says so itself, in the
+	 * one way that survives: by stopping the machine in the debugger.
+	 */
+	uint32_t		sc_beat;
+	uint32_t		sc_lastbeat;
+	int			sc_stalled;
 	uint32_t		sc_scan_starts;
 	uint32_t		sc_scan_ends;
 
