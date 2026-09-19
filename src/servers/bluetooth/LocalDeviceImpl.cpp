@@ -435,8 +435,34 @@ LocalDeviceImpl::HandleEvent(struct hci_event_header* event)
 
 			request = FindPetition(event->ecode, commandStatus->opcode,
 				&eventIndexLocation);
-			if (request != NULL)
+			if (request != NULL) {
 				CommandStatus(commandStatus, request, eventIndexLocation);
+				break;
+			}
+
+			// A controller that will not run a command at all refuses it
+			// here, and then says nothing further about it - there will be
+			// no Command Complete. Whoever asked for one is waiting for an
+			// answer that is never coming, so hand them the refusal and let
+			// the request go. Not every controller implements every command,
+			// and one that does not should not be able to wedge its caller.
+			if (commandStatus->status != BT_OK) {
+				request = FindPetition(HCI_EVENT_CMD_COMPLETE,
+					commandStatus->opcode, &eventIndexLocation);
+
+				if (request != NULL) {
+					TRACE_BT("LocalDeviceImpl: %s refused, failing the"
+						" request waiting on it\n",
+						BluetoothCommandOpcode(commandStatus->opcode));
+
+					BMessage refusal;
+					refusal.AddUInt8("status", commandStatus->status);
+					request->SendReply(&refusal);
+
+					ClearWantedEvent(request, HCI_EVENT_CMD_COMPLETE,
+						commandStatus->opcode);
+				}
+			}
 
 			break;
 		}
