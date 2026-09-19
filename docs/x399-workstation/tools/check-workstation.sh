@@ -90,6 +90,32 @@ $SSH 'set -u
 	done
 	(cd /boot/home/tests && ./audioout 0 >/dev/null 2>&1)
 
+	echo "bluetooth"
+	# The radio is a bootloader until the driver hands it its firmware, and
+	# it answers nothing at all before that - so the thing worth asking is
+	# whether the stack can get the adapter to say who it is, which needs the
+	# firmware, the driver, the kernel modules and the server all working.
+	fw=$(ls /boot/system/non-packaged/data/firmware/h2generic/*.bin \
+		2>/dev/null | head -1)
+	[ -n "$fw" ] && say ok "the radio firmware is installed" "$(basename $fw)" \
+		|| say no "the radio firmware is installed" "not found"
+
+	ready=$(grep -a "mediatek_setup: MT.* ready" /var/log/syslog | tail -1 \
+		| sed "s/.*setup: //")
+	[ -n "$ready" ] && say ok "the radio took its firmware" "$ready" \
+		|| say no "the radio took its firmware" "the driver never said so"
+
+	srv=$(ps | grep -c "[b]luetooth_server")
+	[ "$srv" -ge 1 ] && say ok "the bluetooth server is running" "" \
+		|| say no "the bluetooth server is running" "nothing started it"
+
+	# bttest prints the adapter address once the stack has claimed it.
+	addr=$(cd /boot/home/tests 2>/dev/null \
+		&& timeout 60 ./bttest 1 2>/dev/null \
+		| sed -n "s/^adapter [0-9-]*: //p" | head -1)
+	[ -n "$addr" ] && say ok "the stack can reach the adapter" "$addr" \
+		|| say no "the stack can reach the adapter" "no answer"
+
 	echo "the rest"
 	usb=$(listusb | grep -c RootHub)
 	[ "$usb" -ge 5 ] && say ok "every USB controller is up" "$usb root hubs" \

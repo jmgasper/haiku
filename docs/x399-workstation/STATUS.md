@@ -6,10 +6,11 @@ listed as verified is untested.
 `tools/check-workstation.sh` re-checks the machine against all of this in one
 pass, with nothing set in the environment of the programs it runs, because
 several of these have looked fine while being quietly broken. It last came back
-13 working, 0 not.
+17 working, 0 not.
 
 What still needs someone at the machine: a monitor in a DisplayPort (no port
-asserts hotplug at present), devices in each USB port, and the serial console.
+asserts hotplug at present), devices in each USB port, the serial console, and
+a Bluetooth device to pair with.
 
 | Area | Goal | Status |
 | --- | --- | --- |
@@ -20,6 +21,8 @@ asserts hotplug at present), devices in each USB port, and the serial console.
 | USB | all controllers and ports enumerate devices | all 5 xHCI controllers start and publish a root hub; the NanoKVM enumerates on the ASM2142. The individual ports need devices plugged into them |
 | Audio | ALC1220 analog output, HDMI audio | verified both: two outputs, each clocking its stream at the hardware's own rate (48322 and 48321 frames a second against the 48000 asked for). The graphics card's codec needed a change to Haiku's hda driver, which discarded any codec whose converters are all digital. The monitor reports it takes stereo. What nobody here can check is whether a speaker makes a sound |
 | Graphics | GTX 1070/1080 Ti accelerated 2D/3D, 3-4 monitors | 3D verified: Vulkan on the GPU (1.4 TFLOP/s compute, 57 Gpixel/s fill) and OpenGL 4.5 through it, with frames copied straight into the screen's own frame buffer in video memory rather than sent through the host - a lit sphere at 1600x900 goes from 209 to 970 frames a second. Vertical sync works (locks to 60.0) now that the accelerant hands out a retrace semaphore. Any program gets the GPU, with nothing set in its environment. Three heads driving one spanning desktop is verified, but with the third and second forced rather than plugged in. 2D is not accelerated at all: it runs four to eight times slower than drawing in memory, which is still far more than a desktop needs at one monitor |
+| Bluetooth | TP-Link Archer TX55E, working adapter and discovery | verified: the adapter answers as `90:74:ae:33:d7:cb` "MTK MT7922 #1" and an inquiry finds devices nearby, from a cold boot with nothing done by hand. The radio is a MediaTek MT7922 on USB, which runs a bootloader rather than a Bluetooth controller until it is given firmware - it takes the HCI Reset every stack opens with and never answers. The driver now hands it that firmware at open. Three further faults were in the way: `h2generic` took its event endpoint from the last interface that had one, which on this radio is MediaTek's audio interface, so it listened where no reply is ever sent; it stood isochronous transfers on the SCO endpoints at open, which nothing wants until there is a call; and the server never answered a request for a command the controller refuses outright, which hung the first program to ask for an adapter. Remote name lookup still fails, so discovered devices show an address and no name. Pairing and audio profiles are untried |
+| Wi-Fi | TP-Link Archer TX55E | not possible with this card. Its Wi-Fi half is a MediaTek MT7922 (`14c3:7922`), and no driver for it exists in Haiku or in FreeBSD, whose drivers Haiku's wireless support is built from. Haiku ships Intel, Atheros, Realtek, Ralink and Broadcom drivers; an Intel AX200 or AX210 card would be served by `iaxwifi200`. Writing an MT7922 driver means porting Linux's `mt76`, which is built on mac80211 where Haiku emulates FreeBSD's net80211 - a rewrite rather than a port |
 | Sleep | S3 suspend and resume | sleeps and wakes; the display comes back, but the NVMe and the network card usually do not. Paused until a serial console arrives, which is also what the one untested path in the vertical sync work needs |
 
 ## Log
@@ -571,3 +574,59 @@ asserts hotplug at present), devices in each USB port, and the serial console.
   Only the KVM is plugged in, so what is left in this area needs someone at the
   machine: devices in each physical port, on both the chipset and the
   Thunderbolt controller.
+- 2026-09-19: Bluetooth works on the TP-Link Archer TX55E, from a cold boot
+  with nothing done by hand: the adapter reports `90:74:ae:33:d7:cb` and an
+  inquiry finds a device nearby. Four separate faults stood between the card
+  and a working adapter, and each hid the next.
+
+  The radio is a MediaTek MT7922 (USB `13d3:3610`), which comes out of reset
+  running a bootloader. It answers reads of its own registers and its own
+  download protocol and nothing else - send it the HCI Reset every Bluetooth
+  stack opens with and it takes the packet and stays silent. That was measured
+  rather than guessed: `btraw` sends a command straight to the radio over the
+  USB raw interface, and the radio accepted it and never replied, while
+  `btchip` read chip id `0x7922` and revision `0x8a10` from the bootloader's
+  registers on the same device. `h2generic` now reads MediaTek's firmware
+  image from `data/firmware/h2generic` and feeds it over in 250 byte pieces
+  wrapped in the vendor's WMT protocol, at device open rather than at probe
+  because the disk is not mounted that early. A radio that already holds a
+  section says so, so a second open costs 120 ms against the first 21 seconds.
+
+  With the radio awake, the stack still saw nothing. `h2generic` scanned every
+  interface for its endpoints and kept the last of each kind it found: this
+  radio carries a third interface for isochronous audio whose endpoints are
+  interrupt in and out, so the driver was listening on MediaTek's audio
+  interface. Commands went out correctly, the radio answered correctly, and
+  the reply sat in an endpoint nobody read - proved by sending a command
+  through the driver and then finding its answer still waiting in the endpoint
+  with `btraw`. Events and ACL data are spoken on interface zero only.
+
+  The driver also stood isochronous transfers on the SCO endpoints at every
+  open, on an alternate setting it selects at probe that reserves bandwidth
+  every frame. Nothing asks for voice until a connection wants it, and the
+  driver had carried a note asking for exactly this for years. Removing it
+  took the idle receive traffic from 113 completions in five seconds to none.
+
+  Last, `bluetooth_server` never answered a request for a command the
+  controller refuses. A controller that will not run a command says so with a
+  Command Status carrying an error and then says nothing more; the server only
+  looked for a request waiting on the same event it had just received, so a
+  request waiting on Command Complete stayed in the queue for ever. This
+  controller refuses Read Stored Link Key, which the kit asks for while
+  opening an adapter, so the first program to ask for one hung. Any controller
+  may refuse any command, so the refusal is now matched against whoever is
+  waiting and handed to them as an error.
+
+  Nothing started the server either: the kit reaches it by signature, and a
+  BMessenger finds a running program rather than starting one. It is launched
+  once the volumes are mounted. Not on demand - that has the launch daemon
+  hold the port and wait for the server to adopt it, which this server does
+  not do, so every message to it sat unread.
+
+  Remote name lookup still fails, so discovered devices show an address and no
+  name. Pairing and the audio profiles are untried.
+
+  The Wi-Fi half of the same card cannot work. It is a MediaTek MT7922
+  (`14c3:7922`) and no driver for it exists in Haiku or in FreeBSD, which is
+  where Haiku's wireless drivers come from. An Intel AX200 or AX210 card would
+  be driven by the `iaxwifi200` that Haiku already ships.
