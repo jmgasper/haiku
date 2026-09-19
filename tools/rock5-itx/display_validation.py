@@ -1087,9 +1087,14 @@ DP_VIDEO = re.compile(
     r' clk=([0-9a-f]{8}) background=([0-9a-f]{8}) commit_polls=(\d+) config=((?:[0-9a-f]{8},){4}[0-9a-f]{8})'
     r' msa=((?:[0-9a-f]{8},){2}[0-9a-f]{8}) hblank=([0-9a-f]{8}) vsample=([0-9a-f]{8})$', re.M)
 DP_BACKGROUND = (0x3ff << 20) | (0x100 << 10) | 0x3ff
+DP_WINDOW = re.compile(
+    r'^ROCK5_DISPLAY_DP_WINDOW desktop=(\d) region=([0-9a-f]{8}) address=([0-9a-f]{8}) virtual=(\d+) active=([0-9a-f]{8})'
+    r' control1=([0-9a-f]{8}) axi=([0-9a-f]{8}) delay=([0-9a-f]{8}),([0-9a-f]{8}) gating=([0-9a-f]{8}),([0-9a-f]{8})'
+    r' polls=(\d+) mixers=((?:[0-9a-f]{8},){15}[0-9a-f]{8})$', re.M)
 DP_RESULTS = {0: 'ok', 1: 'not_ready', 2: 'no_hot_plug', 3: 'refclk_unsupported', 4: 'lcpll_timeout',
     5: 'aux_timeout', 6: 'aux_nack', 7: 'aux_short', 8: 'edid_invalid', 9: 'ropll_timeout', 10: 'training_failed',
-    11: 'gpll_unexpected', 12: 'port_busy', 13: 'port_timeout'}
+    11: 'gpll_unexpected', 12: 'port_busy', 13: 'port_timeout', 14: 'no_desktop_window', 15: 'window_busy',
+    16: 'window_verify_failed'}
 DP_LINK_RATES = {0x06: 1.62, 0x0a: 2.7, 0x14: 5.4, 0x1e: 8.1}
 
 
@@ -1133,6 +1138,49 @@ def decode_dp_video(body):
         msa=g[21].split(','), hblank=g[22], vsample=g[23])
 
 
+def decode_dp_window(body):
+    """Check the window step: ESMART0 on video port 1 cloning the desktop window with its buffer and geometry."""
+    line = DP_WINDOW.search(body)
+    if line is None:
+        raise ValidationError('DP window line missing')
+    g = [line.group(i) for i in range(1, 14)]
+    desktop, region, address, virtual, active = int(g[0]), int(g[1], 16), int(g[2], 16), int(g[3]), int(g[4], 16)
+    control1, axi = int(g[5], 16), int(g[6], 16)
+    delay, gating = [int(g[7], 16), int(g[8], 16)], [int(g[9], 16), int(g[10], 16)]
+    mixers = [int(w, 16) for w in g[12].split(',')]
+    if desktop not in (1, 2, 3) or not region & 1 or not address or not virtual:
+        raise ValidationError('no desktop window cloned: %s' % line.group(0))
+    width, height = (active & 0xffff) + 1, (active >> 16) + 1
+    if width > 1920 or height > 1080 or virtual < width:
+        raise ValidationError('desktop window %dx%d (stride %d) does not fit the 1080p port' % (width, height, virtual))
+    if delay[1] & 0xff != (delay[0] >> (desktop * 8)) & 0xff or gating[1] & (1 << 31):
+        raise ValidationError('window delay or automatic gating wrong: %s' % line.group(0))
+    return dict(desktop=desktop, region='%08x' % region, address='%08x' % address, virtual=virtual, width=width,
+        height=height, control1='%08x' % control1, axi='%08x' % axi, delay=g[7:9], gating=g[9:11], polls=int(g[11]),
+        mixers=[g[12].split(',')[i * 4:(i + 1) * 4] for i in range(4)])
+
+
+def check_window_frame(path, width, height, rgb=(255, 64, 255), tolerance=40):
+    """Check a DP1 capture shows the cloned desktop in its top-left width x height and the background elsewhere."""
+    from PIL import Image
+    image = Image.open(path).convert('RGB')
+    if image.size != (1920, 1080):
+        raise ValidationError('capture size %r is not 1920x1080' % (image.size,))
+    near = lambda p: all(abs(a - b) <= tolerance for a, b in zip(p, rgb))
+    inside = image.crop((8, 8, width - 8, height - 8)).resize((32, 24))
+    outside = [image.crop(box).resize((16, 16)) for box in ((width + 16, 0, 1920, 1080), (0, height + 16, width, 1080))]
+    inside_near = sum(1 for p in inside.getdata() if near(p))
+    outside_pixels = [p for part in outside for p in part.getdata()]
+    outside_near = sum(1 for p in outside_pixels if near(p))
+    mean = [round(sum(p[i] for p in inside.getdata()) / (32 * 24)) for i in range(3)]
+    result = dict(status='pass', inside_background=inside_near, inside_pixels=32 * 24, inside_mean=mean,
+        outside_background=outside_near, outside_pixels=len(outside_pixels), width=width, height=height)
+    if inside_near > 0.1 * 32 * 24 or outside_near < 0.95 * len(outside_pixels):
+        result['status'] = 'fail'
+        raise ValidationError('capture does not show the window over the background: %r' % result)
+    return result
+
+
 def check_colour_frame(path, rgb, tolerance=40, share=0.9):
     """Check that a captured frame is (almost) uniformly one colour, as a plain background shows."""
     from PIL import Image
@@ -1156,7 +1204,7 @@ def decode_dpcd(data):
         downstream_type=(data[5] >> 1) & 3, downstream_ports=data[7] & 0xf, training_interval=data[0xe])
 
 
-def validate_dp_probe(body, edid=False, train=False, video=False):
+def validate_dp_probe(body, edid=False, train=False, video=False, window=False):
     """Return the decoded DP probe from a native --dp transcript or raise ValidationError.
 
     A pass means the path came up to the AUX channel exactly as the driver
@@ -1173,7 +1221,7 @@ def validate_dp_probe(body, edid=False, train=False, video=False):
     result, phase = int(line.group(1)), int(line.group(2))
     if result != 0:
         raise ValidationError('DP probe result %s at phase %d' % (DP_RESULTS.get(result, result), phase))
-    if phase != (9 if video else 8 if train else 7 if edid else 6):
+    if phase != (10 if window else 9 if video else 8 if train else 7 if edid else 6):
         raise ValidationError('DP probe ended at phase %d' % phase)
     pin_before, pin_after = int(line.group(3), 16), int(line.group(4), 16)
     if (pin_after >> 4) & 0xf != 5:
@@ -1238,12 +1286,15 @@ def validate_dp_probe(body, edid=False, train=False, video=False):
             cr_loops=int(trained.group(7)), eq_loops=int(trained.group(8)), ropll_polls=int(trained.group(9)),
             swing=[int(trained.group(10)), int(trained.group(11))], pre=[int(trained.group(12)), int(trained.group(13))],
             phyif='%08x' % phyif, cctl='%08x' % cctl, status=status.hex())
-    started = None
+    started = shown = None
     if video:
         started = decode_dp_video(body)
+    if window:
+        shown = decode_dp_window(body)
     summary = 'ROCK5_DISPLAY_DP_PASS edid=%d train=%d' % (1 if edid else 0, 1 if train else 0)
     # Probes before the video step (hrev60097+304 and older) print no video field.
-    summaries = body.count(summary + ' video=%d\n' % (1 if video else 0)) + (0 if video else body.count(summary + '\n'))
+    summaries = body.count(summary + ' video=%d%s\n' % (1 if video else 0, ' window=1' if window else '')) \
+        + (0 if video else body.count(summary + '\n'))
     if summaries != 1 or body.count('ROCK5_DISPLAY_DP_PASS ') != 1:
         raise ValidationError('DP summary missing or inconsistent')
     return dict(status='pass', result=result, phase=phase, pin_before='%08x' % pin_before, pin_after='%08x' % pin_after,
@@ -1254,5 +1305,5 @@ def validate_dp_probe(body, edid=False, train=False, video=False):
         usbdp_grf=[words.group(3), words.group(4)], vo0_grf=[words.group(5), words.group(6)],
         cctl=[words.group(7), words.group(8)], aux_clock=[words.group(9), words.group(10)],
         pma_before=words.group(11).split(','), pma_after=words.group(12).split(','),
-        dpcd=dpcd.hex(), dpcd_decoded=decoded, edid=edid_block.hex() if edid_block else None, training=training, video=started,
+        dpcd=dpcd.hex(), dpcd_decoded=decoded, edid=edid_block.hex() if edid_block else None, training=training, video=started, window=shown,
         edid_base=decode_edid_base(edid_block) if edid_block else None)

@@ -225,7 +225,8 @@ VopModelStep()
 			if (offset == 0xe00 && (value & 0x80000000u) != 0)
 				sVopHoldCountdown = sHoldNever ? -1 : 3;
 		} else if (sAllowDp && ((offset >= 0xd00 && offset <= 0xd54) || offset == 0x74 || offset == 0x6e4
-				|| offset == 0x028 || offset == 0x030)) {
+				|| offset == 0x028 || offset == 0x030 || (offset >= 0x1800 && offset < 0x1900)
+				|| (offset >= 0x650 && offset < 0x670) || offset == 0x6f8 || offset == 0x008)) {
 			// Video port 1 for the DP probe: timing, background and the interface mux are plain words.
 			sVopOverrides[offset] = value;
 		} else
@@ -2790,7 +2791,7 @@ main()
 
 	// DisplayPort probe: gating and refusals, the full path up to the AUX
 	// channel with DPCD and EDID, and every way it stops early.
-	static_assert(sizeof(DpProbeRequest) <= 640, "DP request must stay small on the kernel stack");
+	static_assert(sizeof(DpProbeRequest) <= 768, "DP request must stay small on the kernel stack");
 	Prepare();
 	Controller dpController = controller;
 	controller.dpAuxEnabled = false;
@@ -2819,6 +2820,10 @@ main()
 	dp.flags = 16;
 	assert(Control(primary, kDpProbe, &dp, sizeof(dp)) == B_BAD_VALUE);
 	dp.flags = kDpProbeVideo; // video needs a trained link
+	assert(Control(primary, kDpProbe, &dp, sizeof(dp)) == B_BAD_VALUE);
+	dp.flags = kDpProbeTrain | kDpProbeWindow; // a window needs video
+	assert(Control(primary, kDpProbe, &dp, sizeof(dp)) == B_BAD_VALUE);
+	dp.flags = 32;
 	assert(Control(primary, kDpProbe, &dp, sizeof(dp)) == B_BAD_VALUE);
 	assert(sMapAttempts == 0);
 	auto probe = [&](uint32 flags) {
@@ -2957,6 +2962,34 @@ main()
 	assert(dp.vsampleAfter == ((2u << 21) | (1u << 16) | (1u << 5)));
 	assert(sequenceOf(sDpWrites, {{0x300u, (2u << 21) | (1u << 16)}, {0x330u, 0x1007fu},
 		{0x300u, (2u << 21) | (1u << 16) | (1u << 5)}}));
+	// The window: ESMART0 clones the desktop window ESMART2 on video port 1.
+	Prepare(); sAllowDp = true;
+	sVopOverrides[0x1c04] = (0xcu << 4) | (0xdu << 12); // the board's ids for ESMART2
+	sVopOverrides[0x6f8] = 0x00170000;
+	for (unsigned w = 0; w < 4; w++) {
+		sVopOverrides[0x650 + 0x40 + w * 4] = 0x100 + w; // MIX4
+		sVopOverrides[0x650 + 0x50 + w * 4] = 0x200 + w; // MIX5
+	}
+	assert(probe(kDpProbeTrain | kDpProbeVideo | kDpProbeWindow) == kDpOK && dp.phase == kDpPhaseWindow);
+	assert(dp.desktopWindow == 2 && dp.windowAddress == kModelFirmwareAddress && dp.windowVirtual == 1920);
+	assert(dp.windowActive == 0x0437077f && dp.windowRegionControl == 1);
+	assert(sVopOverrides[0x1810] == 1 && sVopOverrides[0x1814] == kModelFirmwareAddress && sVopOverrides[0x181c] == 1920);
+	assert(sVopOverrides[0x1820] == 0x0437077f && sVopOverrides[0x1824] == 0x0437077f && sVopOverrides[0x1828] == 0);
+	assert(((sVopOverrides[0x1804] >> 4) & 0x1f) == 0x10 && ((sVopOverrides[0x1804] >> 12) & 0x1f) == 0x11);
+	assert((sVopOverrides[0x1808] & 2) == 2 && sVopOverrides[0x6f8] == 0x00170017 && dp.smartDelay[1] == 0x00170017);
+	assert((sVopOverrides[0x008] & 0x80000000u) == 0 && dp.autoGating[0] == 0x80000000u);
+	for (unsigned w = 0; w < 4; w++)
+		assert(sVopOverrides[0x650 + w * 4] == 0x100 + w && sVopOverrides[0x660 + w * 4] == 0x200 + w);
+	assert(dp.mixers[1][0] == 0x100 && dp.mixers[3][3] == 0x203);
+	assert(logged(sVopWrites, 0x000, 0x8000u | 2 | (2u << 16)) && dp.windowPolls >= 1);
+	// The cursor window above the desktop still leaves ESMART2 as the source.
+	Prepare(); sAllowDp = true; sVopOverrides[0x1e10] = 1;
+	assert(probe(kDpProbeTrain | kDpProbeVideo | kDpProbeWindow) == kDpOK && dp.desktopWindow == 2);
+	// No desktop window, or ESMART0 already in use: nothing of the window is written.
+	Prepare(); sAllowDp = true; sVopOverrides[0x1c10] = 0;
+	assert(probe(kDpProbeTrain | kDpProbeVideo | kDpProbeWindow) == kDpNoDesktopWindow && !logged(sVopWrites, 0x1810, 1));
+	Prepare(); sAllowDp = true; sVopOverrides[0x1810] = 1;
+	assert(probe(kDpProbeTrain | kDpProbeVideo | kDpProbeWindow) == kDpWindowBusy);
 	// A GPLL that is not 1188 MHz: nothing of the port is touched.
 	Prepare(); sAllowDp = true; sGpllCon1 = 0x43;
 	assert(probe(kDpProbeTrain | kDpProbeVideo) == kDpGpllUnexpected && sVopWrites.empty());

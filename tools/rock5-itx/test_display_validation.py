@@ -874,6 +874,33 @@ class DisplayValidationTest(unittest.TestCase):
                 with self.assertRaises(check.ValidationError):
                     check.validate_dp_probe(body, edid=True, train=True, video=True)
 
+    def test_dp_window(self):
+        line = ('ROCK5_DISPLAY_DP_WINDOW desktop=2 region=00000001 address=ed940000 virtual=640 active=01df027f'
+            ' control1=00010100 axi=00000002 delay=00170000,00170017 gating=80000000,00000000 polls=3 mixers='
+            + ','.join('%08x' % i for i in range(16)))
+        decoded = check.decode_dp_window(line + '\n')
+        self.assertEqual((decoded['width'], decoded['height'], decoded['address']), (640, 480, 'ed940000'))
+        for name, bad in [('disabled', line.replace('region=00000001', 'region=00000000')),
+                ('size', line.replace('active=01df027f', 'active=04380780')),
+                ('stride', line.replace('virtual=640', 'virtual=320')),
+                ('delay', line.replace('00170000,00170017', '00170000,00170000')),
+                ('gating', line.replace('80000000,00000000', '80000000,80000000'))]:
+            with self.subTest(name):
+                with self.assertRaises(check.ValidationError):
+                    check.decode_dp_window(bad + '\n')
+        import tempfile
+        from pathlib import Path
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'frame.png'
+            image = Image.new('RGB', (1920, 1080), (225, 41, 233))
+            image.paste((51, 102, 152), (0, 0, 640, 480))
+            image.save(path)
+            self.assertEqual(check.check_window_frame(path, 640, 480)['status'], 'pass')
+            Image.new('RGB', (1920, 1080), (225, 41, 233)).save(path)
+            with self.assertRaises(check.ValidationError):
+                check.check_window_frame(path, 640, 480)
+
     def test_colour_frame(self):
         import tempfile
         from pathlib import Path

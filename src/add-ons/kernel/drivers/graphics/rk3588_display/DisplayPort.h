@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "DisplayModeSet.h"
+#include "DisplayCursor.h"
 
 
 namespace RK3588Display {
@@ -23,11 +24,12 @@ namespace RK3588Display {
 // over I2C-over-AUX. It never enables the main link: no training pattern, no
 // video.
 static const uint32_t kDpProbe = 0x52444910; // writable handle
-static const uint32_t kDpVersion = 2; // 2: video fields
+static const uint32_t kDpVersion = 3; // 2: video fields, 3: window fields
 static const uint32_t kDpProbeEdid = 1; // also read EDID block 0 over I2C-over-AUX
 static const uint32_t kDpProbeIgnoreHotPlug = 2; // continue without a hot-plug
 static const uint32_t kDpProbeTrain = 4; // also train the main link (no video)
 static const uint32_t kDpProbeVideo = 8; // then run video port 1 at 1080p60 on the link (background colour)
+static const uint32_t kDpProbeWindow = 16; // then let ESMART0 on video port 1 scan the desktop frame buffer
 
 static const uint32_t kDpOK = 0;
 static const uint32_t kDpNotReady = 1; // VO0 off or a DP/PHY bus clock gated
@@ -43,6 +45,9 @@ static const uint32_t kDpTrainingFailed = 10; // clock recovery or equalization 
 static const uint32_t kDpGpllUnexpected = 11; // the general PLL is not 1188 MHz
 static const uint32_t kDpPortBusy = 12; // video port 1 is not in standby: somebody else uses it
 static const uint32_t kDpPortTimeout = 13; // video port 1 never took its configuration
+static const uint32_t kDpNoDesktopWindow = 14; // no single enabled ESMART window to clone
+static const uint32_t kDpWindowBusy = 15; // ESMART0 already enabled
+static const uint32_t kDpWindowVerifyFailed = 16; // ESMART0 read back differently after the commit
 
 static const uint32_t kDpPhaseNone = 0;
 static const uint32_t kDpPhasePin = 1;
@@ -54,6 +59,7 @@ static const uint32_t kDpPhaseDpcd = 6;
 static const uint32_t kDpPhaseEdid = 7;
 static const uint32_t kDpPhaseTrain = 8;
 static const uint32_t kDpPhaseVideo = 9;
+static const uint32_t kDpPhaseWindow = 10;
 
 static const unsigned kDpPmaWordCount = 7;
 static const uint32_t kDpPmaOffsets[kDpPmaWordCount] = {0x288, 0x28c, 0x2d0, 0x350, 0x354,
@@ -108,6 +114,10 @@ struct DpProbeRequest {
 	uint32_t interfacePolarityBefore, interfacePolarityAfter; // DSP_IF_POL
 	uint32_t portClock, background, commitPolls;
 	uint32_t videoConfig[5], msa[3], hblankInterval, vsampleAfter;
+	// Window (kDpProbeWindow): ESMART0 on video port 1 cloning the desktop window.
+	uint32_t desktopWindow, windowRegionControl, windowAddress, windowVirtual, windowActive;
+	uint32_t windowControl1, windowAxi, smartDelay[2], autoGating[2], windowPolls;
+	uint32_t mixers[4][4]; // MIX0, MIX1 (VP1 layers 1 and 2) and MIX4, MIX5 (their VP2 equivalents)
 	int64_t startedMicros, finishedMicros;
 };
 
@@ -474,7 +484,10 @@ DpProbeSink(Hardware& hardware, DpProbeRequest& request)
 		uint32_t trained = DpTrainLink(hardware, request);
 		if (trained != kDpOK || (request.flags & kDpProbeVideo) == 0)
 			return trained;
-		return DpStartVideo(hardware, request);
+		uint32_t video = DpStartVideo(hardware, request);
+		if (video != kDpOK || (request.flags & kDpProbeWindow) == 0)
+			return video;
+		return DpShowWindow(hardware, request);
 	}
 	return kDpOK;
 }
@@ -871,6 +884,99 @@ DpStartVideo(Hardware& hardware, DpProbeRequest& request)
 	hardware.WriteDp(kDpHblankInterval, request.hblankInterval);
 	hardware.WriteDp(kDpVsampleControl, vsample | (1u << 5));
 	request.vsampleAfter = hardware.ReadDp(kDpVsampleControl);
+	return kDpOK;
+}
+
+
+// ESMART0 sits on overlay layer 2, the third layer of video port 1 on the
+// firmware's map (OVL_LAYER_SEL 0x76543210, OVL_PORT_SEL 0xa5a47738), above
+// the disabled Cluster0/1. The firmware's desktop window ESMART2 has the same
+// place on video port 2 (layer 6 above Cluster2/3), so ESMART0 gets the
+// mixer words the firmware left for that position (MIX4/MIX5 into MIX0/MIX1),
+// the desktop window's bus, pipeline delay, format, stride, size and buffer,
+// and read ids four above the desktop's (the cursor takes the next two).
+static const uint32_t kDpWindow = 0;
+static const uint32_t kDpWindowMixers[2][2] = {{0, 4}, {1, 5}}; // {VP1 mixer, VP2 source}
+
+
+template<class Hardware>
+uint32_t
+DpShowWindow(Hardware& hardware, DpProbeRequest& request)
+{
+	request.phase = kDpPhaseWindow;
+	uint32_t found = 0;
+	for (unsigned window = 1; window < kVopEsmartCount; window++) {
+		if ((hardware.ReadVop(kVopEsmartBase + window * kVopEsmartStride + kVopEsmartRegionControl) & 1) != 0) {
+			request.desktopWindow = window;
+			found++;
+		}
+	}
+	uint32_t base = kVopEsmartBase + kDpWindow * kVopEsmartStride;
+	if ((hardware.ReadVop(base + kVopEsmartRegionControl) & 1) != 0)
+		return kDpWindowBusy;
+	if (found == 0 || (found > 1 && request.desktopWindow != kVopCursorWindow))
+		return kDpNoDesktopWindow;
+	if (found > 1)
+		request.desktopWindow = 2; // the desktop, with the cursor window above it
+	uint32_t desktop = kVopEsmartBase + request.desktopWindow * kVopEsmartStride;
+	request.windowRegionControl = hardware.ReadVop(desktop + kVopEsmartRegionControl);
+	request.windowAddress = hardware.ReadVop(desktop + kVopEsmartRegionAddress);
+	request.windowVirtual = hardware.ReadVop(desktop + kVopEsmartRegionVirtual);
+	request.windowActive = hardware.ReadVop(desktop + kVopEsmartRegionActive);
+	if ((request.windowActive & 0xffff) >= 1920 || (request.windowActive >> 16) >= 1080)
+		return kDpNoDesktopWindow;
+	for (unsigned i = 0; i < 2; i++) {
+		for (unsigned j = 0; j < 2; j++) {
+			uint32_t mixer = kVopMixerBase + kDpWindowMixers[i][j] * kVopMixerStride;
+			for (unsigned w = 0; w < 4; w++)
+				request.mixers[i * 2 + j][w] = hardware.ReadVop(mixer + w * 4);
+		}
+	}
+	uint32_t desktopControl1 = hardware.ReadVop(desktop + kVopEsmartControl1);
+	uint32_t control1 = hardware.ReadVop(base + kVopEsmartControl1);
+	control1 = (control1 & ~((kVopEsmartAxiIdMask << 4) | (kVopEsmartAxiIdMask << 12) | kVopEsmartYMirror))
+		| (NextAxiId(NextAxiId((desktopControl1 >> 4) & kVopEsmartAxiIdMask)) << 4)
+		| (NextAxiId(NextAxiId((desktopControl1 >> 12) & kVopEsmartAxiIdMask)) << 12);
+	hardware.WriteVop(base + kVopEsmartControl1, control1);
+	request.windowControl1 = control1;
+	uint32_t axi = hardware.ReadVop(base + kVopEsmartAxiControl);
+	axi = (axi & ~2u) | (hardware.ReadVop(desktop + kVopEsmartAxiControl) & 2u);
+	hardware.WriteVop(base + kVopEsmartAxiControl, axi);
+	request.windowAxi = axi;
+	request.smartDelay[0] = hardware.ReadVop(kVopSmartDelay);
+	uint32_t delay = (request.smartDelay[0] & ~(0xffu << (kDpWindow * 8)))
+		| (((request.smartDelay[0] >> (request.desktopWindow * 8)) & 0xff) << (kDpWindow * 8));
+	hardware.WriteVop(kVopSmartDelay, delay);
+	request.smartDelay[1] = hardware.ReadVop(kVopSmartDelay);
+	request.autoGating[0] = hardware.ReadVop(kVopAutoGating);
+	if ((request.autoGating[0] & kVopAutoGatingEnable) != 0)
+		hardware.WriteVop(kVopAutoGating, request.autoGating[0] & ~kVopAutoGatingEnable);
+	request.autoGating[1] = hardware.ReadVop(kVopAutoGating);
+	for (unsigned i = 0; i < 2; i++) {
+		uint32_t mixer = kVopMixerBase + kDpWindowMixers[i][0] * kVopMixerStride;
+		for (unsigned w = 0; w < 4; w++)
+			hardware.WriteVop(mixer + w * 4, request.mixers[i * 2 + 1][w]);
+	}
+	hardware.WriteVop(base + kVopEsmartColorKey, 0);
+	hardware.WriteVop(base + kVopEsmartRegionScaleControl, 0);
+	hardware.WriteVop(base + kVopEsmartRegionScaleFactor, 0);
+	hardware.WriteVop(base + kVopEsmartRegionVirtual, request.windowVirtual);
+	hardware.WriteVop(base + kVopEsmartRegionAddress, request.windowAddress);
+	hardware.WriteVop(base + kVopEsmartRegionActive, request.windowActive);
+	hardware.WriteVop(base + kVopEsmartRegionDisplay, request.windowActive);
+	hardware.WriteVop(base + kVopEsmartRegionStart, 0);
+	hardware.WriteVop(base + kVopEsmartRegionControl, request.windowRegionControl);
+	hardware.WriteVop(kVopConfigDone, kVopConfigDoneEnable | (1u << kVopPort1) | ((1u << kVopPort1) << 16));
+	request.windowPolls = 0;
+	while ((hardware.ReadVop(kVopConfigDone) & (1u << kVopPort1)) != 0) {
+		if (request.windowPolls >= kScanoutPollLimit)
+			return kDpPortTimeout;
+		request.windowPolls++;
+		hardware.Pause(kScanoutPollMicros);
+	}
+	if (hardware.ReadVop(base + kVopEsmartRegionControl) != request.windowRegionControl
+		|| hardware.ReadVop(base + kVopEsmartRegionAddress) != request.windowAddress)
+		return kDpWindowVerifyFailed;
 	return kDpOK;
 }
 
