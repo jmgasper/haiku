@@ -511,8 +511,9 @@ def validate_accelerant(body, observation=None, edid_block0=None, mode=(1920, 10
     firmware mode, or after a mode change the new mode at the unchanged
     1920-pixel row pitch of the frame buffer.
     """
-    geometry = (mode[0], mode[1], 7680)
-    expected_timing = shared_timing(*mode)
+    span = tuple(mode) == (3840, 1080)
+    geometry = (mode[0], mode[1], 15360 if span else 7680)
+    expected_timing = span_timing() if span else shared_timing(*mode)
     if 'ROCK5_DISPLAY_WRITE_OPEN_ALLOWED\n' not in body:
         raise ValidationError('writable open was not admitted')
     if 'ROCK5_DISPLAY_ACCELERANT_REQUEST_CHECKS_PASS' not in body:
@@ -597,7 +598,7 @@ def validate_accelerant(body, observation=None, edid_block0=None, mode=(1920, 10
     # The clone maps the whole frame buffer, which keeps its firmware-mode
     # size (1920x1080x4) across mode changes.
     clone = ACCELERANT_CLONE.search(body)
-    if clone is None or int(clone.group(2)) != 1920 * 1080 * 4:
+    if clone is None or int(clone.group(2)) != (3840 if span else 1920) * 1080 * 4:
         raise ValidationError('frame buffer clone missing or wrong size')
     if 'ROCK5_DISPLAY_ACCELERANT_ACQUIRE_BUSY\n' not in body:
         raise ValidationError('a second acquisition was not refused')
@@ -715,6 +716,21 @@ def check_desktop_frame(path):
     return dict(status='pass', samples=samples)
 
 
+def check_span_right_frame(path):
+    """Raise unless a DP1 capture shows the right half of the spanning desktop: the workspace and the
+    Deskbar (top right of the whole desktop), and no Tracker desktop icons (they sit at the left edge of
+    the whole desktop, on HDMI1)."""
+    result = check_desktop_frame(path)
+    from PIL import Image
+    image = Image.open(path).convert('RGB')
+    icons = image.crop((0, 0, 200, 90)).resize((20, 9))
+    blue = sum(1 for p in icons.getdata() if all(abs(a - b) <= 24 for a, b in zip(p, DESKTOP_BLUE)))
+    result['icon_area_blue'] = blue
+    if blue < 0.95 * 20 * 9:
+        raise ValidationError('the icon area of the DP1 frame is not plain desktop (%d/180): not the right half' % blue)
+    return result
+
+
 MODE_LINE = re.compile(
     r'^ROCK5_DISPLAY_MODE width=(\d+) height=(\d+) clock=(\d+) vic=(\d+) result=(\d+) phase=(\d+)'
     r' hold_polls=(\d+) clock_polls=(\d+) lock_polls=(\d+) phy_status=([0-9a-f]{8})'
@@ -725,6 +741,14 @@ CEA_TIMINGS = {(1920, 1080): (148500, 2008, 2052, 2200, 1084, 1089, 1125, 16),
     (1280, 720): (74250, 1390, 1430, 1650, 725, 730, 750, 4),
     (720, 480): (27000, 736, 798, 858, 489, 495, 525, 2),
     (640, 480): (25175, 656, 752, 800, 490, 492, 525, 1)}
+
+
+def span_timing():
+    """The shared timing of the spanning desktop: two 1080p60 ports side by side as one mode with the
+    horizontal timing doubled; the port words are video port 1's (DP1) 1080p programming."""
+    single = shared_timing(1920, 1080)
+    return dict(h=tuple(2 * x for x in single['h']), v=single['v'], pixel_khz=2 * single['pixel_khz'],
+        port_timing=single['port_timing'])
 
 
 def shared_timing(width, height):

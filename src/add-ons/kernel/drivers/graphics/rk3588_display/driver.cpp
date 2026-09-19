@@ -72,6 +72,7 @@ struct Controller {
 	bool cursorHooksEnabled; // app_server's pointer goes to the window, not only the probe's
 	bool dpAuxEnabled; // the second connector's DP path may be brought up to its AUX channel
 	bool dpDesktopEnabled; // the accelerant's frame buffer goes to the second connector (DP1)
+	bool dpSpanEnabled; // one 3840x1080 frame buffer: left half on HDMI1, right half on DP1
 };
 
 // One open file handle. Only writable handles (the accelerant profile) may
@@ -121,7 +122,16 @@ static uint32_t sAutoGatingBefore = 0; // SYS_AUTO_GATING_CTRL as the firmware l
 // desktop that ESMART0 cloned before it took the driver's frame buffer.
 static bool sDpDesktop = false;
 static bool sDpLinkUp = false; // DP1 trained and video port 1 running since an earlier acquisition
+// The spanning desktop: HDMI1's port and window as the firmware left them,
+// the mode it was raised to, and the result.
+static const uint32_t kSpanWidth = 2 * kFrameWidth;
+static uint32_t sFrameWidth = kFrameWidth; // of the acquired buffer
+static bool sSpanHdmi = false; // HDMI1's window scans the left half
+static uint32_t sSpanPort = 0, sSpanWindow = 0;
+static uint32_t sSpanFirmware[3] = {}; // HDMI1 window address, virtual width, active size
+static uint32_t sSpanModeResult = 0;
 static uint32_t sDpFirmwareWindow[3] = {}; // address, virtual width, active size
+static uint32_t sDpDesktopWindow = 0; // the firmware desktop window ESMART0 cloned
 static status_t RestoreScanout(Controller* controller);
 static status_t AcquireFrameBuffer(Handle* handle);
 static status_t AcquireDpFrameBuffer(Handle* handle);
@@ -640,7 +650,9 @@ InitDriver(device_node* node, void** cookie)
 		controller->dpAuxEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-dp-aux") == 0;
 		// The DP desktop profile hands app_server a 1080p frame buffer on the
 		// second connector; HDMI1's port and window stay with the firmware.
-		controller->dpDesktopEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-dp-desktop") == 0;
+		controller->dpSpanEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-dp-span") == 0;
+		controller->dpDesktopEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-dp-desktop") == 0
+			|| controller->dpSpanEnabled;
 		controller->cursorEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-cursor") == 0
 			|| controller->cursorHooksEnabled;
 		controller->modeSetEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-modeset") == 0
@@ -656,7 +668,7 @@ InitDriver(device_node* node, void** cookie)
 		unload_driver_settings(settings);
 	dprintf("rk3588_display: validated VOP2 %#" B_PRIx64 " and HDMI TX1 %#" B_PRIx64
 		" resources; observation only; EDID %s; scanout %s; accelerant %s; modeset %s; cursor %s;"
-		" cursor hooks %s; dp aux %s%s\n",
+		" cursor hooks %s; dp aux %s%s%s\n",
 		controller->resources.vopBase, controller->resources.hdmiBase,
 		controller->edidEnabled ? "enabled" : "disabled",
 		controller->scanoutEnabled ? "enabled" : "disabled",
@@ -665,7 +677,8 @@ InitDriver(device_node* node, void** cookie)
 		controller->cursorEnabled ? "enabled" : "disabled",
 		controller->cursorHooksEnabled ? "enabled" : "disabled",
 		controller->dpAuxEnabled ? "enabled" : "disabled",
-		controller->dpDesktopEnabled ? "; dp desktop enabled" : "");
+		controller->dpDesktopEnabled ? "; dp desktop enabled" : "",
+		controller->dpSpanEnabled ? "; dp span enabled" : "");
 	*cookie = controller;
 	return B_OK;
 }
@@ -1910,6 +1923,114 @@ Free(void* cookie)
 }
 
 
+// The left half of the spanning buffer on HDMI1: its port goes to CEA
+// 1080p60 through the qualified mode set (the firmware runs 640x480 without a
+// sink), and its window takes the buffer at the doubled row pitch. The
+// window's buffer and pitch are written first so the mode set's own commit
+// takes them with the new size. Without the mode the window still scans the
+// buffer at the firmware size.
+static uint32_t
+StartHdmiSpan(Controller* controller, uint32_t window)
+{
+	MappedVop vop;
+	uint32_t interfaces = vop.ReadVop(kVopSystemOffsets[kVopSystemInterfaceEnable]);
+	sSpanModeResult = kModeNotAcquired;
+	if ((interfaces & kVopInterfaceHdmi1) == 0 || window >= kVopEsmartCount)
+		return sSpanModeResult;
+	sSpanPort = (interfaces >> kVopInterfaceHdmi1MuxShift) & 3;
+	sSpanWindow = window;
+	uint32_t base = kVopEsmartBase + window * kVopEsmartStride;
+	sSpanFirmware[0] = vop.ReadVop(base + kVopEsmartRegionAddress);
+	sSpanFirmware[1] = vop.ReadVop(base + kVopEsmartRegionVirtual);
+	sSpanFirmware[2] = vop.ReadVop(base + kVopEsmartRegionActive);
+	uint32_t words[4];
+	for (unsigned i = 0; i < 4; i++) {
+		words[i] = vop.ReadVop(kVopPortBase + sSpanPort * kVopPortStride
+			+ kVopPortOffsets[kVopPortHTotal + i]);
+	}
+	uint32_t firmwareWidth = (sSpanFirmware[2] & 0xffff) + 1, firmwareHeight = (sSpanFirmware[2] >> 16) + 1;
+	SharedInfo decoded = {};
+	memset(&sFirmwareMode, 0, sizeof(sFirmwareMode));
+	if (DecodePortTiming(words, firmwareWidth, firmwareHeight, decoded)) {
+		sFirmwareMode.version = kModeVersion;
+		sFirmwareMode.flags = firmwareWidth == 640 && firmwareHeight == 480 ? 0
+			: kModePositiveHSync | kModePositiveVSync;
+		sFirmwareMode.pixelClockKHz = firmwareWidth == 640 && firmwareHeight == 480 && decoded.hTotal == 800
+			&& decoded.vTotal == 525 ? 25175 : decoded.hTotal * decoded.vTotal * 60 / 1000;
+		sFirmwareMode.hDisplay = firmwareWidth;
+		sFirmwareMode.hSyncStart = decoded.hSyncStart;
+		sFirmwareMode.hSyncEnd = decoded.hSyncEnd;
+		sFirmwareMode.hTotal = decoded.hTotal;
+		sFirmwareMode.vDisplay = firmwareHeight;
+		sFirmwareMode.vSyncStart = decoded.vSyncStart;
+		sFirmwareMode.vSyncEnd = decoded.vSyncEnd;
+		sFirmwareMode.vTotal = decoded.vTotal;
+		sFirmwareMode.vic = CeaVideoCode(firmwareWidth, firmwareHeight, sFirmwareMode.pixelClockKHz);
+	}
+	vop.WriteVop(base + kVopEsmartRegionVirtual, kSpanWidth);
+	vop.WriteVop(base + kVopEsmartRegionAddress, sFrame.physical);
+	sSpanHdmi = true;
+	ModeSetHardware hardware;
+	if (hardware.Prepare(controller->resources, sSpanPort) == B_OK) {
+		ModeRequest request = {};
+		request.version = kModeVersion;
+		request.flags = kModePositiveHSync | kModePositiveVSync;
+		request.pixelClockKHz = kDp1080p60.clock;
+		request.hDisplay = kDp1080p60.hDisplay;
+		request.hSyncStart = kDp1080p60.hSyncStart;
+		request.hSyncEnd = kDp1080p60.hSyncEnd;
+		request.hTotal = kDp1080p60.hTotal;
+		request.vDisplay = kDp1080p60.vDisplay;
+		request.vSyncStart = kDp1080p60.vSyncStart;
+		request.vSyncEnd = kDp1080p60.vSyncEnd;
+		request.vTotal = kDp1080p60.vTotal;
+		request.vic = 16;
+		sSpanModeResult = SetDisplayMode(hardware, sSpanPort, sSpanWindow, request);
+		dprintf("rk3588_display: span hdmi1 port=%" B_PRIu32 " window=%" B_PRIu32 " firmware=%#" B_PRIx32
+			" %" B_PRIu32 " %#" B_PRIx32 " mode result=%" B_PRIu32 " phase=%" B_PRIu32 " timing=%08" B_PRIx32
+			",%08" B_PRIx32 ",%08" B_PRIx32 ",%08" B_PRIx32 "\n", sSpanPort, sSpanWindow, sSpanFirmware[0],
+			sSpanFirmware[1], sSpanFirmware[2], sSpanModeResult, request.phase, request.timing[0],
+			request.timing[1], request.timing[2], request.timing[3]);
+	}
+	if (sSpanModeResult != kModeOK) {
+		// The window takes the buffer at the firmware size.
+		vop.WriteVop(kVopConfigDone, kVopConfigDoneEnable | (1u << sSpanPort) | ((1u << sSpanPort) << 16));
+	}
+	return sSpanModeResult;
+}
+
+
+// HDMI1 back to the firmware desktop: its mode, when the span changed it, then
+// its window's buffer, pitch and size.
+static void
+StopHdmiSpan(Controller* controller)
+{
+	uint32_t restored = kModeNotAcquired;
+	if (sSpanModeResult == kModeOK && sFirmwareMode.version == kModeVersion) {
+		ModeSetHardware hardware;
+		if (hardware.Prepare(controller->resources, sSpanPort) == B_OK) {
+			ModeRequest restore = sFirmwareMode;
+			restored = SetDisplayMode(hardware, sSpanPort, sSpanWindow, restore);
+		}
+	}
+	MappedVop vop;
+	uint32_t base = kVopEsmartBase + sSpanWindow * kVopEsmartStride;
+	vop.WriteVop(base + kVopEsmartRegionVirtual, sSpanFirmware[1]);
+	vop.WriteVop(base + kVopEsmartRegionAddress, sSpanFirmware[0]);
+	vop.WriteVop(base + kVopEsmartRegionActive, sSpanFirmware[2]);
+	vop.WriteVop(base + kVopEsmartRegionDisplay, sSpanFirmware[2]);
+	vop.WriteVop(kVopConfigDone, kVopConfigDoneEnable | (1u << sSpanPort) | ((1u << sSpanPort) << 16));
+	uint32_t polls = 0;
+	while ((vop.ReadVop(kVopConfigDone) & (1u << sSpanPort)) != 0 && polls < kScanoutPollLimit) {
+		polls++;
+		spin(kScanoutPollMicros);
+	}
+	dprintf("rk3588_display: span hdmi1 released; mode restore result=%" B_PRIu32 " polls=%" B_PRIu32 "\n",
+		restored, polls);
+	sSpanHdmi = false;
+}
+
+
 // The accelerant's frame buffer on the second connector: DP1 is brought up
 // as the probe does (hot-plug, PHY, AUX, EDID, training, video port 1 at
 // 1080p60), ESMART0 clones the firmware desktop first (the qualified +308
@@ -1931,7 +2052,12 @@ AcquireDpFrameBuffer(Handle* handle)
 	} requestFree = {request};
 	request->version = kDpVersion;
 	request->flags = kDpProbeEdid | kDpProbeTrain | kDpProbeVideo | kDpProbeWindow;
-	status_t status = AllocateContiguous(sFrame, "RK3588 display frame buffer", kFrameBytes, false);
+	uint32_t width = controller->dpSpanEnabled ? kSpanWidth : kFrameWidth;
+	uint32_t bytesPerRow = width * 4;
+	// DP1 shows the right half of a spanning buffer, all of a single one.
+	uint32_t offset = controller->dpSpanEnabled ? kFrameBytesPerRow : 0;
+	status_t status = AllocateContiguous(sFrame, "RK3588 display frame buffer", bytesPerRow * kFrameHeight,
+		false);
 	if (status != B_OK)
 		return status;
 	uint32_t swapped = kDpNotReady, polls = 0;
@@ -1946,7 +2072,8 @@ AcquireDpFrameBuffer(Handle* handle)
 			request->windowAddress = sDpFirmwareWindow[0];
 			request->windowVirtual = sDpFirmwareWindow[1];
 			request->windowActive = sDpFirmwareWindow[2];
-			swapped = DpSwapWindow(hardware, sFrame.physical, kFrameWidth,
+			request->desktopWindow = sDpDesktopWindow;
+			swapped = DpSwapWindow(hardware, sFrame.physical + offset, width,
 				((kFrameHeight - 1) << 16) | (kFrameWidth - 1), 0, polls);
 		} else if (status == B_OK) {
 			request->result = DpProbeSink(hardware, *request);
@@ -1956,7 +2083,8 @@ AcquireDpFrameBuffer(Handle* handle)
 				sDpFirmwareWindow[0] = request->windowAddress;
 				sDpFirmwareWindow[1] = request->windowVirtual;
 				sDpFirmwareWindow[2] = request->windowActive;
-				swapped = DpSwapWindow(hardware, sFrame.physical, kFrameWidth,
+				sDpDesktopWindow = request->desktopWindow;
+				swapped = DpSwapWindow(hardware, sFrame.physical + offset, width,
 					((kFrameHeight - 1) << 16) | (kFrameWidth - 1), 0, polls);
 			}
 		}
@@ -1981,10 +2109,11 @@ AcquireDpFrameBuffer(Handle* handle)
 	SharedInfo shared = {};
 	shared.version = kAccelerantVersion;
 	shared.modeListArea = -1;
-	shared.width = kFrameWidth;
+	shared.width = width;
 	shared.height = kFrameHeight;
-	shared.bytesPerRow = kFrameBytesPerRow;
-	strncpy(shared.name, "RK3588 VOP2 DP TX1", sizeof(shared.name) - 1);
+	shared.bytesPerRow = bytesPerRow;
+	strncpy(shared.name, controller->dpSpanEnabled ? "RK3588 VOP2 HDMI TX1 + DP TX1" : "RK3588 VOP2 DP TX1",
+		sizeof(shared.name) - 1);
 	if (request->edidBytes == sizeof(shared.edid)) {
 		memcpy(shared.edid, request->edid, sizeof(shared.edid));
 		shared.edidResult = kEdidOK;
@@ -1998,6 +2127,14 @@ AcquireDpFrameBuffer(Handle* handle)
 	shared.vSyncStart = kDp1080p60.vSyncStart;
 	shared.vSyncEnd = kDp1080p60.vSyncEnd;
 	shared.vTotal = kDp1080p60.vTotal;
+	if (controller->dpSpanEnabled) {
+		// Two 1080p60 ports side by side, described as one mode twice as wide
+		// with the horizontal timing doubled, so the refresh rate stays 60 Hz.
+		shared.pixelClockKHz = 2 * kDp1080p60.clock;
+		shared.hSyncStart = 2 * kDp1080p60.hSyncStart;
+		shared.hSyncEnd = 2 * kDp1080p60.hSyncEnd;
+		shared.hTotal = 2 * kDp1080p60.hTotal;
+	}
 	shared.powerMode = kPowerOn;
 	shared.syncFlags = kModePositiveHSync | kModePositiveVSync;
 	sSharedArea = create_area("RK3588 display shared", (void**)&sShared, B_ANY_KERNEL_ADDRESS,
@@ -2020,7 +2157,7 @@ AcquireDpFrameBuffer(Handle* handle)
 	memset(&sFirmwareMode, 0, sizeof(sFirmwareMode));
 	memset(&sCurrentMode, 0, sizeof(sCurrentMode));
 	sPowerMode = kPowerOn;
-	frame_buffer_update((addr_t)sFrame.address, kFrameWidth, kFrameHeight, 32, kFrameBytesPerRow);
+	frame_buffer_update((addr_t)sFrame.address, width, kFrameHeight, 32, bytesPerRow);
 	memset(&sAccelerant, 0, sizeof(sAccelerant));
 	sAccelerant.version = kAccelerantVersion;
 	sAccelerant.flags = kAccelerantAcquired | (shared.flags & kAccelerantEdid);
@@ -2038,6 +2175,10 @@ AcquireDpFrameBuffer(Handle* handle)
 			sShared->portTiming[i] = ReadDisplayRegister(sVopRegisters,
 				kVopPortBase + kVopPort1 * kVopPortStride + kVopPortOffsets[kVopPortHTotal + i]);
 		}
+		// HDMI1's half before the retrace handler exists: the port stop polls
+		// its own hold-valid status while no handler is installed.
+		if (controller->dpSpanEnabled)
+			StartHdmiSpan(controller, request->desktopWindow);
 		if (StartRetrace(kVopPort1, controller->resources.vopInterrupt) == B_OK) {
 			sAccelerant.flags |= kAccelerantRetrace;
 			sAccelerant.retraceSemaphore = sRetraceSemaphore;
@@ -2047,16 +2188,18 @@ AcquireDpFrameBuffer(Handle* handle)
 	sAccelerant.frameBufferPhysical = sFrame.physical;
 	sAccelerant.firmwareAddress = sDpFirmwareWindow[0];
 	sAccelerant.polls = polls;
-	sAccelerant.width = kFrameWidth;
+	sAccelerant.width = width;
 	sAccelerant.height = kFrameHeight;
-	sAccelerant.bytesPerRow = kFrameBytesPerRow;
+	sAccelerant.bytesPerRow = bytesPerRow;
+	sFrameWidth = width;
 	sDpDesktop = true;
 	sOwner = handle;
 	dprintf("rk3588_display: frame buffer acquired at %#" B_PRIx32 " (firmware %#" B_PRIx32
 		") port=%" B_PRIu32 " window=%" B_PRIu32 " polls=%" B_PRIu32 " edid=%" B_PRIu32
-		" output=dp1 retrace=%s irq=%" B_PRIu32 "\n", sFrame.physical, sDpFirmwareWindow[0],
-		sAccelerant.port, sAccelerant.window, polls, shared.edidResult,
-		(sAccelerant.flags & kAccelerantRetrace) != 0 ? "on" : "off", controller->resources.vopInterrupt);
+		" output=dp1 retrace=%s irq=%" B_PRIu32 " width=%" B_PRIu32 " span=%s hdmi_mode=%" B_PRIu32 "\n",
+		sFrame.physical, sDpFirmwareWindow[0], sAccelerant.port, sAccelerant.window, polls, shared.edidResult,
+		(sAccelerant.flags & kAccelerantRetrace) != 0 ? "on" : "off", controller->resources.vopInterrupt, width,
+		sSpanHdmi ? "on" : "off", sSpanModeResult);
 	return B_OK;
 }
 
@@ -2068,6 +2211,8 @@ ReleaseDpFrameBuffer(Controller* controller)
 {
 	StopRetrace(sAccelerant.port, controller->resources.vopInterrupt);
 	uint32_t result = kDpNotReady, polls = 0;
+	if (sSpanHdmi && sVopRegisters != NULL)
+		StopHdmiSpan(controller);
 	if (sVopRegisters != NULL) {
 		MappedVop hardware;
 		result = DpSwapWindow(hardware, sDpFirmwareWindow[0], sDpFirmwareWindow[1], sDpFirmwareWindow[2], 0,
@@ -2089,6 +2234,7 @@ ReleaseDpFrameBuffer(Controller* controller)
 	sShared = NULL;
 	sOwner = NULL;
 	sDpDesktop = false;
+	sFrameWidth = kFrameWidth;
 	dprintf("rk3588_display: frame buffer released; dp1 back to firmware %#" B_PRIx32 " result=%"
 		B_PRIu32 " polls=%" B_PRIu32 " retraces=%" B_PRId32 " calls=%" B_PRId32 " spurious=%" B_PRId32
 		"\n", sDpFirmwareWindow[0], result, polls, sRetraces, sInterruptCalls, sInterruptSpurious);

@@ -901,6 +901,21 @@ class DisplayValidationTest(unittest.TestCase):
             with self.assertRaises(check.ValidationError):
                 check.check_window_frame(path, 640, 480)
 
+    def test_span_right_frame(self):
+        import tempfile
+        from pathlib import Path
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'frame.png'
+            image = Image.new('RGB', (1920, 1080), check.DESKTOP_BLUE)
+            image.paste((216, 216, 216), (1784, 0, 1920, 70))
+            image.save(path)
+            self.assertEqual(check.check_span_right_frame(path)['icon_area_blue'], 180)
+            image.paste((200, 60, 60), (20, 20, 60, 60))
+            image.save(path)
+            with self.assertRaises(check.ValidationError):
+                check.check_span_right_frame(path)
+
     def test_colour_frame(self):
         import tempfile
         from pathlib import Path

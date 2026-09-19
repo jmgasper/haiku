@@ -227,7 +227,7 @@ VopModelStep()
 		} else if (sAllowDp && ((offset >= 0xd00 && offset <= 0xd54) || offset == 0x74 || offset == 0x6e4
 				|| offset == 0x028 || offset == 0x030 || (offset >= 0x1800 && offset < 0x1900)
 				|| (offset >= 0x650 && offset < 0x670) || offset == 0x6f8 || offset == 0x008
-				|| offset == 0xb0 || offset == 0xb4)) {
+				|| offset == 0xb0 || offset == 0xb4 || offset == 0x1c1c || offset == 0x1c20 || offset == 0x1c24)) {
 			// Video port 1 for the DP probe: timing, background and the interface mux are plain words.
 			sVopOverrides[offset] = value;
 		} else
@@ -926,6 +926,7 @@ static const team_id B_SYSTEM_TEAM = 1;
 static void* sPatternAllocation;
 static void* sFrameAllocation;
 static void* sCursorAllocation;
+static size_t sFrameModelBytes = 0;
 static int sPatternArea = -1, sFrameArea = -1, sCursorArea = -1, sSharedModelArea = -1;
 static unsigned sCursorNoncacheable;
 static void* sSharedPage;
@@ -944,7 +945,8 @@ create_area_etc(team_id team, const char* name, size_t size, uint32 lock, uint32
 	bool cursor = strcmp(name, "RK3588 display cursor") == 0;
 	assert(sLockDepth == 1 && team == B_SYSTEM_TEAM);
 	assert(pattern || cursor || strcmp(name, "RK3588 display frame buffer") == 0);
-	assert(size == (pattern ? kPatternBytes : cursor ? kCursorBufferBytes : kFrameBytes) && lock == B_CONTIGUOUS);
+	assert((size == (pattern ? kPatternBytes : cursor ? kCursorBufferBytes : kFrameBytes)
+		|| (!pattern && !cursor && size == 2 * kFrameBytes)) && lock == B_CONTIGUOUS);
 	assert(flags == 0 && guardSize == 0);
 	assert(protection == (B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA));
 	assert(virtualRestrictions->address == NULL && virtualRestrictions->address_specification == 0);
@@ -960,6 +962,8 @@ create_area_etc(team_id team, const char* name, size_t size, uint32 lock, uint32
 	int area = (pattern ? 900 : cursor ? 1200 : 1000) + (int)sPatternAllocations;
 	(pattern ? sPatternAllocation : cursor ? sCursorAllocation : sFrameAllocation) = allocation;
 	(pattern ? sPatternArea : cursor ? sCursorArea : sFrameArea) = area;
+	if (!pattern && !cursor)
+		sFrameModelBytes = size;
 	*address = allocation;
 	return area;
 }
@@ -976,7 +980,8 @@ get_memory_map(const void* address, size_t bytes, physical_entry* table, int32 c
 		assert(bytes == kCursorBufferBytes);
 		table->address = kModelCursorPhysical;
 	} else {
-		assert(address == sFrameAllocation && sFrameAllocation != NULL && bytes == kFrameBytes);
+		assert(address == sFrameAllocation && sFrameAllocation != NULL
+			&& (bytes == kFrameBytes || bytes == 2 * kFrameBytes));
 		table->address = kModelFramePhysical;
 	}
 	table->size = bytes;
@@ -1002,7 +1007,7 @@ delete_area(area_id area)
 		sPatternAllocation = NULL;
 		sPatternArea = -1;
 	} else if (area == sFrameArea) {
-		assert(munmap(sFrameAllocation, kFrameBytes) == 0);
+		assert(munmap(sFrameAllocation, sFrameModelBytes) == 0);
 		sFrameAllocation = NULL;
 		sFrameArea = -1;
 	} else if (area == sCursorArea) {
@@ -1025,10 +1030,10 @@ MakeBufferNoncacheable(area_id area, void* address, size_t bytes)
 	const uint32* pixels = (const uint32*)address;
 	if (area == sFrameArea) {
 		// The frame buffer starts black; nothing of the allocation leaks through.
-		assert(address == sFrameAllocation && bytes == kFrameBytes);
-		for (unsigned i = 0; i < kFrameBytes / 4; i += 4093)
+		assert(address == sFrameAllocation && bytes == sFrameModelBytes);
+		for (unsigned i = 0; i < sFrameModelBytes / 4; i += 4093)
 			assert(pixels[i] == 0);
-		assert(pixels[0] == 0 && pixels[kFrameBytes / 4 - 1] == 0);
+		assert(pixels[0] == 0 && pixels[sFrameModelBytes / 4 - 1] == 0);
 		sFrameNoncacheable++;
 		return B_OK;
 	}
@@ -1084,7 +1089,7 @@ _user_get_area_info(area_id area, area_info* info)
 {
 	assert(area == 1200 + (int)sClones && info != NULL);
 	info->area = area;
-	info->size = kFrameBytes;
+	info->size = sFrameModelBytes;
 	info->address = sFrameAllocation;
 	return B_OK;
 }
@@ -3041,6 +3046,40 @@ main()
 	assert(sVopOverrides[0x1814] == kModelFramePhysical && !logged(sVopWrites, 0xd00, 0xf));
 	assert(Close(primary) == B_OK && sVopOverrides[0x1814] == 0xed940000);
 	controller.dpDesktopEnabled = false;
+	// The spanning desktop: one 3840x1080 buffer, the left half on HDMI1 (its
+	// port raised from the firmware's sink-less 640x480 to 1080p by the mode
+	// set), the right half on DP1; release gives HDMI1 its firmware mode,
+	// window and pitch back.
+	controller.dpDesktopEnabled = controller.dpSpanEnabled = true;
+	assert(Free(primary) == B_OK);
+	assert(Open(&controller, "", O_RDWR, &opened) == B_OK);
+	primary = (Handle*)opened;
+	Prepare(); sAllowDp = true; sAllowModeSet = true;
+	sBootInfo = frame_buffer_boot_info{17, 0xed940000, 0xffff000012340000ull, 640, 480, 32, 2560, 0};
+	sVopOverrides[0x1c14] = 0xed940000; sVopOverrides[0x1c1c] = 640; sVopOverrides[0x1c20] = 0x01df027f;
+	sVopOverrides[0x1c24] = 0x01df027f;
+	sVopOverrides[0xe48] = (800u << 16) | 96; sVopOverrides[0xe4c] = (144u << 16) | 784;
+	sVopOverrides[0xe50] = (525u << 16) | 2; sVopOverrides[0xe54] = (35u << 16) | 515;
+	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_OK && sSpanHdmi && sSpanModeResult == kModeOK);
+	assert(sSpanPort == 2 && sSpanWindow == 2 && sFirmwareMode.pixelClockKHz == 25175 && sFirmwareMode.vic == 1);
+	assert(sVopOverrides[0x1814] == kModelFramePhysical + 7680 && sVopOverrides[0x181c] == 3840);
+	assert(sVopOverrides[0x1c14] == kModelFramePhysical && sVopOverrides[0x1c1c] == 3840);
+	assert(sVopOverrides[0x1c20] == 0x0437077f && sVopOverrides[0xe48] == ((2200u << 16) | 44));
+	assert(sVopOverrides[0xe54] == ((41u << 16) | 1121) && (sVopOverrides[0xe00] & 0x80000000u) == 0);
+	assert(sConsole.width == 3840 && sConsole.bytesPerRow == 15360 && sHandler != NULL);
+	acc = {}; acc.version = kAccelerantVersion;
+	assert(Control(primary, kGetAccelerantInfo, &acc, sizeof(acc)) == B_OK);
+	assert(acc.width == 3840 && acc.bytesPerRow == 15360 && acc.port == 1 && acc.window == 0);
+	assert(sShared->width == 3840 && sShared->hTotal == 4400 && sShared->hSyncStart == 4016
+		&& sShared->pixelClockKHz == 297000 && sShared->vTotal == 1125);
+	assert(strcmp(sShared->name, "RK3588 VOP2 HDMI TX1 + DP TX1") == 0);
+	assert(Close(primary) == B_OK && !sSpanHdmi && !sDpDesktop);
+	assert(sVopOverrides[0x1c14] == 0xed940000 && sVopOverrides[0x1c1c] == 640 && sVopOverrides[0x1c20] == 0x01df027f);
+	assert(sVopOverrides[0xe48] == ((800u << 16) | 96) && sVopOverrides[0xe54] == ((35u << 16) | 515));
+	assert(sVopOverrides[0x1814] == 0xed940000 && sConsole.width == 640 && sHandler == NULL);
+	assert(sAreas.empty());
+	sAllowModeSet = false;
+	controller.dpDesktopEnabled = controller.dpSpanEnabled = false;
 	sDpLinkUp = false;
 	assert(Close(reader) == B_OK && Free(reader) == B_OK && Free(primary) == B_OK);
 	controller.dpAuxEnabled = false;
