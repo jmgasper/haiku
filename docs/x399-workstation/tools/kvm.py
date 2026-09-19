@@ -153,12 +153,12 @@ def type_text(text):
     return {"typed": len(text)}
 
 
-def click(x, y, width, height):
+def click(x, y, width, height, button=1):
     if not (0 <= x < width and 0 <= y < height):
         raise ValueError("Click is outside screen bounds")
     x = round(x / (width - 1) * 32767)
     y = round(y / (height - 1) * 32767)
-    reports = [bytes([2]) + struct.pack("<BHHB", button, x, y, 0) for button in (0, 1, 0)]
+    reports = [bytes([2]) + struct.pack("<BHHB", b, x, y, 0) for b in (0, button, 0)]
     send_reports(reports)
     return {"clicked": True}
 
@@ -173,6 +173,7 @@ def main():
     p = commands.add_parser("type"); p.add_argument("text")
     p = commands.add_parser("click")
     p.add_argument("x", type=int); p.add_argument("y", type=int)
+    p.add_argument("--button", type=int, default=1)
     p.add_argument("--width", type=int, default=1920); p.add_argument("--height", type=int, default=1080)
     p = commands.add_parser("power"); p.add_argument("type", choices=["power", "reset"])
     p.add_argument("--duration", type=int, default=800)
@@ -187,7 +188,7 @@ def main():
     elif args.command == "screenshot": result = screenshot(args.path)
     elif args.command == "key": result = key(args.keys)
     elif args.command == "type": result = type_text(args.text.encode().decode("unicode_escape"))
-    elif args.command == "click": result = click(args.x, args.y, args.width, args.height)
+    elif args.command == "click": result = click(args.x, args.y, args.width, args.height, args.button)
     elif args.command == "power":
         if not 1 <= args.duration <= 10000: raise ValueError("Duration must be 1..10000 ms")
         result = api("/api/vm/gpio", {"type": args.type, "duration": args.duration})

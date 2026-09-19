@@ -710,6 +710,33 @@ a Bluetooth device to pair with.
 
   The ring setup is committed unrun. It is complete enough to resume from and
   has never met the hardware; the commit says so.
+- 2026-09-19: scanning works through `net80211`. `mt7922wifi` wraps the part in
+  Haiku's FreeBSD wireless stack, and `ifconfig <dev> scan` lists what is in
+  earshot by name, channel and signal. Getting there meant the part will not
+  hand over a single beacon until it is asked to sweep the band itself, which
+  looks exactly like a receive filter problem and is not; and that
+  `ieee80211_input_all` wants the signal counted upwards from the noise floor
+  in half decibels, not as a negative dBm, or every network fails the stack's
+  minimum and it rescans for ever without saying why.
+
+  Joining one stops the machine. Not the network - the machine: the Deskbar
+  clock stays on the same minute across seventy-five seconds, so what is on
+  screen is a stale frame. The keyboard interrupt is not serviced either,
+  since the debugger's own key combination does nothing, which puts it at a
+  CPU spinning with interrupts off.
+
+  Every way of seeing it has been tried and none survives: the network is
+  gone; the syslog is never flushed and a power cycle loses it; a script on
+  the desktop that copies the log somewhere safe, started from the keyboard,
+  works while the machine is well and does nothing when it is not; a watchdog
+  in the driver that panics into the debugger never runs, because the thread
+  behind it is stopped too. The serial console is the remaining channel.
+
+  The one line that starts a join is commented in `ic_scan_start` with this
+  written beside it: every scan inherits `IEEE80211_SCAN_NOJOIN` from whoever
+  asked last, and everything else on the system asks for scans that must not
+  join, so the stack is told never to join and quietly scans for ever.
+
 - 2026-09-19: the MT7922's Wi-Fi firmware runs. The patch goes in, all five
   downloadable regions of the RAM image follow, the sixth is skipped as it
   asks to be, and the part reports that what it was given is running - from a
