@@ -695,3 +695,18 @@ a Bluetooth device to pair with.
 
   Still to come before the firmware runs: six WFDMA rings, an MCU command
   layer, and the download over them. Then the 802.11 driver itself.
+- 2026-09-19: the workstation stopped responding and needs someone at it. The
+  NanoKVM is healthy - it answers, and reports HDMI enabled and the power LED
+  lit - but the machine has no video, no network, and does not respond to an
+  eight second hold of the power button, which is what normally forces any
+  board off. That combination means the power has to be cut at the supply.
+
+  It went down between a power cycle and the boot after it, before the ring
+  code below had run once, so nothing points at that code. What it does
+  follow is a long run of hard power cycles, two of which have already
+  corrupted files on this machine - `poke.h` came back as binary rubbish
+  earlier today, and the syslog came back empty from another. A filesystem
+  check is worth doing before trusting what is on the disk.
+
+  The ring setup is committed unrun. It is complete enough to resume from and
+  has never met the hardware; the commit says so.
