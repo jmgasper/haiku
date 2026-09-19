@@ -43,6 +43,13 @@
  * say they are a setting rather than saying nothing at all.
  */
 #define MCU_CE_CMD_GET_NIC_CAPAB	0x8a
+#define MCU_CE_CMD_CHIP_CONFIG		0xca
+
+/* Commands that carry a second identifier beside the first. */
+#define MCU_CMD_EXT_CID			0xed
+#define MCU_EXT_CMD_EFUSE_BUFFER_MODE	0x21
+#define MCU_EXT_CMD_PROTECT_CTRL	0x3e
+#define MCU_EXT_CMD_MAC_INIT_CTRL	0x46
 #define MCU_Q_SET			1
 
 /* What the firmware may say about itself. */
@@ -753,5 +760,138 @@ mt7922_mcu_read_capability(mt7922_dev* device)
 		(device->bands & 1) != 0 ? "2.4 GHz" : "",
 		(device->bands & 2) != 0 ? " and 5 GHz" : "");
 
+	return B_OK;
+}
+
+
+/* A third kind of command. These carry a second identifier beside the first,
+ * and say so twice: once by setting it, and once by acknowledging that they
+ * have.
+ */
+static status_t
+mt7922_mcu_send_ext(mt7922_dev* device, uint8 extended, const void* payload,
+	size_t payloadLength, bool wantAnswer)
+{
+	uint8 reply[256];
+	size_t replyLength = sizeof(reply);
+
+	/* Built by hand rather than through the ordinary path, because two of
+	 * the header's bytes differ and they are not the ones that usually do.
+	 */
+	device->sequence = (device->sequence + 1) & 0xf;
+	if (device->sequence == 0)
+		device->sequence = 1;
+
+	uint8* packet = (uint8*)device->commandBuffer.address;
+	size_t total = MCU_TXD_SIZE + payloadLength;
+
+	memset(packet, 0, MCU_TXD_SIZE);
+	write_le32(packet, (uint32)(total & MT_TXD0_TX_BYTES_MASK)
+		| ((uint32)MT_TX_TYPE_CMD << MT_TXD0_PKT_FMT_SHIFT)
+		| ((uint32)MT_TX_MCU_PORT_RX_Q0 << MT_TXD0_Q_IDX_SHIFT));
+	write_le32(packet + 4, MT_TXD1_LONG_FORMAT
+		| ((uint32)MT_HDR_FORMAT_CMD << MT_TXD1_HDR_FORMAT_SHIFT));
+
+	uint16 length = (uint16)(total - 32);
+	packet[0x20] = length & 0xff;
+	packet[0x21] = length >> 8;
+
+	uint16 port = (1 << 15) | (MT_TX_MCU_PORT_RX_Q0 << 10);
+	packet[0x22] = port & 0xff;
+	packet[0x23] = port >> 8;
+
+	packet[0x24] = MCU_CMD_EXT_CID;
+	packet[0x25] = MCU_PKT_ID;
+	packet[0x26] = MCU_Q_SET;
+	packet[0x27] = device->sequence;
+	packet[0x29] = extended;
+	packet[0x2a] = MCU_S2D_H2N;
+	packet[0x2b] = 1;		/* it is acknowledged */
+
+	if (payloadLength > 0)
+		memcpy(packet + MCU_TXD_SIZE, payload, payloadLength);
+
+	status_t status = mt7922_ring_submit(device, &device->commandRing,
+		device->commandBuffer.physical, total);
+	if (status != B_OK)
+		return status;
+
+	status = mt7922_ring_drain(device, &device->commandRing,
+		MCU_RESPONSE_TIMEOUT);
+	if (status != B_OK || !wantAnswer)
+		return status;
+
+	bigtime_t deadline = system_time() + MCU_RESPONSE_TIMEOUT;
+	while (system_time() < deadline) {
+		uint8 event[1024];
+		size_t got = sizeof(event);
+
+		status = mt7922_event_read(device, event, &got, MCU_RESPONSE_TIMEOUT);
+		if (status != B_OK) {
+			ERROR("extended command %#x went unanswered\n", extended);
+			return status;
+		}
+		if (got >= MCU_RXD_SIZE && event[0x1d] == device->sequence)
+			return B_OK;
+	}
+
+	return B_TIMED_OUT;
+}
+
+
+/* Get the part from "running firmware" to "willing to look around".
+ *
+ * Each of these is a small thing the firmware wants said before it will do
+ * anything useful, and none of them is interesting on its own.
+ */
+status_t
+mt7922_mcu_prepare(mt7922_dev* device)
+{
+	/* Read the calibration data out of the part's own store. */
+	uint8 buffer[4] = { 0 /* from the store */, 1 /* all of it */, 0, 0 };
+	status_t status = mt7922_mcu_send_ext(device, MCU_EXT_CMD_EFUSE_BUFFER_MODE,
+		buffer, sizeof(buffer), true);
+	if (status != B_OK) {
+		ERROR("it would not read its calibration: %s\n", strerror(status));
+		return status;
+	}
+
+	/* When to bother protecting a frame. */
+	uint8 protect[12];
+	memset(protect, 0, sizeof(protect));
+	protect[0] = 1;
+	write_le32(protect + 4, 0x92b);
+	write_le32(protect + 8, 0x2);
+	status = mt7922_mcu_send_ext(device, MCU_EXT_CMD_PROTECT_CTRL, protect,
+		sizeof(protect), true);
+	if (status != B_OK) {
+		ERROR("it would not take its protection settings: %s\n",
+			strerror(status));
+		return status;
+	}
+
+	/* Keep the part awake. The power saving it would otherwise do brings a
+	 * handshake with it that nothing here is ready for.
+	 */
+	uint8 config[328];
+	memset(config, 0, sizeof(config));
+	strcpy((char*)config + 8, "KeepFullPwr 1");
+	status = mt7922_mcu_send_etc(device, MCU_CE_CMD_CHIP_CONFIG, MCU_Q_SET,
+		config, sizeof(config), NULL, NULL);
+	if (status != B_OK) {
+		ERROR("it would not stay awake: %s\n", strerror(status));
+		return status;
+	}
+
+	/* And start the part of it that deals with the air. */
+	uint8 mac[4] = { 1 /* on */, 0 /* first radio */, 0, 0 };
+	status = mt7922_mcu_send_ext(device, MCU_EXT_CMD_MAC_INIT_CTRL, mac,
+		sizeof(mac), true);
+	if (status != B_OK) {
+		ERROR("it would not start its radio: %s\n", strerror(status));
+		return status;
+	}
+
+	TRACE("the radio is prepared\n");
 	return B_OK;
 }
