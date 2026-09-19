@@ -17,6 +17,15 @@ emulator gates show the software fallback without a device. It is not
 qualified: the independent Linux eMMC readbacks need the ROOBI sudo
 password, which is not on record.
 
+The +313 USB image gives app_server [one desktop spanning both HDMI
+ports](DISPLAY.md): a 3840x1080 frame buffer whose left half HDMI1 scans
+(its port raised to 1080p by the driver's mode set) and whose right half
+the DisplayPort-bridged port scans. On both native boots the NanoKVM on the
+second port captures the desktop's right half, with the Deskbar and half of
+the centred pointer. HDMI1's half is checked by register read-back because
+no display is attached to it. The hardware cursor across both ports and
+mode changes on the spanning desktop come next.
+
 The +310 USB image runs [app_server on the second connector](DISPLAY.md)
 at 1920x1080: with the dp-desktop profile the driver trains DP1, scans its
 own frame buffer with a window on video port 1, moves the kernel console

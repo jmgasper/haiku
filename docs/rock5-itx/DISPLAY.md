@@ -938,6 +938,52 @@ NanoKVM captures the full desktop with Tracker and the Deskbar at first try.
   `20260919T052859Z-f2338a`; build `artifacts/build-20260919T052618Z.log`.
 - Stage: `artifacts/display-dp-desktop/20260919T052432Z-82a73f`.
 
+### Qualified +313 desktop spanning both connectors (stage 5a)
+
+The `rock5-itx-edk2-v1.1-display-dp-span` profile makes the DP desktop
+acquisition allocate one 3840x1080 frame buffer with a 15360-byte row
+pitch. DP1's window (ESMART0, video port 1) scans the right half. HDMI1's
+window (ESMART2, video port 2) takes the left half at the same pitch, and
+the qualified mode set raises HDMI1's port to CEA 1080p60 from the 640x480
+the firmware runs without a sink. The mode set runs before the retrace
+handler is installed, so the port stop polls its own hold-valid status.
+app_server sees one 3840x1080 mode with the horizontal timing doubled
+(297 MHz, 4400 total), which keeps 60 Hz. Release restores HDMI1's firmware
+mode (640x480 at 25.175 MHz), window, pitch and size, then puts DP1's window
+back on the firmware desktop.
+
+The `hrev60097+313` image (source `fa0a76bbd8`, SHA-256
+`2a6774c10b228285082135591e8291df06f2a0a9fd6d81ee81e77c9fad9fcdcb`) passes
+the host checks, both QEMU modes and two native boots with normal reboot,
+verified shutdown and automatic ROOBI recovery. On both boots app_server
+runs one 3840x1080 desktop. The NanoKVM on DP1 captures its right half:
+the workspace and the Deskbar at the right edge, with none of Tracker's
+icons, which sit on the left half. The pointer at the desktop's centre
+(x = 1920) is cut at DP1's left edge, so its other half is on HDMI1. HDMI1
+has no sink, so its half is checked by read-back. Its port runs 1080p
+(`0898002c,00c00840,04650005,00290461`, out of standby), and its window scans
+the buffer's start at the 3840-pixel pitch with the 1920x1080 size. Both
+interfaces stay muxed to their ports, and retrace runs at 60 Hz from DP1's
+port.
+
+| Item | Boot 1 | Boot 2 |
+| --- | --- | --- |
+| Frame buffer | `0x104dc000`, 3840x1080, pitch 15360 | `0x0f6b2000`, same |
+| HDMI1 mode set | result 0, phase 6, port 2, window 2 (firmware `0xed940000`, 640x480) | same |
+| Windows | ESMART2 at the buffer, ESMART0 at buffer + 7680, both pitch 3840 | same |
+| Accelerant | flags 7, 1 mode, "RK3588 VOP2 HDMI TX1 + DP TX1" | same |
+| Retrace | 24 waits, 16666 µs, count +24, 0 spurious | same |
+
+- Native evidence: `artifacts/automated-display-dp-span/20260919T055844Z-2aaf07`.
+- Session: `artifacts/interactive/20260919T055845Z-c06816`; recovery boot
+  `02385ea7-f6c5-4fc8-b06c-d310b0b63957`; image archive
+  `artifacts/nanokvm-image-archive/20260919T060632Z-3f1060`.
+- QEMU EL2/EL1: `artifacts/qemu-shell/20260919T055350Z-82784a` and
+  `20260919T055617Z-41f9dc`; build `artifacts/build-20260919T055333Z.log`.
+- Stage: `artifacts/display-dp-span/20260919T055154Z-302f39`.
+- Open: a picture check of HDMI1's half needs a monitor or dummy plug on
+  HDMI1 (only one NanoKVM).
+
 ## Later stages
 
 3. Modes beyond the PLL table (the fractional-rate calculation) or the
