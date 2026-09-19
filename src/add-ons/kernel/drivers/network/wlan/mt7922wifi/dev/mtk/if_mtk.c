@@ -213,6 +213,43 @@ mtk_take_ownership(struct mtk_softc* sc)
 }
 
 
+/* Check we still have the registers before touching any of them. The chip's
+ * firmware can take them back - a reconfiguration puts the vap through
+ * ieee80211_init, and the first command after that is where the machine
+ * stops. A command sent to a part that is not listening never completes:
+ * the read waiting on it does not fail, it simply never returns, which
+ * stops the processor with interrupts off and the whole machine with it.
+ *
+ * This register is safe to read at any time. It sits in the fixed part of
+ * the map, on the host side of the interface, so it answers whether or not
+ * the rest of the chip is awake - which is exactly what makes it usable as
+ * the thing to ask first.
+ */
+static int
+mtk_ensure_owned(struct mtk_softc* sc)
+{
+	int i;
+
+	if ((mtk_read(sc, MTK_CONN_ON_LPCTL) & MTK_LPCTL_OWN_SYNC) == 0)
+		return 0;
+
+	device_printf(sc->sc_dev, "the firmware has taken its registers back;"
+		" asking for them again\n");
+
+	for (i = 0; i < 10; i++) {
+		mtk_write(sc, MTK_CONN_ON_LPCTL, MTK_LPCTL_CLR_OWN);
+		DELAY(3000);
+		if (mtk_poll(sc, MTK_CONN_ON_LPCTL, MTK_LPCTL_OWN_SYNC, 0, 50)) {
+			device_printf(sc->sc_dev, "and has them back\n");
+			return 0;
+		}
+	}
+
+	device_printf(sc->sc_dev, "it will not hand them over\n");
+	return ETIMEDOUT;
+}
+
+
 static void
 mtk_release_ownership(struct mtk_softc* sc)
 {
@@ -556,8 +593,15 @@ mtk_work(void* arg, int pending)
 	 * timer of our own. Asking again while a sweep is in flight is
 	 * harmless; missing the window is not.
 	 */
+	/* Only after a state change, which is the one place the firmware
+	 * might have taken the registers back. It never has - this has not
+	 * fired once - but it is the right thing to ask before a command and
+	 * it costs one direct read of a register that always answers.
+	 */
 	if (sc->sc_want_awake != 0) {
 		sc->sc_want_awake = 0;
+		if (mtk_ensure_owned(sc) != 0)
+			return;
 		mtk_keep_awake(sc);
 	}
 
