@@ -788,19 +788,82 @@ read and both boots.
 - Independent Linux eMMC readbacks were not run: the ROOBI sudo password is
   not available to this session.
 
+## Stages 4b and 4c: DisplayPort TX1 trained and the first picture
+
+With the NanoKVM moved to the second connector, the `display-dp-aux` driver
+profile lets the probe drive the whole path (`--dp [edid] [train [video]]`,
+`kDpProbe`, request version 2). It muxes GPIO3_D5 to `dp1_hpdin_m0`, gives
+the AUX engine its clock (`clk_aux16m_1` = GPLL/75, CLKSEL_CON(117) bits
+15:8), and waits for the controller's PLUG state. It then initialises
+USBDP PHY1 exactly as Linux does in DP+USB mode, with DP on PHY lanes 2 and 3
+(`rockchip,dp-lane-mux = <2 3>`). It reads DPCD 0x000-0x00f and the sink
+count over native AUX and EDID block 0 over I2C-over-AUX. Link training
+follows Linux' `dw_dp_link_train`: clock recovery and equalization with the
+sink's swing and pre-emphasis requests, the drive tables on PHY lanes 2 and
+3, and a rate downgrade on failure. The video step then checks that the GPLL
+is 1188 MHz and runs `dclk_vop1_src` at GPLL/8 (148.5 MHz). It ungates and
+selects `dclk_vop1` and programs video port 1 for CEA 1920x1080@60 with a
+magenta background and no window. DP1 is muxed to the port with positive
+syncs (`DSP_IF_EN` bit 1, mux 15:14 = 1; `DSP_IF_POL` 14:12 = 3), and the
+DW DP stream is set up as `dw_dp_video_enable` does: quad pixel, RGB 8 bpc,
+MSA, CONFIG1-5 and the horizontal blanking interval. The port must be in
+standby, so a running port is never taken over. Nothing on HDMI1 or video
+port 2 changes.
+
+### Qualified +306 first picture on the second connector (stage 4c)
+
+The `hrev60097+306` image (source `0505348cb2`, SHA-256
+`88e11a6031904c603fd7daaf83775c89309d6f8e234745ea3e5a6fb88683e033`) passes
+the host checks (171 tests), both QEMU modes and two native boots with
+normal reboot, verified shutdown and automatic ROOBI recovery. On both
+boots the NanoKVM, behind the RA620, captures a uniform 1920x1080 magenta
+frame from the second connector (mean 225,41,233; all sampled pixels within
+tolerance of the programmed background).
+
+| Item | Boot 1 and boot 2 |
+| --- | --- |
+| Hot-plug | PLUG after 504 polls of 200 µs (~100 ms) |
+| DPCD | `1414c481011001810200...`: DP 1.4, 5.4 Gb/s, 4 lanes, enhanced framing, TPS3, sink count 1 |
+| EDID | "RGT" 1920x1080, valid checksum |
+| AUX | 33 transfers, 9 deferred replies retried |
+| Link | 5.4 Gb/s × 2 lanes on the first attempt (the board wires 2), CR 2 loops, EQ 1 loop, swing 1, pre-emphasis 0, lanes and alignment done (`770081`) |
+| Clocks | GPLL `m=198 p=2 s=1` (1188 MHz); CLKSEL_CON(111) `0x201` → `0xe01` |
+| Video port 1 | `0x8000000f` (standby) → `0x0000000f`; `VP_CLK_CTRL` `0xa` |
+| Interfaces | `DSP_IF_EN` `0x00082021` → `0x00086023` |
+| DW DP | TU 26.4 bytes, threshold 40, hblank interval 254, `VSAMPLE` `0x00410020` |
+| Probe time | ~151 ms including training |
+
+On the first board attempt with this image, the controller captured the
+frame right after the probe and saw black (16,16,16), because the RA620
+and the NanoKVM were still locking. The capture a few seconds later was
+magenta. The controller now recaptures up to four times, five seconds
+apart, and keeps every attempt; one extra capture was needed on each boot.
+Earlier runs: +302 (AUX only) timed out on its first AUX request because
+the AUX clock divider was never set. The +304 image carried a stale
+pre-training driver object with the training-aware probe. An invalidated
+build had compiled it while its header was being edited, and it ended up
+newer than the header's final save. `build_info.py` now touches every
+changed file when a build is invalidated. Both runs recovered normally and
+their images are archived (`display-dp-aux-304-stale-driver`,
+`display-dp-video-306-early-capture`).
+
+- Native evidence: `artifacts/automated-display-dp-video/20260919T044007Z-04d01f`
+  (`qualification.json`, `dp-probe-boot{1,2}.json`, the observation before
+  and after the probe, and the frames with their colour checks).
+- Session: `artifacts/interactive/20260919T044009Z-9fbfef`; recovery boot
+  `2da2c020-5ee4-491d-b4be-58c5f931da21` after verified shutdown; image
+  archive `artifacts/nanokvm-image-archive/20260919T044803Z-6193aa`.
+- QEMU EL2/EL1: `artifacts/qemu-shell/20260919T042450Z-fb1979` and
+  `20260919T042716Z-b05ad0`; build `artifacts/build-20260919T042402Z.log`.
+- Stage: `artifacts/display-dp-video/20260919T042226Z-297c09`.
+
 ## Later stages
 
 3. Modes beyond the PLL table (the fractional-rate calculation) or the
    frame buffer size, and accelerated blits and fills (app_server's
    `B_FILL_RECTANGLE`/`B_SCREEN_TO_SCREEN_BLIT` hooks) on the RGA or the
    GPU, which nothing here provides yet.
-4. DisplayPort TX1 (`0xfde60000`, PD_VO0, `pclk_dp1` at CLKGATE_CON(56)
-   bit 5, `clk_dp1` bit 9, AUX clock `clk_aux16m_1`) through USBDP PHY1
-   (`0xfed90000`, `pclk_usbdpphy1` at CLKGATE_CON(72) bit 4, its GRF at
-   `0xfd5cc000`, lane mux in VO0 GRF `0xfd5a6000`) and the RA620 bridge
-   for the second connector, with HPD on GPIO3_D5. A read-only observation
-   of that path (power, gates, the DP block's version and HPD status, the
-   pin level) comes first; the bring-up itself needs a sink on that port (a
-   monitor, an HDMI dummy plug, or the NanoKVM cable moved) before it can
-   be qualified.
+4. A window on video port 1 scanning its own frame buffer on the trained
+   DP1 link, then the second connector as a second screen for app_server
+   (mode setting from the sink's EDID, link retraining on hot-plug).
 5. One wide framebuffer scanned by two video ports for a spanning desktop.

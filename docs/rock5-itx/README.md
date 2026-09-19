@@ -19,6 +19,15 @@ emulator gates show the software fallback without a device. It is not
 qualified: the independent Linux eMMC readbacks need the ROOBI sudo
 password, which is not on record.
 
+The +306 USB image puts the [first picture on the second connector](DISPLAY.md):
+Haiku brings DisplayPort TX1 and USBDP PHY1 up itself, reads the sink's
+DPCD and EDID over AUX through the RA620 bridge, and trains the link at
+5.4 Gb/s over two lanes on the first attempt. It then drives video port 1
+at 1920x1080@60 into DP1. On both native boots the NanoKVM captures the
+port's magenta background from that connector, and HDMI1's port is left
+untouched. A frame buffer window on that port and a second app_server
+screen come next.
+
 The +300 USB image adds a read-only [observation of the second connector's
 DisplayPort path](DISPLAY.md) to the qualified desktop-cursor cycle: on
 two native boots the DisplayPort TX1 block is powered, clocked and idle
