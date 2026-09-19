@@ -43,7 +43,11 @@ ReportResources(const ResourceInfo& info)
 		" vop_clocks=%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32
 		" hdmi_clocks=%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32
 		" vop_pd=%" PRIu32 " hdmi_pd=%" PRIu32 " phy_phandle=%" PRIu32 " vop_port=%" PRIu32
-		" board=%s\n",
+		" board=%s usbdp=%#" PRIx64 "/%#" PRIx64 " usbdp_grf=%#" PRIx64 "/%#" PRIx64
+		" vo0_grf=%#" PRIx64 "/%#" PRIx64 " ioc=%#" PRIx64 "/%#" PRIx64 " gpio3=%#" PRIx64 "/%#"
+		PRIx64 " dp=%#" PRIx64 "/%#" PRIx64 " dp_pd=%" PRIu32 " usbdp_clocks=%" PRIu32 ",%" PRIu32
+		",%" PRIu32 " usbdp_resets=%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32
+		" gpio3_clocks=%" PRIu32 ",%" PRIu32 "\n",
 		info.version, info.flags, info.vopBase, info.vopSize, info.vopLutBase, info.vopLutSize,
 		info.hdmiBase, info.hdmiSize, info.hdptxBase, info.hdptxSize,
 		info.hdptxGrfBase, info.hdptxGrfSize, info.sysGrfBase, info.sysGrfSize,
@@ -56,7 +60,13 @@ ReportResources(const ResourceInfo& info)
 		info.hdmiClockIds[0], info.hdmiClockIds[1], info.hdmiClockIds[2],
 		info.hdmiClockIds[3], info.hdmiClockIds[4], info.hdmiClockIds[5],
 		info.vopPowerDomain, info.hdmiPowerDomain, info.hdmiPhyPhandle, info.vopPortIndex,
-		info.boardCompatible);
+		info.boardCompatible, info.usbdpPhyBase, info.usbdpPhySize, info.usbdpGrfBase,
+		info.usbdpGrfSize, info.vo0GrfBase, info.vo0GrfSize, info.iocBase, info.iocSize,
+		info.gpio3Base, info.gpio3Size, info.dpBase, info.dpSize, info.dpPowerDomain,
+		info.usbdpPhyClockIds[0], info.usbdpPhyClockIds[1], info.usbdpPhyClockIds[2],
+		info.usbdpPhyResets[0], info.usbdpPhyResets[1], info.usbdpPhyResets[2],
+		info.usbdpPhyResets[3], info.usbdpPhyResets[4], info.gpio3ClockIds[0],
+		info.gpio3ClockIds[1]);
 	if (!ResourcesMatch(info)) {
 		fprintf(stderr, "Display resource description does not match the recorded board\n");
 		return false;
@@ -88,6 +98,15 @@ ReportSnapshot(unsigned index, const DisplaySnapshot& snapshot)
 	PrintWords("VOP_GRF", index, &snapshot.vopGrf, 1);
 	PrintWords("VO1_GRF", index, snapshot.vo1Grf, kVo1GrfCount);
 	PrintWords("HDPTX1_GRF", index, snapshot.hdptxGrf, kHdptxGrfCount);
+	PrintWords("USBDP1_GRF", index, snapshot.usbdpGrf, kUsbdpGrfCount);
+	PrintWords("VO0_GRF", index, snapshot.vo0Grf, kVo0GrfCount);
+	PrintWords("IOC", index, snapshot.ioc, kIocCount);
+	if ((snapshot.flags & kSnapshotGpioRead) != 0)
+		PrintWords("GPIO3", index, snapshot.gpio, kGpioCount);
+	if ((snapshot.flags & kSnapshotDpRead) != 0)
+		PrintWords("DP1", index, snapshot.dp, kDpCount);
+	if ((snapshot.flags & kSnapshotDpAuxRead) != 0)
+		PrintWords("DP1_AUX", index, snapshot.dpAux, kDpAuxCount);
 	if ((snapshot.flags & kSnapshotVopRead) != 0) {
 		PrintWords("VOP_SYS", index, snapshot.vopSystem, kVopSystemCount);
 		PrintWords("VOP_OVL", index, snapshot.vopOverlay, kVopOverlayCount);
@@ -137,6 +156,25 @@ ReportSnapshot(unsigned index, const DisplaySnapshot& snapshot)
 	}
 	if ((snapshot.flags & kSnapshotHdmiRead) != 0)
 		PrintWords("HDMI1", index, snapshot.hdmi, kHdmiCount);
+	// The DisplayPort TX1 path: domain, gates, the pin's mux and level, and
+	// what the block itself says when readable (its version, whether it is
+	// held in soft reset and its hot-plug status word on the AUX clock).
+	uint32_t dpGates = snapshot.clockGate[kClockGateDp];
+	printf("ROCK5_DISPLAY_DP1_PATH sample=%u vo0_on=%u pclk_dp1_gated=%u aux_gated=%u"
+		" hdcp_gated=%u usbdp_pclk_gated=%u immortal_gated=%u gpio3_gated=%u pin_mux=%u"
+		" pin_level=%u pin_direction=%u dp_read=%u aux_read=%u version=%08" PRIx32
+		" soft_reset=%08" PRIx32 " phyif=%08" PRIx32 " pwrdown=%08" PRIx32 " hpd_status=%08"
+		PRIx32 " lane_mux=%08" PRIx32 "\n", index,
+		snapshot.pmu[kPmuRepairStatus] >> 17 & 1, (dpGates & kClockGateDpMask) != 0,
+		(dpGates & kClockGateDpAuxMask) != 0, (dpGates & kClockGateDpHdcpMask) != 0,
+		(snapshot.clockGate[kClockGateUsbdp] & kClockGateUsbdpMask) != 0,
+		(snapshot.clockGate[kClockGateImmortal] & kClockGateImmortalMask) != 0,
+		(snapshot.clockGate[kClockGateGpio] & kClockGateGpioMask) != 0,
+		snapshot.ioc[1] >> 4 & 0xf, snapshot.gpio[kGpioExternalPort] >> kGpioHotPlugPin & 1,
+		snapshot.gpio[3] >> (kGpioHotPlugPin - 16) & 1,
+		(snapshot.flags & kSnapshotDpRead) != 0, (snapshot.flags & kSnapshotDpAuxRead) != 0,
+		snapshot.dp[0], snapshot.dp[7], snapshot.dp[10], snapshot.dp[11], snapshot.dpAux[2],
+		snapshot.vo0Grf[0]);
 	uint32_t status1 = snapshot.sysGrf[2];
 	printf("ROCK5_DISPLAY_HPD sample=%u hdmi0_level=%u hdmi0_int=%u hdmi1_level=%u hdmi1_int=%u"
 		" vop_on=%u vo0_on=%u vo1_on=%u vop_gates=%#" PRIx32 " hdmi_gates=%#" PRIx32
@@ -1053,7 +1091,8 @@ main(int argc, char** argv)
 	}
 	close(fd);
 	printf("ROCK5_DISPLAY_OBSERVATION_PASS samples=%u register_writes=0 consistent=%u"
-		" vop_read=%u hdmi_read=%u\n", samples, consistent ? 1 : 0,
-		(first.flags & kSnapshotVopRead) != 0, (first.flags & kSnapshotHdmiRead) != 0);
+		" vop_read=%u hdmi_read=%u dp_read=%u gpio_read=%u\n", samples, consistent ? 1 : 0,
+		(first.flags & kSnapshotVopRead) != 0, (first.flags & kSnapshotHdmiRead) != 0,
+		(first.flags & kSnapshotDpRead) != 0, (first.flags & kSnapshotGpioRead) != 0);
 	return 0;
 }

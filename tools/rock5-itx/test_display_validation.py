@@ -24,26 +24,35 @@ def port_words(width, height, standby=0, mode=0):
 
 
 def transcript(samples=3, vop=True, hdmi=True, vop_on=True, vo1_on=True, hdmi_gated=False,
-        consistent=True, flags=None, status_jitter=0, pll=True):
+        consistent=True, flags=None, status_jitter=0, pll=True, vo0_on=True, dp_gated=False, aux_gated=False,
+        gpio_gated=False, hpd_level=0, dp=None, gpio=None, aux=None, dp_hpd=0):
     lines = ['ROCK5_DISPLAY_WRITE_OPEN_REJECTED',
-        'ROCK5_DISPLAY_RESOURCES version=1 flags=1 vop=0xfdd90000/0x4200 lut=0xfdd95000/0x1000'
+        'ROCK5_DISPLAY_RESOURCES version=2 flags=1 vop=0xfdd90000/0x4200 lut=0xfdd95000/0x1000'
         ' hdmi=0xfdea0000/0x20000 hdptx=0xfed70000/0x2000 hdptx_grf=0xfd5e4000/0x100'
         ' sys_grf=0xfd58c000/0x1000 vop_grf=0xfd5a4000/0x2000 vo1_grf=0xfd5a8000/0x4000'
         ' pmu=0xfd8d8000/0x400 cru=0xfd7c0000/0x5c000 gic=0xfe600000 vop_irq=188'
         ' hdmi_irqs=205,206,207,208,393 vop_clocks=605,604,609,610,611,612,603'
         ' hdmi_clocks=531,532,533,569,595,717 vop_pd=24 hdmi_pd=26 phy_phandle=108 vop_port=1'
-        ' board=radxa,rock-5-itx',
+        ' board=radxa,rock-5-itx usbdp=0xfed90000/0x10000 usbdp_grf=0xfd5cc000/0x4000'
+        ' vo0_grf=0xfd5a6000/0x2000 ioc=0xfd5f0000/0x10000 gpio3=0xfec40000/0x100 dp=0xfde60000/0x4000'
+        ' dp_pd=25 usbdp_clocks=673,621,599 usbdp_resets=15,16,17,18,537 gpio3_clocks=119,120',
         'ROCK5_DISPLAY_RESOURCE_DESCRIPTION_PASS']
+    # The DisplayPort path follows the domain and gate words unless overridden.
+    dp = (vo0_on and not dp_gated) if dp is None else dp
+    aux = (dp and not aux_gated) if aux is None else aux
+    gpio = (not gpio_gated) if gpio is None else gpio
     if flags is None:
-        flags = 1 | (2 if vop else 8) | (4 if hdmi else 16)
-    repair = (1 << 16 if vop_on else 0) | (1 << 18 if vo1_on else 0) | (1 << 17)
-    pmu = [0x1000, 0, 0x1000, 0, 0x1000, 0, 0, 0x0fff0 & ~((vop_on << 1) | (vo1_on << 3)), 0, 0x0e000000, repair]
-    gate = [0, 0x8000, 0, 0x4 if hdmi_gated else 0, 0, 0]
+        flags = (1 | (2 if vop else 8) | (4 if hdmi else 16) | (32 if dp else 64) | (128 if aux else 0)
+            | (256 if gpio else 512))
+    repair = (1 << 16 if vop_on else 0) | (1 << 18 if vo1_on else 0) | (1 << 17 if vo0_on else 0)
+    pmu = [0x1000, 0, 0x1000, 0, 0x1000, 0, 0, 0x0fff0 & ~((vop_on << 1) | (vo0_on << 2) | (vo1_on << 3)), 0, 0x0e000000, repair]
+    gate = [0, 0x8000, 0, 0x4 if hdmi_gated else 0, 0, 0, 0, 0x4 if gpio_gated else 0,
+        (0x20 if dp_gated else 0) | (0x8 if aux_gated else 0)]
     status1 = (1 << 27) | (1 << 24)
     ports = [port_words(0, 0, standby=1), port_words(1920, 1080), port_words(0, 0, standby=1),
         port_words(0, 0, standby=1)]
     for index in range(samples):
-        lines.append('ROCK5_DISPLAY_SNAPSHOT sample=%d version=1 flags=%#x start_us=%d end_us=%d'
+        lines.append('ROCK5_DISPLAY_SNAPSHOT sample=%d version=2 flags=%#x start_us=%d end_us=%d'
             % (index, flags, 1000 + index * 10, 1050 + index * 10))
         lines.append('ROCK5_DISPLAY_PMU sample=%d %s' % (index, words(pmu)))
         lines.append('ROCK5_DISPLAY_CRU_SELECT sample=%d %s' % (index, words([0x1234, 0x0a00, 0, 0])))
@@ -52,6 +61,15 @@ def transcript(samples=3, vop=True, hdmi=True, vop_on=True, vo1_on=True, hdmi_ga
         lines.append('ROCK5_DISPLAY_VOP_GRF sample=%d %s' % (index, words([0x2])))
         lines.append('ROCK5_DISPLAY_VO1_GRF sample=%d %s' % (index, words([0x0, 0x0])))
         lines.append('ROCK5_DISPLAY_HDPTX1_GRF sample=%d %s' % (index, words([0xe0, 0xf] if pll else [0, 0])))
+        lines.append('ROCK5_DISPLAY_USBDP1_GRF sample=%d %s' % (index, words([0, 0, 0, 0, 0x2, 0, 0x1100])))
+        lines.append('ROCK5_DISPLAY_VO0_GRF sample=%d %s' % (index, words([0x0, 0, 0])))
+        lines.append('ROCK5_DISPLAY_IOC sample=%d %s' % (index, words([0x0, 0x50])))
+        if gpio:
+            lines.append('ROCK5_DISPLAY_GPIO3 sample=%d %s' % (index, words([0, 0, 0, 0, (hpd_level << 29) | (index << 3), 0x0101157c])))
+        if dp:
+            lines.append('ROCK5_DISPLAY_DP1 sample=%d %s' % (index, words([0x14110600, 0x1, 0x4450, 0, 0, 0, 0, 0x0, 0, 0, 0x0, 0x3])))
+        if aux:
+            lines.append('ROCK5_DISPLAY_DP1_AUX sample=%d %s' % (index, words([0x1 * index, 0, dp_hpd << 8])))
         if vop:
             system = [0] * check.VOP_SYS_COUNT
             system[1] = 0x35880000
@@ -81,11 +99,16 @@ def transcript(samples=3, vop=True, hdmi=True, vop_on=True, vo1_on=True, hdmi_ga
                 ' version=35880000' % index)
         if hdmi:
             lines.append('ROCK5_DISPLAY_HDMI1 sample=%d %s' % (index, words(list(range(10)))))
+        lines.append('ROCK5_DISPLAY_DP1_PATH sample=%d vo0_on=%d pclk_dp1_gated=%d aux_gated=%d hdcp_gated=0'
+            ' usbdp_pclk_gated=0 immortal_gated=0 gpio3_gated=%d pin_mux=5 pin_level=%d pin_direction=0'
+            ' dp_read=%d aux_read=%d version=14110600 soft_reset=00000000 phyif=00000000 pwrdown=00000003'
+            ' hpd_status=%08x lane_mux=00000000' % (index, vo0_on, dp_gated, aux_gated, gpio_gated, hpd_level,
+            dp, aux, dp_hpd << 8))
         lines.append('ROCK5_DISPLAY_HPD sample=%d hdmi0_level=0 hdmi0_int=0 hdmi1_level=1 hdmi1_int=1'
-            ' vop_on=%d vo0_on=1 vo1_on=%d vop_gates=0x0 hdmi_gates=%#x hdptx1_status=0xf'
-            % (index, vop_on, vo1_on, 4 if hdmi_gated else 0))
+            ' vop_on=%d vo0_on=%d vo1_on=%d vop_gates=0x0 hdmi_gates=%#x hdptx1_status=0xf'
+            % (index, vop_on, vo0_on, vo1_on, 4 if hdmi_gated else 0))
     lines.append('ROCK5_DISPLAY_OBSERVATION_PASS samples=%d register_writes=0 consistent=1'
-        ' vop_read=%d hdmi_read=%d' % (samples, vop, hdmi))
+        ' vop_read=%d hdmi_read=%d dp_read=%d gpio_read=%d' % (samples, vop, hdmi, dp, gpio))
     return '\n'.join(lines) + '\n'
 
 
@@ -695,6 +718,45 @@ class DisplayValidationTest(unittest.TestCase):
             Image.new('RGB', (1280, 720), check.DESKTOP_BLUE).save(frame, format='JPEG')
             with self.assertRaises(check.ValidationError):
                 check.check_pointer_frame(frame, 958, 538)
+
+    def test_dp_path_decode(self):
+        decoded = check.validate(transcript())
+        self.assertEqual((decoded['dp_read'], decoded['dp_aux_read'], decoded['gpio_read']), (True, True, True))
+        self.assertEqual(decoded['gates'], dict(vop=0, hdmi_pclk=0, pclk_dp1=0, dp_aux=0, dp_hdcp=0, usbdp_pclk=0, usbdp_immortal=0, gpio3=0))
+        self.assertEqual(decoded['dp_pin'], dict(mux=5, lane_mux_word=0, level=0, output=0))
+        self.assertEqual((decoded['dp1']['version'], decoded['dp1']['phyif_powerdown'], decoded['dp1']['hpd_level'], decoded['dp1']['hpd_state']), (0x14110600, 3, 0, 0))
+        self.assertEqual(decoded['gpio3']['version'], 0x0101157c)
+        plugged = check.validate(transcript(hpd_level=1, dp_hpd=1))
+        self.assertEqual((plugged['dp_pin']['level'], plugged['dp1']['hpd_level']), (1, 1))
+        # Gated AUX clock: the block is read, its AUX words are not.
+        no_aux = check.validate(transcript(aux_gated=True))
+        self.assertEqual((no_aux['dp_read'], no_aux['dp_aux_read'], 'hpd_level' in no_aux['dp1']), (True, False, False))
+        # Gated APB clock or VO0 off: no DisplayPort block; gated GPIO3 clock: no pin level.
+        for body in (transcript(dp_gated=True), transcript(vo0_on=False)):
+            skipped = check.validate(body)
+            self.assertEqual((skipped['dp_read'], skipped['dp_aux_read'], 'dp1' in skipped), (False, False, False))
+        no_gpio = check.validate(transcript(gpio_gated=True))
+        self.assertEqual((no_gpio['gpio_read'], 'gpio3' in no_gpio, 'level' in no_gpio['dp_pin']), (False, False, False))
+        cases = [
+            ('dp_flag_without_power', transcript(vo0_on=False, dp=True)),
+            ('dp_flag_without_clock', transcript(dp_gated=True, dp=True)),
+            ('dp_skipped_although_readable', transcript(dp=False)),
+            ('aux_without_dp', transcript(dp=False, aux=True)),
+            ('aux_flag_while_gated', transcript(aux_gated=True, aux=True)),
+            ('gpio_flag_while_gated', transcript(gpio_gated=True, gpio=True)),
+            ('summary_dp', transcript().replace('dp_read=1 gpio_read=1', 'dp_read=0 gpio_read=1')),
+            ('summary_gpio', transcript().replace('dp_read=1 gpio_read=1', 'dp_read=1 gpio_read=0')),
+            ('old_version', transcript().replace('version=2 flags', 'version=1 flags')),
+            ('dp1_missing', '\n'.join(l for l in transcript().splitlines() if not l.startswith('ROCK5_DISPLAY_DP1 ')) + '\n'),
+            ('dp1_unstable', transcript().replace('ROCK5_DISPLAY_DP1 sample=2 14110600', 'ROCK5_DISPLAY_DP1 sample=2 14110601')),
+            ('resources_dp', transcript().replace('dp=0xfde60000/0x4000', 'dp=0xfdec0000/0x4000')),
+            ('gate_count', transcript().replace('ROCK5_DISPLAY_CRU_GATE sample=0 00000000,00008000,00000000,00000000,00000000,00000000,00000000,00000000,00000000',
+                'ROCK5_DISPLAY_CRU_GATE sample=0 00000000,00008000,00000000,00000000,00000000,00000000')),
+        ]
+        for name, body in cases:
+            with self.subTest(name):
+                with self.assertRaises(check.ValidationError):
+                    check.validate(body)
 
     def test_pattern_frame(self):
         import tempfile

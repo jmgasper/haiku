@@ -19,7 +19,7 @@ connectors asymmetrically:
 | Connector | Path | Haiku device-tree presence |
 | --- | --- | --- |
 | `hdmi1-con` | VOP2 video port 1, DW HDMI QP TX1 (`hdmi@fdea0000`), Samsung HDPTX PHY1 (`phy@fed70000`) | Present and enabled in the EDK2 mainline DT that Haiku captures |
-| `hdmi0-con` | VOP2 video port 2, DisplayPort TX1 (`dp@fdec0000`), USBDP PHY1 (`phy@fed90000`, DP lanes 2 and 3), Radxa RA620 DP-to-HDMI bridge (`radxa,ra620`, no control bus) | The captured DT has the USBDP PHY node but no `dp` node and no bridge node |
+| `hdmi0-con` | VOP2 video port 2, DisplayPort TX1 (`dp@fde60000` in Linux' rk3588-extra.dtsi; `0xfdec0000` is eDP0), USBDP PHY1 (`phy@fed90000`, DP lanes 2 and 3), Radxa RA620 DP-to-HDMI bridge (`radxa,ra620`, no control bus), HPD on GPIO3_D5 (`dp1_hpdin_m0`) | The captured DT has the USBDP PHY node but no `dp` node and no bridge node |
 
 HDMI TX0 (`hdmi@fde80000`) is not wired to a connector and is disabled.
 
@@ -718,13 +718,46 @@ buffer, vertical retrace, mode changes, DPMS and a hardware cursor carrying
 app_server's pointer. No drawing is accelerated: app_server's blits and
 fills stay on the CPU.
 
+## Stage 4a: the DisplayPort path observed
+
+The second connector's path is DisplayPort TX1 (`0xfde60000`, the VO0
+domain, `pclk_dp1` at CLKGATE_CON(56) bit 5 with the 16 MHz AUX clock at
+bit 3 and `clk_dp1` at bit 9), USBDP PHY1 (`0xfed90000`, `pclk_usbdpphy1`
+at CLKGATE_CON(72) bit 4, the immortal clock at CLKGATE_CON(2) bit 15, its
+GRF at `0xfd5cc000`, the lane mux and hot-plug trigger in VO0 GRF
+`0xfd5a6000`), the RA620 bridge and the hot-plug pin GPIO3_D5 (function 5
+`dp1_hpdin_m0` in the bus IOC's GPIO3D high mux word, level in GPIO3's
+external port word bit 29). The firmware device tree carries the PHY, both
+GRFs, the IOC and GPIO3 but no DP node, so the resource description
+(version 2) takes the DP block from Linux' rk3588-extra.dtsi as a constant
+and the rest from the tree. The observation (snapshot version 2) reads
+three more CRU gate words, the two GRFs and the IOC mux words always, GPIO3
+while its APB clock is ungated, and the DP block (version, type, id, the
+three configuration words, CCTL, soft reset, video sample control, video
+config 1, PHY interface control and power-down) while VO0 is on and
+`pclk_dp1` ungated, with its AUX status, general interrupt and hot-plug
+status words only while the AUX clock is ungated as well, since an
+unclocked block faults the bus (the +284 lesson). Nothing is written. The
+probe prints the words and a decoded path line; the validator re-derives
+the gating and decodes the pin mux and level and the DP block's version
+and hot-plug state. The stage runs the qualified desktop-cursor cycle with
+this observation; what it records - whether the firmware leaves the block
+clocked, what the pin mux is, and the hot-plug level without a sink - sets
+the bring-up stage's starting point.
+
 ## Later stages
 
 3. Modes beyond the PLL table (the fractional-rate calculation) or the
    frame buffer size, and accelerated blits and fills (app_server's
    `B_FILL_RECTANGLE`/`B_SCREEN_TO_SCREEN_BLIT` hooks) on the RGA or the
    GPU, which nothing here provides yet.
-4. DisplayPort TX1 through USBDP PHY1 and the RA620 bridge for the second
-   connector. This needs a sink on that port (a monitor, an HDMI dummy plug,
-   or the NanoKVM cable moved) before it can be qualified.
+4. DisplayPort TX1 (`0xfde60000`, PD_VO0, `pclk_dp1` at CLKGATE_CON(56)
+   bit 5, `clk_dp1` bit 9, AUX clock `clk_aux16m_1`) through USBDP PHY1
+   (`0xfed90000`, `pclk_usbdpphy1` at CLKGATE_CON(72) bit 4, its GRF at
+   `0xfd5cc000`, lane mux in VO0 GRF `0xfd5a6000`) and the RA620 bridge
+   for the second connector, with HPD on GPIO3_D5. A read-only observation
+   of that path (power, gates, the DP block's version and HPD status, the
+   pin level) comes first; the bring-up itself needs a sink on that port (a
+   monitor, an HDMI dummy plug, or the NanoKVM cable moved) before it can
+   be qualified.
 5. One wide framebuffer scanned by two video ports for a spanning desktop.

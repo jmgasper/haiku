@@ -514,6 +514,56 @@ ReadResources(device_node* parent, ResourceInfo& output)
 		|| !gic.Reg(0, info.interruptBase, gicSize) || gicSize != 0x10000) {
 		return false;
 	}
+	// The second connector's path: USBDP PHY1 (a root node named by its
+	// address, as the firmware tree has no dp node to follow), its two GRFs,
+	// the bus IOC and GPIO3 under the pinctrl node.
+	NodeReference root(sDeviceManager->get_parent_node(parent));
+	NodeReference usbdpNode(FindNamedChild(root.Get(), "phy@fed90000"));
+	NodeReference iocNode(FindNamedChild(root.Get(), "syscon@fd5f0000"));
+	NodeReference pinctrl(FindNamedChild(root.Get(), "pinctrl"));
+	NodeReference gpioNode(FindNamedChild(pinctrl.Get(), "gpio@fec40000"));
+	FdtNode usbdp, ioc, gpio;
+	const char* const usbdpClockNames[] = {"refclk", "immortal", "pclk", "utmi"};
+	const char* const usbdpResetNames[] = {"init", "cmn", "lane", "pcs_apb", "pma_apb"};
+	uint32_t usbdpClocks[7], usbdpResets[10], usbdpGrf, vo0Grf, gpioClocks[4];
+	if (!usbdp.SetTo(usbdpNode.Get()) || !usbdp.Enabled()
+		|| !usbdp.HasString("compatible", "rockchip,rk3588-usbdp-phy")
+		|| !usbdp.Reg(0, info.usbdpPhyBase, info.usbdpPhySize)
+		|| !usbdp.Names("clock-names", usbdpClockNames, 4)
+		|| !usbdp.Cells("clocks", usbdpClocks, 7)
+		|| !usbdp.Names("reset-names", usbdpResetNames, 5)
+		|| !usbdp.Cells("resets", usbdpResets, 10)
+		|| !usbdp.Cells("rockchip,usbdpphy-grf", &usbdpGrf, 1)
+		|| !usbdp.Cells("rockchip,vo-grf", &vo0Grf, 1)
+		|| !ReadSyscon(busModule, bus, usbdpGrf, "rockchip,rk3588-usbdpphy-grf",
+			info.usbdpGrfBase, info.usbdpGrfSize)
+		|| !ReadSyscon(busModule, bus, vo0Grf, "rockchip,rk3588-vo0-grf",
+			info.vo0GrfBase, info.vo0GrfSize)) {
+		return false;
+	}
+	for (unsigned i = 0; i < 3; i++) {
+		if (usbdpClocks[i * 2] != vopClocks[0])
+			return false;
+		info.usbdpPhyClockIds[i] = usbdpClocks[i * 2 + 1];
+	}
+	for (unsigned i = 0; i < 5; i++) {
+		if (usbdpResets[i * 2] != vopClocks[0])
+			return false;
+		info.usbdpPhyResets[i] = usbdpResets[i * 2 + 1];
+	}
+	if (!ioc.SetTo(iocNode.Get()) || !ioc.HasString("compatible", "rockchip,rk3588-ioc")
+		|| !ioc.HasString("compatible", "syscon") || !ioc.Reg(0, info.iocBase, info.iocSize)
+		|| !gpio.SetTo(gpioNode.Get()) || !gpio.HasString("compatible", "rockchip,gpio-bank")
+		|| !gpio.Reg(0, info.gpio3Base, info.gpio3Size)
+		|| !gpio.Cells("clocks", gpioClocks, 4)
+		|| gpioClocks[0] != vopClocks[0] || gpioClocks[2] != vopClocks[0]) {
+		return false;
+	}
+	info.gpio3ClockIds[0] = gpioClocks[1];
+	info.gpio3ClockIds[1] = gpioClocks[3];
+	info.dpBase = kDpBase;
+	info.dpSize = kDpSize;
+	info.dpPowerDomain = kDpPowerDomain;
 	strcpy(info.boardCompatible, "radxa,rock-5-itx");
 	info.version = kResourceVersion;
 	info.flags = kDescriptionValidated;

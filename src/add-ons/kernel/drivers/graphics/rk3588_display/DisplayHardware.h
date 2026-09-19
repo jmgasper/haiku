@@ -60,10 +60,34 @@ public:
 			status = Map(fHdptxGrfArea, "RK3588 display HDPTX1 GRF",
 				resources.hdptxGrfBase, B_PAGE_SIZE, &fHdptxGrf);
 		}
+		if (status == B_OK) {
+			status = Map(fUsbdpGrfArea, "RK3588 display USBDP1 GRF",
+				resources.usbdpGrfBase, B_PAGE_SIZE, &fUsbdpGrf);
+		}
+		if (status == B_OK) {
+			status = Map(fVo0GrfArea, "RK3588 display VO0 GRF", resources.vo0GrfBase,
+				B_PAGE_SIZE, &fVo0Grf);
+		}
+		if (status == B_OK) {
+			// The bus IOC page of the IOC block.
+			status = Map(fIocArea, "RK3588 display BUS IOC",
+				resources.iocBase + RK3588Display::kIocBusOffset, B_PAGE_SIZE, &fIoc);
+		}
 		if (status != B_OK)
 			Unmap();
 		return status;
 	}
+	status_t MapGpio(const RK3588Display::ResourceInfo& resources)
+	{
+		return Map(fGpioArea, "RK3588 display GPIO3", resources.gpio3Base, B_PAGE_SIZE,
+			&fGpio);
+	}
+	status_t MapDp(const RK3588Display::ResourceInfo& resources, size_t size)
+	{
+		return Map(fDpArea, "RK3588 display DP TX1", resources.dpBase, size, &fDp);
+	}
+	void UnmapGpio() { fGpioArea.SetTo(-1); fGpio = NULL; }
+	void UnmapDp() { fDpArea.SetTo(-1); fDp = NULL; }
 	status_t MapVop(const RK3588Display::ResourceInfo& resources, size_t size)
 	{
 		return Map(fVopArea, "RK3588 display VOP2", resources.vopBase, size, &fVop);
@@ -79,6 +103,11 @@ public:
 	{
 		UnmapVop();
 		UnmapHdmi();
+		UnmapGpio();
+		UnmapDp();
+		fIocArea.SetTo(-1); fIoc = NULL;
+		fVo0GrfArea.SetTo(-1); fVo0Grf = NULL;
+		fUsbdpGrfArea.SetTo(-1); fUsbdpGrf = NULL;
 		fHdptxGrfArea.SetTo(-1); fHdptxGrf = NULL;
 		fVo1GrfArea.SetTo(-1); fVo1Grf = NULL;
 		fVopGrfArea.SetTo(-1); fVopGrf = NULL;
@@ -93,6 +122,11 @@ public:
 	uint32_t ReadVopGrf(uint32_t offset) { return ReadDisplayRegister(fVopGrf, offset); }
 	uint32_t ReadVo1Grf(uint32_t offset) { return ReadDisplayRegister(fVo1Grf, offset); }
 	uint32_t ReadHdptxGrf(uint32_t offset) { return ReadDisplayRegister(fHdptxGrf, offset); }
+	uint32_t ReadUsbdpGrf(uint32_t offset) { return ReadDisplayRegister(fUsbdpGrf, offset); }
+	uint32_t ReadVo0Grf(uint32_t offset) { return ReadDisplayRegister(fVo0Grf, offset); }
+	uint32_t ReadIoc(uint32_t offset) { return ReadDisplayRegister(fIoc, offset); }
+	uint32_t ReadGpio(uint32_t offset) { return ReadDisplayRegister(fGpio, offset); }
+	uint32_t ReadDp(uint32_t offset) { return ReadDisplayRegister(fDp, offset); }
 	uint32_t ReadVop(uint32_t offset) { return ReadDisplayRegister(fVop, offset); }
 	uint32_t ReadHdmi(uint32_t offset) { return ReadDisplayRegister(fHdmi, offset); }
 	int64_t Now() { return system_time(); }
@@ -110,13 +144,19 @@ private:
 	}
 
 	AreaDeleter fPmuArea, fClockArea, fSysGrfArea, fVopGrfArea, fVo1GrfArea,
-		fHdptxGrfArea, fVopArea, fHdmiArea;
+		fHdptxGrfArea, fUsbdpGrfArea, fVo0GrfArea, fIocArea, fGpioArea, fDpArea, fVopArea,
+		fHdmiArea;
 	volatile uint32* fPmu = NULL;
 	volatile uint32* fClock = NULL;
 	volatile uint32* fSysGrf = NULL;
 	volatile uint32* fVopGrf = NULL;
 	volatile uint32* fVo1Grf = NULL;
 	volatile uint32* fHdptxGrf = NULL;
+	volatile uint32* fUsbdpGrf = NULL;
+	volatile uint32* fVo0Grf = NULL;
+	volatile uint32* fIoc = NULL;
+	volatile uint32* fGpio = NULL;
+	volatile uint32* fDp = NULL;
 	volatile uint32* fVop = NULL;
 	volatile uint32* fHdmi = NULL;
 };

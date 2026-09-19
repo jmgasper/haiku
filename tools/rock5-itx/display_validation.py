@@ -12,7 +12,7 @@ import re
 
 PMU_COUNT = 11
 CRU_SELECT_COUNT = 4
-CRU_GATE_COUNT = 6
+CRU_GATE_COUNT = 9
 SYS_GRF_COUNT = 3
 VOP_SYS_COUNT = 27
 VOP_OVL_COUNT = 7
@@ -26,6 +26,17 @@ FLAG_VOP_READ = 2
 FLAG_HDMI_READ = 4
 FLAG_VOP_SKIPPED = 8
 FLAG_HDMI_SKIPPED = 16
+FLAG_DP_READ = 32
+FLAG_DP_SKIPPED = 64
+FLAG_DP_AUX_READ = 128
+FLAG_GPIO_READ = 256
+FLAG_GPIO_SKIPPED = 512
+USBDP_GRF_COUNT = 7
+VO0_GRF_COUNT = 3
+IOC_COUNT = 2
+GPIO_COUNT = 6
+DP_COUNT = 12
+DP_AUX_COUNT = 3
 
 INTERFACES = ['dp0', 'dp1', 'edp0', 'hdmi0', 'edp1', 'hdmi1', 'mipi0', 'mipi1', 'rgb']
 
@@ -93,16 +104,19 @@ def validate(body, expected_samples=3):
             ('hdptx', '0xfed70000/0x2000'), ('pmu', '0xfd8d8000/0x400'),
             ('cru', '0xfd7c0000/0x5c000'), ('vop_irq', '188'),
             ('hdmi_irqs', '205,206,207,208,393'), ('vop_pd', '24'), ('hdmi_pd', '26'),
-            ('vop_port', '1'), ('board', 'radxa,rock-5-itx')):
+            ('vop_port', '1'), ('board', 'radxa,rock-5-itx'), ('usbdp', '0xfed90000/0x10000'),
+            ('usbdp_grf', '0xfd5cc000/0x4000'), ('vo0_grf', '0xfd5a6000/0x2000'),
+            ('ioc', '0xfd5f0000/0x10000'), ('gpio3', '0xfec40000/0x100'), ('dp', '0xfde60000/0x4000'),
+            ('dp_pd', '25')):
         if fields.get(key) != value:
             raise ValidationError('resource %s=%r, expected %r' % (key, fields.get(key), value))
     summary = re.search(r'^ROCK5_DISPLAY_OBSERVATION_PASS samples=(\d+) register_writes=0'
-        r' consistent=(\d) vop_read=(\d) hdmi_read=(\d)$', body, re.M)
+        r' consistent=(\d) vop_read=(\d) hdmi_read=(\d) dp_read=(\d) gpio_read=(\d)$', body, re.M)
     if summary is None or int(summary.group(1)) != expected_samples:
         raise ValidationError('observation summary missing or wrong sample count')
     if summary.group(2) != '1':
         raise ValidationError('probe reported inconsistent samples')
-    headers = list(re.finditer(r'^ROCK5_DISPLAY_SNAPSHOT sample=(\d+) version=1 flags=(0x[0-9a-f]+|0)'
+    headers = list(re.finditer(r'^ROCK5_DISPLAY_SNAPSHOT sample=(\d+) version=2 flags=(0x[0-9a-f]+|0)'
         r' start_us=(\d+) end_us=(\d+)$', body, re.M))
     if [int(h.group(1)) for h in headers] != list(range(expected_samples)):
         raise ValidationError('snapshot headers incomplete')
@@ -119,8 +133,17 @@ def validate(body, expected_samples=3):
     hdmi_read = bool(flags & FLAG_HDMI_READ)
     if vop_read == bool(flags & FLAG_VOP_SKIPPED) or hdmi_read == bool(flags & FLAG_HDMI_SKIPPED):
         raise ValidationError('contradictory read/skip flags %#x' % flags)
+    dp_read = bool(flags & FLAG_DP_READ)
+    dp_aux_read = bool(flags & FLAG_DP_AUX_READ)
+    gpio_read = bool(flags & FLAG_GPIO_READ)
+    if dp_read == bool(flags & FLAG_DP_SKIPPED) or gpio_read == bool(flags & FLAG_GPIO_SKIPPED):
+        raise ValidationError('contradictory DisplayPort/GPIO read/skip flags %#x' % flags)
+    if dp_aux_read and not dp_read:
+        raise ValidationError('AUX words flagged read without the DisplayPort block')
     if int(summary.group(3)) != vop_read or int(summary.group(4)) != hdmi_read:
         raise ValidationError('summary flags disagree with snapshot flags')
+    if int(summary.group(5)) != dp_read or int(summary.group(6)) != gpio_read:
+        raise ValidationError('summary DisplayPort/GPIO flags disagree with snapshot flags')
 
     def collect(label, count, required=True, stable_masks=None):
         samples = _samples(body, label)
@@ -144,10 +167,22 @@ def validate(body, expected_samples=3):
     vop_grf = collect('VOP_GRF', 1)
     vo1_grf = collect('VO1_GRF', 2)
     hdptx_grf = collect('HDPTX1_GRF', 2)
+    usbdp_grf = collect('USBDP1_GRF', USBDP_GRF_COUNT)
+    vo0_grf = collect('VO0_GRF', VO0_GRF_COUNT)
+    ioc = collect('IOC', IOC_COUNT)
     repair = pmu[10]
     power = dict(vop_on=(repair >> 16) & 1, vo0_on=(repair >> 17) & 1, vo1_on=(repair >> 18) & 1,
         power_gate2=pmu[7])
-    gates = dict(vop=cru_gate[0] & 0x300, hdmi_pclk=cru_gate[3] & 0x4)
+    gates = dict(vop=cru_gate[0] & 0x300, hdmi_pclk=cru_gate[3] & 0x4,
+        pclk_dp1=(cru_gate[8] >> 5) & 1, dp_aux=(cru_gate[8] >> 3) & 1, dp_hdcp=(cru_gate[8] >> 9) & 1,
+        usbdp_pclk=(cru_gate[4] >> 4) & 1, usbdp_immortal=(cru_gate[6] >> 15) & 1, gpio3=(cru_gate[7] >> 2) & 1)
+    # The driver's DisplayPort and GPIO gating, re-derived from the raw words.
+    if dp_read != (power['vo0_on'] == 1 and gates['pclk_dp1'] == 0):
+        raise ValidationError('DisplayPort read flag disagrees with power/clock words')
+    if dp_aux_read != (dp_read and gates['dp_aux'] == 0):
+        raise ValidationError('DisplayPort AUX read flag disagrees with the AUX clock gate')
+    if gpio_read != (gates['gpio3'] == 0):
+        raise ValidationError('GPIO read flag disagrees with the GPIO3 clock gate')
     # The driver's own gating rule, re-derived here from the raw words. The
     # HDMI TX block is unreachable while the HDPTX PHY is powered down (DPMS
     # off), which the GRF shows as the PLL-enable bit (CON0 bit 7) clear.
@@ -160,11 +195,29 @@ def validate(body, expected_samples=3):
     hpd = dict(hdmi0_level=(status1 >> 19) & 1, hdmi0_int=(status1 >> 16) & 1,
         hdmi1_level=(status1 >> 27) & 1, hdmi1_int=(status1 >> 24) & 1)
     result = dict(status='pass', samples=expected_samples, flags=flags, vop_read=vop_read,
-        hdmi_read=hdmi_read, power=power, gates=gates, hpd=hpd,
+        hdmi_read=hdmi_read, dp_read=dp_read, dp_aux_read=dp_aux_read, gpio_read=gpio_read,
+        power=power, gates=gates, hpd=hpd,
         pmu=pmu, cru_select=cru_select, cru_gate=cru_gate, sys_grf=sys_grf,
         vop_grf=vop_grf[0], vo1_grf=vo1_grf, hdptx_grf=hdptx_grf,
         hdptx1=dict(pll_lock=(hdptx_grf[1] >> 3) & 1, clock_ready=(hdptx_grf[1] >> 2) & 1,
-            phy_ready=(hdptx_grf[1] >> 1) & 1, sideband_ready=hdptx_grf[1] & 1))
+            phy_ready=(hdptx_grf[1] >> 1) & 1, sideband_ready=hdptx_grf[1] & 1),
+        usbdp_grf=usbdp_grf, vo0_grf=vo0_grf, ioc=ioc,
+        # GPIO3_D5 (dp1_hpdin_m0 is mux function 5) carries the second connector's hot-plug.
+        dp_pin=dict(mux=(ioc[1] >> 4) & 0xf, lane_mux_word=vo0_grf[0]))
+    if gpio_read:
+        gpio = collect('GPIO3', GPIO_COUNT, stable_masks=[0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0, 0xffffffff])
+        result['gpio3'] = dict(data=gpio[0:2], direction=gpio[2:4], external_port=gpio[4], version=gpio[5])
+        result['dp_pin'].update(level=(gpio[4] >> 29) & 1, output=(gpio[3] >> 13) & 1)
+    if dp_read:
+        dp = collect('DP1', DP_COUNT)
+        result['dp1'] = dict(version=dp[0], version_type=dp[1], id=dp[2], config=dp[3:6], cctl=dp[6],
+            soft_reset=dp[7], vsample_control=dp[8], video_config1=dp[9], phyif_control=dp[10],
+            phyif_powerdown=dp[11])
+        if dp_aux_read:
+            aux = collect('DP1_AUX', DP_AUX_COUNT, stable_masks=[0, 0, 0xffffffff])
+            # DW DP HPD_STATUS: bit 8 is the current level, bits 11:9 the state machine.
+            result['dp1'].update(aux_status=aux[0], general_interrupt=aux[1], hpd_status=aux[2],
+                hpd_level=(aux[2] >> 8) & 1, hpd_state=(aux[2] >> 9) & 7)
     if vop_read:
         vop_sys = collect('VOP_SYS', VOP_SYS_COUNT)
         vop_ovl = collect('VOP_OVL', VOP_OVL_COUNT)

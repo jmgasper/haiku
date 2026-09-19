@@ -63,8 +63,11 @@ static unsigned sMapAttempts, sFailMap;
 static std::vector<uint64> sMappedBases;
 static int64_t sTime;
 static unsigned sLockDepth;
-static uint32 sRepairStatus = (1u << 16) | (1u << 18);
+static uint32 sRepairStatus = (1u << 16) | (1u << 17) | (1u << 18); // VOP, VO0, VO1 on
 static uint32 sGate52, sGate61;
+static uint32 sGate2, sGate17, sGate56; // CLKGATE_CON(2), (17), (56): USBDP immortal, GPIO3, DP1
+static uint32 sGpioPort; // GPIO3 external port: bit 29 is the DP1 hot-plug pin
+static uint32 sIocMux = 0x50; // GPIO3D_IOMUX_SEL_H: D5 as dp1_hpdin_m0 (function 5)
 static bool sAllowEdid;
 static uint32 sHotPlug = (1u << 24) | (1u << 27);
 
@@ -350,6 +353,22 @@ ModelRegister(uint64 base, unsigned offset)
 		return sGate52;
 	if (base == 0xfd7c0000 && offset == 0x8f4)
 		return sGate61;
+	if (base == 0xfd7c0000 && offset == 0x808)
+		return sGate2;
+	if (base == 0xfd7c0000 && offset == 0x844)
+		return sGate17;
+	if (base == 0xfd7c0000 && offset == 0x8e0)
+		return sGate56;
+	if (base == 0xfec40000 && offset == 0x70)
+		return sGpioPort;
+	if (base == 0xfec40000 && offset == 0x78)
+		return 0x0101157c; // GPIO version id
+	if (base == 0xfd5f8000 && offset == 0x7c)
+		return sIocMux;
+	if (base == 0xfde60000 && offset == 0x000)
+		return 0x14110600; // DW DP version 1.41
+	if (base == 0xfde60000 && offset == 0xd08)
+		return 0x0; // hot-plug status: nothing plugged
 	if (base == 0xfd58c000 && offset == 0x384)
 		return sHotPlug;
 	if (base == 0xfd5e4000 && offset == 0x00)
@@ -371,7 +390,7 @@ map_physical_memory(const char*, uint64 base, size_t bytes, uint32 spec,
 {
 	assert(sLockDepth == 1);
 	static const uint64 kControl[] = {0xfd8d8000, 0xfd7c0000, 0xfd58c000,
-		0xfd5a4000, 0xfd5a8000, 0xfd5e4000};
+		0xfd5a4000, 0xfd5a8000, 0xfd5e4000, 0xfd5cc000, 0xfd5a6000, 0xfd5f8000};
 	bool control = false;
 	for (uint64 candidate : kControl)
 		control |= candidate == base;
@@ -398,6 +417,12 @@ map_physical_memory(const char*, uint64 base, size_t bytes, uint32 spec,
 		writable = (protection & B_KERNEL_WRITE_AREA) != 0;
 		assert(bytes == (writable ? kHdmiEdidMapSize : kHdmiMapSize));
 		assert(!writable || sAllowEdid || sAllowModeSet);
+	} else if (base == 0xfec40000) {
+		// GPIO3 only while its APB clock is ungated, read-only.
+		assert(bytes == B_PAGE_SIZE && (sGate17 & 4) == 0);
+	} else if (base == 0xfde60000) {
+		// DisplayPort TX1 only with VO0 on and its APB clock ungated, read-only.
+		assert(bytes == kDpMapSize && (sRepairStatus & (1u << 17)) != 0 && (sGate56 & 0x20) == 0);
 	} else
 		assert(false);
 	assert(spec == (B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY));
@@ -533,13 +558,14 @@ struct device_node {
 
 static device_node sBusNode, sRoot, sVop, sPorts, sPort1, sEndpoint8, sHdmi,
 	sHdmiPorts, sHdmiPort0, sHdmiEndpoint, sPhy0, sPhy1, sHdptxGrf, sSysGrf,
-	sVopGrf, sVo1Grf, sPmu, sPower, sClock, sGic, sOther;
+	sVopGrf, sVo1Grf, sPmu, sPower, sClock, sGic, sOther, sUsbdpPhy1, sUsbdpGrf, sVo0Grf,
+	sIoc, sPinctrl, sGpio3;
 static fdt_bus sBus;
 static std::map<int, device_node*> sPhandles;
 static std::vector<device_node*> sAllNodes = {&sBusNode, &sRoot, &sVop, &sPorts,
 	&sPort1, &sEndpoint8, &sHdmi, &sHdmiPorts, &sHdmiPort0, &sHdmiEndpoint, &sPhy0,
 	&sPhy1, &sHdptxGrf, &sSysGrf, &sVopGrf, &sVo1Grf, &sPmu, &sPower, &sClock, &sGic,
-	&sOther};
+	&sOther, &sUsbdpPhy1, &sUsbdpGrf, &sVo0Grf, &sIoc, &sPinctrl, &sGpio3};
 
 
 static const void*
@@ -1009,9 +1035,37 @@ Prepare()
 	sClock.name = "clock-controller@fd7c0000";
 	sGic.name = "interrupt-controller@fe600000";
 	sOther.name = "other";
+	// The second connector's path as the firmware tree has it.
+	sUsbdpPhy1.name = "phy@fed90000";
+	sUsbdpGrf.name = "syscon@fd5cc000";
+	sVo0Grf.name = "syscon@fd5a6000";
+	sIoc.name = "syscon@fd5f0000";
+	sPinctrl.name = "pinctrl";
+	sGpio3.name = "gpio@fec40000"; sGpio3.parent = &sPinctrl;
 	sPhandles = {{0x21, &sClock}, {0x22, &sPower}, {0x6b, &sPhy0}, {0x6c, &sPhy1},
 		{0x6e, &sSysGrf}, {0x6f, &sVopGrf}, {0x70, &sVo1Grf}, {0x71, &sPmu},
-		{0x72, &sHdmiEndpoint}, {0x117, &sEndpoint8}, {0x127, &sHdptxGrf}};
+		{0x72, &sHdmiEndpoint}, {0x117, &sEndpoint8}, {0x127, &sHdptxGrf},
+		{0x12a, &sUsbdpGrf}, {0xfd, &sVo0Grf}};
+	sUsbdpPhy1.base = 0xfed90000; sUsbdpPhy1.size = 0x10000;
+	sUsbdpGrf.base = 0xfd5cc000; sUsbdpGrf.size = 0x4000;
+	sVo0Grf.base = 0xfd5a6000; sVo0Grf.size = 0x2000;
+	sIoc.base = 0xfd5f0000; sIoc.size = 0x10000;
+	sGpio3.base = 0xfec40000; sGpio3.size = 0x100;
+	Strings(sUsbdpPhy1, "compatible", {"rockchip,rk3588-usbdp-phy"});
+	Strings(sUsbdpPhy1, "status", {"okay"});
+	Strings(sUsbdpPhy1, "clock-names", {"refclk", "immortal", "pclk", "utmi"});
+	Cells(sUsbdpPhy1, "clocks", {0x21, 0x2a1, 0x21, 0x26d, 0x21, 0x257, 0x128});
+	Strings(sUsbdpPhy1, "reset-names", {"init", "cmn", "lane", "pcs_apb", "pma_apb"});
+	Cells(sUsbdpPhy1, "resets", {0x21, 0x0f, 0x21, 0x10, 0x21, 0x11, 0x21, 0x12, 0x21, 0x219});
+	Cells(sUsbdpPhy1, "rockchip,u2phy-grf", {0x129});
+	Cells(sUsbdpPhy1, "rockchip,usb-grf", {0xfb});
+	Cells(sUsbdpPhy1, "rockchip,usbdpphy-grf", {0x12a});
+	Cells(sUsbdpPhy1, "rockchip,vo-grf", {0xfd});
+	Strings(sUsbdpGrf, "compatible", {"rockchip,rk3588-usbdpphy-grf", "syscon"});
+	Strings(sVo0Grf, "compatible", {"rockchip,rk3588-vo0-grf", "syscon"});
+	Strings(sIoc, "compatible", {"rockchip,rk3588-ioc", "syscon"});
+	Strings(sGpio3, "compatible", {"rockchip,gpio-bank"});
+	Cells(sGpio3, "clocks", {0x21, 0x77, 0x21, 0x78});
 	sVop.base = 0xfdd90000; sVop.size = 0x4200; sVop.base1 = 0xfdd95000; sVop.size1 = 0x1000;
 	sVop.irqs = {188};
 	sHdmi.base = 0xfdea0000; sHdmi.size = 0x20000;
@@ -1074,9 +1128,12 @@ Prepare()
 	Cells(sClock, "#clock-cells", {1});
 	Strings(sGic, "compatible", {"arm,gic-v3"});
 	Cells(sGic, "#interrupt-cells", {4});
-	sRepairStatus = (1u << 16) | (1u << 18);
+	sRepairStatus = (1u << 16) | (1u << 17) | (1u << 18);
 	sGate52 = 0;
 	sGate61 = 0;
+	sGate2 = sGate17 = sGate56 = 0;
+	sGpioPort = 0;
+	sIocMux = 0x50;
 	sMapAttempts = 0;
 	sFailMap = 0;
 	sMappedBases.clear();
@@ -1192,12 +1249,33 @@ Prepare()
 static void
 CheckSnapshotValues(const DisplaySnapshot& snapshot, bool vop, bool hdmi)
 {
-	assert(snapshot.version == kSnapshotVersion);
+	// The DisplayPort path follows the model's VO0 domain and gate words.
+	bool dp = (sRepairStatus & (1u << 17)) != 0 && (sGate56 & 0x20) == 0;
+	bool aux = dp && (sGate56 & 0x8) == 0;
+	bool gpio = (sGate17 & 4) == 0;
+	assert(snapshot.version == kSnapshotVersion && kSnapshotVersion == 2);
 	assert((snapshot.flags & kSnapshotReadOnly) != 0);
 	assert(((snapshot.flags & kSnapshotVopRead) != 0) == vop);
 	assert(((snapshot.flags & kSnapshotVopSkipped) != 0) == !vop);
 	assert(((snapshot.flags & kSnapshotHdmiRead) != 0) == hdmi);
 	assert(((snapshot.flags & kSnapshotHdmiSkipped) != 0) == !hdmi);
+	assert(((snapshot.flags & kSnapshotDpRead) != 0) == dp);
+	assert(((snapshot.flags & kSnapshotDpSkipped) != 0) == !dp);
+	assert(((snapshot.flags & kSnapshotDpAuxRead) != 0) == aux);
+	assert(((snapshot.flags & kSnapshotGpioRead) != 0) == gpio);
+	assert(((snapshot.flags & kSnapshotGpioSkipped) != 0) == !gpio);
+	for (unsigned i = 0; i < kUsbdpGrfCount; i++)
+		assert(snapshot.usbdpGrf[i] == ModelRegister(0xfd5cc000, kUsbdpGrfOffsets[i]));
+	for (unsigned i = 0; i < kVo0GrfCount; i++)
+		assert(snapshot.vo0Grf[i] == ModelRegister(0xfd5a6000, kVo0GrfOffsets[i]));
+	for (unsigned i = 0; i < kIocCount; i++)
+		assert(snapshot.ioc[i] == ModelRegister(0xfd5f8000, kIocOffsets[i]));
+	for (unsigned i = 0; i < kGpioCount; i++)
+		assert(snapshot.gpio[i] == (gpio ? ModelRegister(0xfec40000, kGpioOffsets[i]) : 0));
+	for (unsigned i = 0; i < kDpCount; i++)
+		assert(snapshot.dp[i] == (dp ? ModelRegister(0xfde60000, kDpOffsets[i]) : 0));
+	for (unsigned i = 0; i < kDpAuxCount; i++)
+		assert(snapshot.dpAux[i] == (aux ? ModelRegister(0xfde60000, kDpAuxOffsets[i]) : 0));
 	assert(snapshot.finishedMicros > snapshot.startedMicros);
 	for (unsigned i = 0; i < kPmuCount; i++)
 		assert(snapshot.pmu[i] == ModelRegister(0xfd8d8000, kPmuOffsets[i]));
@@ -1242,9 +1320,9 @@ CheckSnapshotValues(const DisplaySnapshot& snapshot, bool vop, bool hdmi)
 int
 main()
 {
-	static_assert(sizeof(ResourceInfo) == 304, "Diagnostic ABI layout changed");
+	static_assert(sizeof(ResourceInfo) == 448, "Diagnostic ABI layout changed");
 	static_assert(sizeof(EdidRequest) == 192, "EDID ABI layout changed");
-	static_assert(sizeof(DisplaySnapshot) == 784, "Snapshot ABI layout changed");
+	static_assert(sizeof(DisplaySnapshot) == 928, "Snapshot ABI layout changed");
 	static_assert(sizeof(ScanoutRequest) == 88, "Scanout ABI layout changed");
 	static_assert(kPatternBytes == 1920 * 1080 * 4, "Pattern is the firmware framebuffer size");
 	for (unsigned offset : kVopSystemOffsets) assert(offset + 4 <= kVopMapSize);
@@ -1273,6 +1351,10 @@ main()
 	assert(ReadResources(&sVop, good) && ResourcesMatch(good));
 	assert(good.hdmiPhyPhandle == 0x6c && good.vopInterrupt == 188 && good.hdmiInterrupts[4] == 393);
 	assert(good.pmuBase == 0xfd8d8000 && good.clockBase == 0xfd7c0000 && good.hdptxGrfBase == 0xfd5e4000);
+	assert(good.version == 2 && good.usbdpPhyBase == 0xfed90000 && good.usbdpGrfBase == 0xfd5cc000);
+	assert(good.vo0GrfBase == 0xfd5a6000 && good.iocBase == 0xfd5f0000 && good.gpio3Base == 0xfec40000);
+	assert(good.dpBase == 0xfde60000 && good.dpSize == 0x4000 && good.dpPowerDomain == 25);
+	assert(good.usbdpPhyClockIds[2] == 0x257 && good.usbdpPhyResets[4] == 0x219 && good.gpio3ClockIds[1] == 0x78);
 	Prepare();
 	// Phandles are references, not fixed numerical board identifiers.
 	sPhandles.erase(0x21); sPhandles[909] = &sClock;
@@ -1285,6 +1367,9 @@ main()
 	Cells(sHdmi, "resets", {909, 0x1d0, 909, 0x231});
 	Cells(sHdmi, "phys", {910});
 	Cells(sEndpoint8, "remote-endpoint", {911});
+	Cells(sUsbdpPhy1, "clocks", {909, 0x2a1, 909, 0x26d, 909, 0x257, 0x128});
+	Cells(sUsbdpPhy1, "resets", {909, 0x0f, 909, 0x10, 909, 0x11, 909, 0x12, 909, 0x219});
+	Cells(sGpio3, "clocks", {909, 0x77, 909, 0x78});
 	ResourceInfo moved = {};
 	assert(ReadResources(&sVop, moved));
 	good.hdmiPhyPhandle = 910;
@@ -1315,6 +1400,19 @@ main()
 			0x21, 0x264, 0x21, 0x25b, 0x6b, 0x6c}); },
 		[] { Cells(sVop, "interrupts", {0, 157, 4, 0}); },
 		[] { sVop.irqs = {189}; },
+		[] { sUsbdpPhy1.name = "phy@fed80000"; },
+		[] { Strings(sUsbdpPhy1, "status", {"disabled"}); },
+		[] { Strings(sUsbdpPhy1, "compatible", {"rockchip,rk3588-hdptx-phy"}); },
+		[] { Cells(sUsbdpPhy1, "rockchip,usbdpphy-grf", {0xfd}); },
+		[] { Cells(sUsbdpPhy1, "rockchip,vo-grf", {0x70}); },
+		[] { Cells(sUsbdpPhy1, "clocks", {0x22, 0x2a1, 0x21, 0x26d, 0x21, 0x257, 0x128}); },
+		[] { Strings(sUsbdpPhy1, "reset-names", {"init", "cmn", "lane", "pcs", "pma_apb"}); },
+		[] { sIoc.name = "syscon@fd5f1000"; },
+		[] { Strings(sIoc, "compatible", {"rockchip,rk3588-ioc"}); },
+		[] { sGpio3.parent = &sRoot; },
+		[] { sGpio3.size = 0; },
+		[] { Cells(sGpio3, "clocks", {0x21, 0x77, 0x22, 0x78}); },
+		[] { Strings(sGpio3, "compatible", {"rockchip,gpio"}); },
 		[] { sVop.irqController = &sClock; },
 		[] { Cells(sVop, "interrupts-extended", {1}); },
 		[] { Cells(sVop, "power-domains", {0x22, 25}); },
@@ -1404,36 +1502,54 @@ main()
 	assert(Control(&handle, kGetSnapshot, &snapshot, sizeof(snapshot) - 1) == B_BAD_VALUE);
 	assert(Control(&handle, kGetSnapshot, NULL, sizeof(snapshot)) == B_BAD_ADDRESS);
 	assert(sMapAttempts == 0);
-	// Both blocks powered and clocked: eight read-only mappings, all released.
+	// Every block powered and clocked: nine control pages, VOP2, HDMI TX1,
+	// GPIO3 and DP TX1 - thirteen read-only mappings, all released.
 	assert(Control(&handle, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
-	assert(sMapAttempts == 8 && sAreas.empty());
-	assert(sMappedBases.back() == 0xfdea0000 && sMappedBases[6] == 0xfdd90000);
+	assert(sMapAttempts == 13 && sAreas.empty());
+	assert(sMappedBases[9] == 0xfdd90000 && sMappedBases[10] == 0xfdea0000);
+	assert(sMappedBases[11] == 0xfec40000 && sMappedBases.back() == 0xfde60000);
+	CheckSnapshotValues(snapshot, true, true);
+	assert(snapshot.dp[0] == 0x14110600 && snapshot.dpAux[2] == 0 && snapshot.ioc[1] == 0x50);
+	// The hot-plug pin high and the AUX clock gated: the pin shows, the AUX words do not.
+	Prepare(); sGpioPort = 1u << 29; sGate56 = 1u << 3;
+	assert(Control(&handle, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
+	assert(sMapAttempts == 13 && sAreas.empty());
+	CheckSnapshotValues(snapshot, true, true);
+	assert(snapshot.gpio[4] == (1u << 29) && (snapshot.flags & kSnapshotDpAuxRead) == 0 && snapshot.dpAux[0] == 0);
+	// DP APB clock gated, or the GPIO3 clock gated: those blocks are never mapped.
+	Prepare(); sGate56 = 1u << 5;
+	assert(Control(&handle, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
+	assert(sMapAttempts == 12 && sAreas.empty() && sMappedBases.back() == 0xfec40000);
+	CheckSnapshotValues(snapshot, true, true);
+	Prepare(); sGate17 = 1u << 2;
+	assert(Control(&handle, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
+	assert(sMapAttempts == 12 && sAreas.empty() && sMappedBases.back() == 0xfde60000);
 	CheckSnapshotValues(snapshot, true, true);
 	// VOP power domain off: VOP2 is never mapped; HDMI still observed.
-	Prepare(); sRepairStatus = 1u << 18;
+	Prepare(); sRepairStatus = (1u << 17) | (1u << 18);
 	assert(Control(&handle, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
-	assert(sMapAttempts == 7 && sAreas.empty());
+	assert(sMapAttempts == 12 && sAreas.empty());
 	CheckSnapshotValues(snapshot, false, true);
 	// VOP bus clock gated: same skip.
 	Prepare(); sGate52 = 1u << 8;
 	assert(Control(&handle, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
-	assert(sMapAttempts == 7 && sAreas.empty());
+	assert(sMapAttempts == 12 && sAreas.empty());
 	CheckSnapshotValues(snapshot, false, true);
-	// VO1 off or HDMI APB clock gated: HDMI TX1 is never mapped.
+	// VO1 off or HDMI APB clock gated: HDMI TX1 is never mapped (VO0 off skips DP too).
 	Prepare(); sRepairStatus = 1u << 16;
 	assert(Control(&handle, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
-	assert(sMapAttempts == 7 && sAreas.empty());
+	assert(sMapAttempts == 11 && sAreas.empty());
 	CheckSnapshotValues(snapshot, true, false);
 	Prepare(); sGate61 = 1u << 2;
 	assert(Control(&handle, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
-	assert(sMapAttempts == 7 && sAreas.empty());
+	assert(sMapAttempts == 12 && sAreas.empty());
 	CheckSnapshotValues(snapshot, true, false);
 	Prepare(); sRepairStatus = 0;
 	assert(Control(&handle, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_OK);
-	assert(sMapAttempts == 6 && sAreas.empty());
+	assert(sMapAttempts == 10 && sAreas.empty());
 	CheckSnapshotValues(snapshot, false, false);
 	// Every mapping failure is reported and leaves nothing mapped.
-	for (unsigned failing = 1; failing <= 8; failing++) {
+	for (unsigned failing = 1; failing <= 13; failing++) {
 		Prepare(); sFailMap = failing;
 		memset(&snapshot, 0xa5, sizeof(snapshot));
 		assert(Control(&handle, kGetSnapshot, &snapshot, sizeof(snapshot)) == B_NO_MEMORY);
@@ -2087,11 +2203,11 @@ main()
 	assert(Control(reader, kGetSnapshot, &offSnapshot, sizeof(offSnapshot)) == B_OK);
 	assert((offSnapshot.flags & kSnapshotHdmiSkipped) != 0 && (offSnapshot.flags & kSnapshotHdmiRead) == 0);
 	assert((offSnapshot.flags & kSnapshotVopRead) != 0 && offSnapshot.hdptxGrf[0] == 0 && offSnapshot.hdmi[0] == 0);
-	assert(sMappedBases.back() == 0xfdd90000);
+	assert(sMappedBases.back() == 0xfde60000);
 	EdidRequest offEdid = {};
 	offEdid.version = kEdidVersion;
 	assert(Control(reader, kReadEdid, &offEdid, sizeof(offEdid)) == B_OK && offEdid.result == kEdidPoweredOff);
-	assert(sMappedBases.back() == 0xfdd90000);
+	assert(sMappedBases.back() == 0xfde60000);
 	// Off again: nothing to do, nothing touched (app_server repeats DPMS on at every start).
 	sVopWrites.clear(); sPhyWrites.clear(); sGrfWrites.clear(); sCruWrites.clear();
 	unsigned mapsBefore = sMapAttempts;
@@ -2121,7 +2237,7 @@ main()
 	memset(&offSnapshot, 0xa5, sizeof(offSnapshot));
 	assert(Control(reader, kGetSnapshot, &offSnapshot, sizeof(offSnapshot)) == B_OK);
 	assert((offSnapshot.flags & kSnapshotHdmiRead) != 0 && offSnapshot.hdptxGrf[0] == 0xe0);
-	assert(sMappedBases.back() == 0xfdea0000);
+	assert(sMappedBases.back() == 0xfde60000);
 	// On again: already on, nothing touched.
 	sVopWrites.clear(); sPhyWrites.clear();
 	assert(Control(primary, kSetPowerMode, &power, sizeof(power)) == B_OK && power.result == kModeOK);

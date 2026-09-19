@@ -11,7 +11,7 @@
 
 namespace RK3588Display {
 
-static const uint32_t kSnapshotVersion = 1;
+static const uint32_t kSnapshotVersion = 2; // 2: the DisplayPort TX1 path
 
 // Snapshot flags. A snapshot is a sequential read-only observation, never an
 // atomic capture, and never a permission to program the display pipeline.
@@ -20,6 +20,11 @@ static const uint32_t kSnapshotVopRead = 2;
 static const uint32_t kSnapshotHdmiRead = 4;
 static const uint32_t kSnapshotVopSkipped = 8;
 static const uint32_t kSnapshotHdmiSkipped = 16;
+static const uint32_t kSnapshotDpRead = 32; // DisplayPort TX1 APB words read
+static const uint32_t kSnapshotDpSkipped = 64;
+static const uint32_t kSnapshotDpAuxRead = 128; // its AUX/HPD words too (AUX clock ungated)
+static const uint32_t kSnapshotGpioRead = 256; // GPIO3 (the DP1 hot-plug pin) read
+static const uint32_t kSnapshotGpioSkipped = 512;
 
 // Register offsets. Sources: RK3588 TRM v1.0 Part 1 (CRU, PMU), Linux 6.18.52
 // drivers/pmdomain/rockchip/pm-domains.c and drivers/clk/rockchip/clk-rk3588.c,
@@ -40,8 +45,19 @@ static const uint32_t kPmuVo1On = 1u << 18;
 // earc); CLKGATE_CON 52/53 (VOP), 59 (VO1 bus), 61 (HDMI TX), 72/73 (PHYs, HPD).
 static const uint32_t kClockSelectOffsets[] = {0x4bc, 0x4c0, 0x4c4, 0x520};
 static const unsigned kClockSelectCount = 4;
-static const uint32_t kClockGateOffsets[] = {0x8d0, 0x8d4, 0x8ec, 0x8f4, 0x920, 0x924};
-static const unsigned kClockGateCount = 6;
+static const uint32_t kClockGateOffsets[] = {0x8d0, 0x8d4, 0x8ec, 0x8f4, 0x920, 0x924,
+	0x808, 0x844, 0x8e0};
+static const unsigned kClockGateCount = 9;
+static const unsigned kClockGateUsbdp = 4; // CLKGATE_CON(72): bit4 pclk_usbdpphy1
+static const uint32_t kClockGateUsbdpMask = 1u << 4;
+static const unsigned kClockGateImmortal = 6; // CLKGATE_CON(2): bit15 clk_usbdp_phy1_immortal
+static const uint32_t kClockGateImmortalMask = 1u << 15;
+static const unsigned kClockGateGpio = 7; // CLKGATE_CON(17): bit2 pclk_gpio3
+static const uint32_t kClockGateGpioMask = 1u << 2;
+static const unsigned kClockGateDp = 8; // CLKGATE_CON(56): bit5 pclk_dp1, bit3 clk_aux16m_1, bit9 clk_dp1
+static const uint32_t kClockGateDpMask = 1u << 5;
+static const uint32_t kClockGateDpAuxMask = 1u << 3;
+static const uint32_t kClockGateDpHdcpMask = 1u << 9;
 static const unsigned kClockGateVop = 0; // CLKGATE_CON(52): bit8 hclk_vop, bit9 aclk_vop
 static const uint32_t kClockGateVopMask = (1u << 8) | (1u << 9);
 static const unsigned kClockGateHdmi = 3; // CLKGATE_CON(61): bit2 pclk_hdmitx1
@@ -56,6 +72,34 @@ static const uint32_t kVo1GrfOffsets[] = {0x0, 0xc}; // VO1_CON0 sync polarity, 
 static const unsigned kVo1GrfCount = 2;
 static const uint32_t kHdptxGrfOffsets[] = {0x0, 0x80}; // CON0 enables, STATUS ready/lock
 static const unsigned kHdptxGrfCount = 2;
+// The DisplayPort TX1 path (all read-only). USBDP PHY1 GRF: CON0-3, the
+// bvalid word and the USB3 OTG1 configuration Linux' phy-rockchip-usbdp.c
+// touches; VO0 GRF CON0 carries the DP lane mux and hot-plug trigger; the
+// bus IOC page (ioc + 0x8000) holds GPIO3D's mux words (D5 = dp1_hpdin_m0
+// as function 5 in bits 7:4 of the high word); GPIO3's data, direction,
+// external-port and version words give the pin's level.
+static const uint32_t kUsbdpGrfOffsets[] = {0x0, 0x4, 0x8, 0xc, 0x10, 0x1c, 0x30};
+static const unsigned kUsbdpGrfCount = 7;
+static const uint32_t kVo0GrfOffsets[] = {0x0, 0x4, 0x8};
+static const unsigned kVo0GrfCount = 3;
+static const uint32_t kIocBusOffset = 0x8000;
+static const uint32_t kIocOffsets[] = {0x78, 0x7c}; // GPIO3D_IOMUX_SEL_L, _H
+static const unsigned kIocCount = 2;
+static const uint32_t kGpioOffsets[] = {0x00, 0x04, 0x08, 0x0c, 0x70, 0x78};
+static const unsigned kGpioCount = 6;
+static const unsigned kGpioExternalPort = 4;
+static const uint32_t kGpioHotPlugPin = 29; // GPIO3_D5
+static const uint32_t kPmuVo0On = 1u << 17;
+// DW DP TX words on the APB clock: version, type, id, the three
+// configuration words, CCTL, soft reset, video sample control and video
+// config 1, PHY interface control and power-down; then, on the AUX clock,
+// AUX status, the general interrupt word and the hot-plug status.
+static const uint32_t kDpMapSize = 0x4000;
+static const uint32_t kDpOffsets[] = {0x000, 0x004, 0x008, 0x100, 0x104, 0x108, 0x200,
+	0x204, 0x300, 0x310, 0xa00, 0xa18};
+static const unsigned kDpCount = 12;
+static const uint32_t kDpAuxOffsets[] = {0xb04, 0xd00, 0xd08};
+static const unsigned kDpAuxCount = 3;
 
 // VOP2 (fdd90000): only the first 8 KiB are mapped and read.
 static const uint32_t kVopMapSize = 0x2000;
@@ -123,6 +167,12 @@ struct DisplaySnapshot {
 	uint32_t vopCluster[kVopClusterCount][kVopClusterRegisterCount];
 	uint32_t vopEsmart[kVopEsmartCount][kVopEsmartRegisterCount];
 	uint32_t hdmi[kHdmiCount];
+	uint32_t usbdpGrf[kUsbdpGrfCount];
+	uint32_t vo0Grf[kVo0GrfCount];
+	uint32_t ioc[kIocCount];
+	uint32_t gpio[kGpioCount];
+	uint32_t dp[kDpCount];
+	uint32_t dpAux[kDpAuxCount];
 };
 
 
@@ -146,6 +196,31 @@ HdmiReadable(const DisplaySnapshot& snapshot)
 	return (snapshot.pmu[kPmuRepairStatus] & kPmuVo1On) != 0
 		&& (snapshot.clockGate[kClockGateHdmi] & kClockGateHdmiMask) == 0
 		&& (snapshot.hdptxGrf[0] & kHdptxGrfPllEnable) != 0;
+}
+
+
+// DisplayPort TX1 sits in the VO0 domain on pclk_dp1; its AUX and hot-plug
+// words are in the 16 MHz AUX clock domain and are read only while that
+// clock is ungated as well (the HDMI lesson: an unclocked block faults).
+inline bool
+DpReadable(const DisplaySnapshot& snapshot)
+{
+	return (snapshot.pmu[kPmuRepairStatus] & kPmuVo0On) != 0
+		&& (snapshot.clockGate[kClockGateDp] & kClockGateDpMask) == 0;
+}
+
+
+inline bool
+DpAuxReadable(const DisplaySnapshot& snapshot)
+{
+	return DpReadable(snapshot) && (snapshot.clockGate[kClockGateDp] & kClockGateDpAuxMask) == 0;
+}
+
+
+inline bool
+GpioReadable(const DisplaySnapshot& snapshot)
+{
+	return (snapshot.clockGate[kClockGateGpio] & kClockGateGpioMask) == 0;
 }
 
 
@@ -179,6 +254,12 @@ ObserveDisplay(Hardware& hardware, const ResourceInfo& resources, DisplaySnapsho
 		snapshot.vo1Grf[i] = hardware.ReadVo1Grf(kVo1GrfOffsets[i]);
 	for (unsigned i = 0; i < kHdptxGrfCount; i++)
 		snapshot.hdptxGrf[i] = hardware.ReadHdptxGrf(kHdptxGrfOffsets[i]);
+	for (unsigned i = 0; i < kUsbdpGrfCount; i++)
+		snapshot.usbdpGrf[i] = hardware.ReadUsbdpGrf(kUsbdpGrfOffsets[i]);
+	for (unsigned i = 0; i < kVo0GrfCount; i++)
+		snapshot.vo0Grf[i] = hardware.ReadVo0Grf(kVo0GrfOffsets[i]);
+	for (unsigned i = 0; i < kIocCount; i++)
+		snapshot.ioc[i] = hardware.ReadIoc(kIocOffsets[i]);
 
 	if (VopReadable(snapshot)) {
 		status = hardware.MapVop(resources, kVopMapSize);
@@ -225,6 +306,37 @@ ObserveDisplay(Hardware& hardware, const ResourceInfo& resources, DisplaySnapsho
 		snapshot.flags |= kSnapshotHdmiRead;
 	} else
 		snapshot.flags |= kSnapshotHdmiSkipped;
+
+	if (GpioReadable(snapshot)) {
+		status = hardware.MapGpio(resources);
+		if (status != B_OK) {
+			hardware.Unmap();
+			return status;
+		}
+		for (unsigned i = 0; i < kGpioCount; i++)
+			snapshot.gpio[i] = hardware.ReadGpio(kGpioOffsets[i]);
+		hardware.UnmapGpio();
+		snapshot.flags |= kSnapshotGpioRead;
+	} else
+		snapshot.flags |= kSnapshotGpioSkipped;
+
+	if (DpReadable(snapshot)) {
+		status = hardware.MapDp(resources, kDpMapSize);
+		if (status != B_OK) {
+			hardware.Unmap();
+			return status;
+		}
+		for (unsigned i = 0; i < kDpCount; i++)
+			snapshot.dp[i] = hardware.ReadDp(kDpOffsets[i]);
+		if (DpAuxReadable(snapshot)) {
+			for (unsigned i = 0; i < kDpAuxCount; i++)
+				snapshot.dpAux[i] = hardware.ReadDp(kDpAuxOffsets[i]);
+			snapshot.flags |= kSnapshotDpAuxRead;
+		}
+		hardware.UnmapDp();
+		snapshot.flags |= kSnapshotDpRead;
+	} else
+		snapshot.flags |= kSnapshotDpSkipped;
 
 	snapshot.finishedMicros = hardware.Now();
 	hardware.Unmap();

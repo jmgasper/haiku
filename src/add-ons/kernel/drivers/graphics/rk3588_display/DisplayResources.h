@@ -16,7 +16,7 @@ namespace RK3588Display {
 // 'RDI' + operation. Both requests are read-only diagnostics.
 static const uint32_t kGetResources = 0x52444900;
 static const uint32_t kGetSnapshot = 0x52444901;
-static const uint32_t kResourceVersion = 1;
+static const uint32_t kResourceVersion = 2; // 2: the DisplayPort TX1 path blocks
 static const uint32_t kDescriptionValidated = 1;
 
 // Pointer-free description of the display pipeline resources admitted from
@@ -57,7 +57,32 @@ struct ResourceInfo {
 	uint32_t hdmiPhyPhandle;
 	uint32_t vopPortIndex; // video port feeding HDMI TX1 in the device tree
 	char boardCompatible[32];
+	// The second connector's path (version 2): USBDP PHY1 and its GRFs, the
+	// bus IOC and GPIO3 for the hot-plug pin, all from the firmware device
+	// tree; DisplayPort TX1 itself has no node there, so its block comes
+	// from Linux' rk3588-extra.dtsi (dp@fde60000, PD_VO0) as a constant.
+	uint64_t usbdpPhyBase;
+	uint64_t usbdpPhySize;
+	uint64_t usbdpGrfBase;
+	uint64_t usbdpGrfSize;
+	uint64_t vo0GrfBase;
+	uint64_t vo0GrfSize;
+	uint64_t iocBase;
+	uint64_t iocSize;
+	uint64_t gpio3Base;
+	uint64_t gpio3Size;
+	uint64_t dpBase;
+	uint64_t dpSize;
+	uint32_t usbdpPhyClockIds[3]; // refclk, immortal, pclk
+	uint32_t usbdpPhyResets[5]; // init, cmn, lane, pcs_apb, pma_apb
+	uint32_t gpio3ClockIds[2];
+	uint32_t dpPowerDomain;
+	uint32_t reserved;
 };
+
+static const uint64_t kDpBase = 0xfde60000; // DisplayPort TX1, Linux rk3588-extra.dtsi
+static const uint64_t kDpSize = 0x4000;
+static const uint32_t kDpPowerDomain = 25; // RK3588_PD_VO0
 
 
 inline bool
@@ -127,7 +152,14 @@ ResourcesMatch(const ResourceInfo& info)
 		&& memcmp(info.hdmiClockIds, kHdmiClocks, sizeof(kHdmiClocks)) == 0
 		&& info.vopPowerDomain == 24 && info.hdmiPowerDomain == 26
 		&& info.hdmiPhyPhandle != 0 && info.vopPortIndex == 1
-		&& strcmp(info.boardCompatible, "radxa,rock-5-itx") == 0;
+		&& strcmp(info.boardCompatible, "radxa,rock-5-itx") == 0
+		&& info.usbdpPhyBase == 0xfed90000 && info.usbdpPhySize == 0x10000
+		&& info.usbdpGrfBase == 0xfd5cc000 && info.usbdpGrfSize == 0x4000
+		&& info.vo0GrfBase == 0xfd5a6000 && info.vo0GrfSize == 0x2000
+		&& info.iocBase == 0xfd5f0000 && info.iocSize == 0x10000
+		&& info.gpio3Base == 0xfec40000 && info.gpio3Size == 0x100
+		&& info.dpBase == kDpBase && info.dpSize == kDpSize
+		&& info.dpPowerDomain == kDpPowerDomain;
 }
 
 } // namespace RK3588Display
