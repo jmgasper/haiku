@@ -18,6 +18,13 @@ qualified (2026-09-19, `…automated-mali-system-opengl/20260919T124336Z-d49da9`
 with the independent Linux eMMC readbacks now run from the owner's SD-card
 Debian, the lab's new recovery OS.
 
+The +320 USB image runs [2D and 3D together on both connectors](DISPLAY.md):
+one 3840x1080 app_server desktop across HDMI1 and the DisplayPort-bridged
+port, a hardware cursor window on each port, and the qualified system-default
+Mesa on the Mali-G610. On two native boots GLTeapot, started with no
+environment, renders through the installed system OpenGL at 59 FPS on the
+desktop, and the NanoKVM captures it on HDMI1's half.
+
 The +315 USB image completes the [dual-display desktop](DISPLAY.md): one
 3840x1080 app_server desktop across both HDMI ports, with a hardware cursor
 window on each port. A pointer on the seam shows half on each screen. On

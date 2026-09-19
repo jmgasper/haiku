@@ -1026,6 +1026,55 @@ qualified boots:
   `20260919T062039Z-bb4994`; build `artifacts/build-20260919T061754Z.log`.
 - Stage: `artifacts/display-dp-span-cursor/20260919T061616Z-39c30a`.
 
+### Qualified +320 2D and 3D together on both connectors (stage 6)
+
+The integration image carries the current driver with the spanning desktop
+and a hardware cursor per port (profile
+`rock5-itx-edk2-v1.1-display-dp-span-cursor`) and, file for file, the
+qualified system-default Mesa of the +254 stage: the six GLVND/Mesa
+libraries in `/boot/system/non-packaged/lib`, the EGL vendor file, the Mali
+firmware, the `mesa-trial` tree with GLTeapot, and the `mali_csf`
+GPU-shader profile. Every placed file is read back from the image.
+
+The `hrev60097+320` image (source `5d4b0ba0ed`, SHA-256
+`0694b140d359ad20c4a747f2eb3a1e4eab6913fc52f5ec2ec7147a32e308b8fc`) passes
+the host checks (172 tests), both QEMU modes and two native boots with
+normal reboot, verified shutdown and automatic ROOBI recovery. On both
+boots:
+
+- app_server runs the 3840x1080 desktop across HDMI1 and DP1, the accelerant
+  reports flags 55 (acquired, EDID, retrace, cursor, cursor hooks), and the
+  probe's quadrant cursor is placed at (900, 500) on HDMI1's half;
+- the Mesa probe reports `renderer=Mali-G610 (Panfrost) version=OpenGL ES 3.1
+  Mesa 25.3.6`;
+- GLTeapot, launched with no environment at all, maps
+  `/boot/system/non-packaged/lib/libEGL_mesa.so.0`, so it uses the installed
+  system OpenGL;
+- the NanoKVM capture of HDMI1 shows the desktop's left half with the
+  GLTeapot window rendering the teapot (15,614 and 13,167 teapot-red pixels)
+  at 59 FPS, and the cursor where the probe put it.
+
+- Native evidence: `artifacts/automated-display-span-mesa/20260919T230459Z-436c28`.
+- Session: `artifacts/interactive/20260919T230459Z-4ee606`; recovery boot
+  `8bb34d2c-dc30-4199-a89b-5d008a1508b2`; image archive
+  `artifacts/nanokvm-image-archive/20260919T231308Z-80b448`.
+- QEMU EL2/EL1: `artifacts/qemu-shell/20260919T230022Z-ae468e` and
+  `20260919T230240Z-a81c3d`; build `artifacts/build-20260919T230004Z.log`.
+- Stage: `artifacts/display-span-mesa/20260919T225841Z-6af6ef`.
+
+Earlier attempts, each archived: `grep` is absent from the minimum image
+(`span-mesa-319-no-grep`); the Mesa files were placed without their execute
+bits (`…-no-exec-bit`); `mali_csf`'s runtime lines come from the platform
+probe, not a client's exit, so counting them proved nothing
+(`…-teapot-alive`); the Mesa probe run beside GLTeapot failed
+(`…-probe-concurrent`). Two runs then hit uniformly shifted colours in every
+HDMI1 capture of one boot (`…-boot2-colour-shift`, `…-colour-shift-2`), with
+the rendered buffers, the VOP2 port words and the HDMI TX words identical to
+a clean boot. The sink kept the colorimetry of the firmware's own infoframe
+across the mode change; the span path now re-sends the AVI infoframe 50 ms
+after the mode set (5d4b0ba0ed), and both boots of this image are clean with
+no capture retries.
+
 ## Later stages
 
 3. Modes beyond the PLL table (the fractional-rate calculation) or the
