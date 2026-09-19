@@ -96,6 +96,62 @@
 #define MTK_DMA_CTL_DMA_DONE		(1u << 31)
 
 
+/* Talking to the part's own processor. */
+#define MTK_MCU_TXD_SIZE		64
+#define MTK_MCU_RXD_SIZE		36
+#define MTK_TX_TYPE_CMD			2
+#define MTK_TX_MCU_PORT_RX_Q0		0x20
+#define MTK_TXD1_LONG_FORMAT		(1u << 31)
+#define MTK_HDR_FORMAT_CMD		1
+#define MTK_MCU_PKT_ID			0xa0
+#define MTK_MCU_Q_SET			1
+#define MTK_MCU_Q_NA			3
+#define MTK_MCU_S2D_H2N			0
+
+#define MTK_MCU_CMD_TARGET_ADDRESS_LEN	0x01
+#define MTK_MCU_CMD_FW_START		0x02
+#define MTK_MCU_CMD_NIC_POWER_CTRL	0x04
+#define MTK_MCU_CMD_PATCH_START		0x05
+#define MTK_MCU_CMD_PATCH_FINISH	0x07
+#define MTK_MCU_CMD_PATCH_SEM		0x10
+#define MTK_MCU_CE_GET_NIC_CAPAB	0x8a
+
+#define MTK_PATCH_SEM_RELEASE		0
+#define MTK_PATCH_SEM_GET		1
+#define MTK_PATCH_IS_DL			1
+#define MTK_PATCH_SEM_SUCCESS		2
+
+#define MTK_DL_MODE_ENCRYPT		(1u << 0)
+#define MTK_DL_MODE_RESET_SEC_IV	(1u << 3)
+#define MTK_DL_CONFIG_ENCRY_MODE_SEL	(1u << 6)
+#define MTK_DL_MODE_NEED_RSP		(1u << 31)
+#define MTK_FW_START_OVERRIDE		(1u << 0)
+
+#define MTK_FW_FEATURE_ENCRYPT		(1 << 0)
+#define MTK_FW_FEATURE_ENCRY_MODE	(1 << 4)
+#define MTK_FW_FEATURE_OVERRIDE		(1 << 5)
+#define MTK_FW_FEATURE_NOT_SENT		(1 << 6)
+
+#define MTK_NIC_CAP_MAC_ADDR		0x07
+#define MTK_NIC_CAP_PHY			0x08
+
+#define MTK_FIRMWARE_CHUNK		4096
+#define MTK_PATCH_HEADER		96
+#define MTK_PATCH_SECTION		64
+#define MTK_RAM_TRAILER			36
+#define MTK_RAM_REGION			40
+
+#define MTK_PATCH_NAME			"WIFI_MT7922_patch_mcu_1_1_hdr.bin"
+#define MTK_RAM_NAME			"WIFI_RAM_CODE_MT7922_1.bin"
+
+/* A second claim of ownership, made once the rings exist. */
+#define MTK_TOP_LPCR_HOST_BAND0		0x18060010
+#define MTK_LPCR_HOST_FW_OWN		(1 << 0)
+#define MTK_LPCR_HOST_DRV_OWN		(1 << 1)
+#define MTK_SWDEF_MODE			0x0041f23c
+#define MTK_CONN_ON_MISC		0x7c0600f0
+
+
 /* Memory the card reaches by itself. */
 struct mtk_dma_mem {
 	bus_dma_tag_t		tag;
@@ -147,6 +203,10 @@ struct mtk_softc {
 	struct mtk_ring		sc_eventq;	/* answers, before firmware */
 	struct mtk_ring		sc_lateq;	/* answers, after it */
 	struct mtk_ring		sc_dataq;	/* what the air brings */
+	struct mtk_dma_mem	sc_cmdbuf;	/* one command at a time */
+	struct mtk_dma_mem	sc_fwbuf;	/* one piece of firmware */
+	uint8_t			sc_seq;
+	uint8_t			sc_streams;
 	int			sc_rings;
 
 	uint32_t		sc_chipid;
@@ -157,6 +217,7 @@ struct mtk_softc {
 uint32_t	mtk_read(struct mtk_softc*, uint32_t);
 void		mtk_write(struct mtk_softc*, uint32_t, uint32_t);
 int		mtk_dma_setup(struct mtk_softc*);
+int		mtk_firmware_start(struct mtk_softc*);
 void		mtk_dma_teardown(struct mtk_softc*);
 
 #define MTK_LOCK(sc)		mtx_lock(&(sc)->sc_mtx)

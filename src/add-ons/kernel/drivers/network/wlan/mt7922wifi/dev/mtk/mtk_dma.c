@@ -314,6 +314,17 @@ mtk_dma_setup(struct mtk_softc* sc)
 	if (error != 0)
 		goto fail;
 
+	/* A command being sent and a piece of firmware being sent each need
+	 * somewhere the card can fetch them from.
+	 */
+	error = mtk_dma_alloc(sc, &sc->sc_cmdbuf, 2048, "the command buffer");
+	if (error != 0)
+		goto fail;
+
+	error = mtk_dma_alloc(sc, &sc->sc_fwbuf, 4096, "the firmware buffer");
+	if (error != 0)
+		goto fail;
+
 	mtk_dma_enable(sc);
 	sc->sc_rings = 1;
 
@@ -340,5 +351,7 @@ mtk_dma_teardown(struct mtk_softc* sc)
 	mtk_ring_free(&sc->sc_eventq);
 	mtk_ring_free(&sc->sc_lateq);
 	mtk_ring_free(&sc->sc_dataq);
+	mtk_dma_free(&sc->sc_cmdbuf);
+	mtk_dma_free(&sc->sc_fwbuf);
 	sc->sc_rings = 0;
 }

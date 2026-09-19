@@ -428,10 +428,9 @@ mtk_attach(device_t dev)
 	device_printf(dev, "MT%04x, revision %#x\n", sc->sc_chipid,
 		sc->sc_rev & 0xff);
 
-	/* The address this radio answers to is asked of its firmware, which is
-	 * not loaded here yet. Until it is, one is made up from the part itself
-	 * so that the stack has something to attach to - it is marked as locally
-	 * chosen, which is what such an address is.
+	/* Until the firmware says what address this radio answers to, one is
+	 * made up from the part itself, marked as locally chosen. The real one
+	 * replaces it below.
 	 */
 	sc->sc_macaddr[0] = 0x02;
 	sc->sc_macaddr[1] = 0x00;
@@ -471,6 +470,12 @@ mtk_attach(device_t dev)
 	error = mtk_dma_setup(sc);
 	if (error != 0)
 		goto fail;
+
+	error = mtk_firmware_start(sc);
+	if (error != 0)
+		goto fail;
+
+	IEEE80211_ADDR_COPY(ic->ic_macaddr, sc->sc_macaddr);
 
 	device_printf(dev, "attached to the wireless stack\n");
 
