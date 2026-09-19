@@ -7,4 +7,5 @@ KernelAddon mt7922 :
 	mt7922_dma.cpp
 	mt7922_firmware.cpp
 	mt7922_hw.cpp
+	mt7922_mcu.cpp
 	;

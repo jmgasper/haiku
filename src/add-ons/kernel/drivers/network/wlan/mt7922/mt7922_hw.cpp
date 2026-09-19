@@ -317,8 +317,13 @@ mt7922_setup(mt7922_dev* device)
 	if (status != B_OK)
 		goto release;
 
-	/* Next: the firmware itself, over the rings that now exist. Until it is
-	 * running the part is awake and addressable but does nothing.
+	status = mt7922_mcu_start_firmware(device);
+	if (status != B_OK)
+		goto release;
+
+	/* Next: the 802.11 driver proper. The part is now running its own
+	 * firmware, which is what everything above was for, but nothing yet asks
+	 * it to scan, associate or carry anything.
 	 */
 	return B_OK;
 

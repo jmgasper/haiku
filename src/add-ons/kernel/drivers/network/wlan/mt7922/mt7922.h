@@ -220,6 +220,9 @@ struct mt7922_dev {
 	mt7922_ring	firmwareRing;	/* firmware payload, outbound */
 	mt7922_ring	commandRing;	/* commands, outbound */
 	mt7922_ring	eventRing;	/* what it says back */
+	mt7922_dma_mem	commandBuffer;	/* one command at a time */
+	mt7922_dma_mem	firmwareBuffer;	/* one piece of firmware at a time */
+	uint8		sequence;	/* ties an answer to what was asked */
 	bool		ringsReady;
 };
 
@@ -237,6 +240,8 @@ status_t mt7922_firmware_read_patch(mt7922_dev* device,
 status_t mt7922_firmware_read_ram(mt7922_dev* device,
 	mt7922_firmware* firmware);
 void mt7922_firmware_free(mt7922_firmware* firmware);
+
+status_t mt7922_mcu_start_firmware(mt7922_dev* device);
 
 status_t mt7922_setup(mt7922_dev* device);
 void mt7922_teardown(mt7922_dev* device);

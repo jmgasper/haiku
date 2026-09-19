@@ -298,6 +298,20 @@ mt7922_dma_setup(mt7922_dev* device)
 	if (status != B_OK)
 		goto fail;
 
+	/* One buffer for the command being sent and one for the piece of firmware
+	 * being sent. Both are reused, so each is refilled only once the card has
+	 * finished reading the last thing put there.
+	 */
+	status = mt7922_dma_alloc("mt7922 command buffer", 2048,
+		&device->commandBuffer);
+	if (status != B_OK)
+		goto fail;
+
+	status = mt7922_dma_alloc("mt7922 firmware buffer", 4096,
+		&device->firmwareBuffer);
+	if (status != B_OK)
+		goto fail;
+
 	mt7922_dma_enable(device);
 
 	TRACE("transfer engine now %#" B_PRIx32 "\n",
@@ -322,5 +336,7 @@ mt7922_dma_teardown(mt7922_dev* device)
 	mt7922_ring_free(&device->commandRing);
 	mt7922_ring_free(&device->eventRing);
 	mt7922_dma_free(&device->eventRing.buffers);
+	mt7922_dma_free(&device->commandBuffer);
+	mt7922_dma_free(&device->firmwareBuffer);
 	device->ringsReady = false;
 }
