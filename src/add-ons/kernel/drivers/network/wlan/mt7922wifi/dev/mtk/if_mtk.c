@@ -419,8 +419,32 @@ mtk_scan_start(struct ieee80211com* ic)
 		 * associating stops the whole stack, so it stays off until
 		 * that is understood:
 		 *
-		 *	ss->ss_flags &= ~IEEE80211_SCAN_NOJOIN;
 		 */
+		{
+			struct ieee80211vap* vap = TAILQ_FIRST(&ic->ic_vaps);
+
+			if (sc->sc_scan_starts % 8 == 1) {
+				device_printf(sc->sc_dev, "scan start: scan's vap %p"
+					" wants %d, our vap %p wants %d, flags %#x\n",
+					ss->ss_vap, ss->ss_vap != NULL
+						? ss->ss_vap->iv_des_nssid : -1,
+					vap, vap != NULL ? vap->iv_des_nssid : -1,
+					ss->ss_flags);
+			}
+
+			/* Clearing IEEE80211_SCAN_NOJOIN here is what lets the
+			 * stack join at all, and it does reach select_bss and
+			 * pick the right network. It is off because the machine
+			 * then stops answering and the log of that boot never
+			 * reaches disk, so there is nothing to go on:
+			 *
+			 *	ss->ss_flags &= ~IEEE80211_SCAN_NOJOIN;
+			 *
+			 * iv_des_nssid cannot be used to decide when to do it:
+			 * it reads back zero on the same vap whose iv_des_ssid
+			 * reads back correctly as the wanted network.
+			 */
+		}
 	}
 
 	sc->sc_scanning = 1;
