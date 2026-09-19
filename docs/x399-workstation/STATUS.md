@@ -22,7 +22,7 @@ a Bluetooth device to pair with.
 | Audio | ALC1220 analog output, HDMI audio | verified both: two outputs, each clocking its stream at the hardware's own rate (48322 and 48321 frames a second against the 48000 asked for). The graphics card's codec needed a change to Haiku's hda driver, which discarded any codec whose converters are all digital. The monitor reports it takes stereo. What nobody here can check is whether a speaker makes a sound |
 | Graphics | GTX 1070/1080 Ti accelerated 2D/3D, 3-4 monitors | 3D verified: Vulkan on the GPU (1.4 TFLOP/s compute, 57 Gpixel/s fill) and OpenGL 4.5 through it, with frames copied straight into the screen's own frame buffer in video memory rather than sent through the host - a lit sphere at 1600x900 goes from 209 to 970 frames a second. Vertical sync works (locks to 60.0) now that the accelerant hands out a retrace semaphore. Any program gets the GPU, with nothing set in its environment. Three heads driving one spanning desktop is verified, but with the third and second forced rather than plugged in. 2D is not accelerated at all: it runs four to eight times slower than drawing in memory, which is still far more than a desktop needs at one monitor |
 | Bluetooth | TP-Link Archer TX55E, working adapter and discovery | verified: the adapter answers as `90:74:ae:33:d7:cb` "MTK MT7922 #1" and an inquiry finds devices nearby, from a cold boot with nothing done by hand. The radio is a MediaTek MT7922 on USB, which runs a bootloader rather than a Bluetooth controller until it is given firmware - it takes the HCI Reset every stack opens with and never answers. The driver now hands it that firmware at open. Three further faults were in the way: `h2generic` took its event endpoint from the last interface that had one, which on this radio is MediaTek's audio interface, so it listened where no reply is ever sent; it stood isochronous transfers on the SCO endpoints at open, which nothing wants until there is a call; and the server never answered a request for a command the controller refuses outright, which hung the first program to ask for an adapter. Remote name lookup still fails, so discovered devices show an address and no name. Pairing and audio profiles are untried |
-| Wi-Fi | TP-Link Archer TX55E | not possible with this card. Its Wi-Fi half is a MediaTek MT7922 (`14c3:7922`), and no driver for it exists in Haiku or in FreeBSD, whose drivers Haiku's wireless support is built from. Haiku ships Intel, Atheros, Realtek, Ralink and Broadcom drivers; an Intel AX200 or AX210 card would be served by `iaxwifi200`. Writing an MT7922 driver means porting Linux's `mt76`, which is built on mac80211 where Haiku emulates FreeBSD's net80211 - a rewrite rather than a port |
+| Wi-Fi | TP-Link Archer TX55E | out of reach without building a layer Haiku does not have. Its Wi-Fi half is a MediaTek MT7922 (`14c3:7922`); nothing claims it, and Haiku has no MediaTek wireless driver. A driver does exist elsewhere: FreeBSD carries `mt76` in CURRENT, ported from Linux, and MT7922 passes traffic there - but it runs on LinuxKPI and `linuxkpi_wlan`, which emulate Linux's mac80211. Haiku's wireless support is FreeBSD 12.0's own net80211 (`__FreeBSD_version 1200086`) with no LinuxKPI at all, so that driver is not one Haiku can host. Supplying the missing layer is the hard part rather than the driver: it is what still blocks FreeBSD's own mt76, which is not production ready there as of early 2026. An Intel AX200 or AX210 card is served by the `iaxwifi200` Haiku already ships |
 | Sleep | S3 suspend and resume | sleeps and wakes; the display comes back, but the NVMe and the network card usually do not. Paused until a serial console arrives, which is also what the one untested path in the vertical sync work needs |
 
 ## Log
@@ -626,7 +626,14 @@ a Bluetooth device to pair with.
   Remote name lookup still fails, so discovered devices show an address and no
   name. Pairing and the audio profiles are untried.
 
-  The Wi-Fi half of the same card cannot work. It is a MediaTek MT7922
-  (`14c3:7922`) and no driver for it exists in Haiku or in FreeBSD, which is
-  where Haiku's wireless drivers come from. An Intel AX200 or AX210 card would
-  be driven by the `iaxwifi200` that Haiku already ships.
+  The Wi-Fi half of the same card is a MediaTek MT7922 (`14c3:7922`). Nothing
+  claims it and Haiku has no MediaTek wireless driver. A driver does exist
+  elsewhere, which an earlier note here denied: FreeBSD carries `mt76` in
+  CURRENT, ported from Linux, and MT7922 passes traffic there. It is not a
+  driver Haiku can host, though - it is built on LinuxKPI and `linuxkpi_wlan`,
+  which emulate Linux's mac80211, where Haiku's wireless support is FreeBSD
+  12.0's own net80211 (`__FreeBSD_version 1200086`) with no LinuxKPI at all.
+  The missing layer is the hard part rather than the driver: page and
+  page-pool work in LinuxKPI is what still blocks FreeBSD's own mt76, which
+  is not production ready there as of early 2026. An Intel AX200 or AX210
+  card is driven by the `iaxwifi200` that Haiku already ships.
