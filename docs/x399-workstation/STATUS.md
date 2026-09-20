@@ -23,10 +23,35 @@ a Bluetooth device to pair with.
 | Graphics | GTX 1070/1080 Ti accelerated 2D/3D, 3-4 monitors | 3D verified: Vulkan on the GPU (1.4 TFLOP/s compute, 57 Gpixel/s fill) and OpenGL 4.5 through it, with frames copied straight into the screen's own frame buffer in video memory rather than sent through the host - a lit sphere at 1600x900 goes from 209 to 970 frames a second. Vertical sync works (locks to 60.0) now that the accelerant hands out a retrace semaphore. Any program gets the GPU, with nothing set in its environment. Three heads driving one spanning desktop is verified, but with the third and second forced rather than plugged in. 2D is not accelerated at all: it runs four to eight times slower than drawing in memory, which is still far more than a desktop needs at one monitor |
 | Bluetooth | TP-Link Archer TX55E, working adapter and discovery | verified: the adapter answers as `90:74:ae:33:d7:cb` "MTK MT7922 #1" and an inquiry finds devices nearby, from a cold boot with nothing done by hand. The radio is a MediaTek MT7922 on USB, which runs a bootloader rather than a Bluetooth controller until it is given firmware - it takes the HCI Reset every stack opens with and never answers. The driver now hands it that firmware at open. Three further faults were in the way: `h2generic` took its event endpoint from the last interface that had one, which on this radio is MediaTek's audio interface, so it listened where no reply is ever sent; it stood isochronous transfers on the SCO endpoints at open, which nothing wants until there is a call; and the server never answered a request for a command the controller refuses outright, which hung the first program to ask for an adapter. Remote name lookup still fails, so discovered devices show an address and no name. Pairing and audio profiles are untried |
 | Wi-Fi | TP-Link Archer TX55E | the card scans and lists networks; it cannot carry traffic yet. `mt7922` is native, against Haiku's own PCI, and from a cold boot it brings the part up, loads its firmware, tunes a channel, sweeps for networks and reads what it hears: twenty-two in earshot by name, address and channel. It transmits, proven by asking after a network by name and being answered twenty-five times - an answer addressed to us can only follow a question we sent. What remains is joining one: host-side transmission of management frames, then association and keys. The last is best not done here at all - Haiku's wireless drivers present themselves through `net80211`, and its `wpa_supplicant` already does the handshake and key management, which is both far larger than this driver and the part where a mistake is a security mistake rather than a silent one. The network to join and the secret for it come from a settings file on the machine, never from this source, and the secret is never logged |
+| Video decoding | H.264 on the card's video engine, and something that plays a film | verified: the GTX 1080 Ti has an NVDEC engine and an NVC2B0 decoder class, and thirteen H.264 streams together with 120 frames of 1080p Big Buck Bunny decode byte for byte identically to ffmpeg's own decoder - multiple references, B pictures, spatial and temporal direct prediction, B pictures used as references, weighted prediction and two coded sequences among them. 1080p decodes at 232 pictures a second, 4.3 ms each, about eight times what playing it needs. It is offered to the whole system as a media add-on, so any program that opens a film gets it, and `NVPlay` plays one with sound, stopping, starting and seeking. What it will not do is field pictures, 4:2:2 or more than eight bits a sample, and because Haiku picks one decoder for a format those refusals mean the film will not play rather than falling back |
 | Sleep | S3 suspend and resume | sleeps and wakes; the display comes back, but the NVMe and the network card usually do not. Paused until a serial console arrives, which is also what the one untested path in the vertical sync work needs |
 
 ## Log
 
+- 2026-09-20: H.264 decodes on the card. The engine exists - resman lists
+  an `nvdec0` engine and an `NVC2B0` class - and a channel on it, bound like
+  any other but to the decoder rather than to graphics, runs methods we write.
+  Four things about it are not in the header that describes the picture setup,
+  and each cost a measurement:
+  * The arrangement of pixels in memory is not the one Mesa and nouveau use for
+    graphics surfaces on this chip. Rather than guess, the card was asked: a
+    picture whose every line is a different value, then one whose every column
+    is, decoded and read back, say where each pixel went.
+  * A reference whose field markings are zero is not a reference. The engine
+    does not complain - it predicts from picture zero instead, which for a
+    slowly changing picture is nearly right and looks like a subtle motion bug.
+  * The length of bitstream the engine is given must count an end of stream
+    marker, which it appends itself. Ending it at the last byte of the last
+    slice stops the decode partway down the picture while still reporting every
+    macroblock decoded and none in error.
+  * A picture keeps its place in the engine's reference table for as long as it
+    is a reference, because the motion data temporal prediction reads is filed
+    under the place rather than under the picture.
+  The last two came from upstream Mesa's own NVDEC code, once guessing here had
+  stopped being the quicker way. The decoder is a media add-on, so every
+  program that plays video gets it, and `NVPlay` is a film player: seventy
+  seconds of 1080p play in seventy seconds with picture and sound never more
+  than a tenth of a second apart.
 - 2026-09-17: hardware inventory captured with SystemRescue. The NVMe
   contained an ARM64 Haiku test install from the ROCK 5 lab; its files,
   EFI partition and GPT were backed up before reuse.
