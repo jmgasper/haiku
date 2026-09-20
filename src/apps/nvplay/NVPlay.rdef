@@ -1,0 +1,20 @@
+resource app_signature "application/x-vnd.Haiku-NVPlay";
+
+resource app_version {
+	major  = 1,
+	middle = 0,
+	minor  = 0,
+	variety = B_APPV_DEVELOPMENT,
+	internal = 0,
+	short_info = "NVPlay",
+	long_info = "NVPlay - plays a film with the graphics card's video decoder"
+};
+
+resource app_flags B_SINGLE_LAUNCH;
+
+resource file_types message {
+	"types" = "video/x-matroska",
+	"types" = "video/mp4",
+	"types" = "video/quicktime",
+	"types" = "video/x-msvideo"
+};

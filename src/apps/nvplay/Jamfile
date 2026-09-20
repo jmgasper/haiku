@@ -1,0 +1,7 @@
+SubDir HAIKU_TOP src apps nvplay ;
+
+Application NVPlay :
+	NVPlay.cpp
+	: be media localestub [ TargetLibsupc++ ]
+	: NVPlay.rdef
+	;
