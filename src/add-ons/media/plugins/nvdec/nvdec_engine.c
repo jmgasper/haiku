@@ -31,11 +31,6 @@
 #define GPFIFO_ENTRIES		0x100
 #define PUSHBUFFER_SIZE		0x10000
 
-/* The decoder's address space starts here and grows upwards; nothing else
- * shares it, so a bump allocator with a wide gap between buffers will do. */
-#define VA_BASE			0x00200000ull
-#define VA_STRIDE		0x00100000ull
-
 typedef struct {
 	uint32_t	physical;
 	uint32_t	virt;
@@ -53,7 +48,6 @@ struct NvdecEngine {
 	uint32_t	*pushAt;
 	uint32_t	gpPut;
 	uint32_t	semaphoreValue;
-	uint64_t	vaNext;
 	char		*reason;
 	size_t		reasonSize;
 };
@@ -100,15 +94,15 @@ nvdecAlloc(NvdecEngine *engine, NvdecBuffer *buffer, uint64_t size, bool inSyste
 	if (status != NV_OK)
 		return fail(engine, "memory", status);
 
-	uint64_t address = engine->vaNext;
-	engine->vaNext += (size + VA_STRIDE - 1) & ~(VA_STRIDE - 1);
+	/* Let resman place the range. Asking for an address of our own choosing
+	 * runs it out of page tables once a picture is big enough to need more
+	 * than a megabyte or two. */
 	NV_MEMORY_ALLOCATION_PARAMS virt = {
 		.owner = engine->client,
 		.type = NVOS32_TYPE_IMAGE,
-		.flags = NVOS32_ALLOC_FLAGS_VIRTUAL | NVOS32_ALLOC_FLAGS_FIXED_ADDRESS_ALLOCATE,
+		.flags = NVOS32_ALLOC_FLAGS_VIRTUAL,
 		.size = size,
-		.alignment = 0x1000,
-		.offset = address,
+		.alignment = 0x10000,
 		.hVASpace = engine->vaSpace,
 	};
 	status = nvRmApiAlloc(&engine->rm, engine->device, &state->virt,
@@ -162,7 +156,6 @@ nvdecOpen(char *reason, size_t reasonSize)
 		return NULL;
 	engine->reason = reason;
 	engine->reasonSize = reasonSize;
-	engine->vaNext = VA_BASE;
 	engine->deviceFd = -1;
 
 	/* Every request goes through the control node; memory on the card is

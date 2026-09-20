@@ -33,6 +33,10 @@ typedef struct {
 	bool		longTerm;
 	bool		neededForOutput;
 	bool		heldByCaller;
+	/* Where this picture sits in the engine's reference table. It stays
+	 * put for as long as the picture is a reference, which is what the
+	 * reference driver does; moving it about upsets temporal prediction. */
+	int		tableSlot;
 	int		topPoc, bottomPoc, poc;
 	/* Picture order restarts at every IDR, so which coded sequence a
 	 * picture belongs to comes before its order within one. */
@@ -54,6 +58,7 @@ struct NvdecH264 {
 	int		width, height, cropLeft, cropTop;
 	int		pitch;
 	int		surfaceCount;
+	int		lastSurface;
 	int		dpbSize;
 
 	/* Every decoded picture lives in one array, because the engine works
@@ -229,12 +234,16 @@ prepareForSequence(NvdecH264 *decoder, const H264Sps *sps)
 	(void)mbCount;
 	/* One slot past the pictures stays blank, so that a place in the
 	 * engine's table that nothing should be read from can point at it. */
+	char why[192];
+	snprintf(why, sizeof(why), "%s", decoder->reason != NULL ? decoder->reason : "");
+	bool inSystemMemory = getenv("NVDEC_SURFACES_IN_VRAM") == NULL;
 	if (!nvdecAlloc(decoder->engine, &decoder->lumaPool,
-			(size_t)(decoder->surfaceCount + 1) * decoder->lumaSize, true)
+			(size_t)(decoder->surfaceCount + 1) * decoder->lumaSize, inSystemMemory)
 		|| !nvdecAlloc(decoder->engine, &decoder->chromaPool,
-			(size_t)(decoder->surfaceCount + 1) * decoder->chromaSize, true)) {
-		return setError(decoder, "no room for %d decoded pictures of %dx%d",
-			decoder->surfaceCount, decoder->codedWidth, decoder->codedHeight);
+			(size_t)(decoder->surfaceCount + 1) * decoder->chromaSize, inSystemMemory)) {
+		snprintf(why, sizeof(why), "%s", decoder->reason != NULL ? decoder->reason : "");
+		return setError(decoder, "no room for %d decoded pictures of %dx%d: %s",
+			decoder->surfaceCount, decoder->codedWidth, decoder->codedHeight, why);
 	}
 	/* The engine's slot size is its own business - it knows the picture
 	 * size - so this leaves several times what the motion data can need. */
@@ -272,12 +281,20 @@ growBitstream(NvdecH264 *decoder, size_t needed)
 	return true;
 }
 
+/* Take the place that has been free longest, rather than the lowest one.
+ * A picture's index is not only where its pixels are: the motion data the
+ * engine keeps for temporal prediction is filed under it, and a picture
+ * decoded later can still refer to it. Reusing an index as soon as it falls
+ * free leaves that data describing the wrong picture. */
 static int
 takeSurface(NvdecH264 *decoder)
 {
 	for (int i = 0; i < decoder->surfaceCount; i++) {
-		if (!decoder->surfaceBusy[i])
-			return i;
+		int at = (decoder->lastSurface + 1 + i) % decoder->surfaceCount;
+		if (!decoder->surfaceBusy[at]) {
+			decoder->lastSurface = at;
+			return at;
+		}
 	}
 	return -1;
 }
@@ -411,6 +428,23 @@ unmarkReference(FrameStore *store)
 {
 	store->shortTerm = false;
 	store->longTerm = false;
+	store->tableSlot = -1;
+}
+
+static int
+takeTableSlot(NvdecH264 *decoder)
+{
+	bool used[16] = { false };
+	for (int i = 0; i < MAX_SURFACES; i++) {
+		FrameStore *store = &decoder->dpb[i];
+		if (store->inUse && store->tableSlot >= 0 && store->tableSlot < 16)
+			used[store->tableSlot] = true;
+	}
+	for (int i = 0; i < 16; i++) {
+		if (!used[i])
+			return i;
+	}
+	return -1;
 }
 
 static void
@@ -632,6 +666,7 @@ nvdecH264Reset(NvdecH264 *decoder)
 	for (int i = 0; i < MAX_SURFACES; i++)
 		memset(&decoder->dpb[i], 0, sizeof(FrameStore));
 	memset(decoder->surfaceBusy, 0, sizeof(decoder->surfaceBusy));
+	decoder->lastSurface = -1;
 	decoder->dpbCount = 0;
 	decoder->prevPocMsb = 0;
 	decoder->prevPocLsb = 0;
@@ -709,13 +744,14 @@ fillPictureTable(NvdecH264 *decoder, nvdec_h264_pic_s *setup)
 		setup->dpb[i].state = 0;
 		setup->dpb[i].not_existing = 1;
 	}
-	int at = 0;
-	for (int i = 0; i < MAX_SURFACES && at < 16; i++) {
+	for (int i = 0; i < MAX_SURFACES; i++) {
 		FrameStore *store = &decoder->dpb[i];
 		if (!store->inUse || (!store->shortTerm && !store->longTerm))
 			continue;
+		if (store->tableSlot < 0 || store->tableSlot >= 16)
+			continue;
 		int marking = store->longTerm ? 2 : 1;
-		nvdec_dpb_entry_s *entry = &setup->dpb[at++];
+		nvdec_dpb_entry_s *entry = &setup->dpb[store->tableSlot];
 		entry->index = store->surface;
 		entry->col_idx = store->surface;
 		entry->state = 3;			/* a whole frame */
@@ -994,7 +1030,9 @@ nvdecH264Decode(NvdecH264 *decoder, const uint8_t *data, size_t size, int64_t ti
 	store->neededForOutput = true;
 	store->sequence = decoder->sequence;
 	store->time = time;
+	store->tableSlot = -1;
 	if (slice.nalRefIdc != 0) {
+		store->tableSlot = takeTableSlot(decoder);
 		if (currentIsLongTerm) {
 			store->longTerm = true;
 			store->longTermFrameIdx = currentLongTermIdx;
@@ -1005,6 +1043,23 @@ nvdecH264Decode(NvdecH264 *decoder, const uint8_t *data, size_t size, int64_t ti
 	}
 	decoder->surfaceBusy[surface] = true;
 	decoder->dpbCount++;
+	if (getenv("NVDEC_TRACE") != NULL) {
+		static const char *kTypes[] = { "P", "B", "I", "SP", "SI" };
+		fprintf(stderr, "%3u: %-2s fn %2d poc %3d %s surface %2d ->",
+			decoder->pictureCount, kTypes[slice.sliceType], slice.frameNum,
+			store->poc, slice.nalRefIdc != 0 ? "ref    " : "not ref",
+			surface);
+		for (int i = 0; i < MAX_SURFACES; i++) {
+			FrameStore *other = &decoder->dpb[i];
+			if (!other->inUse)
+				continue;
+			fprintf(stderr, " [%d:fn%d:poc%d%s%s]", other->surface,
+				other->frameNum, other->poc,
+				other->shortTerm ? ":short" : (other->longTerm ? ":long" : ""),
+				other->neededForOutput ? ":out" : "");
+		}
+		fprintf(stderr, "\n");
+	}
 	decoder->prevHadMmco5 = false;
 	decoder->pictureCount++;
 	return true;
