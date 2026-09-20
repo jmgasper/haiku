@@ -7,7 +7,7 @@ set -eu
 X399=${X399:-/mnt/HaikuWork/x399}
 SSH="ssh -F $X399/ssh/config -o ConnectTimeout=10 ws-haiku"
 name=$1; shift
-scp -F $X399/ssh/config -q $X399/tests/$name.c ws-haiku:/boot/home/build/tests/
+scp -F $X399/ssh/config -q $X399/tests/$name.c $X399/tests/nvdecrm.h ws-haiku:/boot/home/build/tests/
 $SSH "cd /boot/home/build/tests \
 	&& NVRM=/boot/home/build/src/mesa-nvk/src/nouveau/vulkan/nvkmd/nvrm \
 	&& O=\$NVRM/open-gpu-kernel-modules \
@@ -17,4 +17,5 @@ $SSH "cd /boot/home/build/tests \
 		-I\$O/src/nvidia/arch/nvalloc/common/inc \
 		-I\$O/src/nvidia/arch/nvalloc/unix/include \
 		-I\$O/src/nvidia/inc/kernel \
+		-I/boot/home/build/src/mesa-nvk/src/nouveau/headers/nvidia \
 		$*"
