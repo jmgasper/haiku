@@ -1,3 +1,4 @@
 # Only for the dedicated ROCK 5 ITX with the installed EDK2 v1.1 firmware,
-# mainline DT-only mode and the captured NVMe endpoint on firmware segment 0.
-firmware_profile rock5-itx-edk2-v1.1-dt-nvme
+# mainline DT-only mode and the captured NVMe, SATA and Ethernet endpoints.
+firmware_profile rock5-itx-edk2-v1.1-dt-onboard
+legacy_interrupts true

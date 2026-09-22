@@ -3241,3 +3241,12 @@ and the About window showed four Cortex-A55 cores up to 1.80 GHz and four
 Cortex-A76 cores up to 2.40 GHz. The updated package hash, QEMU build smoke,
 screenshot and the observed EDK2 warm-restart stall are recorded in
 [CPU-DETAILS.md](CPU-DETAILS.md).
+
+## Both onboard Ethernet ports on the NVMe installation
+
+On 2026-09-22 the EDK2 v1.1 PCIe setting was widened to the captured onboard
+endpoints and legacy interrupts. Both RTL8125 ports attached, linked at
+1 Gbit/s, obtained `192.168.1.*` DHCP leases, and passed isolated outbound
+Internet pings. DNS worked through port 1; both restored ports answered LAN
+pings. Build, profile checks and QEMU smoke passed. See
+[NETWORK-PORTS.md](NETWORK-PORTS.md) for native evidence and limits.
