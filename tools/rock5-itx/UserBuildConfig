@@ -1,7 +1,19 @@
 # ARM64 EFI development image. Native ROCK acceptance is recorded in STATUS.md.
 # Keep serial debugging enabled through the normal kernel defaults.
-HAIKU_IMAGE_SIZE = 300 ;
-HAIKU_MMC_NAME = haiku-arm64-mmc.image ;
+# The lab image stays 300 MiB. The eMMC install profile is a regular build --
+# every in-tree application, preference and demo -- sized for the board's
+# 7.28 GiB eMMC. A profile name outside bootstrap-/minimum-/test- selects the
+# regular image definition, and one outside nightly-/release- adds none of the
+# HaikuPorts system packages that arm64 has no repository for.
+if $(HAIKU_BUILD_PROFILE) = rock5full-mmc {
+    HAIKU_IMAGE_SIZE = 6144 ;
+    HAIKU_MMC_NAME = haiku-rock5full-mmc.image ;
+} else {
+    HAIKU_IMAGE_SIZE = 300 ;
+    HAIKU_MMC_NAME = haiku-arm64-mmc.image ;
+}
+
+DefineBuildProfile rock5full-mmc : haiku-mmc-image : "haiku-rock5full.mmc" ;
 
 DeferredSubInclude HAIKU_TOP tools rock5-itx ;
 
@@ -26,4 +38,69 @@ rule UserBuildConfigRulePreImage
 	AddDriversToHaikuImage net : ipro1000 rtl8125 ;
 	AddNewDriversToHaikuImage graphics : mali_csf rk3588_display ;
 	AddFilesToHaikuImage system non-packaged add-ons accelerants : rk3588_display.accelerant ;
+
+	# The eMMC install additionally carries the fork's own OpenGL stack (Haiku
+	# has no arm64 mesa package, so GLTeapot and Haiku3d are filtered out of the
+	# regular image definition), the Mali firmware and the owner's applications.
+	if $(HAIKU_BUILD_PROFILE) = rock5full-mmc {
+		local extras = /mnt/HaikuWork/rock5-image-extras ;
+		local glLibs = <rock5-gl>libEGL_mesa.so.0 <rock5-gl>libEGL.so.1
+			<rock5-gl>libGLESv2.so.2 <rock5-gl>libGLdispatch.so.0
+			<rock5-gl>libOpenGL.so.0 <rock5-gl>libGL.so.1 <rock5-gl>libGLU.so.1
+			<rock5-gl>libsqlite3.so.0 <rock5-gl>libtag.so.2 <rock5-gl>libcurl.so.4
+			<rock5-gl>libpcre2-8.so.0 <rock5-gl>libscintilla.so <rock5-gl>liblexilla.so ;
+		SEARCH on $(glLibs) = [ FDirName $(extras) lib ] ;
+		AddFilesToHaikuImage system non-packaged lib : $(glLibs) ;
+
+		local vendorFile = <rock5-gl>10_mesa_panfrost.json ;
+		SEARCH on $(vendorFile) = [ FDirName $(extras) vendor ] ;
+		AddFilesToHaikuImage system non-packaged add-ons opengl egl_vendor.d
+			: $(vendorFile) ;
+
+		local maliFirmware = <rock5-gl>mali_csffw.bin ;
+		SEARCH on $(maliFirmware) = [ FDirName $(extras) firmware ] ;
+		AddFilesToHaikuImage system non-packaged data firmware mali arch10.8
+			: $(maliFirmware) ;
+
+		# packagefs owns /boot/system, so anything not in a package has to live
+		# under non-packaged to be visible at all. Deskbar lists both.
+		local glDemos = <rock5-gl>GLTeapot <rock5-gl>Haiku3d ;
+		SEARCH on $(glDemos) = [ FDirName $(extras) apps ] ;
+		AddFilesToHaikuImage system non-packaged demos : $(glDemos) ;
+
+		# The owner's applications are installed as real packages, built by
+		# tools/rock5-itx/build-app-packages.sh. packagefs then puts them in
+		# /boot/system/apps with their icons, their data files and the
+		# data/deskbar/menu/Applications symlink that lists them in Deskbar --
+		# none of which a loose binary under non-packaged can have.
+		local ownerPackages = <rock5-pkg>amp-0.2.0~alpha-1-arm64.hpkg
+			<rock5-pkg>kiri-0.0.1~alpha-1-arm64.hpkg
+			<rock5-pkg>turbochook-0.1.2~alpha-1-arm64.hpkg
+			<rock5-pkg>rock5_glinfo-1.0.0-1-arm64.hpkg ;
+		SEARCH on $(ownerPackages) = [ FDirName $(extras) packages ] ;
+		AddFilesToHaikuImage system packages : $(ownerPackages) ;
+
+		# Booting from the eMMC needs sdhci admitted before any volume is
+		# mounted: the loader reads this directory off the boot volume itself
+		# and passes the settings to the kernel, so the driver can attach in
+		# time to be the boot device.
+		local mmcSettings = <rock5-gl>sdhci ;
+		SEARCH on $(mmcSettings) = [ FDirName $(extras) settings ] ;
+		AddFilesToHaikuImage home config settings kernel drivers : $(mmcSettings) ;
+
+		# Without a profile the display driver publishes its device but refuses
+		# app_server's B_GET_ACCELERANT_SIGNATURE, so app_server falls back to
+		# /dev/graphics/framebuffer and Screen reports "Framebuffer". This runs
+		# the accelerant, mode set and hardware cursor on HDMI1.
+		local displaySettings = <rock5-gl>rk3588_display ;
+		SEARCH on $(displaySettings) = [ FDirName $(extras) settings ] ;
+		AddFilesToHaikuImage home config settings kernel drivers : $(displaySettings) ;
+
+		# mali_csf is gated the same way, and without it Mesa falls back to the
+		# software rasteriser: GLTeapot runs at 29 FPS instead of the vsync-capped
+		# 60, and the driver logs "identity profile disabled".
+		local gpuSettings = <rock5-gl>mali_csf ;
+		SEARCH on $(gpuSettings) = [ FDirName $(extras) settings ] ;
+		AddFilesToHaikuImage home config settings kernel drivers : $(gpuSettings) ;
+	}
 }

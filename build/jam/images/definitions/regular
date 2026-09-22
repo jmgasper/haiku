@@ -43,7 +43,7 @@ SYSTEM_APPS += [ FFilterByBuildFeatures
 	Mail
 	MediaConverter
 	MediaPlayer
-	MidiPlayer
+	MidiPlayer@fluidlite
 	People
 	PoorMan
 	PowerStatus
@@ -54,7 +54,7 @@ SYSTEM_APPS += [ FFilterByBuildFeatures
 	SoundRecorder
 ] ;
 
-DESKBAR_APPLICATIONS +=
+DESKBAR_APPLICATIONS += [ FFilterByBuildFeatures
 	ActivityMonitor
 	CodyCam
 	HaikuDepot
@@ -63,13 +63,13 @@ DESKBAR_APPLICATIONS +=
 	Mail
 	MediaConverter
 	MediaPlayer
-	MidiPlayer
+	MidiPlayer@fluidlite
 	People
 	PoorMan
 	SerialConnect
 	SoftwareUpdater
 	SoundRecorder
-;
+] ;
 
 DESKBAR_DESKTOP_APPLETS +=
 	AutoRaise
@@ -81,7 +81,7 @@ SYSTEM_PREFERENCES += [ FFilterByBuildFeatures
 	Bluetooth
 	DataTranslations
 	E-mail
-	Media
+	Media@fluidlite
 	Printers
 	Repositories
 	ScreenSaver
@@ -98,7 +98,7 @@ SYSTEM_DEMOS += [ FFilterByBuildFeatures
 	Mandelbrot
 	OverlayImage
 	Pairs
-	PatchBay
+	PatchBay@fluidlite
 	Playground
 	Pulse
 	Sudoku
@@ -126,7 +126,7 @@ rule HaikuImageGetSystemLibs
 			libgnu.so
 			libmail.so
 			libmedia.so
-			libmidi.so
+			libmidi.so@fluidlite
 			libmidi2.so
 			libnetwork.so
 			libnvmm.so@x86_64

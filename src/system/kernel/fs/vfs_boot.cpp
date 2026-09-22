@@ -466,6 +466,11 @@ vfs_bootstrap_file_systems(void)
 }
 
 
+// How long to keep rescanning for the boot device before giving up, and how
+// long to wait between passes.
+static const bigtime_t kBootDeviceTimeout = 10000000;
+static const bigtime_t kBootDeviceRetryInterval = 250000;
+
 void
 vfs_mount_boot_file_system(kernel_args* args)
 {
@@ -473,12 +478,26 @@ vfs_mount_boot_file_system(kernel_args* args)
 	bootVolume.SetTo(args->boot_volume, args->boot_volume_size);
 
 	PartitionStack partitions;
-	status_t status = get_boot_partitions(bootVolume, partitions);
-	if (status < B_OK) {
-		panic("get_boot_partitions failed!");
-	}
-	if (partitions.IsEmpty()) {
-		panic("did not find any boot partitions! @! syslog | tail 15");
+	status_t status = B_OK;
+
+	// Some buses publish their disks from a worker thread rather than from
+	// register_child_devices(), so the boot device can appear after the first
+	// scan: the MMC bus manager initialises the card and registers its node
+	// on MMCBus::_WorkerThread. Rescan until the boot device shows up rather
+	// than giving up on the first pass; a device that is already there is
+	// still found immediately.
+	const bigtime_t deadline = system_time() + kBootDeviceTimeout;
+	while (true) {
+		status = get_boot_partitions(bootVolume, partitions);
+		if (status < B_OK)
+			panic("get_boot_partitions failed!");
+		if (!partitions.IsEmpty())
+			break;
+		if (system_time() >= deadline) {
+			panic("did not find any boot partitions! @! syslog | tail 15");
+			break;
+		}
+		snooze(kBootDeviceRetryInterval);
 	}
 
 	dev_t bootDevice = -1;

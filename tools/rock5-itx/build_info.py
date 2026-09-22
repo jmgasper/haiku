@@ -9,25 +9,38 @@ from lab import WORK, SOURCE, digest, run, save, timestamp, validate_image
 OUTPUT = WORK / 'build/arm64'
 
 
-def inputs():
+def inputs(target):
     status = run(['git', '-C', str(SOURCE), 'status', '--porcelain'])
     patch = run(['git', '-C', str(SOURCE), 'diff', 'HEAD'])
     untracked = run(['git', '-C', str(SOURCE), 'ls-files', '--others', '--exclude-standard'])
-    return {
+    result = {
         'source_revision': run(['git', '-C', str(SOURCE), 'rev-parse', 'HEAD']),
         'source_dirty': bool(status), 'source_status': status, 'source_patch': patch,
         'untracked_sha256': {name: digest(SOURCE / name) for name in untracked.splitlines()},
         'buildtools_revision': run(['git', '-C', str(WORK / 'src/buildtools'), 'rev-parse', 'HEAD']),
     }
+    if target == '@rock5full-mmc':
+        extras = WORK / 'rock5-image-extras'
+        result['full_image_extras_sha256'] = {
+            str(path.relative_to(extras)): digest(path)
+            for path in sorted(extras.rglob('*')) if path.is_file()
+        }
+        result['owner_app_revisions'] = {
+            name: run(['git', '-C', str(WORK / 'apps' / name), 'rev-parse', 'HEAD'])
+            for name in ('kiri', 'turbochook', 'tasamp')
+        }
+    return result
 
 
 if __name__ == '__main__':
     pending = OUTPUT / 'pending-build.json'
     if sys.argv[1] == 'start':
-        save(pending, {'inputs': inputs(), 'target': sys.argv[2], 'started_utc': timestamp()})
+        target = sys.argv[2]
+        save(pending, {'inputs': inputs(target), 'target': target,
+                       'started_utc': timestamp()})
     elif sys.argv[1] == 'finish':
         record = json.loads(pending.read_text())
-        current = inputs()
+        current = inputs(record['target'])
         if current != record['inputs']:
             # An object compiled from a file being edited can end up newer than
             # the file's final save, and jam would then reuse it: make every
@@ -39,10 +52,15 @@ if __name__ == '__main__':
                     (SOURCE / name).touch()
             raise RuntimeError('Sources changed during the build (%d files touched so jam rebuilds them). '
                 'Rebuild before packaging.' % len(set(changed)))
-        image = OUTPUT / 'haiku-arm64-mmc.image'
+        images = {
+            '@minimum-mmc': ('haiku-arm64-mmc.image', 'build-record.json'),
+            '@rock5full-mmc': ('haiku-rock5full-mmc.image', 'full-build-record.json'),
+        }
+        image_name, record_name = images[record['target']]
+        image = OUTPUT / image_name
         record.update({'image': str(image), 'sha256': digest(image), 'finished_utc': timestamp(),
                        'layout': validate_image(image),
                        'haiku_revision': (OUTPUT / 'build/haiku-revision').read_text().strip()})
-        save(OUTPUT / 'build-record.json', record)
+        save(OUTPUT / record_name, record)
     else:
         raise SystemExit('Use start TARGET or finish')

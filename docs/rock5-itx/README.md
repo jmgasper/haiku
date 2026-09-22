@@ -6,8 +6,9 @@ driver support are tracked separately in [STATUS.md](STATUS.md) and the
 [hardware roadmap](ROADMAP.md). This is not a fully supported Haiku image yet.
 The [GitHub work items](TRACKING.md) split the roadmap into issues and milestones.
 
-The current scope is [Mali-G610 GPU support](GPU.md) only. The owner has deferred
-network stack changes and all other hardware development.
+The owner has expanded the scope to a full Rock 5 ITX system, beginning with
+the [regular ARM64 image](FULL-BUILD.md) and an NVMe installation. GPU,
+networking, media, audio and AX210 work are requested in sequence.
 
 The system-default OpenGL candidate ([MESA-SYSTEM.md](MESA-SYSTEM.md), Mesa
 at `3139063445` on the qualified +256 image) runs GLTeapot on Mali with no

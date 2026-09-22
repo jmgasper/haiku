@@ -4,8 +4,10 @@ Updated 2026-09-18 (Australia/Hobart). This page distinguishes lab readiness fro
 support. No hardware row in the roadmap is accepted merely because Linux or
 firmware supports it.
 
-Current scope is [Mali-G610 GPU acceleration](GPU.md) only; network stack changes
-and other hardware development are deferred at the owner's request.
+The owner has expanded the scope to a full Rock 5 ITX installation and the
+remaining CPU, network, storage, GPU, media, audio and AX210 work. The regular
+ARM64 [full-image candidate](FULL-BUILD.md) is built and its exact image passed
+a QEMU smoke boot; it has not yet had a native board boot.
 
 The system-default OpenGL candidate ([MESA-SYSTEM.md](MESA-SYSTEM.md), Mesa
 at `3139063445` on the qualified +256 image) runs GLTeapot on Mali with no
