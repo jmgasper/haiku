@@ -8,6 +8,7 @@ flock -n 9 || { echo "Another build owns the build lock." >&2; exit 1; }
 for needed in \
     "$HAIKU_WORK/rock5-image-extras/develop/fluidlite/lib/libfluidlite.a" \
     "$HAIKU_WORK/rock5-image-extras/packages/rock5_glinfo-1.0.0-1-arm64.hpkg" \
+    "$HAIKU_WORK/rock5-image-extras/packages/rock5_ffmpeg-6.1.6-2-arm64.hpkg" \
     "$HAIKU_WORK/rock5-image-extras/packages/amp-0.2.0~alpha-1-arm64.hpkg" \
     "$HAIKU_WORK/rock5-image-extras/packages/kiri-0.0.1~alpha-1-arm64.hpkg" \
     "$HAIKU_WORK/rock5-image-extras/packages/turbochook-0.1.2~alpha-1-arm64.hpkg"; do

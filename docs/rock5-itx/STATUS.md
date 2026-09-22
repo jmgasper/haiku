@@ -3279,3 +3279,29 @@ the installed demos with live rotation at 59 FPS using the normal system
 OpenGL setup. The boot log showed the enabled Mali CSF firmware profile.
 See [GPU-FULL-INSTALL.md](GPU-FULL-INSTALL.md) for screenshots, prior native
 qualification and the remaining compatibility limit.
+
+## Media decoding bring-up on the NVMe installation
+
+On 2026-09-23 the NVMe installation completed hardware video qualification for
+8-bit H.264 and H.265 through RKVDEC0 and AV1 through VPU981. Direct MPP jobs
+produced NV12 frames identical to host FFmpeg for all three codecs. The Media
+Kit add-on decoded video and AAC audio, then sought and decoded both tracks
+again in all three Big Buck Bunny samples.
+
+The installed `Rock5MediaPlayer` provides playback with audio, play, pause and
+seek controls. Its native AV1 trial played continuously, paused, sought to
+about 10 seconds while paused, and resumed with a new scene. Physical audio
+output remains part of the separate board-audio item.
+
+Every VPU job uses checked buffer handles, bounded completion polling and exact
+PMU/CRU restoration. Host success, rejection and timeout tests pass. The final
+native power snapshot reported RKVDEC0, RKVDEC1, VDPU and AV1 off after decode.
+The package and driver were installed on the default NVMe system, which passed
+a serial-captured reboot followed by Media Kit H.264 and AV1 decode-and-seek
+checks from the installed package.
+
+The final image SHA-256 is
+`b37ec067153587c08c35ce0ddc28153ac14c828fbfd34cf91c6156603578ef77`;
+its QEMU boot passed before the native installation. Qualification covers the
+tested 1280x720 8-bit samples. Source pins, exact frame hashes, build steps and
+native evidence paths are in [MEDIA.md](../../tools/rock5-itx/MEDIA.md).

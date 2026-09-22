@@ -40,6 +40,10 @@ rule UserBuildConfigRulePreImage
 	# the explicit onboard firmware profile and legacy_interrupts setting.
 	AddDriversToHaikuImage net : ipro1000 rtl8125 ;
 	AddNewDriversToHaikuImage graphics : mali_csf rk3588_display ;
+	AddNewDriversToHaikuImage video : rk3588_vpu ;
+	local vpuSettings = <rock5-lab>rk3588_vpu ;
+	SEARCH on $(vpuSettings) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
+	AddFilesToHaikuImage home config settings kernel drivers : $(vpuSettings) ;
 	AddFilesToHaikuImage system non-packaged add-ons accelerants : rk3588_display.accelerant ;
 
 	# The eMMC install additionally carries the fork's own OpenGL stack (Haiku
@@ -79,7 +83,8 @@ rule UserBuildConfigRulePreImage
 		local ownerPackages = <rock5-pkg>amp-0.2.0~alpha-1-arm64.hpkg
 			<rock5-pkg>kiri-0.0.1~alpha-1-arm64.hpkg
 			<rock5-pkg>turbochook-0.1.2~alpha-1-arm64.hpkg
-			<rock5-pkg>rock5_glinfo-1.0.0-1-arm64.hpkg ;
+			<rock5-pkg>rock5_glinfo-1.0.0-1-arm64.hpkg
+			<rock5-pkg>rock5_ffmpeg-6.1.6-2-arm64.hpkg ;
 		SEARCH on $(ownerPackages) = [ FDirName $(extras) packages ] ;
 		AddFilesToHaikuImage system packages : $(ownerPackages) ;
 

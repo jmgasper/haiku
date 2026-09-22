@@ -1,0 +1,724 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 2a8a431..d7b415a 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -346,7 +346,9 @@ include_directories(kmpp/base/inc)
+ # ----------------------------------------------------------------------------
+ #  utils for test case
+ # ----------------------------------------------------------------------------
+-add_subdirectory(utils)
++if(NOT CMAKE_SYSTEM_NAME STREQUAL "Haiku")
++    add_subdirectory(utils)
++endif()
+ 
+ # ----------------------------------------------------------------------------
+ #  Kernel Media Process Platform library
+diff --git a/mpp/hal/rkdec/h264d/hal_h264d_vdpu34x.c b/mpp/hal/rkdec/h264d/hal_h264d_vdpu34x.c
+index 69c066c..0073d1d 100644
+--- a/mpp/hal/rkdec/h264d/hal_h264d_vdpu34x.c
++++ b/mpp/hal/rkdec/h264d/hal_h264d_vdpu34x.c
+@@ -897,7 +897,7 @@ MPP_RET vdpu34x_h264d_start(void *hal, HalTaskInfo *task)
+     } while (0);
+ 
+ __RETURN:
+-    return ret = MPP_OK;
++    return ret;
+ }
+ 
+ MPP_RET vdpu34x_h264d_wait(void *hal, HalTaskInfo *task)
+diff --git a/mpp/hal/vpu/av1d/hal_av1d_vdpu.c b/mpp/hal/vpu/av1d/hal_av1d_vdpu.c
+index ac2be2d..310ab1c 100644
+--- a/mpp/hal/vpu/av1d/hal_av1d_vdpu.c
++++ b/mpp/hal/vpu/av1d/hal_av1d_vdpu.c
+@@ -2292,7 +2292,7 @@ MPP_RET vdpu_av1d_start(void *hal, HalTaskInfo *task)
+     } while (0);
+ 
+ __RETURN:
+-    return ret = MPP_OK;
++    return ret;
+ }
+ 
+ MPP_RET vdpu_av1d_wait(void *hal, HalTaskInfo *task)
+diff --git a/mpp/mpp_impl.c b/mpp/mpp_impl.c
+index eb74bef..2f88334 100644
+--- a/mpp/mpp_impl.c
++++ b/mpp/mpp_impl.c
+@@ -8,7 +8,11 @@
+ #include <time.h>
+ #include <stdarg.h>
+ #include <sys/types.h>
++#ifdef __HAIKU__
++#include <OS.h>
++#else
+ #include <sys/syscall.h>
++#endif
+ 
+ #include "rk_mpi_cmd.h"
+ 
+@@ -268,7 +272,11 @@ void _ops_log(FILE *fp, const char *fmt, ...)
+     va_list args;
+     va_start(args, fmt);
+ 
++#ifdef __HAIKU__
++    clock_gettime(CLOCK_REALTIME, &tp);
++#else
+     clock_gettime(CLOCK_REALTIME_COARSE, &tp);
++#endif
+     ptm = localtime_r(&tp.tv_sec, &tm_buf);
+     len = strftime(logs, sizeof(logs), "%m-%d %H:%M:%S", ptm);
+     mpp_assert(len < sizeof(logs));
+@@ -294,7 +302,11 @@ MPP_RET mpp_dump_init(MppDump *info)
+ 
+     mpp_mutex_init(&p->lock);
+     p->debug = mpp_debug;
++#ifdef __HAIKU__
++    p->tid = find_thread(NULL);
++#else
+     p->tid = syscall(SYS_gettid);
++#endif
+     p->log_version = 0;
+     p->time_base = mpp_time();
+ 
+diff --git a/mpp/mpp_sys.c b/mpp/mpp_sys.c
+index cee91a1..f2772db 100644
+--- a/mpp/mpp_sys.c
++++ b/mpp/mpp_sys.c
+@@ -12,8 +12,10 @@
+ #include <stdbool.h>
+ #include <string.h>
+ #include <unistd.h>
++#ifndef __HAIKU__
+ #include <sys/epoll.h>
+ #include <sys/eventfd.h>
++#endif
+ 
+ #include "mpp_env.h"
+ #include "mpp_mem.h"
+@@ -603,6 +605,7 @@ static rk_s32 mpp_sys_ctrl(rk_s32 pid, char *cmd, rk_s32 n)
+     return 0;
+ }
+ 
++#ifndef __HAIKU__
+ static void *mpp_sys_srv(MppSThdCtx *data)
+ {
+     MppSThd thd = data->thd;
+@@ -696,6 +699,7 @@ static void *mpp_sys_srv(MppSThdCtx *data)
+ 
+     return NULL;
+ }
++#endif
+ 
+ static void mpp_sys_init(void)
+ {
+@@ -718,6 +722,7 @@ static void mpp_sys_init(void)
+     srv->pid = getpid();
+ 
+     /* setup external command fifo and system service thread */
++#ifndef __HAIKU__
+     if (mpp_sys_debug != 0) {
+         MppSThd sys_thd = NULL;
+         char name[64];
+@@ -746,6 +751,7 @@ static void mpp_sys_init(void)
+             sys_dbg_flow("pid %d create sys srv thread failed\n", pid);
+         }
+     }
++#endif
+ }
+ 
+ static void mpp_sys_deinit(void)
+diff --git a/osal/CMakeLists.txt b/osal/CMakeLists.txt
+index bba1a40..a90465f 100644
+--- a/osal/CMakeLists.txt
++++ b/osal/CMakeLists.txt
+@@ -13,6 +13,10 @@ set(MPP_ALLOCATOR
+     allocator/allocator_drm.c
+ )
+ 
++if(CMAKE_SYSTEM_NAME STREQUAL "Haiku")
++    list(APPEND MPP_ALLOCATOR haiku/allocator_vpu.c)
++endif()
++
+ if(ANDROID)
+     set(PLATFORM_OS_SOURCES
+         android/os_mem.c
+@@ -35,6 +39,12 @@ set(MPP_DRIVER
+     driver/mpp_vcodec_client.c
+ )
+ 
++if(CMAKE_SYSTEM_NAME STREQUAL "Haiku")
++    set(LINUX_ONLY_OSAL_SOURCES haiku/mpp_dmabuf.c)
++else()
++    set(LINUX_ONLY_OSAL_SOURCES mpp_eventfd.c mpp_dmabuf.c)
++endif()
++
+ add_library(osal OBJECT
+     mpp_sgln_base.c
+     mpp_singleton.c
+@@ -44,8 +54,7 @@ add_library(osal OBJECT
+     mpp_allocator.c
+     mpp_mem_pool.c
+     mpp_callback.c
+-    mpp_eventfd.c
+-    mpp_dmabuf.c
++    ${LINUX_ONLY_OSAL_SOURCES}
+     mpp_thread.c
+     mpp_compat.c
+     mpp_common.c
+diff --git a/osal/allocator/allocator_drm.c b/osal/allocator/allocator_drm.c
+index ef8371f..00944da 100644
+--- a/osal/allocator/allocator_drm.c
++++ b/osal/allocator/allocator_drm.c
+@@ -11,8 +11,13 @@
+ #include <sys/ioctl.h>
+ #include <sys/mman.h>
+ 
++#ifdef __HAIKU__
++#include "linux/drm.h"
++#include "linux/drm_mode.h"
++#else
+ #include <linux/drm.h>
+ #include <linux/drm_mode.h>
++#endif
+ 
+ #include "os_mem.h"
+ #include "allocator_drm.h"
+diff --git a/osal/allocator/allocator_vpu.h b/osal/allocator/allocator_vpu.h
+new file mode 100644
+index 0000000..1a6dc40
+--- /dev/null
++++ b/osal/allocator/allocator_vpu.h
+@@ -0,0 +1,6 @@
++/* SPDX-License-Identifier: Apache-2.0 OR MIT */
++#ifndef ALLOCATOR_VPU_H
++#define ALLOCATOR_VPU_H
++#include "mpp_allocator_api.h"
++extern os_allocator allocator_vpu;
++#endif
+diff --git a/osal/driver/mpp_server.c b/osal/driver/mpp_server.c
+index 1e49ae3..d1d35b7 100644
+--- a/osal/driver/mpp_server.c
++++ b/osal/driver/mpp_server.c
+@@ -172,6 +172,7 @@ typedef struct MppDevServer_t {
+     const char          *server_error;
+     const char          *server_name;
+     rk_s32              inited;
++    rk_s32              lock_inited;
+     rk_u32              enable;
+     MppMutex            lock;
+     MppDevBatServ       *bat_server[VPU_CLIENT_BUTT];
+@@ -792,6 +793,11 @@ static void server_clear(MppDevServer *srv)
+             srv->batch_pool = NULL;
+         }
+ 
++        if (srv->lock_inited) {
++            mpp_mutex_destroy(&srv->lock);
++            srv->lock_inited = 0;
++        }
++
+         srv->inited = 0;
+         srv->enable = 0;
+ 
+@@ -841,6 +847,7 @@ static void mpp_server_init()
+     }
+ 
+     mpp_mutex_init(&srv->lock);
++    srv->lock_inited = 1;
+     memset(srv->bat_server, 0, sizeof(srv->bat_server));
+ 
+     do {
+@@ -880,10 +887,10 @@ static void mpp_server_deinit()
+     if (srv) {
+         rk_s32 i;
+ 
+-        for (i = 0; i < VPU_CLIENT_BUTT; i++)
+-            bat_server_put(srv, (MppClientType)i);
+-
+-        mpp_mutex_destroy(&srv->lock);
++        if (srv->lock_inited) {
++            for (i = 0; i < VPU_CLIENT_BUTT; i++)
++                bat_server_put(srv, (MppClientType)i);
++        }
+         server_clear(srv);
+     }
+ }
+diff --git a/osal/driver/mpp_service.c b/osal/driver/mpp_service.c
+index 0346164..93ae42b 100644
+--- a/osal/driver/mpp_service.c
++++ b/osal/driver/mpp_service.c
+@@ -40,8 +40,13 @@ const char *mpp_get_mpp_service_name(void)
+ {
+     static const char *mpp_service_name = NULL;
+     static const char *mpp_service_dev[] = {
++#ifdef __HAIKU__
++        "/dev/video/rk3588_vpu/0",
++        "/dev/video/rk3588_vpu/0",
++#else
+         "/dev/mpp_service",
+         "/dev/mpp-service",
++#endif
+     };
+ 
+     if (mpp_service_name)
+@@ -67,12 +72,20 @@ RK_S32 mpp_service_ioctl(RK_S32 fd, RK_U32 cmd, RK_U32 size, void *param)
+     mpp_req.offset = 0;
+     mpp_req.data_ptr = REQ_DATA_PTR(param);
+ 
++#ifdef __HAIKU__
++    return (RK_S32)ioctl(fd, MPP_IOC_CFG_V1, &mpp_req, sizeof(mpp_req));
++#else
+     return (RK_S32)ioctl(fd, MPP_IOC_CFG_V1, &mpp_req);
++#endif
+ }
+ 
+ RK_S32 mpp_service_ioctl_request(RK_S32 fd, MppReqV1 *req)
+ {
++#ifdef __HAIKU__
++    return (RK_S32)ioctl(fd, MPP_IOC_CFG_V1, req, sizeof(*req));
++#else
+     return (RK_S32)ioctl(fd, MPP_IOC_CFG_V1, req);
++#endif
+ }
+ 
+ MPP_RET mpp_service_check_cmd_valid(RK_U32 cmd, const MppServiceCmdCap *cap)
+diff --git a/osal/haiku/allocator_vpu.c b/osal/haiku/allocator_vpu.c
+new file mode 100644
+index 0000000..ffdafce
+--- /dev/null
++++ b/osal/haiku/allocator_vpu.c
+@@ -0,0 +1,132 @@
++/* SPDX-License-Identifier: Apache-2.0 OR MIT */
++/* RK3588 VPU buffer adapter for the Haiku diagnostic device. */
++#include <fcntl.h>
++#include <stdint.h>
++#include <sys/ioctl.h>
++#include <unistd.h>
++
++#include "allocator_vpu.h"
++#include "mpp_mem.h"
++
++#define VPU_ALLOC_BUFFER 0x52565008u
++#define VPU_FREE_BUFFER  0x52565009u
++
++typedef struct {
++    uint32_t version;
++    uint32_t handle;
++    uint64_t bytes;
++    int32_t area;
++    uint32_t reserved;
++    uint64_t address;
++} VpuAllocation;
++
++typedef struct {
++    uint32_t version;
++    uint32_t handle;
++} VpuRelease;
++
++_Static_assert(sizeof(VpuAllocation) == 32, "VPU allocation ABI changed");
++
++typedef struct {
++    int fd;
++} VpuAllocator;
++
++static MPP_RET
++vpu_open(void **context, size_t alignment, MppAllocFlagType flags)
++{
++    (void)alignment;
++    (void)flags;
++    if (!context)
++        return MPP_ERR_NULL_PTR;
++    *context = NULL;
++    VpuAllocator *allocator = mpp_calloc(VpuAllocator, 1);
++    if (!allocator)
++        return MPP_ERR_MALLOC;
++    allocator->fd = open("/dev/video/rk3588_vpu/0", O_RDWR);
++    if (allocator->fd < 0) {
++        mpp_free(allocator);
++        return MPP_NOK;
++    }
++    *context = allocator;
++    return MPP_OK;
++}
++
++static MPP_RET
++vpu_close(void *context)
++{
++    VpuAllocator *allocator = (VpuAllocator *)context;
++    if (!allocator)
++        return MPP_ERR_NULL_PTR;
++    close(allocator->fd);
++    mpp_free(allocator);
++    return MPP_OK;
++}
++
++static MPP_RET
++vpu_alloc(void *context, MppBufferInfo *info)
++{
++    VpuAllocator *allocator = (VpuAllocator *)context;
++    if (!allocator || !info || !info->size)
++        return MPP_ERR_NULL_PTR;
++    VpuAllocation request = {0};
++    request.version = 1;
++    request.bytes = info->size;
++    if (ioctl(allocator->fd, VPU_ALLOC_BUFFER, &request, sizeof(request)) != 0)
++        return MPP_NOK;
++    info->fd = (int)request.handle;
++    info->size = request.bytes;
++    info->ptr = (void *)(uintptr_t)request.address;
++    info->hnd = (void *)(intptr_t)request.area;
++    return MPP_OK;
++}
++
++static MPP_RET
++vpu_free(void *context, MppBufferInfo *info)
++{
++    VpuAllocator *allocator = (VpuAllocator *)context;
++    if (!allocator || !info || info->fd <= 0)
++        return MPP_ERR_NULL_PTR;
++    VpuRelease request = {1, (uint32_t)info->fd};
++    if (ioctl(allocator->fd, VPU_FREE_BUFFER, &request, sizeof(request)) != 0)
++        return MPP_NOK;
++    info->fd = -1;
++    info->ptr = NULL;
++    info->hnd = NULL;
++    info->size = 0;
++    return MPP_OK;
++}
++
++static MPP_RET
++vpu_import(void *context, MppBufferInfo *info)
++{
++    (void)context;
++    (void)info;
++    return MPP_NOK;
++}
++
++static MPP_RET
++vpu_mmap(void *context, MppBufferInfo *info)
++{
++    (void)context;
++    return info && info->ptr ? MPP_OK : MPP_NOK;
++}
++
++static MppAllocFlagType
++vpu_flags(void *context)
++{
++    (void)context;
++    return MPP_ALLOC_FLAG_NONE;
++}
++
++os_allocator allocator_vpu = {
++    .type = MPP_BUFFER_TYPE_DMA_HEAP,
++    .name = "haiku-vpu",
++    .open = vpu_open,
++    .close = vpu_close,
++    .alloc = vpu_alloc,
++    .free = vpu_free,
++    .import = vpu_import,
++    .release = vpu_import,
++    .mmap = vpu_mmap,
++    .flags = vpu_flags,
++};
+diff --git a/osal/haiku/mpp_dmabuf.c b/osal/haiku/mpp_dmabuf.c
+new file mode 100644
+index 0000000..04aeb12
+--- /dev/null
++++ b/osal/haiku/mpp_dmabuf.c
+@@ -0,0 +1,57 @@
++/* SPDX-License-Identifier: Apache-2.0 OR MIT */
++/*
++ * The Haiku VPU buffer API is not implemented yet. Keep cache operations
++ * explicit failures so no caller can submit stale data to the decoder.
++ */
++#include "mpp_dmabuf.h"
++
++MPP_RET
++mpp_dmabuf_sync_begin(RK_S32 fd, RK_S32 ro, const char *caller)
++{
++    (void)fd;
++    (void)ro;
++    (void)caller;
++    return MPP_NOK;
++}
++
++MPP_RET
++mpp_dmabuf_sync_end(RK_S32 fd, RK_S32 ro, const char *caller)
++{
++    (void)fd;
++    (void)ro;
++    (void)caller;
++    return MPP_NOK;
++}
++
++MPP_RET
++mpp_dmabuf_sync_partial_begin(RK_S32 fd, RK_S32 ro, RK_U32 offset,
++                              RK_U32 length, const char *caller)
++{
++    (void)offset;
++    (void)length;
++    return mpp_dmabuf_sync_begin(fd, ro, caller);
++}
++
++MPP_RET
++mpp_dmabuf_sync_partial_end(RK_S32 fd, RK_S32 ro, RK_U32 offset,
++                            RK_U32 length, const char *caller)
++{
++    (void)offset;
++    (void)length;
++    return mpp_dmabuf_sync_end(fd, ro, caller);
++}
++
++MPP_RET
++mpp_dmabuf_set_name(RK_S32 fd, const char *name, const char *caller)
++{
++    (void)fd;
++    (void)name;
++    (void)caller;
++    return MPP_NOK;
++}
++
++RK_U32
++mpp_dmabuf_sync_partial_support(void)
++{
++    return 0;
++}
+diff --git a/osal/linux/os_env.c b/osal/linux/os_env.c
+index 64a5276..067bb23 100644
+--- a/osal/linux/os_env.c
++++ b/osal/linux/os_env.c
+@@ -3,7 +3,7 @@
+  * Copyright (c) 2015 Rockchip Electronics Co., Ltd.
+  */
+ 
+-#if defined(linux) && !defined(__ANDROID__)
++#if (defined(linux) && !defined(__ANDROID__)) || defined(__HAIKU__)
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <errno.h>
+diff --git a/osal/linux/os_log.c b/osal/linux/os_log.c
+index e39359e..e1dde55 100644
+--- a/osal/linux/os_log.c
++++ b/osal/linux/os_log.c
+@@ -3,7 +3,7 @@
+  * Copyright (c) 2015 Rockchip Electronics Co., Ltd.
+  */
+ 
+-#if defined(linux) && !defined(__ANDROID__)
++#if (defined(linux) && !defined(__ANDROID__)) || defined(__HAIKU__)
+ 
+ #define MODULE_TAG "os_log"
+ 
+diff --git a/osal/linux/os_mem.c b/osal/linux/os_mem.c
+index abadf36..2974b3d 100644
+--- a/osal/linux/os_mem.c
++++ b/osal/linux/os_mem.c
+@@ -3,7 +3,7 @@
+  * Copyright (c) 2015 Rockchip Electronics Co., Ltd.
+  */
+ 
+-#if defined(linux) && !defined(__ANDROID__)
++#if (defined(linux) && !defined(__ANDROID__)) || defined(__HAIKU__)
+ #include <stdlib.h>
+ #include "os_mem.h"
+ 
+diff --git a/osal/mpp_allocator.c b/osal/mpp_allocator.c
+index afc307f..a957467 100644
+--- a/osal/mpp_allocator.c
++++ b/osal/mpp_allocator.c
+@@ -17,8 +17,15 @@
+ #include "allocator_drm.h"
+ #include "allocator_ext_dma.h"
+ #include "allocator_dma_heap.h"
++#ifdef __HAIKU__
++#include "allocator_vpu.h"
++#endif
+ 
++#ifdef __HAIKU__
++#include "linux/drm.h"
++#else
+ #include <linux/drm.h>
++#endif
+ 
+ #define MPP_ALLOCATOR_LOCK(p)   pthread_mutex_lock(&(p)->lock);
+ #define MPP_ALLOCATOR_UNLOCK(p) pthread_mutex_unlock(&(p)->lock);
+@@ -148,25 +155,37 @@ MPP_RET mpp_allocator_get(MppAllocator *allocator, MppAllocatorApi **api,
+             p->os_api = allocator_std;
+         } break;
+         case MPP_BUFFER_TYPE_ION : {
++#ifdef __HAIKU__
++            p->os_api = allocator_vpu;
++#else
+             p->os_api = (mpp_rt_allcator_is_valid(MPP_BUFFER_TYPE_DMA_HEAP) != 0) ? allocator_dma_heap :
+                         (mpp_rt_allcator_is_valid(MPP_BUFFER_TYPE_ION) != 0) ? allocator_ion :
+                         (mpp_rt_allcator_is_valid(MPP_BUFFER_TYPE_DRM) != 0) ? allocator_drm :
+                         allocator_std;
++#endif
+         } break;
+         case MPP_BUFFER_TYPE_EXT_DMA: {
+             p->os_api = allocator_ext_dma;
+         } break;
+         case MPP_BUFFER_TYPE_DRM : {
++#ifdef __HAIKU__
++            p->os_api = allocator_vpu;
++#else
+             p->os_api = (mpp_rt_allcator_is_valid(MPP_BUFFER_TYPE_DMA_HEAP) != 0) ? allocator_dma_heap :
+                         (mpp_rt_allcator_is_valid(MPP_BUFFER_TYPE_DRM) != 0) ? allocator_drm :
+                         (mpp_rt_allcator_is_valid(MPP_BUFFER_TYPE_ION) != 0) ? allocator_ion :
+                         allocator_std;
++#endif
+         } break;
+         case MPP_BUFFER_TYPE_DMA_HEAP: {
++#ifdef __HAIKU__
++            p->os_api = allocator_vpu;
++#else
+             p->os_api = (mpp_rt_allcator_is_valid(MPP_BUFFER_TYPE_DMA_HEAP) != 0) ? allocator_dma_heap :
+                         (mpp_rt_allcator_is_valid(MPP_BUFFER_TYPE_DRM) != 0) ? allocator_drm :
+                         (mpp_rt_allcator_is_valid(MPP_BUFFER_TYPE_ION) != 0) ? allocator_ion :
+                         allocator_std;
++#endif
+         } break;
+         default : {
+         } break;
+diff --git a/osal/mpp_runtime.c b/osal/mpp_runtime.c
+index bca906e..cb8a914 100644
+--- a/osal/mpp_runtime.c
++++ b/osal/mpp_runtime.c
+@@ -172,11 +172,20 @@ static void mpp_rt_srv_init()
+     }
+ 
+     srv->allocator_valid[MPP_BUFFER_TYPE_NORMAL] = 1;
++#ifdef __HAIKU__
++    /* This device admits only validated Rock 5 ITX resources. Its open
++     * permissions currently restrict DMA allocation to root diagnostics. */
++    rk_s32 vpu = open("/dev/video/rk3588_vpu/0", O_RDWR);
++    srv->allocator_valid[MPP_BUFFER_TYPE_DMA_HEAP] = vpu >= 0;
++    if (vpu >= 0)
++        close(vpu);
++#else
+     srv->allocator_valid[MPP_BUFFER_TYPE_ION] = !access("/dev/ion", F_OK | R_OK | W_OK);
+     srv->allocator_valid[MPP_BUFFER_TYPE_DRM] =
+         !access("/dev/dri/renderD128", F_OK | R_OK | W_OK) ||
+         !access("/dev/dri/card0", F_OK | R_OK | W_OK);
+     srv->allocator_valid[MPP_BUFFER_TYPE_DMA_HEAP] = !access("/dev/dma_heap", F_OK | R_OK);
++#endif
+ 
+     if (!srv->allocator_valid[MPP_BUFFER_TYPE_ION] &&
+         !srv->allocator_valid[MPP_BUFFER_TYPE_DRM] &&
+diff --git a/osal/mpp_soc.c b/osal/mpp_soc.c
+index c146e55..6dcd428 100644
+--- a/osal/mpp_soc.c
++++ b/osal/mpp_soc.c
+@@ -1119,6 +1119,26 @@ RK_S32 mpp_coding_to_index(MppCodingType coding)
+ 
+ static void read_soc_name(char *name, rk_s32 size)
+ {
++#if defined(__HAIKU__)
++    /* This Haiku device is published only after matching the Rock 5 ITX
++     * board and the exact RK3588 VDPU resources in its boot FDT. */
++    struct {
++        rk_u32 version, flags;
++        rk_u64 resources[9];
++        rk_u32 interrupts[2], clocks[2], domain, padding;
++    } resources = {0};
++    _Static_assert(sizeof(resources) == 104, "VPU resource ABI changed");
++    rk_s32 fd = open("/dev/video/rk3588_vpu/0", O_RDONLY);
++    if (fd >= 0) {
++        if (ioctl(fd, 0x52565000, &resources, sizeof(resources)) == 0 &&
++            resources.version == 1 && resources.flags == 1 &&
++            resources.resources[0] == 0xfdb50000) {
++            snprintf(name, size, "radxa,rock-5-itx rockchip,rk3588");
++        }
++        close(fd);
++    }
++    return;
++#else
+     const char *path = "/proc/device-tree/compatible";
+     char *ptr = NULL;
+     rk_s32 fd = open(path, O_RDONLY);
+@@ -1145,6 +1165,7 @@ static void read_soc_name(char *name, rk_s32 size)
+ 
+         close(fd);
+     }
++#endif
+ }
+ 
+ static const MppSocInfo *check_soc_info(const char *soc_name)
+diff --git a/osal/mpp_time.c b/osal/mpp_time.c
+index e05dc20..fc59d33 100644
+--- a/osal/mpp_time.c
++++ b/osal/mpp_time.c
+@@ -8,8 +8,10 @@
+ #include <time.h>
+ #include <errno.h>
+ #include <string.h>
++#ifndef __HAIKU__
+ #include <sys/timerfd.h>
+ #include <sys/epoll.h>
++#endif
+ 
+ #include "mpp_mem.h"
+ #include "mpp_time.h"
+@@ -213,6 +215,32 @@ MPP_RET check_is_mpp_timer(void *timer)
+ 
+ static void *mpp_timer_thread(void *ctx)
+ {
++#ifdef __HAIKU__
++    MppTimerImpl *impl = (MppTimerImpl *)ctx;
++    rk_s32 delay = impl->initial;
++    while (MPP_THREAD_RUNNING == mpp_thread_get_status(impl->thd, THREAD_WORK)) {
++        rk_s64 deadline = mpp_time() + (rk_s64)delay * 1000;
++        while (MPP_THREAD_RUNNING == mpp_thread_get_status(impl->thd, THREAD_WORK)
++               && mpp_time() < deadline) {
++            rk_s64 left = deadline - mpp_time();
++            struct timespec pause = {0, (long)(left > 50000 ? 50000000 : left * 1000)};
++            if (pause.tv_nsec > 0)
++                nanosleep(&pause, NULL);
++        }
++        if (MPP_THREAD_RUNNING != mpp_thread_get_status(impl->thd, THREAD_WORK))
++            break;
++        impl->func(impl->ctx);
++        if (!impl->interval) {
++            while (MPP_THREAD_RUNNING == mpp_thread_get_status(impl->thd, THREAD_WORK)) {
++                struct timespec pause = {0, 50000000};
++                nanosleep(&pause, NULL);
++            }
++            break;
++        }
++        delay = impl->interval;
++    }
++    return NULL;
++#else
+     struct itimerspec ts;
+     MppTimerImpl *impl = (MppTimerImpl *)ctx;
+     MppThread *thd = impl->thd;
+@@ -254,10 +282,23 @@ static void *mpp_timer_thread(void *ctx)
+     }
+ 
+     return NULL;
++#endif
+ }
+ 
+ MppTimer mpp_timer_get(const char *name)
+ {
++#ifdef __HAIKU__
++    MppTimerImpl *impl = mpp_calloc(MppTimerImpl, 1);
++    if (!impl)
++        return NULL;
++    impl->timer_fd = -1;
++    impl->epoll_fd = -1;
++    impl->initial = 1000;
++    impl->interval = 1000;
++    impl->check = timer_name;
++    snprintf(impl->name, sizeof(impl->name) - 1, "%s", name);
++    return impl;
++#else
+     MppTimerImpl *impl = NULL;
+     rk_s32 timer_fd = -1;
+     rk_s32 epoll_fd = -1;
+@@ -315,6 +356,7 @@ MppTimer mpp_timer_get(const char *name)
+     }
+ 
+     return NULL;
++#endif
+ }
+ 
+ void mpp_timer_set_callback(MppTimer timer, MppThreadFunc func, void *ctx)
