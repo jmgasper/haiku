@@ -341,7 +341,7 @@ RegisterDevice(device_node* parent)
 	// Only segment zero currently has a qualified requester-ID contract.
 	// EDK2 numbers every root's secondary bus as 1; Linux's msi-map bases
 	// for the other ports must not be added to those firmware BDFs blindly.
-	bool samsungMsi = false;
+	bool nvmeMsi = false;
 	if (port->segment == 0) {
 		fdt_device_module_info* fdt;
 		fdt_device* device;
@@ -364,7 +364,7 @@ RegisterDevice(device_node* parent)
 					uint64 base, size;
 					if (itsNode != NULL && sDeviceManager->get_driver(itsNode,
 							(driver_module_info**)&itsModule, (void**)&itsDevice) == B_OK) {
-						samsungMsi = HasString(itsModule, itsDevice, "compatible", "arm,gic-v3-its")
+						nvmeMsi = HasString(itsModule, itsDevice, "compatible", "arm,gic-v3-its")
 							&& itsModule->get_reg(itsDevice, 0, &base, &size)
 							&& base == 0xfe660000 && size == 0x20000;
 					}
@@ -381,7 +381,7 @@ RegisterDevice(device_node* parent)
 		// treat a retained firmware interrupt-line byte as a valid GIC route.
 		{ B_PCI_INTX_CONTROLLER_MODULE, B_STRING_TYPE, {.string = INTX_MODULE_NAME} }
 	};
-	if (samsungMsi) {
+	if (nvmeMsi) {
 		attrs[3] = { B_PCI_MSI_CONTROLLER_ADDRESS, B_UINT64_TYPE, {.ui64 = 0xfe660000} };
 		attrs[4] = { B_PCI_MSI_REQUESTER_BASE, B_UINT32_TYPE, {.ui32 = 0} };
 		attrs[5] = { B_PCI_MSI_REQUESTER_COUNT, B_UINT32_TYPE, {.ui32 = 0x200} };
@@ -489,7 +489,7 @@ InitDriver(device_node* node, void** cookie)
 		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, (void**)&controller->config[1]));
 	if (controller->endpointArea.Get() < B_OK)
 		return controller->endpointArea.Get();
-	if (*(volatile uint32*)controller->config[1] != port->endpointId)
+	if (!EndpointIdMatches(*(volatile uint32*)controller->config[1], *port))
 		return B_NOT_SUPPORTED;
 	ReadSnapshot(controller->config[1], snapshot);
 	if (!EndpointMatches(snapshot, memoryBase, memorySize, *port)) {

@@ -3221,3 +3221,14 @@ limitations; `state/installed-current.json` points to the installed development
 baseline. Final Linux boot ID is `a5890ee2-35c4-4cf7-ab5a-4bb1409635aa`.
 The SATA startup issue, earlier startup/USB failures, sustained acceptance and
 the remaining hardware roadmap stay open.
+
+## Full ARM64 system installed on the replacement NVMe drive
+
+On 2026-09-22 the full regular image was installed on the 256 GB SPCC NVMe
+SSD. The segment-zero PCIe profile was updated for the replacement endpoint.
+QEMU, the native Installer and BFS check, independent Debian GPT/EFI inspection,
+and two native NVMe desktop boots passed. The second boot used persistent UEFI
+BootOrder with NVMe first; NanoKVM USB, eMMC and SD remain boot alternatives.
+The eMMC was backed up before installation. See
+[NVME-FULL-INSTALL.md](NVME-FULL-INSTALL.md) for the exact image, hashes,
+partitions, boot evidence and current polling limitation.

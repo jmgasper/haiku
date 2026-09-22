@@ -167,7 +167,9 @@ l = Path({config['gadget']!r}) / 'functions/mass_storage.disk0/lun.0'
 def artifact(image):
     image = local_path(image)
     checksum = digest(image)
-    record = json.loads((WORK / 'build/arm64/build-record.json').read_text())
+    record_name = ('full-build-record.json' if image.name == 'haiku-rock5full-mmc.image'
+                   else 'build-record.json')
+    record = json.loads((WORK / 'build/arm64' / record_name).read_text())
     if record['sha256'] != checksum:
         raise RuntimeError('Image does not match the completed build record; rebuild it first')
     output = WORK / f'artifacts/images/haiku-arm64-{checksum[:16]}.img'

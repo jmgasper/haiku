@@ -22,7 +22,7 @@ main(int argc, char** argv)
 	}
 	uint64_t base, size;
 	assert(RootMatches(root, base, size));
-	assert(base == 0xf0000000 && size == 0x100000);
+	assert((base == 0xf0000000 || base == 0xf0200000) && size == 0x100000);
 	assert(EndpointMatches(endpoint, base, size));
 	for (unsigned bus = 0; bus < 256; bus++) {
 		for (unsigned device = 0; device < 32; device++) {

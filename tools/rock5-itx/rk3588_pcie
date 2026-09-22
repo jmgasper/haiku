@@ -1,3 +1,3 @@
 # Only for the dedicated ROCK 5 ITX with the installed EDK2 v1.1 firmware,
-# mainline DT-only mode and Samsung 950 Pro on firmware segment 0.
-firmware_profile rock5-itx-edk2-v1.1-dt-samsung950
+# mainline DT-only mode and the captured NVMe endpoint on firmware segment 0.
+firmware_profile rock5-itx-edk2-v1.1-dt-nvme

@@ -25,6 +25,7 @@ main(int argc, char** argv)
 		assert(port->endpointConfig == endpoints[i] && port->memoryBase == windows[i]);
 		assert(ProfileAllowsPort("rock5-itx-edk2-v1.1-dt-onboard", *port));
 		assert(ProfileAllowsPort("rock5-itx-edk2-v1.1-dt-samsung950", *port) == (i == 0));
+		assert(ProfileAllowsPort("rock5-itx-edk2-v1.1-dt-nvme", *port) == (i == 0));
 		assert(!ProfileAllowsPort("", *port) && !ProfileAllowsPort("unknown", *port));
 		uint32_t root[64], endpoint[64];
 		for (unsigned function = 0; function < 2; function++) {

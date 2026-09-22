@@ -89,6 +89,16 @@ class PCIeProfileTests(unittest.TestCase):
             subprocess.run([str(binary), str(path / 'root'), str(path / 'endpoint')],
                            check=True, timeout=5)
 
+            # The replacement 1f99:6100 controller is at f0200000 on the
+            # same EDK2 port; keep the original Samsung fixture accepted too.
+            root[8] = 0xf020f020
+            endpoint[0] = 0x61001f99
+            endpoint[4] = 0xf0200004
+            (path / 'root').write_bytes(struct.pack('<64I', *root))
+            (path / 'endpoint').write_bytes(struct.pack('<64I', *endpoint))
+            subprocess.run([str(binary), str(path / 'root'), str(path / 'endpoint')],
+                           check=True, timeout=5)
+
 
 if __name__ == '__main__':
     unittest.main()

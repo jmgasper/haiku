@@ -32,7 +32,7 @@ struct PortProfile {
 // Segment 2 is disabled and must never be accessed by this profile.
 static const PortProfile kPorts[] = {
 	{0, UINT64_C(0xa40000000), UINT64_C(0x900100000), 0xf0000000,
-		0xa802144d, 0x010802, 1, "Samsung 950 Pro"},
+		0x61001f99, 0x010802, 1, "NVMe SSD"},
 	{1, UINT64_C(0xa40400000), UINT64_C(0x940100000), 0xf1000000,
 		0x11641b21, 0x010601, 2, "ASM1164"},
 	{3, UINT64_C(0xa40c00000), UINT64_C(0x9c0100000), 0xf3000000,
@@ -58,7 +58,17 @@ ProfileAllowsPort(const char* profile, const PortProfile& port)
 			|| port.segment == 4)
 			&& strcmp(profile, "rock5-itx-edk2-v1.1-dt-onboard") == 0)
 		|| (port.segment == 0
-			&& strcmp(profile, "rock5-itx-edk2-v1.1-dt-samsung950") == 0);
+			&& (strcmp(profile, "rock5-itx-edk2-v1.1-dt-nvme") == 0
+				|| strcmp(profile, "rock5-itx-edk2-v1.1-dt-samsung950") == 0));
+}
+
+inline bool
+EndpointIdMatches(uint32_t id, const PortProfile& port)
+{
+	// Both controllers have been captured on this exact EDK2 port. The
+	// firmware's BAR and root window are validated separately below.
+	return id == port.endpointId
+		|| (port.segment == 0 && id == 0xa802144d);
 }
 
 inline bool
@@ -136,7 +146,7 @@ inline bool
 EndpointMatches(const uint32_t* config, uint64_t memoryBase, uint64_t memorySize,
 	const PortProfile& port = kPorts[0])
 {
-	if (config[0] != port.endpointId || config[2] >> 8 != port.classCode
+	if (!EndpointIdMatches(config[0], port) || config[2] >> 8 != port.classCode
 		|| ((config[3] >> 16) & 0xff) != 0 || (config[1] & 2) == 0) {
 		return false;
 	}
