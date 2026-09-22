@@ -9,7 +9,7 @@
 #include <arch/generic/msi.h>
 #include <lock.h>
 
-// Initial RK3588 firmware profile: ITS1, Samsung 01:00.0 and CPU 0 only.
+// Initial RK3588 firmware profile: ITS1, NVMe 01:00.0 and CPU 0 only.
 // Tables and reservations live for the kernel lifetime, including on failure.
 class GICv3Its : public MSIInterface {
 public:

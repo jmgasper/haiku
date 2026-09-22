@@ -3250,3 +3250,15 @@ endpoints and legacy interrupts. Both RTL8125 ports attached, linked at
 Internet pings. DNS worked through port 1; both restored ports answered LAN
 pings. Build, profile checks and QEMU smoke passed. See
 [NETWORK-PORTS.md](NETWORK-PORTS.md) for native evidence and limits.
+
+## NVMe TRIM and MSI-X on the replacement SSD
+
+On 2026-09-22 the 256 GB SPCC default-boot drive completed native BFS
+free-space TRIM with the trimmed byte count matching the free-block count.
+The image now includes the guarded ITS1 setting; the installed system booted
+from NVMe using MSI-X with delivered interrupts. A 16 MiB file retained its
+hash across a second TRIM, and BFS checked without allocation errors. The
+file hash persisted through a reset-assisted second NVMe boot. A warm restart
+paused at the EDK2 splash before that reset. The build, QEMU smoke, trim-range
+and PCIe profile checks passed. See
+[NVME-SUPPORT.md](NVME-SUPPORT.md) for evidence and limits.

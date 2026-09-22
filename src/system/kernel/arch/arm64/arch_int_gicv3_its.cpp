@@ -241,7 +241,7 @@ GICv3Its::Init(volatile uint8* redistributors, uint32 count, bool trace,
 		return B_ERROR;
 	}
 	fReady = true;
-	dprintf("GICv3 ITS: enabled ITS1, CPU 0, LPI 8192..8223, Samsung DeviceID 0x100\n");
+	dprintf("GICv3 ITS: enabled ITS1, CPU 0, LPI 8192..8223, NVMe DeviceID 0x100\n");
 	return B_OK;
 }
 

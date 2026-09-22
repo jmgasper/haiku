@@ -26,6 +26,9 @@ rule UserBuildConfigRulePreImage
 	local pcieSettings = <rock5-lab>rk3588_pcie ;
 	SEARCH on $(pcieSettings) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
 	AddFilesToHaikuImage home config settings kernel drivers : $(pcieSettings) ;
+	local itsSettings = <rock5-lab>gicv3_its ;
+	SEARCH on $(itsSettings) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
+	AddFilesToHaikuImage home config settings kernel drivers : $(itsSettings) ;
 	AddFilesToHaikuImage home config non-packaged bin
 		: rock5_memory_probe rock5_platform_probe rock5_cache_probe rock5_file_transfer
 			rock5_services_probe rock5_pci_config_probe rock5_network_probe
