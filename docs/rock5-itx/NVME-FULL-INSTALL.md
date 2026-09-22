@@ -41,6 +41,6 @@ matching full-build record.
   The default-boot desktop screenshot is
   `artifacts/nvme-install-20260922/default-boot-2.jpg`.
 
-The current NVMe driver reports polling because its MSI provider was
-unavailable in this boot. That issue and native TRIM verification belong to
-the separate NVMe support task.
+At installation the NVMe driver reported polling because its MSI provider
+was unavailable in that boot. The later [NVMe support update](NVME-SUPPORT.md)
+enabled ITS1 MSI-X and verified native filesystem TRIM on this drive.

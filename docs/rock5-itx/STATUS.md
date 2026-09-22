@@ -1,13 +1,14 @@
 # Tested status
 
-Updated 2026-09-18 (Australia/Hobart). This page distinguishes lab readiness from native Haiku
+Updated 2026-09-22 (Australia/Hobart). This page distinguishes lab readiness from native Haiku
 support. No hardware row in the roadmap is accepted merely because Linux or
 firmware supports it.
 
 The owner has expanded the scope to a full Rock 5 ITX installation and the
 remaining CPU, network, storage, GPU, media, audio and AX210 work. The regular
-ARM64 [full-image candidate](FULL-BUILD.md) is built and its exact image passed
-a QEMU smoke boot; it has not yet had a native board boot.
+ARM64 [full image](FULL-BUILD.md) is installed and boots from NVMe. CPU,
+onboard Ethernet, NVMe TRIM/MSI-X and installed 3D application results are
+recorded at the end of this page. Media, audio and AX210 work follows.
 
 The system-default OpenGL candidate ([MESA-SYSTEM.md](MESA-SYSTEM.md), Mesa
 at `3139063445` on the qualified +256 image) runs GLTeapot on Mali with no
@@ -3269,3 +3270,12 @@ use-after-free in its error notification; the `+323` kernel panicked. The
 request once. Its installed package passed the exact GLInfo repro on MSI-X,
 then native TRIM and BFS check. The failed run and correction are documented
 in [NVME-SUPPORT.md](NVME-SUPPORT.md).
+
+## Mali 3D applications on the full NVMe installation
+
+On 2026-09-22 the corrected NVMe system launched installed GLInfo, which
+identified Mali-G610 (Panfrost) and OpenGL 3.1 Mesa 25.3.6. GLTeapot ran from
+the installed demos with live rotation at 59 FPS using the normal system
+OpenGL setup. The boot log showed the enabled Mali CSF firmware profile.
+See [GPU-FULL-INSTALL.md](GPU-FULL-INSTALL.md) for screenshots, prior native
+qualification and the remaining compatibility limit.
