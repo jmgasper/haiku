@@ -752,8 +752,10 @@ do_io(nvme_disk_handle* handle, io_request* request)
 	CALLED();
 
 	const off_t ns_end = (handle->info->capacity * handle->info->block_size);
-	if ((request->Offset() + (off_t)request->Length()) > ns_end)
+	if ((request->Offset() + (off_t)request->Length()) > ns_end) {
+		request->SetStatusAndNotify(ERANGE);
 		return ERANGE;
+	}
 
 	nvme_io_request nvme_request;
 	memset(&nvme_request, 0, sizeof(nvme_io_request));
@@ -769,6 +771,7 @@ do_io(nvme_disk_handle* handle, io_request* request)
 		status = buffer->LockMemory(request->TeamID(), request->IsWrite());
 		if (status != B_OK) {
 			TRACE_ERROR("failed to lock memory: %s\n", strerror(status));
+			request->SetStatusAndNotify(status);
 			return status;
 		}
 		// SetStatusAndNotify() takes care of unlocking memory if necessary.
@@ -820,6 +823,14 @@ do_io(nvme_disk_handle* handle, io_request* request)
 	// See if we need to bounce anything other than the first or last vec.
 	const size_t block_size = handle->info->block_size;
 	bool bounceAll = (nvme_request.iovecs == NULL);
+	// A single physically contiguous vector can be much larger than the
+	// controller's maximum transfer. The direct path splits between vectors,
+	// so route such a vector through the bounded DMA translation path.
+	const size_t maxIOBytes = (size_t)handle->info->max_io_blocks * block_size;
+	for (int32 i = 0; !bounceAll && i < nvme_request.iovec_count; i++) {
+		if (nvme_request.iovecs[i].size > maxIOBytes)
+			bounceAll = true;
+	}
 	for (int32 i = 1; !bounceAll && i < (nvme_request.iovec_count - 1); i++) {
 		if ((nvme_request.iovecs[i].address % B_PAGE_SIZE) != 0)
 			bounceAll = true;
@@ -943,9 +954,9 @@ nvme_disk_io(void* cookie, io_request* request)
 
 	while (!owner.requests_queue.IsEmpty()) {
 		request = owner.requests_queue.RemoveHead();
-		status_t status = do_io(handle, request);
-		if (status != B_OK && !request->IsFinished())
-			request->SetStatusAndNotify(status);
+		// do_io() completes every request, including errors. Notification may
+		// delete it through the caller's callback before do_io() returns.
+		do_io(handle, request);
 	}
 
 	requestOwnersLocker.Lock();

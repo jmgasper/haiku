@@ -3262,3 +3262,10 @@ file hash persisted through a reset-assisted second NVMe boot. A warm restart
 paused at the EDK2 splash before that reset. The build, QEMU smoke, trim-range
 and PCIe profile checks passed. See
 [NVME-SUPPORT.md](NVME-SUPPORT.md) for evidence and limits.
+
+The subsequent GLInfo launch exposed an oversized NVMe read and a
+use-after-free in its error notification; the `+323` kernel panicked. The
+`+326` driver bounds large vectors through DMA translation and completes each
+request once. Its installed package passed the exact GLInfo repro on MSI-X,
+then native TRIM and BFS check. The failed run and correction are documented
+in [NVME-SUPPORT.md](NVME-SUPPORT.md).

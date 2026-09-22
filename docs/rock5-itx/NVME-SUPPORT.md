@@ -42,3 +42,34 @@ ITS profiles are tied to the captured EDK2 v1.1 firmware and requester ID.
 These checks establish basic installed-drive I/O, filesystem TRIM, and MSI-X
 delivery. They do not measure sustained throughput, controller-stall recovery,
 or sudden power-loss durability.
+
+## Large-read correction
+
+The next cold GLInfo launch on the `+323` installation exposed a real NVMe
+failure. A physically contiguous read of 20,472 sectors was handed to a
+controller limited to 128 KiB per command; libnvme returned out of memory.
+The error path then called `SetStatusAndNotify()` again after its completion
+callback had freed the request, and the kernel panicked on the freed lock.
+The failure trace is `artifacts/gpu-full-20260922/native-serial.log` and its
+NanoKVM screenshot is `glinfo-b.jpg` in that directory. The earlier MSI-X
+and TRIM passes did not cover this large-read path.
+
+The driver now routes any physical vector larger than its maximum transfer
+through the bounded DMA translation path. `do_io()` owns notification on
+every error, and its caller does not inspect a request after completion may
+have freed it. The corrected full image has SHA-256
+`a2625db407ae5ae06fa2962110b35a38749c77deecb45733beddb6777435030b`;
+QEMU reached Welcome in `artifacts/qemu/20260922T130837Z-80edba`.
+The rebuilt Haiku package has SHA-256
+`751243c7f975aa47e4ecbaa6fa0974ebe873ab71203f80ab7a766b99af17d956`;
+the same hash was checked after transfer, and `pkgman` upgraded the NVMe
+installation from `+323` to `+326`.
+
+On the first `+326` native NVMe boot, ITS1 and MSI-X attached and GLInfo
+reached its Mali-G610 (Panfrost) window. The prior large library read no
+longer failed or panicked. Filesystem TRIM completed 238,387,552,256 bytes,
+and `checkfs -c /boot` checked 427 nodes with zero allocation errors. The
+screen is `artifacts/nvme-large-io-20260922/glinfo-c.jpg`, the TRIM/check
+screen is `final-trim-b.jpg`, and the serial capture is `native-serial.log`.
+This resolves the reproduced failure; broader stress and fault injection
+remain to be tested.
