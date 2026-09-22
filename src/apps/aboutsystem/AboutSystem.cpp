@@ -1072,6 +1072,59 @@ SysInfoView::_GetCPUInfo()
 		}
 	}
 
+	if (platform == B_CPU_ARM_64) {
+		BString cpuType("ARM ");
+		bool first = true;
+		for (uint32 i = 0; i < topologyNodeCount; i++) {
+			if (topology[i].type != B_TOPOLOGY_CORE)
+				continue;
+
+			uint32 model = topology[i].data.core.model;
+			uint64 frequency = topology[i].data.core.default_frequency;
+			bool seen = false;
+			for (uint32 j = 0; j < i; j++) {
+				if (topology[j].type == B_TOPOLOGY_CORE
+					&& topology[j].data.core.model == model
+					&& topology[j].data.core.default_frequency == frequency) {
+					seen = true;
+					break;
+				}
+			}
+			if (seen)
+				continue;
+
+			uint32 count = 0;
+			for (uint32 j = i; j < topologyNodeCount; j++) {
+				if (topology[j].type == B_TOPOLOGY_CORE
+					&& topology[j].data.core.model == model
+					&& topology[j].data.core.default_frequency == frequency)
+					count++;
+			}
+
+			if (!first)
+				cpuType << ", ";
+			first = false;
+			const char* modelName = get_cpu_model_string(platform, cpuVendor,
+				model);
+			cpuType << (modelName != NULL ? modelName : B_TRANSLATE("Unknown"))
+				<< " (" << count << " cores";
+			if (frequency != 0) {
+				BString speed;
+				if (frequency >= 1000000000) {
+					speed.SetToFormat(B_TRANSLATE("%.2f GHz"),
+						(double)frequency / 1000000000.0);
+				} else {
+					speed.SetToFormat(B_TRANSLATE("%.0f MHz"),
+						(double)frequency / 1000000.0);
+				}
+				cpuType << ", " << B_TRANSLATE("up to") << " " << speed;
+			}
+			cpuType << ")";
+		}
+		delete[] topology;
+		return cpuType;
+	}
+
 	delete[] topology;
 
 	BString cpuType;

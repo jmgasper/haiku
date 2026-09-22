@@ -149,6 +149,7 @@ namespace BKernel {
 
 typedef struct arch_cpu_info {
 	uint64						mpidr;
+	uint32						midr;
 	BKernel::Thread*			last_vfp_user;
 } arch_cpu_info;
 #endif

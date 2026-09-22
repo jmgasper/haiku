@@ -3232,3 +3232,12 @@ BootOrder with NVMe first; NanoKVM USB, eMMC and SD remain boot alternatives.
 The eMMC was backed up before installation. See
 [NVME-FULL-INSTALL.md](NVME-FULL-INSTALL.md) for the exact image, hashes,
 partitions, boot evidence and current polling limitation.
+
+## ARM64 CPU identity and frequency in About this system
+
+On 2026-09-22 the ARM64 topology gained per-core MIDR identities and maximum
+frequencies from the firmware CPU operating-point tables. A native NVMe boot
+and the About window showed four Cortex-A55 cores up to 1.80 GHz and four
+Cortex-A76 cores up to 2.40 GHz. The updated package hash, QEMU build smoke,
+screenshot and the observed EDK2 warm-restart stall are recorded in
+[CPU-DETAILS.md](CPU-DETAILS.md).
