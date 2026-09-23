@@ -8,7 +8,9 @@ The [GitHub work items](TRACKING.md) split the roadmap into issues and milestone
 
 The owner has expanded the scope to a full Rock 5 ITX system, beginning with
 the [regular ARM64 image](FULL-BUILD.md) and an NVMe installation. GPU,
-networking, media, audio and AX210 work are requested in sequence.
+networking, media, audio and AX210 work are requested in sequence. The
+[board analog audio](AUDIO.md) driver now publishes the ES8316 path through
+multi_audio and completes native 48 kHz stereo playback with zero underruns.
 
 The system-default OpenGL candidate ([MESA-SYSTEM.md](MESA-SYSTEM.md), Mesa
 at `3139063445` on the qualified +256 image) runs GLTeapot on Mali with no

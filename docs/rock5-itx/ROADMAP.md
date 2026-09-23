@@ -352,7 +352,7 @@ against Windows; evaluate actual ACPI and device-tree tables for Haiku.
 
 | Work item | Starting point and dependencies | Acceptance |
 | --- | --- | --- |
-| ES8316 analog and front audio | Observed codec; RK3588 I2S, DMA, clocks, I2C and Haiku multi_audio integration | Headphone and microphone paths plus front header playback/capture; levels, channels, sample rates, latency and sustained duplex operation measured |
+| ES8316 analog and front audio | 48 kHz stereo S16 playback through RK3588 I2S0, I2C7, ES8316 and Haiku multi_audio is qualified in [AUDIO.md](AUDIO.md) | Add microphone and front-header routing, mixer levels, more rates/formats, DMA, latency measurement and sustained duplex operation |
 | HDMI/DisplayPort audio | Display link and I2S/audio infrastructure | Enumerate sinks, stereo playback, hotplug/rate changes and A/V synchronization for both HDMI outputs and supported DP sink |
 | S/PDIF output | RK3588 S/PDIF TX and clock/DMA driver | Valid output to an identified receiver at supported sample rates; channel correctness and underrun recovery |
 

@@ -41,6 +41,7 @@ rule UserBuildConfigRulePreImage
 	AddDriversToHaikuImage net : ipro1000 rtl8125 ;
 	AddNewDriversToHaikuImage graphics : mali_csf rk3588_display ;
 	AddNewDriversToHaikuImage video : rk3588_vpu ;
+	AddNewDriversToHaikuImage audio hmulti : rk3588_audio ;
 	local vpuSettings = <rock5-lab>rk3588_vpu ;
 	SEARCH on $(vpuSettings) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
 	AddFilesToHaikuImage home config settings kernel drivers : $(vpuSettings) ;

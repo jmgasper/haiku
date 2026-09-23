@@ -8,7 +8,8 @@ The owner has expanded the scope to a full Rock 5 ITX installation and the
 remaining CPU, network, storage, GPU, media, audio and AX210 work. The regular
 ARM64 [full image](FULL-BUILD.md) is installed and boots from NVMe. CPU,
 onboard Ethernet, NVMe TRIM/MSI-X and installed 3D application results are
-recorded at the end of this page. Media, audio and AX210 work follows.
+recorded at the end of this page. Media and analog audio playback are now
+qualified; AX210 work follows.
 
 The system-default OpenGL candidate ([MESA-SYSTEM.md](MESA-SYSTEM.md), Mesa
 at `3139063445` on the qualified +256 image) runs GLTeapot on Mali with no
@@ -3305,3 +3306,22 @@ The final image SHA-256 is
 its QEMU boot passed before the native installation. Qualification covers the
 tested 1280x720 8-bit samples. Source pins, exact frame hashes, build steps and
 native evidence paths are in [MEDIA.md](../../tools/rock5-itx/MEDIA.md).
+
+## ROCK 5 ITX analog audio playback
+
+On 2026-09-23 the NVMe installation gained a board-specific multi_audio driver
+for RK3588 I2S0 and the ES8316 codec. Haiku validates the exact board, I2S
+register range and GIC interrupt 212, configures power, clocks, pin mux, I2C7
+and codec state, and publishes `/dev/audio/hmulti/rk3588/0`.
+
+Native `media_client` playback of a five-second 1 kHz stereo WAV completed at
+48 kHz S16. The driver started and stopped cleanly with zero underruns. The
+final run had no kernel panic or media add-on fault. Four focused host checks,
+the kernel add-on build, the full regular image build, and EL1 and EL2 QEMU
+framebuffer gates pass. The immutable full image SHA-256 is
+`d85128622cca9295322cc50ce68680dd53d8272f283c75e050cb3ea84a2f0314`.
+
+The remote fixture does not measure the analog waveform outside the jack.
+Capture, mixer controls, additional rates and formats, DMA, HDMI/DisplayPort
+audio and S/PDIF remain open. [AUDIO.md](AUDIO.md) records the implementation,
+Linux oracle, failed first attempts, final evidence and exact scope.
