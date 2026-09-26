@@ -29,6 +29,7 @@ extern void RegisterConnection(hci_id hid, uint16 handle);
 extern void unRegisterConnection(hci_id hid, uint16 handle);
 
 status_t PostToUpper(HciConnection* conn, net_buffer* buf);
+status_t PostToServer(HciConnection* conn, net_buffer* buf, hci_id hid);
 
 status_t
 AclAssembly(net_buffer* nbuf, hci_id hid)
@@ -146,6 +147,19 @@ AclAssembly(net_buffer* nbuf, hci_id hid)
 		TRACE("%s: L2cap packet ready %" B_PRIu32 " bytes\n", __func__,
 			conn->currentRxPacket->size);
 
+		if (conn->lowEnergy) {
+			/* Nothing in the kernel speaks what rides on a Low Energy link,
+			 * so the whole frame goes to the server, with the ACL header put
+			 * back in front of it: a handle is the only thing that says which
+			 * device sent it.
+			 */
+			error = PostToServer(conn, conn->currentRxPacket, hid);
+			gBufferModule->free(conn->currentRxPacket);
+			conn->currentRxPacket = NULL;
+			conn->currentRxExpectedLength = 0;
+			return error;
+		}
+
 		memcpy(conn->currentRxPacket->source, &conn->address_dest, sizeof(sockaddr_storage));
 		conn->currentRxPacket->interface_address = &conn->interface_address;
 
@@ -159,6 +173,35 @@ AclAssembly(net_buffer* nbuf, hci_id hid)
 	}
 
 	return error;
+}
+
+
+/* Rebuild the ACL packet the frame arrived in - its header was stripped and
+ * its pieces joined - and hand it to the Bluetooth server.
+ */
+status_t
+PostToServer(HciConnection* conn, net_buffer* buf, hci_id hid)
+{
+	uint8 packet[HCI_MAX_FRAME_SIZE];
+
+	if (buf->size + sizeof(struct hci_acl_header) > sizeof(packet)) {
+		ERROR("%s: a frame of %" B_PRIu32 " bytes is more than a packet"
+			" holds\n", __func__, buf->size);
+		return EMSGSIZE;
+	}
+
+	struct hci_acl_header* header = (struct hci_acl_header*)packet;
+	header->handle = B_HOST_TO_LENDIAN_INT16(
+		pack_acl_handle_flags(conn->handle, HCI_ACL_PACKET_START, 0));
+	header->alen = B_HOST_TO_LENDIAN_INT16((uint16)buf->size);
+
+	status_t status = gBufferModule->read(buf, 0,
+		packet + sizeof(struct hci_acl_header), buf->size);
+	if (status != B_OK)
+		return status;
+
+	return btCoreData->PostData(hid, packet,
+		sizeof(struct hci_acl_header) + buf->size);
 }
 
 

@@ -19,6 +19,7 @@
 
 #include <btModules.h>
 
+#include "bluetooth/HCI/btHCI_acl.h"
 #include "bluetooth/HCI/btHCI_transport.h"
 #include "h2cfg.h"
 #include "h2debug.h"
@@ -759,6 +760,47 @@ device_control(void* cookie, uint32 msg, void* params, size_t size)
 				ERROR("%s: Queing failed at submit_tx_command()\n", __func__);
 			else
 				TRACE("%s: command launched\n", __func__);
+			break;
+		}
+
+		/* A whole ACL packet from userland, sent as it stands. The stack's
+		 * own protocols build their packets out of net buffers and hand them
+		 * down through the HCI module; a Low Energy link's attributes and
+		 * pairing are handled by the server instead, so their packets arrive
+		 * here already complete, handle and all.
+		 */
+		case ISSUE_BT_ACL: {
+			if (size < sizeof(struct hci_acl_header)
+				|| size > HCI_MAX_FRAME_SIZE || nb == NULL) {
+				err = B_BAD_VALUE;
+				break;
+			}
+
+			net_buffer* nbuf = nb->create(size);
+			if (nbuf == NULL) {
+				err = B_NO_MEMORY;
+				break;
+			}
+
+			void* buffer = alloca(size);
+			if (user_memcpy(buffer, params, size) != B_OK) {
+				nb_destroy(nbuf);
+				err = B_BAD_ADDRESS;
+				break;
+			}
+
+			err = nb->append(nbuf, buffer, size);
+			if (err != B_OK) {
+				nb_destroy(nbuf);
+				break;
+			}
+
+			err = submit_tx_acl(bdev, nbuf);
+			if (err != B_OK) {
+				ERROR("%s: sending the ACL packet failed: %s\n", __func__,
+					strerror(err));
+				nb_destroy(nbuf);
+			}
 			break;
 		}
 

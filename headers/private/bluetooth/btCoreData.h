@@ -46,6 +46,14 @@ struct HciConnection : DoublyLinkedListLinkImpl<HciConnection> {
 	uint16				mtu;
 	connection_status	status;
 
+	/* A Low Energy link carries the same ACL packets as any other, but what
+	 * rides on them is nothing like classic L2CAP: the channels that matter
+	 * are fixed, need no setting up, and are handled by the Bluetooth server
+	 * rather than in the kernel. Frames from such a link are handed up to it
+	 * instead of to the L2CAP module.
+	 */
+	bool				lowEnergy;
+
 	net_buffer*			currentRxPacket;
 	ssize_t				currentRxExpectedLength;
 
@@ -90,6 +98,13 @@ struct bluetooth_core_data_module_info {
 	uint8					(*allocate_command_ident)(struct HciConnection* conn, void* associated);
 	void*					(*lookup_command_ident)(struct HciConnection* conn, uint8 ident);
 	void					(*free_command_ident)(struct HciConnection* conn, uint8 ident);
+
+	/* Hand a whole ACL packet up to the Bluetooth server, for the links whose
+	 * contents the kernel does not interpret. Added at the end so that a
+	 * module built before it existed still finds everything else in place.
+	 */
+	status_t				(*PostData)(hci_id hid, const void* data,
+								size_t size);
 };
 
 

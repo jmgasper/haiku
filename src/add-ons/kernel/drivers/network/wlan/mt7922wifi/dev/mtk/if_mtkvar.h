@@ -197,6 +197,7 @@
 #define MTK_MCU_CE_SET_RX_FILTER	0x0a
 #define MTK_MCU_CE_SET_CHAN_DOMAIN	0x0f
 #define MTK_MCU_CE_START_HW_SCAN	0x03
+#define MTK_MCU_CE_CANCEL_HW_SCAN	0x1b
 #define MTK_SCAN_REQUEST_SIZE		1186
 
 #define MTK_FILTER_ENABLE		(1u << 31)
@@ -313,6 +314,7 @@ struct mtk_softc {
 	int			sc_join_at;
 	int			sc_joining;
 	int			sc_want_awake;
+	int			sc_want_stop;
 
 	/* One command at a time. There is a single command buffer and a
 	 * single sequence number behind mtk_mcu_send, and two threads in it
@@ -405,6 +407,7 @@ int		mtk_firmware_start(struct mtk_softc*);
 int		mtk_radio_init(struct mtk_softc*);
 int		mtk_hw_scan(struct mtk_softc*, uint8_t only);
 int		mtk_keep_awake(struct mtk_softc*);
+int		mtk_cancel_scan(struct mtk_softc*);
 void		mtk_receive_frame(struct mtk_softc*, const uint8_t*, size_t, int, int);
 int		mtk_tune(struct mtk_softc*, uint8_t channel);
 int		mtk_send_frame(struct mtk_softc*, struct mbuf*);

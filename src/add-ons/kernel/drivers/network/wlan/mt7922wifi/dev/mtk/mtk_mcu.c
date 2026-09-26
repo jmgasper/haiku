@@ -881,6 +881,26 @@ mtk_set_channels(struct mtk_softc* sc)
  * come back, which stops the processor with interrupts off and takes the
  * whole machine with it, debugger and keyboard included.
  */
+/* Tell the part to stop sweeping. Starting a sweep and never ending it
+ * leaves the firmware working its own way through the band while the stack
+ * parks on one channel and starts talking to an access point - two things
+ * driving one radio, which is not a state anything was designed to be in.
+ */
+int
+mtk_cancel_scan(struct mtk_softc* sc)
+{
+	uint8_t request[4];
+
+	memset(request, 0, sizeof(request));
+	request[0] = 1;			/* the sweep we started */
+
+	device_printf(sc->sc_dev, "telling it to stop looking\n");
+
+	return mtk_mcu_send(sc, MTK_MCU_CE_CANCEL_HW_SCAN, MTK_MCU_Q_SET,
+		request, sizeof(request), NULL, NULL);
+}
+
+
 int
 mtk_keep_awake(struct mtk_softc* sc)
 {

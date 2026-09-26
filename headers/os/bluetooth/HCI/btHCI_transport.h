@@ -34,7 +34,14 @@ enum {
 	GET_STATS,
 	GET_NOTIFICATION_PORT,
 	GET_HCI_ID,
-	BT_UP
+	BT_UP,
+	/* Hand a whole ACL packet, header and all, straight to the controller.
+	 * Data normally comes down from the stack's own protocols, but a Low
+	 * Energy link carries its attributes and its pairing on channels that
+	 * are fixed and need no setting up, and those belong to the server
+	 * rather than to the kernel. This is how they leave.
+	 */
+	ISSUE_BT_ACL
 };
 
 // To deprecate ...

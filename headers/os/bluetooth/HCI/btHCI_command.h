@@ -402,6 +402,122 @@ struct hci_command_header {
 		uint16		handle;
 	} __attribute__ ((packed));
 
+/* - Low Energy Command definition -
+ *
+ * The controller's Low Energy half is a separate command group, and a host
+ * that never sends any of these gets none of the behaviour: the controller
+ * does not scan, does not advertise and reports no LE events until it is asked
+ * to. The commands below are the ones a host needs to find a device, connect
+ * to it and encrypt the link - which is all a mouse or a keyboard asks for.
+ */
+#define OGF_LE					0x08
+
+	#define OCF_LE_SET_EVENT_MASK			0x0001
+	struct hci_le_set_event_mask {
+		uint8		mask[8];
+	} __attribute__ ((packed));
+
+	#define OCF_LE_READ_BUFFER_SIZE			0x0002
+	struct hci_rp_le_read_buffer_size {
+		uint8		status;
+		uint16		acl_mtu;
+		uint8		acl_max_pkt;
+	} __attribute__ ((packed));
+
+	#define OCF_LE_READ_LOCAL_FEATURES		0x0003
+	struct hci_rp_le_read_local_features {
+		uint8		status;
+		uint8		features[8];
+	} __attribute__ ((packed));
+
+	#define OCF_LE_SET_RANDOM_ADDRESS		0x0005
+	struct hci_le_set_random_address {
+		bdaddr_t	bdaddr;
+	} __attribute__ ((packed));
+
+	#define OCF_LE_SET_SCAN_PARAMETERS		0x000B
+	struct hci_le_set_scan_parameters {
+		uint8		type;			/* 0 passive, 1 active */
+		uint16		interval;		/* both in units of 0.625 ms */
+		uint16		window;
+		uint8		own_address_type;
+		uint8		filter_policy;
+	} __attribute__ ((packed));
+
+	#define OCF_LE_SET_SCAN_ENABLE			0x000C
+	struct hci_le_set_scan_enable {
+		uint8		enable;
+		uint8		filter_duplicates;
+	} __attribute__ ((packed));
+
+	#define OCF_LE_CREATE_CONNECTION		0x000D
+	struct hci_le_create_connection {
+		uint16		scan_interval;
+		uint16		scan_window;
+		uint8		filter_policy;
+		uint8		peer_address_type;	/* 0 public, 1 random */
+		bdaddr_t	peer_address;
+		uint8		own_address_type;
+		uint16		interval_min;		/* in units of 1.25 ms */
+		uint16		interval_max;
+		uint16		latency;
+		uint16		supervision_timeout;	/* in units of 10 ms */
+		uint16		min_ce_length;
+		uint16		max_ce_length;
+	} __attribute__ ((packed));
+
+	#define OCF_LE_CREATE_CONNECTION_CANCEL	0x000E
+
+	#define OCF_LE_READ_WHITE_LIST_SIZE		0x000F
+	#define OCF_LE_CLEAR_WHITE_LIST			0x0010
+
+	#define OCF_LE_ADD_TO_WHITE_LIST		0x0011
+	struct hci_le_white_list_entry {
+		uint8		address_type;
+		bdaddr_t	address;
+	} __attribute__ ((packed));
+
+	#define OCF_LE_REMOVE_FROM_WHITE_LIST	0x0012
+
+	#define OCF_LE_CONNECTION_UPDATE		0x0013
+	struct hci_le_connection_update {
+		uint16		handle;
+		uint16		interval_min;
+		uint16		interval_max;
+		uint16		latency;
+		uint16		supervision_timeout;
+		uint16		min_ce_length;
+		uint16		max_ce_length;
+	} __attribute__ ((packed));
+
+	#define OCF_LE_START_ENCRYPTION			0x0019
+	struct hci_le_start_encryption {
+		uint16		handle;
+		uint8		random[8];
+		uint16		diversifier;
+		uint8		key[16];
+	} __attribute__ ((packed));
+
+	#define OCF_LE_LONG_TERM_KEY_REPLY		0x001A
+	struct hci_le_long_term_key_reply {
+		uint16		handle;
+		uint8		key[16];
+	} __attribute__ ((packed));
+
+	#define OCF_LE_LONG_TERM_KEY_NEGATIVE_REPLY	0x001B
+	struct hci_le_long_term_key_negative_reply {
+		uint16		handle;
+	} __attribute__ ((packed));
+
+	#define OCF_LE_READ_SUPPORTED_STATES	0x001C
+
+	#define OCF_LE_SET_DATA_LENGTH			0x0022
+	struct hci_le_set_data_length {
+		uint16		handle;
+		uint16		tx_octets;
+		uint16		tx_time;
+	} __attribute__ ((packed));
+
 /* Status params */
 #define OGF_STATUS_PARAM				0x05
 

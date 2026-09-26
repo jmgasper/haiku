@@ -355,6 +355,80 @@ struct hci_ev_simple_pairing_complete {
 #define HCI_EVENT_REMOTE_HOST_SUPPORTED_FEATURES_NOTIFICATION	0x3D
 
 
+#define HCI_EVENT_LE_META							0x3E
+/* Everything the Low Energy half of a controller reports arrives as this one
+ * event, with a subevent code saying which it is. It is masked off until the
+ * host both unmasks it and says that it speaks LE, so a host that knows
+ * nothing of LE never sees any of this.
+ */
+struct hci_ev_le_meta {
+	uint8		subevent;
+} __attribute__((packed));
+
+	#define HCI_EVENT_LE_CONNECTION_COMPLETE			0x01
+	struct hci_ev_le_connection_complete {
+		uint8		status;
+		uint16		handle;
+		uint8		role;			/* 0 central, 1 peripheral */
+		uint8		peer_address_type;
+		bdaddr_t	peer_address;
+		uint16		interval;
+		uint16		latency;
+		uint16		supervision_timeout;
+		uint8		clock_accuracy;
+	} __attribute__((packed));
+
+	#define HCI_EVENT_LE_ADVERTISING_REPORT				0x02
+	/* Followed by that many of: event type, address type, address, the
+	 * length of the advertising data, the data itself, and one byte of
+	 * signal strength. Each report is a different length, so they cannot be
+	 * described as an array.
+	 */
+	struct hci_ev_le_advertising_report {
+		uint8		reports;
+	} __attribute__((packed));
+
+	#define HCI_EVENT_LE_CONNECTION_UPDATE_COMPLETE		0x03
+	struct hci_ev_le_connection_update_complete {
+		uint8		status;
+		uint16		handle;
+		uint16		interval;
+		uint16		latency;
+		uint16		supervision_timeout;
+	} __attribute__((packed));
+
+	#define HCI_EVENT_LE_READ_REMOTE_FEATURES_COMPLETE	0x04
+
+	#define HCI_EVENT_LE_LONG_TERM_KEY_REQUEST			0x05
+	struct hci_ev_le_long_term_key_request {
+		uint16		handle;
+		uint8		random[8];
+		uint16		diversifier;
+	} __attribute__((packed));
+
+	#define HCI_EVENT_LE_DATA_LENGTH_CHANGE				0x07
+
+	#define HCI_EVENT_LE_ENHANCED_CONNECTION_COMPLETE	0x0A
+	/* The same as a connection complete, with the addresses that private
+	 * address resolution produced in the middle of it.
+	 */
+	struct hci_ev_le_enhanced_connection_complete {
+		uint8		status;
+		uint16		handle;
+		uint8		role;
+		uint8		peer_address_type;
+		bdaddr_t	peer_address;
+		bdaddr_t	local_resolvable_address;
+		bdaddr_t	peer_resolvable_address;
+		uint16		interval;
+		uint16		latency;
+		uint16		supervision_timeout;
+		uint8		clock_accuracy;
+	} __attribute__((packed));
+
+	#define HCI_EVENT_LE_PHY_UPDATE_COMPLETE			0x0C
+
+
 /* HAIKU Internal Events, not produced by the transport devices but
  * by some entity of the Haiku Bluetooth Stack.
  * The MSB 0xE is chosen for this purpose

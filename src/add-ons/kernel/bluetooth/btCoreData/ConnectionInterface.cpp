@@ -28,6 +28,9 @@ HciConnection::HciConnection(hci_id hid)
 	mutex_init(&fLock, "HciConnection");
 	Hid = hid;
 	fNextIdent = L2CAP_FIRST_CID;
+	lowEnergy = false;
+	ndevice = NULL;
+	disconnect_hook = NULL;
 
 	// TODO: This doesn't really belong here...
 	interface_address = {};
@@ -49,10 +52,12 @@ AddConnection(uint16 handle, int type, const bdaddr_t& dst, hci_id hid)
 {
 	// Create connection descriptor
 
+	bool existing = true;
 	HciConnection* conn = ConnectionByHandle(handle, hid);
 	if (conn != NULL)
 		goto update;
 
+	existing = false;
 	conn = new (std::nothrow) HciConnection(hid);
 	if (conn == NULL)
 		goto bail;
@@ -75,9 +80,9 @@ update:
 	conn->status = HCI_CONN_OPEN;
 	conn->mtu = L2CAP_MTU_MINIMUM; // TODO: give the mtu to the connection
 
-	{
-	MutexLocker _(&sConnectionListLock);
-	sConnectionList.Add(conn);
+	if (!existing) {
+		MutexLocker _(&sConnectionListLock);
+		sConnectionList.Add(conn);
 	}
 
 bail:

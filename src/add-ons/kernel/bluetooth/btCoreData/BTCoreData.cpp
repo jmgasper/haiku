@@ -64,6 +64,43 @@ PostEvent(bluetooth_device* ndev, void* event, size_t size)
 			break;
 		}
 
+		/* A Low Energy connection is reported through the one event the LE
+		 * half of a controller uses for everything, and it has to be
+		 * registered here for the same reason a classic one does: the ACL
+		 * packets that follow name only a handle, and everything above needs
+		 * to know whose link that is.
+		 */
+		case HCI_EVENT_LE_META:
+		{
+			struct hci_ev_le_meta* meta
+				= (struct hci_ev_le_meta*)(outgoingEvent + 1);
+
+			if (meta->subevent != HCI_EVENT_LE_CONNECTION_COMPLETE
+				&& meta->subevent != HCI_EVENT_LE_ENHANCED_CONNECTION_COMPLETE)
+				break;
+
+			struct hci_ev_le_connection_complete* data
+				= (struct hci_ev_le_connection_complete*)(meta + 1);
+
+			if (data->status != BT_OK)
+				break;
+
+			HciConnection* conn = AddConnection(
+				B_LENDIAN_TO_HOST_INT16(data->handle) & 0x0fff, BT_ACL,
+				data->peer_address, ndev->index);
+
+			if (conn == NULL) {
+				ERROR("%s: no memory for a connection descriptor\n", __func__);
+				break;
+			}
+
+			conn->ndevice = ndev;
+			conn->lowEnergy = true;
+			TRACE("%s: Registered Low Energy connection handle=%#x\n",
+				__func__, B_LENDIAN_TO_HOST_INT16(data->handle));
+			break;
+		}
+
 		case HCI_EVENT_DISCONNECTION_COMPLETE:
 		{
 			struct hci_ev_disconnection_complete_reply* data;
@@ -95,6 +132,30 @@ PostEvent(bluetooth_device* ndev, void* event, size_t size)
 	}
 
 	return err;
+}
+
+
+/* Hand a whole ACL packet to the Bluetooth server. This is the path for the
+ * links whose contents the kernel has no protocol for - a Low Energy link's
+ * attributes and pairing - and it deliberately carries the ACL header too, so
+ * that what arrives says which connection it came from.
+ */
+status_t
+PostData(hci_id hid, const void* data, size_t size)
+{
+	port_id port = find_port(BT_USERLAND_PORT_NAME);
+	if (port == B_NAME_NOT_FOUND) {
+		ERROR("%s: bluetooth_server not found for posting!\n", __func__);
+		return B_NAME_NOT_FOUND;
+	}
+
+	status_t status = write_port_etc(port, PACK_PORTCODE(BT_ACL, hid, -1),
+		data, size, B_TIMEOUT, 1 * 1000 * 1000);
+
+	if (status != B_OK)
+		ERROR("%s: Error posting userland %s\n", __func__, strerror(status));
+
+	return status;
 }
 
 
@@ -142,6 +203,8 @@ bluetooth_core_data_module_info sBCDModule = {
 	allocate_command_ident,
 	lookup_command_ident,
 	free_command_ident,
+
+	PostData,
 };
 
 

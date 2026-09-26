@@ -508,6 +508,13 @@ mtk_scan_end(struct ieee80211com* ic)
 
 	sc->sc_scanning = 0;
 	sc->sc_scan_ends++;
+
+	/* And tell the part, which has been sweeping the band on its own
+	 * since the scan began and will otherwise carry on doing so while
+	 * the stack tries to talk to whatever it picked.
+	 */
+	sc->sc_want_stop = 1;
+	taskqueue_enqueue(sc->sc_tq, &sc->sc_work);
 }
 
 
@@ -598,6 +605,11 @@ mtk_work(void* arg, int pending)
 	 * fired once - but it is the right thing to ask before a command and
 	 * it costs one direct read of a register that always answers.
 	 */
+	if (sc->sc_want_stop != 0) {
+		sc->sc_want_stop = 0;
+		mtk_cancel_scan(sc);
+	}
+
 	if (sc->sc_want_awake != 0) {
 		sc->sc_want_awake = 0;
 		if (mtk_ensure_owned(sc) != 0)
