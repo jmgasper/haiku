@@ -299,6 +299,26 @@ mtk_ensure_owned(struct mtk_softc* sc)
 }
 
 
+static int
+mtk_wfsys_reset(struct mtk_softc* sc)
+{
+	uint32_t value = mtk_read(sc, MTK_WFSYS_SW_RST);
+
+	mtk_write(sc, MTK_WFSYS_SW_RST, value & ~MTK_WFSYS_SW_RST_B);
+	DELAY(50000);
+	mtk_write(sc, MTK_WFSYS_SW_RST, value | MTK_WFSYS_SW_RST_B);
+
+	if (!mtk_poll(sc, MTK_WFSYS_SW_RST, MTK_WFSYS_SW_INIT_DONE,
+			MTK_WFSYS_SW_INIT_DONE, 500)) {
+		device_printf(sc->sc_dev, "the Wi-Fi half did not come out of"
+			" reset\n");
+		return ETIMEDOUT;
+	}
+
+	return 0;
+}
+
+
 static void
 mtk_release_ownership(struct mtk_softc* sc)
 {
@@ -831,6 +851,15 @@ mtk_attach(device_t dev)
 
 	device_printf(dev, "MT%04x, revision %#x\n", sc->sc_chipid,
 		sc->sc_rev & 0xff);
+
+	/* Start the Wi-Fi half from its reset, as Linux does at every probe
+	 * (mt792x_wfsys_reset): the card is powered in standby, so whatever
+	 * the last boot left running in it is still running now. This does
+	 * not disturb the Bluetooth half.
+	 */
+	error = mtk_wfsys_reset(sc);
+	if (error != 0)
+		goto fail;
 
 	/* Until the firmware says what address this radio answers to, one is
 	 * made up from the part itself, marked as locally chosen. The real one

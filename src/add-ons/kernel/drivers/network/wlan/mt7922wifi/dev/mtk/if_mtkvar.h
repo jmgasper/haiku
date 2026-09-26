@@ -252,6 +252,11 @@ extern const uint8_t mtk_channels_5ghz[MTK_CHANNELS_5GHZ];
 #define MTK_TMAC_ICR0			0x820e40a4
 #define MTK_AGG_ACR0			0x820e2084
 
+/* The Wi-Fi half's own reset, which leaves Bluetooth alone. */
+#define MTK_WFSYS_SW_RST		0x18000140
+#define MTK_WFSYS_SW_RST_B		(1 << 0)
+#define MTK_WFSYS_SW_INIT_DONE		(1 << 4)
+
 /* A second claim of ownership, made once the rings exist. */
 #define MTK_TOP_LPCR_HOST_BAND0		0x18060010
 #define MTK_LPCR_HOST_FW_OWN		(1 << 0)
