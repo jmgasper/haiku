@@ -51,9 +51,9 @@ struct CursorMove {
 	int32_t x, y; // in: pointer position on the mode's frame
 	uint32_t result;
 	uint32_t polls;
-	uint32_t displayStart; // DSP_ST read back
-	uint32_t address; // YRGB_MST read back
-	uint32_t reserved;
+	uint32_t displayStart; // DSP_ST read back, or written when deferred
+	uint32_t address; // YRGB_MST read back, or written when deferred
+	uint32_t deferred; // out: mismatches | (unverified << 16), both windows
 };
 
 struct CursorShow {
@@ -61,8 +61,21 @@ struct CursorShow {
 	uint32_t visible; // in
 	uint32_t result;
 	uint32_t polls;
-	uint32_t regionControl; // REGION0_CTRL read back
-	uint32_t reserved[3];
+	uint32_t regionControl; // REGION0_CTRL read back, or written when deferred
+	uint32_t deferred; // out: mismatches | (unverified << 16), both windows
+	uint32_t reserved[2];
+};
+
+// A window's last commit, held in the driver rather than in CursorState so the
+// probe's save/restore ioctl keeps its size. VOP2 latches a window at the next
+// frame start whether or not anyone watches REG_CFG_DONE, so a cursor update
+// leaves its commit pending and the following one verifies it: waiting here
+// costs a whole frame under the hardware lock on every pointer move.
+struct CursorCommit {
+	uint32_t control, start, address;
+	uint32_t pending;     // written, not yet seen latched
+	uint32_t mismatches;  // latched with different words
+	uint32_t unverified;  // still unlatched when the next commit arrived
 };
 
 // The complete cursor state, for the probe to save and restore.
@@ -157,6 +170,33 @@ NextAxiId(uint32_t id)
 
 // Programs the cursor window and the mixer for the state and commits the
 // port. The window's bus and read ids follow the desktop window's (the same
+// A deferred commit is checked once the port has reached a frame start, never
+// by waiting for one. The read-backs go into the state so a commit the port
+// refused leaves the driver looking at the window's real words: a failed hide
+// must keep the window counted as live, exactly as the synchronous path did.
+template<class Hardware>
+bool
+SettleCursor(Hardware& hardware, CursorState& state, CursorCommit& commit, uint32_t port)
+{
+	if (commit.pending == 0)
+		return false;
+	if ((hardware.ReadVop(kVopConfigDone) & (1u << port)) != 0) {
+		commit.unverified++;
+		return false;
+	}
+	uint32_t base = kVopEsmartBase + state.window * kVopEsmartStride;
+	state.regionControl = hardware.ReadVop(base + kVopEsmartRegionControl);
+	state.displayStart = hardware.ReadVop(base + kVopEsmartRegionStart);
+	state.address = hardware.ReadVop(base + kVopEsmartRegionAddress);
+	commit.pending = 0;
+	if (state.regionControl != commit.control || state.displayStart != commit.start
+		|| state.address != commit.address) {
+		commit.mismatches++;
+		return true;
+	}
+	return false;
+}
+
 // bus, ids two above), its pipeline delay copies the desktop window's, no
 // scaling, no colour key, no mirroring, and the mixer words are written
 // every time: they are cheap and the firmware never set them for this
@@ -166,10 +206,13 @@ NextAxiId(uint32_t id)
 // commit fill the state.
 template<class Hardware>
 uint32_t
-ApplyCursor(Hardware& hardware, CursorState& state, uint32_t bufferPhysical, uint32_t port,
-	uint32_t desktopWindow, uint32_t frameWidth, uint32_t frameHeight, uint32_t& polls)
+ApplyCursor(Hardware& hardware, CursorState& state, CursorCommit& commit, uint32_t bufferPhysical,
+	uint32_t port, uint32_t desktopWindow, uint32_t frameWidth, uint32_t frameHeight,
+	uint32_t& polls, bool wait)
 {
 	uint32_t base = kVopEsmartBase + state.window * kVopEsmartStride;
+	// The caller settles the previous commit before it decides to program at
+	// all, so doing it again here would count the same commit twice.
 	uint32_t desktop = kVopEsmartBase + desktopWindow * kVopEsmartStride;
 	CursorPlacement placement = PlaceCursor(state, frameWidth, frameHeight);
 	uint32_t desktopControl1 = hardware.ReadVop(desktop + kVopEsmartControl1);
@@ -212,6 +255,17 @@ ApplyCursor(Hardware& hardware, CursorState& state, uint32_t bufferPhysical, uin
 	hardware.WriteVop(base + kVopEsmartRegionControl, regionControl);
 	hardware.WriteVop(kVopConfigDone, kVopConfigDoneEnable | (1u << port) | ((1u << port) << 16));
 	polls = 0;
+	commit.control = regionControl;
+	commit.start = start;
+	commit.address = address;
+	if (!wait) {
+		commit.pending = 1;
+		state.regionControl = regionControl;
+		state.displayStart = start;
+		state.address = address;
+		return kCursorOK;
+	}
+	commit.pending = 0;
 	while ((hardware.ReadVop(kVopConfigDone) & (1u << port)) != 0) {
 		if (polls >= kScanoutPollLimit)
 			return kCursorTimeout;

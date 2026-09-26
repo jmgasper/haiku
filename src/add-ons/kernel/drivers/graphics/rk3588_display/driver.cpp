@@ -120,6 +120,28 @@ static bool sCursorProgrammed = false; // the cursor window was written since ac
 // The spanning desktop's right-hand cursor window (DP1's port): the pointer
 // state shifted by the left screen's width.
 static CursorState sCursorRight = {};
+// The last commit written to each cursor window, verified by the next one.
+static CursorCommit sCursorCommit = {};
+static CursorCommit sCursorRightCommit = {};
+// app_server re-sends the pointer on every shape change, so these lines are on
+// a hot path: keep the first few as evidence and afterwards only failures.
+static const uint32_t kCursorLogLimit = 16;
+static uint32_t sCursorBitmapLogs = 0;
+static uint32_t sCursorShowLogs = 0;
+
+// The deferred verification tally of both cursor windows, reported back through
+// the move and show replies so a silent commit failure is still visible.
+static uint32_t
+CursorDeferredTally()
+{
+	uint32_t mismatches = sCursorCommit.mismatches + sCursorRightCommit.mismatches;
+	uint32_t unverified = sCursorCommit.unverified + sCursorRightCommit.unverified;
+	if (mismatches > 0xffff)
+		mismatches = 0xffff;
+	if (unverified > 0xffff)
+		unverified = 0xffff;
+	return mismatches | (unverified << 16);
+}
 static const uint32_t kDpCursorWindow = 1; // ESMART1, overlay layer 3 of video port 1
 static const uint32_t kDpCursorMixer = 2;
 static uint32_t sAutoGatingBefore = 0; // SYS_AUTO_GATING_CTRL as the firmware left it
@@ -145,7 +167,7 @@ static status_t ChangeDisplayMode(Handle* handle, ModeRequest& request);
 static status_t ChangePowerMode(Handle* handle, PowerRequest& request);
 static status_t CursorControl(Handle* handle, uint32 op, void* buffer, size_t length);
 static status_t DpControl(Handle* handle, void* buffer, size_t length);
-static uint32_t ProgramCursor(uint32_t& polls);
+static uint32_t ProgramCursor(uint32_t& polls, bool wait = true);
 static int32 RetraceInterrupt(void* data);
 static void ReleaseFrameBuffer(Controller* controller);
 
@@ -1585,7 +1607,7 @@ LogCursorRegisters(MappedVop& hardware, const char* label)
 // Writes the cursor window for the current state over the persistent
 // mapping; the acquiring team's frame size clips it.
 static uint32_t
-ProgramCursor(uint32_t& polls)
+ProgramCursor(uint32_t& polls, bool wait)
 {
 	polls = 0;
 	if (sOwner == NULL || sVopRegisters == NULL || sCursor.area < 0)
@@ -1601,8 +1623,8 @@ ProgramCursor(uint32_t& polls)
 	if (sDpDesktop && sSpanHdmi) {
 		// One window per port, each clipped to its own 1920x1080 screen: the
 		// left one on HDMI1's port over its window, the right one on DP1's.
-		result = ApplyCursor(hardware, sCursorState, sCursor.physical, sSpanPort, sSpanWindow,
-			kFrameWidth, kFrameHeight, polls);
+		result = ApplyCursor(hardware, sCursorState, sCursorCommit, sCursor.physical, sSpanPort,
+			sSpanWindow, kFrameWidth, kFrameHeight, polls, wait);
 		uint32_t rightEnabledBefore = sCursorRight.regionControl;
 		uint32_t window = sCursorRight.window, mixer = sCursorRight.mixer, regionControl
 			= sCursorRight.regionControl, displayStart = sCursorRight.displayStart, address = sCursorRight.address;
@@ -1614,8 +1636,8 @@ ProgramCursor(uint32_t& polls)
 		sCursorRight.address = address;
 		sCursorRight.x = sCursorState.x - (int32_t)kFrameWidth;
 		uint32_t rightPolls = 0;
-		uint32_t right = ApplyCursor(hardware, sCursorRight, sCursor.physical, kVopPort1, kDpWindow,
-			kFrameWidth, kFrameHeight, rightPolls);
+		uint32_t right = ApplyCursor(hardware, sCursorRight, sCursorRightCommit, sCursor.physical,
+			kVopPort1, kDpWindow, kFrameWidth, kFrameHeight, rightPolls, wait);
 		polls += rightPolls;
 		if (result == kCursorOK)
 			result = right;
@@ -1623,13 +1645,32 @@ ProgramCursor(uint32_t& polls)
 			enabledBefore = ~sCursorState.regionControl; // log the change below
 	} else {
 		// The single DP desktop's window scans the port's whole screen.
-		result = ApplyCursor(hardware, sCursorState, sCursor.physical, sAccelerant.port,
-			sAccelerant.window, sDpDesktop ? kFrameWidth : sAccelerant.width, sAccelerant.height, polls);
+		result = ApplyCursor(hardware, sCursorState, sCursorCommit, sCursor.physical, sAccelerant.port,
+			sAccelerant.window, sDpDesktop ? kFrameWidth : sAccelerant.width, sAccelerant.height,
+			polls, wait);
 	}
 	sCursorProgrammed = true;
 	if (first || sCursorState.regionControl != enabledBefore || result != kCursorOK)
 		LogCursorRegisters(hardware, result == kCursorOK ? "after" : "failed");
 	return result;
+}
+
+
+// Check the last deferred commit without waiting for a frame. app_server's
+// ioctls run this first so CursorWindowLive() and the replies see what the
+// port actually took, not only what the driver asked for.
+static void
+CursorSettle()
+{
+	if (sOwner == NULL || sVopRegisters == NULL || sCursor.area < 0 || !sCursorProgrammed)
+		return;
+	MappedVop hardware;
+	if (sDpDesktop && sSpanHdmi) {
+		SettleCursor(hardware, sCursorState, sCursorCommit, sSpanPort);
+		SettleCursor(hardware, sCursorRight, sCursorRightCommit, kVopPort1);
+	} else {
+		SettleCursor(hardware, sCursorState, sCursorCommit, sAccelerant.port);
+	}
 }
 
 
@@ -1678,6 +1719,7 @@ CursorControl(Handle* handle, uint32 op, void* buffer, size_t length)
 			return B_BAD_VALUE;
 		}
 		MutexLocker locker(sHardwareLock);
+		CursorSettle();
 		bitmap->polls = 0;
 		if (sOwner == NULL || sCursor.address == NULL) {
 			bitmap->result = kCursorNotAcquired;
@@ -1689,7 +1731,8 @@ CursorControl(Handle* handle, uint32 op, void* buffer, size_t length)
 			memset(sCursorState.data, 0, kCursorBufferBytes);
 			sCursorState.width = sCursorState.height = 0;
 			sCursorState.hotX = sCursorState.hotY = 0;
-			bitmap->result = CursorWindowLive() ? ProgramCursor(bitmap->polls) : kCursorOK;
+			bitmap->result = CursorWindowLive() ? ProgramCursor(bitmap->polls, false) : kCursorOK;
+			if (bitmap->result != kCursorOK || sCursorBitmapLogs++ < kCursorLogLimit)
 			dprintf("rk3588_display: cursor bitmap cleared result=%" B_PRIu32 " polls=%" B_PRIu32
 				"\n", bitmap->result, bitmap->polls);
 		} else if (bitmap->width == 0 || bitmap->height == 0 || bitmap->width > kCursorMaxSize
@@ -1709,7 +1752,8 @@ CursorControl(Handle* handle, uint32 op, void* buffer, size_t length)
 			sCursorState.height = bitmap->height;
 			sCursorState.hotX = bitmap->hotX;
 			sCursorState.hotY = bitmap->hotY;
-			bitmap->result = CursorWindowLive() ? ProgramCursor(bitmap->polls) : kCursorOK;
+			bitmap->result = CursorWindowLive() ? ProgramCursor(bitmap->polls, false) : kCursorOK;
+			if (bitmap->result != kCursorOK || sCursorBitmapLogs++ < kCursorLogLimit)
 			dprintf("rk3588_display: cursor bitmap %" B_PRIu32 "x%" B_PRIu32 " hot=%" B_PRIu32
 				",%" B_PRIu32 " result=%" B_PRIu32 " polls=%" B_PRIu32 "\n", bitmap->width,
 				bitmap->height, bitmap->hotX, bitmap->hotY, bitmap->result, bitmap->polls);
@@ -1727,6 +1771,7 @@ CursorControl(Handle* handle, uint32 op, void* buffer, size_t length)
 		if (move.version != kCursorVersion)
 			return B_BAD_VALUE;
 		MutexLocker locker(sHardwareLock);
+		CursorSettle();
 		move.polls = 0;
 		if (sOwner == NULL || sCursor.address == NULL) {
 			move.result = kCursorNotAcquired;
@@ -1736,10 +1781,11 @@ CursorControl(Handle* handle, uint32 op, void* buffer, size_t length)
 			sCursorState.x = move.x;
 			sCursorState.y = move.y;
 			// A hidden cursor only remembers its position.
-			move.result = CursorWindowLive() ? ProgramCursor(move.polls) : kCursorOK;
+			move.result = CursorWindowLive() ? ProgramCursor(move.polls, false) : kCursorOK;
 		}
 		move.displayStart = sCursorState.displayStart;
 		move.address = sCursorState.address;
+		move.deferred = CursorDeferredTally();
 		return user_memcpy(buffer, &move, sizeof(move));
 	}
 	if (op == kShowCursor) {
@@ -1751,19 +1797,22 @@ CursorControl(Handle* handle, uint32 op, void* buffer, size_t length)
 		if (show.version != kCursorVersion)
 			return B_BAD_VALUE;
 		MutexLocker locker(sHardwareLock);
+		CursorSettle();
 		show.polls = 0;
 		if (sOwner == NULL || sCursor.address == NULL) {
 			show.result = kCursorNotAcquired;
 		} else {
 			bool wasVisible = sCursorState.visible != 0;
 			sCursorState.visible = show.visible != 0 ? 1 : 0;
-			show.result = wasVisible || CursorWindowLive() ? ProgramCursor(show.polls) : kCursorOK;
+			show.result = wasVisible || CursorWindowLive() ? ProgramCursor(show.polls, false) : kCursorOK;
+			if (show.result != kCursorOK || sCursorShowLogs++ < kCursorLogLimit)
 			dprintf("rk3588_display: cursor %s result=%" B_PRIu32 " polls=%" B_PRIu32
 				" control=%#" B_PRIx32 " start=%#" B_PRIx32 "\n",
 				show.visible != 0 ? "shown" : "hidden", show.result, show.polls,
 				sCursorState.regionControl, sCursorState.displayStart);
 		}
 		show.regionControl = sCursorState.regionControl;
+		show.deferred = CursorDeferredTally();
 		return user_memcpy(buffer, &show, sizeof(show));
 	}
 	return B_DEV_INVALID_IOCTL;

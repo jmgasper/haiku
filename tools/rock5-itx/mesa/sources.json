@@ -5,7 +5,8 @@
     "sha256": "59217efeac3b64e7ced958324b9db7494f1e0741aeb22d780276514cc1b8f206",
     "source_dir": "mesa-25.3.6",
     "patches": [
-      "mesa-haiku-native.patch"
+      "mesa-haiku-native.patch",
+      "mesa-haiku-quad-fill.patch"
     ]
   },
   "libglvnd": {
@@ -17,7 +18,8 @@
       "libglvnd-1.7.0.patchset",
       "libglvnd-haiku-sysroot.patch",
       "libglvnd-haiku-mutex.patch",
-      "libglvnd-haiku-bitmap.patch"
+      "libglvnd-haiku-bitmap.patch",
+      "libglvnd-haiku-present.patch"
     ]
   },
   "haikuports_revision": "50ed75230b0be025c78f99a47508d1825799677d",

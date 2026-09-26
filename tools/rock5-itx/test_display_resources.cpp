@@ -261,6 +261,18 @@ VopModelStep()
 }
 
 
+
+// Let the modelled port reach its next frame start without a driver call.
+// Deferred cursor commits latch there, so a test that wants to look at what
+// the port took has to ask for the frame rather than watch for it.
+static void
+ModelCursorFrameStart()
+{
+	if (sVopCommitCountdown > 0)
+		sVopCommitCountdown = 1;
+	VopModelStep();
+}
+
 static bool
 PhyOffsetAccessible(unsigned offset)
 {
@@ -2650,11 +2662,13 @@ main()
 	assert(Control(reader, kGetCursor, &cursorState, sizeof(cursorState)) == B_OK);
 	assert(cursorState.x == 100 && cursorState.y == 200 && cursorState.visible == 0 && sVopWrites.empty());
 	// Showing programs ESMART3 (bus ids, no scaling, no colour key, 64-pixel
-	// rows, the buffer, 16x16 at 98,197), mixer 6 and commits port 2; the
-	// read-backs wait for the frame start.
+	// rows, the buffer, 16x16 at 98,197), mixer 6 and commits port 2. The
+	// commit is left for the next frame start: nothing polls for it here, and
+	// the reply reports the words that were written.
 	show.visible = 1;
 	assert(Control(primary, kShowCursor, &show, sizeof(show)) == B_OK && show.result == kCursorOK);
-	assert(show.polls >= 1 && show.polls <= 4 && show.regionControl == 1);
+	assert(show.polls == 0 && show.regionControl == 1 && show.deferred == 0);
+	ModelCursorFrameStart();
 	assert(sequenceOf(sVopWrites, {{0x1e04u, (0xcu << 4) | (0xdu << 12)}, {0x1e08u, 0x2u}, {0x6f8u, 0x17170000u},
 		{0x008u, 0u}, {0x1ed0u, 0u}, {0x1e30u, 0u}, {0x1e34u, 0u},
 		{0x6b0u, 0x00ff0125u}, {0x6b4u, 0x00ff0060u}, {0x6b8u, 0x00000024u}, {0x6bcu, 0x00000074u},
@@ -2675,7 +2689,7 @@ main()
 	sVopWrites.clear();
 	move.x = -5; move.y = -7;
 	assert(Control(primary, kMoveCursor, &move, sizeof(move)) == B_OK && move.result == kCursorOK);
-	assert(move.polls >= 1 && move.displayStart == 0 && move.address == kModelCursorPhysical + 10 * 256 + 7 * 4);
+	assert(move.polls == 0 && move.displayStart == 0 && move.address == kModelCursorPhysical + 10 * 256 + 7 * 4);
 	assert(sequenceOf(sVopWrites, {{0x1e14u, (uint32)(kModelCursorPhysical + 10 * 256 + 7 * 4)}, {0x1e20u, 0x00050008u},
 		{0x1e24u, 0x00050008u}, {0x1e28u, 0u}, {0x000u, 0x00048004u}}));
 	assert(sVopWrites.size() == 5); // the settled words are not rewritten
@@ -2702,31 +2716,43 @@ main()
 	// the next bitmap brings it back. A new bitmap while visible is programmed
 	// at once; the hot spot moves the window.
 	sVopWrites.clear();
-	assert(bitmap(0, 0, 0, 0, 0) == kCursorOK && cursorBitmap.polls >= 1);
+	assert(bitmap(0, 0, 0, 0, 0) == kCursorOK && cursorBitmap.polls == 0);
 	assert(sequenceOf(sVopWrites, {{0x1e20u, 0u}, {0x1e10u, 0u}, {0x000u, 0x00048004u}}));
 	assert(Control(reader, kGetCursor, &cursorState, sizeof(cursorState)) == B_OK);
 	assert(cursorState.width == 0 && cursorState.visible == 1 && cursorState.regionControl == 0 && cursorState.data[5 * kCursorBytesPerRow + 7 * 4] == 0);
 	sVopWrites.clear();
-	assert(bitmap(64, 32, 63, 31, 256) == kCursorOK && cursorBitmap.polls >= 1);
+	assert(bitmap(64, 32, 63, 31, 256) == kCursorOK && cursorBitmap.polls == 0);
 	assert(sequenceOf(sVopWrites, {{0x1e20u, 0x001f003fu}, {0x1e28u, (369u << 16) | 437u}, {0x000u, 0x00048004u}}));
 	assert(Control(reader, kGetCursor, &cursorState, sizeof(cursorState)) == B_OK);
 	memcpy(&pixel, cursorState.data + 31 * kCursorBytesPerRow + 63 * 4, 4);
 	assert(pixel == (0x80000000u | (31 << 8) | 63) && cursorState.data[32 * kCursorBytesPerRow] == 0);
-	// The port never takes the commit: a timeout after the poll limit.
+	// The port never reaches a frame start: no call waits for it, and the next
+	// one counts the commit it could not check.
 	sVopWrites.clear();
 	sCommitNeverCompletes = true;
 	move.x = 600;
-	assert(Control(primary, kMoveCursor, &move, sizeof(move)) == B_OK && move.result == kCursorTimeout);
-	assert(move.polls == kScanoutPollLimit);
+	assert(Control(primary, kMoveCursor, &move, sizeof(move)) == B_OK && move.result == kCursorOK);
+	assert(move.polls == 0);
+	uint32 unverifiedBefore = move.deferred >> 16;
+	move.x = 601;
+	assert(Control(primary, kMoveCursor, &move, sizeof(move)) == B_OK && move.result == kCursorOK);
+	assert((move.deferred >> 16) == unverifiedBefore + 1 && (move.deferred & 0xffff) == 0);
 	sCommitNeverCompletes = false;
-	// The region control never takes: the read-back differs.
+	ModelCursorFrameStart();
+	// The region control never takes: the deferred read-back differs, so the
+	// next call counts a mismatch and resyncs the state from the port. The
+	// window is still enabled there, so it stays live and can be hidden again.
 	sCursorStickyControl = true;
 	show.visible = 0;
-	assert(Control(primary, kShowCursor, &show, sizeof(show)) == B_OK && show.result == kCursorVerifyFailed);
-	assert(show.regionControl == 1);
-	sCursorStickyControl = false;
 	assert(Control(primary, kShowCursor, &show, sizeof(show)) == B_OK && show.result == kCursorOK);
+	uint32 mismatchesBefore = show.deferred & 0xffff;
+	ModelCursorFrameStart();
+	sCursorStickyControl = false;
+	sVopWrites.clear();
+	assert(Control(primary, kShowCursor, &show, sizeof(show)) == B_OK && show.result == kCursorOK);
+	assert((show.deferred & 0xffff) == mismatchesBefore + 1);
 	assert(show.regionControl == 0 && sequenceOf(sVopWrites, {{0x1e10u, 0u}, {0x000u, 0x00048004u}}));
+	ModelCursorFrameStart();
 	// Hidden: moves and bitmaps touch nothing; showing brings the window back.
 	sVopWrites.clear();
 	move.x = 700; move.y = 300;

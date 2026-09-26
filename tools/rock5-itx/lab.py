@@ -179,11 +179,17 @@ def artifact(image):
             raise RuntimeError('Existing immutable artifact has changed')
     else:
         temporary = output.with_suffix('.part')
-        shutil.copyfile(image, temporary)
-        if digest(temporary) != checksum:
-            raise RuntimeError('Image changed during copy; finish the build first')
-        temporary.replace(output)
-        output.chmod(0o444)
+        try:
+            # Full images contain long zero-filled ranges. Keep immutable
+            # copies sparse even when the build output itself is not sparse.
+            subprocess.run(['cp', '--sparse=always', '--', str(image),
+                            str(temporary)], check=True)
+            if digest(temporary) != checksum:
+                raise RuntimeError('Image changed during copy; finish the build first')
+            temporary.replace(output)
+            output.chmod(0o444)
+        finally:
+            temporary.unlink(missing_ok=True)
     manifest_path = output.with_suffix('.json')
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
