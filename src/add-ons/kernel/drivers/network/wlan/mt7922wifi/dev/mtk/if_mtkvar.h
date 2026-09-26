@@ -320,6 +320,12 @@ struct mtk_softc {
 	 */
 	struct mtx		sc_cmdmtx;
 
+	/* One sender at a time on the transmit ring. Frames come from the
+	 * stack's transmit path and from its raw path, on different threads,
+	 * and both move the same head.
+	 */
+	struct mtx		sc_txmtx;
+
 	/* While the part is sweeping, the radio is its. The stack is stepped
 	 * through its channel list from our own thread instead of being let
 	 * retune underneath the sweep.

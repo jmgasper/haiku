@@ -57,8 +57,24 @@ mtk_wr32(uint8_t* where, uint32_t value)
  * matches where we are on the ring, so nothing is overwritten while the card
  * is still reading it.
  */
+static int mtk_send_frame_locked(struct mtk_softc*, struct mbuf*);
+
+
 int
 mtk_send_frame(struct mtk_softc* sc, struct mbuf* m)
+{
+	int error;
+
+	mtx_lock(&sc->sc_txmtx);
+	error = mtk_send_frame_locked(sc, m);
+	mtx_unlock(&sc->sc_txmtx);
+
+	return error;
+}
+
+
+static int
+mtk_send_frame_locked(struct mtk_softc* sc, struct mbuf* m)
 {
 	struct mtk_ring* ring = &sc->sc_txq;
 	struct ieee80211_frame* frame;

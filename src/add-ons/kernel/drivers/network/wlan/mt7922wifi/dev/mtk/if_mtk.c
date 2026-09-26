@@ -533,14 +533,37 @@ mtk_updateslot(struct ieee80211com* ic)
 }
 
 
+/* Who owns what, which the two ways in differ on and which getting wrong
+ * frees kernel memory twice:
+ *
+ * - A frame we accept is ours, and so is the node reference that came with
+ *   it. The frame is copied onto the ring at once, so it is finished with
+ *   there and then, and ieee80211_tx_complete gives both back - which is
+ *   also what runs the stack's own completion callbacks, the ones its
+ *   authentication and association timeouts hang off.
+ * - A frame we refuse through ic_transmit is still the stack's: it reads
+ *   the node out of it and frees both itself (ieee80211_parent_xmitpkt).
+ * - A frame we refuse through ic_raw_xmit is ours to free, but the node is
+ *   not: ieee80211_raw_output lets go of it.
+ *
+ * This driver used to free the frame and the node on every path, which on
+ * a full ring meant each probe request of a scan freed its node twice.
+ */
 static int
 mtk_transmit(struct ieee80211com* ic, struct mbuf* m)
 {
 	struct mtk_softc* sc = ic->ic_softc;
+	struct ieee80211_node* ni = (struct ieee80211_node*)m->m_pkthdr.rcvif;
 	int error = mtk_send_frame(sc, m);
 
-	m_freem(m);
-	return error;
+	if (error != 0) {
+		sc->sc_refused++;
+		return error;
+	}
+
+	sc->sc_sent++;
+	ieee80211_tx_complete(ni, m, 0);
+	return 0;
 }
 
 
@@ -551,16 +574,15 @@ mtk_raw_xmit(struct ieee80211_node* ni, struct mbuf* m,
 	struct mtk_softc* sc = ni->ni_ic->ic_softc;
 	int error = mtk_send_frame(sc, m);
 
-	if (error == 0)
-		sc->sc_sent++;
-	else
+	if (error != 0) {
 		sc->sc_refused++;
+		m_freem(m);
+		return error;
+	}
 
-	m_freem(m);
-	if (error != 0)
-		ieee80211_free_node(ni);
-
-	return error;
+	sc->sc_sent++;
+	ieee80211_tx_complete(ni, m, 0);
+	return 0;
 }
 
 
@@ -735,6 +757,7 @@ mtk_attach(device_t dev)
 
 	sc->sc_dev = dev;
 	mtx_init(&sc->sc_cmdmtx, "mtk commands", MTX_NETWORK_LOCK, MTX_DEF);
+	mtx_init(&sc->sc_txmtx, "mtk transmit", MTX_NETWORK_LOCK, MTX_DEF);
 	callout_init(&sc->sc_poll, 1);
 	sc->sc_tq = taskqueue_create_fast("mtk_taskq", M_NOWAIT,
 		taskqueue_thread_enqueue, &sc->sc_tq);
@@ -859,6 +882,7 @@ fail:
 		sc->sc_mem = NULL;
 	}
 	mtx_destroy(&sc->sc_cmdmtx);
+	mtx_destroy(&sc->sc_txmtx);
 	mtx_destroy(&sc->sc_mtx);
 	return error;
 }
@@ -902,6 +926,7 @@ mtk_detach(device_t dev)
 	}
 
 	mtx_destroy(&sc->sc_cmdmtx);
+	mtx_destroy(&sc->sc_txmtx);
 	mtx_destroy(&sc->sc_mtx);
 	return 0;
 }
