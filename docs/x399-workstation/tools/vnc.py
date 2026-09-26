@@ -82,10 +82,15 @@ class VNC:
             reason = self.recv(struct.unpack(">I", self.recv(4))[0])
             raise RuntimeError(f"server refused: {reason.decode(errors='replace')}")
         types = self.recv(count)
-        if 2 not in types:
+        if 2 in types:
+            self.send(b"\x02")
+            self.send(des_response(password, self.recv(16)))
+        elif 1 in types:
+            # No authentication (a local QEMU display, say); RFB 3.8 still
+            # sends a security result.
+            self.send(b"\x01")
+        else:
             raise RuntimeError(f"no VncAuth offered, got {list(types)}")
-        self.send(b"\x02")
-        self.send(des_response(password, self.recv(16)))
         if struct.unpack(">I", self.recv(4))[0] != 0:
             reason = self.recv(struct.unpack(">I", self.recv(4))[0])
             raise RuntimeError(f"auth failed: {reason.decode(errors='replace')}")
