@@ -10,7 +10,12 @@
 
 
 #include <GraphicsDefs.h>
+#include <Rect.h>
 #include <SupportDefs.h>
+
+
+class BMessage;
+class BString;
 
 
 void _init_global_fonts_();
@@ -28,6 +33,18 @@ void		set_workspaces_layout(uint32 columns, uint32 rows);
 
 bool		get_control_look(BString& path);
 status_t	set_control_look(const BString& path);
+
+// The monitors making up the screen, their arrangement and scaling. The
+// layout message holds one "display" message per monitor; see
+// DisplayLayout::Archive() and ApplyRequest() in app_server for the fields.
+status_t	get_display_layout(BMessage& layout);
+status_t	set_display_layout(const BMessage& request);
+status_t	get_display_frame(BRect frame, bool forZoom, BRect& _displayFrame);
+				// the frame of the monitor most of \a frame is on; with
+				// \a forZoom, the whole screen when zooming to one monitor
+				// is turned off
+bool		get_zoom_to_display();
+void		set_zoom_to_display(bool zoomToDisplay);
 
 }	// namespace BPrivate
 

@@ -56,8 +56,10 @@ All rights reserved.
 #include <Mime.h>
 #include <Path.h>
 #include <Roster.h>
+#include <Screen.h>
 
 #include <DeskbarPrivate.h>
+#include <InterfacePrivate.h>
 #include <RosterPrivate.h>
 #include "tracker_private.h"
 
@@ -91,6 +93,17 @@ main()
 	app.Run();
 
 	return B_OK;
+}
+
+
+BRect
+DeskbarScreenFrame(BWindow* window)
+{
+	BRect frame;
+	if (BPrivate::get_display_frame(BRect(), false, frame) == B_OK
+		&& frame.IsValid())
+		return frame;
+	return window != NULL ? BScreen(window).Frame() : BScreen().Frame();
 }
 
 
