@@ -89,7 +89,9 @@ $SSH 'set -u
 
 	# The union of the monitors is what the desktop is; a desktop that does
 	# not match means a classic mode was set behind the back of the layout.
-	desk=$(screenmode -s 2>/dev/null | awk "{print \$1\"x\"\$2}")
+	# (screenmode -s would print the frame buffer, which is larger when the
+	# desktop is drawn at high density.)
+	desk=$(screenmode -d 2>/dev/null | sed -n "s/^Desktop: \([0-9]*\) x \([0-9]*\).*/\1x\2/p")
 	union=$(echo "$displays" | awk "\$3==1 {r=\$5+int((\$8*100+\$7/2)/\$7); b=\$6+int((\$9*100+\$7/2)/\$7); if (r>w) w=r; if (b>h) h=b} END {print w\"x\"h}")
 	[ "$desk" = "$union" ] && say ok "the desktop is the monitors" "$desk" \
 		|| say no "the desktop is the monitors" "desktop $desk, monitors $union"

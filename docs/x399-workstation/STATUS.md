@@ -22,13 +22,60 @@ each USB port, the serial console, and a Bluetooth device to pair with.
 | USB | all controllers and ports enumerate devices | all 5 xHCI controllers start and publish a root hub; the NanoKVM enumerates on the ASM2142. The individual ports need devices plugged into them |
 | Audio | ALC1220 analog output, HDMI audio | verified both: two outputs, each clocking its stream at the hardware's own rate (48322 and 48321 frames a second against the 48000 asked for). The graphics card's codec needed a change to Haiku's hda driver, which discarded any codec whose converters are all digital. The monitor reports it takes stereo. What nobody here can check is whether a speaker makes a sound |
 | Graphics | GTX 1070/1080 Ti accelerated 2D/3D, 3-4 monitors | 3D verified: Vulkan on the GPU (1.4 TFLOP/s compute, 57 Gpixel/s fill) and OpenGL 4.5 through it, with frames copied straight into the screen's own frame buffer in video memory rather than sent through the host - a lit sphere at 1600x900 goes from 209 to 970 frames a second. Vertical sync works (locks to 60.0) now that the accelerant hands out a retrace semaphore. Any program gets the GPU, with nothing set in its environment. Three heads driving one spanning desktop is verified, but with the third and second forced rather than plugged in. 2D is not accelerated at all: it runs four to eight times slower than drawing in memory, which is still far more than a desktop needs at one monitor |
-| Displays | two 4K monitors usable at arm's length: per-monitor scaling, arrangement, per-monitor maximize, hot plug | verified on the two Dell P2415Q (DisplayPort): each monitor is a region of one frame buffer that the display engine scales up to the panel, at 100 to 250 percent in steps of 25, chosen per monitor. app_server arranges the monitors (side by side, stacked, swapped, one off), remembers the arrangement per monitor identity, keeps the mouse off the parts of the desktop no monitor shows, moves windows along with their monitor, and maximizes a window to the monitor most of it is on (the classic whole-desktop maximize is a setting). Two 24-inch 4K monitors come up at 200 percent, a 3840x1080 desktop, with no settings at all. The Screen preferences show the monitors as they stand and let them be dragged into place, identified by number on each screen, and read out from their EDID. Monitors coming and going are noticed two ways, but nobody was at the machine to plug one, so that path is untested. Frame buffer and VESA hardware gets the same scaling done in software, untested here |
+| Displays | two 4K monitors usable at arm's length: per-monitor scaling, arrangement, per-monitor maximize, hot plug | verified on the two Dell P2415Q (DisplayPort): each monitor is a region of one frame buffer that the display engine scales up to the panel, at 100 to 250 percent in steps of 25, chosen per monitor. app_server arranges the monitors (side by side, stacked, swapped, one off), remembers the arrangement per monitor identity, keeps the mouse off the parts of the desktop no monitor shows, moves windows along with their monitor, and maximizes a window to the monitor most of it is on (the classic whole-desktop maximize is a setting). Two 24-inch 4K monitors come up at 200 percent, a 3840x1080 desktop drawn at full density with no settings at all; text is sharp in the frame buffer itself. The Screen preferences show the monitors as they stand and let them be dragged into place, identified by number on each screen, and read out from their EDID. Monitors coming and going are noticed two ways, but nobody was at the machine to plug one, so that path is untested. Frame buffer and VESA hardware gets the same scaling done in software, untested here |
 | Bluetooth | TP-Link Archer TX55E, working adapter and discovery | verified: the adapter answers as `90:74:ae:33:d7:cb` "MTK MT7922 #1" and an inquiry finds devices nearby, from a cold boot with nothing done by hand. The radio is a MediaTek MT7922 on USB, which runs a bootloader rather than a Bluetooth controller until it is given firmware - it takes the HCI Reset every stack opens with and never answers. The driver now hands it that firmware at open. Three further faults were in the way: `h2generic` took its event endpoint from the last interface that had one, which on this radio is MediaTek's audio interface, so it listened where no reply is ever sent; it stood isochronous transfers on the SCO endpoints at open, which nothing wants until there is a call; and the server never answered a request for a command the controller refuses outright, which hung the first program to ask for an adapter. Remote name lookup still fails, so discovered devices show an address and no name. Pairing and audio profiles are untried |
 | Wi-Fi | TP-Link Archer TX55E | the card scans and lists networks; it cannot carry traffic yet. `mt7922` is native, against Haiku's own PCI, and from a cold boot it brings the part up, loads its firmware, tunes a channel, sweeps for networks and reads what it hears: twenty-two in earshot by name, address and channel. It transmits, proven by asking after a network by name and being answered twenty-five times - an answer addressed to us can only follow a question we sent. What remains is joining one: host-side transmission of management frames, then association and keys. The last is best not done here at all - Haiku's wireless drivers present themselves through `net80211`, and its `wpa_supplicant` already does the handshake and key management, which is both far larger than this driver and the part where a mistake is a security mistake rather than a silent one. The network to join and the secret for it come from a settings file on the machine, never from this source, and the secret is never logged |
 | Video decoding | H.264 on the card's video engine, and something that plays a film | verified: the GTX 1080 Ti has an NVDEC engine and an NVC2B0 decoder class, and thirteen H.264 streams together with 120 frames of 1080p Big Buck Bunny decode byte for byte identically to ffmpeg's own decoder - multiple references, B pictures, spatial and temporal direct prediction, B pictures used as references, weighted prediction and two coded sequences among them. 1080p decodes at 232 pictures a second, 4.3 ms each, about eight times what playing it needs. It is offered to the whole system as a media add-on, so any program that opens a film gets it, and `NVPlay` plays one with sound, stopping, starting and seeking. What it will not do is field pictures, 4:2:2 or more than eight bits a sample, and because Haiku picks one decoder for a format those refusals mean the film will not play rather than falling back |
 | Sleep | S3 suspend and resume | sleeps and wakes; the display comes back, but the NVMe and the network card usually do not. Paused until a serial console arrives, which is also what the one untested path in the vertical sync work needs |
 
 ## Log
+
+- 2026-09-26, later: the scaled desktop is drawn sharp. The first version
+  drew the desktop at its logical size and had the card's display engine
+  enlarge each monitor's region, which is what X11 and Windows call bitmap
+  scaling and looks like it. Now app_server draws at the monitor's density
+  (`HWInterface::RenderScale`, in percent; the Painter's device scale):
+  every logical coordinate is scaled on its way into the buffer, one pixel
+  lines become bars as wide as the scale, filled rectangles snap to the
+  finer grid, glyphs are rendered at the larger size straight from the
+  glyph cache and hinting is turned off so that what a program measures at
+  the logical size is what gets drawn, the cursor and drag bitmaps are
+  rendered or enlarged to the density, patterns keep their logical period,
+  and screenshots are averaged back down to the logical size. Windows,
+  clipping, input and every program's view of the world stay logical.
+
+  The plan was Apple's: draw at twice the density and let the display
+  engine shrink the picture onto monitors that need less. The engine here
+  will not shrink anything - a single monitor at 175 percent (a 4388 pixel
+  picture onto 3840) is refused by NVKMS as firmly as one at 150, while
+  enlarging works at any factor; the reply carries no reason across the
+  ioctl. So the density is the smallest scale among the enabled monitors:
+  at that scale a monitor's region is its own size and nothing is scaled
+  at all, and any monitor with a larger scale is enlarged by the engine.
+  Two monitors at the same scale are both sharp at every step from 100 to
+  250 percent, fractional ones included, because the Painter's scale is
+  fractional too (a 150 percent monitor is drawn at exactly 1.5 pixels per
+  logical pixel). The cost of a fractional scale is that a logical offset
+  is not a whole number of pixels: scrolling rounds and a window moved by
+  one logical pixel moves by one or two, which is what every other system
+  that scales fractionally does as well.
+
+  Measured on the workstation at 200 percent on both monitors (a
+  7680x2160 frame buffer, drawn one to one): text and the Deskbar are
+  crisp in the frame buffer itself (`nvscanout --dump` writes it out, the
+  screenshot code no longer being the thing under test); `drawtest`
+  fills its window 303 times a second, draws 200 small rectangles 169
+  times, scrolls it 293 times and 40 lines of text 87 times a second,
+  each pushing four times the pixels of before. Direct windows are not
+  connected while the desktop is scaled, since the frame buffer they would
+  be handed is not in the coordinates they draw in; the GPU present path
+  for OpenGL therefore falls back to presenting through app_server until
+  BGLView learns the density, and the VNC server has to be told to read
+  the screen through BScreen (`-ScreenReaderBDirect=0`, now in its launch
+  script). Bitmaps a program supplies at the logical size are enlarged
+  pixel for pixel - icons look as they do on any system without high
+  density artwork; Tracker's vector icons could be rasterised larger once
+  a program can ask for the density.
 
 - 2026-09-26: two 4K monitors are a desktop rather than an expanse. The
   display engine of the card has a scaler on each head, and NVKMS accepts a
