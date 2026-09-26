@@ -13,11 +13,19 @@
 //   --watch <seconds>
 //            poll both resman and NVKMS for that long and report every change,
 //            to see whether plugging a display in is noticed
+//   --events <seconds>
+//            declare interest in NVKMS's display events and report every one
+//            that arrives for that long, alongside the same polling as --watch;
+//            tells whether a plug or unplug is delivered as an event or only
+//            visible to a poll
 
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <system_error>
+
+#include <errno.h>
+#include <sys/select.h>
 
 #include <OS.h>
 
@@ -196,7 +204,7 @@ static void RmProbe()
 // resman sees the hot plug detect lines directly; NVKMS only learns about
 // DisplayPort connections through hotplug events delivered by resman, so
 // watching both tells the two apart.
-static void Watch(NvKmsApi &kms, NvKmsDevice &kmsDev, int seconds)
+static void Watch(NvKmsApi &kms, NvKmsDevice &kmsDev, int seconds, bool events = false)
 {
 	NvRmApi rm;
 	NvRmDevice rmDev(rm, 0);
@@ -211,10 +219,62 @@ static void Watch(NvKmsApi &kms, NvKmsDevice &kmsDev, int seconds)
 	dispParams.request.dispHandle = disp;
 	CheckErrno(kms.Control(NVKMS_IOCTL_QUERY_DISP, &dispParams, sizeof(dispParams)));
 
+	if (events) {
+		NvKmsDeclareEventInterestParams interest {};
+		interest.request.interestMask = (1U << NVKMS_EVENT_TYPE_DPY_CHANGED)
+			| (1U << NVKMS_EVENT_TYPE_DYNAMIC_DPY_CONNECTED)
+			| (1U << NVKMS_EVENT_TYPE_DYNAMIC_DPY_DISCONNECTED)
+			| (1U << NVKMS_EVENT_TYPE_DPY_ATTRIBUTE_CHANGED);
+		CheckErrno(kms.Control(NVKMS_IOCTL_DECLARE_EVENT_INTEREST, &interest, sizeof(interest)));
+		printf("declared interest in dpy events on fd %d\n", kms.Fd());
+	}
+
 	NvU32 lastRmMask = ~0u;
 	NvU32 lastKmsMask = ~0u;
 	bigtime_t end = system_time() + seconds * 1000000LL;
 	do {
+		if (events) {
+			// Drain whatever NVKMS has queued, waiting up to half a second for
+			// more; the poll below runs in between.
+			fd_set readSet;
+			FD_ZERO(&readSet);
+			FD_SET(kms.Fd(), &readSet);
+			struct timeval timeout = { 0, 500000 };
+			int ready = select(kms.Fd() + 1, &readSet, NULL, NULL, &timeout);
+			if (ready < 0)
+				printf("select failed: %s\n", strerror(errno));
+			while (ready > 0) {
+				NvKmsGetNextEventParams next {};
+				CheckErrno(kms.Control(NVKMS_IOCTL_GET_NEXT_EVENT, &next, sizeof(next)));
+				if (!next.reply.valid)
+					break;
+				const NvKmsEvent &event = next.reply.event;
+				switch (event.eventType) {
+					case NVKMS_EVENT_TYPE_DPY_CHANGED:
+						printf("%8" B_PRId64 " ms: event DPY_CHANGED dpy %u\n",
+							system_time() / 1000, (unsigned)nvDpyIdToNvU32(event.u.dpyChanged.dpyId));
+						break;
+					case NVKMS_EVENT_TYPE_DYNAMIC_DPY_CONNECTED:
+						printf("%8" B_PRId64 " ms: event DYNAMIC_DPY_CONNECTED dpy %u\n",
+							system_time() / 1000, (unsigned)nvDpyIdToNvU32(event.u.dynamicDpyConnected.dpyId));
+						break;
+					case NVKMS_EVENT_TYPE_DYNAMIC_DPY_DISCONNECTED:
+						printf("%8" B_PRId64 " ms: event DYNAMIC_DPY_DISCONNECTED dpy %u\n",
+							system_time() / 1000, (unsigned)nvDpyIdToNvU32(event.u.dynamicDpyDisconnected.dpyId));
+						break;
+					case NVKMS_EVENT_TYPE_DPY_ATTRIBUTE_CHANGED:
+						printf("%8" B_PRId64 " ms: event DPY_ATTRIBUTE_CHANGED dpy %u attribute %u value %lld\n",
+							system_time() / 1000, (unsigned)nvDpyIdToNvU32(event.u.dpyAttributeChanged.dpyId),
+							(unsigned)event.u.dpyAttributeChanged.attribute,
+							(long long)event.u.dpyAttributeChanged.value);
+						break;
+					default:
+						printf("%8" B_PRId64 " ms: event type %u\n", system_time() / 1000,
+							(unsigned)event.eventType);
+				}
+			}
+		}
+
 		NV0073_CTRL_SYSTEM_GET_CONNECT_STATE_PARAMS params {};
 		params.displayMask = supported.displayMask;
 		NvU32 tries = 0;
@@ -246,7 +306,8 @@ static void Watch(NvKmsApi &kms, NvKmsDevice &kmsDev, int seconds)
 			lastRmMask = params.displayMask;
 			lastKmsMask = kmsMask;
 		}
-		snooze(500000);
+		if (!events)
+			snooze(500000);
 	} while (system_time() < end);
 }
 
@@ -257,6 +318,7 @@ int main(int argc, char **argv)
 	bool dumpEdid = false;
 	bool rmProbe = false;
 	int watchSeconds = 0;
+	bool watchEvents = false;
 	int pcieGen = 0;
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--force") == 0)
@@ -267,10 +329,14 @@ int main(int argc, char **argv)
 			rmProbe = true;
 		else if (strcmp(argv[i], "--watch") == 0 && i + 1 < argc)
 			watchSeconds = atoi(argv[++i]);
+		else if (strcmp(argv[i], "--events") == 0 && i + 1 < argc) {
+			watchSeconds = atoi(argv[++i]);
+			watchEvents = true;
+		}
 		else if (strcmp(argv[i], "--pcie-speed") == 0 && i + 1 < argc)
 			pcieGen = atoi(argv[++i]);
 		else {
-			fprintf(stderr, "usage: %s [--force] [--edid] [--rm] [--watch <seconds>]\n",
+			fprintf(stderr, "usage: %s [--force] [--edid] [--rm] [--watch <seconds>] [--events <seconds>]\n",
 				argv[0]);
 			return 1;
 		}
@@ -382,7 +448,7 @@ int main(int argc, char **argv)
 		RmProbe();
 
 	if (watchSeconds > 0)
-		Watch(kms, kmsDev, watchSeconds);
+		Watch(kms, kmsDev, watchSeconds, watchEvents);
 
 	return 0;
 }

@@ -3,7 +3,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/select.h>
 #include <atomic>
+#include <algorithm>
 #include <mutex>
 #include <vector>
 
@@ -23,6 +25,8 @@
 extern "C" {
 #include "ctrl/ctrl2080/ctrl2080gpu.h" // NV2080_CTRL_CMD_GPU_GET_NAME_STRING
 #include "ctrl/ctrl0000/ctrl0000client.h" // NV0000_CTRL_CMD_CLIENT_SHARE_OBJECT
+#include "class/cl0073.h" // NV04_DISPLAY_COMMON
+#include "ctrl/ctrl0073/ctrl0073system.h" // NV0073_CTRL_CMD_SYSTEM_GET_CONNECT_STATE
 #include "rs_access.h"
 }
 
@@ -106,6 +110,7 @@ static NvKmsMode ToNvKmsMode(const display_mode &haikuMode) {
 }
 
 
+
 class NvAccelerant {
 private:
 	static NvAccelerant *sInstance;
@@ -116,24 +121,47 @@ private:
 	NvKmsApi fKms;
 	NvKmsDevice fKmsDev;
 	NvKmsDispHandle fDisp;
+	NVDpyIdList fValidDpys {};
 
-	// A connected display and the head that drives it. When more than one
-	// display is connected, the desktop spans all of them from left to right.
+	// One connector of the card, and the monitor on it.
+	//
+	// Every connected output has a region of the frame buffer that its head
+	// scans out. The region is measured in frame buffer pixels; the display
+	// engine scales it up to the monitor's own resolution when the output's
+	// scale is above 100 percent, which is what makes a 4K monitor usable at
+	// arm's length without every program having to know about it. Outputs
+	// can be placed anywhere in the frame buffer - side by side, stacked,
+	// swapped - and the frame buffer is the smallest rectangle that holds
+	// them all.
 	struct Output {
 		NVDpyId dpyId;
-		NvU32 head;
+		uint32 id;					// what the rest of the system calls it
+		NvU32 head;					// the head driving it while enabled
+		NvU32 headMask;				// the heads able to drive it
+		char name[NVKMS_DPY_NAME_SIZE];
+		bool connected;
+		bool forced;				// see IsForcedConnected()
+		bool enabled;
 		NvKmsMode preferredMode;
-		int32 x;
+		NvKmsMode mode;				// the timing the head is driven with
+		int32 x, y;					// region in the frame buffer
+		uint16 width, height;		// its size, in frame buffer pixels
+		uint16 scale;				// percent
+		std::vector<uint8> edid;
 	};
 	std::vector<Output> fOutputs;
-	NVDpyId fDpyId;	// primary display
-	NvU32 fHead;	// primary head
+
+	// The primary output is the one the mode list describes, the one a
+	// program asking for "the" monitor's EDID gets, and the head whose
+	// blanks the retrace semaphore follows.
+	NVDpyId fDpyId;
+	NvU32 fHead;
 
 	std::vector<NvKmsMode> fModeList;
-	NvKmsMode fSpanMode {};
+	NvKmsMode fLayoutMode {};			// the frame buffer the layout needs
 	NvKmsMode fCurrentMode {};
 	display_mode fCurrentHaikuMode {};
-	bool fSpanning = false;
+	bool fLayoutApplied = false;		// the layout is what is on screen
 	NvKmsDpyAttributeDpmsValue fDpmsState = NV_KMS_DPY_ATTRIBUTE_DPMS_ON;
 	NvKmsBitmap fOldFramebuffer, fFramebuffer;
 
@@ -171,22 +199,37 @@ private:
 	std::atomic<bool> fQuitResumeThread {false};
 	sem_id fDisplayRestoredSem = -1;
 
+	// Watching for monitors being plugged in and pulled out.
+	thread_id fHotplugThread = -1;
+	std::atomic<bool> fQuitHotplugThread {false};
+	NvRmObject fRmDisplay;
+	NvU32 fRmDisplayMask = 0;
+	port_id fChangePort = -1;
+	int32 fChangeCode = 0;
+
 	NvAccelerant(int devFd);
 
 	void ApplyMode(const display_mode &mode, NvKmsBitmap &framebuffer);
-	void ApplySpanningMode(NvKmsBitmap &framebuffer);
+	void ApplyLayout(NvKmsBitmap &framebuffer);
 	static status_t ResumeThreadEntry(void *arg);
 	void ResumeThread();
 	void RestoreAfterResume();
 
-	NVDpyId FindConnectedDisplay(NVDpyIdList validDpys);
-	void FindOutputs(NVDpyIdList validDpys);
+	void FindOutputs();
+	bool QueryOutput(Output &output, NvKmsQueryDpyDynamicDataReply *dynamic = nullptr);
+	bool AssignHead(Output &output, NvU32 &usedHeads);
+	void ReadModeList();
 	bool ValidateMode(const NvKmsMode &mode);
 	NvKmsMode PreferredMode(NVDpyId dpyId);
-	void BuildSpanMode();
-	bool IsSpanMode(const display_timing &timing) const;
-	void SetSpanningMode(const display_mode &mode);
+	std::vector<NvKmsMode> ModesOf(NVDpyId dpyId);
+	void ApplyDefaultLayout();
+	void BuildLayoutMode();
+	bool IsLayoutMode(const display_timing &timing) const;
+	void SetLayoutMode(const display_mode &mode);
 	void PublishScanout();
+	Output *OutputByID(uint32 id);
+	Output *PrimaryOutput();
+	void FillDisplayOutput(const Output &output, display_output &info) const;
 
 	void StartRetraceThread();
 	void StopRetraceThread();
@@ -195,6 +238,14 @@ private:
 	void DisableVblankReports();
 	static status_t RetraceThreadEntry(void *arg);
 	void RetraceThread();
+
+	void StartHotplugThread();
+	void StopHotplugThread();
+	static status_t HotplugThreadEntry(void *arg);
+	void HotplugThread();
+	NvU32 ConnectedDisplayMask();
+	bool RefreshOutputs();
+	void NotifyDisplayChange();
 
 public:
 	sem_id RetraceSemaphore();
@@ -231,6 +282,12 @@ public:
 	void GetEdidInfo(void* info, uint32 size, uint32* _version);
 	status_t WaitForDisplayRestore(bigtime_t timeout);
 
+	uint32 DisplayOutputCount();
+	void GetDisplayOutputs(display_output* outputs, uint32* count);
+	void GetDisplayOutputModes(uint32 id, display_mode* modes, uint32* count);
+	void SetDisplayLayout(const display_output_config* configs, uint32 count, display_mode* mode);
+	void SetDisplayChangePort(port_id port, int32 code);
+
 	void MoveCursor(uint16 x, uint16 y);
 	void ShowCursor(bool isVisible);
 	void SetCursorShape(uint16 width, uint16 height, uint16 hotX, uint16 hotY, const uint8* andMask, const uint8* xorMask);
@@ -239,6 +296,58 @@ public:
 
 
 NvAccelerant *NvAccelerant::sInstance {};
+
+
+// The settings file, ~/config/settings/nvidia_rm_accelerant, is a testing
+// aid. It can force a connector on ("force_connected DP-0", using the EDID of
+// the first connected monitor, so that layouts can be tried without the
+// monitors), and it can shape the layout the card comes up with before
+// app_server has said anything ("scale DP-2 150", "position DP-4 2560 0").
+// app_server's own layout, once it applies one, replaces all of that.
+static bool ReadSetting(const char *key, const char *connector, char *value, size_t valueSize)
+{
+	FILE *file = fopen("/boot/home/config/settings/nvidia_rm_accelerant", "r");
+	if (file == NULL)
+		return false;
+	bool found = false;
+	char line[256];
+	while (fgets(line, sizeof(line), file) != NULL) {
+		char lineKey[64], lineConnector[128], rest[128] = "";
+		if (sscanf(line, "%63s %127s %127[^\n]", lineKey, lineConnector, rest) < 2)
+			continue;
+		if (strcmp(lineKey, key) == 0 && strcmp(lineConnector, connector) == 0) {
+			strlcpy(value, rest, valueSize);
+			found = true;
+		}
+	}
+	fclose(file);
+	return found;
+}
+
+static bool IsForcedConnected(const char *name)
+{
+	char value[128];
+	return ReadSetting("force_connected", name, value, sizeof(value));
+}
+
+// NVKMS names a connector with a monitor on it after the monitor, "DELL
+// P2415Q (DP-2)"; the rest of the system wants the connector, "DP-2".
+static void ConnectorName(const char *nvKmsName, char *connector, size_t size)
+{
+	const char *open = strrchr(nvKmsName, '(');
+	const char *close = open != NULL ? strchr(open, ')') : NULL;
+	if (open != NULL && close != NULL && close > open + 1) {
+		size_t length = std::min((size_t)(close - open - 1), size - 1);
+		memcpy(connector, open + 1, length);
+		connector[length] = '\0';
+	} else
+		strlcpy(connector, nvKmsName, size);
+}
+
+static uint16 LogicalSize(uint32 pixels, uint16 scale)
+{
+	return (uint16)((pixels * 100 + scale / 2) / scale);
+}
 
 
 NvAccelerant::NvAccelerant(int devFd):
@@ -251,31 +360,27 @@ NvAccelerant::NvAccelerant(int devFd):
 	}
 	fDisp = fKmsDev.Info().dispHandles[0];
 
-	NVDpyIdList validDpys;
 	{
 		NvKmsQueryDispParams params {};
 		params.request.deviceHandle = fKmsDev.Get();
 		params.request.dispHandle = fDisp;
 		CheckErrno(fKms.Control(NVKMS_IOCTL_QUERY_DISP, &params, sizeof(params)));
 
-		validDpys = params.reply.validDpys;
+		fValidDpys = params.reply.validDpys;
 	}
+
+	// A monitor takes a moment to answer after the card comes up.
 	const int32 totalAttempts = 10;
 	for (int32 i = 0; i < totalAttempts; i++) {
-		fDpyId = FindConnectedDisplay(validDpys);
-		if (!nvDpyIdIsInvalid(fDpyId)) {
+		FindOutputs();
+		if (!fOutputs.empty())
 			break;
-		}
 		debug_printf("nvidia_rm: [%" B_PRId32 "/%" B_PRId32 "]: no connected displays\n", i, totalAttempts);
 		snooze(100000);
 	}
-	if (nvDpyIdIsInvalid(fDpyId)) {
+	if (fOutputs.empty()) {
 		RaiseErrno(ENODEV);
 	}
-
-	FindOutputs(validDpys);
-	fDpyId = fOutputs[0].dpyId;
-	fHead = fOutputs[0].head;
 
 	{
 		NvKmsGrabOwnershipParams params {};
@@ -283,36 +388,22 @@ NvAccelerant::NvAccelerant(int devFd):
 		CheckErrno(fKms.Control(NVKMS_IOCTL_GRAB_OWNERSHIP, &params, sizeof(params)));
 	}
 
-	for (NvU32 i = 0;; i++) {
-		NvKmsValidateModeIndexParams params {
-			.request = {
-				.deviceHandle = fKmsDev.Get(),
-				.dispHandle = fDisp,
-				.dpyId = fDpyId,
-				.modeIndex = i,
-			},
-		};
-		CheckErrno(fKms.Control(NVKMS_IOCTL_VALIDATE_MODE_INDEX, &params, sizeof(params)));
-		if (params.reply.end) {
-			break;
-		}
-		if (!ValidateMode(params.reply.mode)) {
-			continue;
-		}
-		fModeList.push_back(params.reply.mode);
-	}
-
-	BuildSpanMode();
+	ApplyDefaultLayout();
+	ReadModeList();
 
 	fDisplayRestoredSem = create_sem(0, "nvidia_rm display restored");
 	fResumeThread = spawn_thread(ResumeThreadEntry, "nvidia_rm resume",
 		B_DISPLAY_PRIORITY, this);
 	if (fResumeThread >= 0)
 		resume_thread(fResumeThread);
+
+	StartHotplugThread();
 }
 
 NvAccelerant::~NvAccelerant()
 {
+	StopHotplugThread();
+
 	if (fResumeThread >= 0) {
 		fQuitResumeThread = true;
 		status_t result;
@@ -382,8 +473,8 @@ void NvAccelerant::RestoreAfterResume()
 	if (fCurrentMode.timings.hVisible == 0 || !fFramebuffer.IsSet())
 		return;
 
-	if (fSpanning)
-		ApplySpanningMode(fFramebuffer);
+	if (fLayoutApplied)
+		ApplyLayout(fFramebuffer);
 	else
 		ApplyMode(fCurrentHaikuMode, fFramebuffer);
 
@@ -402,45 +493,67 @@ void NvAccelerant::RestoreAfterResume()
 		SetDpmsMode(B_DPMS_OFF);
 }
 
-// Testing aid: "force_connected <connector>" lines in
-// ~/config/settings/nvidia_rm_accelerant force a connector on, using the EDID
-// of the first connected display, so that multi-display layouts can be tested
-// without monitors.
-static bool IsForcedConnected(const char *name)
+
+// Ask NVKMS about one connector. Returns whether a monitor is on it (or is
+// being pretended to be, see the settings file). The reply is handed back to
+// callers that want more of it than the summary kept in the Output.
+bool NvAccelerant::QueryOutput(Output &output, NvKmsQueryDpyDynamicDataReply *dynamic)
 {
-	FILE *file = fopen("/boot/home/config/settings/nvidia_rm_accelerant", "r");
-	if (file == NULL)
-		return false;
-	bool forced = false;
-	char line[256];
-	while (fgets(line, sizeof(line), file) != NULL) {
-		char connector[128];
-		if (sscanf(line, "force_connected %127s", connector) == 1 && strcmp(connector, name) == 0)
-			forced = true;
-	}
-	fclose(file);
-	return forced;
+	NvKmsQueryDpyDynamicDataParams params {};
+	params.request.deviceHandle = fKmsDev.Get();
+	params.request.dispHandle = fDisp;
+	params.request.dpyId = output.dpyId;
+	CheckErrno(fKms.Control(NVKMS_IOCTL_QUERY_DPY_DYNAMIC_DATA, &params, sizeof(params)));
+
+	ConnectorName(params.reply.name, output.name, sizeof(output.name));
+	output.connected = params.reply.connected || params.reply.edid.valid;
+	if (params.reply.edid.valid && params.reply.edid.bufferSize > 0) {
+		output.edid.assign(params.reply.edid.buffer,
+			params.reply.edid.buffer + params.reply.edid.bufferSize);
+	} else
+		output.edid.clear();
+
+	if (dynamic != nullptr)
+		*dynamic = params.reply;
+	return output.connected;
 }
 
-void NvAccelerant::FindOutputs(NVDpyIdList validDpys)
+bool NvAccelerant::AssignHead(Output &output, NvU32 &usedHeads)
 {
+	NvU32 freeHeads = output.headMask & ~usedHeads;
+	if (freeHeads == 0) {
+		debug_printf("nvidia_rm: no free head for display %s\n", output.name);
+		return false;
+	}
+	output.head = __builtin_ctz(freeHeads);
+	usedHeads |= 1U << output.head;
+	return true;
+}
+
+// Find every monitor on the card. Connectors are listed in NVKMS's order,
+// which puts the connector the firmware used first; that becomes the primary
+// output and the left end of the default layout.
+void NvAccelerant::FindOutputs()
+{
+	std::vector<Output> outputs;
 	NvKmsQueryDpyDynamicDataReply firstConnected {};
 	bool haveFirstConnected = false;
-	NVDpyIdList forcedDpys = nvEmptyDpyIdList();
-	for (NVDpyId dpyId = nvNextDpyIdInDpyIdListUnsorted(nvInvalidDpyId(), validDpys);
+
+	for (NVDpyId dpyId = nvNextDpyIdInDpyIdListUnsorted(nvInvalidDpyId(), fValidDpys);
 			!nvDpyIdIsInvalid(dpyId);
-			dpyId = nvNextDpyIdInDpyIdListUnsorted(dpyId, validDpys)) {
-		NvKmsQueryDpyDynamicDataParams params {};
-		params.request.deviceHandle = fKmsDev.Get();
-		params.request.dispHandle = fDisp;
-		params.request.dpyId = dpyId;
-		CheckErrno(fKms.Control(NVKMS_IOCTL_QUERY_DPY_DYNAMIC_DATA, &params, sizeof(params)));
-		debug_printf("nvidia_rm: connector %s%s\n", params.reply.name,
-			params.reply.connected ? " (connected)" : "");
-		if (!haveFirstConnected && params.reply.connected && params.reply.edid.valid) {
-			firstConnected = params.reply;
-			haveFirstConnected = true;
-		} else if (haveFirstConnected && !params.reply.connected && IsForcedConnected(params.reply.name)) {
+			dpyId = nvNextDpyIdInDpyIdListUnsorted(dpyId, fValidDpys)) {
+		Output output {};
+		output.dpyId = dpyId;
+		output.id = nvDpyIdToNvU32(dpyId);
+		output.scale = 100;
+
+		NvKmsQueryDpyDynamicDataReply dynamic;
+		bool connected = QueryOutput(output, &dynamic);
+		debug_printf("nvidia_rm: connector %s%s%s%s\n", output.name,
+			connected ? " (connected" : "", connected ? dynamic.name : "",
+			connected ? ")" : "");
+
+		if (!connected && haveFirstConnected && IsForcedConnected(output.name)) {
 			NvKmsQueryDpyDynamicDataParams forceParams {};
 			forceParams.request.deviceHandle = fKmsDev.Get();
 			forceParams.request.dispHandle = fDisp;
@@ -451,60 +564,80 @@ void NvAccelerant::FindOutputs(NVDpyIdList validDpys)
 			memcpy(forceParams.request.edid.buffer, firstConnected.edid.buffer,
 				sizeof(forceParams.request.edid.buffer));
 			CheckErrno(fKms.Control(NVKMS_IOCTL_QUERY_DPY_DYNAMIC_DATA, &forceParams, sizeof(forceParams)));
-			debug_printf("nvidia_rm: forcing %s connected: %d\n", params.reply.name,
+			debug_printf("nvidia_rm: forcing %s connected: %d\n", output.name,
 				forceParams.reply.connected);
-			if (forceParams.reply.connected)
-				forcedDpys = nvAddDpyIdToDpyIdList(dpyId, forcedDpys);
+			if (forceParams.reply.connected) {
+				connected = QueryOutput(output);
+				output.forced = true;
+			}
 		}
-	}
-
-	NvU32 usedHeads = 0;
-	for (NVDpyId dpyId = nvNextDpyIdInDpyIdListUnsorted(nvInvalidDpyId(), validDpys);
-			!nvDpyIdIsInvalid(dpyId);
-			dpyId = nvNextDpyIdInDpyIdListUnsorted(dpyId, validDpys)) {
-		NvKmsQueryDpyDynamicDataParams dynamicParams {};
-		dynamicParams.request.deviceHandle = fKmsDev.Get();
-		dynamicParams.request.dispHandle = fDisp;
-		dynamicParams.request.dpyId = dpyId;
-		CheckErrno(fKms.Control(NVKMS_IOCTL_QUERY_DPY_DYNAMIC_DATA, &dynamicParams, sizeof(dynamicParams)));
-		if (!dynamicParams.reply.connected && !dynamicParams.reply.edid.valid
-			&& !nvDpyIdIsInDpyIdList(dpyId, forcedDpys))
+		if (!connected)
 			continue;
+		if (!haveFirstConnected) {
+			firstConnected = dynamic;
+			haveFirstConnected = true;
+		}
 
 		NvKmsQueryDpyStaticDataParams staticParams {};
 		staticParams.request.deviceHandle = fKmsDev.Get();
 		staticParams.request.dispHandle = fDisp;
 		staticParams.request.dpyId = dpyId;
 		CheckErrno(fKms.Control(NVKMS_IOCTL_QUERY_DPY_STATIC_DATA, &staticParams, sizeof(staticParams)));
+		output.headMask = staticParams.reply.headMask;
 
-		NvU32 freeHeads = staticParams.reply.headMask & ~usedHeads;
-		if (freeHeads == 0) {
-			debug_printf("nvidia_rm: no free head for display %s\n", dynamicParams.reply.name);
+		output.preferredMode = PreferredMode(dpyId);
+		output.mode = output.preferredMode;
+		if (output.mode.timings.hVisible == 0) {
+			debug_printf("nvidia_rm: display %s has no usable mode\n", output.name);
 			continue;
 		}
-		NvU32 head = __builtin_ctz(freeHeads);
-		usedHeads |= 1U << head;
-
-		Output output {
-			.dpyId = dpyId,
-			.head = head,
-			.preferredMode = PreferredMode(dpyId),
-			.x = 0,
-		};
-		debug_printf("nvidia_rm: display %s on head %" B_PRIu32 ", %" B_PRIu32 "x%" B_PRIu32 "\n",
-			dynamicParams.reply.name, head, (uint32)output.preferredMode.timings.hVisible,
-			(uint32)output.preferredMode.timings.vVisible);
-		fOutputs.push_back(output);
+		outputs.push_back(output);
 	}
 
+	fOutputs = outputs;
 	if (fOutputs.empty())
-		RaiseErrno(ENODEV);
+		return;
+	fDpyId = fOutputs[0].dpyId;
+}
 
+// The layout the card comes up with: every monitor at its own resolution,
+// side by side from left to right, one frame buffer pixel per monitor pixel -
+// unless the settings file says otherwise. app_server replaces this with the
+// user's layout as soon as it starts.
+void NvAccelerant::ApplyDefaultLayout()
+{
+	NvU32 usedHeads = 0;
 	int32 x = 0;
 	for (auto &output: fOutputs) {
+		output.enabled = AssignHead(output, usedHeads);
+		if (!output.enabled)
+			continue;
+
+		char value[128];
+		if (ReadSetting("scale", output.name, value, sizeof(value))) {
+			int scale = atoi(value);
+			if (scale >= 100 && scale <= 400)
+				output.scale = scale;
+		}
+		output.width = LogicalSize(output.mode.timings.hVisible, output.scale);
+		output.height = LogicalSize(output.mode.timings.vVisible, output.scale);
 		output.x = x;
-		x += output.preferredMode.timings.hVisible;
+		output.y = 0;
+		if (ReadSetting("position", output.name, value, sizeof(value))) {
+			int px, py;
+			if (sscanf(value, "%d %d", &px, &py) == 2) {
+				output.x = px;
+				output.y = py;
+			}
+		}
+		x = output.x + output.width;
+
+		debug_printf("nvidia_rm: display %s on head %" B_PRIu32 ", %" B_PRIu32 "x%" B_PRIu32
+			" at %" B_PRId32 ",%" B_PRId32 " scale %u%%\n",
+			output.name, output.head, (uint32)output.mode.timings.hVisible,
+			(uint32)output.mode.timings.vVisible, output.x, output.y, output.scale);
 	}
+	BuildLayoutMode();
 }
 
 NvKmsMode NvAccelerant::PreferredMode(NVDpyId dpyId)
@@ -529,59 +662,111 @@ NvKmsMode NvAccelerant::PreferredMode(NVDpyId dpyId)
 	return firstMode;
 }
 
-void NvAccelerant::BuildSpanMode()
+// Every timing a monitor accepts, as NVKMS validated them.
+std::vector<NvKmsMode> NvAccelerant::ModesOf(NVDpyId dpyId)
 {
-	if (fOutputs.size() < 2)
-		return;
-
-	const NvModeTimings &primary = fOutputs[0].preferredMode.timings;
-	NvU32 width = 0;
-	NvU32 height = 0;
-	for (const auto &output: fOutputs) {
-		width += output.preferredMode.timings.hVisible;
-		height = std::max(height, (NvU32)output.preferredMode.timings.vVisible);
-	}
-
-	// Synthetic timings: the primary display's blanking around the whole
-	// desktop. They only describe the desktop to app_server; every head is
-	// programmed with its own display's timings.
-	fSpanMode = fOutputs[0].preferredMode;
-	NvModeTimings &t = fSpanMode.timings;
-	NvU32 extraH = width - primary.hVisible;
-	NvU32 extraV = height - primary.vVisible;
-	t.hVisible += extraH;
-	t.hSyncStart += extraH;
-	t.hSyncEnd += extraH;
-	t.hTotal += extraH;
-	t.vVisible += extraV;
-	t.vSyncStart += extraV;
-	t.vSyncEnd += extraV;
-	t.vTotal += extraV;
-	t.pixelClockHz = (NvU32)((uint64)primary.RRx1k * t.hTotal * t.vTotal / 1000);
-}
-
-bool NvAccelerant::IsSpanMode(const display_timing &timing) const
-{
-	return fOutputs.size() >= 2
-		&& timing.h_display == fSpanMode.timings.hVisible
-		&& timing.v_display == fSpanMode.timings.vVisible;
-}
-
-NVDpyId NvAccelerant::FindConnectedDisplay(NVDpyIdList validDpys)
-{
-	NVDpyId curDpyId = nvNextDpyIdInDpyIdListUnsorted(nvInvalidDpyId(), validDpys);
-	while (!nvDpyIdIsInvalid(curDpyId)) {
-		NvKmsQueryDpyDynamicDataParams params {};
-		params.request.deviceHandle = fKmsDev.Get();
-		params.request.dispHandle = fDisp;
-		params.request.dpyId = curDpyId;
-		CheckErrno(fKms.Control(NVKMS_IOCTL_QUERY_DPY_DYNAMIC_DATA, &params, sizeof(params)));
-		if (params.reply.connected || params.reply.edid.valid) {
+	std::vector<NvKmsMode> modes;
+	for (NvU32 i = 0;; i++) {
+		NvKmsValidateModeIndexParams params {
+			.request = {
+				.deviceHandle = fKmsDev.Get(),
+				.dispHandle = fDisp,
+				.dpyId = dpyId,
+				.modeIndex = i,
+			},
+		};
+		CheckErrno(fKms.Control(NVKMS_IOCTL_VALIDATE_MODE_INDEX, &params, sizeof(params)));
+		if (params.reply.end)
 			break;
-		}
-		curDpyId = nvNextDpyIdInDpyIdListUnsorted(curDpyId, validDpys);
+		if (!params.reply.valid)
+			continue;
+		modes.push_back(params.reply.mode);
 	}
-	return curDpyId;
+	return modes;
+}
+
+// The mode list the classic interface sees: the primary monitor's modes.
+void NvAccelerant::ReadModeList()
+{
+	fModeList = ModesOf(fDpyId);
+}
+
+// The frame buffer is the smallest rectangle around every enabled output's
+// region. Its timings are synthetic: the primary monitor's blanking around the
+// whole thing. They only describe the frame buffer to app_server; every head
+// is programmed with its own monitor's timings.
+void NvAccelerant::BuildLayoutMode()
+{
+	int32 minX = INT32_MAX, minY = INT32_MAX, maxX = INT32_MIN, maxY = INT32_MIN;
+	const Output *primary = nullptr;
+	for (const auto &output: fOutputs) {
+		if (!output.enabled)
+			continue;
+		if (primary == nullptr)
+			primary = &output;
+		minX = std::min(minX, output.x);
+		minY = std::min(minY, output.y);
+		maxX = std::max(maxX, output.x + (int32)output.width);
+		maxY = std::max(maxY, output.y + (int32)output.height);
+	}
+	if (primary == nullptr) {
+		fLayoutMode = {};
+		return;
+	}
+	// Regions are kept at the frame buffer's origin.
+	for (auto &output: fOutputs) {
+		if (!output.enabled)
+			continue;
+		output.x -= minX;
+		output.y -= minY;
+	}
+	fDpyId = primary->dpyId;
+	fHead = primary->head;
+
+	const NvModeTimings &p = primary->mode.timings;
+	NvU32 width = maxX - minX;
+	NvU32 height = maxY - minY;
+
+	fLayoutMode = primary->mode;
+	NvModeTimings &t = fLayoutMode.timings;
+	NvU32 extraH = width > p.hVisible ? width - p.hVisible : 0;
+	NvU32 extraV = height > p.vVisible ? height - p.vVisible : 0;
+	NvU32 lessH = width < p.hVisible ? p.hVisible - width : 0;
+	NvU32 lessV = height < p.vVisible ? p.vVisible - height : 0;
+	t.hVisible = width;
+	t.hSyncStart = t.hSyncStart + extraH - lessH;
+	t.hSyncEnd = t.hSyncEnd + extraH - lessH;
+	t.hTotal = t.hTotal + extraH - lessH;
+	t.vVisible = height;
+	t.vSyncStart = t.vSyncStart + extraV - lessV;
+	t.vSyncEnd = t.vSyncEnd + extraV - lessV;
+	t.vTotal = t.vTotal + extraV - lessV;
+	t.pixelClockHz = (NvU32)((uint64)p.RRx1k * t.hTotal * t.vTotal / 1000);
+}
+
+bool NvAccelerant::IsLayoutMode(const display_timing &timing) const
+{
+	return fLayoutMode.timings.hVisible != 0
+		&& timing.h_display == fLayoutMode.timings.hVisible
+		&& timing.v_display == fLayoutMode.timings.vVisible;
+}
+
+NvAccelerant::Output *NvAccelerant::OutputByID(uint32 id)
+{
+	for (auto &output: fOutputs) {
+		if (output.id == id)
+			return &output;
+	}
+	return nullptr;
+}
+
+NvAccelerant::Output *NvAccelerant::PrimaryOutput()
+{
+	for (auto &output: fOutputs) {
+		if (nvDpyIdsAreEqual(output.dpyId, fDpyId))
+			return &output;
+	}
+	return fOutputs.empty() ? nullptr : &fOutputs[0];
 }
 
 bool NvAccelerant::ValidateMode(const NvKmsMode &mode)
@@ -657,20 +842,26 @@ void NvAccelerant::GetDeviceInfo(accelerant_device_info* adi)
 }
 
 
+// The classic mode list: the layout's frame buffer first, so that app_server
+// picks it up as the preferred mode, then the primary monitor's own timings
+// for programs that set a mode the old way (which drives the primary monitor
+// alone).
 uint32 NvAccelerant::ModeCount()
 {
 	debug_printf("NvAccelerant::ModeCount\n");
 
-	return fModeList.size() + (fOutputs.size() >= 2 ? 1 : 0);
+	std::lock_guard<std::recursive_mutex> lock(fLock);
+	return fModeList.size() + (fLayoutMode.timings.hVisible != 0 ? 1 : 0);
 }
 
 void NvAccelerant::GetModeList(display_mode* mode)
 {
 	debug_printf("NvAccelerant::GetModeList\n");
 
+	std::lock_guard<std::recursive_mutex> lock(fLock);
 	int32 i = 0;
-	if (fOutputs.size() >= 2)
-		mode[i++] = ToHaikuMode(fSpanMode);
+	if (fLayoutMode.timings.hVisible != 0)
+		mode[i++] = ToHaikuMode(fLayoutMode);
 	for (const auto &nvKmsMode: fModeList) {
 		mode[i++] = ToHaikuMode(nvKmsMode);
 	}
@@ -732,14 +923,16 @@ status_t NvAccelerant::ProposeMode(display_mode *target, display_mode *low, disp
 {
 	debug_printf("NvAccelerant::ProposeMode\n");
 
-	if (IsSpanMode(target->timing)) {
-		target->timing = ToHaikuModeTimings(fSpanMode.timings);
+	std::lock_guard<std::recursive_mutex> lock(fLock);
+
+	if (IsLayoutMode(target->timing)) {
+		target->timing = ToHaikuModeTimings(fLayoutMode.timings);
 		target->virtual_width = target->timing.h_display;
 		target->virtual_height = target->timing.v_display;
 		return IsDisplayModeWithinBounds(*target, *low, *high) ? B_OK : B_BAD_VALUE;
 	}
 
-	for (int32 i = 0; i < fModeList.size(); i++) {
+	for (size_t i = 0; i < fModeList.size(); i++) {
 		const auto &nvKmsMode = fModeList[i];
 		const auto mode = ToHaikuMode(nvKmsMode);
 		if (ModeTimingsEqual(target->timing, mode.timing)) {
@@ -749,7 +942,7 @@ status_t NvAccelerant::ProposeMode(display_mode *target, display_mode *low, disp
 
 	uint32 reqRefreshRate = CalcRefreshRate(target->timing);
 	int32 bestCandidateIdx = -1;
-	for (int32 i = 0; i < fModeList.size(); i++) {
+	for (size_t i = 0; i < fModeList.size(); i++) {
 		const auto &nvKmsMode = fModeList[i];
 		const auto timings = ToHaikuModeTimings(nvKmsMode.timings);
 		if (
@@ -771,30 +964,35 @@ status_t NvAccelerant::ProposeMode(display_mode *target, display_mode *low, disp
 	return IsDisplayModeWithinBounds(*target, *low, *high) ? B_OK : B_BAD_VALUE;
 }
 
+// The classic single-monitor mode set: the primary monitor at that timing,
+// with the whole frame buffer, and every other head off.
 void NvAccelerant::ApplyMode(const display_mode &mode, NvKmsBitmap &framebuffer)
 {
+	Output *primary = PrimaryOutput();
+	if (primary == nullptr)
+		RaiseErrno(ENODEV);
+	NvU32 head = primary->head;
+
 	NvKmsSetModeParams params {};
 	params.request.deviceHandle = fKmsDev.Get();
 	params.request.commit = true;
 	params.request.requestedDispsBitMask |= 1U << 0;
-	params.request.disp[0].requestedHeadsBitMask |= 1U << 0;
-	params.request.disp[0].head[0].dpyIdList = nvAddDpyIdToEmptyDpyIdList(fDpyId);
-	params.request.disp[0].head[0].mode = ToNvKmsMode(mode);
-	params.request.disp[0].head[0].modeValidationParams.overrides = NVKMS_MODE_VALIDATION_NO_RRX1K_CHECK;
-	params.request.disp[0].head[0].viewPortOut = {.x = 0, .y = 0, .width = mode.timing.h_display, .height = mode.timing.v_display};
-	params.request.disp[0].head[0].viewPortSizeIn = {.width = mode.timing.h_display, .height = mode.timing.v_display};
-	params.request.disp[0].head[0].flip.layer[NVKMS_MAIN_LAYER].surface.handle[0] = framebuffer.Surface().Get();
-	params.request.disp[0].head[0].flip.layer[NVKMS_MAIN_LAYER].surface.specified = true;
-	params.request.disp[0].head[0].flip.layer[NVKMS_MAIN_LAYER].sizeIn.val = {.width = framebuffer.Width(), .height = framebuffer.Height()};
-	params.request.disp[0].head[0].flip.layer[NVKMS_MAIN_LAYER].sizeIn.specified = true;
-	params.request.disp[0].head[0].flip.layer[NVKMS_MAIN_LAYER].sizeOut.val = {.width = framebuffer.Width(), .height = framebuffer.Height()};
-	params.request.disp[0].head[0].flip.layer[NVKMS_MAIN_LAYER].sizeOut.specified = true;
+	params.request.disp[0].requestedHeadsBitMask |= 1U << head;
+	params.request.disp[0].head[head].dpyIdList = nvAddDpyIdToEmptyDpyIdList(fDpyId);
+	params.request.disp[0].head[head].mode = ToNvKmsMode(mode);
+	params.request.disp[0].head[head].modeValidationParams.overrides = NVKMS_MODE_VALIDATION_NO_RRX1K_CHECK;
+	params.request.disp[0].head[head].viewPortOut = {.x = 0, .y = 0, .width = mode.timing.h_display, .height = mode.timing.v_display};
+	params.request.disp[0].head[head].viewPortSizeIn = {.width = mode.timing.h_display, .height = mode.timing.v_display};
+	params.request.disp[0].head[head].flip.layer[NVKMS_MAIN_LAYER].surface.handle[0] = framebuffer.Surface().Get();
+	params.request.disp[0].head[head].flip.layer[NVKMS_MAIN_LAYER].surface.specified = true;
+	params.request.disp[0].head[head].flip.layer[NVKMS_MAIN_LAYER].sizeIn.val = {.width = framebuffer.Width(), .height = framebuffer.Height()};
+	params.request.disp[0].head[head].flip.layer[NVKMS_MAIN_LAYER].sizeIn.specified = true;
+	params.request.disp[0].head[head].flip.layer[NVKMS_MAIN_LAYER].sizeOut.val = {.width = framebuffer.Width(), .height = framebuffer.Height()};
+	params.request.disp[0].head[head].flip.layer[NVKMS_MAIN_LAYER].sizeOut.specified = true;
 
-	// turn off the heads of other displays
-	for (const auto &output: fOutputs) {
-		if (output.head != 0)
-			params.request.disp[0].requestedHeadsBitMask |= 1U << output.head;
-	}
+	// turn off every other head
+	params.request.disp[0].requestedHeadsBitMask
+		|= (1U << std::min<NvU32>(fKmsDev.Info().numHeads, NVKMS_MAX_HEADS_PER_DISP)) - 1;
 
 	try {
 		CheckErrno(fKms.Control(NVKMS_IOCTL_SET_MODE, &params, sizeof(params)));
@@ -802,9 +1000,10 @@ void NvAccelerant::ApplyMode(const display_mode &mode, NvKmsBitmap &framebuffer)
 		debug_printf("[!] NvAccelerant: SetMode failed\n");
 		debug_printf("  status: %d\n", params.reply.status);
 		debug_printf("  disp[0].status: %d\n", params.reply.disp[0].status);
-		debug_printf("  disp[0].head[0].status: %d\n", params.reply.disp[0].head[0].status);
+		debug_printf("  disp[0].head[%" B_PRIu32 "].status: %d\n", head, params.reply.disp[0].head[head].status);
 		throw;
 	}
+	fHead = head;
 }
 
 void NvAccelerant::SetDisplayMode(display_mode* modeToSet)
@@ -813,8 +1012,8 @@ void NvAccelerant::SetDisplayMode(display_mode* modeToSet)
 
 	std::lock_guard<std::recursive_mutex> lock(fLock);
 
-	if (IsSpanMode(modeToSet->timing)) {
-		SetSpanningMode(*modeToSet);
+	if (IsLayoutMode(modeToSet->timing)) {
+		SetLayoutMode(*modeToSet);
 		return;
 	}
 
@@ -852,7 +1051,7 @@ void NvAccelerant::SetDisplayMode(display_mode* modeToSet)
 
 	fCurrentMode = ToNvKmsMode(*modeToSet);
 	fCurrentHaikuMode = *modeToSet;
-	fSpanning = false;
+	fLayoutApplied = false;
 
 	fOldFramebuffer = std::move(fFramebuffer);
 	fFramebuffer = std::move(newFramebuffer);
@@ -862,23 +1061,35 @@ void NvAccelerant::SetDisplayMode(display_mode* modeToSet)
 	RefreshVblankReports();
 }
 
-void NvAccelerant::ApplySpanningMode(NvKmsBitmap &framebuffer)
+// Program every enabled output: its own timings, its region of the frame
+// buffer, and the display engine's scaler between the two when the region is
+// smaller than the monitor.
+void NvAccelerant::ApplyLayout(NvKmsBitmap &framebuffer)
 {
 	NvKmsSetModeParams params {};
 	params.request.deviceHandle = fKmsDev.Get();
 	params.request.commit = true;
 	params.request.requestedDispsBitMask |= 1U << 0;
+	// Every head is part of the request; one that gets no display below is
+	// turned off, which is what a monitor that was unplugged or disabled
+	// needs.
+	params.request.disp[0].requestedHeadsBitMask
+		= (1U << std::min<NvU32>(fKmsDev.Info().numHeads, NVKMS_MAX_HEADS_PER_DISP)) - 1;
 	for (const auto &output: fOutputs) {
-		const NvModeTimings &timings = output.preferredMode.timings;
+		if (!output.enabled)
+			continue;
+		const NvModeTimings &timings = output.mode.timings;
 		NvKmsSetModeOneHeadRequest &head = params.request.disp[0].head[output.head];
 		params.request.disp[0].requestedHeadsBitMask |= 1U << output.head;
 		head.dpyIdList = nvAddDpyIdToEmptyDpyIdList(output.dpyId);
-		head.mode = output.preferredMode;
+		head.mode = output.mode;
 		head.modeValidationParams.overrides = NVKMS_MODE_VALIDATION_NO_RRX1K_CHECK;
+		// viewPortOut is the whole raster; viewPortSizeIn is how much of the
+		// frame buffer is stretched over it.
 		head.viewPortOut = {.x = 0, .y = 0, .width = timings.hVisible, .height = timings.vVisible};
-		head.viewPortSizeIn = {.width = timings.hVisible, .height = timings.vVisible};
+		head.viewPortSizeIn = {.width = output.width, .height = output.height};
 		head.flip.viewPortIn.specified = true;
-		head.flip.viewPortIn.point = {.x = (NvU16)output.x, .y = 0};
+		head.flip.viewPortIn.point = {.x = (NvU16)output.x, .y = (NvU16)output.y};
 		auto &layer = head.flip.layer[NVKMS_MAIN_LAYER];
 		layer.surface.handle[0] = framebuffer.Surface().Get();
 		layer.surface.specified = true;
@@ -892,28 +1103,34 @@ void NvAccelerant::ApplySpanningMode(NvKmsBitmap &framebuffer)
 	try {
 		CheckErrno(fKms.Control(NVKMS_IOCTL_SET_MODE, &params, sizeof(params)));
 	} catch (const std::system_error&) {
-		debug_printf("[!] NvAccelerant: spanning SetMode failed, status %d\n", params.reply.status);
+		debug_printf("[!] NvAccelerant: layout SetMode failed, status %d\n", params.reply.status);
 		for (const auto &output: fOutputs) {
-			debug_printf("  head %" B_PRIu32 " status: %d\n", output.head,
+			if (!output.enabled)
+				continue;
+			debug_printf("  head %" B_PRIu32 " (%s, %ux%u at %" B_PRId32 ",%" B_PRId32 " -> %ux%u): status %d\n",
+				output.head, output.name, output.width, output.height, output.x, output.y,
+				(unsigned)output.mode.timings.hVisible, (unsigned)output.mode.timings.vVisible,
 				params.reply.disp[0].head[output.head].status);
 		}
 		throw;
 	}
 }
 
-void NvAccelerant::SetSpanningMode(const display_mode &mode)
+void NvAccelerant::SetLayoutMode(const display_mode &mode)
 {
-	NvKmsBitmap newFramebuffer(fRmDev, fKmsDev, fSpanMode.timings.hVisible,
-		fSpanMode.timings.vVisible, (color_space)mode.space);
+	NvKmsBitmap newFramebuffer(fRmDev, fKmsDev, fLayoutMode.timings.hVisible,
+		fLayoutMode.timings.vVisible, (color_space)mode.space);
 
-	ApplySpanningMode(newFramebuffer);
+	ApplyLayout(newFramebuffer);
 
-	fCurrentMode = fSpanMode;
+	fCurrentMode = fLayoutMode;
 	fCurrentHaikuMode = mode;
-	fCurrentHaikuMode.timing = ToHaikuModeTimings(fSpanMode.timings);
-	fCurrentHaikuMode.virtual_width = fSpanMode.timings.hVisible;
-	fCurrentHaikuMode.virtual_height = fSpanMode.timings.vVisible;
-	fSpanning = true;
+	fCurrentHaikuMode.timing = ToHaikuModeTimings(fLayoutMode.timings);
+	fCurrentHaikuMode.virtual_width = fLayoutMode.timings.hVisible;
+	fCurrentHaikuMode.virtual_height = fLayoutMode.timings.vVisible;
+	fCurrentHaikuMode.h_display_start = 0;
+	fCurrentHaikuMode.v_display_start = 0;
+	fLayoutApplied = true;
 
 	fOldFramebuffer = std::move(fFramebuffer);
 	fFramebuffer = std::move(newFramebuffer);
@@ -927,11 +1144,410 @@ void NvAccelerant::GetDisplayMode(display_mode* currentMode)
 {
 	debug_printf("NvAccelerant::GetDisplayMode\n");
 
+	std::lock_guard<std::recursive_mutex> lock(fLock);
 	if (fCurrentMode.timings.hVisible == 0) {
 		RaiseErrno(ENOENT);
 	}
 	*currentMode = fCurrentHaikuMode;
 	currentMode->flags |= B_PARALLEL_ACCESS;
+}
+
+
+// #pragma mark - display outputs
+
+
+void NvAccelerant::FillDisplayOutput(const Output &output, display_output &info) const
+{
+	info = {};
+	info.version = B_DISPLAY_OUTPUT_VERSION;
+	info.id = output.id;
+	strlcpy(info.name, output.name, sizeof(info.name));
+	info.flags = B_DISPLAY_OUTPUT_SCALABLE;
+	if (output.connected)
+		info.flags |= B_DISPLAY_OUTPUT_CONNECTED;
+	if (output.enabled)
+		info.flags |= B_DISPLAY_OUTPUT_ENABLED;
+	info.x = output.x;
+	info.y = output.y;
+	info.width = output.width;
+	info.height = output.height;
+	info.scale = output.scale;
+	info.native_timing = ToHaikuModeTimings(output.preferredMode.timings);
+	info.timing = ToHaikuModeTimings(output.mode.timings);
+	info.edid_length = std::min(output.edid.size(), sizeof(info.edid));
+	memcpy(info.edid, output.edid.data(), info.edid_length);
+}
+
+uint32 NvAccelerant::DisplayOutputCount()
+{
+	std::lock_guard<std::recursive_mutex> lock(fLock);
+	return fOutputs.size();
+}
+
+void NvAccelerant::GetDisplayOutputs(display_output* outputs, uint32* count)
+{
+	std::lock_guard<std::recursive_mutex> lock(fLock);
+	uint32 i = 0;
+	for (const auto &output: fOutputs) {
+		if (i >= *count)
+			break;
+		FillDisplayOutput(output, outputs[i++]);
+	}
+	*count = i;
+}
+
+void NvAccelerant::GetDisplayOutputModes(uint32 id, display_mode* modes, uint32* count)
+{
+	std::lock_guard<std::recursive_mutex> lock(fLock);
+	Output *output = OutputByID(id);
+	if (output == nullptr)
+		RaiseErrno(ENOENT);
+	std::vector<NvKmsMode> list = ModesOf(output->dpyId);
+	uint32 i = 0;
+	for (const auto &mode: list) {
+		if (i >= *count)
+			break;
+		modes[i++] = ToHaikuMode(mode);
+	}
+	*count = i;
+}
+
+// Take the layout app_server wants. Nothing changes on screen here; it does
+// when the returned mode is set.
+void NvAccelerant::SetDisplayLayout(const display_output_config* configs, uint32 count, display_mode* mode)
+{
+	std::lock_guard<std::recursive_mutex> lock(fLock);
+
+	// Work on a copy so that a refused layout leaves the current one alone.
+	std::vector<Output> outputs = fOutputs;
+	for (auto &output: outputs)
+		output.enabled = false;
+
+	NvU32 usedHeads = 0;
+	uint32 enabled = 0;
+	for (uint32 i = 0; i < count; i++) {
+		const display_output_config &config = configs[i];
+		Output *output = nullptr;
+		for (auto &candidate: outputs) {
+			if (candidate.id == config.id)
+				output = &candidate;
+		}
+		if (output == nullptr || !output->connected) {
+			debug_printf("nvidia_rm: layout names output %" B_PRIu32 ", which is not there\n",
+				config.id);
+			RaiseErrno(ENOENT);
+		}
+		if ((config.flags & B_DISPLAY_OUTPUT_ENABLED) == 0)
+			continue;
+		if (config.scale < 100 || config.scale > 400) {
+			debug_printf("nvidia_rm: layout asks for a scale of %u%%\n", config.scale);
+			RaiseErrno(EINVAL);
+		}
+		if (!AssignHead(*output, usedHeads))
+			RaiseErrno(EBUSY);
+
+		NvKmsMode timing = output->preferredMode;
+		if (config.timing.h_display != 0) {
+			// The exact timing if the monitor lists it, else the listed one
+			// with that resolution nearest in refresh rate.
+			std::vector<NvKmsMode> list = ModesOf(output->dpyId);
+			const NvKmsMode *best = nullptr;
+			uint32 wanted = CalcRefreshRate(config.timing);
+			for (const auto &candidate: list) {
+				display_timing candidateTiming = ToHaikuModeTimings(candidate.timings);
+				if (ModeTimingsEqual(candidateTiming, config.timing)) {
+					best = &candidate;
+					break;
+				}
+				if (candidateTiming.h_display != config.timing.h_display
+					|| candidateTiming.v_display != config.timing.v_display)
+					continue;
+				if (best == nullptr || std::abs((int64)candidate.timings.RRx1k - (int64)wanted)
+						< std::abs((int64)best->timings.RRx1k - (int64)wanted))
+					best = &candidate;
+			}
+			if (best == nullptr) {
+				debug_printf("nvidia_rm: %s does not take %ux%u\n", output->name,
+					config.timing.h_display, config.timing.v_display);
+				RaiseErrno(EINVAL);
+			}
+			timing = *best;
+		}
+
+		output->enabled = true;
+		output->mode = timing;
+		output->scale = config.scale;
+		output->width = LogicalSize(timing.timings.hVisible, config.scale);
+		output->height = LogicalSize(timing.timings.vVisible, config.scale);
+		output->x = config.x;
+		output->y = config.y;
+		enabled++;
+	}
+	if (enabled == 0)
+		RaiseErrno(EINVAL);
+
+	fOutputs = outputs;
+	BuildLayoutMode();
+	ReadModeList();
+
+	for (const auto &output: fOutputs) {
+		if (!output.enabled)
+			continue;
+		debug_printf("nvidia_rm: layout: %s head %" B_PRIu32 " %ux%u@%u at %" B_PRId32 ",%" B_PRId32
+			" scale %u%% (%ux%u)\n", output.name, output.head,
+			(unsigned)output.mode.timings.hVisible, (unsigned)output.mode.timings.vVisible,
+			(unsigned)(output.mode.timings.RRx1k / 1000), output.x, output.y, output.scale,
+			output.width, output.height);
+	}
+
+	*mode = ToHaikuMode(fLayoutMode);
+	if (fCurrentHaikuMode.space != 0)
+		mode->space = fCurrentHaikuMode.space;
+}
+
+void NvAccelerant::SetDisplayChangePort(port_id port, int32 code)
+{
+	std::lock_guard<std::recursive_mutex> lock(fLock);
+	fChangePort = port;
+	fChangeCode = code;
+}
+
+
+// #pragma mark - hotplug
+
+
+// The hot plug detect lines, straight from resman. NVKMS's own idea of what
+// is connected is only as fresh as the last hotplug event it was told about,
+// so this is what the poll compares.
+NvU32 NvAccelerant::ConnectedDisplayMask()
+{
+	if (fRmDisplay.Get() == 0) {
+		fRmDisplay = fRmDev.Device().Alloc(NV04_DISPLAY_COMMON, NULL, 0);
+		NV0073_CTRL_SYSTEM_GET_SUPPORTED_PARAMS supported {};
+		fRmDisplay.Control(NV0073_CTRL_CMD_SYSTEM_GET_SUPPORTED, &supported, sizeof(supported));
+		fRmDisplayMask = supported.displayMask;
+	}
+
+	NV0073_CTRL_SYSTEM_GET_CONNECT_STATE_PARAMS params {};
+	params.displayMask = fRmDisplayMask;
+	params.flags = DRF_DEF(0073_CTRL, _SYSTEM_GET_CONNECT_STATE_FLAGS, _DDC, _DISABLE)
+		| DRF_DEF(0073_CTRL, _SYSTEM_GET_CONNECT_STATE_FLAGS, _LOAD, _DISABLE);
+	NvU32 tries = 0;
+	do {
+		params.retryTimeMs = 0;
+		fRmDisplay.Control(NV0073_CTRL_CMD_SYSTEM_GET_CONNECT_STATE, &params, sizeof(params));
+		if (params.retryTimeMs > 0)
+			snooze(params.retryTimeMs * 1000LL);
+	} while (params.retryTimeMs > 0 && ++tries < 50);
+	return params.displayMask;
+}
+
+// Ask NVKMS about every connector again. Monitors that appeared are added,
+// disabled, to the right of the layout; monitors that went are marked and
+// their heads freed when app_server next applies a layout. Returns whether
+// anything changed.
+bool NvAccelerant::RefreshOutputs()
+{
+	std::lock_guard<std::recursive_mutex> lock(fLock);
+
+	bool changed = false;
+	int32 right = 0;
+	for (const auto &output: fOutputs) {
+		if (output.enabled)
+			right = std::max(right, output.x + (int32)output.width);
+	}
+
+	for (NVDpyId dpyId = nvNextDpyIdInDpyIdListUnsorted(nvInvalidDpyId(), fValidDpys);
+			!nvDpyIdIsInvalid(dpyId);
+			dpyId = nvNextDpyIdInDpyIdListUnsorted(dpyId, fValidDpys)) {
+		Output *known = OutputByID(nvDpyIdToNvU32(dpyId));
+		if (known != nullptr && known->forced)
+			continue;
+
+		Output probe {};
+		probe.dpyId = dpyId;
+		probe.id = nvDpyIdToNvU32(dpyId);
+		bool connected = QueryOutput(probe);
+
+		if (known == nullptr) {
+			if (!connected)
+				continue;
+			NvKmsQueryDpyStaticDataParams staticParams {};
+			staticParams.request.deviceHandle = fKmsDev.Get();
+			staticParams.request.dispHandle = fDisp;
+			staticParams.request.dpyId = dpyId;
+			CheckErrno(fKms.Control(NVKMS_IOCTL_QUERY_DPY_STATIC_DATA, &staticParams, sizeof(staticParams)));
+			probe.headMask = staticParams.reply.headMask;
+			probe.preferredMode = PreferredMode(dpyId);
+			probe.mode = probe.preferredMode;
+			if (probe.mode.timings.hVisible == 0)
+				continue;
+			probe.scale = 100;
+			probe.width = LogicalSize(probe.mode.timings.hVisible, probe.scale);
+			probe.height = LogicalSize(probe.mode.timings.vVisible, probe.scale);
+			probe.x = right;
+			probe.y = 0;
+			probe.enabled = false;
+			right += probe.width;
+			debug_printf("nvidia_rm: %s connected\n", probe.name);
+			fOutputs.push_back(probe);
+			changed = true;
+			continue;
+		}
+
+		if (known->connected != connected) {
+			debug_printf("nvidia_rm: %s %s\n", known->name,
+				connected ? "connected" : "disconnected");
+			known->connected = connected;
+			changed = true;
+		}
+		if (connected) {
+			// The same connector may now have a different monitor on it.
+			if (known->edid != probe.edid) {
+				debug_printf("nvidia_rm: %s has a different monitor\n", known->name);
+				known->edid = probe.edid;
+				known->preferredMode = PreferredMode(dpyId);
+				if (!known->enabled) {
+					known->mode = known->preferredMode;
+					known->width = LogicalSize(known->mode.timings.hVisible, known->scale);
+					known->height = LogicalSize(known->mode.timings.vVisible, known->scale);
+				}
+				changed = true;
+			}
+		}
+	}
+
+	// A disconnected output that is not being driven has nothing to say.
+	for (auto it = fOutputs.begin(); it != fOutputs.end();) {
+		if (!it->connected && !it->enabled && !it->forced)
+			it = fOutputs.erase(it);
+		else
+			++it;
+	}
+	return changed;
+}
+
+void NvAccelerant::NotifyDisplayChange()
+{
+	port_id port;
+	int32 code;
+	{
+		std::lock_guard<std::recursive_mutex> lock(fLock);
+		port = fChangePort;
+		code = fChangeCode;
+	}
+	if (port < 0)
+		return;
+	write_port_etc(port, code, NULL, 0, B_RELATIVE_TIMEOUT, 100000);
+}
+
+status_t NvAccelerant::HotplugThreadEntry(void *arg)
+{
+	static_cast<NvAccelerant*>(arg)->HotplugThread();
+	return B_OK;
+}
+
+// Two ways of hearing about a monitor being plugged in or pulled out: NVKMS
+// posts an event when resman tells it about a hotplug, which is immediate,
+// and every couple of seconds the hot plug detect lines are read directly,
+// which catches what the event path misses. Either way the connectors are
+// queried again and app_server is told when something differs.
+void NvAccelerant::HotplugThread()
+{
+	NvU32 lastMask = 0;
+	bool haveMask = false;
+	try {
+		lastMask = ConnectedDisplayMask();
+		haveMask = true;
+	} catch (const std::system_error &ex) {
+		debug_printf("nvidia_rm: cannot read the hot plug lines: %s\n", ex.what());
+	}
+
+	while (!fQuitHotplugThread.load()) {
+		bool check = false;
+
+		fd_set readSet;
+		FD_ZERO(&readSet);
+		FD_SET(fKms.Fd(), &readSet);
+		struct timeval timeout = { 2, 0 };
+		int ready = select(fKms.Fd() + 1, &readSet, NULL, NULL, &timeout);
+		if (fQuitHotplugThread.load())
+			break;
+		if (ready > 0) {
+			std::lock_guard<std::recursive_mutex> lock(fLock);
+			for (;;) {
+				NvKmsGetNextEventParams next {};
+				if (fKms.Control(NVKMS_IOCTL_GET_NEXT_EVENT, &next, sizeof(next)) < 0
+					|| !next.reply.valid)
+					break;
+				switch (next.reply.event.eventType) {
+					case NVKMS_EVENT_TYPE_DPY_CHANGED:
+					case NVKMS_EVENT_TYPE_DYNAMIC_DPY_CONNECTED:
+					case NVKMS_EVENT_TYPE_DYNAMIC_DPY_DISCONNECTED:
+						debug_printf("nvidia_rm: display change event %d\n",
+							(int)next.reply.event.eventType);
+						check = true;
+						break;
+					default:
+						break;
+				}
+			}
+		} else if (ready < 0) {
+			snooze(2000000);
+		}
+
+		if (haveMask) {
+			try {
+				NvU32 mask = ConnectedDisplayMask();
+				if (mask != lastMask) {
+					debug_printf("nvidia_rm: hot plug lines 0x%" B_PRIx32 " -> 0x%" B_PRIx32 "\n",
+						lastMask, mask);
+					lastMask = mask;
+					check = true;
+				}
+			} catch (const std::system_error &ex) {
+				debug_printf("nvidia_rm: cannot read the hot plug lines: %s\n", ex.what());
+				haveMask = false;
+			}
+		}
+
+		if (!check)
+			continue;
+		try {
+			// Give the monitor a moment to answer its EDID before asking.
+			snooze(300000);
+			if (RefreshOutputs())
+				NotifyDisplayChange();
+		} catch (const std::system_error &ex) {
+			debug_printf("[!] nvidia_rm: re-detecting displays failed: %s\n", ex.what());
+		}
+	}
+}
+
+void NvAccelerant::StartHotplugThread()
+{
+	NvKmsDeclareEventInterestParams interest {};
+	interest.request.interestMask = (1U << NVKMS_EVENT_TYPE_DPY_CHANGED)
+		| (1U << NVKMS_EVENT_TYPE_DYNAMIC_DPY_CONNECTED)
+		| (1U << NVKMS_EVENT_TYPE_DYNAMIC_DPY_DISCONNECTED);
+	if (fKms.Control(NVKMS_IOCTL_DECLARE_EVENT_INTEREST, &interest, sizeof(interest)) < 0)
+		debug_printf("nvidia_rm: NVKMS will not report display events\n");
+
+	fQuitHotplugThread.store(false);
+	fHotplugThread = spawn_thread(HotplugThreadEntry, "nvidia_rm hotplug",
+		B_LOW_PRIORITY, this);
+	if (fHotplugThread >= 0)
+		resume_thread(fHotplugThread);
+}
+
+void NvAccelerant::StopHotplugThread()
+{
+	if (fHotplugThread < 0)
+		return;
+	fQuitHotplugThread.store(true);
+	status_t result;
+	wait_for_thread(fHotplugThread, &result);
+	fHotplugThread = -1;
 }
 
 // Telling the rest of the system when the display is between frames.
@@ -1250,7 +1866,7 @@ void NvAccelerant::SetDpmsMode(uint32 dpms_flags)
 	}
 
 	for (const auto &output: fOutputs) {
-		if (!fSpanning && !nvDpyIdsAreEqual(output.dpyId, fDpyId))
+		if (fLayoutApplied ? !output.enabled : !nvDpyIdsAreEqual(output.dpyId, fDpyId))
 			continue;
 		NvKmsSetDpyAttributeParams params {};
 		params.request.deviceHandle = fKmsDev.Get();
@@ -1263,32 +1879,15 @@ void NvAccelerant::SetDpmsMode(uint32 dpms_flags)
 	fDpmsState = (NvKmsDpyAttributeDpmsValue)value;
 }
 
+// The layout's frame buffer is what app_server should come up in.
 void NvAccelerant::GetPreferredDisplayMode(display_mode* preferredMode)
 {
 	debug_printf("NvAccelerant::GetPreferredDisplayMode\n");
 
-	if (fOutputs.size() >= 2) {
-		*preferredMode = ToHaikuMode(fSpanMode);
-		return;
-	}
-
-	for (NvU32 i = 0;; i++) {
-		NvKmsValidateModeIndexParams params {};
-		params.request.deviceHandle = fKmsDev.Get();
-		params.request.dispHandle = fDisp;
-		params.request.dpyId = fDpyId;
-		params.request.modeIndex = i;
-		CheckErrno(fKms.Control(NVKMS_IOCTL_VALIDATE_MODE_INDEX, &params, sizeof(params)));
-		if (params.reply.end)
-			break;
-
-		if (params.reply.preferredMode) {
-			*preferredMode = ToHaikuMode(params.reply.mode);
-			return;
-		}
-	}
-
-	RaiseErrno(ENOENT);
+	std::lock_guard<std::recursive_mutex> lock(fLock);
+	if (fLayoutMode.timings.hVisible == 0)
+		RaiseErrno(ENOENT);
+	*preferredMode = ToHaikuMode(fLayoutMode);
 }
 
 void NvAccelerant::GetMonitorInfo(monitor_info* info)
@@ -1298,6 +1897,7 @@ void NvAccelerant::GetMonitorInfo(monitor_info* info)
 	RaiseErrno(ENOSYS);
 }
 
+// The primary monitor's EDID, for the classic single-monitor interface.
 void NvAccelerant::GetEdidInfo(void* info, uint32 size, uint32* _version)
 {
 	debug_printf("NvAccelerant::GetEdidInfo\n");
@@ -1306,43 +1906,19 @@ void NvAccelerant::GetEdidInfo(void* info, uint32 size, uint32* _version)
 		RaiseErrno(B_BUFFER_OVERFLOW);
 	}
 
-	{
-		NvKmsQueryDpyDynamicDataParams params {};
-		params.request.deviceHandle = fKmsDev.Get();
-		params.request.dispHandle = fDisp;
-		params.request.dpyId = fDpyId;
-		CheckErrno(fKms.Control(NVKMS_IOCTL_QUERY_DPY_DYNAMIC_DATA, &params, sizeof(params)));
-		if (!params.reply.edid.valid) {
-			RaiseErrno(B_ERROR);
-		}
-		edid_decode((edid1_info*)info, (const edid1_raw*)params.reply.edid.buffer);
-		*_version = EDID_VERSION_1;
-	}
-}
-
-
-void NvAccelerant::MoveCursor(uint16 x, uint16 y)
-{
 	std::lock_guard<std::recursive_mutex> lock(fLock);
-	fCursorPos.x = x;
-	fCursorPos.y = y;
-	UpdateCursor(false, true);
+	Output *primary = PrimaryOutput();
+	if (primary == nullptr || primary->edid.size() < sizeof(edid1_raw))
+		RaiseErrno(ENOENT);
+	edid_decode((edid1_info*)info, (const edid1_raw*)primary->edid.data());
+	*_version = EDID_VERSION_1;
 }
 
-void NvAccelerant::ShowCursor(bool isVisible)
-{
-	std::lock_guard<std::recursive_mutex> lock(fLock);
-	if (fCursorVisible == isVisible) {
-		return;
-	}
-	fCursorVisible = !fCursorVisible;
-	UpdateCursor(true, false);
-}
 
 void NvAccelerant::UpdateCursor(bool updateImage, bool updatePos)
 {
 	for (const auto &output: fOutputs) {
-		if (!fSpanning && output.head != fHead)
+		if (fLayoutApplied ? !output.enabled : output.head != fHead)
 			continue;
 
 		if (updateImage) {
@@ -1374,8 +1950,8 @@ void NvAccelerant::UpdateCursor(bool updateImage, bool updatePos)
 					.dispHandle = fDisp,
 					.head = output.head,
 					.common = {
-						.x = (NvS16)(fCursorPos.x - fCursorHotSpot.x - (fSpanning ? output.x : 0)),
-						.y = (NvS16)(fCursorPos.y - fCursorHotSpot.y),
+						.x = (NvS16)(fCursorPos.x - fCursorHotSpot.x - (fLayoutApplied ? output.x : 0)),
+						.y = (NvS16)(fCursorPos.y - fCursorHotSpot.y - (fLayoutApplied ? output.y : 0)),
 					},
 				},
 			};
@@ -1386,6 +1962,24 @@ void NvAccelerant::UpdateCursor(bool updateImage, bool updatePos)
 	if (updateImage && fNewCursor.IsSet()) {
 		fCursor = std::move(fNewCursor);
 	}
+}
+
+void NvAccelerant::MoveCursor(uint16 x, uint16 y)
+{
+	std::lock_guard<std::recursive_mutex> lock(fLock);
+	fCursorPos.x = x;
+	fCursorPos.y = y;
+	UpdateCursor(false, true);
+}
+
+void NvAccelerant::ShowCursor(bool isVisible)
+{
+	std::lock_guard<std::recursive_mutex> lock(fLock);
+	if (fCursorVisible == isVisible) {
+		return;
+	}
+	fCursorVisible = !fCursorVisible;
+	UpdateCursor(true, false);
 }
 
 void NvAccelerant::SetCursorShape(uint16 width, uint16 height, uint16 hotX, uint16 hotY, const uint8* andMask, const uint8* xorMask)
@@ -1443,6 +2037,7 @@ void NvAccelerant::SetCursorBitmap(uint16 width, uint16 height, uint16 hotX, uin
 		UpdateCursor(true, true);
 	}
 }
+
 
 
 _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
@@ -1648,19 +2243,6 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 			};
 			return (void*)fn;
 		}
-#if 0
-		case B_GET_MONITOR_INFO: {
-			get_monitor_info fn = [](monitor_info* info) {
-				try {
-					NvAccelerant::Instance()->GetMonitorInfo(info);
-					return B_OK;
-				} catch (const std::system_error &ex) {
-					debug_printf("[!] nvidia_rm: %s\n", ex.what());
-					return ToErrorCode(ex);
-				}
-			};
-			return (void*)fn;
-		}
 		case B_GET_EDID_INFO: {
 			get_edid_info fn = [](void* info, uint32 size, uint32* _version) {
 				try {
@@ -1679,7 +2261,66 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 			};
 			return (void*)fn;
 		}
-#endif
+
+		case B_GET_DISPLAY_OUTPUT_COUNT: {
+			get_display_output_count fn = []() -> uint32 {
+				try {
+					return NvAccelerant::Instance()->DisplayOutputCount();
+				} catch (const std::system_error &ex) {
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
+					return 0;
+				}
+			};
+			return (void*)fn;
+		}
+		case B_GET_DISPLAY_OUTPUTS: {
+			get_display_outputs fn = [](display_output* outputs, uint32* count) {
+				try {
+					NvAccelerant::Instance()->GetDisplayOutputs(outputs, count);
+					return B_OK;
+				} catch (const std::system_error &ex) {
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
+					return ToErrorCode(ex);
+				}
+			};
+			return (void*)fn;
+		}
+		case B_GET_DISPLAY_OUTPUT_MODES: {
+			get_display_output_modes fn = [](uint32 id, display_mode* modes, uint32* count) {
+				try {
+					NvAccelerant::Instance()->GetDisplayOutputModes(id, modes, count);
+					return B_OK;
+				} catch (const std::system_error &ex) {
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
+					return ToErrorCode(ex);
+				}
+			};
+			return (void*)fn;
+		}
+		case B_SET_DISPLAY_LAYOUT: {
+			set_display_layout fn = [](const display_output_config* configs, uint32 count, display_mode* mode) {
+				try {
+					NvAccelerant::Instance()->SetDisplayLayout(configs, count, mode);
+					return B_OK;
+				} catch (const std::system_error &ex) {
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
+					return ToErrorCode(ex);
+				}
+			};
+			return (void*)fn;
+		}
+		case B_SET_DISPLAY_CHANGE_PORT: {
+			set_display_change_port fn = [](port_id port, int32 code) {
+				try {
+					NvAccelerant::Instance()->SetDisplayChangePort(port, code);
+					return B_OK;
+				} catch (const std::system_error &ex) {
+					debug_printf("[!] nvidia_rm: %s\n", ex.what());
+					return ToErrorCode(ex);
+				}
+			};
+			return (void*)fn;
+		}
 
 #if 0
 		case B_MOVE_CURSOR: {
