@@ -9,7 +9,7 @@ from source with the Haiku patches it ships (Node.js 16 to 26). Login \
 shells get the nvm command through data/profile.d/nvm.sh."
 
 packager		"The Haiku build system"
-vendor			"nvm-sh, with Haiku changes"
+vendor			"Haiku Project"
 
 copyrights		"2010 Tim Caswell and Jordan Harband"
 licenses		MIT
