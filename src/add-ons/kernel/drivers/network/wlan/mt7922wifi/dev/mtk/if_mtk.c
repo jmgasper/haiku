@@ -23,6 +23,8 @@
 
 #include <machine/bus.h>
 
+#include <driver_settings.h>
+
 #include <dev/pci/pcireg.h>
 #include <dev/pci/pcivar.h>
 
@@ -673,10 +675,44 @@ mtk_intr(void* arg)
 }
 
 
+/* Stay out of the boot unless told otherwise. While this driver can still
+ * stop the machine, a boot that loads it can stop every boot after it too:
+ * the network preferences, the Deskbar applet and auto configuration all
+ * start scanning as soon as the card appears. So in the first two minutes
+ * the card is left alone, and it is brought in afterwards by hand with
+ * `rescan mt7922wifi`. "attach_at_boot true" in the driver's settings file
+ * restores the ordinary behaviour once it has earned it.
+ */
+static int
+mtk_boot_allowed(void)
+{
+	void* settings;
+	bool allowed = false;
+
+	if (ticks >= 120 * hz)
+		return 1;
+
+	settings = load_driver_settings("mt7922wifi");
+	if (settings != NULL) {
+		allowed = get_driver_boolean_parameter(settings, "attach_at_boot",
+			false, true);
+		unload_driver_settings(settings);
+	}
+
+	return allowed;
+}
+
+
 static int
 mtk_probe(device_t dev)
 {
 	const struct mtk_part* part;
+
+	if (!mtk_boot_allowed()) {
+		device_printf(dev, "not attaching during boot; `rescan mt7922wifi`"
+			" once it is up\n");
+		return ENXIO;
+	}
 
 	for (part = mtk_parts; part->name != NULL; part++) {
 		if (pci_get_vendor(dev) == part->vendor
