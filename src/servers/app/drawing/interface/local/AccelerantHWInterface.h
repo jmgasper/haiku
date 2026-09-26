@@ -49,6 +49,7 @@ public:
 
 	virtual	bool				HasDisplayLayout() const;
 	virtual	status_t			SetSoftwareScale(uint16 percent);
+	virtual	status_t			SetRenderScale(uint16 percent);
 	virtual	status_t			GetDisplayOutputs(display_output** _outputs,
 									uint32* _count);
 	virtual	status_t			GetDisplayOutputModes(uint32 id,

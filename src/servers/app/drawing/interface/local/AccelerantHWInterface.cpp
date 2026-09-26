@@ -1212,8 +1212,8 @@ AccelerantHWInterface::GetDriverPath(BString& string)
 status_t
 AccelerantHWInterface::_UpdateBackBuffer()
 {
-	int32 width = LogicalWidth();
-	int32 height = LogicalHeight();
+	int32 width = BackBufferWidth();
+	int32 height = BackBufferHeight();
 	if (fBackBuffer.IsSet() && fBackBuffer->Width() == (uint32)width
 		&& fBackBuffer->Height() == (uint32)height
 		&& fFrontBuffer->ColorSpace() != B_RGB32)
@@ -1230,6 +1230,28 @@ AccelerantHWInterface::_UpdateBackBuffer()
 	}
 	// clear out backbuffer, alpha is 255 this way
 	memset(fBackBuffer->Bits(), 255, fBackBuffer->BitsLength());
+	return B_OK;
+}
+
+
+status_t
+AccelerantHWInterface::SetRenderScale(uint16 percent)
+{
+	AutoWriteLocker _(this);
+
+	if (percent == RenderScale())
+		return B_OK;
+	status_t status = HWInterface::SetRenderScale(percent);
+	if (status != B_OK)
+		return status;
+	if (!fFrontBuffer.IsSet())
+		return B_OK;
+
+	status = _UpdateBackBuffer();
+	if (status != B_OK)
+		return status;
+
+	_NotifyFrameBufferChanged();
 	return B_OK;
 }
 
@@ -1353,6 +1375,29 @@ AccelerantHWInterface::SetDisplayLayout(const display_output_config* configs,
 		delete[] fModeList;
 		fModeList = NULL;
 		fModeCount = 0;
+		if (status == B_OK) {
+			// Every output of a layout is drawn at the same density, and
+			// the logical size is the rectangle around the enabled outputs.
+			uint16 renderScale = 100;
+			int32 right = 0, bottom = 0;
+			for (uint32 i = 0; i < count; i++) {
+				if (configs[i].render_scale > renderScale)
+					renderScale = configs[i].render_scale;
+				if ((configs[i].flags & B_DISPLAY_OUTPUT_ENABLED) == 0)
+					continue;
+				uint16 scale = configs[i].scale == 0 ? 100 : configs[i].scale;
+				int32 width = (configs[i].timing.h_display * 100 + scale / 2)
+					/ scale;
+				int32 height = (configs[i].timing.v_display * 100 + scale / 2)
+					/ scale;
+				if (configs[i].x + width > right)
+					right = configs[i].x + width;
+				if (configs[i].y + height > bottom)
+					bottom = configs[i].y + height;
+			}
+			SetLogicalSize(right, bottom);
+			HWInterface::SetRenderScale(renderScale);
+		}
 	}
 	if (status != B_OK || !switchMode)
 		return status;
@@ -1564,9 +1609,12 @@ AccelerantHWInterface::SetCursor(ServerCursor* cursor)
 			fFloatingOverlaysLock.Unlock();
 		}
 		// and we need to update our position
-		if (fAccMoveCursor != NULL)
-			fAccMoveCursor((uint16)fCursorLocation.x,
-				(uint16)fCursorLocation.y);
+		if (fAccMoveCursor != NULL) {
+			fAccMoveCursor((uint16)(fCursorLocation.x * RenderScaleFactor()
+					* SoftwareScale() / 100),
+				(uint16)(fCursorLocation.y * RenderScaleFactor()
+					* SoftwareScale() / 100));
+		}
 	}
 
 	if (fAccShowCursor != NULL)
@@ -1605,8 +1653,8 @@ AccelerantHWInterface::MoveCursorTo(float x, float y)
 	if (fHardwareCursorEnabled && LockExclusiveAccess()) {
 		if (fAccMoveCursor != NULL) {
 			// the hardware cursor lives in the front buffer's pixels
-			fAccMoveCursor((uint16)(x * SoftwareScale() / 100),
-				(uint16)(y * SoftwareScale() / 100));
+			fAccMoveCursor((uint16)(x * RenderScaleFactor() * SoftwareScale() / 100),
+				(uint16)(y * RenderScaleFactor() * SoftwareScale() / 100));
 		}
 		else {
 			fHardwareCursorEnabled = false;
