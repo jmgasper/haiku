@@ -416,6 +416,7 @@ main(int argc, char** argv)
 	BNetworkAddress mask;
 	BNetworkAddress gateway;
 	bool defaultRoute = false;
+	bool defaultKeyword = false;
 
 	route_entry route;
 	memset(&route, 0, sizeof(route_entry));
@@ -431,6 +432,7 @@ main(int argc, char** argv)
 
 		if (!strcmp(argv[i], "default")) {
 			defaultRoute = true;
+			defaultKeyword = true;
 			route.flags = RTF_DEFAULT;
 			i++;
 			break;
@@ -512,7 +514,18 @@ main(int argc, char** argv)
 		i++;
 	}
 
-	if (!destination.IsEmpty())
+	// An all-zero destination is the default route only without a netmask
+	// (or with an all-zero one). VPN clients cover the address space with
+	// 0.0.0.0/1 and 128.0.0.0/1 (::/1 and 8000::/1); as default routes, the
+	// kernel would drop their masks and half the traffic would bypass the
+	// tunnel.
+	bool zeroNetwork = defaultRoute && !defaultKeyword && !mask.IsEmpty();
+	if (zeroNetwork) {
+		defaultRoute = false;
+		route.flags &= ~RTF_DEFAULT;
+	}
+
+	if (!destination.IsEmpty() || zeroNetwork)
 		route.destination = (sockaddr*)destination;
 	if (!mask.IsEmpty())
 		route.mask = (sockaddr*)mask;
