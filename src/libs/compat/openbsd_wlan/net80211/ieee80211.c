@@ -152,6 +152,8 @@ ieee80211_channel_init(struct ifnet *ifp)
 				ic->ic_modecaps |= 1<<IEEE80211_MODE_11N;
 			if (IEEE80211_IS_CHAN_AC(c))
 				ic->ic_modecaps |= 1<<IEEE80211_MODE_11AC;
+			if (IEEE80211_CHAN_HE(c))
+				ic->ic_modecaps |= 1<<IEEE80211_MODE_11AX;
 		}
 	}
 	/* validate ic->ic_curmode */
@@ -508,6 +510,15 @@ ieee80211_media_init(struct ifnet *ifp,
 		if (ic->ic_caps & IEEE80211_C_QOS)
 			ic->ic_flags |= IEEE80211_F_QOS;
 	}
+	if (ic->ic_modecaps & (1 << IEEE80211_MODE_11AX)) {
+		mopt = IEEE80211_IS_CHAN_5GHZ(ic->ic_ibss_chan) ?
+		    IFM_IEEE80211_HE5G : IFM_IEEE80211_HE2G;
+		ADD(ic, IFM_AUTO, mopt);
+		ADD(ic, IFM_IEEE80211_HE, mopt);
+		ic->ic_flags |= IEEE80211_F_HEON | IEEE80211_F_HTON;
+		if (ic->ic_caps & IEEE80211_C_QOS)
+			ic->ic_flags |= IEEE80211_F_QOS;
+	}
 
 	ieee80211_media_status(ifp, &imr);
 	ifmedia_set(&ic->ic_media, imr.ifm_active);
@@ -574,6 +585,10 @@ ieee80211_media_change(struct ifnet *ifp)
 #endif
 		newphymode = IEEE80211_MODE_11AC;
 		break;
+	case IFM_IEEE80211_HE5G:
+	case IFM_IEEE80211_HE2G:
+		newphymode = IEEE80211_MODE_11AX;
+		break;
 	case IFM_AUTO:
 		newphymode = IEEE80211_MODE_AUTO;
 		break;
@@ -592,7 +607,13 @@ ieee80211_media_change(struct ifnet *ifp)
 	 */
 	i = -1;
 #ifdef __FreeBSD_version
-	if (IFM_SUBTYPE(ime->ifm_media) == IFM_IEEE80211_VHT) {
+	if (IFM_SUBTYPE(ime->ifm_media) == IFM_IEEE80211_HE) {
+		if ((ic->ic_modecaps & (1 << IEEE80211_MODE_11AX)) == 0 ||
+		    (newphymode != IEEE80211_MODE_AUTO &&
+		    newphymode != IEEE80211_MODE_11AX))
+			return EINVAL;
+		i = -1;
+	} else if (IFM_SUBTYPE(ime->ifm_media) == IFM_IEEE80211_VHT) {
 #else
 	if (IFM_SUBTYPE(ime->ifm_media) >= IFM_IEEE80211_VHT_MCS0 &&
 	    IFM_SUBTYPE(ime->ifm_media) <= IFM_IEEE80211_VHT_MCS9) {
@@ -705,9 +726,17 @@ ieee80211_media_change(struct ifnet *ifp)
 	/*
 	 * Committed to changes, install the MCS/rate setting.
 	 */
-	ic->ic_flags &= ~(IEEE80211_F_HTON | IEEE80211_F_VHTON);
+	ic->ic_flags &= ~(IEEE80211_F_HTON | IEEE80211_F_VHTON |
+	    IEEE80211_F_HEON);
 	ieee80211_configure_ampdu_tx(ic, 0);
-	if ((ic->ic_modecaps & (1 << IEEE80211_MODE_11AC)) &&
+	if ((ic->ic_modecaps & (1 << IEEE80211_MODE_11AX)) &&
+	    (newphymode == IEEE80211_MODE_AUTO ||
+	    newphymode == IEEE80211_MODE_11AX)) {
+		ic->ic_flags |= IEEE80211_F_HEON | IEEE80211_F_HTON;
+		if (ic->ic_modecaps & (1 << IEEE80211_MODE_11AC))
+			ic->ic_flags |= IEEE80211_F_VHTON;
+		ieee80211_configure_ampdu_tx(ic, 1);
+	} else if ((ic->ic_modecaps & (1 << IEEE80211_MODE_11AC)) &&
 	    (newphymode == IEEE80211_MODE_AUTO ||
 	    newphymode == IEEE80211_MODE_11AC)) {
 		ic->ic_flags |= IEEE80211_F_VHTON;
@@ -719,7 +748,8 @@ ieee80211_media_change(struct ifnet *ifp)
 		ic->ic_flags |= IEEE80211_F_HTON;
 		ieee80211_configure_ampdu_tx(ic, 1);
 	}
-	if ((ic->ic_flags & (IEEE80211_F_HTON | IEEE80211_F_VHTON)) == 0) {
+	if ((ic->ic_flags & (IEEE80211_F_HTON | IEEE80211_F_VHTON |
+	    IEEE80211_F_HEON)) == 0) {
 		ic->ic_fixed_mcs = -1;
 	    	if (ic->ic_fixed_rate != i) {
 			ic->ic_fixed_rate = i;		/* set fixed tx rate */
@@ -784,9 +814,12 @@ ieee80211_media_status(struct ifnet *ifp, struct ifmediareq *imr)
 	case IEEE80211_M_STA:
 		ni = ic->ic_bss;
 		if (ic->ic_curmode == IEEE80211_MODE_11N ||
-		    ic->ic_curmode == IEEE80211_MODE_11AC)
+		    ic->ic_curmode == IEEE80211_MODE_11AC ||
+		    ic->ic_curmode == IEEE80211_MODE_11AX)
 			imr->ifm_active |= ieee80211_mcs2media(ic,
 				ni->ni_txmcs, ic->ic_curmode);
+		else if (ni->ni_flags & IEEE80211_NODE_HE)
+			imr->ifm_active |= IFM_IEEE80211_HE;
 		else if (ni->ni_flags & IEEE80211_NODE_VHT) /* in MODE_AUTO */
 			imr->ifm_active |= ieee80211_mcs2media(ic,
 				ni->ni_txmcs, IEEE80211_MODE_11AC);
@@ -839,6 +872,10 @@ ieee80211_media_status(struct ifnet *ifp, struct ifmediareq *imr)
 #else
 		imr->ifm_active |= IFM_IEEE80211_11AC;
 #endif
+		break;
+	case IEEE80211_MODE_11AX:
+		imr->ifm_active |= IEEE80211_IS_CHAN_5GHZ(ni->ni_chan) ?
+		    IFM_IEEE80211_HE5G : IFM_IEEE80211_HE2G;
 		break;
 	}
 }
@@ -1014,6 +1051,7 @@ ieee80211_setbasicrates(struct ieee80211com *ic)
 	    { 4, { 2, 4, 11, 22 } },		/* IEEE80211_MODE_11G */
 	    { 0 },				/* IEEE80211_MODE_11N	*/
 	    { 0 },				/* IEEE80211_MODE_11AC	*/
+	    { 0 },				/* IEEE80211_MODE_11AX	*/
 	};
 	enum ieee80211_phymode mode;
 	struct ieee80211_rateset *rs;
@@ -1097,9 +1135,14 @@ ieee80211_setmode(struct ieee80211com *ic, enum ieee80211_phymode mode)
 		IEEE80211_CHAN_PUREG,	/* IEEE80211_MODE_11G */
 		IEEE80211_CHAN_HT,	/* IEEE80211_MODE_11N */
 		IEEE80211_CHAN_VHT,	/* IEEE80211_MODE_11AC */
+		0,			/* IEEE80211_MODE_11AX uses xflags */
+	};
+	static const u_int chanxflags[] = {
+		0, 0, 0, 0, 0, 0, IEEE80211_CHANX_HE
 	};
 	const struct ieee80211_channel *c;
 	u_int modeflags;
+	u_int modexflags;
 	int i;
 
 	/* validate new mode */
@@ -1116,12 +1159,15 @@ ieee80211_setmode(struct ieee80211com *ic, enum ieee80211_phymode mode)
 	if (mode >= nitems(chanflags))
 		panic("%s: unexpected mode %u", __func__, mode);
 	modeflags = chanflags[mode];
+	modexflags = chanxflags[mode];
 	for (i = 0; i <= IEEE80211_CHAN_MAX; i++) {
 		c = &ic->ic_channels[i];
 		if (mode == IEEE80211_MODE_AUTO) {
 			if (c->ic_flags != 0)
 				break;
-		} else if ((c->ic_flags & modeflags) == modeflags)
+		} else if (c->ic_flags != 0 &&
+		    (c->ic_flags & modeflags) == modeflags &&
+		    (c->ic_xflags & modexflags) == modexflags)
 			break;
 	}
 	if (i > IEEE80211_CHAN_MAX) {
@@ -1138,7 +1184,9 @@ ieee80211_setmode(struct ieee80211com *ic, enum ieee80211_phymode mode)
 		if (mode == IEEE80211_MODE_AUTO) {
 			if (c->ic_flags != 0)
 				setbit(ic->ic_chan_active, i);
-		} else if ((c->ic_flags & modeflags) == modeflags)
+		} else if (c->ic_flags != 0 &&
+		    (c->ic_flags & modeflags) == modeflags &&
+		    (c->ic_xflags & modexflags) == modexflags)
 			setbit(ic->ic_chan_active, i);
 	}
 	/*
@@ -1211,7 +1259,8 @@ ieee80211_next_mode(struct ifnet *ifp)
 		 * Skip over 11ac mode. Its set of channels is the set
 		 * of all channels supported by 11a.
 		 */
-		if (mode == IEEE80211_MODE_11AC)
+		if (mode == IEEE80211_MODE_11AC ||
+		    mode == IEEE80211_MODE_11AX)
 			continue;
 
 		/* Start over if we have already tried all modes. */
@@ -1256,6 +1305,8 @@ ieee80211_mcs2media(struct ieee80211com *ic, int mcs,
 			    (IFM_IEEE80211_VHT_MCS0 + mcs));
 		break;
 #endif
+	case IEEE80211_MODE_11AX:
+		return IFM_IEEE80211_HE;
 	case IEEE80211_MODE_AUTO:
 		break;
 	}
@@ -1349,6 +1400,7 @@ ieee80211_rate2media(struct ieee80211com *ic, int rate,
 		break;
 	case IEEE80211_MODE_11N:
 	case IEEE80211_MODE_11AC:
+	case IEEE80211_MODE_11AX:
 		/* 11n/11ac uses MCS, not rates. */
 		panic("%s: unexpected mode %d", __func__, mode);
 		break;

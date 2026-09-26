@@ -21,10 +21,54 @@ SEARCH on [ FGristFiles CsfFirmware.cpp ]
 	= [ FDirName $(HAIKU_TOP) src add-ons kernel drivers graphics mali_csf ] ;
 SimpleTest rock5_cache_probe : cache_probe.cpp ;
 UsePrivateHeaders drivers ;
+UsePrivateHeaders kernel ;
 SimpleTest rock5_pci_config_probe : pci_config_probe.cpp ;
 SimpleTest rock5_mmc_register_probe : mmc_register_probe.cpp ;
 SimpleTest rock5_file_transfer : file_transfer.cpp : network ;
 SimpleTest rock5_network_probe : network_probe.cpp : network ;
+UseHeaders [ FDirName $(HAIKU_TOP) src libs compat freebsd_network ] : true ;
+UseHeaders [ FDirName $(HAIKU_TOP) src libs compat freebsd_wlan ] : true ;
+SimpleTest rock5_ax210_wifi_he_probe : ax210_wifi_he_probe.cpp : network ;
+UseHeaders [ FDirName $(HAIKU_TOP) src add-ons kernel drivers bus usb ] : true ;
+SimpleTest rock5_ax210_bt_loader : ax210_bt_loader.cpp ;
+UsePrivateHeaders bluetooth ;
+SimpleTest rock5_ax210_bt_probe : ax210_bt_probe.cpp
+	: be libbluetooth.so [ TargetLibsupc++ ] ;
+SimpleTest rock5_ax210_bt_connect_probe : ax210_bt_connect_probe.cpp
+	: be libbluetooth.so [ TargetLibsupc++ ] ;
+SimpleTest rock5_ax210_bt_le_probe : ax210_bt_le_probe.cpp
+	: be libbluetooth.so [ TargetLibsupc++ ] ;
+SimpleTest rock5_ax210_bt_le_connect_probe : ax210_bt_le_connect_probe.cpp
+	: be libbluetooth.so [ TargetLibsupc++ ] ;
+SimpleTest rock5_ax210_bt_att_probe : ax210_bt_att_probe.cpp
+	: be libbluetooth.so [ TargetLibsupc++ ] ;
+UseHeaders [ FDirName $(HAIKU_TOP) src kits bluetooth ] : true ;
+SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) src kits bluetooth ] ;
+SimpleTest rock5_att_client_test : att_client_test.cpp LEAttributeClient.cpp
+	LELog.cpp
+	: network [ TargetLibstdc++ ] ;
+SimpleTest rock5_le_hid_service_test : le_hid_service_test.cpp
+	LEHIDService.cpp LEAttributeClient.cpp LELog.cpp
+	: network [ TargetLibstdc++ ] ;
+UseHeaders [ FDirName $(HAIKU_TOP) src add-ons kernel drivers input
+	hid_shared ] [ FDirName $(HAIKU_TOP) src bin hid_decode ]
+	[ FDirName $(HAIKU_TOP) headers private kernel ] ;
+SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) src add-ons kernel drivers input
+	hid_shared ] ;
+SubDirC++Flags -DUSERLAND_HID ;
+UsePrivateHeaders drivers ;
+SimpleTest rock5_le_hid_mouse_test : le_hid_mouse_test.cpp
+	LEHIDMouseDecoder.cpp HIDCollection.cpp HIDParser.cpp HIDReport.cpp
+	HIDReportItem.cpp : [ TargetLibstdc++ ] ;
+SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) src libs compat openbsd_wlan crypto ] ;
+SimpleTest rock5_legacy_pairing_crypto_test : legacy_pairing_crypto_test.cpp
+	LELegacyPairingCrypto.cpp aes.c : [ TargetLibstdc++ ] ;
+SimpleTest rock5_legacy_pairing_client_test : legacy_pairing_client_test.cpp
+	LELegacyPairingClient.cpp LELegacyPairingCrypto.cpp aes.c LELog.cpp
+	: be network [ TargetLibstdc++ ] ;
+SimpleTest rock5_le_encryption_layout_test : le_encryption_layout_test.cpp ;
+SimpleTest rock5_le_bond_store_test : le_bond_store_test.cpp LEBondStore.cpp
+	: [ TargetLibstdc++ ] ;
 SimpleTest rock5_memcpy_probe : memcpy_probe.cpp ;
 SimpleTest rock5_profile_probe : profile_probe.cpp profile_probe_arm64.S ;
 

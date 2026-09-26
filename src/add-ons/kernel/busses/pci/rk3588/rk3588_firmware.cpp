@@ -17,6 +17,7 @@
 
 #include "firmware_profile.h"
 #include "intx_profile.h"
+#include "msi_profile.h"
 
 using namespace RK3588Firmware;
 
@@ -261,15 +262,24 @@ MatchesNode(device_node* node, const PortProfile** matchedPort)
 		return false;
 	}
 	uint64 base, size;
-	if (!fdt->get_reg(device, 0, &base, &size) || size != 0x400000) {
+	if (!fdt->get_reg(device, 0, &base, &size)) {
+		dprintf("rk3588_pcie: compatible FDT root has no first register range\n");
+		return false;
+	}
+	if (size != 0x400000) {
+		dprintf("rk3588_pcie: unsupported FDT root at %#" B_PRIx64
+			" size %#" B_PRIx64 "\n", base, size);
 		return false;
 	}
 	const PortProfile* port = FindPort(base);
 	if (port == NULL)
 		return false;
 
-	if (!FirmwareIommuDescription(fdt, device, *port))
+	if (!FirmwareIommuDescription(fdt, device, *port)) {
+		dprintf("rk3588_pcie: segment %u firmware IOMMU description rejected\n",
+			port->segment);
 		return false;
+	}
 	// Require an untranslated parent bus on the exact board. This explicit
 	// firmware profile is not a general driver for the Linux DT resources.
 	bool board = false;
@@ -317,8 +327,11 @@ MatchesNode(device_node* node, const PortProfile** matchedPort)
 			sDeviceManager->put_node(current);
 		current = next;
 	}
-	if (!supported || !board)
+	if (!supported || !board) {
+		dprintf("rk3588_pcie: segment %u FDT ancestry rejected: resources=%s board=%s\n",
+			port->segment, supported ? "valid" : "invalid", board ? "match" : "mismatch");
 		return false;
+	}
 	*matchedPort = port;
 	return true;
 }
@@ -328,7 +341,14 @@ static float
 SupportsDevice(device_node* parent)
 {
 	const PortProfile* port;
-	return MatchesNode(parent, &port) && ProfileEnabled(*port) ? 1.0f : 0.0f;
+	if (!MatchesNode(parent, &port))
+		return 0.0f;
+	if (!ProfileEnabled(*port)) {
+		dprintf("rk3588_pcie: segment %u disabled by firmware profile setting\n",
+			port->segment);
+		return 0.0f;
+	}
+	return 1.0f;
 }
 
 
@@ -338,20 +358,21 @@ RegisterDevice(device_node* parent)
 	const PortProfile* port;
 	if (!MatchesNode(parent, &port))
 		return B_NOT_SUPPORTED;
-	// Only segment zero currently has a qualified requester-ID contract.
-	// EDK2 numbers every root's secondary bus as 1; Linux's msi-map bases
-	// for the other ports must not be added to those firmware BDFs blindly.
-	bool nvmeMsi = false;
-	if (port->segment == 0) {
+	bool msi = false;
+	MsiProfile msiProfile;
+	if (FindMsiProfile(port->segment, msiProfile)) {
 		fdt_device_module_info* fdt;
 		fdt_device* device;
 		if (sDeviceManager->get_driver(parent, (driver_module_info**)&fdt,
 				(void**)&device) == B_OK) {
 			int length;
 			const uint32* map = (const uint32*)fdt->get_prop(device, "msi-map", &length);
-			if (map != NULL && length == 16 && B_BENDIAN_TO_HOST_INT32(map[0]) == 0
-				&& B_BENDIAN_TO_HOST_INT32(map[2]) == 0
-				&& B_BENDIAN_TO_HOST_INT32(map[3]) == 0x1000
+			uint32 decodedMap[4];
+			if (map != NULL && length == 16) {
+				for (unsigned i = 0; i < 4; i++)
+					decodedMap[i] = B_BENDIAN_TO_HOST_INT32(map[i]);
+			}
+			if (map != NULL && length == 16
 				&& fdt->get_prop(device, "msi-map-mask", NULL) == NULL) {
 				fdt_bus_module_info* busModule;
 				fdt_bus* bus;
@@ -364,9 +385,9 @@ RegisterDevice(device_node* parent)
 					uint64 base, size;
 					if (itsNode != NULL && sDeviceManager->get_driver(itsNode,
 							(driver_module_info**)&itsModule, (void**)&itsDevice) == B_OK) {
-						nvmeMsi = HasString(itsModule, itsDevice, "compatible", "arm,gic-v3-its")
+						msi = HasString(itsModule, itsDevice, "compatible", "arm,gic-v3-its")
 							&& itsModule->get_reg(itsDevice, 0, &base, &size)
-							&& base == 0xfe660000 && size == 0x20000;
+							&& MsiResourcesMatch(msiProfile, decodedMap, length, base, size);
 					}
 				}
 			}
@@ -381,10 +402,13 @@ RegisterDevice(device_node* parent)
 		// treat a retained firmware interrupt-line byte as a valid GIC route.
 		{ B_PCI_INTX_CONTROLLER_MODULE, B_STRING_TYPE, {.string = INTX_MODULE_NAME} }
 	};
-	if (nvmeMsi) {
-		attrs[3] = { B_PCI_MSI_CONTROLLER_ADDRESS, B_UINT64_TYPE, {.ui64 = 0xfe660000} };
-		attrs[4] = { B_PCI_MSI_REQUESTER_BASE, B_UINT32_TYPE, {.ui32 = 0} };
-		attrs[5] = { B_PCI_MSI_REQUESTER_COUNT, B_UINT32_TYPE, {.ui32 = 0x200} };
+	if (msi) {
+		attrs[3] = { B_PCI_MSI_CONTROLLER_ADDRESS, B_UINT64_TYPE,
+			{.ui64 = msiProfile.controller} };
+		attrs[4] = { B_PCI_MSI_REQUESTER_BASE, B_UINT32_TYPE,
+			{.ui32 = msiProfile.requesterBase} };
+		attrs[5] = { B_PCI_MSI_REQUESTER_COUNT, B_UINT32_TYPE,
+			{.ui32 = msiProfile.requesterCount} };
 	}
 	return sDeviceManager->register_node(parent, DRIVER_NAME, attrs, NULL, NULL);
 }

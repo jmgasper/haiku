@@ -198,9 +198,10 @@ bus_alloc_resource(device_t dev, int type, int *rid, unsigned long start,
 			result = bus_alloc_irq_resource(dev, res);
 		} else {
 			// msi or msi-x interrupt at index *rid - 1
-			pci_info* info = get_device_pci_info(dev);
+			struct root_device_softc* root
+				= (struct root_device_softc*)dev->root->softc;
 			res->r_bustag = BUS_SPACE_TAG_MSI;
-			res->r_bushandle = info->u.h0.interrupt_line + *rid - 1;
+			res->r_bushandle = root->msi_start_vector + *rid - 1;
 			result = 0;
 		}
 	} else if (type == SYS_RES_MEMORY || type == SYS_RES_IOPORT) {

@@ -7,6 +7,17 @@ import unittest
 
 
 class BusInterruptTests(unittest.TestCase):
+    def test_msi_vector_storage_is_wide(self):
+        directory = Path(__file__).resolve().parent
+        source = directory.parents[1]
+        device = (source / 'src/libs/compat/freebsd_network/device.h').read_text()
+        bus = (source / 'src/libs/compat/freebsd_network/bus.cpp').read_text()
+        pci = (source / 'src/libs/compat/freebsd_network/pci.cpp').read_text()
+        self.assertIn('uint32\t\t\tmsi_start_vector;', device)
+        self.assertIn('root->msi_start_vector + *rid - 1', bus)
+        self.assertEqual(pci.count('root->msi_start_vector = startVector;'), 2)
+        self.assertNotIn('info->u.h0.interrupt_line = startVector;', pci)
+
     def test_setup_failures_and_level_interrupt_masking(self):
         directory = Path(__file__).resolve().parent
         source = directory.parents[1]

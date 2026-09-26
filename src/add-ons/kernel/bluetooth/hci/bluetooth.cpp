@@ -337,6 +337,13 @@ PostACL(hci_id hciId, net_buffer* buffer)
 		" bytes (flags 0x%" B_PRIx32 "):\n", __func__, device->index,
 		buffer->size, buffer->flags);
 
+	// Automatically flushable packets are not allowed on an LE-U link (Core
+	// Vol 4 Part E 5.4.2); controllers may drop them. Start LE PDUs with the
+	// non-flushable boundary flag instead.
+	HciConnection* connection = btCoreData->ConnectionByHandle(handle, hciId);
+	if (connection != NULL && connection->isLE)
+		flag = HCI_ACL_PACKET_START_NON_FLUSHABLE;
+
 	// TODO: ATOMIC! any other thread should stop here
 	do {
 		// Divide packet if big enough

@@ -104,10 +104,10 @@ RemoteDevice::GetFriendlyName(bool alwaysAsk)
 	}
 
 	if (fDiscovererLocalDevice == NULL)
-		return BString(B_TRANSLATE("#NoOwnerError#Not Valid name"));
+		return bdaddrUtils::ToString(fBdaddr);
 
 	if (fMessenger == NULL)
-		return BString(B_TRANSLATE("#ServerNotReady#Not Valid name"));
+		return bdaddrUtils::ToString(fBdaddr);
 
 	void* remoteNameCommand = NULL;
 	size_t size;
@@ -142,7 +142,7 @@ RemoteDevice::GetFriendlyName(bool alwaysAsk)
 				fFriendlyNameIsComplete = true;
 				return name;
 			} else {
-				return BString(""); // should not happen
+				return bdaddrUtils::ToString(fBdaddr);
 			}
 
 		} else {
@@ -150,11 +150,11 @@ RemoteDevice::GetFriendlyName(bool alwaysAsk)
 			if (!fFriendlyName.IsEmpty())
 				return fFriendlyName;
 
-			return BString(B_TRANSLATE("#CommandFailed#Not Valid name"));
+			return bdaddrUtils::ToString(fBdaddr);
 		}
 	}
 
-	return BString(B_TRANSLATE("#NotCompletedRequest#Not Valid name"));
+	return bdaddrUtils::ToString(fBdaddr);
 }
 
 
@@ -215,19 +215,26 @@ RemoteDevice::Connect()
 	bdaddr_t bdaddr = GetBluetoothAddress();
 	request.AddData("bdaddr", B_ANY_TYPE, &bdaddr, sizeof(bdaddr_t));
 
-	request.AddString("name", GetFriendlyName());
+	// Connecting must not wait for a remote-name request. Some discoverable
+	// devices never answer one, and this call can run from a preferences window.
+	BString name = GetCachedFriendlyName();
+	if (name.IsEmpty())
+		name = bdaddrUtils::ToString(bdaddr);
+	request.AddString("name", name);
 	request.AddUInt32("record", fDeviceClass.Record());
 
-	uint16 packetType;
-	fDiscovererLocalDevice->GetProperty("packet_type", (uint32*)&packetType);
+	uint32 propertyValue = 0;
+	fDiscovererLocalDevice->GetProperty("packet_type", &propertyValue);
+	uint16 packetType = (uint16)propertyValue;
 	request.AddUInt16("packet type", packetType);
 
 	request.AddUInt8("pscan_rep_mode", fPageRepetitionMode);
 	request.AddUInt8("pscan_mode", fScanMode);
 	request.AddUInt16("clock_offset", fClockOffset);
 
-	uint8 roleSwitch;
-	fDiscovererLocalDevice->GetProperty("role_switch_capable", (uint32*)&roleSwitch);
+	propertyValue = 0;
+	fDiscovererLocalDevice->GetProperty("role_switch_capable", &propertyValue);
+	uint8 roleSwitch = (uint8)propertyValue;
 	request.AddUInt8("role_switch", roleSwitch);
 
 	if (fMessenger->SendMessage(&request) == B_OK)

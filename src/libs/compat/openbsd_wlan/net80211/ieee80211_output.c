@@ -327,6 +327,12 @@ const struct ieee80211_edca_ac_params
 		[EDCA_AC_VI] = { 3,  4, 2,  94 },
 		[EDCA_AC_VO] = { 2,  3, 2,  47 }
 	},
+	[IEEE80211_MODE_11AX] = {
+		[EDCA_AC_BK] = { 4, 10, 7,   0 },
+		[EDCA_AC_BE] = { 4, 10, 3,   0 },
+		[EDCA_AC_VI] = { 3,  4, 2,  94 },
+		[EDCA_AC_VO] = { 2,  3, 2,  47 }
+	},
 };
 
 #ifndef IEEE80211_STA_ONLY
@@ -357,6 +363,12 @@ const struct ieee80211_edca_ac_params
 		[EDCA_AC_VO] = { 2,  3, 1,  47 }
 	},
 	[IEEE80211_MODE_11AC] = {
+		[EDCA_AC_BK] = { 4, 10, 7,   0 },
+		[EDCA_AC_BE] = { 4,  6, 3,   0 },
+		[EDCA_AC_VI] = { 3,  4, 1,  94 },
+		[EDCA_AC_VO] = { 2,  3, 1,  47 }
+	},
+	[IEEE80211_MODE_11AX] = {
 		[EDCA_AC_BK] = { 4, 10, 7,   0 },
 		[EDCA_AC_BE] = { 4,  6, 3,   0 },
 		[EDCA_AC_VI] = { 3,  4, 1,  94 },
@@ -1293,6 +1305,32 @@ ieee80211_add_vhtcaps(u_int8_t *frm, struct ieee80211com *ic)
 	return frm;
 }
 
+static u_int8_t *
+ieee80211_add_hecaps(u_int8_t *frm, struct ieee80211com *ic)
+{
+	u_int8_t phycap0 = ic->ic_he_phy_cap[0];
+	int mcslen = IEEE80211_HE_MCS_NSS_SIZE(phycap0);
+
+	*frm++ = IEEE80211_ELEMID_EXTENSION;
+	*frm++ = 1 + IEEE80211_HE_CAPS_FIXED_LEN + mcslen;
+	*frm++ = IEEE80211_ELEMID_EXT_HECAPS;
+	memcpy(frm, ic->ic_he_mac_cap, IEEE80211_HE_MAC_CAPS_LEN);
+	frm += IEEE80211_HE_MAC_CAPS_LEN;
+	memcpy(frm, ic->ic_he_phy_cap, IEEE80211_HE_PHY_CAPS_LEN);
+	frm += IEEE80211_HE_PHY_CAPS_LEN;
+	LE_WRITE_2(frm, ic->ic_he_rxmcs_80); frm += 2;
+	LE_WRITE_2(frm, ic->ic_he_txmcs_80); frm += 2;
+	if (phycap0 & IEEE80211_HE_PHYCAP0_CHAN_WIDTH_160_IN_5G) {
+		LE_WRITE_2(frm, ic->ic_he_rxmcs_160); frm += 2;
+		LE_WRITE_2(frm, ic->ic_he_txmcs_160); frm += 2;
+	}
+	if (phycap0 & IEEE80211_HE_PHYCAP0_CHAN_WIDTH_8080_IN_5G) {
+		LE_WRITE_2(frm, ic->ic_he_rxmcs_80p80); frm += 2;
+		LE_WRITE_2(frm, ic->ic_he_txmcs_80p80); frm += 2;
+	}
+	return frm;
+}
+
 #ifndef IEEE80211_STA_ONLY
 /*
  * Add a Timeout Interval element to a frame (see 7.3.2.49).
@@ -1517,6 +1555,13 @@ ieee80211_get_assoc_req(struct ieee80211com *ic, struct ieee80211_node *ni,
 	struct mbuf *m;
 	u_int8_t *frm;
 	u_int16_t capinfo;
+	u_int hecapslen = 0;
+	if ((ic->ic_flags & (IEEE80211_F_HEON | IEEE80211_F_HTON)) ==
+	    (IEEE80211_F_HEON | IEEE80211_F_HTON) &&
+	    ni->ni_chan != NULL && IEEE80211_CHAN_HE(ni->ni_chan) &&
+	    (ni->ni_flags & IEEE80211_NODE_HECAP))
+		hecapslen = 3 + IEEE80211_HE_CAPS_FIXED_LEN +
+		    IEEE80211_HE_MCS_NSS_SIZE(ic->ic_he_phy_cap[0]);
 
 	m = ieee80211_getmgmt(M_DONTWAIT, MT_DATA,
 	    2 + 2 +
@@ -1534,7 +1579,8 @@ ieee80211_get_assoc_req(struct ieee80211com *ic, struct ieee80211_node *ni,
 	      (ni->ni_rsnprotos & IEEE80211_PROTO_WPA)) ?
 		2 + IEEE80211_WPAIE_MAXLEN : 0) +
 	    ((ic->ic_flags & IEEE80211_F_HTON) ? 28 + 9 : 0) +
-	    ((ic->ic_flags & IEEE80211_F_VHTON) ? 14 : 0));
+	    ((ic->ic_flags & IEEE80211_F_VHTON) ? 14 : 0) +
+	    hecapslen);
 	if (m == NULL)
 		return NULL;
 
@@ -1571,6 +1617,8 @@ ieee80211_get_assoc_req(struct ieee80211com *ic, struct ieee80211_node *ni,
 	}
 	if (ic->ic_flags & IEEE80211_F_VHTON)
 		frm = ieee80211_add_vhtcaps(frm, ic);
+	if (hecapslen)
+		frm = ieee80211_add_hecaps(frm, ic);
 
 	m->m_pkthdr.len = m->m_len = frm - mtod(m, u_int8_t *);
 

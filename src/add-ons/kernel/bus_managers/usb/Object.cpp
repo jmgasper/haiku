@@ -49,7 +49,9 @@ Object::PutUSBID(bool waitForIdle)
 void
 Object::WaitForIdle()
 {
-	int32 retries = 20;
+	// The host controller can retire an isochronous transfer several frames
+	// after it has been canceled. Two milliseconds is not enough for that path.
+	int32 retries = 5000;
 	while (CountReferences() != 1 && retries--)
 		snooze(100);
 	if (retries <= 0)

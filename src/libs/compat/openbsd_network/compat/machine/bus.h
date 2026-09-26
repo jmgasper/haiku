@@ -158,6 +158,11 @@ bus_dmamem_alloc_obsd(bus_dma_tag_t tag, bus_size_t size, bus_size_t alignment, 
 	//     3. physical addresses
 	// This function returns the second type. We simply return the virtual address for it.
 
+	// OpenBSD drivers use an alignment of zero when no special alignment is
+	// required. FreeBSD's bus_dma_tag_create() spells that constraint as one.
+	if (alignment == 0)
+		alignment = 1;
+
 	bus_dma_tag_t local;
 	int error = bus_dma_tag_create(tag, alignment, boundary,
 		BUS_SPACE_MAXADDR, BUS_SPACE_MAXADDR, NULL, NULL,

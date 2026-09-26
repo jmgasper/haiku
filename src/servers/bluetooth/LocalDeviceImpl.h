@@ -6,6 +6,10 @@
 #define _LOCALDEVICE_IMPL_H_
 
 #include <String.h>
+#include <Locker.h>
+#include <Messenger.h>
+
+#include <vector>
 
 #include <bluetooth/bluetooth.h>
 #include <bluetooth/L2CAP/btL2CAP.h>
@@ -55,12 +59,29 @@ public:
 
 	// Request handling
 	status_t 	ProcessSimpleRequest(BMessage* request);
+	// Low Energy (LocalDeviceLE.cpp). Scanning is shared: every listener
+	// receives advertisements until it stops. One LE link at a time.
+	status_t StartLEScan(const BMessenger& listener);
+	status_t StopLEScan(const BMessenger* listener);
+		// NULL stops the scan for every listener.
+	status_t StartLEConnection(const BMessenger& listener,
+		const uint8* address, uint8 addressType);
+	status_t CancelLEConnection(const BMessenger* listener);
+	status_t DisconnectLEConnection(const BMessenger* listener);
+	status_t StartLEEncryption(const uint8* key, const uint8* randomNumber,
+		uint16 encryptedDiversifier);
+	void LEPulse();
+	void LEInquiryState(bool active);
+	void Pulse();
+		// Periodic housekeeping: HCI command queue and LE watchdogs.
+	status_t StartPairingSetup();
 
 	// Connection
 	void CreateConnection(BMessage* message);
 	void CancelConnection(BMessage* message);
 	void Disconnect(BMessage* message);
 	void SetConnEncryption(uint16 handle, bool encryption_enabled);
+	void ConfirmPairing(bdaddr_t address, bool accepted);
 
 	ServerRemoteDevice*	RemoteDeviceByAddr(bdaddr_t bdaddr);
 	ServerRemoteDevice*	RemoteDeviceByHandle(uint16 handle);
@@ -69,6 +90,87 @@ public:
 	RemoteDevicesList*	GetRemoteDevicesList();
 
 private:
+	enum PairSetupState {
+		PAIR_SETUP_IDLE,
+		PAIR_SETUP_EVENT_MASK,
+		PAIR_SETUP_SSP,
+		PAIR_SETUP_SC,
+		PAIR_SETUP_LE_HOST
+	};
+	PairSetupState fPairSetupState;
+	void HandlePairSetupCommandComplete(struct hci_event_header* event);
+
+	// Low Energy state, guarded by fLELock (HCI events arrive on the port
+	// listener thread, requests on the application thread).
+	enum LEMaskState {
+		LE_MASKS_NONE,
+		LE_MASKS_CLASSIC,
+		LE_MASKS_LE,
+		LE_MASKS_READY
+	};
+	enum LEScanState {
+		LE_SCAN_IDLE,
+		LE_SCAN_WAIT_MASKS,
+		LE_SCAN_PARAMETERS,
+		LE_SCAN_ENABLE,
+		LE_SCAN_ACTIVE,
+		LE_SCAN_DISABLE
+	};
+	enum LEConnectionState {
+		LE_CONN_IDLE,
+		LE_CONN_PENDING,
+			// waiting for masks or for the scan to pause
+		LE_CONN_CREATE_SENT,
+		LE_CONN_CONNECTING,
+		LE_CONN_CANCELING,
+		LE_CONN_CONNECTED,
+		LE_CONN_DISCONNECTING
+	};
+	struct LEAdvertiserSeen {
+		uint8 address[6];
+		uint8 addressType;
+		uint8 eventType;
+		bigtime_t when;
+	};
+
+	BLocker fLELock;
+	LEMaskState fLEMaskState;
+	LEScanState fLEScanState;
+	bigtime_t fLEScanSince;
+	bool fClassicInquiryActive;
+	bigtime_t fClassicInquirySince;
+	std::vector<BMessenger> fLEScanListeners;
+	std::vector<LEAdvertiserSeen> fLESeen;
+
+	LEConnectionState fLEConnectionState;
+	bigtime_t fLEConnectionSince;
+	bool fLECancelRequested;
+	BMessenger fLEConnectionListener;
+	uint8 fLEConnectionAddress[6];
+	uint8 fLEConnectionAddressType;
+	uint16 fLEConnectionHandle;
+	bool fLEEncryptionPending;
+	bool fLEEncrypted;
+
+	status_t _SendLECommand(uint16 opcode, const void* data, size_t length);
+	void _EnsureLEMasks();
+	void _UpdateLE();
+	bool _LEInitiating() const;
+	void _FailLEScan(uint8 status);
+	status_t _IssueLECreateConnection();
+	void _SendLEScanNotice(uint32 what, uint8 status = 0);
+	void _SendLEConnectionNotice(uint32 what, status_t status = B_OK);
+	void _ResetLEConnection();
+	bool _ForwardAdvertisement(const uint8* report, size_t dataLength);
+
+	void HandleLECommandComplete(struct hci_event_header* event);
+	void HandleLECommandStatus(struct hci_event_header* event);
+	void HandleLEMeta(struct hci_event_header* event);
+	void HandleLEAdvertisingReport(struct hci_event_header* event);
+	void HandleLEConnectionComplete(struct hci_event_header* event);
+	void HandleLERemoteParameterRequest(struct hci_event_header* event);
+	bool HandleLEDisconnection(uint16 handle, uint8 status, uint8 reason);
+	bool HandleLEEncryptionChange(uint16 handle, uint8 status, bool enabled);
 
 	RemoteDevicesList	fRemoteDevicesList;
 

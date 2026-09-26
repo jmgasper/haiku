@@ -1,6 +1,6 @@
 # Tested status
 
-Updated 2026-09-22 (Australia/Hobart). This page distinguishes lab readiness from native Haiku
+Updated 2026-09-25 (Australia/Hobart). This page distinguishes lab readiness from native Haiku
 support. No hardware row in the roadmap is accepted merely because Linux or
 firmware supports it.
 
@@ -9,7 +9,165 @@ remaining CPU, network, storage, GPU, media, audio and AX210 work. The regular
 ARM64 [full image](FULL-BUILD.md) is installed and boots from NVMe. CPU,
 onboard Ethernet, NVMe TRIM/MSI-X and installed 3D application results are
 recorded at the end of this page. Media and analog audio playback are now
-qualified; AX210 work follows.
+qualified. The [AX210 status](AX210.md) records native Wi-Fi association,
+HE capability scans, Bluetooth firmware loading, Classic inquiry and LE
+advertisement discovery. The AX210 now joins the 5 GHz Gaspers network at
+802.11ax, obtains DHCP, reports a two-stream HE rate, and carries gateway and
+internet traffic with Ethernet down. The current HE rate configuration uses
+20 MHz; wider-channel parity with the 40 MHz Linux reference and other Wi-Fi 6
+modes remain open. Bluetooth LE connection initiation and cancellation pass on
+the native AX210. A live MX Master 2S reached an LE connection during pairing,
+but the SMP exchange stalled; encryption, bonding, and mouse input are not yet
+verified.
+The [Wi-Fi and Bluetooth preferences update](AX210.md#wi-fi-and-bluetooth-preferences-2026-09-24)
+adds a dedicated WiFi panel and Deskbar applet, groups mesh access points by
+SSID and security type, and makes Bluetooth scan results usable when a Classic
+peer does not provide a name. The
+Bluetooth inquiry panel now keeps a bounded LE scan running if Classic inquiry
+fails. The revised app is installed and a native scan returned LE devices;
+the Classic-failure branch still needs a live failure test. An MX Master 2S
+appeared by name as an LE mouse; its pairing remains unresolved. The
+new Wi-Fi UI is installed on the board. Its panel joined Gaspers with its
+password field, obtained DHCP, and carried
+gateway and internet traffic with Ethernet down. The separate applet reported
+SSID and strength and survived a reboot. The later Network preferences
+revision fixes selection from its grouped WiFi menu. The dedicated panel
+clears an entered password when switching networks; both revisions are
+installed and exercised natively. The WiFi panel now offers a default-on
+remember option: a native join saved Gaspers by SSID in a mode-`0600` settings
+file, and a password-free manual join reused it after reboot. A separate
+short-lived `wifiautojoin` helper now joins a saved network at boot without
+running a scan on Deskbar's UI thread. After an orderly Rock 5 reboot, the
+WiFi panel showed Gaspers connected without a manual join, and `ifconfig`
+reported DHCP address `192.168.1.156`. The earlier applet scanning experiment
+was rolled back to the working applet. The applet now
+routes unsaved protected networks to the dedicated panel with
+the SSID selected, while a saved Gaspers entry joins directly. Its latest
+installed revision returned automatically after an orderly board reboot and
+showed the grouped menu. ARM64 and x86_64 targeted builds pass; x86_64 native
+UI use remains open. The applet now offers a Disconnect action while
+associated. On the board it left Gaspers, then a selection from the grouped
+menu rejoined and obtained `192.168.1.153` by DHCP. The native **Scan again**
+trial then exposed an OpenBSD WLAN adapter issue: reading scan results
+implicitly began a background scan, and the explicit scan request did not
+start one. A revised `iaxwifi200` override makes result reads passive and
+starts a scan only on request, without selecting a new mesh BSS on scan
+completion. ARM64/x86_64 targeted builds and the full ARM64 QEMU boot passed.
+The installed driver survived an NVMe reboot; applet rescan and native
+`ifconfig scan` completed while Gaspers remained associated with DHCP address
+`192.168.1.153`. The installed WiFi panel now requests one scan when opened:
+a native reopen replaced a stale single-network cache entry with grouped
+Gaspers and Gaspers_ioT within 12 seconds. The latest panel hides stale
+network rows while a scan is in progress and enables Connect only after fresh
+results arrive. Native opening and manual rescan both returned the grouped,
+secured list while Gaspers stayed connected. The panel also
+now refreshes adapter discovery
+while open, clears a vanished adapter's stale networks, and retained a
+selected Gaspers entry through a native periodic refresh. Adapter hotplug
+itself remains untested. The current WiFi panel saves a newly entered
+password only after the selected network associates and reports link, since
+`JoinNetwork()` initially reports only that the request was submitted. An
+empty password is accepted for an already saved network; pending joins have a
+60-second timeout. ARM64/x86_64 builds and the full ARM64 QEMU boot pass. On
+the board, an empty-password attempt for unsaved Gaspers_ioT was rejected;
+an invalid password reached the existing retry dialog and then timed out.
+Gaspers_ioT was absent from the saved-network file before and after that
+trial. Selecting saved Gaspers in WiFiStatus restored WPA2 association and
+DHCP address `192.168.1.153`. A successful first-time save with the current
+panel remains to be verified. Both WiFi surfaces now require link before
+showing an association as connected. A native cache regression had replaced
+the panel's grouped list with one falsely **Open** Gaspers row on a periodic
+refresh; it now retains the last completed scan until the next requested
+scan. The active association supplies security details for its matching
+BSSID. ARM64/x86_64 builds and the full ARM64 QEMU boot passed, and the
+installed panel kept Gaspers and Gaspers_ioT as secured rows through more
+than seven refresh ticks. Another native trial showed a stale NetServer scan
+cache could turn a secured Gaspers_ioT join into an **Open – no encryption**
+dialog. The latest panel sends the selected security mode with new join
+requests; ARM64/x86_64 builds and the full ARM64 QEMU boot passed. An
+invalid-password retry now displayed **WPA/WPA2**. Gaspers_ioT remained
+absent from saved networks, and rejoining saved Gaspers restored an encrypted
+link, DHCP address `192.168.1.154`, and two successful gateway pings. A
+native Disconnect/Connect cycle in the latest panel then reused saved Gaspers
+without entering a password and passed two more gateway pings. A further
+native trial supplied the known valid Gaspers password with Remember enabled:
+the panel authenticated, the mode-`0600` saved-network file was rewritten,
+its content matched a private recovery copy, and two gateway pings passed.
+The temporary credential copies were removed. A later first-time save trial
+removed the saved Gaspers entry through NetServer after backup: the helper
+reported zero saved networks, the panel required a password, and a valid
+Remember join recreated the entry with mode `0600` and byte-for-byte content
+matching the backup. Gateway pings and an applet reconnect using that newly
+saved entry passed. The temporary helper and copies were removed. Bluetooth
+preferences scans Classic and LE
+advertisements, exposes a Pair action for a
+selected connectable LE peer, and reports pairing errors by stage. A native
+scan of the latest installed panel kept Pair enabled for a connectable peer
+and disabled it with a pairing-mode hint for a peer seen only in
+nonconnectable reports. The installed stack
+includes legacy Just Works SMP, controller encryption, a private reusable bond
+store, encrypted reconnection, ATT notification handling, HID service discovery
+and a report-map mouse decoder. An input server add-on for paired HID mice is
+installed and loaded on the Rock 5. The main preferences window now has a
+separate saved LE mouse list and a clearer Scan for devices action. The
+installed panel showed the empty list and opened the scan window natively;
+the populated list awaits a paired mouse.
+The LE scan now uses advertised Mouse Appearance and HID service hints to
+identify otherwise unnamed candidates. The parser and both architecture
+builds pass, and the latest board app completed a native scan; no observed
+peer advertised mouse or HID fields. The Classic Headphones address has a
+Cambridge Silicon Radio prefix in the local IEEE assignment dataset, which
+does not identify the particular product.
+The installed Classic scan now recovers its controls after an inquiry error,
+and Classic Connect uses a cached name or address without a blocking name
+request. The no-controller scan window closed safely on the board. After a
+service-only restart, two scans found the same Classic address but no LE
+peers. A direct probe confirmed that this restart accepts LE scan requests
+but never reports scan start, even after a 30-second wait. The updated panel
+now times out the missing scan-start notice and reports an error; ARM64 and
+x86_64 builds pass, and the installed app exercised both success and failure
+paths natively. Running the AX210 boot helper restored LE scanning without a
+reboot (46 reports in six seconds). The preferences Start menu now uses an
+optional portable startup hook; the Rock 5 hook runs the AX210 helper. A menu
+Stop/Start then produced 47 LE reports in six seconds, and the preferences
+scan again listed Classic and LE devices. A raw server-only restart still
+needs controller initialization; its specific failure cause remains open.
+The installed Bluetooth preferences now offers a confirmed Forget action for
+a selected saved LE mouse. ARM64/x86_64 builds and the full ARM64 QEMU check
+pass; on the board the empty-list action is disabled and a new Classic/LE scan
+completed. The populated-list Forget path awaits an actual paired mouse.
+Bonded mouse reconnection now resolves rotating LE addresses from the saved
+identity key before connecting; the published Bluetooth `ah` vector passes
+on the host and natively, and the revised add-on is loaded after reboot.
+The ATT and SMP socket waits now use `poll()` so the mouse path does not depend
+on the process's descriptor count. High-descriptor scripted cases pass on the
+host; native protocol cases pass, and both Bluetooth services load the revised
+library after reboot.
+The LE mouse input add-on now releases held buttons if its notification stream
+ends during a disconnect. ARM64/x86_64 targeted builds and the full ARM64
+EL2/xHCI QEMU boot pass; the hash-verified add-on is installed on the Rock 5
+with a restore copy. A synced restart returned to the desktop, and
+`listimage` showed the new nonpackaged add-on loaded by `input_server`. Gaspers
+did not auto-join at that boot; the installed WiFi panel rejoined its saved
+entry without a password and showed 65% signal. A later `wifiautojoin`
+installation and reboot verified automatic Gaspers association. A live mouse is still needed to
+exercise the button-release path.
+Scripted protocol and decoder tests pass on the host and Rock 5; the full
+ARM64 image build and QEMU boot also pass. With the user's mouse in pairing
+mode, a native scan identified **MX Master 2S** and the pairing worker reached
+the SMP exchange after the LE connection notice. It then remained waiting for
+minutes, with no bond or pointer event. A diagnostic preferences app and
+library showing finer SMP progress are installed for the next live attempt;
+pairing, reconnection, and pointer events remain unverified.
+The stalled exchange also left the Bluetooth server unable to answer a new
+preferences launch. An orderly reboot restored the desktop, preferences, and
+native Classic/LE scans; the mouse did not appear in those later scans.
+The WiFi and Bluetooth applications, supporting libraries and LE mouse input
+add-on also pass a targeted x86_64 cross-build from this fork
+(`artifacts/wifi-bt-x86-build.json`). An x86_64 runtime test and full image
+build remain open.
+See the [AX210 status](AX210.md#le-hid-mouse-bridge-and-native-installation)
+for the exact image, installed paths, backups and evidence.
 
 The system-default OpenGL candidate ([MESA-SYSTEM.md](MESA-SYSTEM.md), Mesa
 at `3139063445` on the qualified +256 image) runs GLTeapot on Mali with no
@@ -502,8 +660,9 @@ control and PWM fan. Identification does not establish Haiku driver support.
 The installed 256 GB Samsung 950 Pro NVMe SSD is identified in ROOBI. The owner
 authorizes erasing its existing data for testing and eventual Haiku installation.
 Native Haiku PCIe/NVMe discovery and a full-capacity SSD installation now work
-through the explicit firmware profile described below. No SATA disk or
-Wi-Fi/Bluetooth module has been identified as installed.
+through the explicit firmware profile described below. No SATA disk was
+identified at this inventory stage; the Intel AX210 Wi-Fi/Bluetooth module
+was subsequently installed and identified.
 Additional storage, network peers, audio loopback/receivers, displays and camera
 fixtures are needed for the corresponding acceptance tests. The owner confirmed
 PCB revision v1.12 on 2026-09-11.

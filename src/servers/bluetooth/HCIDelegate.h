@@ -47,6 +47,11 @@ class HCIDelegate {
 			// TODO: hci control flow
 		} 
 
+		// Command flow control: called with Num_HCI_Command_Packets from each
+		// Command Complete/Status event, and periodically.
+		virtual void CommandCredits(uint8 credits) {}
+		virtual void Pulse() {}
+
 
 		status_t QueueCommand(raw_command rc, size_t size) 
 		{

@@ -502,15 +502,17 @@ LocalDevice::_ReadLinkKeys()
 {
 	uint8 bt_status = BT_ERROR;
 
-	BluetoothCommand<> LocalFeatures(OGF_CONTROL_BASEBAND,
+	BluetoothCommand<typed_command(hci_read_stored_link_key)> readStoredKeys(OGF_CONTROL_BASEBAND,
 		OCF_READ_STORED_LINK_KEY);
+	memset(&readStoredKeys->bdaddr, 0, sizeof(readStoredKeys->bdaddr));
+	readStoredKeys->all_keys_flag = 1;
 
 	BMessage request(BT_MSG_HANDLE_SIMPLE_REQUEST);
 	BMessage reply;
 
 	request.AddInt32("hci_id", fHid);
 	request.AddData("raw command", B_ANY_TYPE,
-		LocalFeatures.Data(), LocalFeatures.Size());
+		readStoredKeys.Data(), readStoredKeys.Size());
 	request.AddInt16("eventExpected",  HCI_EVENT_CMD_COMPLETE);
 	request.AddInt16("opcodeExpected", PACK_OPCODE(OGF_CONTROL_BASEBAND,
 		OCF_READ_STORED_LINK_KEY));

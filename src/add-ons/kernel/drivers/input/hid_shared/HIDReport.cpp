@@ -10,7 +10,9 @@
 #endif
 
 #include "HIDCollection.h"
+#ifndef USERLAND_HID
 #include "HIDDevice.h"
+#endif
 #include "HIDReport.h"
 #include "HIDReportItem.h"
 

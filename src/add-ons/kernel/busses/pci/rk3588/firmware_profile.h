@@ -29,12 +29,13 @@ struct PortProfile {
 };
 
 // Only root/endpoint pairs independently captured under EDK2 and Haiku.
-// Segment 2 is disabled and must never be accessed by this profile.
 static const PortProfile kPorts[] = {
 	{0, UINT64_C(0xa40000000), UINT64_C(0x900100000), 0xf0000000,
 		0x61001f99, 0x010802, 1, "NVMe SSD"},
 	{1, UINT64_C(0xa40400000), UINT64_C(0x940100000), 0xf1000000,
 		0x11641b21, 0x010601, 2, "ASM1164"},
+	{2, UINT64_C(0xa40800000), UINT64_C(0x980100000), 0xf2000000,
+		0x27258086, 0x028000, 0x1a, "Intel AX210"},
 	{3, UINT64_C(0xa40c00000), UINT64_C(0x9c0100000), 0xf3000000,
 		0x812510ec, 0x020000, 5, "RTL8125"},
 	{4, UINT64_C(0xa41000000), UINT64_C(0xa00100000), 0xf4000000,
@@ -54,7 +55,7 @@ FindPort(uint64_t rootConfig)
 inline bool
 ProfileAllowsPort(const char* profile, const PortProfile& port)
 {
-	return ((port.segment == 0 || port.segment == 1 || port.segment == 3
+	return ((port.segment == 0 || port.segment == 1 || port.segment == 2 || port.segment == 3
 			|| port.segment == 4)
 			&& strcmp(profile, "rock5-itx-edk2-v1.1-dt-onboard") == 0)
 		|| (port.segment == 0
@@ -147,7 +148,8 @@ EndpointMatches(const uint32_t* config, uint64_t memoryBase, uint64_t memorySize
 	const PortProfile& port = kPorts[0])
 {
 	if (!EndpointIdMatches(config[0], port) || config[2] >> 8 != port.classCode
-		|| ((config[3] >> 16) & 0xff) != 0 || (config[1] & 2) == 0) {
+		|| ((config[3] >> 16) & 0xff) != 0
+		|| (port.segment != 2 && (config[1] & 2) == 0)) {
 		return false;
 	}
 	if (port.segment == 0)
@@ -160,6 +162,10 @@ EndpointMatches(const uint32_t* config, uint64_t memoryBase, uint64_t memorySize
 			&& MemoryBarMatches(config, 5, 0, 0x2000, memoryBase, memorySize)
 			&& config[4] != config[9];
 	}
+	// EDK2 assigns the AX210 BAR but leaves memory decoding disabled. The PCI
+	// core enables the command register after importing this fixed resource.
+	if (port.segment == 2)
+		return MemoryBarMatches(config, 0, 4, 0x4000, memoryBase, memorySize);
 	if (port.segment == 3 || port.segment == 4) {
 		if (!MemoryBarMatches(config, 2, 4, 0x10000, memoryBase, memorySize)
 			|| !MemoryBarMatches(config, 4, 4, 0x4000, memoryBase, memorySize)) {

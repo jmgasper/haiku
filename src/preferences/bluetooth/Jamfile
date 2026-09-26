@@ -6,27 +6,30 @@ UsePrivateHeaders shared ;
 AddResources Bluetooth : Bluetooth.rdef ;
 
 Application Bluetooth :
+	AdvancedWindow.cpp
 	BluetoothDeviceView.cpp
 	BluetoothMain.cpp
 	BluetoothSettings.cpp
 	BluetoothSettingsView.cpp
 	BluetoothWindow.cpp
+	BluetoothWorkers.cpp
+	DeviceIcons.cpp
 	DeviceListItem.cpp
+	DeviceModel.cpp
 	ExtendedLocalDeviceView.cpp
-	InquiryPanel.cpp
-	RemoteDevicesView.cpp
+	NearbyScanner.cpp
 	: be shared libbluetooth.so [ TargetLibsupc++ ] localestub
 	;
 
 DoCatalogs Bluetooth :
 	x-vnd.Haiku-BluetoothPrefs
 	:
+	AdvancedWindow.cpp
 	BluetoothDeviceView.cpp
 	BluetoothMain.cpp
 	BluetoothSettingsView.cpp
 	BluetoothWindow.cpp
+	DeviceModel.cpp
 	ExtendedLocalDeviceView.cpp
-	InquiryPanel.cpp
-	RemoteDevicesView.cpp
+	NearbyScanner.cpp
 ;
-

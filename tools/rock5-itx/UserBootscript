@@ -5,6 +5,19 @@ for file in "$HOME"/config/settings/boot/launch/*; do
 	[ -e "$file" ] && /bin/open "$file" &
 done
 
+# The AX210's USB function starts in Intel bootloader mode on every cold boot.
+# This helper waits for h2generic, loads its operational image, then starts HCI.
+/bin/sh /boot/home/config/settings/boot/start-ax210-bluetooth.sh > /dev/dprintf 2>&1 &
+
+# Join a remembered WiFi network after the adapter and net_server are ready.
+# Existing installations may already launch the helper through the user's
+# boot/launch directory, which the loop above handles.
+if [ ! -e "$HOME/config/settings/boot/launch/wifiautojoin" ]; then
+	wifi_autojoin=/boot/home/config/non-packaged/bin/wifiautojoin
+	[ -x "$wifi_autojoin" ] || wifi_autojoin=/boot/system/bin/wifiautojoin
+	[ -x "$wifi_autojoin" ] && "$wifi_autojoin" > /dev/dprintf 2>&1 &
+fi
+
 (
 	sleep 10
 	echo ROCK5_PROBE_BEGIN

@@ -370,6 +370,22 @@ struct ieee80211_node {
 	uint8_t			ni_vht_chan_center_freq_idx1;
 	uint16_t		ni_vht_basic_mcs;
 
+	/* HE capabilities and operation from extension elements. */
+	uint8_t			ni_he_mac_cap[IEEE80211_HE_MAC_CAPS_LEN];
+	uint8_t			ni_he_phy_cap[IEEE80211_HE_PHY_CAPS_LEN];
+	uint16_t		ni_he_rxmcs_80;
+	uint16_t		ni_he_txmcs_80;
+	uint16_t		ni_he_rxmcs_160;
+	uint16_t		ni_he_txmcs_160;
+	uint16_t		ni_he_rxmcs_80p80;
+	uint16_t		ni_he_txmcs_80p80;
+	uint8_t			ni_he_ppe_len;
+	uint8_t			ni_he_ppe[IEEE80211_HE_PPE_MAX_LEN];
+	uint8_t			ni_he_oper_params[IEEE80211_HEOP_PARAMS_LEN];
+	uint16_t		ni_he_basic_mcs;
+	uint8_t			ni_hecaps_ie_len;
+	uint8_t			ni_hecaps_ie[IEEE80211_HE_CAPS_IE_MAX_LEN];
+
 	/* Timeout handlers which trigger Tx Block Ack negotiation. */
 	struct timeout		ni_addba_req_to[IEEE80211_NUM_TID];
 	int			ni_addba_req_intval[IEEE80211_NUM_TID];
@@ -381,6 +397,16 @@ struct ieee80211_node {
 
 	int			ni_txmcs;	/* current MCS used for TX */
 	int			ni_vht_ss;	/* VHT # spatial streams */
+	int			ni_he_ss;	/* HE # spatial streams */
+#ifdef __HAIKU__
+	/* Last transmit rate reported by the driver (IEEE80211_IOC_HAIKU_TX_RATE) */
+	uint32_t		ni_haiku_tx_kbps;
+	uint8_t			ni_haiku_tx_mode;
+	uint8_t			ni_haiku_tx_mcs;
+	uint8_t			ni_haiku_tx_nss;
+	uint8_t			ni_haiku_tx_gi;	/* 100 ns units */
+	uint16_t		ni_haiku_tx_width;	/* MHz */
+#endif
 
 	/* others */
 	u_int16_t		ni_associd;	/* assoc response */
@@ -427,6 +453,8 @@ struct ieee80211_node {
 #define IEEE80211_NODE_VHTCAP		0x40000	/* claims to support VHT */
 #define IEEE80211_NODE_VHT_SGI80	0x80000	/* SGI on 80 MHz negotiated */ 
 #define IEEE80211_NODE_VHT_SGI160	0x100000 /* SGI on 160 MHz negotiated */ 
+#define IEEE80211_NODE_HE		0x200000 /* HE negotiated */
+#define IEEE80211_NODE_HECAP		0x400000 /* HE capability advertised */
 
 	/* If not NULL, this function gets called when ni_refcnt hits zero. */
 	void			(*ni_unref_cb)(struct ieee80211com *,
@@ -602,6 +630,16 @@ ieee80211_node_supports_vht_chan160(struct ieee80211_node *ni)
 
 struct ieee80211com;
 
+static inline int
+ieee80211_node_supports_he(struct ieee80211_node *ni)
+{
+	uint16_t rx_mcs = (ni->ni_he_rxmcs_80 &
+	    IEEE80211_HE_MCS_FOR_SS_MASK(1)) >>
+	    IEEE80211_HE_MCS_FOR_SS_SHIFT(1);
+	return (ni->ni_flags & IEEE80211_NODE_HECAP) &&
+	    rx_mcs != IEEE80211_HE_MCS_SS_NOT_SUPP;
+}
+
 typedef void ieee80211_iter_func(void *, struct ieee80211_node *);
 
 void ieee80211_node_attach(struct ifnet *);
@@ -639,6 +677,10 @@ int ieee80211_setup_htop(struct ieee80211_node *, const uint8_t *,
     uint8_t, int);
 void ieee80211_setup_vhtcaps(struct ieee80211_node *, const uint8_t *,
     uint8_t);
+void ieee80211_setup_hecaps(struct ieee80211_node *, const uint8_t *, uint8_t);
+int ieee80211_setup_heop(struct ieee80211_node *, const uint8_t *, uint8_t,
+    int);
+void ieee80211_clear_hecaps(struct ieee80211_node *);
 void ieee80211_clear_vhtcaps(struct ieee80211_node *);
 int ieee80211_setup_vhtop(struct ieee80211_node *, const uint8_t *,
     uint8_t, int);
@@ -677,6 +719,56 @@ RBT_PROTOTYPE(ieee80211_ess_tree, ieee80211_ess_rbt, ess_rbt, ieee80211_ess_cmp)
 #ifdef __FreeBSD_version
 void ieee80211_node_raise_inact(void *arg, struct ieee80211_node *ni);
 void ieee80211_clean_inactive_nodes(struct ieee80211com *ic, int inact_max);
+#endif
+
+#ifdef __HAIKU__
+/* ni_haiku_tx_mode values; the same numbers as IEEE80211_IOC_HAIKU_TX_RATE */
+#define IEEE80211_HAIKU_TX_MODE_UNKNOWN	0
+#define IEEE80211_HAIKU_TX_MODE_LEGACY	1
+#define IEEE80211_HAIKU_TX_MODE_HT		2
+#define IEEE80211_HAIKU_TX_MODE_VHT		3
+#define IEEE80211_HAIKU_TX_MODE_HE		4
+
+/*
+ * PHY data rate in kbit/s for an HT (mode 2), VHT (3) or HE (4) MCS:
+ * data subcarriers x coded bits x coding rate x streams / symbol time.
+ * width is in MHz, gi in units of 100 ns. Returns 0 if unknown.
+ */
+static inline uint32_t
+ieee80211_haiku_mcs_kbps(int mode, int mcs, int nss, int width, int gi)
+{
+	/* bits per subcarrier and coding rate (x12) per MCS */
+	static const uint8_t bits[] = { 1, 2, 2, 4, 4, 6, 6, 6, 8, 8, 10, 10 };
+	static const uint8_t rate12[] = { 6, 6, 9, 6, 9, 8, 9, 10, 9, 10, 9, 10 };
+	uint32_t subcarriers, symbol;	/* symbol duration in 100 ns */
+
+	if (mcs < 0 || mcs > 11 || nss < 1 || nss > 8
+	    || (mode != 4 && mcs > 9))
+		return 0;
+	if (mode == 4) {
+		switch (width) {
+		case 20: subcarriers = 234; break;
+		case 40: subcarriers = 468; break;
+		case 80: subcarriers = 980; break;
+		case 160: subcarriers = 1960; break;
+		default: return 0;
+		}
+		symbol = 128 + (gi != 0 ? gi : 8);
+	} else if (mode == 2 || mode == 3) {
+		switch (width) {
+		case 20: subcarriers = 52; break;
+		case 40: subcarriers = 108; break;
+		case 80: subcarriers = 234; break;
+		case 160: subcarriers = 468; break;
+		default: return 0;
+		}
+		symbol = gi == 4 ? 36 : 40;
+	} else
+		return 0;
+	/* kbit/s = sc * bits * (rate12 / 12) * nss / (symbol * 100 ns) */
+	return (uint32_t)((uint64_t)subcarriers * bits[mcs] * rate12[mcs] * nss
+	    * 10000 / (12 * symbol));
+}
 #endif
 
 #endif /* _NET80211_IEEE80211_NODE_H_ */

@@ -301,6 +301,7 @@ uint64_t	ifmedia_baudrate(int);
 /* NB: not enough bits to express MCS fully */
 #define	IFM_IEEE80211_MCS	24	/* HT MCS rate */
 #define	IFM_IEEE80211_VHT	25	/* VHT MCS rate */
+#define	IFM_IEEE80211_HE	26	/* HE MCS rate */
 
 #define	IFM_IEEE80211_ADHOC	0x00000100	/* Operate in Adhoc mode */
 #define	IFM_IEEE80211_HOSTAP	0x00000200	/* Operate in Host AP mode */
@@ -319,6 +320,8 @@ uint64_t	ifmedia_baudrate(int);
 #define	IFM_IEEE80211_11NG	0x00060000	/* 2Ghz, HT mode */
 #define	IFM_IEEE80211_VHT5G	0x00070000	/* 5Ghz, VHT mode */
 #define	IFM_IEEE80211_VHT2G	0x00080000	/* 2Ghz, VHT mode */
+#define	IFM_IEEE80211_HE5G	0x00090000	/* 5Ghz, HE mode */
+#define	IFM_IEEE80211_HE2G	0x000a0000	/* 2Ghz, HE mode */
 
 /*
  * ATM
@@ -364,7 +367,7 @@ uint64_t	ifmedia_baudrate(int);
 #define	IFM_IMASK	0xf0000000	/* Instance */
 #define	IFM_ISHIFT	28		/* Instance shift */
 #define	IFM_OMASK	0x0000ff00	/* Type specific options */
-#define	IFM_MMASK	0x00070000	/* Mode */
+#define	IFM_MMASK	0x000f0000	/* Mode (includes 802.11ax modes 9 and 10) */
 #define	IFM_MSHIFT	16		/* Mode shift */
 #define	IFM_GMASK	0x0ff00000	/* Global options */
 
@@ -623,6 +626,7 @@ struct ifmedia_description {
 	{ IFM_IEEE80211_OFDM27, "OFDM/27Mbps" },			\
 	{ IFM_IEEE80211_MCS, "MCS" },					\
 	{ IFM_IEEE80211_VHT, "VHT" },					\
+	{ IFM_IEEE80211_HE, "HE" },					\
 	{ 0, NULL },							\
 }
 
@@ -687,6 +691,8 @@ struct ifmedia_description {
 	{ IFM_IEEE80211_11NG, "11ng" },					\
 	{ IFM_IEEE80211_VHT5G, "11ac" },				\
 	{ IFM_IEEE80211_VHT2G, "11ac2" },				\
+	{ IFM_IEEE80211_HE5G, "11ax" },				\
+	{ IFM_IEEE80211_HE2G, "11ax2" },				\
 	{ 0, NULL },							\
 }
 

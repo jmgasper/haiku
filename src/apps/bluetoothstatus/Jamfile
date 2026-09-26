@@ -1,0 +1,21 @@
+SubDir HAIKU_TOP src apps bluetoothstatus ;
+
+UsePrivateHeaders bluetooth ;
+
+# Deskbar loads this applet into its own team, where an older system
+# libbluetooth.so may be found first; build the few kit pieces in.
+SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) src kits bluetooth ] ;
+
+Application BluetoothStatus :
+	BluetoothStatus.cpp
+	LEBondStore.cpp
+	LEDeviceStatus.cpp
+	: be [ TargetLibstdc++ ] localestub
+	: BluetoothStatus.rdef
+;
+
+DoCatalogs BluetoothStatus :
+	x-vnd.Haiku-BluetoothStatus
+	:
+	BluetoothStatus.cpp
+;

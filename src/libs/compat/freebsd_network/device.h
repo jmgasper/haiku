@@ -37,6 +37,7 @@ struct root_device_softc {
 	struct pci_info	pci_info;
 	bool			is_msi;
 	bool			is_msix;
+	uint32			msi_start_vector;
 
 	struct freebsd_usb_device* usb_dev;
 };

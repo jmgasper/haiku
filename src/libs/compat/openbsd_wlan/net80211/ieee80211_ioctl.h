@@ -358,6 +358,8 @@ struct ieee80211_nodereq {
 
 	/* VHT */
 	uint8_t			nr_vht_ss;
+	uint8_t			nr_hecaps_ie_len;
+	uint8_t			nr_hecaps_ie[IEEE80211_HE_CAPS_IE_MAX_LEN];
 
 	u_int32_t	nr_assoc_fail;	/* association failure reasons */
 };
@@ -375,6 +377,7 @@ struct ieee80211_nodereq {
 #define IEEE80211_NODEREQ_COPY		0x04	/* add node with flags */
 #define IEEE80211_NODEREQ_HT		0x08	/* HT negotiated */
 #define IEEE80211_NODEREQ_VHT		0x10	/* VHT negotiated */
+#define IEEE80211_NODEREQ_HECAP		0x20	/* HE capability advertised */
 
 #define SIOCG80211NODE		_IOWR('i', 211, struct ieee80211_nodereq)
 #define SIOCS80211NODE		 _IOW('i', 212, struct ieee80211_nodereq)

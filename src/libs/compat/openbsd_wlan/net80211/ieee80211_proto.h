@@ -64,6 +64,7 @@ struct ieee80211_node;
 struct ieee80211_rxinfo;
 struct ieee80211_rsnparams;
 extern	void ieee80211_rtm_80211info_task(void *);
+extern	void ieee80211_notify_scan_done(struct ifnet *);
 extern	void ieee80211_set_link_state(struct ieee80211com *, int);
 extern	u_int ieee80211_get_hdrlen(const struct ieee80211_frame *);
 extern	int ieee80211_classify(struct ieee80211com *, struct mbuf *);
@@ -168,6 +169,8 @@ extern	void ieee80211_sa_query_request(struct ieee80211com *,
 extern	void ieee80211_ht_negotiate(struct ieee80211com *,
     struct ieee80211_node *);
 extern	void ieee80211_vht_negotiate(struct ieee80211com *,
+    struct ieee80211_node *);
+extern	void ieee80211_he_negotiate(struct ieee80211com *,
     struct ieee80211_node *);
 extern	void ieee80211_tx_ba_timeout(void *);
 extern	void ieee80211_rx_ba_timeout(void *);

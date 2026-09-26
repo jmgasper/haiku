@@ -5,6 +5,12 @@ SubDir HAIKU_TOP src kits bluetooth ;
 #}
 
 UsePrivateHeaders shared bluetooth ;
+UsePrivateHeaders drivers ;
+UsePrivateHeaders kernel ;
+UseHeaders [ FDirName $(HAIKU_TOP) src add-ons kernel drivers input
+	hid_shared ] [ FDirName $(HAIKU_TOP) src bin hid_decode ]
+	[ FDirName $(HAIKU_TOP) headers private kernel ] ;
+SubDirC++Flags -DUSERLAND_HID ;
 
 SubDirHdrs [ FDirName $(SUBDIR) UI ] ;
 
@@ -13,6 +19,9 @@ for architectureObject in [ MultiArchSubDirSetup ] {
 	on $(architectureObject) {
 
 		SEARCH_SOURCE += [ FDirName $(SUBDIR) UI ] ;
+		SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) src libs compat openbsd_wlan crypto ] ;
+		SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) src add-ons kernel drivers
+			input hid_shared ] ;
 
 		SharedLibrary [ MultiArchDefaultGristFiles libbluetooth.so ] :
 			LocalDevice.cpp
@@ -21,6 +30,20 @@ for architectureObject in [ MultiArchSubDirSetup ] {
 			RemoteDevice.cpp
 			CommandManager.cpp
 			KitSupport.cpp
+			LEAttributeClient.cpp
+			LEHIDService.cpp
+			LEHIDMouseDecoder.cpp
+			HIDCollection.cpp
+			HIDParser.cpp
+			HIDReport.cpp
+			HIDReportItem.cpp
+			LELegacyPairingCrypto.cpp
+			LELegacyPairingClient.cpp
+			LEBondStore.cpp
+			LEPairingSession.cpp
+			LELog.cpp
+			LEDeviceStatus.cpp
+			aes.c
 			DeviceClass.cpp
 			#UI
 			PincodeWindow.cpp
@@ -28,7 +51,7 @@ for architectureObject in [ MultiArchSubDirSetup ] {
 			ConnectionView.cpp
 			BluetoothIconView.cpp
 			:
-			be localestub [ TargetLibstdc++ ]
+			be network localestub [ TargetLibstdc++ ]
 		;
 	}
 }

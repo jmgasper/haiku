@@ -797,6 +797,25 @@ struct ieee80211_haiku_join_req {
 	uint8 i_key[];
 #endif
 };
+
+/*
+	Haiku extension: the transmit rate the driver last used (or its rate
+	control last selected) towards the associated access point. Fields are
+	zero when the driver does not report them.
+*/
+#define IEEE80211_IOC_HAIKU_TX_RATE				0x6003
+struct ieee80211_haiku_tx_rate {
+	uint32 i_kbps;
+	uint8 i_mode;
+		/* 0 unknown, 1 legacy (CCK/OFDM), 2 HT, 3 VHT, 4 HE */
+	uint8 i_mcs;
+	uint8 i_nss;
+	uint8 i_guard_interval;
+		/* in units of 100 ns: 4, 8, 16 or 32 */
+	uint16 i_width;
+		/* channel width in MHz */
+	uint16 i_reserved;
+};
 #endif /* __HAIKU__ */
 
 /*

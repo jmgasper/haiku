@@ -73,6 +73,10 @@ AclAssembly(net_buffer* nbuf, hci_id hid)
 			con_handle);
 		conn = btCoreData->AddConnection(con_handle, BT_ACL, BDADDR_NULL, hid);
 	}
+	if (conn == NULL) {
+		gBufferModule->free(nbuf);
+		return ENOMEM;
+	}
 
 	// Verify connection state
 	if (conn->status!= HCI_CONN_OPEN) {
@@ -84,7 +88,8 @@ AclAssembly(net_buffer* nbuf, hci_id hid)
 
 
 	// Process packet
-	if (pb == HCI_ACL_PACKET_START) {
+	if (pb == HCI_ACL_PACKET_START
+		|| pb == HCI_ACL_PACKET_START_NON_FLUSHABLE) {
 		if (conn->currentRxPacket != NULL) {
 			TRACE("%s: Dropping incomplete L2CAP packet, got %" B_PRIu32
 				" want %d \n", __func__, conn->currentRxPacket->size, length );

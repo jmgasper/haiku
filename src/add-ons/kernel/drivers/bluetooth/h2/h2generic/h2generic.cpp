@@ -22,6 +22,7 @@
 #include "bluetooth/HCI/btHCI_transport.h"
 #include "h2cfg.h"
 #include "h2debug.h"
+#include "h2mediatek.h"
 #include "h2transactions.h"
 #include "h2util.h"
 #include "snet_buffer.h"
@@ -54,6 +55,24 @@ usb_support_descriptor supported_devices[] = {
 	// Generic Bluetooth USB device
 	// Class, SubClass, and Protocol codes that describe a Bluetooth device
 	{ UDCLASS_WIRELESS, UDSUBCLASS_RF, UDPROTO_BLUETOOTH, 0, 0 },
+	// Intel combo cards (Linux btusb BTUSB_INTEL_COMBINED). They report
+	// the Bluetooth class, but are listed explicitly like in btusb. Their
+	// firmware is loaded by bt_firmware before bluetooth_server runs.
+	{ 0, 0, 0, 0x8087, 0x07dc },	// Wireless 7260
+	{ 0, 0, 0, 0x8087, 0x0a2a },	// Wireless 7265 / 3160 / 3165
+	{ 0, 0, 0, 0x8087, 0x0aa7 },	// Wireless-AC 3168
+	{ 0, 0, 0, 0x8087, 0x0a2b },	// Wireless 8260 / 8265
+	{ 0, 0, 0, 0x8087, 0x0aaa },	// Wireless-AC 9460 / 9560
+	{ 0, 0, 0, 0x8087, 0x0025 },	// Wireless-AC 9260
+	{ 0, 0, 0, 0x8087, 0x0026 },	// Wi-Fi 6 AX201
+	{ 0, 0, 0, 0x8087, 0x0029 },	// Wi-Fi 6 AX200
+	{ 0, 0, 0, 0x8087, 0x0032 },	// Wi-Fi 6E AX210
+	{ 0, 0, 0, 0x8087, 0x0033 },	// Wi-Fi 6E AX211 / AX411
+	{ 0, 0, 0, 0x8087, 0x0035 },	// Wi-Fi 7 BE2xx
+	{ 0, 0, 0, 0x8087, 0x0036 },
+	{ 0, 0, 0, 0x8087, 0x0037 },
+	{ 0, 0, 0, 0x8087, 0x0038 },
+	{ 0, 0, 0, 0x8087, 0x0039 },
 
 	// Broadcom BCM2035
 	{ 0, 0, 0, 0x0a5c, 0x200a },
@@ -333,11 +352,19 @@ device_added(usb_device dev, void** cookie)
 	// Find endpoints that we need
 	for (size_t i = 0; i < config->interface_count; i++) {
 		uif = config->interface[i].active;
+
+		// Events and ACL data use the first interface only. MediaTek radios
+		// have a third interface whose bulk and interrupt endpoints look
+		// just like the HCI ones (from the x399-workstation branch).
+		bool primary = uif->descr->interface_number == 0;
+
 		for (e = 0; e < uif->descr->num_endpoints; e++) {
 
 			ep = &uif->endpoint[e];
 			switch (ep->descr->attributes & USB_ENDPOINT_ATTR_MASK) {
 				case USB_ENDPOINT_ATTR_INTERRUPT:
+					if (!primary)
+						break;
 					if (ep->descr->endpoint_address & USB_ENDPOINT_ADDR_DIR_IN) {
 						new_bt_dev->intr_in_ep = ep;
 						new_bt_dev->max_packet_size_intr_in = ep->descr->max_packet_size;
@@ -348,6 +375,8 @@ device_added(usb_device dev, void** cookie)
 					break;
 
 				case USB_ENDPOINT_ATTR_BULK:
+					if (!primary)
+						break;
 					if (ep->descr->endpoint_address & USB_ENDPOINT_ADDR_DIR_IN) {
 						new_bt_dev->bulk_in_ep = ep;
 						new_bt_dev->max_packet_size_bulk_in = ep->descr->max_packet_size;
@@ -544,6 +573,17 @@ device_open(const char* name, uint32 flags, void **cookie)
 		return B_ERROR;
 	}
 
+	// MediaTek radios answer no HCI command until they have their firmware.
+	// This runs at open rather than attach because it reads the firmware
+	// from disk. Other radios return at once.
+	status_t setupStatus = mediatek_setup(bdev);
+	if (setupStatus != B_OK) {
+		ERROR("%s: the radio could not be made ready: %s\n", __func__,
+			strerror(setupStatus));
+		TEST_AND_CLEAR(&bdev->state, RUNNING);
+		return setupStatus;
+	}
+
 	acquire_sem(bdev->lock);
 	// TX structures
 	for (i = 0; i < BT_DRIVER_TXCOVERAGE; i++) {
@@ -605,6 +645,8 @@ device_close(void* cookie)
 
 	if (bdev == NULL)
 		panic("bad cookie");
+	// Completion callbacks must stop submitting receives before cancellation.
+	const bool wasRunning = TEST_AND_CLEAR(&bdev->state, RUNNING);
 
 	// Clean queues
 
@@ -652,7 +694,7 @@ device_close(void* cookie)
 		btDevices->UnregisterDriver(bdev->hdev);
 
 	// unSet RUNNING
-	if (TEST_AND_CLEAR(&bdev->state, RUNNING)) {
+	if (!wasRunning) {
 		ERROR("%s: %s not running?\n", __func__, bdev->name);
 		return B_ERROR;
 	}
@@ -892,7 +934,8 @@ init_driver(void)
 	}
 
 	// Note: After here device_added and publish devices hooks are called
-	usb->register_driver(BLUETOOTH_DEVICE_DEVFS_NAME, supported_devices, 1, NULL);
+	usb->register_driver(BLUETOOTH_DEVICE_DEVFS_NAME, supported_devices,
+		B_COUNT_OF(supported_devices), NULL);
 	usb->install_notify(BLUETOOTH_DEVICE_DEVFS_NAME, &notify_hooks);
 
 	add_debugger_command("bth2generic", &dump_driver,

@@ -31,13 +31,10 @@ public:
 								{ return fCurrentSettings.localdeviceclass; }
 			int32			Policy() const
 								{ return fCurrentSettings.policy; }
-			int32			InquiryTime() const
-								{ return fCurrentSettings.inquirytime; }
 
 			void			SetPickedDevice(bdaddr_t pickeddevice);
 			void			SetLocalDeviceClass(DeviceClass localdeviceclass);
 			void			SetPolicy(int32 policy);
-			void			SetInquiryTime(int32 inquirytime);
 
 			void			LoadSettings();
 			void			SaveSettings();
@@ -47,7 +44,6 @@ private:
 				bdaddr_t pickeddevice;
 				DeviceClass localdeviceclass;
 				int32 policy;
-				int32 inquirytime;
 			};
 
 			SettingsMessage		fSettingsMessage;

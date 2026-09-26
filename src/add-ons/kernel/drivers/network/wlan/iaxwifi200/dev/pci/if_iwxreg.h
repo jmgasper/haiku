@@ -2015,6 +2015,7 @@ struct iwx_tx_queue_cfg_rsp {
 
 /* DATA_PATH group subcommand IDs */
 #define IWX_DQA_ENABLE_CMD	0x00
+#define IWX_STA_HE_CTXT_CMD	0x07
 #define IWX_RLC_CONFIG_CMD	0x08
 #define IWX_TLC_MNG_CONFIG_CMD	0x0f
 #define IWX_RX_BAID_ALLOCATION_CONFIG_CMD	0x16
@@ -4430,6 +4431,7 @@ struct iwx_mac_data_p2p_dev {
 #define IWX_MAC_FILTER_OUT_BCAST		(1 << 8)
 #define IWX_MAC_FILTER_IN_CRC32			(1 << 11)
 #define IWX_MAC_FILTER_IN_PROBE_REQUEST		(1 << 12)
+#define IWX_MAC_FILTER_IN_11AX			(1 << 14)
 
 /**
  * QoS flags
@@ -4849,6 +4851,66 @@ struct iwx_he_pkt_ext_v1 {
 struct iwx_he_pkt_ext_v2 {
 	uint8_t pkt_ext_qam_th[MAX_HE_SUPP_NSS][MAX_CHANNEL_BW_INDX_API_D_VER_3][2];
 } __packed; /* PKT_EXT_DOT11AX_API_S_VER_2 */
+
+/* Intel STA_HE_CTXT_CMD versions 1/2 and 3. Version 1 ends before
+ * max_bssid_indicator; version 2 includes the last eight bytes. */
+struct iwx_he_sta_context_cmd_v2 {
+	uint8_t sta_id;
+	uint8_t tid_limit;
+	uint8_t reserved1;
+	uint8_t reserved2;
+	uint32_t flags;
+	uint8_t ref_bssid_addr[6];
+	uint16_t reserved0;
+	uint32_t htc_flags;
+	uint8_t frag_flags;
+	uint8_t frag_level;
+	uint8_t frag_max_num;
+	uint8_t frag_min_size;
+	struct iwx_he_pkt_ext_v1 pkt_ext;
+	uint8_t bss_color;
+	uint8_t htc_trig_based_pkt_ext;
+	uint16_t frame_time_rts_th;
+	uint8_t rand_alloc_ecwmin;
+	uint8_t rand_alloc_ecwmax;
+	uint16_t reserved3;
+	struct iwx_he_backoff_conf trig_based_txf[IWX_AC_NUM];
+	uint8_t max_bssid_indicator;
+	uint8_t bssid_index;
+	uint8_t ema_ap;
+	uint8_t profile_periodicity;
+	uint8_t bssid_count;
+	uint8_t reserved4[3];
+} __packed;
+
+struct iwx_he_sta_context_cmd_v3 {
+	uint8_t sta_id;
+	uint8_t tid_limit;
+	uint8_t reserved1;
+	uint8_t reserved2;
+	uint32_t flags;
+	uint8_t ref_bssid_addr[6];
+	uint16_t reserved0;
+	uint32_t htc_flags;
+	uint8_t frag_flags;
+	uint8_t frag_level;
+	uint8_t frag_max_num;
+	uint8_t frag_min_size;
+	struct iwx_he_pkt_ext_v2 pkt_ext;
+	uint8_t bss_color;
+	uint8_t htc_trig_based_pkt_ext;
+	uint16_t frame_time_rts_th;
+	uint8_t rand_alloc_ecwmin;
+	uint8_t rand_alloc_ecwmax;
+	uint16_t puncture_mask;
+	struct iwx_he_backoff_conf trig_based_txf[IWX_AC_NUM];
+	uint8_t max_bssid_indicator;
+	uint8_t bssid_index;
+	uint8_t ema_ap;
+	uint8_t profile_periodicity;
+	uint8_t bssid_count;
+	uint8_t reserved4[3];
+} __packed;
 
 /**
  * struct iwx_mvm_sta_cfg_cmd - cmd structure to add a peer sta to the uCode's
@@ -5438,7 +5500,7 @@ enum {
 
 /* Bit 10 - OFDM HE */
 #define IWX_RATE_MCS_HE_POS_V1	10
-#define IWX_RATE_MCS_HE_MSK_V1	(1 << RATE_MCS_HE_POS_V1)
+#define IWX_RATE_MCS_HE_MSK_V1	(1 << IWX_RATE_MCS_HE_POS_V1)
 
 /*
  * Bit 11-12: (0) 20MHz, (1) 40MHz, (2) 80MHz, (3) 160MHz

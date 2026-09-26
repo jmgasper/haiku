@@ -288,8 +288,10 @@ pci_alloc_msi(device_t dev, int *count)
 		return ENODEV;
 	}
 
-	((struct root_device_softc *)dev->root->softc)->is_msi = true;
-	info->u.h0.interrupt_line = startVector;
+	struct root_device_softc* root
+		= (struct root_device_softc*)dev->root->softc;
+	root->is_msi = true;
+	root->msi_start_vector = startVector;
 	return EOK;
 }
 
@@ -299,8 +301,11 @@ pci_release_msi(device_t dev)
 {
 	pci_info* info = get_device_pci_info(dev);
 	gPci->unconfigure_msi(info->bus, info->device, info->function);
-	((struct root_device_softc *)dev->root->softc)->is_msi = false;
-	((struct root_device_softc *)dev->root->softc)->is_msix = false;
+	struct root_device_softc* root
+		= (struct root_device_softc*)dev->root->softc;
+	root->is_msi = false;
+	root->is_msix = false;
+	root->msi_start_vector = 0;
 	return EOK;
 }
 
@@ -341,8 +346,10 @@ pci_alloc_msix(device_t dev, int *count)
 		return ENODEV;
 	}
 
-	((struct root_device_softc *)dev->root->softc)->is_msix = true;
-	info->u.h0.interrupt_line = startVector;
+	struct root_device_softc* root
+		= (struct root_device_softc*)dev->root->softc;
+	root->is_msix = true;
+	root->msi_start_vector = startVector;
 	return EOK;
 }
 

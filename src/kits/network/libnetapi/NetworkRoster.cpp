@@ -224,6 +224,7 @@ BNetworkRoster::GetNextPersistentNetwork(uint32* cookie,
 	if (networkMessage.FindUInt32("key_mode", &network.key_mode) != B_OK)
 		network.key_mode = B_KEY_MODE_NONE;
 
+	(*cookie)++;
 	return B_OK;
 }
 
@@ -231,14 +232,24 @@ BNetworkRoster::GetNextPersistentNetwork(uint32* cookie,
 status_t
 BNetworkRoster::AddPersistentNetwork(const wireless_network& network)
 {
+	return AddPersistentNetwork(network, NULL);
+}
+
+
+status_t
+BNetworkRoster::AddPersistentNetwork(const wireless_network& network,
+	const char* password)
+{
 	BMessage message(kMsgAddPersistentNetwork);
 	BString networkName;
 	networkName.SetTo(network.name, sizeof(network.name));
 	status_t status = message.AddString("name", networkName);
-	if (status == B_OK) {
+	if (status == B_OK && network.address.InitCheck() == B_OK) {
 		BNetworkAddress address = network.address;
 		status = message.AddFlat("address", &address);
 	}
+	if (status == B_OK && password != NULL && password[0] != '\0')
+		status = message.AddString("password", password);
 
 	if (status == B_OK)
 		status = message.AddUInt32("flags", network.flags);

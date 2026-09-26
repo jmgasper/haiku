@@ -3,6 +3,8 @@
 # install ProcessController, NetworkStatus, PowerStatus & volume control in the Deskbar
 /boot/system/apps/ProcessController -deskbar
 /boot/system/apps/NetworkStatus --deskbar
+/boot/system/apps/WiFiStatus
+/boot/system/apps/BluetoothStatus
 /boot/system/apps/PowerStatus --deskbar
 /boot/system/bin/desklink --add-volume
 

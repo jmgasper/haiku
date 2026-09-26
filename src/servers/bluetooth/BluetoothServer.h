@@ -53,6 +53,7 @@ public:
 	virtual bool QuitRequested(void);
 	virtual void ArgvReceived(int32 argc, char **argv);
 	virtual void ReadyToRun(void);
+	virtual void Pulse(void);
 
 
 	virtual void AppActivated(bool act);

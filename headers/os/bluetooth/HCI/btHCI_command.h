@@ -21,6 +21,36 @@ struct hci_command_header {
 #define GET_OPCODE_OGF(op)		(op >> 10)
 #define GET_OPCODE_OCF(op)		(op & 0x03ff)
 
+#define OGF_LE_CONTROL				0x08
+#define OCF_LE_SET_EVENT_MASK			0x0001
+#define OCF_LE_SET_SCAN_PARAMETERS	0x000b
+#define OCF_LE_SET_SCAN_ENABLE		0x000c
+#define OCF_LE_CREATE_CONN			0x000d
+#define OCF_LE_CREATE_CONN_CANCEL	0x000e
+#define OCF_LE_START_ENCRYPTION		0x0019
+
+struct hci_cp_le_create_conn {
+	uint16		scan_interval;
+	uint16		scan_window;
+	uint8		filter_policy;
+	uint8		peer_address_type;
+	bdaddr_t	peer_address;
+	uint8		own_address_type;
+	uint16		connection_interval_min;
+	uint16		connection_interval_max;
+	uint16		connection_latency;
+	uint16		supervision_timeout;
+	uint16		minimum_ce_length;
+	uint16		maximum_ce_length;
+} __attribute__ ((packed));
+
+struct hci_cp_le_start_encryption {
+	uint16	connection_handle;
+	uint8	random_number[8];
+	uint16	encrypted_diversifier;
+	uint8	long_term_key[16];
+} __attribute__ ((packed));
+
 
 /* - Informational Parameters Command definition - */
 #define OGF_INFORMATIONAL_PARAM 0x04
@@ -64,6 +94,11 @@ struct hci_command_header {
 
 /* - Host Controller and Baseband Command definition - */
 #define OGF_CONTROL_BASEBAND			0x03
+
+	#define OCF_SET_EVENT_MASK			0x0001
+	#define OCF_WRITE_SIMPLE_PAIRING_MODE	0x0056
+	#define OCF_WRITE_LE_HOST_SUPPORTED	0x006d
+	#define OCF_WRITE_SC_HOST_SUPPORT		0x007a
 
 	#define OCF_RESET					0x0003
   /*struct hci_reset {

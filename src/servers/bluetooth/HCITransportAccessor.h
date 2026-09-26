@@ -11,6 +11,12 @@
 
 #include "HCIDelegate.h"
 
+#include <Locker.h>
+#include <OS.h>
+
+#include <deque>
+#include <vector>
+
 
 class HCITransportAccessor : public HCIDelegate {
 
@@ -19,8 +25,20 @@ class HCITransportAccessor : public HCIDelegate {
 		~HCITransportAccessor();
 		status_t IssueCommand(raw_command rc, size_t size);
 		status_t Launch();
+		void CommandCredits(uint8 credits);
+		void Pulse();
 	private:
-		int fDescriptor;		
+		status_t _Send(const uint8* command, size_t size);
+		void _Drain();
+
+		int fDescriptor;
+		// Commands wait here while the controller has no command credits,
+		// so concurrent clients cannot overrun it (Core Vol 4 Part E 4.4).
+		BLocker fQueueLock;
+		std::deque<std::vector<uint8> > fQueue;
+		int32 fCredits;
+		int32 fStalls;
+		bigtime_t fLastSent;
 };
 
 #endif

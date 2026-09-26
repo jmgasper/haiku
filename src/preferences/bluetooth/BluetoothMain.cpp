@@ -2,12 +2,7 @@
  * Copyright 2008-10, Oliver Ruiz Dorantes, <oliver.ruiz.dorantes_at_gmail.com>
  * All rights reserved. Distributed under the terms of the MIT License.
  */
-#include <stdio.h>
-
-#include <Alert.h>
 #include <Catalog.h>
-#include <MessageRunner.h>
-#include <Roster.h>
 #include <private/interface/AboutWindow.h>
 
 #include "BluetoothMain.h"
@@ -20,7 +15,8 @@
 
 BluetoothApplication::BluetoothApplication()
 	:
-	BApplication(BLUETOOTH_APP_SIGNATURE)
+	BApplication(BLUETOOTH_APP_SIGNATURE),
+	fWindow(NULL)
 {
 }
 
@@ -28,66 +24,9 @@ BluetoothApplication::BluetoothApplication()
 void
 BluetoothApplication::ReadyToRun()
 {
-	if (!be_roster->IsRunning(BLUETOOTH_SIGNATURE)) {
-		BAlert* alert = new BAlert("Services not running",
-			B_TRANSLATE("The Bluetooth services are not currently running "
-				"on this system."),
-			B_TRANSLATE("Launch now"), B_TRANSLATE("Quit"), "",
-			B_WIDTH_AS_USUAL, B_WARNING_ALERT);
-		alert->SetShortcut(1, B_ESCAPE);
-		int32 choice = alert->Go();
-
-		switch (choice) {
-			case 0:
-			{
-				status_t error;
-				error = be_roster->Launch(BLUETOOTH_SIGNATURE);
-				printf("kMsgStartServices: %s\n", strerror(error));
-				// TODO: This is temporal
-				// BMessage handcheck: use the version of Launch()
-				// that includes a BMessage	in that message include
-				// a BMessenger to yourself and the BT server could
-				// use that messenger to send back a reply indicating
-				// when it's ready and you could just create window
-				BMessageRunner::StartSending(be_app_messenger,
-					new BMessage('Xtmp'), 2 * 1000000, 1);
-				break;
-			}
-			case 1:
-				PostMessage(B_QUIT_REQUESTED);
-				break;
-		}
-
-		return;
-	}
-
-	PostMessage(new BMessage('Xtmp'));
-}
-
-
-void
-BluetoothApplication::MessageReceived(BMessage* message)
-{
-	switch (message->what) {
-		case kMsgAddToRemoteList:
-			fWindow->PostMessage(message);
-			break;
-
-		case 'Xtmp':
-			if (!be_roster->IsRunning(BLUETOOTH_SIGNATURE)) {
-				// Give another chance
-				BMessageRunner::StartSending(be_app_messenger,
-					new BMessage('Xtmp'), 2 * 1000000, 1);
-			} else {
-				fWindow = new BluetoothWindow(BRect(100, 100, 750, 420));
-				fWindow->Show();
-			}
-			break;
-
-		default:
-			BApplication::MessageReceived(message);
-			break;
-	}
+	// The window itself reports a stopped service and offers to start it.
+	fWindow = new BluetoothWindow();
+	fWindow->Show();
 }
 
 

@@ -9,6 +9,7 @@
 #include <bluetooth/bluetooth_error.h>
 #include <bluetooth/HCI/btHCI_transport.h>
 #include <bluetooth/HCI/btHCI_event.h>
+#include <ByteOrder.h>
 
 #define BT_DEBUG_THIS_MODULE
 #include <btDebug.h>
@@ -59,8 +60,57 @@ PostEvent(bluetooth_device* ndev, void* event, size_t size)
 			if (conn == NULL)
 				panic("no mem for conn desc");
 			conn->ndevice = ndev;
+			conn->isLE = false;
 			TRACE("%s: Registered connection handle=%#x\n", __func__,
 				data->handle);
+			break;
+		}
+
+		case HCI_EVENT_LE_META:
+		{
+			if (outgoingEvent->elen < sizeof(hci_ev_le_conn_complete)
+				|| size < sizeof(hci_event_header)
+					+ sizeof(hci_ev_le_conn_complete))
+				break;
+			const hci_ev_le_conn_complete* data
+				= (const hci_ev_le_conn_complete*)(outgoingEvent + 1);
+			if (data->subevent != HCI_LE_SUBEVENT_CONN_COMPLETE
+				|| data->status != BT_OK)
+				break;
+
+			uint16 handle = B_LENDIAN_TO_HOST_INT16(data->handle);
+			const bdaddr_t& peer = data->peer_address;
+			dprintf("btCoreData: LE link up, handle %#x peer "
+				"%02X:%02X:%02X:%02X:%02X:%02X (type %u) interval %u latency "
+				"%u timeout %u\n", handle, peer.b[5], peer.b[4], peer.b[3],
+				peer.b[2], peer.b[1], peer.b[0], data->peer_address_type,
+				B_LENDIAN_TO_HOST_INT16(data->connection_interval),
+				B_LENDIAN_TO_HOST_INT16(data->connection_latency),
+				B_LENDIAN_TO_HOST_INT16(data->supervision_timeout));
+
+			// A link whose Disconnection Complete was lost (for example
+			// across a bluetooth_server restart) would otherwise shadow this
+			// one: L2CAP looks connections up by peer address.
+			HciConnection* stale;
+			while ((stale = ConnectionByDestination(peer, ndev->index)) != NULL
+				&& stale->handle != handle) {
+				dprintf("btCoreData: dropping stale link handle %#x to the same "
+					"peer\n", stale->handle);
+				if (RemoveConnection(stale->handle, ndev->index) != B_OK)
+					break;
+			}
+
+			HciConnection* conn = AddConnection(handle, BT_ACL,
+				data->peer_address, ndev->index);
+			if (conn == NULL) {
+				ERROR("%s: Cannot register LE connection handle=%#x\n",
+					__func__, handle);
+				break;
+			}
+			conn->ndevice = ndev;
+			conn->isLE = true;
+			TRACE("%s: Registered LE connection handle=%#x\n",
+				__func__, handle);
 			break;
 		}
 
@@ -71,7 +121,14 @@ PostEvent(bluetooth_device* ndev, void* event, size_t size)
 			data = (struct hci_ev_disconnection_complete_reply*)
 				(outgoingEvent + 1);
 
-			RemoveConnection(data->handle, ndev->index);
+			HciConnection* conn = ConnectionByHandle(data->handle,
+				ndev->index);
+			if (conn != NULL && conn->isLE) {
+				dprintf("btCoreData: LE link down, handle %#x status %#x "
+					"reason %#x\n", data->handle, data->status, data->reason);
+			}
+			if (data->status == BT_OK)
+				RemoveConnection(data->handle, ndev->index);
 			TRACE("%s: unRegistered connection handle=%#x\n", __func__,
 				data->handle);
 			break;

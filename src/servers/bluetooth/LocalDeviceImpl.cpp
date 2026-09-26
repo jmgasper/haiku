@@ -19,9 +19,13 @@
 
 #include <ConnectionIncoming.h>
 #include <PincodeWindow.h>
+#include <Alert.h>
+#include <ByteOrder.h>
+#include <Invoker.h>
 
 #include <FindDirectory.h>
 #include <stdio.h>
+#include <string.h>
 #include <new>
 
 
@@ -65,9 +69,112 @@ LocalDeviceImpl::CreateTransportAccessor(BPath* path)
 }
 
 
-LocalDeviceImpl::LocalDeviceImpl(HCIDelegate* hd) : LocalDeviceHandler(hd)
+LocalDeviceImpl::LocalDeviceImpl(HCIDelegate* hd)
+	: LocalDeviceHandler(hd),
+	  fPairSetupState(PAIR_SETUP_IDLE),
+	  fLELock("LE state"),
+	  fLEMaskState(LE_MASKS_NONE),
+	  fLEScanState(LE_SCAN_IDLE),
+	  fLEScanSince(0),
+	  fClassicInquiryActive(false),
+	  fClassicInquirySince(0),
+	  fLEConnectionState(LE_CONN_IDLE),
+	  fLEConnectionSince(0),
+	  fLECancelRequested(false),
+	  fLEConnectionAddressType(0),
+	  fLEConnectionHandle(0),
+	  fLEEncryptionPending(false),
+	  fLEEncrypted(false)
 {
+	memset(fLEConnectionAddress, 0, sizeof(fLEConnectionAddress));
 	LoadRemoteDevices();
+}
+
+
+status_t
+LocalDeviceImpl::StartPairingSetup()
+{
+	if (fPairSetupState != PAIR_SETUP_IDLE)
+		return B_BUSY;
+	const uint8 eventMask[8] = {
+		0xff, 0xff, 0xfb, 0xff, 0x07, 0xf8, 0xbf, 0x3d
+	};
+	fPairSetupState = PAIR_SETUP_EVENT_MASK;
+	status_t result = _SendLECommand(
+		PACK_OPCODE(OGF_CONTROL_BASEBAND, OCF_SET_EVENT_MASK),
+		eventMask, sizeof(eventMask));
+	if (result != B_OK)
+		fPairSetupState = PAIR_SETUP_IDLE;
+	return result;
+}
+
+
+void
+LocalDeviceImpl::HandlePairSetupCommandComplete(struct hci_event_header* event)
+{
+	if (fPairSetupState == PAIR_SETUP_IDLE || event->elen < 4)
+		return;
+	const uint8* response = (const uint8*)(event + 1);
+	uint16 opcode = response[1] | (response[2] << 8);
+	uint16 expected = 0;
+	switch (fPairSetupState) {
+		case PAIR_SETUP_EVENT_MASK:
+			expected = PACK_OPCODE(OGF_CONTROL_BASEBAND, OCF_SET_EVENT_MASK);
+			break;
+		case PAIR_SETUP_SSP:
+			expected = PACK_OPCODE(OGF_CONTROL_BASEBAND,
+				OCF_WRITE_SIMPLE_PAIRING_MODE);
+			break;
+		case PAIR_SETUP_SC:
+			expected = PACK_OPCODE(OGF_CONTROL_BASEBAND,
+				OCF_WRITE_SC_HOST_SUPPORT);
+			break;
+		case PAIR_SETUP_LE_HOST:
+			expected = PACK_OPCODE(OGF_CONTROL_BASEBAND,
+				OCF_WRITE_LE_HOST_SUPPORTED);
+			break;
+		default:
+			return;
+	}
+	if (opcode != expected)
+		return;
+	if (response[3] != 0) {
+		printf("Bluetooth pairing setup opcode %#x failed: %#x\n",
+			opcode, response[3]);
+		fPairSetupState = PAIR_SETUP_IDLE;
+		return;
+	}
+	const uint8 enabled = 1;
+	const uint8 leHost[2] = { 1, 1 };
+	status_t result = B_OK;
+	switch (fPairSetupState) {
+		case PAIR_SETUP_EVENT_MASK:
+			fPairSetupState = PAIR_SETUP_SSP;
+			result = _SendLECommand(PACK_OPCODE(OGF_CONTROL_BASEBAND,
+				OCF_WRITE_SIMPLE_PAIRING_MODE), &enabled, 1);
+			break;
+		case PAIR_SETUP_SSP:
+			fPairSetupState = PAIR_SETUP_SC;
+			result = _SendLECommand(PACK_OPCODE(OGF_CONTROL_BASEBAND,
+				OCF_WRITE_SC_HOST_SUPPORT), &enabled, 1);
+			break;
+		case PAIR_SETUP_SC:
+			fPairSetupState = PAIR_SETUP_LE_HOST;
+			result = _SendLECommand(PACK_OPCODE(OGF_CONTROL_BASEBAND,
+				OCF_WRITE_LE_HOST_SUPPORTED), leHost, sizeof(leHost));
+			break;
+		case PAIR_SETUP_LE_HOST:
+			printf("Bluetooth SSP, Secure Connections and LE host enabled\n");
+			fPairSetupState = PAIR_SETUP_IDLE;
+			break;
+		default:
+			break;
+	}
+	if (result != B_OK) {
+		printf("Bluetooth pairing setup command failed to send: %ld\n",
+			(long)result);
+		fPairSetupState = PAIR_SETUP_IDLE;
+	}
 }
 
 
@@ -220,6 +327,28 @@ LocalDeviceImpl::HandleUnexpectedEvent(struct hci_event_header* event)
 	// Events here might have not been initated by us
 	// TODO: ML mark as handled pass a reply by parameter and reply in common
 	switch (event->ecode) {
+		case HCI_EVENT_CMD_COMPLETE:
+			HandlePairSetupCommandComplete(event);
+			HandleLECommandComplete(event);
+			break;
+
+		case HCI_EVENT_CMD_STATUS:
+			HandleLECommandStatus(event);
+			break;
+
+		case HCI_EVENT_LE_META:
+			HandleLEMeta(event);
+			break;
+
+		case 0x30:
+			// Encryption Key Refresh Complete: status, handle.
+			if (event->elen >= 3) {
+				const uint8* payload = (const uint8*)(event + 1);
+				HandleLEEncryptionChange(payload[1] | (payload[2] << 8),
+					payload[0], true);
+			}
+			break;
+
 		case HCI_EVENT_HARDWARE_ERROR:
 			HardwareError(
 				JumpEventHeader<struct hci_ev_hardware_error>(event));
@@ -245,7 +374,8 @@ LocalDeviceImpl::HandleUnexpectedEvent(struct hci_event_header* event)
 			break;
 
 		case HCI_EVENT_ENCRYPT_CHANGE:
-			EncryptChange(JumpEventHeader<struct hci_ev_encrypt_change>(event));
+			if (event->elen >= sizeof(hci_ev_encrypt_change))
+				EncryptChange(JumpEventHeader<struct hci_ev_encrypt_change>(event));
 			break;
 
 		default:
@@ -406,6 +536,22 @@ LocalDeviceImpl::HandleEvent(struct hci_event_header* event)
 	BMessage* request = NULL;
 	int32 eventIndexLocation;
 
+	// HCI command flow control: both events report how many commands the
+	// controller accepts now.
+	const uint8* payload = (const uint8*)(event + 1);
+	if (event->ecode == HCI_EVENT_CMD_COMPLETE && event->elen >= 3) {
+		fHCIDelegate->CommandCredits(payload[0]);
+		if ((payload[1] | (payload[2] << 8))
+				== PACK_OPCODE(OGF_LINK_CONTROL, OCF_INQUIRY_CANCEL))
+			LEInquiryState(false);
+	} else if (event->ecode == HCI_EVENT_CMD_STATUS && event->elen >= 4) {
+		fHCIDelegate->CommandCredits(payload[1]);
+		if ((payload[2] | (payload[3] << 8))
+				== PACK_OPCODE(OGF_LINK_CONTROL, OCF_INQUIRY))
+			LEInquiryState(payload[0] == 0);
+	} else if (event->ecode == HCI_EVENT_INQUIRY_COMPLETE)
+		LEInquiryState(false);
+
 	// Check if it is a requested one
 	switch (event->ecode) {
 		case HCI_EVENT_CMD_COMPLETE:
@@ -428,6 +574,21 @@ LocalDeviceImpl::HandleEvent(struct hci_event_header* event)
 		{
 			struct hci_ev_cmd_status* commandStatus
 				= JumpEventHeader<struct hci_ev_cmd_status>(event);
+
+			// A controller may reject a command before its expected completion.
+			// Finish that request so callers do not wait forever for an event
+			// that the controller will never send.
+			if (commandStatus->status != BT_OK) {
+				request = FindPetition(HCI_EVENT_CMD_COMPLETE,
+					commandStatus->opcode, &eventIndexLocation);
+				if (request != NULL) {
+					BMessage reply;
+					reply.AddUInt8("status", commandStatus->status);
+					request->SendReply(&reply);
+					ClearWantedEvent(request);
+					break;
+				}
+			}
 
 			TRACE_BT("LocalDeviceImpl: Incoming CommandStatus(%d)(%s) for %s\n", commandStatus->ncmd,
 				BluetoothError(commandStatus->status),
@@ -1348,7 +1509,10 @@ LocalDeviceImpl::CreateConnection(BMessage* message)
 {
 	const bdaddr_t* bdaddr;
 	ssize_t addr_size;
-	message->FindData("bdaddr", B_ANY_TYPE, (const void**)&bdaddr, &addr_size);
+	if (message->FindData("bdaddr", B_ANY_TYPE,
+			(const void**)&bdaddr, &addr_size) != B_OK
+		|| addr_size != sizeof(bdaddr_t))
+		return;
 
 	TRACE_BT("LocalDeviceImpl: Create Connection to %s...\n",
 		bdaddrUtils::ToString(*bdaddr).String());
@@ -1540,6 +1704,13 @@ LocalDeviceImpl::ConnectionComplete(struct hci_ev_conn_complete* event)
 	BMessage reply;
 
 	ServerRemoteDevice* rd = RemoteDeviceByAddr(event->bdaddr);
+	if (rd == NULL && event->status == BT_OK) {
+		rd = new ServerRemoteDevice();
+		rd->bdaddr = event->bdaddr;
+		rd->link_key = LinkKeyUtils::NullKey();
+		memset(rd->classOfDevice, 0, sizeof(rd->classOfDevice));
+		AddRemoteDevice(rd);
+	}
 	if (rd != NULL)
 		reply.AddData("bdaddr", B_ANY_TYPE, &event->bdaddr, sizeof(bdaddr_t));
 
@@ -1573,11 +1744,13 @@ LocalDeviceImpl::ConnectionComplete(struct hci_ev_conn_complete* event)
 
 		reply.what = BT_MSG_CONN_COMPLETED;
 	} else {
-		linkkey_t nullLinkKey = LinkKeyUtils::NullKey();
-		if (LinkKeyUtils::Compare(&rd->link_key, &nullLinkKey))
-			RemoveRemoteDevice(rd);
-		else
-			rd->conn_state = RemoteDevice::DISCONNECTED;
+		if (rd != NULL) {
+			linkkey_t nullLinkKey = LinkKeyUtils::NullKey();
+			if (LinkKeyUtils::Compare(&rd->link_key, &nullLinkKey))
+				RemoveRemoteDevice(rd);
+			else
+				rd->conn_state = RemoteDevice::DISCONNECTED;
+		}
 
 		TRACE_BT("LocalDeviceImpl: %s: failed with error %s\n", __FUNCTION__,
 			BluetoothError(event->status));
@@ -1594,16 +1767,19 @@ LocalDeviceImpl::DisconnectionComplete(hci_ev_disconnection_complete_reply* even
 {
 	TRACE_BT("LocalDeviceImpl: %s: Handle=%#x, reason=%s status=%x\n", __FUNCTION__, event->handle,
 		BluetoothError(event->reason), event->status);
+	uint16 handle = B_LENDIAN_TO_HOST_INT16(event->handle);
+	HandleLEDisconnection(handle, event->status, event->reason);
 
 	ServerRemoteDevice* rd;
-	rd = RemoteDeviceByHandle(event->handle);
+	rd = RemoteDeviceByHandle(handle);
 	BMessage reply(BT_MSG_DISCONN_COMPLETED);
 	reply.AddUInt8("status", event->status);
 
 	if (rd != NULL)
 		reply.AddData("bdaddr", B_ANY_TYPE, &rd->bdaddr, sizeof(bdaddr_t));
 
-	if (event->status == BT_OK || event->status == BT_NO_CONNECTION)
+	if (rd != NULL && (event->status == BT_OK
+		|| event->status == BT_NO_CONNECTION))
 		rd->conn_state = RemoteDevice::DISCONNECTED;
 
 
@@ -1818,25 +1994,36 @@ void
 LocalDeviceImpl::UserConfirmationRequest(struct hci_ev_user_confirmation_request* event,
 	BMessage* request)
 {
-	size_t size;
-	void* command;
-
 	TRACE_BT("LocalDeviceImpl: User Confirmation Request for %s (Passkey: %06" B_PRIu32 ")\n",
 		bdaddrUtils::ToString(event->bdaddr).String(), event->passkey);
+	BString prompt;
+	prompt.SetToFormat("Confirm pairing with %s only if the other device shows "
+		"the same code: %06" B_PRIu32,
+		bdaddrUtils::ToString(event->bdaddr).String(), event->passkey);
+	BMessage* decision = new BMessage(BT_MSG_PAIR_CONFIRM_RESULT);
+	decision->AddInt32("hci_id", GetID());
+	decision->AddData("bdaddr", B_ANY_TYPE, &event->bdaddr, sizeof(bdaddr_t));
+	BAlert* alert = new BAlert("Bluetooth pairing", prompt.String(),
+		"Reject", "Confirm", NULL, B_WIDTH_AS_USUAL, B_WARNING_ALERT);
+	alert->Go(new BInvoker(decision, be_app_messenger));
+}
 
-	command = buildUserConfirmReply(event->bdaddr, &size);
 
-
-	BMessage* newrequest = new BMessage;
-	newrequest->AddInt16("eventExpected", HCI_EVENT_CMD_COMPLETE);
-	newrequest->AddInt16("opcodeExpected", PACK_OPCODE(OGF_LINK_CONTROL, OCF_USER_CONFIRM_REPLY));
-
-	AddWantedEvent(newrequest);
-
-	if ((fHCIDelegate)->IssueCommand(command, size) == B_ERROR)
-		TRACE_BT("LocalDeviceImpl: Command issued error for reply %s\n", __FUNCTION__);
-	else
-		TRACE_BT("LocalDeviceImpl: Command issued in reply of  %s\n", __FUNCTION__);
+void
+LocalDeviceImpl::ConfirmPairing(bdaddr_t address, bool accepted)
+{
+	uint16 opcode = PACK_OPCODE(OGF_LINK_CONTROL,
+		accepted ? OCF_USER_CONFIRM_REPLY : OCF_USER_CONFIRM_NEG_REPLY);
+	BluetoothCommand<typed_command(hci_cp_user_confirm_reply)> command(
+		OGF_LINK_CONTROL,
+		accepted ? OCF_USER_CONFIRM_REPLY : OCF_USER_CONFIRM_NEG_REPLY);
+	command->bdaddr = address;
+	if (fHCIDelegate->IssueCommand(command.Data(), command.Size()) != B_OK)
+		return;
+	BMessage* request = new BMessage;
+	request->AddInt16("eventExpected", HCI_EVENT_CMD_COMPLETE);
+	request->AddInt16("opcodeExpected", opcode);
+	AddWantedEvent(request);
 }
 
 
@@ -1903,8 +2090,11 @@ LocalDeviceImpl::EncryptChange(struct hci_ev_encrypt_change* event)
 {
 	TRACE_BT("LocalDeviceImpl: %s: Handle=%#x, encrypt=%x, status=%x\n",
 		__FUNCTION__, event->handle, event->encrypt, event->status);
+	uint16 handle = B_LENDIAN_TO_HOST_INT16(event->handle);
+	if (HandleLEEncryptionChange(handle, event->status, event->encrypt != 0))
+		return;
 
-	ServerRemoteDevice* rd = RemoteDeviceByHandle(event->handle);
+	ServerRemoteDevice* rd = RemoteDeviceByHandle(handle);
 	if (rd == NULL)
 		return;
 

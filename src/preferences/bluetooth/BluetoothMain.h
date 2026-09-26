@@ -14,7 +14,6 @@ class BluetoothApplication : public BApplication
 public:
 				 BluetoothApplication();
 	virtual void ReadyToRun();
-	virtual void MessageReceived(BMessage*);
 	virtual void AboutRequested();
 
 private:

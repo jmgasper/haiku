@@ -21,7 +21,6 @@ BluetoothSettings::BluetoothSettings()
 	fCurrentSettings.pickeddevice = bdaddrUtils::NullAddress();
 	fCurrentSettings.localdeviceclass = DeviceClass();
 	fCurrentSettings.policy = 0;
-	fCurrentSettings.inquirytime = 15;
 }
 
 
@@ -47,15 +46,11 @@ BluetoothSettings::SetPolicy(int32 policy)
 
 
 void
-BluetoothSettings::SetInquiryTime(int32 inquirytime)
-{
-	fCurrentSettings.inquirytime = inquirytime;
-}
-
-
-void
 BluetoothSettings::LoadSettings()
 {
+	// Other windows may have saved changes since this object was created.
+	fSettingsMessage.Load();
+
 	bdaddr_t* addr;
 	ssize_t size;
 	status_t status = fSettingsMessage.FindData("BDAddress", B_RAW_TYPE,
@@ -74,7 +69,6 @@ BluetoothSettings::LoadSettings()
 		SetLocalDeviceClass(DeviceClass());
 
 	SetPolicy(fSettingsMessage.GetValue("Policy", (int32)0));
-	SetInquiryTime(fSettingsMessage.GetValue("InquiryTime", (int32)15));
 }
 
 
@@ -86,7 +80,7 @@ BluetoothSettings::SaveSettings()
 	fSettingsMessage.SetValue("BDAddress", B_RAW_TYPE, &fCurrentSettings.pickeddevice,
 		sizeof(bdaddr_t));
 	fSettingsMessage.SetValue("Policy", fCurrentSettings.policy);
-	fSettingsMessage.SetValue("InquiryTime", fCurrentSettings.inquirytime);
+	fSettingsMessage.RemoveName("InquiryTime");
 
 	fSettingsMessage.Save();
 }

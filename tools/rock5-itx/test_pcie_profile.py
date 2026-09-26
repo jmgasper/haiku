@@ -46,6 +46,7 @@ class PCIeProfileTests(unittest.TestCase):
             for segment, identity, class_revision, bars in (
                 (0, 0xa802144d, 0x01080201, [0xf0000004, 0, 1, 0, 0, 0]),
                 (1, 0x11641b21, 0x01060102, [0xf1002000, 0, 0, 0, 0, 0xf1000000]),
+                (2, 0x27258086, 0x0280001a, [0xf2000004, 0, 0, 0, 0, 0]),
                 (3, 0x812510ec, 0x02000005, [1, 0, 0xf3000004, 0, 0xf3010004, 0]),
                 (4, 0x812510ec, 0x02000005, [1, 0, 0xf4000004, 0, 0xf4010004, 0]),
             ):
@@ -57,6 +58,8 @@ class PCIeProfileTests(unittest.TestCase):
                 root[0x80 // 4] = 0x30230000 if segment < 2 else 0x30120000
                 endpoint = [0] * 64
                 endpoint[:4] = [identity, 0x00100007, class_revision, 0]
+                if segment == 2:
+                    endpoint[1] = 0x00100000
                 endpoint[4:10] = bars
                 for name, words in [('root', root), ('endpoint', endpoint)]:
                     fixture = path / (str(segment) + '-' + name)

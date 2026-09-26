@@ -454,9 +454,12 @@ enum {
 	IEEE80211_ELEMID_QUIET_CHNL		= 198,	/* 11ac */
 	IEEE80211_ELEMID_OPMODE_NOTIF		= 199,	/* 11ac */
 	/* 200-220 reserved */
-	IEEE80211_ELEMID_VENDOR			= 221	/* vendor private */
-	/* 222-255 reserved */
+	IEEE80211_ELEMID_VENDOR			= 221,	/* vendor private */
+	IEEE80211_ELEMID_EXTENSION		= 255
 };
+
+#define IEEE80211_ELEMID_EXT_HECAPS		35
+#define IEEE80211_ELEMID_EXT_HEOP			36
 
 /*
  * Action field category values (see 802.11-2012 8.4.1.11 Table 8-38).
@@ -787,6 +790,33 @@ enum {
 
 /* The highest number of spatial streams supported by VHT. */
 #define IEEE80211_VHT_NUM_SS	8
+
+/* 802.11ax HE elements use variable-length MCS maps. */
+#define IEEE80211_HE_MAC_CAPS_LEN		6
+#define IEEE80211_HE_PHY_CAPS_LEN		11
+#define IEEE80211_HE_CAPS_FIXED_LEN		(IEEE80211_HE_MAC_CAPS_LEN + \
+						    IEEE80211_HE_PHY_CAPS_LEN)
+#define IEEE80211_HE_MCS_NSS_80_LEN		4
+#define IEEE80211_HE_PHYCAP0_CHAN_WIDTH_40_IN_2G	0x02
+#define IEEE80211_HE_PHYCAP0_CHAN_WIDTH_40_80_IN_5G	0x04
+#define IEEE80211_HE_PHYCAP0_CHAN_WIDTH_160_IN_5G	0x08
+#define IEEE80211_HE_PHYCAP0_CHAN_WIDTH_8080_IN_5G	0x10
+#define IEEE80211_HE_MCS_NSS_SIZE(_phycap0) \
+	(IEEE80211_HE_MCS_NSS_80_LEN + \
+	(((_phycap0) & IEEE80211_HE_PHYCAP0_CHAN_WIDTH_160_IN_5G) ? 4 : 0) + \
+	(((_phycap0) & IEEE80211_HE_PHYCAP0_CHAN_WIDTH_8080_IN_5G) ? 4 : 0))
+#define IEEE80211_HEOP_PARAMS_LEN		4
+#define IEEE80211_HEOP_FIXED_LEN			6
+#define IEEE80211_HE_CAPS_IE_MAX_LEN		64
+#define IEEE80211_HE_PPE_MAX_LEN			25
+#define IEEE80211_HE_PHYCAP6_PPE_PRESENT		0x80
+#define IEEE80211_HE_MCS_FOR_SS_MASK(n)	(0x3 << (2 * ((n) - 1)))
+#define IEEE80211_HE_MCS_FOR_SS_SHIFT(n)	(2 * ((n) - 1))
+#define IEEE80211_HE_MCS_0_7			0
+#define IEEE80211_HE_MCS_0_9			1
+#define IEEE80211_HE_MCS_0_11			2
+#define IEEE80211_HE_MCS_SS_NOT_SUPP		3
+#define IEEE80211_HE_NUM_SS			8
 
 /*
  * VHT Operation element (see 802.11ac-2013 8.4.2.161).

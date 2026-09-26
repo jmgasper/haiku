@@ -1,0 +1,6 @@
+SubDir HAIKU_TOP src bin network wifiautojoin ;
+
+UsePrivateHeaders net ;
+
+Application wifiautojoin : WiFiAutoJoin.cpp
+	: be bnetapi shared [ TargetLibstdc++ ] ;

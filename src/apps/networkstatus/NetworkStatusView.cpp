@@ -50,6 +50,7 @@
 #include "NetworkStatusIcons.h"
 #include "RadioView.h"
 #include "WirelessNetworkMenuItem.h"
+#include "../../shared/net/WirelessNetworkList.h"
 
 
 #undef B_TRANSLATION_CONTEXT
@@ -257,12 +258,10 @@ NetworkStatusView::MessageReceived(BMessage* message)
 		{
 			const char* deviceName;
 			const char* name;
-			BNetworkAddress address;
 			if (message->FindString("device", &deviceName) == B_OK
-				&& message->FindString("name", &name) == B_OK
-				&& message->FindFlat("address", &address) == B_OK) {
+				&& message->FindString("name", &name) == B_OK) {
 				BNetworkDevice device(deviceName);
-				status_t status = device.JoinNetwork(address);
+				status_t status = device.JoinNetwork(name);
 				if (status != B_OK) {
 					BString text
 						= B_TRANSLATE("Could not join wireless network:\n");
@@ -401,30 +400,39 @@ NetworkStatusView::MouseDown(BPoint point)
 	// Add wireless networks, if any, first so that we can sort the menu
 
 	if (!wifiInterface.IsEmpty()) {
-		std::set<BNetworkAddress> associated;
-		BNetworkAddress address;
-		uint32 cookie = 0;
-		while (device.GetNextAssociatedNetwork(cookie, address) == B_OK)
-			associated.insert(address);
-
+		// Group access points by network name, like the WiFi preferences
 		uint32 networksCount = 0;
 		wireless_network* networks = NULL;
 		device.GetNetworks(networks, networksCount);
-		for (uint32 i = 0; i < networksCount; i++) {
-			const wireless_network& network = networks[i];
+		if (networksCount <= 1
+			&& (BNetworkInterface(wifiInterface).Flags() & IFF_UP) != 0) {
+			// Some drivers only keep the associated access point after
+			// joining: look around for the next time the menu opens. This
+			// does not wait for the scan.
+			device.Scan(false, false);
+		}
+		BString associatedName = AssociatedWirelessNetworkName(device,
+			networks, networksCount);
+		std::vector<WirelessNetworkGroup> visible = GroupWirelessNetworks(
+			networks, networksCount, associatedName.String());
+		delete[] networks;
+
+		for (size_t i = 0; i < visible.size(); i++) {
+			wireless_network network = visible[i].network;
+			// The menu item draws the signal as a percentage
+			network.signal_strength = WirelessSignalPercent(network);
+
 			BMessage* message = new BMessage(kMsgJoinNetwork);
 			message->AddString("device", wifiInterface);
 			message->AddString("name", network.name);
-			message->AddFlat("address", &network.address);
 
 			BMenuItem* item = new WirelessNetworkMenuItem(network, message);
 			menu->AddItem(item);
-			if (associated.find(network.address) != associated.end())
+			if (visible[i].connected)
 				item->SetMarked(true);
 		}
-		delete[] networks;
 
-		if (networksCount == 0) {
+		if (visible.empty()) {
 			BMenuItem* item = new BMenuItem(
 				B_TRANSLATE("<no wireless networks found>"), NULL);
 			item->SetEnabled(false);

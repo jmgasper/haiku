@@ -181,13 +181,21 @@ wlan_control(void* cookie, uint32 op, void* arg, size_t length)
 			if (op != SIOCS80211)
 				return B_BAD_VALUE;
 
-			// SIOCS80211SCAN is a no-op, scans cannot actually be initiated.
-			// But we can at least check if one is already in progress.
 			status_t status = EBUSY;
 
 			IFF_LOCKGIANT(ifp);
 			if (ic->ic_state == IEEE80211_S_SCAN || (ic->ic_flags & IEEE80211_F_BGSCAN) != 0)
 				status = EINPROGRESS;
+			else if (ic->ic_state == IEEE80211_S_RUN) {
+				// A manual scan fills the visible-network list without selecting a
+				// different BSS. The normal background roam remains independent.
+				ic->ic_xflags |= IEEE80211_F_SCAN_ONLY;
+				ieee80211_begin_bgscan(ifp);
+				if (ic->ic_flags & IEEE80211_F_BGSCAN)
+					status = B_OK;
+				else
+					ic->ic_xflags &= ~IEEE80211_F_SCAN_ONLY;
+			}
 			IFF_UNLOCKGIANT(ifp);
 
 			return status;
@@ -202,7 +210,8 @@ wlan_control(void* cookie, uint32 op, void* arg, size_t length)
 
 			// We need a scan_result of maximum possible size to work with.
 			struct ieee80211req_scan_result* sr = (struct ieee80211req_scan_result*)
-				alloca(sizeof(struct ieee80211req_scan_result) + IEEE80211_NWID_LEN + 257);
+				alloca(sizeof(struct ieee80211req_scan_result) + IEEE80211_NWID_LEN
+					+ 257 + IEEE80211_HE_CAPS_IE_MAX_LEN);
 
 			uint16 remaining = ireq.i_len, offset = 0;
 			for (int i = 0; remaining > 0; i++) {
@@ -222,8 +231,11 @@ wlan_control(void* cookie, uint32 op, void* arg, size_t length)
 				uint16_t ieLen = 0;
 				if (nodereq.nr_rsnie[1] != 0) {
 					ieLen = 2 + nodereq.nr_rsnie[1];
-					size += ieLen;
 				}
+				const uint8_t heLen = nodereq.nr_hecaps_ie_len <=
+					IEEE80211_HE_CAPS_IE_MAX_LEN ? nodereq.nr_hecaps_ie_len : 0;
+				ieLen += heLen;
+				size += ieLen;
 				const int32 roundedSize = roundup(size, 4);
 				if (remaining < roundedSize)
 					break;
@@ -243,7 +255,12 @@ wlan_control(void* cookie, uint32 op, void* arg, size_t length)
 				sr->isr_ssid_len = nodereq.nr_nwid_len;
 				sr->isr_meshid_len = 0;
 				memcpy((uint8*)sr + sr->isr_ie_off, nodereq.nr_nwid, sr->isr_ssid_len);
-				memcpy((uint8*)sr + sr->isr_ie_off + sr->isr_ssid_len, nodereq.nr_rsnie, ieLen);
+				const uint8_t rsnLen = nodereq.nr_rsnie[1] != 0
+					? 2 + nodereq.nr_rsnie[1] : 0;
+				memcpy((uint8*)sr + sr->isr_ie_off + sr->isr_ssid_len,
+					nodereq.nr_rsnie, rsnLen);
+				memcpy((uint8*)sr + sr->isr_ie_off + sr->isr_ssid_len + rsnLen,
+					nodereq.nr_hecaps_ie, heLen);
 
 				sr->isr_len = roundedSize;
 				if (user_memcpy((uint8*)ireq.i_data + offset, sr, size) != B_OK)
@@ -361,6 +378,43 @@ wlan_control(void* cookie, uint32 op, void* arg, size_t length)
 					return EOPNOTSUPP;
 			}
 
+			break;
+		}
+
+		case IEEE80211_IOC_HAIKU_TX_RATE: {
+			if (op != SIOCG80211)
+				return B_BAD_VALUE;
+			if (ireq.i_len < sizeof(struct ieee80211_haiku_tx_rate))
+				return EINVAL;
+
+			struct ieee80211_haiku_tx_rate rate = {};
+			IFF_LOCKGIANT(ifp);
+			struct ieee80211_node* ni = ic->ic_bss;
+			if (ic->ic_state != IEEE80211_S_RUN || ni == NULL) {
+				IFF_UNLOCKGIANT(ifp);
+				return ENOTCONN;
+			}
+			rate.i_kbps = ni->ni_haiku_tx_kbps;
+			rate.i_mode = ni->ni_haiku_tx_mode;
+			rate.i_mcs = ni->ni_haiku_tx_mcs;
+			rate.i_nss = ni->ni_haiku_tx_nss;
+			rate.i_guard_interval = ni->ni_haiku_tx_gi;
+			rate.i_width = ni->ni_haiku_tx_width;
+			if (rate.i_kbps == 0 && (ni->ni_flags & IEEE80211_NODE_HT) == 0
+				&& ni->ni_txrate < ni->ni_rates.rs_nrates) {
+				// Drivers that do not report a rate still keep the
+				// legacy rate index net80211 rate control uses.
+				rate.i_mode = IEEE80211_HAIKU_TX_MODE_LEGACY;
+				rate.i_nss = 1;
+				rate.i_width = 20;
+				rate.i_kbps = (ni->ni_rates.rs_rates[ni->ni_txrate]
+					& IEEE80211_RATE_VAL) * 500;
+			}
+			IFF_UNLOCKGIANT(ifp);
+
+			ireq.i_len = sizeof(rate);
+			if (user_memcpy(ireq.i_data, &rate, sizeof(rate)) != B_OK)
+				return B_BAD_ADDRESS;
 			break;
 		}
 
@@ -489,20 +543,16 @@ ieee80211_rtm_80211info_task(void* arg)
 }
 
 
-#if 0
 void
-ieee80211_notify_scan_done(struct ieee80211vap* vap)
+ieee80211_notify_scan_done(struct ifnet* ifp)
 {
-	TRACE("%s\n", __FUNCTION__);
-
 	if (sNotificationModule != NULL) {
 		char messageBuffer[512];
 		KMessage message;
 		message.SetTo(messageBuffer, sizeof(messageBuffer), B_NETWORK_MONITOR);
 		message.AddInt32("opcode", B_NETWORK_WLAN_SCANNED);
-		message.AddString("interface", vap->iv_ifp->device_name);
+		message.AddString("interface", ifp->device_name);
 
 		sNotificationModule->send_notification(&message);
 	}
 }
-#endif

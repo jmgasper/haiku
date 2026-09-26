@@ -8,10 +8,14 @@
 
 #include <bluetooth/bluetooth.h>
 
+/* Use these values in l2cap_psm when connecting to an LE fixed channel. */
+#define B_L2CAP_LE_ATT_CID 0x0004
+#define B_L2CAP_LE_SMP_CID 0x0006
+
 struct sockaddr_l2cap {
 	uint8		l2cap_len;		/* total length */
 	uint8		l2cap_family;	/* address family */
-	uint16		l2cap_psm;		/* PSM (Protocol/Service Multiplexor) */
+	uint16		l2cap_psm;		/* PSM, or ATT/SMP fixed CID on an LE link */
 	bdaddr_t	l2cap_bdaddr;	/* address */
 };
 

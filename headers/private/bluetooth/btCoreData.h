@@ -43,6 +43,7 @@ struct HciConnection : DoublyLinkedListLinkImpl<HciConnection> {
 	bdaddr_t			destination;
 	uint16				handle;
 	int					type;
+	bool				isLE;
 	uint16				mtu;
 	connection_status	status;
 

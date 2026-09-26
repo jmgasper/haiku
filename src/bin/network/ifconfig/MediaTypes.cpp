@@ -78,6 +78,9 @@ const media_type kMediaTypes[] = {
 			{ IFM_IEEE80211_11NA, "802.11n(a)", "802.11n(a)" },
 			{ IFM_IEEE80211_11NG, "802.11n(g)", "802.11n(g)" },
 			{ IFM_IEEE80211_VHT5G, "802.11ac", "802.11ac" },
+			{ IFM_IEEE80211_VHT2G, "802.11ac2", "802.11ac2" },
+			{ IFM_IEEE80211_HE5G, "802.11ax", "802.11ax" },
+			{ IFM_IEEE80211_HE2G, "802.11ax2", "802.11ax2" },
 			{ -1, NULL, NULL }
 		},
 		{

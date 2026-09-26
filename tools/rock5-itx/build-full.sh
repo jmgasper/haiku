@@ -9,10 +9,27 @@ for needed in \
     "$HAIKU_WORK/rock5-image-extras/develop/fluidlite/lib/libfluidlite.a" \
     "$HAIKU_WORK/rock5-image-extras/packages/rock5_glinfo-1.0.0-1-arm64.hpkg" \
     "$HAIKU_WORK/rock5-image-extras/packages/rock5_ffmpeg-6.1.6-2-arm64.hpkg" \
+    "$HAIKU_WORK/rock5-image-extras/packages/wpa_supplicant-2.11.haiku.1-1-arm64.hpkg" \
     "$HAIKU_WORK/rock5-image-extras/packages/amp-0.2.0~alpha-1-arm64.hpkg" \
     "$HAIKU_WORK/rock5-image-extras/packages/kiri-0.0.1~alpha-1-arm64.hpkg" \
     "$HAIKU_WORK/rock5-image-extras/packages/turbochook-0.1.2~alpha-1-arm64.hpkg"; do
     test -s "$needed" || { echo "Missing full-image input: $needed" >&2; exit 1; }
+done
+
+# Wi-Fi firmware comes from HaikuPorts' architecture-neutral packages
+# (import-wifi-firmware-packages.sh); Bluetooth firmware packages are made by
+# build-bluetooth-firmware-packages.sh. arm64 packagefs has no zstd support,
+# so a zstd package would silently leave its drivers without firmware.
+for needed in \
+	"$HAIKU_WORK/rock5-image-extras/packages/intel_wifi_firmwares-2025_02_11-1-any.hpkg" \
+	"$HAIKU_WORK/rock5-image-extras/packages/ralink_wifi_firmwares-2023_08_04-1-any.hpkg" \
+	"$HAIKU_WORK/rock5-image-extras/packages/realtek_wifi_firmwares-2019_01_02-1-any.hpkg" \
+	"$HAIKU_WORK/rock5-image-extras/packages/intel_bluetooth_firmwares-20240318-1-any.hpkg" \
+	"$HAIKU_WORK/rock5-image-extras/packages/realtek_bluetooth_firmwares-20240318-1-any.hpkg" \
+	"$HAIKU_WORK/rock5-image-extras/packages/mediatek_bluetooth_firmwares-20240318-1-any.hpkg"; do
+	test -s "$needed" || { echo "Missing firmware package: $needed" >&2; exit 1; }
+	[ "$(od -An -tu1 -j18 -N2 -- "$needed" | awk '{print $1 * 256 + $2}')" != 2 ] \
+		|| { echo "zstd package, run import-wifi-firmware-packages.sh: $needed" >&2; exit 1; }
 done
 
 cd "$HAIKU_WORK/build/arm64"

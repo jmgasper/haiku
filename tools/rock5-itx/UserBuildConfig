@@ -20,9 +20,13 @@ DeferredSubInclude HAIKU_TOP tools rock5-itx ;
 rule UserBuildConfigRulePreImage
 {
 	local bootscripts = <rock5-lab>UserBootscript
-		<rock5-lab>UserSetupEnvironment ;
+		<rock5-lab>UserSetupEnvironment <rock5-lab>start-ax210-bluetooth.sh ;
 	SEARCH on $(bootscripts) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
 	AddFilesToHaikuImage home config settings boot : $(bootscripts) ;
+	# Run by the Bluetooth preferences "Start service" button.
+	local bluetoothHook = <rock5-lab>start-services ;
+	SEARCH on $(bluetoothHook) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
+	AddFilesToHaikuImage home config settings bluetooth : $(bluetoothHook) ;
 	local pcieSettings = <rock5-lab>rk3588_pcie ;
 	SEARCH on $(pcieSettings) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
 	AddFilesToHaikuImage home config settings kernel drivers : $(pcieSettings) ;
@@ -38,7 +42,13 @@ rule UserBuildConfigRulePreImage
 	AddFilesToHaikuImage home config non-packaged bin : rock5_ahci_probe rock5_mmc_probe ;
 	# Intel is the QEMU DMA fixture. Native RTL8125 trials additionally require
 	# the explicit onboard firmware profile and legacy_interrupts setting.
-	AddDriversToHaikuImage net : ipro1000 rtl8125 ;
+	# The regular image definition packages iaxwifi200 and the other Wi-Fi
+	# drivers for arm64; the minimum-based lab image only gets the AX210's.
+	if $(HAIKU_BUILD_PROFILE) = rock5full-mmc {
+		AddDriversToHaikuImage net : ipro1000 rtl8125 ;
+	} else {
+		AddDriversToHaikuImage net : ipro1000 rtl8125 iaxwifi200 ;
+	}
 	AddNewDriversToHaikuImage graphics : mali_csf rk3588_display ;
 	AddNewDriversToHaikuImage video : rk3588_vpu ;
 	AddNewDriversToHaikuImage audio hmulti : rk3588_audio ;
@@ -70,6 +80,25 @@ rule UserBuildConfigRulePreImage
 		AddFilesToHaikuImage system non-packaged data firmware mali arch10.8
 			: $(maliFirmware) ;
 
+		# Wi-Fi and Bluetooth firmware for every supported card, as
+		# architecture-neutral packages under /boot/system/data/firmware:
+		# HaikuPorts' Intel, Ralink/MediaTek and Realtek Wi-Fi sets, and
+		# linux-firmware's Intel and Realtek (bt_firmware) and MediaTek
+		# (h2generic) Bluetooth images from build-bluetooth-firmware-packages.sh.
+		local firmwarePackages
+			= <rock5-pkg>intel_wifi_firmwares-2025_02_11-1-any.hpkg
+			<rock5-pkg>ralink_wifi_firmwares-2023_08_04-1-any.hpkg
+			<rock5-pkg>realtek_wifi_firmwares-2019_01_02-1-any.hpkg
+			<rock5-pkg>intel_bluetooth_firmwares-20240318-1-any.hpkg
+			<rock5-pkg>mediatek_bluetooth_firmwares-20240318-1-any.hpkg
+			<rock5-pkg>realtek_bluetooth_firmwares-20240318-1-any.hpkg ;
+		SEARCH on $(firmwarePackages) = [ FDirName $(extras) packages ] ;
+		AddFilesToHaikuImage system packages : $(firmwarePackages) ;
+		AddFilesToHaikuImage system non-packaged bin
+			: bt_le rock5_ax210_bt_loader rock5_ax210_bt_probe
+				rock5_ax210_bt_le_probe rock5_ax210_bt_connect_probe
+				rock5_ax210_wifi_he_probe ;
+
 		# packagefs owns /boot/system, so anything not in a package has to live
 		# under non-packaged to be visible at all. Deskbar lists both.
 		local glDemos = <rock5-gl>GLTeapot <rock5-gl>Haiku3d ;
@@ -85,7 +114,8 @@ rule UserBuildConfigRulePreImage
 			<rock5-pkg>kiri-0.0.1~alpha-1-arm64.hpkg
 			<rock5-pkg>turbochook-0.1.2~alpha-1-arm64.hpkg
 			<rock5-pkg>rock5_glinfo-1.0.0-1-arm64.hpkg
-			<rock5-pkg>rock5_ffmpeg-6.1.6-2-arm64.hpkg ;
+			<rock5-pkg>rock5_ffmpeg-6.1.6-2-arm64.hpkg
+			<rock5-pkg>wpa_supplicant-2.11.haiku.1-1-arm64.hpkg ;
 		SEARCH on $(ownerPackages) = [ FDirName $(extras) packages ] ;
 		AddFilesToHaikuImage system packages : $(ownerPackages) ;
 

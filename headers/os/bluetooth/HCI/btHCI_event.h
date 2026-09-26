@@ -121,6 +121,23 @@ struct hci_ev_cmd_status {
 	uint16		opcode;
 } __attribute__ ((packed));
 
+#define HCI_EVENT_LE_META						0x3E
+#define HCI_LE_SUBEVENT_CONN_COMPLETE			0x01
+#define HCI_LE_SUBEVENT_ADVERTISING_REPORT		0x02
+
+struct hci_ev_le_conn_complete {
+	uint8		subevent;
+	uint8		status;
+	uint16		handle;
+	uint8		role;
+	uint8		peer_address_type;
+	bdaddr_t	peer_address;
+	uint16		connection_interval;
+	uint16		connection_latency;
+	uint16		supervision_timeout;
+	uint8		clock_accuracy;
+} __attribute__ ((packed));
+
 #define HCI_EVENT_HARDWARE_ERROR					0x10
 struct hci_ev_hardware_error {
 	uint8		hardware_code; /* hardware error code */
