@@ -25,9 +25,14 @@
  * SOFTWARE.
  */
 
+#ifdef _KERNEL
 #include <sys/types.h>
 #include <sys/systm.h>
 #include <sys/stdint.h>
+#else
+#include <stdint.h>
+#include <string.h>
+#endif
 
 #include "aes.h"
 
@@ -380,7 +385,7 @@ aes_keysched_base(uint32_t *skey, const void *key, size_t key_len)
  * on key size). The number of rounds is returned. If the key size is
  * invalid (not 16, 24 or 32), then 0 is returned.
  */
-unsigned
+static unsigned
 aes_ct_keysched(uint32_t *comp_skey, const void *key, size_t key_len)
 {
 	uint32_t skey[60];
@@ -412,7 +417,7 @@ aes_ct_keysched(uint32_t *comp_skey, const void *key, size_t key_len)
  * a larger array suitable for aes_ct_bitslice_encrypt() and
  * aes_ct_bitslice_decrypt().
  */
-void
+static void
 aes_ct_skey_expand(uint32_t *skey,
 	unsigned num_rounds, const uint32_t *comp_skey)
 {
@@ -503,7 +508,7 @@ mix_columns(uint32_t *q)
  * eight 32-bit words, two block encryptions are actually performed
  * in parallel.
  */
-void
+static void
 aes_ct_bitslice_encrypt(unsigned num_rounds,
 	const uint32_t *skey, uint32_t *q)
 {
@@ -524,7 +529,7 @@ aes_ct_bitslice_encrypt(unsigned num_rounds,
 /*
  * Like aes_ct_bitslice_Sbox(), but for the inverse S-box.
  */
-void
+static void
 aes_ct_bitslice_invSbox(uint32_t *q)
 {
 	/*
@@ -638,7 +643,7 @@ inv_mix_columns(uint32_t *q)
  * eight 32-bit words, two block decryptions are actually performed
  * in parallel.
  */
-void
+static void
 aes_ct_bitslice_decrypt(unsigned num_rounds,
 	const uint32_t *skey, uint32_t *q)
 {

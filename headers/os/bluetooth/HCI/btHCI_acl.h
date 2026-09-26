@@ -22,7 +22,7 @@ struct hci_acl_header {
 #define get_acl_bc_flag(h)					(((h) & 0xc000) >> 14)
 
 /* PB flag values */
-/* 00 - reserved for future use */
+#define	HCI_ACL_PACKET_START_NON_FLUSHABLE	0x0 /* host to controller; LE-U */
 #define	HCI_ACL_PACKET_FRAGMENT		0x1 
 #define	HCI_ACL_PACKET_START		0x2
 /* 11 - reserved for future use */

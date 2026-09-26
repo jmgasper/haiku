@@ -314,23 +314,27 @@ SYSTEM_ADD_ONS_DRIVERS_MIDI +=
 ;
 
 SYSTEM_ADD_ONS_DRIVERS_NET += [ FFilterByBuildFeatures
-	# WLAN drivers
-	x86,x86_64,riscv64 @{
-		aironetwifi
+	# WLAN drivers. The M.2/mini PCIe and USB ones also serve arm64 boards;
+	# they build there and load on the ROCK 5 ITX (iaxwifi200 is in use).
+	x86,x86_64,riscv64,arm64 @{
 		atheroswifi
-		broadcom43xx
 		iaxwifi200
 		idualwifi7260
-		iprowifi2100
-		iprowifi2200
 		iprowifi3945
 		iprowifi4965
-		marvell88w8363
-		marvell88w8335
 		ralinkwifi
 		realtekwifi
 		realtekwifi8187
 		zydwifi1211
+	}@ # x86,x86_64,riscv64,arm64
+	# Legacy PCI and CardBus cards
+	x86,x86_64,riscv64 @{
+		aironetwifi
+		broadcom43xx
+		iprowifi2100
+		iprowifi2200
+		marvell88w8363
+		marvell88w8335
 	}@ # x86,x86_64,riscv64
 ] ;
 

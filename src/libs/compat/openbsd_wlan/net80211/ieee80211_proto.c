@@ -79,6 +79,7 @@ const char * const ieee80211_phymode_name[] = {
 	"11g",		/* IEEE80211_MODE_11G */
 	"11n",		/* IEEE80211_MODE_11N */
 	"11ac",		/* IEEE80211_MODE_11AC */
+	"11ax",		/* IEEE80211_MODE_11AX */
 };
 
 void ieee80211_set_beacon_miss_threshold(struct ieee80211com *);
@@ -669,6 +670,37 @@ ieee80211_vht_negotiate(struct ieee80211com *ic, struct ieee80211_node *ni)
 	if ((ni->ni_vhtcaps & IEEE80211_VHTCAP_SGI160) &&
 	    (ic->ic_vhtcaps & IEEE80211_VHTCAP_SGI160))
 		ni->ni_flags |= IEEE80211_NODE_VHT_SGI160;
+}
+
+void
+ieee80211_he_negotiate(struct ieee80211com *ic, struct ieee80211_node *ni)
+{
+	ni->ni_flags &= ~IEEE80211_NODE_HE;
+	if ((ic->ic_modecaps & (1 << IEEE80211_MODE_11AX)) == 0 ||
+	    (ic->ic_flags & (IEEE80211_F_HEON | IEEE80211_F_HTON)) !=
+	    (IEEE80211_F_HEON | IEEE80211_F_HTON) ||
+	    ni->ni_chan == NULL || !IEEE80211_CHAN_HE(ni->ni_chan) ||
+	    (ni->ni_flags & IEEE80211_NODE_HT) == 0 ||
+	    !ieee80211_node_supports_he(ni))
+		return;
+
+	if (((ic->ic_he_rxmcs_80 & IEEE80211_HE_MCS_FOR_SS_MASK(1)) >>
+	    IEEE80211_HE_MCS_FOR_SS_SHIFT(1)) == IEEE80211_HE_MCS_SS_NOT_SUPP)
+		return;
+
+	if (ic->ic_opmode == IEEE80211_M_STA) {
+		for (int n = 1; n <= IEEE80211_HE_NUM_SS; n++) {
+			uint16_t basic = (ni->ni_he_basic_mcs &
+			    IEEE80211_HE_MCS_FOR_SS_MASK(n)) >>
+			    IEEE80211_HE_MCS_FOR_SS_SHIFT(n);
+			uint16_t rx = (ic->ic_he_rxmcs_80 &
+			    IEEE80211_HE_MCS_FOR_SS_MASK(n)) >>
+			    IEEE80211_HE_MCS_FOR_SS_SHIFT(n);
+			if (basic != IEEE80211_HE_MCS_SS_NOT_SUPP && basic > rx)
+				return;
+		}
+	}
+	ni->ni_flags |= IEEE80211_NODE_HE;
 }
 
 void

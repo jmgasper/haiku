@@ -22,6 +22,9 @@ public:
 	status_t			BindToChannel(L2capEndpoint* endpoint);
 	status_t			UnbindFromChannel(L2capEndpoint* endpoint);
 	L2capEndpoint*		GetForChannel(uint16 cid);
+	status_t			BindToFixedChannel(L2capEndpoint* endpoint);
+	void				UnbindFromFixedChannel(L2capEndpoint* endpoint);
+	L2capEndpoint*		GetForFixedChannel(HciConnection* connection, uint16 cid);
 	void				Disconnected(HciConnection* connection);
 
 private:
@@ -68,6 +71,8 @@ private:
 	rw_lock fChannelEndpointsLock;
 	uint16 fNextChannelID;
 	AVLTree<EndpointChannelTreeDefinition> fChannelEndpoints;
+	rw_lock fFixedEndpointsLock;
+	L2capEndpoint* fFixedEndpoints;
 };
 
 extern L2capEndpointManager gL2capEndpointManager;

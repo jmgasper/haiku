@@ -14,6 +14,7 @@
 #include "L2capEndpointManager.h"
 #include "SupportDefs.h"
 #include "l2cap_signal.h"
+#include "l2cap_le.h"
 #include <btDebug.h>
 
 
@@ -48,7 +49,9 @@ L2capEndpoint::L2capEndpoint(net_socket* socket)
 	fState(CLOSED),
 	fConnection(NULL),
 	fChannelID(L2CAP_NULL_CID),
-	fDestinationChannelID(L2CAP_NULL_CID)
+	fDestinationChannelID(L2CAP_NULL_CID),
+	fFixedChannel(false),
+	fNextFixed(NULL)
 {
 	CALLED();
 
@@ -118,6 +121,14 @@ L2capEndpoint::Shutdown()
 {
 	CALLED();
 	MutexLocker locker(fLock);
+	if (fFixedChannel) {
+		L2CAP_LE_TRACE("socket %p closing cid %#x\n", this, fChannelID);
+		gL2capEndpointManager.UnbindFromFixedChannel(this);
+		fFixedChannel = false;
+		fConnection = NULL;
+		fState = CLOSED;
+		return B_OK;
+	}
 
 	if (fState == CLOSED) {
 		// Nothing to do.
@@ -295,10 +306,23 @@ L2capEndpoint::Connect(const struct sockaddr* _address)
 	if (fState != CLOSED)
 		return EALREADY;
 
+	const bool fixedChannel = address->l2cap_psm == L2CAP_ATT_CID
+		|| address->l2cap_psm == L2CAP_SMP_CID;
+	if (fixedChannel)
+		l2cap_le_reload_settings();
+
 	// Set up route.
 	hci_id hid = btCoreData->RouteConnection(address->l2cap_bdaddr);
-	if (hid <= 0)
+	if (hid <= 0) {
+		if (fixedChannel) {
+			dprintf("l2cap-le: no ACL link to %02X:%02X:%02X:%02X:%02X:%02X "
+				"for cid %#x\n", address->l2cap_bdaddr.b[5],
+				address->l2cap_bdaddr.b[4], address->l2cap_bdaddr.b[3],
+				address->l2cap_bdaddr.b[2], address->l2cap_bdaddr.b[1],
+				address->l2cap_bdaddr.b[0], address->l2cap_psm);
+		}
 		return ENETUNREACH;
+	}
 
 	TRACE("l2cap: %" B_PRId32 " for route %02X:%02X:%02X:%02X:%02X:%02X\n", hid,
 		address->l2cap_bdaddr.b[5], address->l2cap_bdaddr.b[4], address->l2cap_bdaddr.b[3],
@@ -306,10 +330,42 @@ L2capEndpoint::Connect(const struct sockaddr* _address)
 
 	fConnection = btCoreData->ConnectionByDestination(
 		address->l2cap_bdaddr, hid);
-	if (fConnection == NULL)
+	if (fConnection == NULL) {
+		if (fixedChannel)
+			dprintf("l2cap-le: route found but no connection for cid %#x\n",
+				address->l2cap_psm);
 		return EHOSTUNREACH;
+	}
 
 	memcpy(&socket->peer, _address, sizeof(struct sockaddr_l2cap));
+	if (fixedChannel) {
+		if (!fConnection->isLE) {
+			dprintf("l2cap-le: link handle %#x to the peer is not LE; cannot "
+				"open cid %#x\n", fConnection->handle, address->l2cap_psm);
+			fConnection = NULL;
+			return EPROTONOSUPPORT;
+		}
+		fChannelID = address->l2cap_psm;
+		fDestinationChannelID = fChannelID;
+		// ATT starts with a 23-byte MTU. SMP can carry a 65-byte public key.
+		fChannelConfig.outgoing_mtu = fChannelID == L2CAP_ATT_CID ? 23 : 65;
+		status = gL2capEndpointManager.BindToFixedChannel(this);
+		L2CAP_LE_TRACE("socket %p %s cid %#x on handle %#x: %s\n", this,
+			status == B_OK ? "bound" : "could not bind", fChannelID,
+			fConnection->handle, strerror(status));
+		if (status != B_OK) {
+			dprintf("l2cap-le: cid %#x on handle %#x is already open by "
+				"another socket (%s)\n", fChannelID, fConnection->handle,
+				strerror(status));
+			fChannelID = L2CAP_NULL_CID;
+			fDestinationChannelID = L2CAP_NULL_CID;
+			fConnection = NULL;
+			return status;
+		}
+		fFixedChannel = true;
+		fState = OPEN;
+		return B_OK;
+	}
 
 	status = gL2capEndpointManager.BindToChannel(this);
 	if (status != B_OK)
@@ -475,8 +531,14 @@ L2capEndpoint::_SendQueued()
 		header->length = B_HOST_TO_LENDIAN_INT16(buffer->size - sizeof(l2cap_basic_header));
 		header->dcid = B_HOST_TO_LENDIAN_INT16(fDestinationChannelID);
 
+		if (fFixedChannel)
+			l2cap_le_dump("tx", fConnection, fDestinationChannelID, buffer);
 		buffer->type = fConnection->handle;
-		btDevices->PostACL(fConnection->ndevice->index, buffer);
+		if (btDevices->PostACL(fConnection->ndevice->index, buffer) != B_OK) {
+			ERROR("%s: could not post ACL data on handle %#x\n", __func__,
+				fConnection->handle);
+			gBufferModule->free(buffer);
+		}
 	}
 }
 

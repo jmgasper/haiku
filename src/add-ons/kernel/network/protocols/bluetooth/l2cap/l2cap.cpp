@@ -13,6 +13,7 @@
 
 #include "l2cap_command.h"
 #include "l2cap_internal.h"
+#include "l2cap_le.h"
 #include "l2cap_signal.h"
 #include "L2capEndpoint.h"
 #include "L2capEndpointManager.h"
@@ -274,6 +275,50 @@ l2cap_receive_data(net_buffer* buffer)
 			buffer->interface_address = NULL;
 
 			status = endpoint->ReceiveData(buffer);
+			gSocketModule->release_socket(endpoint->socket);
+			break;
+		}
+
+		case L2CAP_LE_SIGNALING_CID:
+		{
+			HciConnection* connection = connection_for(buffer);
+			if (connection == NULL || !connection->isLE) {
+				dprintf("l2cap-le: LE signaling PDU without an LE link\n");
+				gBufferModule->free(buffer);
+				return ENOTCONN;
+			}
+			return l2cap_le_handle_signaling(connection, buffer);
+		}
+
+		case L2CAP_ATT_CID:
+		case L2CAP_SMP_CID:
+		{
+			HciConnection* connection = connection_for(buffer);
+			if (connection == NULL || !connection->isLE) {
+				dprintf("l2cap-le: fixed channel %#x PDU without an LE link "
+					"(connection %p)\n", dcid, connection);
+				gBufferModule->free(buffer);
+				return ENOTCONN;
+			}
+			l2cap_le_dump("rx", connection, dcid, buffer);
+			if (dcid == L2CAP_ATT_CID
+				&& l2cap_le_answer_att(connection, buffer)) {
+				gBufferModule->free(buffer);
+				return B_OK;
+			}
+			L2capEndpoint* endpoint
+				= gL2capEndpointManager.GetForFixedChannel(connection, dcid);
+			if (endpoint == NULL) {
+				uint8 opcode = 0;
+				gBufferModule->read(buffer, 0, &opcode, 1);
+				L2CAP_LE_TRACE("no socket on cid %#x of handle %#x; dropped "
+					"opcode %#x\n", dcid, connection->handle, opcode);
+				gBufferModule->free(buffer);
+				return ECONNRESET;
+			}
+			status = endpoint->ReceiveData(buffer);
+			if (status != B_OK)
+				gBufferModule->free(buffer);
 			gSocketModule->release_socket(endpoint->socket);
 			break;
 		}

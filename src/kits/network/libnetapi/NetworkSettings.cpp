@@ -635,6 +635,17 @@ BNetworkSettings::_Save(const char* name)
 			kInterfacesTemplate, fInterfaces);
 	}
 	if (name == NULL || strcmp(name, kNetworksSettingsName) == 0) {
+		// This file may contain WiFi passwords. Restrict it before writing,
+		// including when an older settings file already exists.
+		BPath networksPath = _Path(path, kNetworksSettingsName);
+		BFile networksFile(networksPath.Path(), B_WRITE_ONLY | B_CREATE_FILE);
+		status = networksFile.InitCheck();
+		if (status != B_OK)
+			return status;
+		status = networksFile.SetPermissions(0600);
+		if (status != B_OK)
+			return status;
+
 		// Convert settings to storage format
 		BMessage networks = fNetworks;
 		BMessage network;

@@ -99,6 +99,8 @@ private:
 	ConditionVariable fCommandWait;
 
 	uint16			fChannelID, fDestinationChannelID;
+	bool			fFixedChannel;
+	L2capEndpoint*	fNextFixed;
 
 	net_fifo		fReceiveQueue, fSendQueue;
 	net_timer		fSendTimer;

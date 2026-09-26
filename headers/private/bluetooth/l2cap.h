@@ -15,6 +15,11 @@
 #define L2CAP_NULL_CID		0x0000
 #define L2CAP_SIGNALING_CID	0x0001
 #define L2CAP_CONNECTIONLESS_CID 0x0002
+
+/* Fixed channels on LE ACL links. */
+#define L2CAP_ATT_CID		0x0004
+#define L2CAP_LE_SIGNALING_CID	0x0005
+#define L2CAP_SMP_CID		0x0006
 	/* 0x0003-0x003f: reserved */
 #define L2CAP_FIRST_CID		0x0040
 #define L2CAP_LAST_CID		0xffff

@@ -218,6 +218,12 @@ StdBinCommands
 	bt_discovery.cpp
 	: be libbluetooth.so [ TargetLibsupc++ ] : $(haiku-utils_rsrc) ;
 
+# Bluetooth Low Energy diagnostics use the kit's private LE interfaces.
+UsePrivateHeaders bluetooth ;
+StdBinCommands
+	bt_le.cpp
+	: be libbluetooth.so [ TargetLibstdc++ ] : $(haiku-utils_rsrc) ;
+
 
 # standard commands that need libbe.so, libbnetapi.so, libtracker.so
 StdBinCommands
@@ -254,6 +260,7 @@ SubInclude HAIKU_TOP src bin desklink ;
 SubInclude HAIKU_TOP src bin fwcontrol ;
 SubInclude HAIKU_TOP src bin hid_decode ;
 SubInclude HAIKU_TOP src bin i2c ;
+SubInclude HAIKU_TOP src bin bt_firmware ;
 SubInclude HAIKU_TOP src bin keymap ;
 SubInclude HAIKU_TOP src bin keystore ;
 SubInclude HAIKU_TOP src bin listdev ;

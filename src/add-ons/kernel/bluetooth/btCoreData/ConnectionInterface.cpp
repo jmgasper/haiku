@@ -27,6 +27,7 @@ HciConnection::HciConnection(hci_id hid)
 {
 	mutex_init(&fLock, "HciConnection");
 	Hid = hid;
+	isLE = false;
 	fNextIdent = L2CAP_FIRST_CID;
 
 	// TODO: This doesn't really belong here...
@@ -50,6 +51,7 @@ AddConnection(uint16 handle, int type, const bdaddr_t& dst, hci_id hid)
 	// Create connection descriptor
 
 	HciConnection* conn = ConnectionByHandle(handle, hid);
+	bool newConnection = conn == NULL;
 	if (conn != NULL)
 		goto update;
 
@@ -75,9 +77,9 @@ update:
 	conn->status = HCI_CONN_OPEN;
 	conn->mtu = L2CAP_MTU_MINIMUM; // TODO: give the mtu to the connection
 
-	{
-	MutexLocker _(&sConnectionListLock);
-	sConnectionList.Add(conn);
+	if (newConnection) {
+		MutexLocker _(&sConnectionListLock);
+		sConnectionList.Add(conn);
 	}
 
 bail:

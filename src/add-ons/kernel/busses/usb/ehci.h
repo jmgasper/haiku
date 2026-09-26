@@ -49,6 +49,7 @@ typedef struct isochronous_transfer_data {
 	uint16						last_to_process;
 	bool						incoming;
 	bool						is_active;
+	bool						notify_canceled;
 	isochronous_transfer_data *	link;
 
 	size_t						buffer_size;

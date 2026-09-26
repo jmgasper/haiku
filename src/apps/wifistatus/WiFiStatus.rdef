@@ -1,0 +1,9 @@
+resource app_signature "application/x-vnd.Haiku-WiFiStatus";
+resource app_name_catalog_entry "x-vnd.Haiku-WiFiStatus:System name:WiFiStatus";
+resource app_flags B_SINGLE_LAUNCH;
+resource app_version {
+	major = 1, middle = 0, minor = 0,
+	variety = B_APPV_DEVELOPMENT, internal = 0,
+	short_info = "WiFiStatus",
+	long_info = "WiFi Deskbar applet"
+};

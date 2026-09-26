@@ -384,6 +384,37 @@ load_image(const char* name, uint8** _image, size_t* _size)
 }
 
 
+/* The USB vendors of MediaTek based modules in Linux btusb (BTUSB_MEDIATEK).
+ * Only these are asked for MediaTek registers; an Intel or Realtek radio is
+ * never sent a MediaTek vendor request.
+ */
+static const uint16 kMediaTekModuleVendors[] = {
+	0x043e,		/* LG */
+	0x0489,		/* Foxconn */
+	0x04ca,		/* Lite-On */
+	0x0e8d,		/* MediaTek */
+	0x13d3,		/* IMC Networks / AzureWave */
+	0x2c7c,		/* Quectel */
+	0x35f5,
+};
+
+
+static bool
+may_be_mediatek(bt_usb_dev* bdev)
+{
+	const usb_device_descriptor* descriptor
+		= usb->get_device_descriptor(bdev->dev);
+	if (descriptor == NULL)
+		return false;
+
+	for (size_t i = 0; i < B_COUNT_OF(kMediaTekModuleVendors); i++) {
+		if (descriptor->vendor_id == kMediaTekModuleVendors[i])
+			return true;
+	}
+	return false;
+}
+
+
 status_t
 mediatek_setup(bt_usb_dev* bdev)
 {
@@ -391,9 +422,12 @@ mediatek_setup(bt_usb_dev* bdev)
 	uint32 chipId = 0;
 	uint32 firmwareVersion = 0;
 
-	/* Ask the bootloader who it is. Anything that is not a MediaTek radio
-	 * will not answer this at all, which is how we tell them apart without
-	 * keeping a list of every part number ever sold.
+	if (!may_be_mediatek(bdev))
+		return B_OK;
+
+	/* Ask the bootloader who it is. A module from these vendors built on
+	 * another chip will not answer this at all, which is how we tell them
+	 * apart without keeping a list of every part number ever sold.
 	 */
 	if (read_register(bdev, MTK_REG_CHIP_ID, &chipId) != B_OK)
 		return B_OK;

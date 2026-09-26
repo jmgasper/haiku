@@ -938,7 +938,9 @@ ieee80211_create_ibss(struct ieee80211com* ic, struct ieee80211_channel *chan)
 		printf("%s: creating ibss\n", ifp->if_xname);
 	ic->ic_flags |= IEEE80211_F_SIBSS;
 	ni->ni_chan = chan;
-	if ((ic->ic_flags & IEEE80211_F_VHTON) && IEEE80211_IS_CHAN_5GHZ(chan))
+	if ((ic->ic_flags & IEEE80211_F_HEON) && IEEE80211_CHAN_HE(chan))
+		mode = IEEE80211_MODE_11AX;
+	else if ((ic->ic_flags & IEEE80211_F_VHTON) && IEEE80211_IS_CHAN_5GHZ(chan))
 		mode = IEEE80211_MODE_11AC;
 	else if (ic->ic_flags & IEEE80211_F_HTON)
 		mode = IEEE80211_MODE_11N;
@@ -967,7 +969,8 @@ ieee80211_create_ibss(struct ieee80211com* ic, struct ieee80211_channel *chan)
 	}
 	ieee80211_setmode(ic, mode);
 	/* Pick an appropriate mode for supported legacy rates. */
-	if (ic->ic_curmode == IEEE80211_MODE_11AC) {
+	if (ic->ic_curmode == IEEE80211_MODE_11AC ||
+	    ic->ic_curmode == IEEE80211_MODE_11AX) {
 		mode = IEEE80211_MODE_11A;
 	} else if (ic->ic_curmode == IEEE80211_MODE_11N) {
 		if (IEEE80211_IS_CHAN_5GHZ(chan))
@@ -1476,6 +1479,8 @@ ieee80211_end_scan(struct ifnet *ifp)
 	int bgscan = ((ic->ic_flags & IEEE80211_F_BGSCAN) &&
 	    ic->ic_opmode == IEEE80211_M_STA &&
 	    ic->ic_state == IEEE80211_S_RUN);
+	int scan_only = (ic->ic_xflags & IEEE80211_F_SCAN_ONLY) != 0;
+	ic->ic_xflags &= ~IEEE80211_F_SCAN_ONLY;
 
 	if (ifp->if_flags & IFF_DEBUG)
 		printf("%s: end %s scan\n", ifp->if_xname,
@@ -1488,6 +1493,13 @@ ieee80211_end_scan(struct ifnet *ifp)
 
 	if (ic->ic_opmode == IEEE80211_M_STA)
 		ieee80211_clean_inactive_nodes(ic, IEEE80211_INACT_SCAN);
+
+	if (scan_only)
+		ieee80211_notify_scan_done(ifp);
+	if (bgscan && scan_only) {
+		ic->ic_flags &= ~IEEE80211_F_BGSCAN;
+		return;
+	}
 
 	ni = RBT_MIN(ieee80211_tree, &ic->ic_tree);
 
@@ -1585,7 +1597,9 @@ ieee80211_end_scan(struct ifnet *ifp)
 			 * may not carry HT information.
 			 */
 			ni = ic->ic_bss;
-			if (ni->ni_flags & IEEE80211_NODE_VHT)
+			if (ni->ni_flags & IEEE80211_NODE_HE)
+				ieee80211_setmode(ic, IEEE80211_MODE_11AX);
+			else if (ni->ni_flags & IEEE80211_NODE_VHT)
 				ieee80211_setmode(ic, IEEE80211_MODE_11AC);
 			else if (ni->ni_flags & IEEE80211_NODE_HT)
 				ieee80211_setmode(ic, IEEE80211_MODE_11N);
@@ -2625,6 +2639,90 @@ ieee80211_setup_vhtop(struct ieee80211_node *ni, const uint8_t *data,
 	return 1;
 }
 
+void
+ieee80211_setup_hecaps(struct ieee80211_node *ni, const uint8_t *data,
+    uint8_t len)
+{
+	if (len < IEEE80211_HE_CAPS_FIXED_LEN + IEEE80211_HE_MCS_NSS_80_LEN)
+		return;
+	const uint8_t phycap0 = data[IEEE80211_HE_MAC_CAPS_LEN];
+	const int mcslen = IEEE80211_HE_MCS_NSS_SIZE(phycap0);
+	if (len < IEEE80211_HE_CAPS_FIXED_LEN + mcslen)
+		return;
+
+	memcpy(ni->ni_he_mac_cap, data, IEEE80211_HE_MAC_CAPS_LEN);
+	memcpy(ni->ni_he_phy_cap, data + IEEE80211_HE_MAC_CAPS_LEN,
+	    IEEE80211_HE_PHY_CAPS_LEN);
+	const uint8_t *mcs = data + IEEE80211_HE_CAPS_FIXED_LEN;
+	ni->ni_he_rxmcs_80 = mcs[0] | (mcs[1] << 8);
+	ni->ni_he_txmcs_80 = mcs[2] | (mcs[3] << 8);
+	mcs += 4;
+	if (phycap0 & IEEE80211_HE_PHYCAP0_CHAN_WIDTH_160_IN_5G) {
+		ni->ni_he_rxmcs_160 = mcs[0] | (mcs[1] << 8);
+		ni->ni_he_txmcs_160 = mcs[2] | (mcs[3] << 8);
+		mcs += 4;
+	} else {
+		ni->ni_he_rxmcs_160 = ni->ni_he_txmcs_160 = 0;
+	}
+	if (phycap0 & IEEE80211_HE_PHYCAP0_CHAN_WIDTH_8080_IN_5G) {
+		ni->ni_he_rxmcs_80p80 = mcs[0] | (mcs[1] << 8);
+		ni->ni_he_txmcs_80p80 = mcs[2] | (mcs[3] << 8);
+		mcs += 4;
+	} else {
+		ni->ni_he_rxmcs_80p80 = ni->ni_he_txmcs_80p80 = 0;
+	}
+	ni->ni_he_ppe_len = 0;
+	if (ni->ni_he_phy_cap[6] & IEEE80211_HE_PHYCAP6_PPE_PRESENT) {
+		/* PPE header: three NSS bits, four RU bits, then six bits per
+		 * NSS/RU pair. Reject truncated PPE before enabling HE. */
+		int nss, ru_count = 0, ppe_len;
+		uint8_t ru_mask;
+		if (mcs >= data + len)
+			return;
+		nss = (mcs[0] & 0x7) + 1;
+		ru_mask = (mcs[0] >> 3) & 0xf;
+		for (int ru = 0; ru < 4; ru++)
+			if (ru_mask & (1 << ru))
+				ru_count++;
+		ppe_len = (7 + 6 * nss * ru_count + 7) / 8;
+		if (ru_count == 0 || ppe_len > sizeof(ni->ni_he_ppe) ||
+		    mcs + ppe_len > data + len)
+			return;
+		memcpy(ni->ni_he_ppe, mcs, ppe_len);
+		ni->ni_he_ppe_len = ppe_len;
+	}
+	ni->ni_flags |= IEEE80211_NODE_HECAP;
+}
+
+int
+ieee80211_setup_heop(struct ieee80211_node *ni, const uint8_t *data,
+    uint8_t len, int isprobe)
+{
+	if (len < IEEE80211_HEOP_FIXED_LEN)
+		return 0;
+	memcpy(ni->ni_he_oper_params, data, IEEE80211_HEOP_PARAMS_LEN);
+	if (isprobe)
+		ni->ni_he_basic_mcs = data[4] | (data[5] << 8);
+	return 1;
+}
+
+void
+ieee80211_clear_hecaps(struct ieee80211_node *ni)
+{
+	memset(ni->ni_he_mac_cap, 0, sizeof(ni->ni_he_mac_cap));
+	memset(ni->ni_he_phy_cap, 0, sizeof(ni->ni_he_phy_cap));
+	ni->ni_he_rxmcs_80 = ni->ni_he_txmcs_80 = 0;
+	ni->ni_he_rxmcs_160 = ni->ni_he_txmcs_160 = 0;
+	ni->ni_he_rxmcs_80p80 = ni->ni_he_txmcs_80p80 = 0;
+	ni->ni_he_ppe_len = 0;
+	memset(ni->ni_he_ppe, 0, sizeof(ni->ni_he_ppe));
+	memset(ni->ni_he_oper_params, 0, sizeof(ni->ni_he_oper_params));
+	ni->ni_he_basic_mcs = 0;
+	ni->ni_hecaps_ie_len = 0;
+	ni->ni_he_ss = 0;
+	ni->ni_flags &= ~(IEEE80211_NODE_HE | IEEE80211_NODE_HECAP);
+}
+
 #ifndef IEEE80211_STA_ONLY
 /* 
  * Handle nodes switching from 11ac into legacy modes.
@@ -3078,6 +3176,7 @@ void
 ieee80211_node_leave_vht(struct ieee80211com *ic, struct ieee80211_node *ni)
 {
 	ieee80211_clear_vhtcaps(ni);
+	ieee80211_clear_hecaps(ni);
 }
 
 /*
@@ -3216,7 +3315,8 @@ ieee80211_node_leave(struct ieee80211com *ic, struct ieee80211_node *ni)
 		ieee80211_node_leave_rsn(ic, ni);
 
 	if (ic->ic_curmode == IEEE80211_MODE_11G ||
-	    (ic->ic_curmode == IEEE80211_MODE_11N &&
+	    ((ic->ic_curmode == IEEE80211_MODE_11N ||
+	    ic->ic_curmode == IEEE80211_MODE_11AX) &&
 	    IEEE80211_IS_CHAN_2GHZ(ic->ic_bss->ni_chan)))
 		ieee80211_node_leave_11g(ic, ni);
 
@@ -3224,6 +3324,8 @@ ieee80211_node_leave(struct ieee80211com *ic, struct ieee80211_node *ni)
 		ieee80211_node_leave_ht(ic, ni);
 	if (ni->ni_flags & IEEE80211_NODE_VHT)
 		ieee80211_node_leave_vht(ic, ni);
+	if (ni->ni_flags & IEEE80211_NODE_HE)
+		ieee80211_clear_hecaps(ni);
 
 	if (ic->ic_node_leave != NULL)
 		(*ic->ic_node_leave)(ic, ni);

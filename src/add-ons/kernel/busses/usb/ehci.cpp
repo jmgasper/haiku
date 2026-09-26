@@ -1787,6 +1787,7 @@ EHCI::AddPendingIsochronousTransfer(Transfer *transfer, ehci_itd **isoRequest,
 	data->last_to_process = lastIndex;
 	data->incoming = directionIn;
 	data->is_active = true;
+	data->notify_canceled = false;
 	data->link = NULL;
 	data->buffer_phy = bufferPhy;
 	data->buffer_log = bufferLog;
@@ -1878,22 +1879,26 @@ EHCI::CancelQueuedTransfers(Pipe *pipe, bool force)
 status_t
 EHCI::CancelQueuedIsochronousTransfers(Pipe *pipe, bool force)
 {
+	if (!LockIsochronous())
+		return B_ERROR;
+	bool found = false;
 	isochronous_transfer_data *current = fFirstIsochronousTransfer;
 
 	while (current) {
 		if (current->transfer->TransferPipe() == pipe) {
-			// TODO implement
-
-			// TODO: Use the force paramater in order to avoid calling
-			// invalid callbacks
 			current->is_active = false;
+			current->notify_canceled = !force;
+			found = true;
 		}
 
 		current = current->link;
 	}
 
-	TRACE_ERROR("no isochronous transfer found!\n");
-	return B_ERROR;
+	UnlockIsochronous();
+	if (found)
+		release_sem_etc(fFinishIsochronousTransfersSem, 1,
+			B_DO_NOT_RESCHEDULE);
+	return B_OK;
 }
 
 
@@ -2240,6 +2245,10 @@ EHCI::FinishIsochronousTransfers()
 
 		// Process the frame list until one transfer is processed
 		while (!transferDone && loop++ < EHCI_VFRAMELIST_ENTRIES_COUNT) {
+			Transfer* completedTransfer = NULL;
+			status_t completedStatus = B_OK;
+			size_t completedLength = 0;
+			bool completedNotify = false;
 			// wait 1ms in order to be sure to be one position behind
 			// the controller
 			while (currentFrame == (((ReadOpReg(EHCI_FRINDEX) / 8)
@@ -2279,11 +2288,12 @@ EHCI::FinishIsochronousTransfers()
 					// belongs to an inbound transfer. If the transfer is not
 					// active, it means the request has been removed, so simply
 					// remove the descriptors.
-				if (transfer && transfer->is_active) {
+				if (transfer) {
 					TRACE("FinishIsochronousTransfers active transfer\n");
 					size_t actualLength = 0;
-					status_t status = B_OK;
-					if (EHCI_ITD_DIR_GET(itd->buffer_phy[1]) != 0) {
+					status_t status = transfer->is_active ? B_OK : B_CANCELED;
+					if (transfer->is_active
+						&& EHCI_ITD_DIR_GET(itd->buffer_phy[1]) != 0) {
 						status = transfer->transfer->PrepareKernelAccess();
 						if (status == B_OK)
 							actualLength = ReadIsochronousDescriptorChain(transfer);
@@ -2307,7 +2317,14 @@ EHCI::FinishIsochronousTransfers()
 					}
 					transfer->link = NULL;
 
-					transfer->transfer->Finished(status, actualLength);
+					// The completion callback may queue another isochronous
+					// transfer. Run it after releasing fIsochronousLock; otherwise
+					// SubmitIsochronous() attempts to lock it recursively.
+					completedTransfer = transfer->transfer;
+					completedStatus = status;
+					completedLength = actualLength;
+					completedNotify = transfer->is_active
+						|| transfer->notify_canceled;
 
 					itd = itd->prev;
 
@@ -2317,7 +2334,6 @@ EHCI::FinishIsochronousTransfers()
 					TRACE("FinishIsochronousTransfers descriptors freed\n");
 
 					delete [] transfer->descriptors;
-					delete transfer->transfer;
 					FreeChunk(transfer->buffer_log,
 						(phys_addr_t)transfer->buffer_phy,
 						transfer->buffer_size);
@@ -2330,6 +2346,11 @@ EHCI::FinishIsochronousTransfers()
 			}
 
 			UnlockIsochronous();
+			if (completedTransfer != NULL) {
+				if (completedNotify)
+					completedTransfer->Finished(completedStatus, completedLength);
+				delete completedTransfer;
+			}
 
 			TRACE("FinishIsochronousTransfers next frame\n");
 

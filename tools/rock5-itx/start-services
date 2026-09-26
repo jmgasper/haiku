@@ -1,0 +1,4 @@
+#!/bin/sh
+# Prepare the AX210 controller (firmware), then start bluetooth_server.
+# Run by the Bluetooth preferences "Start service" button.
+exec /bin/sh /boot/home/config/settings/boot/start-ax210-bluetooth.sh
