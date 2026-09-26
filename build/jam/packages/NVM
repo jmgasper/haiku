@@ -1,0 +1,30 @@
+# nvm, the Node Version Manager, taught Haiku (data/nvm, tools/nodejs-haiku).
+# Architecture-neutral: shell scripts, the Haiku patches for each Node.js
+# major it can build from source, and the login-shell hook that /etc/profile
+# picks up from data/profile.d.
+
+local nvmPackage = nvm.hpkg ;
+HaikuPackage $(nvmPackage) ;
+
+local nvmDir = [ FDirName $(HAIKU_TOP) data nvm ] ;
+
+local nvmFiles = <nvm>nvm.sh <nvm>nvm-exec <nvm>bash_completion
+	<nvm>LICENSE.md ;
+SEARCH on $(nvmFiles) = $(nvmDir) ;
+AddFilesToPackage data nvm : $(nvmFiles) ;
+
+local nvmPatches = [ Glob $(nvmDir)/haiku/patches : node-v*.patch ] ;
+AddFilesToPackage data nvm haiku patches : $(nvmPatches) ;
+
+local nvmHook = <nvm-profile>nvm.sh ;
+SEARCH on $(nvmHook) = [ FDirName $(nvmDir) haiku profile.d ] ;
+AddFilesToPackage data profile.d : $(nvmHook) ;
+
+local nvmDocs = <nvm-doc>README.md ;
+SEARCH on $(nvmDocs) = $(nvmDir) ;
+AddFilesToPackage documentation packages nvm : $(nvmDocs) ;
+local nvmHaikuDocs = <nvm-haiku-doc>README.md ;
+SEARCH on $(nvmHaikuDocs) = [ FDirName $(nvmDir) haiku ] ;
+AddFilesToPackage documentation packages nvm : $(nvmHaikuDocs) : HAIKU.md ;
+
+BuildHaikuPackage $(nvmPackage) : nvm ;
