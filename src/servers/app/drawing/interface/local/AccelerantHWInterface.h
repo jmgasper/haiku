@@ -47,6 +47,16 @@ public:
 	virtual	status_t			GetPreferredMode(display_mode* mode);
 	virtual status_t			GetMonitorInfo(monitor_info* info);
 
+	virtual	bool				HasDisplayLayout() const;
+	virtual	status_t			SetSoftwareScale(uint16 percent);
+	virtual	status_t			GetDisplayOutputs(display_output** _outputs,
+									uint32* _count);
+	virtual	status_t			GetDisplayOutputModes(uint32 id,
+									display_mode** _modes, uint32* _count);
+	virtual	status_t			SetDisplayLayout(
+									const display_output_config* configs,
+									uint32 count, bool switchMode = true);
+
 	virtual sem_id				RetraceSemaphore();
 	virtual status_t			WaitForRetrace(
 									bigtime_t timeout = B_INFINITE_TIMEOUT);
@@ -112,6 +122,9 @@ private:
 			void				_SetGrayscalePalette();
 
 	static	status_t			_DisplayRestoreThread(void* data);
+	static	status_t			_DisplayChangeThread(void* data);
+			status_t			_SetMode(const display_mode& mode, bool force);
+			status_t			_UpdateBackBuffer();
 
 private:
 			int					fCardFD;
@@ -162,6 +175,15 @@ private:
 			wait_for_display_restore fAccWaitForDisplayRestore;
 			thread_id			fDisplayRestoreThread;
 			bool				fQuitDisplayRestoreThread;
+
+			// display layout hooks
+			get_display_output_count fAccGetDisplayOutputCount;
+			get_display_outputs	fAccGetDisplayOutputs;
+			get_display_output_modes fAccGetDisplayOutputModes;
+			set_display_layout	fAccSetDisplayLayout;
+			set_display_change_port fAccSetDisplayChangePort;
+			port_id				fDisplayChangePort;
+			thread_id			fDisplayChangeThread;
 
 			frame_buffer_config	fFrameBufferConfig;
 			int					fModeCount;

@@ -38,7 +38,7 @@ RemoteEventStream::~RemoteEventStream()
 
 
 void
-RemoteEventStream::UpdateScreenBounds(BRect bounds)
+RemoteEventStream::UpdateScreenBounds(BRect bounds, const BRegion* displays)
 {
 }
 

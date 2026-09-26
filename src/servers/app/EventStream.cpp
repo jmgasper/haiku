@@ -113,10 +113,16 @@ InputServerStream::SendQuit()
 
 
 void
-InputServerStream::UpdateScreenBounds(BRect bounds)
+InputServerStream::UpdateScreenBounds(BRect bounds, const BRegion* displays)
 {
 	BMessage update(IS_SCREEN_BOUNDS_UPDATED);
 	update.AddRect("screen_bounds", bounds);
+	// With monitors of different sizes, parts of the bounds show nothing;
+	// the cursor is kept out of those.
+	if (displays != NULL) {
+		for (int32 i = 0; i < displays->CountRects(); i++)
+			update.AddRect("display_frames", displays->RectAt(i));
+	}
 
 	fInputServer.SendMessage(&update);
 }
