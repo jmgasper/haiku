@@ -285,9 +285,14 @@ mtk_receive_frame(struct mtk_softc* sc, const uint8_t* data, size_t got,
 
 			/* Not air, so it may be the answer a command is waiting for.
 			 * Leave it where that command will find it rather than
-			 * letting the command race us for the ring.
+			 * letting the command race us for the ring. Only an event
+			 * can be one: transmit-done notices and transmit status
+			 * arrive on the same rings, in another layout, and a byte
+			 * of theirs that happens to equal the sequence number is
+			 * not an answer.
 			 */
-			if (got >= MTK_MCU_RXD_SIZE && data[0x1d] == sc->sc_seq
+			if (type == MTK_RX_TYPE_EVENT && got >= MTK_MCU_RXD_SIZE
+					&& data[0x1d] == sc->sc_seq
 					&& sc->sc_replyready == 0) {
 				size_t keep = got > sizeof(sc->sc_reply)
 					? sizeof(sc->sc_reply) : got;
