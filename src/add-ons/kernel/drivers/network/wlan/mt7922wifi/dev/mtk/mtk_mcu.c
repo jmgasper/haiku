@@ -34,6 +34,10 @@
 #include "if_mtkvar.h"
 
 
+static void mtk_modify(struct mtk_softc* sc, uint32_t address, uint32_t mask,
+	uint32_t value);
+
+
 static uint32_t
 mtk_le32(const uint8_t* from)
 {
@@ -1046,6 +1050,12 @@ mtk_firmware_start(struct mtk_softc* sc)
 		}
 		DELAY(1000);
 	}
+
+	/* No L0s on the link, as Linux asks before every firmware load
+	 * (mt7921e_mcu_init). Power states the link can drop into by itself
+	 * are one more way for a read to stop coming back.
+	 */
+	mtk_modify(sc, MTK_PCIE_MAC_PM, 0, MTK_PCIE_MAC_PM_L0S_DIS);
 
 	/* Which mode the firmware comes up in, said before it is sent. */
 	mtk_write(sc, MTK_SWDEF_MODE, 0);

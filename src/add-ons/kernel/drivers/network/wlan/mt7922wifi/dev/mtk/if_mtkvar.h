@@ -37,6 +37,8 @@
  * but the card never raises a line, so the host hears nothing.
  */
 #define MTK_PCIE_MAC_INT_ENABLE		0x74030188
+#define MTK_PCIE_MAC_PM			0x00010194
+#define MTK_PCIE_MAC_PM_L0S_DIS		(1 << 8)
 #define MTK_MCU_CMD_WAKE_RX_PCIE	(1 << 0)
 #define MTK_INTERRUPTS_ALL		0x2c7ffff5
 
@@ -419,6 +421,7 @@ struct mtk_softc {
 	uint32_t		sc_chipid;
 	uint32_t		sc_rev;
 	int			sc_owned;
+	uint32_t		sc_badaddr;
 };
 
 uint32_t	mtk_read(struct mtk_softc*, uint32_t);
