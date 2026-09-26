@@ -138,6 +138,12 @@
 #define MTK_RXD1_GROUP_5		(1 << 15)
 #define MTK_RXD1_FCS_ERROR		(1 << 27)
 
+/* Every 20 MHz channel of both bands (mtk_mcu.c). */
+#define MTK_CHANNELS_2GHZ		13
+#define MTK_CHANNELS_5GHZ		25
+extern const uint8_t mtk_channels_2ghz[MTK_CHANNELS_2GHZ];
+extern const uint8_t mtk_channels_5ghz[MTK_CHANNELS_5GHZ];
+
 /* Talking to the part's own processor. */
 #define MTK_MCU_TXD_SIZE		64
 #define MTK_MCU_RXD_SIZE		36
@@ -197,6 +203,9 @@
 #define MTK_MCU_CE_SET_RX_FILTER	0x0a
 #define MTK_MCU_CE_SET_CHAN_DOMAIN	0x0f
 #define MTK_MCU_CE_START_HW_SCAN	0x03
+#define MTK_MCU_CE_CANCEL_HW_SCAN	0x1b
+#define MTK_MCU_EVENT_SCAN_DONE		0x0d
+#define MTK_HW_SCAN_TIMEOUT		15	/* seconds */
 #define MTK_SCAN_REQUEST_SIZE		1186
 
 #define MTK_FILTER_ENABLE		(1u << 31)
@@ -307,12 +316,20 @@ struct mtk_softc {
 	struct taskqueue*	sc_rxtq;
 	struct task		sc_rxwork;
 	uint8_t			sc_want_channel;
-	int			sc_want_scan;
-	int			sc_scanning;
-	int			sc_scan_at;
-	int			sc_join_at;
-	int			sc_joining;
 	int			sc_want_awake;
+
+	/* Scanning is the firmware's. The stack asks for a scan, the part is
+	 * asked for one sweep of every channel, and the scan ends when the part
+	 * says the sweep is done - never earlier, never a second sweep over the
+	 * first, and nothing retunes the radio while it is sweeping.
+	 */
+	int			sc_scanning;	/* the stack is scanning */
+	int			sc_want_scan;	/* start a sweep */
+	int			sc_want_cancel;	/* stop the sweep */
+	int			sc_scan_done;	/* the part says it is done */
+	int			sc_hwscanning;	/* a sweep is running */
+	int			sc_hwscan_at;	/* since when, in ticks */
+	uint8_t			sc_hwscan_seq;
 
 	/* One command at a time. There is a single command buffer and a
 	 * single sequence number behind mtk_mcu_send, and two threads in it
@@ -409,7 +426,8 @@ void		mtk_write(struct mtk_softc*, uint32_t, uint32_t);
 int		mtk_dma_setup(struct mtk_softc*);
 int		mtk_firmware_start(struct mtk_softc*);
 int		mtk_radio_init(struct mtk_softc*);
-int		mtk_hw_scan(struct mtk_softc*, uint8_t only);
+int		mtk_hw_scan(struct mtk_softc*);
+int		mtk_cancel_scan(struct mtk_softc*);
 int		mtk_keep_awake(struct mtk_softc*);
 void		mtk_receive_frame(struct mtk_softc*, const uint8_t*, size_t, int, int);
 int		mtk_tune(struct mtk_softc*, uint8_t channel);

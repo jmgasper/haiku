@@ -31,6 +31,7 @@
 #include <net/if_media.h>
 
 #include <net80211/ieee80211_var.h>
+#include <net80211/ieee80211_proto.h>
 
 #include "if_mtkvar.h"
 
@@ -165,8 +166,11 @@ mtk_receive_frame(struct mtk_softc* sc, const uint8_t* data, size_t got,
 {
 	struct ieee80211com* ic = &sc->sc_ic;
 	struct mbuf* m;
-	uint32_t word0, word1, word2, type;
+	uint32_t word0, word1, word2, word3, type;
+	struct ieee80211_rx_stats rxs;
 	size_t at, length;
+	int dbm = MTK_NOISE_FLOOR + MTK_RSSI / 2;
+	uint8_t channel;
 
 	if (got < 64)
 		return;
@@ -174,6 +178,7 @@ mtk_receive_frame(struct mtk_softc* sc, const uint8_t* data, size_t got,
 	word0 = mtk_rd32(data);
 	word1 = mtk_rd32(data + 4);
 	word2 = mtk_rd32(data + 8);
+	word3 = mtk_rd32(data + 12);
 	type = (word0 >> 27) & 0x1f;
 
 	if (which >= 0 && which < 3)
@@ -184,6 +189,18 @@ mtk_receive_frame(struct mtk_softc* sc, const uint8_t* data, size_t got,
 	 */
 	if (type != MTK_RX_TYPE_NORMAL && type != MTK_RX_TYPE_NORMAL_MCU) {
 		if (type != MTK_RX_TYPE_EVENT || ((word0 >> 16) & 0xf) != 1) {
+			/* The end of a sweep is said unprompted, and may carry
+			 * the sequence number of the command that started it -
+			 * so it is recognised by what it is before it can be
+			 * mistaken for the answer to some later command.
+			 */
+			if (type == MTK_RX_TYPE_EVENT && got >= MTK_MCU_RXD_SIZE
+					&& data[0x1c] == MTK_MCU_EVENT_SCAN_DONE) {
+				sc->sc_scan_done = 1;
+				taskqueue_enqueue(sc->sc_tq, &sc->sc_work);
+				return;
+			}
+
 			/* Not air, so it may be the answer a command is waiting for.
 			 * Leave it where that command will find it rather than
 			 * letting the command race us for the ring.
@@ -219,6 +236,15 @@ mtk_receive_frame(struct mtk_softc* sc, const uint8_t* data, size_t got,
 	if ((word1 & MTK_RXD1_GROUP_2) != 0)
 		at += 8;
 	if ((word1 & MTK_RXD1_GROUP_3) != 0) {
+		/* The first of the receive vectors carries the signal as heard
+		 * by each aerial (RCPI, in half decibels above -110 dBm).
+		 */
+		if (at + 8 <= got) {
+			uint32_t rcpi = mtk_rd32(data + at + 4) & 0xff;
+
+			if (rcpi != 0 && rcpi != 0xff)
+				dbm = ((int)rcpi - 220) / 2;
+		}
 		at += 8;
 		if ((word1 & MTK_RXD1_GROUP_5) != 0)
 			at += 72;
@@ -316,12 +342,40 @@ mtk_receive_frame(struct mtk_softc* sc, const uint8_t* data, size_t got,
 		}
 	}
 
-	/* The stack wants this counted upwards from the noise floor in half
-	 * decibels, not as a negative dBm: anything under STA_RSSI_MIN it
-	 * refuses to associate with, so a plausible-looking -30 made every
-	 * network in earshot unusable and the scan repeat for ever.
+	/* Which channel it was heard on, from the descriptor itself: the part
+	 * sweeps the band on its own, so where the stack thinks the radio is
+	 * says nothing about where a frame came from.
+	 *
+	 * And the signal, which the stack wants counted upwards from the noise
+	 * floor in half decibels rather than as a negative dBm: anything under
+	 * STA_RSSI_MIN it refuses to associate with, so a plausible-looking
+	 * -30 once made every network in earshot unusable.
 	 */
-	ieee80211_input_all(ic, m, MTK_RSSI, MTK_NOISE_FLOOR);
+	memset(&rxs, 0, sizeof(rxs));
+	rxs.r_flags = IEEE80211_R_NF | IEEE80211_R_RSSI;
+	rxs.c_nf = MTK_NOISE_FLOOR;
+	if (dbm < MTK_NOISE_FLOOR)
+		dbm = MTK_NOISE_FLOOR;
+	rxs.c_rssi = (dbm - MTK_NOISE_FLOOR) * 2;
+
+	channel = (word3 >> 8) & 0xff;
+	if (channel != 0 && channel <= 14) {
+		rxs.r_flags |= IEEE80211_R_FREQ | IEEE80211_R_IEEE | IEEE80211_R_BAND;
+		rxs.c_ieee = channel;
+		rxs.c_band = IEEE80211_CHAN_2GHZ;
+		rxs.c_freq = ieee80211_ieee2mhz(channel, IEEE80211_CHAN_2GHZ);
+	} else if (channel > 14 && channel <= 180) {
+		rxs.r_flags |= IEEE80211_R_FREQ | IEEE80211_R_IEEE | IEEE80211_R_BAND;
+		rxs.c_ieee = channel;
+		rxs.c_band = IEEE80211_CHAN_5GHZ;
+		rxs.c_freq = ieee80211_ieee2mhz(channel, IEEE80211_CHAN_5GHZ);
+	}
+
+	if (!ieee80211_add_rx_params(m, &rxs)) {
+		m_freem(m);
+		return;
+	}
+	ieee80211_input_mimo_all(ic, m);
 }
 
 

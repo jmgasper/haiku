@@ -836,20 +836,28 @@ mtk_tune(struct mtk_softc* sc, uint8_t channel)
 }
 
 
-/* Get the radio from "running firmware" to "willing to listen". */
-/* The same three the stack is told about, so a sweep comes back round to
- * whichever one it is dwelling on in well under a second.
+/* The channels the part is told exist, and the ones the stack is told it
+ * may use (mtk_getradiocaps): every 20 MHz channel of both bands, the world
+ * over. Where a given one is actually allowed is decided above the driver.
  */
-static const uint8_t mtk_channels_2ghz[] = { 1, 6, 11 };
+const uint8_t mtk_channels_2ghz[MTK_CHANNELS_2GHZ] = {
+	1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
+};
+const uint8_t mtk_channels_5ghz[MTK_CHANNELS_5GHZ] = {
+	36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128,
+	132, 136, 140, 144, 149, 153, 157, 161, 165
+};
 
 
-/* Which channels exist at all. Without this the part has no list to look
- * through and answers a scan request by doing nothing.
+/* Which channels exist at all (mt76_connac_mcu_set_channel_domain). Without
+ * this the part has no list to look through and answers a scan request by
+ * doing nothing. Each channel is its number and flags, eight bytes, all of
+ * the 2.4 GHz ones first.
  */
 static int
 mtk_set_channels(struct mtk_softc* sc)
 {
-	uint8_t request[12 + sizeof(mtk_channels_2ghz) * 8];
+	uint8_t request[12 + (MTK_CHANNELS_2GHZ + MTK_CHANNELS_5GHZ) * 8];
 	size_t i, at;
 
 	memset(request, 0, sizeof(request));
@@ -858,12 +866,14 @@ mtk_set_channels(struct mtk_softc* sc)
 	request[4] = 0;			/* 20 and 40 MHz down low */
 	request[5] = 3;			/* and everything up high */
 	request[6] = 3;
-	request[8] = sizeof(mtk_channels_2ghz);
-	request[9] = 0;
+	request[8] = MTK_CHANNELS_2GHZ;
+	request[9] = MTK_CHANNELS_5GHZ;
 
 	at = 12;
-	for (i = 0; i < sizeof(mtk_channels_2ghz); i++, at += 8)
+	for (i = 0; i < MTK_CHANNELS_2GHZ; i++, at += 8)
 		request[at] = mtk_channels_2ghz[i];
+	for (i = 0; i < MTK_CHANNELS_5GHZ; i++, at += 8)
+		request[at] = mtk_channels_5ghz[i];
 
 	return mtk_mcu_send(sc, MTK_MCU_CE_SET_CHAN_DOMAIN, MTK_MCU_Q_SET,
 		request, sizeof(request), NULL, NULL);
@@ -894,54 +904,52 @@ mtk_keep_awake(struct mtk_softc* sc)
 }
 
 
+/* One sweep of every channel the part knows, the way Linux asks for one
+ * (mt76_connac_mcu_hw_scan): active, for any network, each channel probed
+ * twice, split so the part can come back to its own channel in between. The
+ * part says it is done with a SCAN_DONE event; until then nothing else may
+ * start a sweep or retune the radio.
+ */
 int
-mtk_hw_scan(struct mtk_softc* sc, uint8_t only)
+mtk_hw_scan(struct mtk_softc* sc)
 {
 	uint8_t request[MTK_SCAN_REQUEST_SIZE];
-	size_t i, at, count;
 
 	memset(request, 0, sizeof(request));
 
-	request[0] = 1;			/* this is scan number one */
+	sc->sc_hwscan_seq = (sc->sc_hwscan_seq + 1) & 0x7f;
+	if (sc->sc_hwscan_seq == 0)
+		sc->sc_hwscan_seq = 1;
+
+	request[0] = sc->sc_hwscan_seq;	/* band 0, so the top bit is clear */
 	request[1] = 0;			/* on behalf of our station */
-	request[2] = 1;			/* asking */
-	request[3] = 1;			/* of anyone at all */
-	request[4] = 1;			/* one name to ask after */
-	request[5] = 2;			/* asked twice per channel */
-	request[6] = 1 << 5;		/* in more than one go */
+	request[2] = 1;			/* active */
+	request[3] = 1 << 0;		/* for any network at all */
+	request[4] = 0;			/* no names to ask after */
+	request[5] = 2;			/* probed twice per channel */
+	request[6] = 1 << 5;		/* split, as the MT7921 family wants */
 	request[7] = 1;			/* and the later fields are meant */
 
-	mtk_put32(request + 8, 0);	/* the empty name, which all answer to */
+	request[0x9e] = 0;		/* every channel the part knows */
+	request[0x9f] = 0;
 
-	request[0x9e] = 4;		/* these channels, named below */
-	at = 0xa0;
-
-	/* One channel, not nineteen. This net80211 has no way to say which
-	 * channel a frame arrived on, so it credits every one to wherever it
-	 * last parked us. Letting the part wander turns the scan table into
-	 * guesswork and the stack rescans for ever; asking only about the
-	 * channel we are actually on makes what it records true.
-	 */
-	if (only != 0) {
-		count = 1;
-		request[at] = only <= 14 ? 1 : 2;
-		request[at + 1] = only;
-	} else {
-		count = sizeof(mtk_channels_2ghz);
-		for (i = 0; i < sizeof(mtk_channels_2ghz); i++, at += 2) {
-			request[at] = 1;	/* down low */
-			request[at + 1] = mtk_channels_2ghz[i];
-		}
-	}
-
-	request[0x9f] = (uint8_t)count;
-
-	memset(request + 0x456, 0xff, 6);	/* addressed to everyone */
-
-	if (only == 0)
-		device_printf(sc->sc_dev, "asking %zu channels who is there\n", count);
+	memset(request + 0x456, 0xff, 6);	/* whichever network answers */
 
 	return mtk_mcu_send(sc, MTK_MCU_CE_START_HW_SCAN, MTK_MCU_Q_SET,
+		request, sizeof(request), NULL, NULL);
+}
+
+
+/* Stop the sweep that is running (mt76_connac_mcu_cancel_hw_scan). */
+int
+mtk_cancel_scan(struct mtk_softc* sc)
+{
+	uint8_t request[4];
+
+	memset(request, 0, sizeof(request));
+	request[0] = sc->sc_hwscan_seq;
+
+	return mtk_mcu_send(sc, MTK_MCU_CE_CANCEL_HW_SCAN, MTK_MCU_Q_SET,
 		request, sizeof(request), NULL, NULL);
 }
 

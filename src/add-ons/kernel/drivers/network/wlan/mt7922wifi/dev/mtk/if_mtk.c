@@ -272,8 +272,10 @@ mtk_release_ownership(struct mtk_softc* sc)
 }
 
 
-/* The channels this part will work on. What it may actually use is decided
- * above this driver, from what the networks it hears say about where they are.
+/* The channels this part will work on: every 20 MHz channel of both bands.
+ * Which of them may actually be used is decided above this driver. The part
+ * sweeps them all in one go and says on each frame which channel it heard
+ * it on, so there is no longer any reason to keep the list short.
  */
 static void
 mtk_getradiocaps(struct ieee80211com* ic, int maxchans, int* nchans,
@@ -281,19 +283,16 @@ mtk_getradiocaps(struct ieee80211com* ic, int maxchans, int* nchans,
 {
 	uint8_t bands[IEEE80211_MODE_BYTES];
 
-	/* Only the three channels that do not overlap. The stack dwells on
-	 * each in turn while the part sweeps the band on its own schedule, and
-	 * the two only line up often enough to keep the scan table fresh if
-	 * there are few channels to get through. Widen this once a connection
-	 * is reliable.
-	 */
-	static const uint8_t wanted[] = { 1, 6, 11 };
-
 	memset(bands, 0, sizeof(bands));
 	setbit(bands, IEEE80211_MODE_11B);
 	setbit(bands, IEEE80211_MODE_11G);
-	ieee80211_add_channel_list_2ghz(chans, maxchans, nchans, wanted,
-		nitems(wanted), bands, 0);
+	ieee80211_add_channel_list_2ghz(chans, maxchans, nchans,
+		mtk_channels_2ghz, MTK_CHANNELS_2GHZ, bands, 0);
+
+	memset(bands, 0, sizeof(bands));
+	setbit(bands, IEEE80211_MODE_11A);
+	ieee80211_add_channel_list_5ghz(chans, maxchans, nchans,
+		mtk_channels_5ghz, MTK_CHANNELS_5GHZ, bands, 0);
 }
 
 
@@ -312,7 +311,6 @@ mtk_newstate(struct ieee80211vap* vap, enum ieee80211_state state, int arg)
 	 * channel mid-handshake.
 	 */
 	if (state != IEEE80211_S_SCAN && state != IEEE80211_S_INIT) {
-		sc->sc_scanning = 0;
 		/* Not from here: this is the stack's thread, and the command
 		 * buffer belongs to ours.
 		 */
@@ -356,6 +354,11 @@ mtk_vap_create(struct ieee80211com* ic, const char name[IFNAMSIZ], int unit,
 	 */
 	vap->iv_debug = IEEE80211_MSG_STATE | IEEE80211_MSG_AUTH
 		| IEEE80211_MSG_ASSOC;
+
+	/* The firmware sweeps the band and probes on its own; the stack is
+	 * not to step through channels or send probe requests of its own.
+	 */
+	vap->iv_flags_ext |= IEEE80211_FEXT_SCAN_OFFLOAD;
 
 	/* Watch the comings and goings, but let the stack decide them. */
 	mvp->newstate = vap->iv_newstate;
@@ -424,74 +427,14 @@ mtk_parent(struct ieee80211com* ic)
 }
 
 
+/* The stack's scan is the firmware's sweep: one sweep per scan, asked for
+ * from our own thread, and the scan ends when the part says the sweep is
+ * done (mtk_work, on MTK_MCU_EVENT_SCAN_DONE).
+ */
 static void
 mtk_scan_start(struct ieee80211com* ic)
 {
-	/* The stack moves us from channel to channel, but that alone is not
-	 * enough: until the part is asked to scan it forwards no announcements
-	 * at all, so the stack would be looking at an empty channel.
-	 */
 	struct mtk_softc* sc = ic->ic_softc;
-
-	struct ieee80211_scan_state* ss = ic->ic_scan;
-
-	/* Long enough for the part's sweep of the whole band to come back to
-	 * whichever channel this is. The usual 200ms means the sweep is almost
-	 * always somewhere else when a beacon finally arrives.
-	 */
-	if (ss != NULL) {
-		ss->ss_mindwell = hz / 2;
-		ss->ss_maxdwell = 3 * hz / 2;
-
-		/* Whoever asked for a scan last leaves their flags on the vap,
-		 * and everything else on this system asks for scans that must
-		 * not join anything - so once the network preferences have
-		 * looked around once, the stack is told never to join again and
-		 * quietly spends the rest of its life scanning. If a network
-		 * has actually been asked for, this scan is allowed to join it.
-		 */
-		/* Whoever asked for a scan last leaves their flags on the vap,
-		 * and everything else on this system asks for scans that must
-		 * not join - so once the network preferences have looked around
-		 * once, the stack is told never to join again. Clearing that
-		 * here lets it try, which is the only way it will ever join
-		 * anything.
-		 */
-		/* Every scan inherits IEEE80211_SCAN_NOJOIN from whoever asked
-		 * for one last, and everything else on this system asks for
-		 * scans that must not join - so once the network preferences
-		 * have looked around once, the stack is told never to join and
-		 * quietly scans for ever.
-		 *
-		 * Clearing it is what lets it join, but only clear it once a
-		 * network has actually been configured. With nothing to match,
-		 * the stack finds no candidate, and without NOJOIN that path
-		 * returns "restart the scan" instead of "stop": a tight loop
-		 * firing a command at the part for every turn of it, which is
-		 * what was stopping the machine half a minute after boot.
-		 *
-		 * So only one scan in every five seconds is allowed to join -
-		 * and even that is held off (the 0 && below) until associating
-		 * itself stops taking the machine with it, because configuring
-		 * a network is then all it takes.
-		 *
-		 * So only one scan in every five seconds is allowed to join.
-		 * The rest keep the flag and stop cleanly when they find
-		 * nothing, which is what bounds the loop. The vap's own state
-		 * cannot be used to decide this instead: both iv_des_nssid and
-		 * the privacy flag read back as unset on the very vap whose
-		 * iv_des_ssid reads back as the wanted network.
-		 */
-		if (0 && (ss->ss_flags & IEEE80211_SCAN_NOJOIN) != 0
-				&& (sc->sc_join_at == 0
-					|| (int)(ticks - sc->sc_join_at) > 5 * hz)) {
-			sc->sc_join_at = ticks;
-			sc->sc_joining = 1;
-			device_printf(sc->sc_dev, "letting this scan join\n");
-			ss->ss_flags &= ~IEEE80211_SCAN_NOJOIN;
-		} else
-			sc->sc_joining = 0;
-	}
 
 	sc->sc_scanning = 1;
 	sc->sc_want_scan = 1;
@@ -509,7 +452,32 @@ mtk_scan_end(struct ieee80211com* ic)
 	struct mtk_softc* sc = ic->ic_softc;
 
 	sc->sc_scanning = 0;
+	sc->sc_want_scan = 0;
 	sc->sc_scan_ends++;
+
+	/* The stack is done with it even if the part is not, as when a scan
+	 * is cancelled: tell the part too, or it carries on sweeping while
+	 * the stack tries to talk to whatever it picked.
+	 */
+	if (sc->sc_hwscanning != 0) {
+		sc->sc_want_cancel = 1;
+		taskqueue_enqueue(sc->sc_tq, &sc->sc_work);
+	}
+}
+
+
+/* The stack steps through its channel list even while the firmware does the
+ * scanning; those steps mean nothing to the part and must not reach it.
+ */
+static void
+mtk_scan_curchan(struct ieee80211_scan_state* ss, unsigned long maxdwell)
+{
+}
+
+
+static void
+mtk_scan_mindwell(struct ieee80211_scan_state* ss)
+{
 }
 
 
@@ -517,13 +485,13 @@ static void
 mtk_set_channel(struct ieee80211com* ic)
 {
 	struct mtk_softc* sc = ic->ic_softc;
-	uint8_t channel = ieee80211_chan2ieee(ic, ic->ic_curchan);
 
-	/* Recorded, not done: tuning is a command, and a command must not be
-	 * sent from a thread the stack is holding locks on.
+	/* Recorded, not done. During a scan the channel is the sweep's; after
+	 * one it is the channel of the network being joined, which is set up
+	 * with the rest of that network when the stack moves to it.
 	 */
-	sc->sc_want_channel = channel;
-	taskqueue_enqueue(sc->sc_tq, &sc->sc_work);
+	if ((ic->ic_flags & IEEE80211_F_SCAN) == 0)
+		sc->sc_want_channel = ieee80211_chan2ieee(ic, ic->ic_curchan);
 }
 
 
@@ -606,21 +574,17 @@ static void
 mtk_work(void* arg, int pending)
 {
 	struct mtk_softc* sc = arg;
+	struct ieee80211com* ic = &sc->sc_ic;
 
 	if (sc->sc_startall != 0) {
 		sc->sc_startall = 0;
-		ieee80211_start_all(&sc->sc_ic);
+		ieee80211_start_all(ic);
 	}
 
-	/* The stack only files what it hears while its own scan is running, so
-	 * the part's sweep has to start when that window opens, not on some
-	 * timer of our own. Asking again while a sweep is in flight is
-	 * harmless; missing the window is not.
-	 */
 	/* Only after a state change, which is the one place the firmware
-	 * might have taken the registers back. It never has - this has not
-	 * fired once - but it is the right thing to ask before a command and
-	 * it costs one direct read of a register that always answers.
+	 * might have taken the registers back. It never has, but it is the
+	 * right thing to ask before a command and it costs one direct read of
+	 * a register that always answers.
 	 */
 	if (sc->sc_want_awake != 0) {
 		sc->sc_want_awake = 0;
@@ -629,26 +593,39 @@ mtk_work(void* arg, int pending)
 		mtk_keep_awake(sc);
 	}
 
-	if (sc->sc_want_channel != 0 && sc->sc_want_channel != sc->sc_channel) {
-		uint8_t channel = sc->sc_want_channel;
-
-		if (mtk_tune(sc, channel) == 0) {
-			sc->sc_channel = channel;
-			sc->sc_want_scan = sc->sc_scanning;
+	if (sc->sc_want_cancel != 0) {
+		sc->sc_want_cancel = 0;
+		if (sc->sc_hwscanning != 0) {
+			mtk_cancel_scan(sc);
+			sc->sc_hwscanning = 0;
 		}
 	}
 
-	/* The part hands over no beacon at all unless it is sweeping, and it
-	 * only accepts a sweep of the whole band. That sweep wanders off the
-	 * channel the stack is listening on, so it is kept running for as long
-	 * as the stack is scanning and the stack is made to dwell long enough
-	 * that the sweep comes back round while it is still listening.
+	/* The sweep is over, one way or another: end the stack's scan, which
+	 * is what lets it pick a network. Taking its lock is fine here - this
+	 * thread is ours and holds nothing the stack waits on.
 	 */
-	if (sc->sc_scanning != 0 && (sc->sc_scan_at == 0
-			|| (int)(ticks - sc->sc_scan_at) > hz)) {
+	if (sc->sc_scan_done != 0) {
+		struct ieee80211vap* vap = TAILQ_FIRST(&ic->ic_vaps);
+
+		sc->sc_scan_done = 0;
+		sc->sc_hwscanning = 0;
+		if (sc->sc_scanning != 0 && vap != NULL)
+			ieee80211_scan_done(vap);
+	}
+
+	if (sc->sc_want_scan != 0 && sc->sc_hwscanning == 0) {
 		sc->sc_want_scan = 0;
-		sc->sc_scan_at = ticks;
-		mtk_hw_scan(sc, 0);
+		if (sc->sc_scanning != 0) {
+			if (mtk_hw_scan(sc) == 0) {
+				sc->sc_hwscanning = 1;
+				sc->sc_hwscan_at = ticks;
+			} else {
+				device_printf(sc->sc_dev, "the part would not sweep\n");
+				sc->sc_scan_done = 1;
+				taskqueue_enqueue(sc->sc_tq, &sc->sc_work);
+			}
+		}
 	}
 }
 
@@ -669,8 +646,15 @@ mtk_tick(void* arg)
 	 */
 	taskqueue_enqueue(sc->sc_rxtq, &sc->sc_rxwork);
 
-	if (sc->sc_want_scan != 0 || sc->sc_want_channel != sc->sc_channel)
+	/* A sweep the part never reports finished must not leave the stack
+	 * scanning for ever.
+	 */
+	if (sc->sc_hwscanning != 0 && sc->sc_scan_done == 0
+		&& (int)(ticks - sc->sc_hwscan_at) > MTK_HW_SCAN_TIMEOUT * hz) {
+		device_printf(sc->sc_dev, "the sweep never said it was done\n");
+		sc->sc_scan_done = 1;
 		taskqueue_enqueue(sc->sc_tq, &sc->sc_work);
+	}
 
 	callout_reset(&sc->sc_poll, hz / 100, mtk_tick, sc);
 }
@@ -833,6 +817,8 @@ mtk_attach(device_t dev)
 	ic->ic_scan_start = mtk_scan_start;
 	ic->ic_scan_end = mtk_scan_end;
 	ic->ic_set_channel = mtk_set_channel;
+	ic->ic_scan_curchan = mtk_scan_curchan;
+	ic->ic_scan_mindwell = mtk_scan_mindwell;
 	ic->ic_updateslot = mtk_updateslot;
 	ic->ic_raw_xmit = mtk_raw_xmit;
 	ic->ic_transmit = mtk_transmit;
