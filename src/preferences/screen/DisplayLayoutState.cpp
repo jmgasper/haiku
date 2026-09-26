@@ -208,6 +208,7 @@ DisplayLayoutState::DisplayLayoutState()
 	fFrame(0, 0, -1, -1),
 	fScreenFrame(0, 0, -1, -1),
 	fHasLayout(false),
+	fCanScale(false),
 	fZoomToDisplay(false)
 {
 }
@@ -257,11 +258,9 @@ DisplayLayoutState::SetTo(const BMessage& layout)
 	if (fDisplays.empty())
 		return B_ENTRY_NOT_FOUND;
 
-	if (!fHasLayout) {
-		// One display and a fixed scale
-		for (size_t i = 0; i < fDisplays.size(); i++)
-			fDisplays[i].scale = 100;
-	}
+	// Without a layout the driver shows one display with the whole frame
+	// buffer; the app_server still draws into it at the display's scale.
+	fCanScale = true;
 
 	if (PrimaryID() < 0 && FirstEnabledID() >= 0)
 		SetPrimary(FirstEnabledID());
@@ -293,6 +292,7 @@ DisplayLayoutState::SetToSingleDisplay(BRect frame, int32 width,
 
 	fFrame = fScreenFrame = frame;
 	fHasLayout = false;
+	fCanScale = false;
 	fZoomToDisplay = false;
 }
 

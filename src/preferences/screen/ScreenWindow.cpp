@@ -254,6 +254,7 @@ ScreenWindow::ScreenWindow(ScreenSettings* settings)
 	fSettings(settings),
 	fIsVesa(false),
 	fHasLayout(false),
+	fUndoIsScale(false),
 	fBootWorkspaceApplied(false),
 	fSelectedID(-1),
 	fReloadRunner(NULL),
@@ -480,7 +481,7 @@ ScreenWindow::_BuildDetailsPanel()
 	fScaleField = new BMenuField("ScaleMenu", B_TRANSLATE("Scale:"),
 		fScaleMenu);
 	fScaleField->SetAlignment(B_ALIGN_RIGHT);
-	if (!fHasLayout) {
+	if (!fCurrentLayout.CanScale()) {
 		fScaleField->SetEnabled(false);
 		fScaleField->SetToolTip(
 			B_TRANSLATE("The graphics driver does not support scaling."));
@@ -1067,7 +1068,7 @@ ScreenWindow::_UpdateDetails()
 	fResolutionField->SetEnabled(display->enabled);
 	fRefreshField->SetEnabled(display->enabled
 		&& fRefreshMenu->CountItems() > 0);
-	fScaleField->SetEnabled(fHasLayout && display->enabled);
+	fScaleField->SetEnabled(fCurrentLayout.CanScale() && display->enabled);
 }
 
 
@@ -1810,6 +1811,13 @@ ScreenWindow::_CheckApplyEnabled()
 			}
 		}
 		revertEnabled = fSelected != fOriginal;
+
+		// The one display can still be scaled
+		if (_ScaleChanged())
+			applyEnabled = true;
+		if (!fPendingLayout.SameArrangement(fOriginalLayout)
+			|| !fCurrentLayout.SameArrangement(fOriginalLayout))
+			revertEnabled = true;
 	}
 
 	fApplyButton->SetEnabled(applyEnabled);
@@ -1826,6 +1834,18 @@ ScreenWindow::_CheckApplyEnabled()
 		|| columns != fOriginalWorkspacesColumns
 		|| rows != fOriginalWorkspacesRows
 		|| brightness != fOriginalBrightness);
+}
+
+
+/*!	Whether the user picked another scale for the single display of a
+	driver without layouts.
+*/
+bool
+ScreenWindow::_ScaleChanged() const
+{
+	if (fHasLayout || !fCurrentLayout.CanScale())
+		return false;
+	return !fPendingLayout.SameArrangement(fCurrentLayout);
 }
 
 
@@ -2201,7 +2221,7 @@ ScreenWindow::MessageReceived(BMessage* message)
 		}
 
 		case BUTTON_UNDO_MSG:
-			if (fHasLayout) {
+			if (fHasLayout || fUndoIsScale) {
 				_ApplyLayoutState(fUndoLayout, false);
 				break;
 			}
@@ -2230,17 +2250,16 @@ ScreenWindow::MessageReceived(BMessage* message)
 				fBrightnessSlider->SetValue(fOriginalBrightness * 255);
 			}
 
-			if (fHasLayout) {
-				if (!fCurrentLayout.SameArrangement(fOriginalLayout))
-					_ApplyLayoutState(fOriginalLayout, false);
-				else {
-					fPendingLayout = fCurrentLayout;
-					_UpdateArrangementView();
-					_UpdateDetails();
-					_CheckApplyEnabled();
-				}
-				break;
+			if (!fCurrentLayout.SameArrangement(fOriginalLayout))
+				_ApplyLayoutState(fOriginalLayout, false);
+			else {
+				fPendingLayout = fCurrentLayout;
+				_UpdateArrangementView();
+				_UpdateDetails();
+				_CheckApplyEnabled();
 			}
+			if (fHasLayout)
+				break;
 
 			fScreenMode.Revert();
 			_UpdateActiveMode();
@@ -2248,19 +2267,34 @@ ScreenWindow::MessageReceived(BMessage* message)
 		}
 
 		case BUTTON_APPLY_MSG:
-			if (fHasLayout)
+		{
+			if (fHasLayout) {
 				_ApplyLayout();
-			else
+				break;
+			}
+
+			// One display: its scale goes through the layout, its mode
+			// through the classic path. Only one of them asks to keep the
+			// change.
+			bool scaleChanged = _ScaleChanged();
+			bool modeChanged = fSelected != fActive;
+			fUndoIsScale = scaleChanged && !modeChanged;
+			if (scaleChanged) {
+				fUndoLayout = fCurrentLayout;
+				_ApplyLayoutState(fPendingLayout, !modeChanged);
+			}
+			if (modeChanged || !scaleChanged)
 				_ApplyMode();
 			break;
+		}
 
 		case MAKE_INITIAL_MSG:
 			// user pressed "keep" in confirmation dialog
 			fModified = true;
-			if (fHasLayout) {
-				fOriginalLayout = fCurrentLayout;
+			fOriginalLayout = fCurrentLayout;
+			if (fHasLayout)
 				_CheckApplyEnabled();
-			} else
+			else
 				_UpdateActiveMode();
 			break;
 

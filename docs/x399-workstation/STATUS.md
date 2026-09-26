@@ -135,6 +135,20 @@ each USB port, the serial console, and a Bluetooth device to pair with.
   disconnected then, since the frame buffer they would get is not what they
   draw in. This is untested, as the machine has no such display.
 
+  2026-09-26, later: with the desktop drawn at density the software path
+  is simpler than that - the frame buffer stays the panel's, the logical
+  size is the panel's divided by the scale, and app_server draws into it at
+  the scale; nothing is enlarged on the copy. It was verified on the ROCK 5
+  ITX (rk3588_display, one head, no layout hooks): 200 percent live from
+  `screenmode`, the scale kept across a reboot, and the Screen preferences'
+  scale menu, countdown and undo. That menu had been disabled whenever the
+  driver had no layout of its own; `DisplayLayoutState::CanScale()` now
+  separates "the driver cannot arrange monitors" from "nothing can be
+  scaled", and Apply, Undo and Revert send the scale through
+  `set_display_layout()` while the mode keeps the classic path. On this
+  machine the change is behaviour-neutral (the accelerant has the layout
+  hooks), so the workstation was not power cycled for it.
+
 - 2026-09-20: H.264 decodes on the card. The engine exists - resman lists
   an `nvdec0` engine and an `NVC2B0` class - and a channel on it, bound like
   any other but to the decoder rather than to graphics, runs methods we write.
