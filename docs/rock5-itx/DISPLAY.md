@@ -1075,6 +1075,40 @@ across the mode change; the span path now re-sends the AVI infoframe 50 ms
 after the mode set (5d4b0ba0ed), and both boots of this image are clean with
 no capture retries.
 
+## Display scaling and the new Screen preferences (2026-09-26)
+
+The workstation branch's display work (per-monitor scaling at 100 to 250
+percent in steps of 25, monitor arrangement, per-monitor maximize, the
+rewritten Screen preferences, `screenmode -d`) was brought over as five
+commits and installed on the ITX board's NVMe system in place: the system
+package built with `jam -q @rock5full-mmc build haiku.hpkg` (the plain
+`haiku.hpkg` target builds the *minimum* package, without Media, MidiPlayer
+and their catalogs), split into 12 MiB parts, uploaded with `shell.py
+upload`, joined and renamed over `/boot/system/packages/haiku-*.hpkg`, then
+`shutdown -r -q`. Before that the lab shell had to be enabled on the running
+system from Terminal over the NanoKVM's keyboard (`nanokvm.py type`): the
+`enable-shell` file, the `services` entry for telnetd on the USB link, and
+the password set with `passwd`, because the registrar reads the shadow file
+only at boot.
+
+`rk3588_display` has no layout hooks, so app_server takes the software
+path: the frame buffer stays the panel's 1920x1080, the logical desktop is
+that divided by the scale (960x540 at 200 percent), and everything is drawn
+at density straight into the frame buffer. Verified over the KVM capture:
+`screenmode --display 1 --scale 200` switched live and the picture was
+sharp; the scale survived a reboot (settings file
+`~/config/settings/system/app_server/displays`); the Screen preferences show
+the KVM's EDID (VCS, 26", 85 dpi), offer the scale menu, apply 150 and 100
+percent live with the countdown, and the countdown's undo put 200 percent
+back. The preferences initially disabled the scale menu whenever the driver
+had no layout; `DisplayLayoutState::CanScale()` now tells the two cases
+apart (the app_server answered the layout query at all), and Apply, Undo
+and Revert route the scale through `set_display_layout()` while the mode
+still goes through the classic path. The board was left at 100 percent, the
+default for an 85 dpi display. Not covered: a second connector's layout
+(the driver drives one head for app_server), and the scale menu in the
+resolution-changing case on this driver, which offers a single mode.
+
 ## Later stages
 
 3. Modes beyond the PLL table (the fractional-rate calculation) or the

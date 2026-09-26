@@ -81,6 +81,10 @@ public:
 			int32				FirstEnabledID() const;
 
 			bool				HasLayout() const { return fHasLayout; }
+			bool				CanScale() const { return fCanScale; }
+									// the app_server scales the display,
+									// even when the driver cannot arrange
+									// several of them
 			bool				ZoomToDisplay() const
 									{ return fZoomToDisplay; }
 			BRect				ScreenFrame() const { return fScreenFrame; }
@@ -104,6 +108,7 @@ private:
 			BRect				fFrame;
 			BRect				fScreenFrame;
 			bool				fHasLayout;
+			bool				fCanScale;
 			bool				fZoomToDisplay;
 };
 

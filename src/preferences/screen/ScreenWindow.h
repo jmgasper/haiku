@@ -91,6 +91,7 @@ private:
 			void				_CheckApplyEnabled();
 			void				_ShowError(const char* format,
 									status_t status);
+			bool				_ScaleChanged() const;
 
 			bool				_IsVesa() const { return fIsVesa; }
 
@@ -98,6 +99,9 @@ private:
 			ScreenSettings*		fSettings;
 			bool				fIsVesa;
 			bool				fHasLayout;
+			bool				fUndoIsScale;
+									// the last apply changed the scale of
+									// the single display, not its mode
 			bool				fBootWorkspaceApplied;
 
 			DisplayLayoutState	fCurrentLayout;

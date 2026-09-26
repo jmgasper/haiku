@@ -174,6 +174,8 @@ def main():
     commands.add_parser("status")
     p = commands.add_parser("screenshot"); p.add_argument("path")
     p = commands.add_parser("key"); p.add_argument("keys", nargs="+")
+    p = commands.add_parser("type"); p.add_argument("text")
+    p.add_argument("--enter", action="store_true")
     p = commands.add_parser("click")
     p.add_argument("x", type=int); p.add_argument("y", type=int)
     p.add_argument("--width", type=int, default=1920); p.add_argument("--height", type=int, default=1080)
@@ -188,6 +190,7 @@ def main():
                   "/api/vm/device/virtual", "/api/storage/image", "/api/storage/image/mounted"]}
     elif args.command == "screenshot": result = screenshot(args.path)
     elif args.command == "key": result = key(args.keys)
+    elif args.command == "type": result = type_text(args.text + ("\n" if args.enter else ""))
     elif args.command == "click": result = click(args.x, args.y, args.width, args.height)
     elif args.command == "power":
         if not 1 <= args.duration <= 10000: raise ValueError("Duration must be 1..10000 ms")

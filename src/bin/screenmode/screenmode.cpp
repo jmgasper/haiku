@@ -123,7 +123,8 @@ print_displays(bool shortOutput)
 	layout.FindRect("screen frame", &frame);
 	if (!shortOutput) {
 		printf("Desktop: %g x %g%s\n", frame.Width() + 1, frame.Height() + 1,
-			hasLayout ? "" : " (the driver drives one display, unscaled)");
+			hasLayout ? "" : " (the driver drives one display; it is scaled "
+				"in software)");
 	}
 
 	BMessage display;

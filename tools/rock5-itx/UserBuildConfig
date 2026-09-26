@@ -19,6 +19,19 @@ DeferredSubInclude HAIKU_TOP tools rock5-itx ;
 
 rule UserBuildConfigRulePreImage
 {
+	# The lab's telnet shell over the NanoKVM's USB network, so that an
+	# installed image can be driven from the workstation (2026-09-26). The
+	# private overlay (a shadow line for baron and the opt-in file, see
+	# shell_image.py) lives outside the tree; without it nothing is added.
+	local labOverlay = /mnt/HaikuWork/rock5-image-extras/lab ;
+	if [ Glob $(labOverlay) : shadow ] && [ Glob $(labOverlay) : enable-shell ] {
+		local labShadow = <rock5-lab-files>shadow ;
+		SEARCH on $(labShadow) = $(labOverlay) ;
+		AddFilesToHaikuImage system settings etc : $(labShadow) ;
+		local labEnable = <rock5-lab-files>enable-shell ;
+		SEARCH on $(labEnable) = $(labOverlay) ;
+		AddFilesToHaikuImage home config settings rock5-lab : $(labEnable) ;
+	}
 	local bootscripts = <rock5-lab>UserBootscript
 		<rock5-lab>UserSetupEnvironment <rock5-lab>start-ax210-bluetooth.sh ;
 	SEARCH on $(bootscripts) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
