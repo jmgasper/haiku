@@ -53,6 +53,7 @@
 #include <WindowPrivate.h>
 
 #include <binary_compatibility/Interface.h>
+#include <InterfacePrivate.h>
 #include <input_globals.h>
 #include <tracker_private.h>
 #include <util/SplayTree.h>
@@ -1609,8 +1610,13 @@ BWindow::Zoom()
 	float maxZoomWidth = std::min(fMaxZoomWidth, fMaxWidth);
 	float maxZoomHeight = std::min(fMaxZoomHeight, fMaxHeight);
 
-	// 3) the screen rectangle
-	BRect screenFrame = (BScreen(this)).Frame();
+	// 3) the screen rectangle - or rather the rectangle of the monitor most
+	// of the window is on: with several monitors, a zoomed window that
+	// spans all of them is rarely what anybody wants. The user can turn
+	// this off in the Screen preferences.
+	BRect screenFrame;
+	if (BPrivate::get_display_frame(fFrame, true, screenFrame) != B_OK)
+		screenFrame = (BScreen(this)).Frame();
 	maxZoomWidth = std::min(maxZoomWidth, screenFrame.Width());
 	maxZoomHeight = std::min(maxZoomHeight, screenFrame.Height());
 
@@ -1619,7 +1625,9 @@ BWindow::Zoom()
 	BDeskbar deskbar;
 	BRect deskbarFrame = deskbar.Frame();
 	bool isShiftDown = (modifiers() & B_SHIFT_KEY) != 0;
-	if (!isShiftDown && !deskbar.IsAutoHide()) {
+	if (!isShiftDown && !deskbar.IsAutoHide()
+		&& deskbarFrame.Intersects(screenFrame)) {
+		// the Deskbar only takes room on the monitor it is on
 		// remove area taken up by Deskbar unless hidden or shift is held down
 		switch (deskbar.Location()) {
 			case B_DESKBAR_TOP:
@@ -2540,10 +2548,13 @@ BWindow::CenterIn(const BRect& rect)
 }
 
 
+/*!	Centers the window on the monitor it is on - or, while it is still
+	hidden, on the one the mouse is on, which is where the user is looking.
+*/
 void
 BWindow::CenterOnScreen()
 {
-	CenterIn(BScreen(this).Frame());
+	CenterIn(_DisplayFrame());
 }
 
 
@@ -2561,7 +2572,7 @@ BWindow::MoveOnScreen(uint32 flags)
 	// Set size limits now if needed
 	UpdateSizeLimits();
 
-	BRect screenFrame = BScreen(this).Frame();
+	BRect screenFrame = _DisplayFrame();
 	BRect frame = Frame();
 
 	float borderWidth;
@@ -3912,6 +3923,29 @@ BWindow::_KeyboardNavigation()
 
 	\return The new window position.
 */
+/*!	The frame of the monitor this window is on. A hidden window has not
+	been placed by anybody yet, so the monitor with the mouse on it counts,
+	which is where the user is looking.
+*/
+BRect
+BWindow::_DisplayFrame()
+{
+	BRect reference = fFrame;
+	if (IsHidden()) {
+		BPoint where;
+		uint32 buttons;
+		if (get_mouse(&where, &buttons) == B_OK)
+			reference = BRect(where, where);
+	}
+
+	BRect displayFrame;
+	if (BPrivate::get_display_frame(reference, false, displayFrame) == B_OK
+		&& displayFrame.IsValid())
+		return displayFrame;
+	return BScreen(this).Frame();
+}
+
+
 BPoint
 BWindow::AlertPosition(const BRect& frame)
 {
@@ -3923,7 +3957,16 @@ BWindow::AlertPosition(const BRect& frame)
 
 	BRect screenFrame = BScreen(this).Frame();
 	if (frame == screenFrame) {
-		// reference frame is screen frame, skip the below adjustments
+		// reference frame is screen frame, skip the below adjustments -
+		// except that with several monitors, the alert goes onto the one
+		// the mouse is on rather than the middle of them all
+		BRect displayFrame = _DisplayFrame();
+		if (displayFrame != screenFrame) {
+			point.Set(displayFrame.left + (displayFrame.Width() / 2.0f)
+					- (width / 2.0f),
+				displayFrame.top + (displayFrame.Height() / 4.0f)
+					- ceil(height / 3.0f));
+		}
 		return point;
 	}
 
