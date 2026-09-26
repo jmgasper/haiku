@@ -21,6 +21,7 @@ The ones worth knowing about:
 | `tests/drawtest.cpp` | what ordinary 2D drawing costs on the screen against in memory |
 | `tests/soundtest.cpp`, `tests/audioout.cpp` | whether an output clocks its stream, and which one the system uses |
 | `tests/retracetest.cpp` | whether the display reports its blanks |
+| `screenmode -d` (in the system) | how app_server has arranged and scaled the monitors; `--display <n> --scale/--position/--primary` changes it |
 
 They expect the workstation reachable as `ws-haiku` over the ssh configuration
 in `x399/ssh/`, and the built programs in `/boot/home/tests` on it. Nothing here

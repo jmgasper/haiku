@@ -77,6 +77,28 @@ $SSH 'set -u
 		*) say no "the display reports its blanks" "${r:-nothing}";;
 	esac
 
+	echo "displays"
+	# screenmode -d asks app_server for the monitors it arranges; each line
+	# of the short form is one monitor: number, connector, enabled,
+	# connected, x, y, scale, width, height, refresh, main.
+	displays=$(screenmode -d -s 2>/dev/null)
+	count=$(echo "$displays" | grep -c "^[0-9]")
+	[ "$count" -ge 1 ] && say ok "app_server arranges the monitors" \
+		"$(echo "$displays" | awk "{printf \"%s@%s%% \", \$2, \$7}")" \
+		|| say no "app_server arranges the monitors" "no display listed"
+
+	# The union of the monitors is what the desktop is; a desktop that does
+	# not match means a classic mode was set behind the back of the layout.
+	desk=$(screenmode -s 2>/dev/null | awk "{print \$1\"x\"\$2}")
+	union=$(echo "$displays" | awk "\$3==1 {r=\$5+int((\$8*100+\$7/2)/\$7); b=\$6+int((\$9*100+\$7/2)/\$7); if (r>w) w=r; if (b>h) h=b} END {print w\"x\"h}")
+	[ "$desk" = "$union" ] && say ok "the desktop is the monitors" "$desk" \
+		|| say no "the desktop is the monitors" "desktop $desk, monitors $union"
+
+	# The accelerant writes what it programmed when a layout is applied.
+	lay=$(grep -a "nvidia_rm: layout:" /var/log/syslog | tail -1 | sed "s/.*layout: //")
+	[ -n "$lay" ] && say ok "the card was given a layout" "$lay" \
+		|| say no "the card was given a layout" "nothing in the syslog"
+
 	echo "sound"
 	outputs=$(cd /boot/home/tests && ./audioout 2>/dev/null | grep -c "^[0-9]")
 	[ "$outputs" -ge 2 ] && say ok "both outputs are there" "$outputs" \

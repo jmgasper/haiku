@@ -8,9 +8,10 @@ pass, with nothing set in the environment of the programs it runs, because
 several of these have looked fine while being quietly broken. It last came back
 16 working, 0 not.
 
-What still needs someone at the machine: a monitor in a DisplayPort (no port
-asserts hotplug at present), devices in each USB port, the serial console, and
-a Bluetooth device to pair with.
+What still needs someone at the machine: a look at the scaled picture on the
+two 4K monitors, a monitor pulled out and plugged back in (the syslog says
+`nvidia_rm: DP-4 disconnected` and the desktop should follow), devices in
+each USB port, the serial console, and a Bluetooth device to pair with.
 
 | Area | Goal | Status |
 | --- | --- | --- |
@@ -21,12 +22,71 @@ a Bluetooth device to pair with.
 | USB | all controllers and ports enumerate devices | all 5 xHCI controllers start and publish a root hub; the NanoKVM enumerates on the ASM2142. The individual ports need devices plugged into them |
 | Audio | ALC1220 analog output, HDMI audio | verified both: two outputs, each clocking its stream at the hardware's own rate (48322 and 48321 frames a second against the 48000 asked for). The graphics card's codec needed a change to Haiku's hda driver, which discarded any codec whose converters are all digital. The monitor reports it takes stereo. What nobody here can check is whether a speaker makes a sound |
 | Graphics | GTX 1070/1080 Ti accelerated 2D/3D, 3-4 monitors | 3D verified: Vulkan on the GPU (1.4 TFLOP/s compute, 57 Gpixel/s fill) and OpenGL 4.5 through it, with frames copied straight into the screen's own frame buffer in video memory rather than sent through the host - a lit sphere at 1600x900 goes from 209 to 970 frames a second. Vertical sync works (locks to 60.0) now that the accelerant hands out a retrace semaphore. Any program gets the GPU, with nothing set in its environment. Three heads driving one spanning desktop is verified, but with the third and second forced rather than plugged in. 2D is not accelerated at all: it runs four to eight times slower than drawing in memory, which is still far more than a desktop needs at one monitor |
+| Displays | two 4K monitors usable at arm's length: per-monitor scaling, arrangement, per-monitor maximize, hot plug | verified on the two Dell P2415Q (DisplayPort): each monitor is a region of one frame buffer that the display engine scales up to the panel, at 100 to 250 percent in steps of 25, chosen per monitor. app_server arranges the monitors (side by side, stacked, swapped, one off), remembers the arrangement per monitor identity, keeps the mouse off the parts of the desktop no monitor shows, moves windows along with their monitor, and maximizes a window to the monitor most of it is on (the classic whole-desktop maximize is a setting). Two 24-inch 4K monitors come up at 200 percent, a 3840x1080 desktop, with no settings at all. The Screen preferences show the monitors as they stand and let them be dragged into place, identified by number on each screen, and read out from their EDID. Monitors coming and going are noticed two ways, but nobody was at the machine to plug one, so that path is untested. Frame buffer and VESA hardware gets the same scaling done in software, untested here |
 | Bluetooth | TP-Link Archer TX55E, working adapter and discovery | verified: the adapter answers as `90:74:ae:33:d7:cb` "MTK MT7922 #1" and an inquiry finds devices nearby, from a cold boot with nothing done by hand. The radio is a MediaTek MT7922 on USB, which runs a bootloader rather than a Bluetooth controller until it is given firmware - it takes the HCI Reset every stack opens with and never answers. The driver now hands it that firmware at open. Three further faults were in the way: `h2generic` took its event endpoint from the last interface that had one, which on this radio is MediaTek's audio interface, so it listened where no reply is ever sent; it stood isochronous transfers on the SCO endpoints at open, which nothing wants until there is a call; and the server never answered a request for a command the controller refuses outright, which hung the first program to ask for an adapter. Remote name lookup still fails, so discovered devices show an address and no name. Pairing and audio profiles are untried |
 | Wi-Fi | TP-Link Archer TX55E | the card scans and lists networks; it cannot carry traffic yet. `mt7922` is native, against Haiku's own PCI, and from a cold boot it brings the part up, loads its firmware, tunes a channel, sweeps for networks and reads what it hears: twenty-two in earshot by name, address and channel. It transmits, proven by asking after a network by name and being answered twenty-five times - an answer addressed to us can only follow a question we sent. What remains is joining one: host-side transmission of management frames, then association and keys. The last is best not done here at all - Haiku's wireless drivers present themselves through `net80211`, and its `wpa_supplicant` already does the handshake and key management, which is both far larger than this driver and the part where a mistake is a security mistake rather than a silent one. The network to join and the secret for it come from a settings file on the machine, never from this source, and the secret is never logged |
 | Video decoding | H.264 on the card's video engine, and something that plays a film | verified: the GTX 1080 Ti has an NVDEC engine and an NVC2B0 decoder class, and thirteen H.264 streams together with 120 frames of 1080p Big Buck Bunny decode byte for byte identically to ffmpeg's own decoder - multiple references, B pictures, spatial and temporal direct prediction, B pictures used as references, weighted prediction and two coded sequences among them. 1080p decodes at 232 pictures a second, 4.3 ms each, about eight times what playing it needs. It is offered to the whole system as a media add-on, so any program that opens a film gets it, and `NVPlay` plays one with sound, stopping, starting and seeking. What it will not do is field pictures, 4:2:2 or more than eight bits a sample, and because Haiku picks one decoder for a format those refusals mean the film will not play rather than falling back |
 | Sleep | S3 suspend and resume | sleeps and wakes; the display comes back, but the NVMe and the network card usually do not. Paused until a serial console arrives, which is also what the one untested path in the vertical sync work needs |
 
 ## Log
+
+- 2026-09-26: two 4K monitors are a desktop rather than an expanse. The
+  display engine of the card has a scaler on each head, and NVKMS accepts a
+  viewport into the frame buffer that is smaller than the raster it drives -
+  there is no limit on upscaling, only on downscaling - so a monitor at 150
+  percent is a 2560x1440 region of the frame buffer stretched over 3840x2160
+  pixels, by the hardware, for every program at once. The accelerant now has
+  a layout: every connected output with a region, a scale and a timing, and
+  five new hooks (`B_GET_DISPLAY_OUTPUTS`, `B_SET_DISPLAY_LAYOUT` and
+  friends in `Accelerant.h`) by which app_server reads and sets it. The frame
+  buffer is the smallest rectangle around the regions; its mode is
+  synthesized as before.
+
+  app_server keeps the arrangement (`DisplayLayout`), applies it before the
+  first mode is set so the screen comes up once, remembers it per monitor
+  (EDID vendor, product, serial and name, plus the connector) in
+  `~/config/settings/system/app_server/displays`, and puts a monitor it has
+  never seen at a scale that suits its density - 200 percent from 175 dots per
+  inch, 150 from 130 - to the right of the others. Windows travel with their
+  monitor when the layout changes, in proportion when the monitor's size in
+  desktop pixels changes, and windows left where nothing is shown are brought
+  onto the nearest monitor. input_server is told which parts of the desktop
+  are monitors and keeps the cursor on them, sliding along an edge rather
+  than disappearing into the dead corner below the smaller monitor.
+  `BWindow::Zoom()` asks for the monitor holding most of the window
+  (`AS_GET_DISPLAY_FRAME`), unless the user turned that off; `CenterOnScreen()`
+  and alerts use the monitor the window or the mouse is on; the Deskbar
+  lives on the main display. `screenmode -d` lists all of it and
+  `screenmode --display 2 --scale 150 --position 0 0 --primary` changes it
+  from a shell.
+
+  Measured on the workstation: both monitors at 200 percent give a 3840x1080
+  desktop and at 150 a 4480x1440 one; changing one monitor's scale, swapping
+  them by moving one onto the other, and making the other one main each take
+  effect at once with no error from NVKMS; a window at 2700,200 on the right
+  monitor was at 140,200 after the monitors swapped, and one on the left was
+  at 2145,225 after the swap and 2220,300 after that monitor went from 200
+  to 150 percent; `Zoom()` on a window at 2700,200 gave 2565,29-4474,1074,
+  that monitor less the tab, and the classic setting gave the whole desktop
+  less the Deskbar. The Screen preferences were driven over VNC: the two
+  monitors show as numbered rectangles with the selected one's EDID beside
+  them (Dell P2415Q, 23.8", 185 dpi, serial, week 48 of 2016), "Identify
+  displays" put a large 1 and 2 in the middle of each monitor, dragging 2
+  onto 1 swapped them on Apply - the preferences window itself moved to the
+  other monitor, and the Deskbar to the main display - and the countdown
+  put them back when it ran out. Two things could not be checked from here: whether the
+  scaled picture looks right on the panels (only a person can see them), and
+  hot plugging, which the accelerant watches both through NVKMS's display
+  events and by reading the hot plug lines from resman every two seconds.
+  The NanoKVM has no video on this machine, and a monitor cannot be pulled
+  out over the network.
+
+  Hardware without a layout of its own (the frame buffer and VESA drivers)
+  gets the scale done in software: app_server draws at the logical size and
+  enlarges it into the frame buffer as it copies, whole scales by
+  duplication and fractional ones by interpolation; direct windows are left
+  disconnected then, since the frame buffer they would get is not what they
+  draw in. This is untested, as the machine has no such display.
 
 - 2026-09-20: H.264 decodes on the card. The engine exists - resman lists
   an `nvdec0` engine and an `NVC2B0` class - and a channel on it, bound like
