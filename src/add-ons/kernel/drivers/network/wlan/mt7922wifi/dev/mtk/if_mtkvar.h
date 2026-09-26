@@ -119,7 +119,13 @@
 #define MTK_TXBUF_SIZE			2112
 #define MTK_MGMT_HEADER			24
 
+#define MTK_LMAC_AC00			0x00
 #define MTK_LMAC_ALTX0			0x10
+#define MTK_TX_TYPE_CT			0
+#define MTK_TXD2_MULTICAST		(1 << 10)
+#define MTK_PHY_TYPE_CCK		0
+#define MTK_PHY_TYPE_OFDM		1
+#define MTK_TX_RATE_MODE_SHIFT		6
 #define MTK_TXD1_TID_MGMT		7
 #define MTK_HDR_FORMAT_802_11		2
 #define MTK_TXD2_FIX_RATE		(1u << 31)
@@ -385,6 +391,8 @@ struct mtk_softc {
 	struct mtk_dma_mem	sc_txbuf;	/* frames of ours, one per slot */
 	uint16_t		sc_token;
 	uint8_t			sc_peer;	/* the radio we address */
+	uint8_t			sc_omac;	/* our own address's index */
+	uint16_t		sc_tx_wcid;	/* station entry frames go to */
 	uint8_t			sc_channel;
 
 	/* Enough to tell "nothing is arriving" from "nothing is being sent"

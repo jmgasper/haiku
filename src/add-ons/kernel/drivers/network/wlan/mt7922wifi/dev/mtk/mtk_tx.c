@@ -54,6 +54,80 @@ mtk_wr32(uint8_t* where, uint32_t value)
 }
 
 
+/* The rate a frame with no rate history goes at: the lowest the band has,
+ * as Linux picks for this family (mt76_connac2_mac_tx_rate_val, the first
+ * basic rate) - CCK 1 Mbit/s low, OFDM 6 Mbit/s high.
+ */
+static uint32_t
+mtk_fixed_rate(struct mtk_softc* sc)
+{
+	struct ieee80211com* ic = &sc->sc_ic;
+
+	if (ic->ic_curchan != NULL && IEEE80211_IS_CHAN_5GHZ(ic->ic_curchan))
+		return (MTK_PHY_TYPE_OFDM << MTK_TX_RATE_MODE_SHIFT) | 11;
+
+	return (MTK_PHY_TYPE_CCK << MTK_TX_RATE_MODE_SHIFT) | 0;
+}
+
+
+/* The description that goes ahead of a frame, as mt76_connac2_mac_write_txwi
+ * writes it for an 802.11 frame with no hardware key:
+ *
+ * - management and control frames on the ALTX0 queue, data on the queue of
+ *   its access category (the part numbers them the other way round);
+ * - the header's own length and the frame's own type, not a management
+ *   frame's regardless;
+ * - addressed to the station entry the frame is for, from our own address;
+ * - every frame at a fixed rate for now: the part does rate control only
+ *   for stations it has been told the rates of.
+ */
+static void
+mtk_write_txd(struct mtk_softc* sc, uint8_t* txd,
+	const struct ieee80211_frame* frame, size_t length, int ac)
+{
+	uint8_t type = (frame->i_fc[0] & IEEE80211_FC0_TYPE_MASK)
+		>> IEEE80211_FC0_TYPE_SHIFT;
+	uint8_t subtype = (frame->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK)
+		>> IEEE80211_FC0_SUBTYPE_SHIFT;
+	int multicast = IEEE80211_IS_MULTICAST(frame->i_addr1);
+	int data = type == (IEEE80211_FC0_TYPE_DATA >> IEEE80211_FC0_TYPE_SHIFT);
+	uint32_t queue, headerLength, tid = 0;
+
+	headerLength = ieee80211_anyhdrsize(frame);
+	if (data) {
+		if (ac < 0 || ac > 3)
+			ac = WME_AC_BE;
+		queue = MTK_LMAC_AC00 + (3 - ac);
+		if (IEEE80211_QOS_HAS_SEQ(frame)) {
+			const uint8_t* qos = ieee80211_getqos(__DECONST(void*, frame));
+			tid = qos[0] & IEEE80211_QOS_TID;
+		}
+	} else
+		queue = MTK_LMAC_ALTX0;
+
+	mtk_wr32(txd, ((uint32_t)queue << 25)
+		| ((uint32_t)MTK_TX_TYPE_CT << 23)
+		| (uint32_t)(length + MTK_TXD_HEADER));
+	mtk_wr32(txd + 4, MTK_TXD1_LONG_FORMAT
+		| ((uint32_t)sc->sc_omac << 24)
+		| ((tid & 0x7) << 20)
+		| ((uint32_t)MTK_HDR_FORMAT_802_11 << 16)
+		| (((headerLength / 2) & 0x1f) << 11)
+		| (sc->sc_tx_wcid & 0x3ff));
+
+	/* A fixed rate carries HT control itself: the part adds none to
+	 * management and control frames.
+	 */
+	mtk_wr32(txd + 8, MTK_TXD2_FIX_RATE | MTK_TXD2_HTC_VLD
+		| (multicast ? MTK_TXD2_MULTICAST : 0)
+		| ((uint32_t)(type & 0x3) << 4) | (subtype & 0xf));
+	mtk_wr32(txd + 12, MTK_TXD3_BA_DISABLE | ((uint32_t)15 << 11));
+	mtk_wr32(txd + 24, MTK_TXD6_FIXED_BW | (mtk_fixed_rate(sc) << 16));
+	mtk_wr32(txd + 28, ((uint32_t)(type & 0x3) << 20)
+		| ((uint32_t)(subtype & 0xf) << 16));
+}
+
+
 /* Hand one frame to the card. The description is built in the slot that
  * matches where we are on the ring, so nothing is overwritten while the card
  * is still reading it.
@@ -85,7 +159,6 @@ mtk_send_frame_locked(struct mtk_softc* sc, struct mbuf* m)
 	uint32_t* desc;
 	uint16_t next, token;
 	size_t length = m->m_pkthdr.len;
-	uint8_t subtype;
 
 	if (length < MTK_MGMT_HEADER || length > MTK_TXBUF_SIZE - MTK_TXD_SIZE)
 		return EINVAL;
@@ -105,29 +178,9 @@ mtk_send_frame_locked(struct mtk_softc* sc, struct mbuf* m)
 
 	m_copydata(m, 0, length, (caddr_t)(slot + MTK_TXD_SIZE));
 	frame = (struct ieee80211_frame*)(slot + MTK_TXD_SIZE);
-	subtype = (frame->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK)
-		>> IEEE80211_FC0_SUBTYPE_SHIFT;
 
 	memset(slot, 0, MTK_TXD_SIZE);
-
-	/* How much is being sent counts the first half of this description but
-	 * not the second, which has no outward logic to it.
-	 */
-	mtk_wr32(slot, ((uint32_t)MTK_LMAC_ALTX0 << 25)
-		| (uint32_t)(length + MTK_TXD_HEADER));
-	mtk_wr32(slot + 4, MTK_TXD1_LONG_FORMAT
-		| ((uint32_t)MTK_TXD1_TID_MGMT << 20)
-		| ((uint32_t)MTK_HDR_FORMAT_802_11 << 16)
-		| ((uint32_t)(MTK_MGMT_HEADER / 2) << 11)
-		| sc->sc_peer);
-
-	/* Anything that is not ordinary traffic goes at a rate we choose, there
-	 * being no history yet to choose from.
-	 */
-	mtk_wr32(slot + 8, MTK_TXD2_FIX_RATE | MTK_TXD2_HTC_VLD | subtype);
-	mtk_wr32(slot + 12, MTK_TXD3_BA_DISABLE | ((uint32_t)15 << 11));
-	mtk_wr32(slot + 24, MTK_TXD6_FIXED_BW);
-	mtk_wr32(slot + 28, (uint32_t)subtype << 16);
+	mtk_write_txd(sc, slot, frame, length, M_WME_GETAC(m));
 
 	/* And where the frame is: immediately behind its description. */
 	where = slot + MTK_TXD_HEADER;
