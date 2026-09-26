@@ -363,28 +363,141 @@ mtk_getradiocaps(struct ieee80211com* ic, int maxchans, int* nchans,
 }
 
 
+/* Tell the firmware the access point is gone: its station entry and the
+ * network record, and any remain-on-channel still held.
+ */
+static void
+mtk_join_teardown(struct mtk_softc* sc, struct ieee80211_node* ni)
+{
+	mtk_roc_abort(sc);
+
+	if (sc->sc_ap_added) {
+		sc->sc_ap_added = 0;
+		if (ni != NULL) {
+			mtk_sta_update(sc, ni, MTK_WCID_AP, MTK_STA_STATE_NONE, 0, 1);
+			mtk_bss_update(sc, ni, 0);
+		}
+		mtk_wtbl_clear(sc, MTK_WCID_AP);
+	}
+}
+
+
+/* Before the first frame to a network: a record of the access point, and
+ * the radio held on its channel (mt7921_mac_sta_add, mgd_prepare_tx).
+ */
+static int
+mtk_join_prepare(struct mtk_softc* sc, struct ieee80211_node* ni)
+{
+	int error;
+
+	if (ni == NULL || ni->ni_chan == NULL
+			|| ni->ni_chan == IEEE80211_CHAN_ANYC)
+		return EINVAL;
+
+	if (mtk_ensure_owned(sc) != 0)
+		return EIO;
+	mtk_keep_awake(sc);
+
+	if (sc->sc_hwscanning != 0) {
+		mtk_cancel_scan(sc);
+		sc->sc_hwscanning = 0;
+	}
+
+	if (sc->sc_ap_added && !IEEE80211_ADDR_EQ(sc->sc_ap_bssid, ni->ni_bssid))
+		mtk_join_teardown(sc, NULL);
+
+	if (!sc->sc_ap_added) {
+		mtk_wtbl_clear(sc, MTK_WCID_AP);
+		error = mtk_sta_update(sc, ni, MTK_WCID_AP, MTK_STA_STATE_NONE, 1, 1);
+		if (error != 0)
+			return error;
+		IEEE80211_ADDR_COPY(sc->sc_ap_bssid, ni->ni_bssid);
+		sc->sc_ap_added = 1;
+	}
+
+	return mtk_roc(sc, ni->ni_chan, 1000);
+}
+
+
+/* The association is accepted: the network record with its channel, the
+ * access point's record as associated, and our own entry's
+ * (mt7921_mac_sta_event ASSOC, bss_info_changed ASSOC, mgd_complete_tx).
+ */
+static int
+mtk_join_finish(struct mtk_softc* sc, struct ieee80211_node* ni)
+{
+	int error;
+
+	error = mtk_bss_update(sc, ni, 1);
+	if (error == 0) {
+		mtk_wtbl_clear(sc, MTK_WCID_AP);
+		error = mtk_sta_update(sc, ni, MTK_WCID_AP, MTK_STA_STATE_ASSOC, 1,
+			0);
+	}
+	if (error == 0)
+		error = mtk_sta_update(sc, NULL, MTK_WCID_OWN, MTK_STA_STATE_ASSOC, 1,
+			1);
+
+	mtk_roc_abort(sc);
+	return error;
+}
+
+
+/* State changes are where the firmware has to be told about the network,
+ * before the stack sends the frame the new state calls for. That takes
+ * commands, which wait, so the stack's lock is let go meanwhile, as the
+ * FreeBSD drivers for firmware-driven cards do (iwm_newstate); this runs
+ * on the stack's own task queue, not on the thread every driver shares.
+ */
 static int
 mtk_newstate(struct ieee80211vap* vap, enum ieee80211_state state, int arg)
 {
 	struct mtk_vap* mvp = MTK_VAP(vap);
-	struct mtk_softc* sc = vap->iv_ic->ic_softc;
-	int error;
+	struct ieee80211com* ic = vap->iv_ic;
+	struct mtk_softc* sc = ic->ic_softc;
+	enum ieee80211_state old = vap->iv_state;
+	struct ieee80211_node* ni = vap->iv_bss;
+	int error = 0;
 
-	device_printf(sc->sc_dev, "state now %s\n",
-		ieee80211_state_name[state]);
+	device_printf(sc->sc_dev, "state %s -> %s\n",
+		ieee80211_state_name[old], ieee80211_state_name[state]);
 
-	/* Leaving the scan behind: stop sweeping before the stack starts
-	 * talking to the network it has chosen, or the part wanders off the
-	 * channel mid-handshake.
-	 */
-	if (state != IEEE80211_S_SCAN && state != IEEE80211_S_INIT) {
-		/* Not from here: this is the stack's thread, and the command
-		 * buffer belongs to ours.
-		 */
-		sc->sc_want_awake = 1;
-		taskqueue_enqueue(sc->sc_tq, &sc->sc_work);
+	IEEE80211_UNLOCK(ic);
+
+	switch (state) {
+		case IEEE80211_S_INIT:
+		case IEEE80211_S_SCAN:
+			if (old >= IEEE80211_S_AUTH)
+				mtk_join_teardown(sc, ni);
+			break;
+
+		case IEEE80211_S_AUTH:
+		case IEEE80211_S_ASSOC:
+			if (old == IEEE80211_S_RUN)
+				mtk_join_teardown(sc, ni);
+			error = mtk_join_prepare(sc, ni);
+			break;
+
+		case IEEE80211_S_RUN:
+			if (vap->iv_opmode == IEEE80211_M_STA)
+				error = mtk_join_finish(sc, ni);
+			break;
+
+		default:
+			break;
 	}
 
+	if (error != 0) {
+		device_printf(sc->sc_dev, "the firmware was not ready for %s: %d\n",
+			ieee80211_state_name[state], error);
+	}
+
+	IEEE80211_LOCK(ic);
+
+	/* A failure is reported and the stack carries on regardless: it has
+	 * its own timeouts for a join that goes nowhere, and a state machine
+	 * refused here tends to stay stuck.
+	 */
 	error = mvp->newstate(vap, state, arg);
 
 	device_printf(sc->sc_dev, "state %s settled (%d)\n",
@@ -645,6 +758,16 @@ mtk_work(void* arg, int pending)
 
 	if (sc->sc_startall != 0) {
 		sc->sc_startall = 0;
+
+		/* Our address has to exist in the firmware before anything is
+		 * done on its behalf, scanning included (mt7921_add_interface).
+		 */
+		if (!sc->sc_dev_added) {
+			mtk_keep_awake(sc);
+			if (mtk_dev_add(sc, 1) == 0)
+				sc->sc_dev_added = 1;
+		}
+
 		ieee80211_start_all(ic);
 	}
 

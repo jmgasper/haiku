@@ -251,6 +251,13 @@ mtk_mcu_send_locked(struct mtk_softc* sc, uint8_t command, uint8_t setQuery,
 	if (sc->sc_seq == 0)
 		sc->sc_seq = 1;
 
+	/* Whatever answer is still lying where replies are left belongs to an
+	 * earlier command - one sent without waiting - and must not be taken
+	 * for this one's. The new sequence number keeps any later stragglers
+	 * out.
+	 */
+	sc->sc_replyready = 0;
+
 	memset(packet, 0, MTK_MCU_TXD_SIZE);
 	mtk_put32(packet, (uint32_t)(total & 0xffff)
 		| ((uint32_t)MTK_TX_TYPE_CMD << 23)
@@ -294,6 +301,98 @@ mtk_mcu_send_locked(struct mtk_softc* sc, uint8_t command, uint8_t setQuery,
 		return 0;
 	}
 
+}
+
+
+/* A unified command (MCU_UNI_CMD in Linux): the same hardware descriptor,
+ * then a sixteen-byte header of a different shape, and the arguments at 48
+ * rather than 64. The part always answers these (the option asks it to), so
+ * the answer is always collected, and its status - the UNI_EVENT_ID_CMD_RESULT
+ * body, le32 after the command id - is what is returned.
+ */
+static int
+mtk_mcu_send_uni_locked(struct mtk_softc* sc, uint16_t command,
+	const void* payload, size_t payloadLength, int wait)
+{
+	uint8_t* packet = (uint8_t*)sc->sc_cmdbuf.addr;
+	size_t total = MTK_MCU_UNI_TXD_SIZE + payloadLength;
+	uint8_t reply[128];
+	size_t got = sizeof(reply);
+	uint16_t length;
+	int error;
+
+	if (total > sc->sc_cmdbuf.size)
+		return EINVAL;
+
+	sc->sc_seq = (sc->sc_seq + 1) & 0xf;
+	if (sc->sc_seq == 0)
+		sc->sc_seq = 1;
+	sc->sc_replyready = 0;
+
+	memset(packet, 0, MTK_MCU_UNI_TXD_SIZE);
+	mtk_put32(packet, (uint32_t)(total & 0xffff)
+		| ((uint32_t)MTK_TX_TYPE_CMD << 23)
+		| ((uint32_t)MTK_TX_MCU_PORT_RX_Q0 << 25));
+	mtk_put32(packet + 4, MTK_TXD1_LONG_FORMAT
+		| ((uint32_t)MTK_HDR_FORMAT_CMD << 16));
+
+	length = (uint16_t)(total - 32);
+	packet[0x20] = length & 0xff;
+	packet[0x21] = length >> 8;
+	packet[0x22] = command & 0xff;
+	packet[0x23] = command >> 8;
+	packet[0x25] = MTK_MCU_PKT_ID;
+	packet[0x27] = sc->sc_seq;
+	packet[0x2a] = MTK_MCU_S2D_H2N;
+	packet[0x2b] = MTK_MCU_UNI_OPTION_SET_ACK;
+
+	if (payloadLength > 0)
+		memcpy(packet + MTK_MCU_UNI_TXD_SIZE, payload, payloadLength);
+
+	error = mtk_ring_submit(sc, &sc->sc_cmdq, sc->sc_cmdbuf.paddr, total);
+	if (error != 0)
+		return error;
+
+	error = mtk_ring_drain(sc, &sc->sc_cmdq, 3000);
+	if (error != 0 || !wait)
+		return error;
+
+	if (mtk_wait_reply(sc, reply, &got, 3000) != 0) {
+		device_printf(sc->sc_dev, "no answer to unified command %#x\n",
+			command);
+		return ETIMEDOUT;
+	}
+
+	/* The result event names the command it answers and how it went. */
+	if (got >= MTK_MCU_RXD_SIZE + 8) {
+		uint32_t status = mtk_le32(reply + MTK_MCU_RXD_SIZE + 4);
+
+		if (reply[MTK_MCU_RXD_SIZE] != (command & 0xff) || status != 0) {
+			device_printf(sc->sc_dev, "unified command %#x: answer for"
+				" %#x, status %#x\n", command, reply[MTK_MCU_RXD_SIZE],
+				status);
+			return EIO;
+		}
+	}
+
+	return 0;
+}
+
+
+int
+mtk_mcu_send_uni(struct mtk_softc* sc, uint16_t command, const void* payload,
+	size_t payloadLength, int wait)
+{
+	int error;
+
+	mtx_lock(&sc->sc_cmdmtx);
+	sc->sc_mcu_busy++;
+	error = mtk_mcu_send_uni_locked(sc, command, payload, payloadLength,
+		wait);
+	sc->sc_mcu_busy--;
+	mtx_unlock(&sc->sc_cmdmtx);
+
+	return error;
 }
 
 
@@ -687,6 +786,13 @@ mtk_mcu_send_ext_locked(struct mtk_softc* sc, uint8_t extended,
 	sc->sc_seq = (sc->sc_seq + 1) & 0xf;
 	if (sc->sc_seq == 0)
 		sc->sc_seq = 1;
+
+	/* Whatever answer is still lying where replies are left belongs to an
+	 * earlier command - one sent without waiting - and must not be taken
+	 * for this one's. The new sequence number keeps any later stragglers
+	 * out.
+	 */
+	sc->sc_replyready = 0;
 
 	memset(packet, 0, MTK_MCU_TXD_SIZE);
 	mtk_put32(packet, (uint32_t)(total & 0xffff)

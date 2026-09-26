@@ -146,6 +146,15 @@
 #define MTK_RXD1_GROUP_5		(1 << 15)
 #define MTK_RXD1_FCS_ERROR		(1 << 27)
 
+/* Station table entries, as Linux numbers them for one interface on band 0
+ * (mt7921_add_interface, mt7921_mac_sta_add): 0 is the global entry, the
+ * access point is the first station allocated, and our own interface's entry
+ * is the last in the table.
+ */
+#define MTK_WCID_GLOBAL			0
+#define MTK_WCID_AP			1
+#define MTK_WCID_OWN			19
+
 /* Every 20 MHz channel of both bands (mtk_mcu.c). */
 #define MTK_CHANNELS_2GHZ		13
 #define MTK_CHANNELS_5GHZ		25
@@ -155,6 +164,8 @@ extern const uint8_t mtk_channels_5ghz[MTK_CHANNELS_5GHZ];
 /* Talking to the part's own processor. */
 #define MTK_MCU_TXD_SIZE		64
 #define MTK_MCU_RXD_SIZE		36
+#define MTK_MCU_UNI_TXD_SIZE		48
+#define MTK_MCU_UNI_OPTION_SET_ACK	0x07	/* ACK | UNI | SET */
 #define MTK_TX_TYPE_CMD			2
 #define MTK_TX_MCU_PORT_RX_Q0		0x20
 #define MTK_TXD1_LONG_FORMAT		(1u << 31)
@@ -213,6 +224,10 @@ extern const uint8_t mtk_channels_5ghz[MTK_CHANNELS_5GHZ];
 #define MTK_MCU_CE_START_HW_SCAN	0x03
 #define MTK_MCU_CE_CANCEL_HW_SCAN	0x1b
 #define MTK_MCU_EVENT_SCAN_DONE		0x0d
+#define MTK_MCU_UNI_EVENT_ROC		0x27
+#define MTK_MCU_UNI_UNSOLICITED		(1 << 2)	/* rxd option byte */
+#define MTK_STA_STATE_NONE		0
+#define MTK_STA_STATE_ASSOC		2
 #define MTK_HW_SCAN_TIMEOUT		15	/* seconds */
 #define MTK_SCAN_REQUEST_SIZE		1186
 
@@ -393,6 +408,20 @@ struct mtk_softc {
 	uint8_t			sc_peer;	/* the radio we address */
 	uint8_t			sc_omac;	/* our own address's index */
 	uint16_t		sc_tx_wcid;	/* station entry frames go to */
+
+	/* What the firmware has been told (mtk_sta.c): our address, whether
+	 * there is an access point record, and which one it is.
+	 */
+	int			sc_dev_added;
+	int			sc_ap_added;
+	uint8_t			sc_ap_bssid[6];
+
+	/* Remain-on-channel while joining: our token, and what the part's
+	 * grant event said.
+	 */
+	uint8_t			sc_roc_token;
+	volatile int		sc_roc_granted;
+	int			sc_roc_active;
 	uint8_t			sc_channel;
 
 	/* Enough to tell "nothing is arriving" from "nothing is being sent"
@@ -444,6 +473,16 @@ int		mtk_firmware_start(struct mtk_softc*);
 int		mtk_radio_init(struct mtk_softc*);
 int		mtk_hw_scan(struct mtk_softc*);
 int		mtk_cancel_scan(struct mtk_softc*);
+int		mtk_mcu_send_uni(struct mtk_softc*, uint16_t command,
+			const void* payload, size_t payloadLength, int wait);
+void		mtk_wtbl_clear(struct mtk_softc*, uint16_t wcid);
+int		mtk_dev_add(struct mtk_softc*, int enable);
+int		mtk_bss_update(struct mtk_softc*, struct ieee80211_node*, int enable);
+int		mtk_sta_update(struct mtk_softc*, struct ieee80211_node*,
+			uint16_t wcid, int state, int enable, int newly);
+int		mtk_roc(struct mtk_softc*, struct ieee80211_channel*,
+			uint32_t milliseconds);
+int		mtk_roc_abort(struct mtk_softc*);
 int		mtk_keep_awake(struct mtk_softc*);
 void		mtk_receive_frame(struct mtk_softc*, const uint8_t*, size_t, int, int);
 int		mtk_tune(struct mtk_softc*, uint8_t channel);

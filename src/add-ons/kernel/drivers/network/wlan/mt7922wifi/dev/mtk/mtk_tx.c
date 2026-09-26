@@ -70,6 +70,21 @@ mtk_fixed_rate(struct mtk_softc* sc)
 }
 
 
+/* Which station entry a frame goes out through: the access point's, once the
+ * firmware has a record of it and the frame is addressed to it, and our own
+ * interface's for everything else (mt792x_tx).
+ */
+static uint16_t
+mtk_tx_wcid(struct mtk_softc* sc, const struct ieee80211_frame* frame)
+{
+	if (sc->sc_ap_added
+		&& IEEE80211_ADDR_EQ(frame->i_addr1, sc->sc_ap_bssid))
+		return MTK_WCID_AP;
+
+	return sc->sc_dev_added ? MTK_WCID_OWN : MTK_WCID_GLOBAL;
+}
+
+
 /* The description that goes ahead of a frame, as mt76_connac2_mac_write_txwi
  * writes it for an 802.11 frame with no hardware key:
  *
@@ -113,7 +128,7 @@ mtk_write_txd(struct mtk_softc* sc, uint8_t* txd,
 		| ((tid & 0x7) << 20)
 		| ((uint32_t)MTK_HDR_FORMAT_802_11 << 16)
 		| (((headerLength / 2) & 0x1f) << 11)
-		| (sc->sc_tx_wcid & 0x3ff));
+		| (mtk_tx_wcid(sc, frame) & 0x3ff));
 
 	/* A fixed rate carries HT control itself: the part adds none to
 	 * management and control frames.
@@ -247,6 +262,20 @@ mtk_receive_frame(struct mtk_softc* sc, const uint8_t* data, size_t got,
 			 * so it is recognised by what it is before it can be
 			 * mistaken for the answer to some later command.
 			 */
+			/* The grant of a remain-on-channel: a unified event,
+			 * unsolicited, whose body starts four bytes into the
+			 * payload (mt7921_mcu_uni_roc_event).
+			 */
+			if (type == MTK_RX_TYPE_EVENT && got >= MTK_MCU_RXD_SIZE + 12
+					&& data[0x1c] == MTK_MCU_UNI_EVENT_ROC
+					&& (data[0x1e] & MTK_MCU_UNI_UNSOLICITED) != 0) {
+				const uint8_t* grant = data + MTK_MCU_RXD_SIZE + 4;
+
+				if (grant[5] == sc->sc_roc_token)
+					sc->sc_roc_granted = 1;
+				return;
+			}
+
 			if (type == MTK_RX_TYPE_EVENT && got >= MTK_MCU_RXD_SIZE
 					&& data[0x1c] == MTK_MCU_EVENT_SCAN_DONE) {
 				sc->sc_scan_done = 1;
