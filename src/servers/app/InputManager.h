@@ -10,6 +10,7 @@
 
 
 #include <Locker.h>
+#include <Region.h>
 #include <ObjectList.h>
 
 
@@ -20,7 +21,7 @@ class InputManager : public BLocker {
 		InputManager();
 		virtual ~InputManager();
 
-		void UpdateScreenBounds(BRect bounds);
+		void UpdateScreenBounds(BRect bounds, const BRegion* displays = NULL);
 
 		bool AddStream(EventStream* stream);
 		void RemoveStream(EventStream* stream);

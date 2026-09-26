@@ -141,6 +141,18 @@ AccelerantHWInterface::AccelerantHWInterface()
 	fAccReleaseOverlay(NULL),
 	fAccConfigureOverlay(NULL),
 
+	fAccWaitForDisplayRestore(NULL),
+	fDisplayRestoreThread(-1),
+	fQuitDisplayRestoreThread(false),
+
+	fAccGetDisplayOutputCount(NULL),
+	fAccGetDisplayOutputs(NULL),
+	fAccGetDisplayOutputModes(NULL),
+	fAccSetDisplayLayout(NULL),
+	fAccSetDisplayChangePort(NULL),
+	fDisplayChangePort(-1),
+	fDisplayChangeThread(-1),
+
 	fModeCount(0),
 	fModeList(NULL),
 
@@ -409,6 +421,94 @@ AccelerantHWInterface::_SetupDefaultHooks()
 	fAccGetBrightness = (get_brightness)fAccelerantHook(B_GET_BRIGHTNESS, NULL);
 	fAccSetBrightness = (set_brightness)fAccelerantHook(B_SET_BRIGHTNESS, NULL);
 
+	// display state restoring (after suspend)
+	fAccWaitForDisplayRestore = (wait_for_display_restore)fAccelerantHook(
+		B_WAIT_FOR_DISPLAY_RESTORE, NULL);
+	if (fAccWaitForDisplayRestore != NULL && fDisplayRestoreThread < 0) {
+		fQuitDisplayRestoreThread = false;
+		fDisplayRestoreThread = spawn_thread(_DisplayRestoreThread,
+			"display restore", B_DISPLAY_PRIORITY, this);
+		if (fDisplayRestoreThread >= 0)
+			resume_thread(fDisplayRestoreThread);
+	}
+
+	// display outputs and their layout
+	fAccGetDisplayOutputCount = (get_display_output_count)fAccelerantHook(
+		B_GET_DISPLAY_OUTPUT_COUNT, NULL);
+	fAccGetDisplayOutputs = (get_display_outputs)fAccelerantHook(
+		B_GET_DISPLAY_OUTPUTS, NULL);
+	fAccGetDisplayOutputModes = (get_display_output_modes)fAccelerantHook(
+		B_GET_DISPLAY_OUTPUT_MODES, NULL);
+	fAccSetDisplayLayout = (set_display_layout)fAccelerantHook(
+		B_SET_DISPLAY_LAYOUT, NULL);
+	fAccSetDisplayChangePort = (set_display_change_port)fAccelerantHook(
+		B_SET_DISPLAY_CHANGE_PORT, NULL);
+	if (fAccGetDisplayOutputCount == NULL || fAccGetDisplayOutputs == NULL
+		|| fAccSetDisplayLayout == NULL) {
+		fAccGetDisplayOutputCount = NULL;
+		fAccGetDisplayOutputs = NULL;
+		fAccGetDisplayOutputModes = NULL;
+		fAccSetDisplayLayout = NULL;
+		fAccSetDisplayChangePort = NULL;
+	}
+
+	// Monitors coming and going: the accelerant writes to this port, and the
+	// thread turns that into a screen change for the desktop to deal with.
+	if (fAccSetDisplayChangePort != NULL && fDisplayChangeThread < 0) {
+		fDisplayChangePort = create_port(8, "display change");
+		if (fDisplayChangePort >= 0) {
+			fDisplayChangeThread = spawn_thread(_DisplayChangeThread,
+				"display change", B_DISPLAY_PRIORITY, this);
+			if (fDisplayChangeThread >= 0) {
+				resume_thread(fDisplayChangeThread);
+				fAccSetDisplayChangePort(fDisplayChangePort, 'dchg');
+			}
+		}
+	}
+
+	return B_OK;
+}
+
+
+/*static*/ status_t
+AccelerantHWInterface::_DisplayChangeThread(void* data)
+{
+	AccelerantHWInterface* interface = (AccelerantHWInterface*)data;
+
+	while (true) {
+		int32 code;
+		ssize_t bytes = read_port(interface->fDisplayChangePort, &code, NULL, 0);
+		if (bytes == B_BAD_PORT_ID || bytes == B_INTERRUPTED)
+			break;
+		if (bytes < B_OK || code != 'dchg')
+			continue;
+
+		// Let a burst of events (one per connector) settle into one change.
+		snooze(200000);
+		while (port_count(interface->fDisplayChangePort) > 0)
+			read_port_etc(interface->fDisplayChangePort, &code, NULL, 0,
+				B_RELATIVE_TIMEOUT, 0);
+
+		interface->_NotifyScreenChanged();
+	}
+
+	return B_OK;
+}
+
+
+/*static*/ status_t
+AccelerantHWInterface::_DisplayRestoreThread(void* data)
+{
+	AccelerantHWInterface* interface = (AccelerantHWInterface*)data;
+
+	while (!interface->fQuitDisplayRestoreThread) {
+		if (interface->fAccWaitForDisplayRestore(500000) != B_OK)
+			continue;
+
+		// The screen contents were lost, have everything redrawn.
+		interface->_NotifyScreenChanged();
+	}
+
 	return B_OK;
 }
 
@@ -440,6 +540,23 @@ AccelerantHWInterface::_UpdateHooksAfterModeChange()
 status_t
 AccelerantHWInterface::Shutdown()
 {
+	if (fDisplayChangeThread >= 0) {
+		if (fAccSetDisplayChangePort != NULL)
+			fAccSetDisplayChangePort(-1, 0);
+		delete_port(fDisplayChangePort);
+		fDisplayChangePort = -1;
+		status_t result;
+		wait_for_thread(fDisplayChangeThread, &result);
+		fDisplayChangeThread = -1;
+	}
+
+	if (fDisplayRestoreThread >= 0) {
+		fQuitDisplayRestoreThread = true;
+		status_t result;
+		wait_for_thread(fDisplayRestoreThread, &result);
+		fDisplayRestoreThread = -1;
+	}
+
 	if (fAccelerantHook != NULL) {
 		uninit_accelerant uninitAccelerant
 			= (uninit_accelerant)fAccelerantHook(B_UNINIT_ACCELERANT, NULL);
@@ -547,13 +664,26 @@ AccelerantHWInterface::_SetFallbackMode(display_mode& newMode) const
 status_t
 AccelerantHWInterface::SetMode(const display_mode& mode)
 {
+	return _SetMode(mode, false);
+}
+
+
+/*!	\a force sets the mode again even when it is the current one, which is
+	what a changed display layout needs: the frame buffer is the same size,
+	but the monitors behind it are arranged differently and the accelerant
+	allocates a new one.
+*/
+status_t
+AccelerantHWInterface::_SetMode(const display_mode& mode, bool force)
+{
 	AutoWriteLocker _(this);
 	// TODO: There are places this function can fail,
 	// maybe it needs to roll back changes in case of an
 	// error.
 
 	// prevent from doing the unnecessary
-	if (fModeCount > 0 && fFrontBuffer.IsSet() && fDisplayMode == mode) {
+	if (!force && fModeCount > 0 && fFrontBuffer.IsSet()
+		&& fDisplayMode == mode) {
 		// TODO: better comparison of display modes
 		return B_OK;
 	}
@@ -635,28 +765,9 @@ AccelerantHWInterface::SetMode(const display_mode& mode)
 	_UpdateHooksAfterModeChange();
 
 	// update backbuffer if necessary
-	if (!fBackBuffer.IsSet()
-		|| fBackBuffer->Width() != fFrontBuffer->Width()
-		|| fBackBuffer->Height() != fFrontBuffer->Height()
-		|| (fFrontBuffer->ColorSpace() == B_RGB32 && fBackBuffer.IsSet())) {
-		// NOTE: backbuffer is always B_RGBA32, this simplifies the
-		// drawing backend implementation tremendously for the time
-		// being. The color space conversion is handled in CopyBackToFront()
-
-		fBackBuffer.Unset();
-
-		fBackBuffer.SetTo(new(nothrow) MallocBuffer(
-			fFrontBuffer->Width(), fFrontBuffer->Height()));
-
-		status = fBackBuffer.IsSet()
-			? fBackBuffer->InitCheck() : B_NO_MEMORY;
-		if (status < B_OK) {
-			fBackBuffer.Unset();
-			return status;
-		}
-		// clear out backbuffer, alpha is 255 this way
-		memset(fBackBuffer->Bits(), 255, fBackBuffer->BitsLength());
-	}
+	status = _UpdateBackBuffer();
+	if (status != B_OK)
+		return status;
 
 	// update color palette configuration if necessary
 	if (fDisplayMode.space == B_CMAP8)
@@ -1093,6 +1204,163 @@ AccelerantHWInterface::GetDriverPath(BString& string)
 }
 
 
+/*!	The back buffer has the logical size: the front buffer's, reduced by
+	the software scale. It is always B_RGBA32, which simplifies the drawing
+	backend tremendously; the color space conversion (and the scaling) is
+	handled in CopyBackToFront().
+*/
+status_t
+AccelerantHWInterface::_UpdateBackBuffer()
+{
+	int32 width = LogicalWidth();
+	int32 height = LogicalHeight();
+	if (fBackBuffer.IsSet() && fBackBuffer->Width() == (uint32)width
+		&& fBackBuffer->Height() == (uint32)height
+		&& fFrontBuffer->ColorSpace() != B_RGB32)
+		return B_OK;
+
+	fBackBuffer.Unset();
+	fBackBuffer.SetTo(new(nothrow) MallocBuffer(width, height));
+
+	status_t status = fBackBuffer.IsSet()
+		? fBackBuffer->InitCheck() : B_NO_MEMORY;
+	if (status < B_OK) {
+		fBackBuffer.Unset();
+		return status;
+	}
+	// clear out backbuffer, alpha is 255 this way
+	memset(fBackBuffer->Bits(), 255, fBackBuffer->BitsLength());
+	return B_OK;
+}
+
+
+status_t
+AccelerantHWInterface::SetSoftwareScale(uint16 percent)
+{
+	AutoWriteLocker _(this);
+
+	if (percent == SoftwareScale())
+		return B_OK;
+	if (!fFrontBuffer.IsSet())
+		return B_NO_INIT;
+	switch (fFrontBuffer->ColorSpace()) {
+		case B_RGB32:
+		case B_RGBA32:
+		case B_RGB30:
+		case B_RGB24:
+		case B_RGB16:
+		case B_RGB15:
+		case B_RGBA15:
+		case B_CMAP8:
+			break;
+		default:
+			return B_UNSUPPORTED;
+	}
+
+	status_t status = HWInterface::SetSoftwareScale(percent);
+	if (status != B_OK)
+		return status;
+
+	status = _UpdateBackBuffer();
+	if (status != B_OK)
+		return status;
+
+	_NotifyFrameBufferChanged();
+	return B_OK;
+}
+
+
+// #pragma mark - display layout
+
+
+bool
+AccelerantHWInterface::HasDisplayLayout() const
+{
+	return fAccSetDisplayLayout != NULL;
+}
+
+
+status_t
+AccelerantHWInterface::GetDisplayOutputs(display_output** _outputs,
+	uint32* _count)
+{
+	AutoReadLocker _(this);
+
+	if (fAccGetDisplayOutputs == NULL)
+		return B_UNSUPPORTED;
+
+	uint32 count = fAccGetDisplayOutputCount();
+	if (count == 0)
+		return B_ENTRY_NOT_FOUND;
+
+	display_output* outputs = (display_output*)malloc(
+		count * sizeof(display_output));
+	if (outputs == NULL)
+		return B_NO_MEMORY;
+
+	status_t status = fAccGetDisplayOutputs(outputs, &count);
+	if (status != B_OK) {
+		free(outputs);
+		return status;
+	}
+
+	*_outputs = outputs;
+	*_count = count;
+	return B_OK;
+}
+
+
+status_t
+AccelerantHWInterface::GetDisplayOutputModes(uint32 id, display_mode** _modes,
+	uint32* _count)
+{
+	AutoReadLocker _(this);
+
+	if (fAccGetDisplayOutputModes == NULL)
+		return B_UNSUPPORTED;
+
+	// Monitors list a few dozen timings at most.
+	uint32 count = 256;
+	display_mode* modes = (display_mode*)malloc(count * sizeof(display_mode));
+	if (modes == NULL)
+		return B_NO_MEMORY;
+
+	status_t status = fAccGetDisplayOutputModes(id, modes, &count);
+	if (status != B_OK) {
+		free(modes);
+		return status;
+	}
+
+	*_modes = modes;
+	*_count = count;
+	return B_OK;
+}
+
+
+status_t
+AccelerantHWInterface::SetDisplayLayout(const display_output_config* configs,
+	uint32 count, bool switchMode)
+{
+	if (fAccSetDisplayLayout == NULL)
+		return B_UNSUPPORTED;
+
+	display_mode mode;
+	status_t status;
+	{
+		AutoWriteLocker _(this);
+		status = fAccSetDisplayLayout(configs, count, &mode);
+		// The mode list changed with the layout.
+		delete[] fModeList;
+		fModeList = NULL;
+		fModeCount = 0;
+	}
+	if (status != B_OK || !switchMode)
+		return status;
+
+	return _SetMode(mode, true);
+}
+
+
 // #pragma mark - overlays
 
 
@@ -1335,8 +1603,11 @@ AccelerantHWInterface::MoveCursorTo(float x, float y)
 	HWInterface::MoveCursorTo(x, y);
 
 	if (fHardwareCursorEnabled && LockExclusiveAccess()) {
-		if (fAccMoveCursor != NULL)
-				fAccMoveCursor((uint16)x, (uint16)y);
+		if (fAccMoveCursor != NULL) {
+			// the hardware cursor lives in the front buffer's pixels
+			fAccMoveCursor((uint16)(x * SoftwareScale() / 100),
+				(uint16)(y * SoftwareScale() / 100));
+		}
 		else {
 			fHardwareCursorEnabled = false;
 			if (fAccShowCursor != NULL)

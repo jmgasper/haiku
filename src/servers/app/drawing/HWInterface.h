@@ -93,6 +93,31 @@ public:
 	virtual	status_t			GetPreferredMode(display_mode* mode);
 	virtual status_t			GetMonitorInfo(monitor_info* info);
 
+	// display outputs: the monitors behind this interface and where each
+	// one sits in the frame buffer. An interface without layout support
+	// has one output covering the whole frame buffer.
+	virtual	bool				HasDisplayLayout() const { return false; }
+
+	// Software scaling, for hardware that cannot scale its output: drawing
+	// happens at the logical size, and the copy to the front buffer
+	// enlarges it. 100 is off.
+			uint16				SoftwareScale() const
+									{ return fSoftwareScale; }
+	virtual	status_t			SetSoftwareScale(uint16 percent);
+			int32				LogicalWidth() const;
+			int32				LogicalHeight() const;
+	virtual	status_t			GetDisplayOutputs(display_output** _outputs,
+									uint32* _count);
+									// the array is malloc()ed
+	virtual	status_t			GetDisplayOutputModes(uint32 id,
+									display_mode** _modes, uint32* _count);
+	virtual	status_t			SetDisplayLayout(
+									const display_output_config* configs,
+									uint32 count, bool switchMode = true);
+									// arranges the outputs and, with
+									// switchMode, switches to the resulting
+									// mode; without, the next mode set does
+
 	virtual sem_id				RetraceSemaphore() = 0;
 	virtual status_t			WaitForRetrace(
 									bigtime_t timeout = B_INFINITE_TIMEOUT) = 0;
@@ -178,6 +203,11 @@ protected:
 	virtual	void				_DrawCursor(IntRect area) const;
 
 	// does the actual transfer and handles color space conversion
+			void				_CopyToFrontScaled(uint8* src, uint32 srcBPR,
+									int32 x, int32 y, int32 right,
+									int32 bottom) const;
+			void				_CopyRowToFront(const uint8* row, int32 x,
+									int32 y, int32 count) const;
 			void				_CopyToFront(uint8* src, uint32 srcBPR, int32 x,
 									int32 y, int32 right, int32 bottom) const;
 
@@ -235,6 +265,7 @@ protected:
 			ServerCursorReference
 								fCursorAndDragBitmap;
 			bool				fCursorVisible;
+			uint16				fSoftwareScale;
 			bool				fCursorObscured;
 			bool				fHardwareCursorEnabled;
 			BPoint				fCursorLocation;

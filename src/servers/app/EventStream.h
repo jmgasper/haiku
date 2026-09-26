@@ -12,6 +12,7 @@
 #include <LinkReceiver.h>
 #include <MessageQueue.h>
 #include <Messenger.h>
+#include <Region.h>
 
 
 struct shared_cursor;
@@ -27,7 +28,8 @@ class EventStream {
 
 		virtual bool SupportsCursorThread() const;
 
-		virtual void UpdateScreenBounds(BRect bounds) = 0;
+		virtual void UpdateScreenBounds(BRect bounds,
+			const BRegion* displays = NULL) = 0;
 
 		virtual bool GetNextEvent(BMessage** _event) = 0;
 		virtual status_t GetNextCursorPosition(BPoint& where,
@@ -53,7 +55,8 @@ class InputServerStream : public EventStream {
 
 		virtual bool SupportsCursorThread() const { return fCursorSemaphore >= B_OK; }
 
-		virtual void UpdateScreenBounds(BRect bounds);
+		virtual void UpdateScreenBounds(BRect bounds,
+			const BRegion* displays = NULL);
 
 		virtual bool GetNextEvent(BMessage** _event);
 		virtual status_t GetNextCursorPosition(BPoint& where,
