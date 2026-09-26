@@ -346,9 +346,14 @@ int main(int argc, char **argv)
 
 	NvKmsApi kms;
 	NvKmsDevice kmsDev(kms, 0);
-	if (watchSeconds == 0)
-		printf("device: %u disps, %u heads\n", (unsigned)kmsDev.Info().numDisps,
-		(unsigned)kmsDev.Info().numHeads);
+	if (watchSeconds == 0) {
+		printf("device: %u disps, %u heads, surfaces up to %ux%u pixels and %u bytes a row, cursor %u\n",
+			(unsigned)kmsDev.Info().numDisps, (unsigned)kmsDev.Info().numHeads,
+			(unsigned)kmsDev.Info().maxWidthInPixels,
+			(unsigned)kmsDev.Info().maxHeightInPixels,
+			(unsigned)kmsDev.Info().maxWidthInBytes,
+			(unsigned)kmsDev.Info().maxCursorSize);
+	}
 
 	for (NvU32 dispIndex = 0; watchSeconds == 0 && dispIndex < kmsDev.Info().numDisps;
 			dispIndex++) {

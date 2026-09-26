@@ -127,12 +127,18 @@ private:
 	//
 	// Every connected output has a region of the frame buffer that its head
 	// scans out. The region is measured in frame buffer pixels; the display
-	// engine scales it up to the monitor's own resolution when the output's
-	// scale is above 100 percent, which is what makes a 4K monitor usable at
-	// arm's length without every program having to know about it. Outputs
-	// can be placed anywhere in the frame buffer - side by side, stacked,
-	// swapped - and the frame buffer is the smallest rectangle that holds
-	// them all.
+	// engine scales it to the monitor's own resolution when the two differ.
+	// The output's scale says how large the picture is on the monitor
+	// relative to its logical size (150 percent: a 3840 pixel wide monitor is
+	// 2560 logical pixels wide), and renderScale how many frame buffer pixels
+	// app_server draws per logical pixel, also in percent. At renderScale
+	// equal to the scale the region is the monitor's own size and nothing is
+	// scaled at all, which is what keeps text crisp; at a smaller renderScale
+	// the engine enlarges the region. The engine will not shrink one - this
+	// GPU refuses every downscale - so app_server draws at the smallest scale
+	// among the monitors. Outputs can be placed anywhere in the frame buffer
+	// - side by side, stacked, swapped - and the frame buffer is the
+	// smallest rectangle that holds them all.
 	struct Output {
 		NVDpyId dpyId;
 		uint32 id;					// what the rest of the system calls it
@@ -147,6 +153,7 @@ private:
 		int32 x, y;					// region in the frame buffer
 		uint16 width, height;		// its size, in frame buffer pixels
 		uint16 scale;				// percent
+		uint16 renderScale;			// frame buffer pixels per logical pixel, percent
 		std::vector<uint8> edid;
 	};
 	std::vector<Output> fOutputs;
@@ -349,6 +356,16 @@ static uint16 LogicalSize(uint32 pixels, uint16 scale)
 	return (uint16)((pixels * 100 + scale / 2) / scale);
 }
 
+// The frame buffer region of an output: its logical size drawn at renderScale
+// percent. At the output's own scale that is the monitor's size exactly.
+static uint16 RegionSize(uint32 pixels, uint16 scale, uint16 renderScale)
+{
+	if (renderScale == scale)
+		return pixels;
+	uint32 logical = LogicalSize(pixels, scale);
+	return (uint16)((logical * renderScale + 50) / 100);
+}
+
 
 NvAccelerant::NvAccelerant(int devFd):
 	fDevFd(dup(devFd)),
@@ -546,6 +563,7 @@ void NvAccelerant::FindOutputs()
 		output.dpyId = dpyId;
 		output.id = nvDpyIdToNvU32(dpyId);
 		output.scale = 100;
+		output.renderScale = 100;
 
 		NvKmsQueryDpyDynamicDataReply dynamic;
 		bool connected = QueryOutput(output, &dynamic);
@@ -1172,6 +1190,7 @@ void NvAccelerant::FillDisplayOutput(const Output &output, display_output &info)
 	info.width = output.width;
 	info.height = output.height;
 	info.scale = output.scale;
+	info.render_scale = output.renderScale;
 	info.native_timing = ToHaikuModeTimings(output.preferredMode.timings);
 	info.timing = ToHaikuModeTimings(output.mode.timings);
 	info.edid_length = std::min(output.edid.size(), sizeof(info.edid));
@@ -1243,6 +1262,14 @@ void NvAccelerant::SetDisplayLayout(const display_output_config* configs, uint32
 			debug_printf("nvidia_rm: layout asks for a scale of %u%%\n", config.scale);
 			RaiseErrno(EINVAL);
 		}
+		uint16 renderScale = config.render_scale == 0 ? 100 : config.render_scale;
+		if (renderScale < 100 || renderScale > config.scale) {
+			// more pixels than the monitor has would need the engine to
+			// shrink the picture, which it will not
+			debug_printf("nvidia_rm: layout asks for %u%% of pixels on a %u%% output\n",
+				renderScale, config.scale);
+			RaiseErrno(EINVAL);
+		}
 		if (!AssignHead(*output, usedHeads))
 			RaiseErrno(EBUSY);
 
@@ -1277,10 +1304,11 @@ void NvAccelerant::SetDisplayLayout(const display_output_config* configs, uint32
 		output->enabled = true;
 		output->mode = timing;
 		output->scale = config.scale;
-		output->width = LogicalSize(timing.timings.hVisible, config.scale);
-		output->height = LogicalSize(timing.timings.vVisible, config.scale);
-		output->x = config.x;
-		output->y = config.y;
+		output->renderScale = renderScale;
+		output->width = RegionSize(timing.timings.hVisible, config.scale, renderScale);
+		output->height = RegionSize(timing.timings.vVisible, config.scale, renderScale);
+		output->x = (config.x * renderScale + 50) / 100;
+		output->y = (config.y * renderScale + 50) / 100;
 		enabled++;
 	}
 	if (enabled == 0)
@@ -1294,10 +1322,10 @@ void NvAccelerant::SetDisplayLayout(const display_output_config* configs, uint32
 		if (!output.enabled)
 			continue;
 		debug_printf("nvidia_rm: layout: %s head %" B_PRIu32 " %ux%u@%u at %" B_PRId32 ",%" B_PRId32
-			" scale %u%% (%ux%u)\n", output.name, output.head,
+			" scale %u%% (%ux%u, drawn at %u%%)\n", output.name, output.head,
 			(unsigned)output.mode.timings.hVisible, (unsigned)output.mode.timings.vVisible,
 			(unsigned)(output.mode.timings.RRx1k / 1000), output.x, output.y, output.scale,
-			output.width, output.height);
+			output.width, output.height, output.renderScale);
 	}
 
 	*mode = ToHaikuMode(fLayoutMode);
@@ -1383,6 +1411,7 @@ bool NvAccelerant::RefreshOutputs()
 			if (probe.mode.timings.hVisible == 0)
 				continue;
 			probe.scale = 100;
+			probe.renderScale = 100;
 			probe.width = LogicalSize(probe.mode.timings.hVisible, probe.scale);
 			probe.height = LogicalSize(probe.mode.timings.vVisible, probe.scale);
 			probe.x = right;
@@ -1409,8 +1438,10 @@ bool NvAccelerant::RefreshOutputs()
 				known->preferredMode = PreferredMode(dpyId);
 				if (!known->enabled) {
 					known->mode = known->preferredMode;
-					known->width = LogicalSize(known->mode.timings.hVisible, known->scale);
-					known->height = LogicalSize(known->mode.timings.vVisible, known->scale);
+					known->width = RegionSize(known->mode.timings.hVisible, known->scale,
+						known->renderScale);
+					known->height = RegionSize(known->mode.timings.vVisible, known->scale,
+						known->renderScale);
 				}
 				changed = true;
 			}
