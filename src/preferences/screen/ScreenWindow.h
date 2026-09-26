@@ -1,5 +1,5 @@
 /*
- * Copyright 2001-2014 Haiku, Inc. All rights reserved.
+ * Copyright 2001-2026 Haiku, Inc. All rights reserved.
  * Distributed under the terms of the MIT License.
  *
  * Authors:
@@ -15,104 +15,169 @@
 
 #include <Window.h>
 
+#include "DisplayLayoutState.h"
 #include "ScreenMode.h"
 
 
-class BBox;
-class BPopUpMenu;
+class BButton;
+class BCheckBox;
 class BMenuField;
+class BMenuItem;
+class BMessageRunner;
+class BPopUpMenu;
 class BSlider;
 class BSpinner;
 class BStringView;
 
-class RefreshWindow;
-class MonitorView;
+class DisplayArrangementView;
 class ScreenSettings;
 
 
 class ScreenWindow : public BWindow {
 public:
-							ScreenWindow(ScreenSettings *settings);
-	virtual					~ScreenWindow();
+								ScreenWindow(ScreenSettings* settings);
+	virtual						~ScreenWindow();
 
-	virtual	bool			QuitRequested();
-	virtual	void			MessageReceived(BMessage *message);
-	virtual	void			WorkspaceActivated(int32 ws, bool state);
-	virtual	void			ScreenChanged(BRect frame, color_space mode);
-
-private:
-			void			_BuildSupportedColorSpaces();
-
-			void			_CheckApplyEnabled();
-			void			_CheckResolutionMenu();
-			void			_CheckColorMenu();
-			void			_CheckRefreshMenu();
-
-			void			_UpdateActiveMode();
-			void			_UpdateActiveMode(int32 workspace);
-			void			_UpdateWorkspaceButtons();
-			void			_UpdateRefreshControl();
-			void			_UpdateMonitorView();
-			void			_UpdateControls();
-			void			_UpdateOriginal();
-			void			_UpdateMonitor();
-			void			_UpdateColorLabel();
-
-			void			_Apply();
-
-			status_t		_WriteVesaModeFile(const screen_mode& mode) const;
-			bool			_IsVesa() const { return fIsVesa; }
+	virtual	bool				QuitRequested();
+	virtual	void				MessageReceived(BMessage* message);
+	virtual	void				WorkspaceActivated(int32 workspace,
+									bool state);
+	virtual	void				WindowActivated(bool active);
+	virtual	void				ScreenChanged(BRect frame, color_space mode);
 
 private:
-			ScreenSettings*	fSettings;
-			bool			fIsVesa;
-			bool			fBootWorkspaceApplied;
+	// building the UI
+			BView*				_BuildDetailsPanel();
+			void				_BuildFallbackMenus();
+			void				_BuildResolutionMenu(
+									const std::vector<display_mode_entry>&
+										resolutions);
+			void				_BuildSupportedColorSpaces();
 
-			BBox*			fScreenBox;
-			BStringView*	fDeviceInfo;
-			MonitorView*	fMonitorView;
-			BMenuItem*		fAllWorkspacesItem;
+	// display layout path
+			void				_LoadLayout();
+			void				_ReloadLayout(bool resetPending);
+			void				_SelectDisplay(int32 id);
+			display_state*		_SelectedDisplay();
+			void				_UpdateArrangementView();
+			void				_UpdateDetails();
+			void				_UpdateLayoutMenus(
+									const display_state& display);
+			void				_UpdateInfo(const display_state& display);
+			void				_UpdateTitle(const display_state& display);
+			void				_ApplyLayout();
+			void				_ApplyLayoutState(
+									const DisplayLayoutState& state,
+									bool showAlert);
+			void				_IdentifyDisplays();
+			void				_LaunchBackgrounds();
 
-			BSpinner*		fColumnsControl;
-			BSpinner*		fRowsControl;
+	// classic single screen path
+			void				_CheckResolutionMenu();
+			void				_CheckColorMenu();
+			void				_CheckRefreshMenu();
+			void				_UpdateActiveMode();
+			void				_UpdateActiveMode(int32 workspace);
+			void				_UpdateRefreshControl();
+			void				_UpdateFallbackControls();
+			void				_UpdateOriginal();
+			void				_UpdateColorLabel();
+			void				_ApplyMode();
+			status_t			_WriteVesaModeFile(
+									const screen_mode& mode) const;
 
-			uint32			fSupportedColorSpaces;
-			BMenuItem*		fUserSelectedColorSpace;
+	// both
+			void				_UpdateWorkspaceButtons();
+			void				_CheckApplyEnabled();
+			void				_ShowError(const char* format,
+									status_t status);
 
-			BPopUpMenu*		fResolutionMenu;
-			BMenuField*		fResolutionField;
-			BPopUpMenu*		fColorsMenu;
-			BMenuField*		fColorsField;
-			BPopUpMenu*		fRefreshMenu;
-			BMenuField*		fRefreshField;
-			BMenuItem*		fOtherRefresh;
+			bool				_IsVesa() const { return fIsVesa; }
 
-			BPopUpMenu*		fCombineMenu;
-			BMenuField*		fCombineField;
-			BPopUpMenu*		fSwapDisplaysMenu;
-			BMenuField*		fSwapDisplaysField;
-			BPopUpMenu*		fUseLaptopPanelMenu;
-			BMenuField*		fUseLaptopPanelField;
-			BPopUpMenu*		fTVStandardMenu;
-			BMenuField*		fTVStandardField;
+private:
+			ScreenSettings*		fSettings;
+			bool				fIsVesa;
+			bool				fHasLayout;
+			bool				fBootWorkspaceApplied;
 
-			BSlider*		fBrightnessSlider;
+			DisplayLayoutState	fCurrentLayout;
+				// what the app_server has right now
+			DisplayLayoutState	fPendingLayout;
+				// what the user is editing
+			DisplayLayoutState	fOriginalLayout;
+				// for Revert: as it was when opened or last kept
+			DisplayLayoutState	fUndoLayout;
+				// for the countdown: as it was before Apply
+			int32				fSelectedID;
+			BMessageRunner*		fReloadRunner;
 
-			BButton*		fDefaultsButton;
-			BButton*		fApplyButton;
-			BButton*		fRevertButton;
+			DisplayArrangementView* fArrangementView;
+			BButton*			fIdentifyButton;
+			BButton*			fBackgroundsButton;
+			BCheckBox*			fZoomBox;
 
-			ScreenMode		fScreenMode;
-			ScreenMode		fUndoScreenMode;
+			BStringView*		fTitleView;
+			BStringView*		fSubtitleView;
+
+			BMenuField*			fWorkspaceField;
+			BMenuItem*			fAllWorkspacesItem;
+
+			BPopUpMenu*			fResolutionMenu;
+			BMenuField*			fResolutionField;
+			bool				fResolutionMatrix;
+			BPopUpMenu*			fColorsMenu;
+			BMenuField*			fColorsField;
+			BPopUpMenu*			fRefreshMenu;
+			BMenuField*			fRefreshField;
+			BMenuItem*			fOtherRefresh;
+			BPopUpMenu*			fScaleMenu;
+			BMenuField*			fScaleField;
+
+			BPopUpMenu*			fCombineMenu;
+			BMenuField*			fCombineField;
+			BPopUpMenu*			fSwapDisplaysMenu;
+			BMenuField*			fSwapDisplaysField;
+			BPopUpMenu*			fUseLaptopPanelMenu;
+			BMenuField*			fUseLaptopPanelField;
+			BPopUpMenu*			fTVStandardMenu;
+			BMenuField*			fTVStandardField;
+
+			BCheckBox*			fEnabledBox;
+			BCheckBox*			fPrimaryBox;
+
+			BStringView*		fConnectorLabel;
+			BStringView*		fConnectorView;
+			BStringView*		fSerialLabel;
+			BStringView*		fSerialView;
+			BStringView*		fManufacturedLabel;
+			BStringView*		fManufacturedView;
+			BStringView*		fSizeLabel;
+			BStringView*		fSizeView;
+			BStringView*		fDeviceLabel;
+			BStringView*		fDeviceInfo;
+
+			BSlider*			fBrightnessSlider;
+			BSpinner*			fColumnsControl;
+			BSpinner*			fRowsControl;
+
+			BButton*			fDefaultsButton;
+			BButton*			fApplyButton;
+			BButton*			fRevertButton;
+
+			uint32				fSupportedColorSpaces;
+			BMenuItem*			fUserSelectedColorSpace;
+
+			ScreenMode			fScreenMode;
+			ScreenMode			fUndoScreenMode;
 				// screen modes for all workspaces
 
-			screen_mode		fActive, fSelected, fOriginal;
+			screen_mode			fActive, fSelected, fOriginal;
 				// screen modes for the current workspace
 
-			uint32			fOriginalWorkspacesColumns;
-			uint32			fOriginalWorkspacesRows;
-			float			fOriginalBrightness;
-			bool			fModified;
+			uint32				fOriginalWorkspacesColumns;
+			uint32				fOriginalWorkspacesRows;
+			float				fOriginalBrightness;
+			bool				fModified;
 };
 
 #endif	/* SCREEN_WINDOW_H */
