@@ -89,7 +89,7 @@ mtk_tx_wcid(struct mtk_softc* sc, const struct ieee80211_frame* frame)
  * writes it for an 802.11 frame with no hardware key:
  *
  * - management and control frames on the ALTX0 queue, data on the queue of
- *   its access category (the part numbers them the other way round);
+ *   its access category (numbered the part's way, not the stack's);
  * - the header's own length and the frame's own type, not a management
  *   frame's regardless;
  * - addressed to the station entry the frame is for, from our own address;
@@ -108,11 +108,18 @@ mtk_write_txd(struct mtk_softc* sc, uint8_t* txd,
 	int data = type == (IEEE80211_FC0_TYPE_DATA >> IEEE80211_FC0_TYPE_SHIFT);
 	uint32_t queue, headerLength, tid = 0;
 
+	/* The part's queues by access category: background, best effort,
+	 * video, voice - not the stack's order, which starts at best effort.
+	 */
+	static const uint8_t lmac[4] = {
+		[WME_AC_BE] = 1, [WME_AC_BK] = 0, [WME_AC_VI] = 2, [WME_AC_VO] = 3
+	};
+
 	headerLength = ieee80211_anyhdrsize(frame);
 	if (data) {
 		if (ac < 0 || ac > 3)
 			ac = WME_AC_BE;
-		queue = MTK_LMAC_AC00 + (3 - ac);
+		queue = MTK_LMAC_AC00 + lmac[ac];
 		if (IEEE80211_QOS_HAS_SEQ(frame)) {
 			const uint8_t* qos = ieee80211_getqos(__DECONST(void*, frame));
 			tid = qos[0] & IEEE80211_QOS_TID;
@@ -178,6 +185,19 @@ mtk_send_frame_locked(struct mtk_softc* sc, struct mbuf* m)
 	if (length < MTK_MGMT_HEADER || length > MTK_TXBUF_SIZE - MTK_TXD_SIZE)
 		return EINVAL;
 
+	/* The slot must be empty, not just its descriptor fetched. A frame
+	 * whose report never comes is given up on after a second, so a lost
+	 * report costs a slot for a while rather than the ring for ever.
+	 */
+	if (sc->sc_txbusy[ring->head] != 0) {
+		if ((int)(ticks - sc->sc_txbusy[ring->head]) < hz) {
+			sc->sc_txfull++;
+			return ENOBUFS;
+		}
+		sc->sc_txstale++;
+		sc->sc_txbusy[ring->head] = 0;
+	}
+
 	next = (ring->head + 1) % ring->count;
 	if (next == ring->tail) {
 		/* Let the card catch up before deciding the ring is full. */
@@ -201,9 +221,13 @@ mtk_send_frame_locked(struct mtk_softc* sc, struct mbuf* m)
 	where = slot + MTK_TXD_HEADER;
 	memset(where, 0, MTK_TXD_HEADER);
 
-	token = ++sc->sc_token & 0x7fff;
+	/* The token is the slot, which makes it unique among the frames the
+	 * part has: a slot is not used again until its token comes back.
+	 */
+	token = ring->head;
 	where[0] = token & 0xff;
 	where[1] = (token >> 8) | 0x80;
+	sc->sc_txbusy[ring->head] = ticks != 0 ? ticks : 1;
 
 	mtk_wr32(where + 8, (uint32_t)(slotPhysical + MTK_TXD_SIZE));
 	where[12] = length & 0xff;
@@ -240,17 +264,42 @@ mtk_receive_frame(struct mtk_softc* sc, const uint8_t* data, size_t got,
 	int dbm = MTK_NOISE_FLOOR + MTK_RSSI / 2;
 	uint8_t channel;
 
+	if (got < 8)
+		return;
+	word0 = mtk_rd32(data);
+	type = (word0 >> 27) & 0x1f;
+
+	/* Frames the part has finished sending (mt7921_mac_tx_free): after
+	 * eight bytes of header, one word per frame naming its token, with
+	 * words that start another station's run of them in between.
+	 */
+	if (type == MTK_RX_TYPE_SENT) {
+		uint32_t count = (word0 >> 16) & 0x3ff, i = 0;
+
+		for (at = 8; i < count && at + 4 <= got; at += 4) {
+			uint32_t info = mtk_rd32(data + at);
+			uint32_t msdu;
+
+			if ((info & (1u << 31)) != 0)
+				continue;		/* another station's run */
+			i++;
+			msdu = (info >> 16) & 0x7fff;
+			if (msdu < MTK_TX_RING_COUNT)
+				sc->sc_txbusy[msdu] = 0;
+			sc->sc_txdone++;
+		}
+		return;
+	}
+
 	/* Answers can be shorter than any frame, so only the event header is
 	 * required here; frames are measured once they are known to be frames.
 	 */
 	if (got < MTK_MCU_RXD_SIZE)
 		return;
 
-	word0 = mtk_rd32(data);
 	word1 = mtk_rd32(data + 4);
 	word2 = mtk_rd32(data + 8);
 	word3 = mtk_rd32(data + 12);
-	type = (word0 >> 27) & 0x1f;
 
 	if (which >= 0 && which < 3)
 		sc->sc_raw[which]++;
@@ -452,6 +501,9 @@ mtk_receive_frame(struct mtk_softc* sc, const uint8_t* data, size_t got,
 				sc->sc_subtype[9], sc->sc_subtype[10], sc->sc_subtype[11],
 				sc->sc_subtype[12], sc->sc_subtype[13], sc->sc_subtype[14],
 				sc->sc_subtype[15]);
+			device_printf(sc->sc_dev, "out: %u sent, %u reported done,"
+				" %u given up on, %u refused for want of a slot\n",
+				sc->sc_sent, sc->sc_txdone, sc->sc_txstale, sc->sc_txfull);
 		}
 	}
 
@@ -519,14 +571,15 @@ mtk_receive(struct mtk_softc* sc)
 			continue;
 
 		for (guard = 0; guard < ring->count; guard++) {
+			uint32_t control;
 			size_t got;
 
 			if ((desc[ring->tail * 4 + 1] & MTK_DMA_CTL_DMA_DONE) == 0)
 				break;
 
 			rmb();
-			got = (desc[ring->tail * 4 + 1] & MTK_DMA_CTL_LEN_MASK)
-				>> MTK_DMA_CTL_LEN_SHIFT;
+			control = desc[ring->tail * 4 + 1];
+			got = (control & MTK_DMA_CTL_LEN_MASK) >> MTK_DMA_CTL_LEN_SHIFT;
 			if (got > MTK_RX_BUFFER_SIZE)
 				got = MTK_RX_BUFFER_SIZE;
 
@@ -547,6 +600,19 @@ mtk_receive(struct mtk_softc* sc)
 
 			wmb();
 			mtk_write(sc, ring->regs + MTK_RING_CPU_INDEX, ring->head);
+
+			/* A frame too long for one buffer goes on into the next
+			 * ones, and only the last is marked. None is wanted here -
+			 * every frame this driver takes fits - and the later
+			 * buffers have no description of their own at all, so
+			 * their first bytes only look like one.
+			 */
+			if (sc->sc_rxpartial[r] != 0
+					|| (control & MTK_DMA_CTL_LAST_SEC0) == 0) {
+				sc->sc_rxpartial[r]
+					= (control & MTK_DMA_CTL_LAST_SEC0) == 0;
+				continue;
+			}
 
 			mtk_receive_frame(sc, frame, got, r, (int)ring->head);
 		}

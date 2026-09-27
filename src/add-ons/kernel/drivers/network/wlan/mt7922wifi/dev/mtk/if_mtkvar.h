@@ -412,6 +412,17 @@ struct mtk_softc {
 	struct mtk_dma_mem	sc_fwbuf;	/* one piece of firmware */
 	struct mtk_dma_mem	sc_txbuf;	/* frames of ours, one per slot */
 	uint16_t		sc_token;
+
+	/* Which transmit slots the part still has a frame in: the tick each
+	 * was handed over at, nonzero until a TXRX_NOTIFY names its token.
+	 * The ring only fetches a frame's description; the frame itself is
+	 * read from its slot when it is sent, which under load is long after.
+	 */
+	int			sc_txbusy[MTK_TX_RING_COUNT];
+	uint32_t		sc_txdone;
+	uint32_t		sc_txstale;
+	uint32_t		sc_txfull;
+	int			sc_rxpartial[3];
 	uint8_t			sc_peer;	/* the radio we address */
 	uint8_t			sc_omac;	/* our own address's index */
 	uint16_t		sc_tx_wcid;	/* station entry frames go to */
