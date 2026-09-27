@@ -465,6 +465,24 @@ mtk_newstate(struct ieee80211vap* vap, enum ieee80211_state state, int arg)
 	struct ieee80211_node* ni = vap->iv_bss;
 	int error = 0;
 
+	/* The stack can queue a transition from INIT to a later state: a
+	 * deauthentication queued (INIT) while a join is under way, and then the
+	 * access point's answer to that join (ASSOC). sta_newstate calls it
+	 * invalid and does nothing, which leaves the interface in ASSOC with no
+	 * join in progress and no timer to end it - on the workstation, for good.
+	 * Scan instead: its end hands the choice back to the supplicant. Our
+	 * commands run with the stack's lock let go, which makes the window
+	 * wider under load than it would be otherwise. INIT to AUTH is left
+	 * alone: sta_newstate takes that one (it sends the authentication).
+	 */
+	if (vap->iv_opmode == IEEE80211_M_STA && old == IEEE80211_S_INIT
+		&& (state == IEEE80211_S_ASSOC || state == IEEE80211_S_RUN)) {
+		device_printf(sc->sc_dev, "state INIT -> %s is not a transition;"
+			" scanning instead\n", ieee80211_state_name[state]);
+		state = IEEE80211_S_SCAN;
+		arg = 0;
+	}
+
 	MTK_DEBUG(sc, "state %s -> %s\n",
 		ieee80211_state_name[old], ieee80211_state_name[state]);
 
@@ -538,8 +556,8 @@ mtk_vap_create(struct ieee80211com* ic, const char name[IFNAMSIZ], int unit,
 	 * blocks the thread writing it while it holds the stack's own lock -
 	 * which stops every card in the machine, not just this one.
 	 */
-	vap->iv_debug = IEEE80211_MSG_STATE | IEEE80211_MSG_AUTH
-		| IEEE80211_MSG_ASSOC;
+	vap->iv_debug = ((struct mtk_softc*)ic->ic_softc)->sc_debug
+		? IEEE80211_MSG_STATE | IEEE80211_MSG_AUTH | IEEE80211_MSG_ASSOC : 0;
 
 	/* The firmware sweeps the band and probes on its own; the stack is
 	 * not to step through channels or send probe requests of its own.
