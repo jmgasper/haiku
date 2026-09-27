@@ -4,7 +4,9 @@
 #
 # usage: install-staged-haiku-pkg.sh [<nvidia_rm.accelerant>]
 #
-# The installed package is kept as /boot/home/x399-backup/previous-haiku.hpkg.
+# The installed package is kept as /boot/home/x399-backup/haiku-<date>.hpkg,
+# one per install, so that the one from before a series of installs is still
+# there at the end of it.
 # The accelerant goes in as nvidia_rm.accelerant.new; the boot job
 # x399-driver-safety swaps it in before app_server loads it, so the one that
 # is running is never overwritten underneath it.
@@ -23,7 +25,7 @@ $SSH "set -e
 	name=\$(ls /boot/system/packages/ | grep '^haiku-r1')
 	[ -f $STAGE/haiku.hpkg ]
 	mkdir -p /boot/home/x399-backup
-	cp /boot/system/packages/\$name /boot/home/x399-backup/previous-haiku.hpkg
+	cp /boot/system/packages/\$name /boot/home/x399-backup/haiku-\$(date +%Y%m%d-%H%M%S).hpkg
 	cp $STAGE/haiku.hpkg /boot/system/packages/\$name.new
 	sync
 	mv -f /boot/system/packages/\$name.new /boot/system/packages/\$name
