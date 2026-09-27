@@ -116,6 +116,7 @@ public:
 private:
 			void				_Normalize();
 			void				_Separate();
+			void				_CloseGaps();
 			DisplayInfo*		_DisplayByID(uint32 id);
 			const BMessage*		_FindSaved(const BMessage& saved,
 									const DisplayInfo& display,
