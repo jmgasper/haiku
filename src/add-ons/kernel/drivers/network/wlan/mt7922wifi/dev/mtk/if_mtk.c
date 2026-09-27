@@ -465,7 +465,7 @@ mtk_newstate(struct ieee80211vap* vap, enum ieee80211_state state, int arg)
 	struct ieee80211_node* ni = vap->iv_bss;
 	int error = 0;
 
-	device_printf(sc->sc_dev, "state %s -> %s\n",
+	MTK_DEBUG(sc, "state %s -> %s\n",
 		ieee80211_state_name[old], ieee80211_state_name[state]);
 
 	IEEE80211_UNLOCK(ic);
@@ -506,7 +506,7 @@ mtk_newstate(struct ieee80211vap* vap, enum ieee80211_state state, int arg)
 	 */
 	error = mvp->newstate(vap, state, arg);
 
-	device_printf(sc->sc_dev, "state %s settled (%d)\n",
+	MTK_DEBUG(sc, "state %s settled (%d)\n",
 		ieee80211_state_name[state], error);
 
 	return error;
@@ -588,7 +588,7 @@ mtk_parent(struct ieee80211com* ic)
 	if (wanted == sc->sc_running)
 		return;
 
-	device_printf(sc->sc_dev, "asked to be %s\n", wanted ? "up" : "down");
+	MTK_DEBUG(sc, "asked to be %s\n", wanted ? "up" : "down");
 	sc->sc_running = wanted;
 
 	if (wanted) {
@@ -606,7 +606,7 @@ mtk_parent(struct ieee80211com* ic)
 		sc->sc_draining = 0;
 		sc->sc_startall = 0;
 		callout_stop(&sc->sc_poll);
-		device_printf(sc->sc_dev, "%u interrupts, %u frames in, %u out,"
+		MTK_DEBUG(sc, "%u interrupts, %u frames in, %u out,"
 			" %u refused\n", sc->sc_interrupts, sc->sc_received,
 			sc->sc_sent, sc->sc_refused);
 	}
@@ -625,7 +625,7 @@ mtk_scan_start(struct ieee80211com* ic)
 	sc->sc_scanning = 1;
 	sc->sc_want_scan = 1;
 	if (++sc->sc_scan_starts % 10 == 1) {
-		device_printf(sc->sc_dev, "the stack has begun %u scans and"
+		MTK_DEBUG(sc, "the stack has begun %u scans and"
 			" finished %u\n", sc->sc_scan_starts, sc->sc_scan_ends);
 	}
 	taskqueue_enqueue(sc->sc_tq, &sc->sc_work);
@@ -818,7 +818,7 @@ mtk_work(void* arg, int pending)
 		/* Whether answers get through at all once the receive thread
 		 * owns the rings: a command known to be answered, asked again.
 		 */
-		device_printf(sc->sc_dev, "asking something with a known answer:"
+		MTK_DEBUG(sc, "asking something with a known answer:"
 			" %d\n", mtk_probe_reply(sc));
 
 		if (!sc->sc_dev_added) {
@@ -937,27 +937,43 @@ mtk_intr(void* arg)
 }
 
 
-/* Stay out of the boot unless told otherwise. While this driver can still
- * stop the machine, a boot that loads it can stop every boot after it too:
- * the network preferences, the Deskbar applet and auto configuration all
- * start scanning as soon as the card appears. So in the first two minutes
- * the card is left alone, and it is brought in afterwards by hand with
- * `rescan mt7922wifi`. "attach_at_boot true" in the driver's settings file
- * restores the ordinary behaviour once it has earned it.
+/* Whether to take the card during boot. By default yes, like any driver.
+ * The driver settings can say otherwise:
+ *
+ *   attach_at_boot false        leave the card alone for the first two
+ *                               minutes; `rescan mt7922wifi` brings it in
+ *   attach_at_boot_until <time> attach during boot only until that time
+ *                               (seconds since 1970), and not after it
+ *
+ * The second is for trying boot-time attachment where nothing but the power
+ * switch can reach the machine: if the boot never finishes, the first boot
+ * after the deadline leaves the card alone and comes up.
  */
 static int
 mtk_boot_allowed(void)
 {
 	void* settings;
-	bool allowed = false;
+	bool allowed = true;
 
 	if (ticks >= 120 * hz)
 		return 1;
 
 	settings = load_driver_settings("mt7922wifi");
 	if (settings != NULL) {
+		const char* until;
+
 		allowed = get_driver_boolean_parameter(settings, "attach_at_boot",
-			false, true);
+			true, true);
+		until = get_driver_parameter(settings, "attach_at_boot_until", NULL,
+			NULL);
+		if (allowed && until != NULL) {
+			uint64_t deadline = 0;
+
+			for (; *until >= '0' && *until <= '9'; until++)
+				deadline = deadline * 10 + (*until - '0');
+			if ((uint64_t)real_time_clock() >= deadline)
+				allowed = false;
+		}
 		unload_driver_settings(settings);
 	}
 
@@ -1024,6 +1040,16 @@ mtk_attach(device_t dev)
 		device_printf(dev, "cannot reach the card's registers\n");
 		error = ENXIO;
 		goto fail;
+	}
+
+	{
+		void* settings = load_driver_settings("mt7922wifi");
+
+		if (settings != NULL) {
+			sc->sc_debug = get_driver_boolean_parameter(settings, "debug",
+				false, true);
+			unload_driver_settings(settings);
+		}
 	}
 
 	sc->sc_st = rman_get_bustag(sc->sc_mem);

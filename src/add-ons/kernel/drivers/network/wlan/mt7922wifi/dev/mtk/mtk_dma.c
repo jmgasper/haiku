@@ -345,7 +345,7 @@ mtk_dma_setup(struct mtk_softc* sc)
 	mtk_dma_enable(sc);
 	sc->sc_rings = 1;
 
-	device_printf(sc->sc_dev, "rings ready, engine at %#x\n",
+	MTK_DEBUG(sc, "rings ready, engine at %#x\n",
 		mtk_read(sc, MTK_WFDMA0_GLO_CFG));
 
 	return 0;

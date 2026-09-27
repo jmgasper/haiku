@@ -179,7 +179,7 @@ mtk_dev_add(struct mtk_softc* sc, int enable)
 				sizeof(dev), 1);
 	}
 
-	device_printf(sc->sc_dev, "our address %s the firmware: %d\n",
+	MTK_RESULT(sc, error, "our address %s the firmware: %d\n",
 		enable ? "given to" : "taken from", error);
 	return error;
 }
@@ -267,7 +267,7 @@ mtk_bss_update(struct mtk_softc* sc, struct ieee80211_node* ni, int enable)
 		}
 	}
 
-	device_printf(sc->sc_dev, "network %s: %d\n",
+	MTK_RESULT(sc, error, "network %s: %d\n",
 		enable ? "joined" : "left", error);
 	return error;
 }
@@ -434,7 +434,7 @@ mtk_sta_update(struct mtk_softc* sc, struct ieee80211_node* ni,
 	put16(m + 2, tlvs);
 
 	error = mtk_mcu_send_uni(sc, UNI_STA_REC_UPDATE, m, at, 1);
-	device_printf(sc->sc_dev, "station entry %u: state %d, %s: %d\n", wcid,
+	MTK_RESULT(sc, error, "station entry %u: state %d, %s: %d\n", wcid,
 		state, enable ? "on" : "off", error);
 	return error;
 }
@@ -473,7 +473,7 @@ mtk_sta_remove(struct mtk_softc* sc, uint16_t wcid, const uint8_t* bssid)
 	m[36] = wcid >> 8;
 
 	error = mtk_mcu_send_uni(sc, UNI_STA_REC_UPDATE, m, sizeof(m), 1);
-	device_printf(sc->sc_dev, "station entry %u removed: %d\n", wcid, error);
+	MTK_RESULT(sc, error, "station entry %u removed: %d\n", wcid, error);
 	return error;
 }
 
@@ -537,7 +537,7 @@ mtk_roc(struct mtk_softc* sc, struct ieee80211_channel* channel,
 			acked = 1;
 			if (sc->sc_replylen >= MTK_MCU_RXD_SIZE + 8) {
 				result = get32(sc->sc_reply + MTK_MCU_RXD_SIZE + 4);
-				device_printf(sc->sc_dev, "stay on channel %u: asked, status"
+				MTK_RESULT(sc, result, "stay on channel %u: asked, status"
 					" %#x after %d ms\n", number, result, i);
 			}
 		}
@@ -547,7 +547,8 @@ mtk_roc(struct mtk_softc* sc, struct ieee80211_channel* channel,
 	}
 	mtx_unlock(&sc->sc_rxmtx);
 
-	device_printf(sc->sc_dev, "stay on channel %u: %s after %d ms\n", number,
+	MTK_RESULT(sc, sc->sc_roc_granted == 0,
+		"stay on channel %u: %s after %d ms\n", number,
 		sc->sc_roc_granted != 0 ? "granted" : "not granted", i);
 	if (sc->sc_roc_granted == 0) {
 		mtk_roc_abort(sc);

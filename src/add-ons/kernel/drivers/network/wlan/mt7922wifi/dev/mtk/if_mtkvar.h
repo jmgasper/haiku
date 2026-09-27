@@ -412,6 +412,7 @@ struct mtk_softc {
 	struct mtk_dma_mem	sc_fwbuf;	/* one piece of firmware */
 	struct mtk_dma_mem	sc_txbuf;	/* frames of ours, one per slot */
 	uint16_t		sc_token;
+	int			sc_debug;	/* "debug true" in the settings */
 
 	/* Which transmit slots the part still has a frame in: the tick each
 	 * was handed over at, nonzero until a TXRX_NOTIFY names its token.
@@ -492,6 +493,21 @@ int		mtk_firmware_start(struct mtk_softc*);
 int		mtk_radio_init(struct mtk_softc*);
 int		mtk_hw_scan(struct mtk_softc*);
 int		mtk_cancel_scan(struct mtk_softc*);
+/* What only someone working on this driver wants to read - every state
+ * change, command answer and counter - printed when the mt7922wifi driver
+ * settings say "debug true". A result is printed anyway when it is a failure.
+ */
+#define MTK_DEBUG(sc, ...) \
+	do { \
+		if ((sc)->sc_debug) \
+			device_printf((sc)->sc_dev, __VA_ARGS__); \
+	} while (0)
+#define MTK_RESULT(sc, error, ...) \
+	do { \
+		if ((error) != 0 || (sc)->sc_debug) \
+			device_printf((sc)->sc_dev, __VA_ARGS__); \
+	} while (0)
+
 int		mtk_mcu_send_uni(struct mtk_softc*, uint16_t command,
 			const void* payload, size_t payloadLength, int wait);
 void		mtk_wtbl_clear(struct mtk_softc*, uint16_t wcid);

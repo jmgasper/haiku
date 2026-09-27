@@ -93,8 +93,8 @@ mtk_tx_wcid(struct mtk_softc* sc, const struct ieee80211_frame* frame)
  * - the header's own length and the frame's own type, not a management
  *   frame's regardless;
  * - addressed to the station entry the frame is for, from our own address;
- * - every frame at a fixed rate for now: the part does rate control only
- *   for stations it has been told the rates of.
+ * - a fixed rate for all but data to the access point, whose rate the
+ *   firmware chooses from the rates in the station record it was given.
  */
 static void
 mtk_write_txd(struct mtk_softc* sc, uint8_t* txd,
@@ -107,6 +107,7 @@ mtk_write_txd(struct mtk_softc* sc, uint8_t* txd,
 	int multicast = IEEE80211_IS_MULTICAST(frame->i_addr1);
 	int data = type == (IEEE80211_FC0_TYPE_DATA >> IEEE80211_FC0_TYPE_SHIFT);
 	uint32_t queue, headerLength, tid = 0;
+	int fixed;
 
 	/* The part's queues by access category: background, best effort,
 	 * video, voice - not the stack's order, which starts at best effort.
@@ -137,14 +138,18 @@ mtk_write_txd(struct mtk_softc* sc, uint8_t* txd,
 		| (((headerLength / 2) & 0x1f) << 11)
 		| (mtk_tx_wcid(sc, frame) & 0x3ff));
 
-	/* A fixed rate carries HT control itself: the part adds none to
-	 * management and control frames.
+	/* Management, control and group frames at a fixed basic rate, which
+	 * carries HT control itself (the part adds none to them); frames to
+	 * the access point at whatever rate the firmware's rate control picks
+	 * from the rates in its station record, as mt76_connac2 has it.
 	 */
-	mtk_wr32(txd + 8, MTK_TXD2_FIX_RATE | MTK_TXD2_HTC_VLD
+	fixed = !data || multicast;
+	mtk_wr32(txd + 8, (fixed ? MTK_TXD2_FIX_RATE | MTK_TXD2_HTC_VLD : 0)
 		| (multicast ? MTK_TXD2_MULTICAST : 0)
 		| ((uint32_t)(type & 0x3) << 4) | (subtype & 0xf));
-	mtk_wr32(txd + 12, MTK_TXD3_BA_DISABLE | ((uint32_t)15 << 11));
-	mtk_wr32(txd + 24, MTK_TXD6_FIXED_BW | (mtk_fixed_rate(sc) << 16));
+	mtk_wr32(txd + 12, (fixed ? MTK_TXD3_BA_DISABLE : 0) | ((uint32_t)15 << 11));
+	if (fixed)
+		mtk_wr32(txd + 24, MTK_TXD6_FIXED_BW | (mtk_fixed_rate(sc) << 16));
 	mtk_wr32(txd + 28, ((uint32_t)(type & 0x3) << 20)
 		| ((uint32_t)(subtype & 0xf) << 16));
 }
@@ -322,7 +327,7 @@ mtk_receive_frame(struct mtk_softc* sc, const uint8_t* data, size_t got,
 						&& data[0x1d] != sc->sc_seq
 						&& data[0x1c] != MTK_MCU_EVENT_SCAN_DONE))) {
 			sc->sc_events_shown++;
-			device_printf(sc->sc_dev, "type %u flag %u on ring %d: eid %#x"
+			MTK_DEBUG(sc, "type %u flag %u on ring %d: eid %#x"
 				" seq %u option %#x ext %#x len %zu (waiting for seq %u)\n",
 				type, (word0 >> 16) & 0xf, which, data[0x1c], data[0x1d],
 				data[0x1e], data[0x20], got, sc->sc_seq);
@@ -343,7 +348,7 @@ mtk_receive_frame(struct mtk_softc* sc, const uint8_t* data, size_t got,
 					&& (data[0x1e] & MTK_MCU_UNI_UNSOLICITED) != 0) {
 				const uint8_t* grant = data + MTK_MCU_RXD_SIZE + 4;
 
-				device_printf(sc->sc_dev, "channel %u held for token %u"
+				MTK_DEBUG(sc, "channel %u held for token %u"
 					" (ours %u), status %u\n", grant[7], grant[5],
 					sc->sc_roc_token, grant[6]);
 				if (grant[5] == sc->sc_roc_token)
@@ -477,7 +482,7 @@ mtk_receive_frame(struct mtk_softc* sc, const uint8_t* data, size_t got,
 		 */
 		if (which >= 0 && which < 3 && sc->sc_shown[which] < 4) {
 			sc->sc_shown[which]++;
-			device_printf(sc->sc_dev, "ring %d slot %d: rxd %08x %08x %08x,"
+			MTK_DEBUG(sc, "ring %d slot %d: rxd %08x %08x %08x,"
 				" %zu bytes at %zu: %02x %02x %02x %02x %02x %02x %02x %02x"
 				" %02x %02x %02x %02x %02x %02x %02x %02x\n",
 				which, slot, word0, word1, word2, length, at,
@@ -486,7 +491,7 @@ mtk_receive_frame(struct mtk_softc* sc, const uint8_t* data, size_t got,
 		}
 
 		if (++sc->sc_received % 500 == 0) {
-			device_printf(sc->sc_dev, "rings %u/%u/%u; %u beacons,"
+			MTK_DEBUG(sc, "rings %u/%u/%u; %u beacons,"
 				" %u probe resp; dropped %u of types"
 				" %#x, %u ragged; in: %u mgmt, %u data, %u ctrl;"
 				" subtypes %u %u %u %u %u %u %u %u %u %u %u %u"
@@ -501,7 +506,7 @@ mtk_receive_frame(struct mtk_softc* sc, const uint8_t* data, size_t got,
 				sc->sc_subtype[9], sc->sc_subtype[10], sc->sc_subtype[11],
 				sc->sc_subtype[12], sc->sc_subtype[13], sc->sc_subtype[14],
 				sc->sc_subtype[15]);
-			device_printf(sc->sc_dev, "out: %u sent, %u reported done,"
+			MTK_DEBUG(sc, "out: %u sent, %u reported done,"
 				" %u given up on, %u refused for want of a slot\n",
 				sc->sc_sent, sc->sc_txdone, sc->sc_txstale, sc->sc_txfull);
 		}

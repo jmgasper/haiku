@@ -147,7 +147,7 @@ mtk_wait_reply(struct mtk_softc* sc, uint8_t* buffer, size_t* length,
 			word0 = mtk_le32(buffer);
 			if (sc->sc_replies_shown < 12 || i >= 200) {
 				sc->sc_replies_shown++;
-				device_printf(sc->sc_dev, "answer after %d ms: type %u"
+				MTK_DEBUG(sc, "answer after %d ms: type %u"
 					" flag %u eid %#x seq %u option %#x\n", i,
 					(word0 >> 27) & 0x1f, (word0 >> 16) & 0xf, buffer[0x1c],
 					buffer[0x1d], buffer[0x1e]);
@@ -535,7 +535,7 @@ mtk_load_patch(struct mtk_softc* sc)
 
 	answer = replyLength > 32 ? reply[32] : 0;
 	if (answer == MTK_PATCH_IS_DL) {
-		device_printf(sc->sc_dev, "the part already holds its patch\n");
+		MTK_DEBUG(sc, "the part already holds its patch\n");
 		goto done;
 	}
 	if (answer != MTK_PATCH_SEM_SUCCESS) {
@@ -1112,7 +1112,7 @@ mtk_radio_init(struct mtk_softc* sc)
 		device_printf(sc->sc_dev, "the radio would not start: %d\n", error);
 	mtk_set_timing(sc);
 
-	device_printf(sc->sc_dev, "radio ready, filter %#x\n",
+	MTK_DEBUG(sc, "radio ready, filter %#x\n",
 		mtk_read(sc, MTK_WF_RFCR));
 	return 0;
 }
