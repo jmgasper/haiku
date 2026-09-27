@@ -123,13 +123,13 @@ NVDecDecoder::Setup(media_format* ioEncodedFormat, const void* infoBuffer,
 	if (description.u.misc.codec != CODEC_ID_H264)
 		return B_ERROR;
 
-	char reason[256] = "";
-	fEngine = nvdecOpen(reason, sizeof(reason));
+	fReason[0] = '\0';
+	fEngine = nvdecOpen(fReason, sizeof(fReason));
 	if (fEngine == NULL) {
-		fprintf(stderr, "nvdec: the card's decoder is not available: %s\n", reason);
+		fprintf(stderr, "nvdec: the card's decoder is not available: %s\n", fReason);
 		return B_ERROR;
 	}
-	fDecoder = nvdecH264Create(fEngine, reason, sizeof(reason));
+	fDecoder = nvdecH264Create(fEngine, fReason, sizeof(fReason));
 	if (fDecoder == NULL) {
 		nvdecClose(fEngine);
 		fEngine = NULL;

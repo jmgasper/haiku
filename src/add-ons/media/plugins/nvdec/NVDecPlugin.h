@@ -39,6 +39,7 @@ private:
 
 			NvdecEngine*		fEngine;
 			NvdecH264*			fDecoder;
+			char				fReason[256];
 
 			/* A chunk from an MPEG-4 file is a run of length-prefixed units
 			 * rather than one with start codes; this says how long the
