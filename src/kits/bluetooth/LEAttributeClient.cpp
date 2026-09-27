@@ -21,12 +21,21 @@ namespace Bluetooth {
 #define LOG(level, format, args...) LELog(level, "att", format, ##args)
 
 static const uint8 kATTErrorResponse = 0x01;
+static const uint8 kATTExchangeMTURequest = 0x02;
+static const uint8 kATTExchangeMTUResponse = 0x03;
 static const uint8 kATTHandleValueNotification = 0x1b;
 static const uint8 kATTHandleValueIndication = 0x1d;
+static const uint8 kATTCommandFlag = 0x40;
 static const uint8 kATTAttributeNotFound = 0x0a;
 static const uint8 kATTAttributeNotLong = 0x0b;
+static const uint8 kATTRequestNotSupported = 0x06;
 static const size_t kATTDefaultMTU = 23;
 static const size_t kMaximumAttributeLength = 4096;
+// Notifications that arrive while a request waits for its answer are kept
+// for ReadNotification(). A mouse being moved sends one every few
+// milliseconds, so this has to hold what arrives during a slow exchange; past
+// it the oldest go, which for input reports is the right ones to lose.
+static const size_t kMaximumQueuedNotifications = 512;
 
 
 static uint16
@@ -171,10 +180,14 @@ LEAttributeClient::_Exchange(const uint8* request, size_t requestLength,
 		status_t status = _Receive(response);
 		if (status != B_OK)
 			return status;
-		if (response[0] != 0x1b)
+		if (_HandlePeerPDU(response))
+			continue;
+		if (response[0] != kATTHandleValueNotification)
 			break;
-		if (response.size() < 3 || fNotifications.size() >= 64)
+		if (response.size() < 3)
 			return B_BAD_DATA;
+		if (fNotifications.size() >= kMaximumQueuedNotifications)
+			fNotifications.pop_front();
 		Notification notification = { Read16(&response[1]),
 			std::vector<uint8>(response.begin() + 3, response.end()) };
 		fNotifications.push_back(notification);
@@ -388,14 +401,69 @@ LEAttributeClient::ReadNotification(uint16& handle, std::vector<uint8>& value)
 		return B_OK;
 	}
 	std::vector<uint8> response;
-	status_t status = _Receive(response);
-	if (status != B_OK)
-		return status;
-	if (response.size() < 3 || response[0] != 0x1b)
+	for (;;) {
+		status_t status = _Receive(response);
+		if (status != B_OK)
+			return status;
+		if (_HandlePeerPDU(response))
+			continue;
+		if (response[0] == kATTHandleValueNotification)
+			break;
+		// The late answer to a request that gave up waiting for it, most
+		// likely; nothing is waiting for it any more.
+		LOG(LE_LOG_DEBUG, "ignoring unexpected ATT PDU %#x (%zu bytes)",
+			response[0], response.size());
+	}
+	if (response.size() < 3)
 		return B_BAD_DATA;
 	handle = Read16(&response[1]);
 	value.assign(response.begin() + 3, response.end());
 	return B_OK;
+}
+
+
+/*!	The peer is a GATT client too: a mouse may ask for the MTU or look for
+	services on this side. Nothing is served here, but every request needs an
+	answer, or the peer waits 30 seconds and then drops the link. Returns
+	whether \a pdu was such a request or command, and so has been dealt with.
+*/
+bool
+LEAttributeClient::_HandlePeerPDU(const std::vector<uint8>& pdu)
+{
+	const uint8 opcode = pdu[0];
+	if ((opcode & kATTCommandFlag) != 0) {
+		// a command (Write Command, Signed Write): no answer expected
+		LOG(LE_LOG_DEBUG, "ignoring ATT command %#x from the peer", opcode);
+		return true;
+	}
+	// Requests have even opcodes up to 0x20; 0x1e is the confirmation of an
+	// indication, which this side never sends.
+	if ((opcode & 1) != 0 || opcode > 0x20 || opcode == 0x1e)
+		return false;
+
+	uint8 answer[5];
+	size_t answerLength;
+	if (opcode == kATTExchangeMTURequest) {
+		answer[0] = kATTExchangeMTUResponse;
+		Write16(answer + 1, kATTDefaultMTU);
+		answerLength = 3;
+	} else {
+		// Discovery finds nothing; anything else is not supported.
+		bool discovery = opcode == 0x04 || opcode == 0x06 || opcode == 0x08
+			|| opcode == 0x10;
+		answer[0] = kATTErrorResponse;
+		answer[1] = opcode;
+		Write16(answer + 2, pdu.size() >= 3 ? Read16(&pdu[1]) : 0);
+		answer[4] = discovery ? kATTAttributeNotFound : kATTRequestNotSupported;
+		answerLength = 5;
+	}
+	LOG(LE_LOG_DEBUG, "answering ATT request %#x from the peer", opcode);
+	LELogHex(LE_LOG_TRACE, "att", "->", answer, answerLength);
+	if (send(fSocket, answer, answerLength, 0) != (ssize_t)answerLength) {
+		LOG(LE_LOG_ERROR, "could not answer ATT request %#x: %s", opcode,
+			strerror(errno));
+	}
+	return true;
 }
 
 } // namespace Bluetooth
