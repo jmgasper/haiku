@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <syslog.h>
 #include <time.h>
 #include <unistd.h>
@@ -184,16 +185,20 @@ VLog(int32 level, const char* component, const char* format, va_list args)
 	char message[1024];
 	vsnprintf(message, sizeof(message), format, args);
 
+	// Seconds and milliseconds from the same clock, so that lines written
+	// within one second still read in the order they happened.
 	char timestamp[32];
-	time_t now = time(NULL);
+	struct timeval now;
+	gettimeofday(&now, NULL);
+	time_t seconds = now.tv_sec;
 	struct tm local;
-	localtime_r(&now, &local);
+	localtime_r(&seconds, &local);
 	strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", &local);
 
 	static const char* kLevelNames[] = { "ERR", "INF", "DBG", "TRC" };
 	char line[1200];
 	snprintf(line, sizeof(line), "%s.%03d [%" B_PRId32 "/%" B_PRId32
-		"] %s %s: %s\n", timestamp, (int)((system_time() / 1000) % 1000),
+		"] %s %s: %s\n", timestamp, (int)(now.tv_usec / 1000),
 		getpid(), find_thread(NULL), kLevelNames[ClampLevel(level)],
 		component != NULL ? component : "le", message);
 	WriteLine(line);

@@ -76,6 +76,7 @@ LocalDeviceImpl::LocalDeviceImpl(HCIDelegate* hd)
 	  fLEMaskState(LE_MASKS_NONE),
 	  fLEScanState(LE_SCAN_IDLE),
 	  fLEScanSince(0),
+	  fLECommandSince(0),
 	  fClassicInquiryActive(false),
 	  fClassicInquirySince(0),
 	  fLEConnectionState(LE_CONN_IDLE),
