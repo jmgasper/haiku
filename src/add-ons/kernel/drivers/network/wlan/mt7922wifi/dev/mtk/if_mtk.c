@@ -681,6 +681,24 @@ mtk_updateslot(struct ieee80211com* ic)
 }
 
 
+/* The stack calls this whenever the network's WME parameters change - and
+ * the first time is the moment it settles on a network to join. Unlike most
+ * of its callbacks this one is called without checking it is set
+ * (vap_update_wme), so a driver that says it does WME and leaves it unset
+ * jumps through a null pointer into the debugger on every join. With no
+ * screen to see the debugger on, that looked exactly like the machine
+ * freezing, which is how it was reported for a week.
+ *
+ * The firmware keeps its own default EDCA parameters for now; programming
+ * them (MCU SET_EDCA_PARMS, mt7921_mcu_set_tx) can follow.
+ */
+static int
+mtk_wme_update(struct ieee80211com* ic)
+{
+	return 0;
+}
+
+
 /* Who owns what, which the two ways in differ on and which getting wrong
  * frees kernel memory twice:
  *
@@ -1031,6 +1049,7 @@ mtk_attach(device_t dev)
 	ic->ic_scan_curchan = mtk_scan_curchan;
 	ic->ic_scan_mindwell = mtk_scan_mindwell;
 	ic->ic_updateslot = mtk_updateslot;
+	ic->ic_wme.wme_update = mtk_wme_update;
 	ic->ic_raw_xmit = mtk_raw_xmit;
 	ic->ic_transmit = mtk_transmit;
 	ic->ic_parent = mtk_parent;
