@@ -30,6 +30,34 @@ each USB port, the serial console, and a Bluetooth device to pair with.
 
 ## Log
 
+- 2026-09-28: the monitor arrangement survives sleep and reboots, sleeping
+  monitors wake, and a Bluetooth mouse moved while it connects stays
+  connected.
+  * The swapped arrangement (DP-4 left of DP-2) came back in connector order
+    after reboots. It was lost before them: DP-4 lets go of its hot plug line
+    about five minutes into DPMS off, and app_server stored every layout it
+    worked out by itself, including the one without DP-4, where DP-2 had
+    moved to x = 0. Seen happen on its own while the machine sat idle under
+    the screen saver. app_server now stores only what the user chose, and
+    writes its settings files so a reset cannot empty them; the accelerant
+    ignores hot plug changes while the displays sleep, checks every
+    DisplayPort link from the monitor's DPCD on waking and programs the
+    layout again when one is down or something changed. Verified: 8 minutes
+    of DPMS off, DP-4 dropped and returned, nothing moved, both monitors
+    awake with every lane locked at once; then a power cycle came up in the
+    swapped arrangement. `tests/displaylayouttest` covers the layout logic.
+  * Bluetooth on a cold boot: bluetooth_server starts 29.6 s after the
+    kernel, opens the radio at 33.5 s, and the MT7922's firmware download
+    takes 21 s (every USB control transfer to this radio costs 3 ms, against
+    0.2 ms for the keyboard), so the mouse can reconnect from about 55 s. The
+    add-on scans at once. One boot that morning took ten minutes instead,
+    while Wi-Fi spent that long authenticating; the server now logs each
+    step with the time since boot, and `tools/boottrace.sh` runs as a system
+    launch job, for the next time. A mouse moved while the add-on read its
+    battery overflowed a 64-entry notification queue and dropped the link
+    ("disconnected after 64 reports: Bad data"), repeatedly while it kept
+    moving; fixed, not yet seen with the mouse in hand.
+
 - 2026-09-27: Wi-Fi works. The MT7922 joins WPA2 networks from the Wi-Fi
   preferences and the WiFiStatus applet, gets its address by DHCP, and with
   the wired card unplugged in software the machine uses the internet over the
