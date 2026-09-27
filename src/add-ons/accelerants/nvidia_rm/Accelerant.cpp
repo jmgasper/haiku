@@ -27,6 +27,7 @@ extern "C" {
 #include "ctrl/ctrl0000/ctrl0000client.h" // NV0000_CTRL_CMD_CLIENT_SHARE_OBJECT
 #include "class/cl0073.h" // NV04_DISPLAY_COMMON
 #include "ctrl/ctrl0073/ctrl0073system.h" // NV0073_CTRL_CMD_SYSTEM_GET_CONNECT_STATE
+#include "ctrl/ctrl0073/ctrl0073dp.h" // NV0073_CTRL_CMD_DP_AUXCH_CTRL
 #include "rs_access.h"
 }
 
@@ -148,6 +149,7 @@ private:
 		bool connected;
 		bool forced;				// see IsForcedConnected()
 		bool enabled;
+		bool displayPort;
 		NvKmsMode preferredMode;
 		NvKmsMode mode;				// the timing the head is driven with
 		int32 x, y;					// region in the frame buffer
@@ -213,6 +215,12 @@ private:
 	NvU32 fRmDisplayMask = 0;
 	port_id fChangePort = -1;
 	int32 fChangeCode = 0;
+	// A connector changed while the displays were asleep; guarded by fLock.
+	bool fChangedWhileAsleep = false;
+	// How many more times to check the links after waking; guarded by fLock.
+	int32 fWakeChecksLeft = 0;
+	// When to look at the connectors and links again after waking.
+	std::atomic<bigtime_t> fRecheckAt {0};
 
 	NvAccelerant(int devFd);
 
@@ -253,6 +261,15 @@ private:
 	NvU32 ConnectedDisplayMask();
 	bool RefreshOutputs();
 	void NotifyDisplayChange();
+	bool IsDisplayPort(NVDpyId dpyId);
+
+	NvRmObject &RmDisplay();
+	bool AccessDpcd(NvU32 displayId, NvU32 address, NvU8 *data, NvU32 size, bool write);
+	bool LinkIsUp(const Output &output);
+	void WakeSink(const Output &output);
+	bool RetrainLinks(bool always);
+	void WakeDisplays();
+	void CheckLinksAfterWake();
 
 public:
 	sem_id RetraceSemaphore();
@@ -602,6 +619,7 @@ void NvAccelerant::FindOutputs()
 		staticParams.request.dpyId = dpyId;
 		CheckErrno(fKms.Control(NVKMS_IOCTL_QUERY_DPY_STATIC_DATA, &staticParams, sizeof(staticParams)));
 		output.headMask = staticParams.reply.headMask;
+		output.displayPort = IsDisplayPort(dpyId);
 
 		output.preferredMode = PreferredMode(dpyId);
 		output.mode = output.preferredMode;
@@ -1077,6 +1095,9 @@ void NvAccelerant::SetDisplayMode(display_mode* modeToSet)
 	PublishScanout();
 
 	RefreshVblankReports();
+
+	if (fDpmsState != NV_KMS_DPY_ATTRIBUTE_DPMS_ON)
+		SetDpmsMode(B_DPMS_OFF);
 }
 
 // Program every enabled output: its own timings, its region of the frame
@@ -1156,6 +1177,11 @@ void NvAccelerant::SetLayoutMode(const display_mode &mode)
 	PublishScanout();
 
 	RefreshVblankReports();
+
+	// A mode set trains every link and wakes every monitor; if they were
+	// meant to be asleep, put them back.
+	if (fDpmsState != NV_KMS_DPY_ATTRIBUTE_DPMS_ON)
+		SetDpmsMode(B_DPMS_OFF);
 }
 
 void NvAccelerant::GetDisplayMode(display_mode* currentMode)
@@ -1347,7 +1373,7 @@ void NvAccelerant::SetDisplayChangePort(port_id port, int32 code)
 // The hot plug detect lines, straight from resman. NVKMS's own idea of what
 // is connected is only as fresh as the last hotplug event it was told about,
 // so this is what the poll compares.
-NvU32 NvAccelerant::ConnectedDisplayMask()
+NvRmObject &NvAccelerant::RmDisplay()
 {
 	if (fRmDisplay.Get() == 0) {
 		fRmDisplay = fRmDev.Device().Alloc(NV04_DISPLAY_COMMON, NULL, 0);
@@ -1355,6 +1381,12 @@ NvU32 NvAccelerant::ConnectedDisplayMask()
 		fRmDisplay.Control(NV0073_CTRL_CMD_SYSTEM_GET_SUPPORTED, &supported, sizeof(supported));
 		fRmDisplayMask = supported.displayMask;
 	}
+	return fRmDisplay;
+}
+
+NvU32 NvAccelerant::ConnectedDisplayMask()
+{
+	RmDisplay();
 
 	NV0073_CTRL_SYSTEM_GET_CONNECT_STATE_PARAMS params {};
 	params.displayMask = fRmDisplayMask;
@@ -1406,6 +1438,7 @@ bool NvAccelerant::RefreshOutputs()
 			staticParams.request.dpyId = dpyId;
 			CheckErrno(fKms.Control(NVKMS_IOCTL_QUERY_DPY_STATIC_DATA, &staticParams, sizeof(staticParams)));
 			probe.headMask = staticParams.reply.headMask;
+			probe.displayPort = IsDisplayPort(dpyId);
 			probe.preferredMode = PreferredMode(dpyId);
 			probe.mode = probe.preferredMode;
 			if (probe.mode.timings.hVisible == 0)
@@ -1470,6 +1503,23 @@ void NvAccelerant::NotifyDisplayChange()
 	if (port < 0)
 		return;
 	write_port_etc(port, code, NULL, 0, B_RELATIVE_TIMEOUT, 100000);
+}
+
+bool NvAccelerant::IsDisplayPort(NVDpyId dpyId)
+{
+	NvKmsQueryDpyStaticDataParams staticParams {};
+	staticParams.request.deviceHandle = fKmsDev.Get();
+	staticParams.request.dispHandle = fDisp;
+	staticParams.request.dpyId = dpyId;
+	if (fKms.Control(NVKMS_IOCTL_QUERY_DPY_STATIC_DATA, &staticParams, sizeof(staticParams)) < 0)
+		return false;
+	NvKmsQueryConnectorStaticDataParams connector {};
+	connector.request.deviceHandle = fKmsDev.Get();
+	connector.request.dispHandle = fDisp;
+	connector.request.connectorHandle = staticParams.reply.connectorHandle;
+	if (fKms.Control(NVKMS_IOCTL_QUERY_CONNECTOR_STATIC_DATA, &connector, sizeof(connector)) < 0)
+		return false;
+	return connector.reply.isDP;
 }
 
 status_t NvAccelerant::HotplugThreadEntry(void *arg)
@@ -1542,8 +1592,30 @@ void NvAccelerant::HotplugThread()
 			}
 		}
 
+		bigtime_t recheckAt = fRecheckAt.load();
+		if (recheckAt != 0 && system_time() >= recheckAt) {
+			fRecheckAt.store(0);
+			CheckLinksAfterWake();
+			check = true;
+		}
 		if (!check)
 			continue;
+
+		// A DisplayPort monitor lets go of its hot plug line once it has been
+		// asleep for a while, and may take it again later while still asleep
+		// (the Dell P2415Q does both within minutes). Taking it out of the
+		// layout for that moves every window off it and loses its place, and
+		// with no picture sent it may never wake. While the displays sleep,
+		// only remember that something happened; waking them looks again.
+		{
+			std::lock_guard<std::recursive_mutex> lock(fLock);
+			if (fDpmsState != NV_KMS_DPY_ATTRIBUTE_DPMS_ON) {
+				if (!fChangedWhileAsleep)
+					debug_printf("nvidia_rm: a display changed while asleep; looking again once awake\n");
+				fChangedWhileAsleep = true;
+				continue;
+			}
+		}
 		try {
 			// Give the monitor a moment to answer its EDID before asking.
 			snooze(300000);
@@ -1896,6 +1968,8 @@ void NvAccelerant::SetDpmsMode(uint32 dpms_flags)
 			RaiseErrno(EINVAL);
 	}
 
+	bool waking = value == NV_KMS_DPY_ATTRIBUTE_DPMS_ON
+		&& fDpmsState != NV_KMS_DPY_ATTRIBUTE_DPMS_ON;
 	for (const auto &output: fOutputs) {
 		if (fLayoutApplied ? !output.enabled : !nvDpyIdsAreEqual(output.dpyId, fDpyId))
 			continue;
@@ -1905,9 +1979,165 @@ void NvAccelerant::SetDpmsMode(uint32 dpms_flags)
 		params.request.dpyId = output.dpyId;
 		params.request.attribute = NV_KMS_DPY_ATTRIBUTE_DPMS;
 		params.request.value = value;
-		CheckErrno(fKms.Control(NVKMS_IOCTL_SET_DPY_ATTRIBUTE, &params, sizeof(params)));
+		int result = fKms.Control(NVKMS_IOCTL_SET_DPY_ATTRIBUTE, &params, sizeof(params));
+		if (result < 0 && waking) {
+			// One monitor that will not listen must not keep the others
+			// dark; WakeDisplays() below takes care of it.
+			debug_printf("nvidia_rm: %s did not take the power state\n", output.name);
+			continue;
+		}
+		CheckErrno(result);
 	}
 	fDpmsState = (NvKmsDpyAttributeDpmsValue)value;
+
+	if (waking)
+		WakeDisplays();
+}
+
+
+// Talk to a DisplayPort monitor's DPCD over its AUX channel through resman.
+// The display ID is the NVKMS dpy ID, which for a connector is resman's.
+bool NvAccelerant::AccessDpcd(NvU32 displayId, NvU32 address, NvU8 *data, NvU32 size,
+	bool write)
+{
+	NV0073_CTRL_DP_AUXCH_CTRL_PARAMS aux {};
+	aux.displayId = displayId;
+	aux.cmd = DRF_DEF(0073_CTRL, _DP_AUXCH_CMD, _TYPE, _AUX)
+		| (write ? DRF_DEF(0073_CTRL, _DP_AUXCH_CMD, _REQ_TYPE, _WRITE)
+			: DRF_DEF(0073_CTRL, _DP_AUXCH_CMD, _REQ_TYPE, _READ));
+	aux.addr = address;
+	aux.size = size - 1; // the control call takes a zero-based size
+	if (write)
+		memcpy(aux.data, data, size);
+	try {
+		RmDisplay().Control(NV0073_CTRL_CMD_DP_AUXCH_CTRL, &aux, sizeof(aux));
+	} catch (const std::system_error &) {
+		return false;
+	}
+	if (aux.replyType != NV0073_CTRL_DP_AUXCH_REPLYTYPE_ACK)
+		return false;
+	if (!write) {
+		if (aux.size + 1 < size)
+			return false;
+		memcpy(data, aux.data, size);
+	}
+	return true;
+}
+
+// Whether a DisplayPort monitor is awake and its link trained: every lane has
+// its clock recovered, is equalized and has symbol lock, and the lanes are
+// aligned. Then it shows what the head sends it. Other kinds of output have
+// nothing to ask, and count as up.
+bool NvAccelerant::LinkIsUp(const Output &output)
+{
+	if (!output.displayPort)
+		return true;
+	NvU8 power = 0, link[2] = {}, status[3] = {};
+	if (!AccessDpcd(output.id, 0x600, &power, 1, false)
+		|| !AccessDpcd(output.id, 0x100, link, 2, false)
+		|| !AccessDpcd(output.id, 0x202, status, 3, false))
+		return false;
+	unsigned lanes = link[1] & 0x1f;
+	if ((power & 7) != 1 || lanes == 0 || (status[2] & 1) == 0)
+		return false;
+	for (unsigned lane = 0; lane < lanes && lane < 4; lane++) {
+		if (((status[lane / 2] >> (4 * (lane % 2))) & 7) != 7)
+			return false;
+	}
+	return true;
+}
+
+// Ask a DisplayPort monitor to power up (DPCD SET_POWER to D0). One in its
+// deepest sleep may take a while to answer its AUX channel at all; NVKMS
+// gives up after a few milliseconds, this keeps asking for a second.
+void NvAccelerant::WakeSink(const Output &output)
+{
+	for (int attempt = 0; attempt < 50; attempt++) {
+		NvU8 d0 = 1;
+		if (AccessDpcd(output.id, 0x600, &d0, 1, true)) {
+			if (attempt > 0)
+				debug_printf("nvidia_rm: %s answered after %d attempts\n", output.name,
+					attempt + 1);
+			return;
+		}
+		snooze(20000);
+	}
+	debug_printf("nvidia_rm: %s does not answer on its AUX channel\n", output.name);
+}
+
+// Makes sure every enabled monitor shows a picture: each DisplayPort link is
+// checked, and when one is not up (or \a always) the monitor is asked to
+// power up and the layout programmed anew, which trains every link from the
+// start. Returns whether all links are up afterwards. fLock must be held.
+bool NvAccelerant::RetrainLinks(bool always)
+{
+	if (!fLayoutApplied || !fFramebuffer.IsSet())
+		return true;
+
+	bool allUp = true;
+	for (const auto &output: fOutputs) {
+		if (!output.enabled || LinkIsUp(output))
+			continue;
+		debug_printf("nvidia_rm: %s is not showing a picture\n", output.name);
+		allUp = false;
+		WakeSink(output);
+	}
+	if (allUp && !always)
+		return true;
+
+	debug_printf("nvidia_rm: programming the layout again\n");
+	try {
+		ApplyLayout(fFramebuffer);
+		RefreshVblankReports();
+		if (!fCursorImage.data.empty()) {
+			SetCursorBitmap(fCursorImage.width, fCursorImage.height,
+				fCursorImage.hotX, fCursorImage.hotY, fCursorImage.colorSpace,
+				fCursorImage.bytesPerRow, fCursorImage.data.data());
+		}
+		if (fCursorVisible)
+			UpdateCursor(true, true);
+	} catch (const std::system_error &ex) {
+		debug_printf("[!] nvidia_rm: programming the layout failed: %s\n", ex.what());
+		return false;
+	}
+
+	allUp = true;
+	for (const auto &output: fOutputs) {
+		if (output.enabled && !LinkIsUp(output)) {
+			debug_printf("nvidia_rm: %s is still not showing a picture\n", output.name);
+			allUp = false;
+		}
+	}
+	return allUp;
+}
+
+// The displays were asleep and have been told to wake. For DisplayPort that
+// is a request to the monitor to power up; one that misses it stays asleep
+// with its link powered down and never sees a picture again. So the links are
+// checked now, and again a few times over the next seconds: a monitor that
+// had let go of its hot plug line comes back only after a moment, and cannot
+// be trained before. Once the monitors had that time the connectors are
+// looked at too; one really pulled out while asleep is only reported then.
+void NvAccelerant::WakeDisplays()
+{
+	bool changed = fChangedWhileAsleep;
+	fChangedWhileAsleep = false;
+	if (changed)
+		debug_printf("nvidia_rm: a display changed while asleep\n");
+	fWakeChecksLeft = RetrainLinks(changed) ? 1 : 3;
+	fRecheckAt.store(system_time() + 2000000);
+}
+
+void NvAccelerant::CheckLinksAfterWake()
+{
+	std::lock_guard<std::recursive_mutex> lock(fLock);
+	if (fWakeChecksLeft <= 0 || fDpmsState != NV_KMS_DPY_ATTRIBUTE_DPMS_ON)
+		return;
+	fWakeChecksLeft--;
+	if (RetrainLinks(false))
+		fWakeChecksLeft = 0;
+	if (fWakeChecksLeft > 0)
+		fRecheckAt.store(system_time() + 3000000);
 }
 
 // The layout's frame buffer is what app_server should come up in.

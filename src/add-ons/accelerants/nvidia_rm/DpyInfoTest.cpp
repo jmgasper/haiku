@@ -18,6 +18,11 @@
 //            that arrives for that long, alongside the same polling as --watch;
 //            tells whether a plug or unplug is delivered as an event or only
 //            visible to a poll
+//   --dpcd   read the link and power state of every DisplayPort monitor from
+//            its DPCD: whether it is awake (SET_POWER), the link rate and lane
+//            count it was trained at, and whether every lane is locked. This
+//            is what says whether a monitor really shows a picture, which
+//            nothing on the GPU side can.
 
 #include <stdio.h>
 #include <string.h>
@@ -200,6 +205,90 @@ static void RmProbe()
 }
 
 
+static bool ReadDpcd(NvRmObject &display, NvU32 displayId, NvU32 address,
+	NvU8 *data, NvU32 size)
+{
+	NV0073_CTRL_DP_AUXCH_CTRL_PARAMS aux {};
+	aux.displayId = displayId;
+	aux.cmd = DRF_DEF(0073_CTRL, _DP_AUXCH_CMD, _TYPE, _AUX)
+		| DRF_DEF(0073_CTRL, _DP_AUXCH_CMD, _REQ_TYPE, _READ);
+	aux.addr = address;
+	aux.size = size - 1; // the control call takes a zero-based size
+	try {
+		display.Control(NV0073_CTRL_CMD_DP_AUXCH_CTRL, &aux, sizeof(aux));
+	} catch (const std::system_error &ex) {
+		return false;
+	}
+	if (aux.replyType != NV0073_CTRL_DP_AUXCH_REPLYTYPE_ACK || aux.size + 1 < size)
+		return false;
+	memcpy(data, aux.data, size);
+	return true;
+}
+
+
+// One line per DisplayPort monitor with its hot plug line up: awake or not,
+// and whether the main link is trained. A monitor that is awake with every
+// lane locked and aligned is showing what the GPU sends it.
+static void DpcdState()
+{
+	NvRmApi rm;
+	NvRmDevice rmDev(rm, 0);
+	NvRmObject display = rmDev.Device().Alloc(NV04_DISPLAY_COMMON, NULL, 0);
+
+	NV0073_CTRL_SYSTEM_GET_SUPPORTED_PARAMS supported {};
+	display.Control(NV0073_CTRL_CMD_SYSTEM_GET_SUPPORTED, &supported, sizeof(supported));
+	NV0073_CTRL_SYSTEM_GET_CONNECT_STATE_PARAMS connect {};
+	connect.displayMask = supported.displayMask;
+	connect.flags = DRF_DEF(0073_CTRL, _SYSTEM_GET_CONNECT_STATE_FLAGS, _DDC, _DISABLE)
+		| DRF_DEF(0073_CTRL, _SYSTEM_GET_CONNECT_STATE_FLAGS, _LOAD, _DISABLE);
+	NvU32 tries = 0;
+	do {
+		connect.retryTimeMs = 0;
+		display.Control(NV0073_CTRL_CMD_SYSTEM_GET_CONNECT_STATE, &connect, sizeof(connect));
+		if (connect.retryTimeMs > 0)
+			snooze(connect.retryTimeMs * 1000LL);
+	} while (connect.retryTimeMs > 0 && ++tries < 50);
+	printf("hot plug lines 0x%x\n", (unsigned)connect.displayMask);
+
+	for (NvU32 displayId = 1; displayId != 0; displayId <<= 1) {
+		if ((connect.displayMask & displayId) == 0)
+			continue;
+		NvU8 revision = 0, power = 0, link[2] = {}, status[6] = {};
+		if (!ReadDpcd(display, displayId, 0x000, &revision, 1)) {
+			printf("dpy 0x%x: no AUX answer (not DisplayPort, or asleep)\n",
+				(unsigned)displayId);
+			continue;
+		}
+		bool havePower = ReadDpcd(display, displayId, 0x600, &power, 1);
+		bool haveLink = ReadDpcd(display, displayId, 0x100, link, 2);
+		bool haveStatus = ReadDpcd(display, displayId, 0x200, status, 6);
+		const char *powerName = !havePower ? "?"
+			: (power & 7) == 1 ? "D0 (awake)"
+			: (power & 7) == 2 ? "D3 (asleep)"
+			: (power & 7) == 5 ? "D3 aux on" : "other";
+		unsigned lanes = haveLink ? (link[1] & 0x1f) : 0;
+		// Lane status: per lane, bit 0 clock recovery, bit 1 channel
+		// equalization, bit 2 symbol lock; two lanes a byte.
+		bool locked = haveStatus && lanes > 0;
+		for (unsigned lane = 0; locked && lane < lanes; lane++) {
+			NvU8 bits = (status[2 + lane / 2] >> (4 * (lane % 2))) & 7;
+			if (bits != 7)
+				locked = false;
+		}
+		bool aligned = haveStatus && (status[4] & 1) != 0;
+		printf("dpy 0x%x: DPCD %u.%u, power %s (0x%02x), link %s x%u, "
+			"lanes %02x %02x align %02x sink %02x -> %s\n",
+			(unsigned)displayId, revision >> 4, revision & 0xf, powerName,
+			(unsigned)power,
+			!haveLink ? "?" : link[0] == 0x06 ? "1.62G" : link[0] == 0x0a ? "2.7G"
+				: link[0] == 0x14 ? "5.4G" : link[0] == 0x1e ? "8.1G" : "none",
+			lanes, (unsigned)status[2], (unsigned)status[3], (unsigned)status[4],
+			(unsigned)status[0],
+			(power & 7) == 1 && locked && aligned ? "SHOWING" : "NOT SHOWING");
+	}
+}
+
+
 // Poll resman's and NVKMS's idea of what is connected, and report changes.
 // resman sees the hot plug detect lines directly; NVKMS only learns about
 // DisplayPort connections through hotplug events delivered by resman, so
@@ -317,6 +406,7 @@ int main(int argc, char **argv)
 	bool force = false;
 	bool dumpEdid = false;
 	bool rmProbe = false;
+	bool dpcd = false;
 	int watchSeconds = 0;
 	bool watchEvents = false;
 	int pcieGen = 0;
@@ -327,6 +417,8 @@ int main(int argc, char **argv)
 			dumpEdid = true;
 		else if (strcmp(argv[i], "--rm") == 0)
 			rmProbe = true;
+		else if (strcmp(argv[i], "--dpcd") == 0)
+			dpcd = true;
 		else if (strcmp(argv[i], "--watch") == 0 && i + 1 < argc)
 			watchSeconds = atoi(argv[++i]);
 		else if (strcmp(argv[i], "--events") == 0 && i + 1 < argc) {
@@ -336,13 +428,18 @@ int main(int argc, char **argv)
 		else if (strcmp(argv[i], "--pcie-speed") == 0 && i + 1 < argc)
 			pcieGen = atoi(argv[++i]);
 		else {
-			fprintf(stderr, "usage: %s [--force] [--edid] [--rm] [--watch <seconds>] [--events <seconds>]\n",
+			fprintf(stderr, "usage: %s [--force] [--edid] [--rm] [--dpcd] [--watch <seconds>] [--events <seconds>]\n",
 				argv[0]);
 			return 1;
 		}
 	}
 
 	setvbuf(stdout, NULL, _IONBF, 0);
+
+	if (dpcd) {
+		DpcdState();
+		return 0;
+	}
 
 	NvKmsApi kms;
 	NvKmsDevice kmsDev(kms, 0);
@@ -380,6 +477,7 @@ int main(int argc, char **argv)
 
 			NvKmsQueryConnectorStaticDataParams connParams {};
 			connParams.request.deviceHandle = kmsDev.Get();
+			connParams.request.dispHandle = disp;
 			connParams.request.connectorHandle = staticParams.reply.connectorHandle;
 			bool haveConnector = kms.Control(NVKMS_IOCTL_QUERY_CONNECTOR_STATIC_DATA,
 				&connParams, sizeof(connParams)) >= 0;
