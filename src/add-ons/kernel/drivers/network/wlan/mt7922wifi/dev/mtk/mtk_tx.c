@@ -240,7 +240,10 @@ mtk_receive_frame(struct mtk_softc* sc, const uint8_t* data, size_t got,
 	int dbm = MTK_NOISE_FLOOR + MTK_RSSI / 2;
 	uint8_t channel;
 
-	if (got < 64)
+	/* Answers can be shorter than any frame, so only the event header is
+	 * required here; frames are measured once they are known to be frames.
+	 */
+	if (got < MTK_MCU_RXD_SIZE)
 		return;
 
 	word0 = mtk_rd32(data);
@@ -256,12 +259,19 @@ mtk_receive_frame(struct mtk_softc* sc, const uint8_t* data, size_t got,
 	 * something it said itself.
 	 */
 	if (type != MTK_RX_TYPE_NORMAL && type != MTK_RX_TYPE_NORMAL_MCU) {
-		/* What the part says back, for the first few dozen events: event
-		 * id, sequence number, option byte and length, and which ring.
+		/* What the part says unprompted, for the first few dozen events:
+		 * event id, sequence number, option byte and length, and which
+		 * ring. Not the answers to commands, which the command reports,
+		 * nor the end of every sweep, nor the data ring's continuation
+		 * buffers - the second half of a frame too long for one buffer,
+		 * whose first bytes are payload that only looks like a header.
 		 */
 		if (got >= MTK_MCU_RXD_SIZE && sc->sc_events_shown < 40
+				&& which != 0
 				&& (type != MTK_RX_TYPE_EVENT
-					|| ((word0 >> 16) & 0xf) != 1)) {
+					|| (((word0 >> 16) & 0xf) != 1
+						&& data[0x1d] != sc->sc_seq
+						&& data[0x1c] != MTK_MCU_EVENT_SCAN_DONE))) {
 			sc->sc_events_shown++;
 			device_printf(sc->sc_dev, "type %u flag %u on ring %d: eid %#x"
 				" seq %u option %#x ext %#x len %zu (waiting for seq %u)\n",
@@ -284,6 +294,9 @@ mtk_receive_frame(struct mtk_softc* sc, const uint8_t* data, size_t got,
 					&& (data[0x1e] & MTK_MCU_UNI_UNSOLICITED) != 0) {
 				const uint8_t* grant = data + MTK_MCU_RXD_SIZE + 4;
 
+				device_printf(sc->sc_dev, "channel %u held for token %u"
+					" (ours %u), status %u\n", grant[7], grant[5],
+					sc->sc_roc_token, grant[6]);
 				if (grant[5] == sc->sc_roc_token)
 					sc->sc_roc_granted = 1;
 				return;
@@ -325,7 +338,7 @@ mtk_receive_frame(struct mtk_softc* sc, const uint8_t* data, size_t got,
 			return;
 		}
 	}
-	if ((word1 & MTK_RXD1_FCS_ERROR) != 0)
+	if (got < 64 || (word1 & MTK_RXD1_FCS_ERROR) != 0)
 		return;
 
 	at = MTK_RXD_FIXED;

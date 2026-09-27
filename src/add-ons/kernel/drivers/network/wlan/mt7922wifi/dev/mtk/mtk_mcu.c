@@ -114,81 +114,15 @@ mtk_ring_drain(struct mtk_softc* sc, struct mtk_ring* ring, int milliseconds)
 }
 
 
-/* Take one thing off a receiving ring, and give the descriptor back. */
-static int
-mtk_ring_take(struct mtk_softc* sc, struct mtk_ring* ring, uint8_t* buffer,
-	size_t* length)
-{
-	uint32_t* desc = (uint32_t*)ring->desc.addr;
-	size_t got;
-
-	if (ring->count == 0)
-		return 0;
-	if ((desc[ring->tail * 4 + 1] & MTK_DMA_CTL_DMA_DONE) == 0)
-		return 0;
-
-	rmb();
-
-	got = (desc[ring->tail * 4 + 1] & MTK_DMA_CTL_LEN_MASK)
-		>> MTK_DMA_CTL_LEN_SHIFT;
-	if (got > *length)
-		got = *length;
-
-	memcpy(buffer, (const uint8_t*)ring->buffers.addr
-		+ (size_t)ring->tail * MTK_RX_BUFFER_SIZE, got);
-	*length = got;
-
-	desc[ring->tail * 4 + 2] = 0;
-	desc[ring->tail * 4 + 3] = 0;
-	wmb();
-	desc[ring->tail * 4 + 1] = (uint32_t)MTK_RX_BUFFER_SIZE
-		<< MTK_DMA_CTL_LEN_SHIFT;
-
-	ring->head = ring->tail;
-	ring->tail = (ring->tail + 1) % ring->count;
-
-	wmb();
-	mtk_write(sc, ring->regs + MTK_RING_CPU_INDEX, ring->head);
-
-	return 1;
-}
-
-
-/* The part answers on one ring before its firmware is running and another
- * afterwards, and nothing says exactly when it changes over. Watching both
- * costs one extra read and removes the question.
- */
-static int
-mtk_event_read(struct mtk_softc* sc, uint8_t* buffer, size_t* length,
-	int milliseconds)
-{
-	int i;
-
-	for (i = 0; i <= milliseconds; i++) {
-		size_t got = *length;
-		if (mtk_ring_take(sc, &sc->sc_eventq, buffer, &got)) {
-			*length = got;
-			return 0;
-		}
-
-		got = *length;
-		if (mtk_ring_take(sc, &sc->sc_lateq, buffer, &got)) {
-			*length = got;
-			return 0;
-		}
-
-		DELAY(1000);
-	}
-
-	return ETIMEDOUT;
-}
-
-
-
-/* Wait for the answer to the command just sent. Before the ring drain is
- * running - during firmware load - there is nobody else to read the rings, so
- * read them here. Once it is running it is the only reader, and it leaves the
- * answer where this can find it.
+/* Wait for the answer to the command just sent, draining every ring meanwhile
+ * the way the receive thread does - which is held off while this runs, so
+ * there is exactly one reader. mtk_receive_frame leaves an event carrying
+ * the command's sequence number in sc_reply and handles everything else as
+ * it always does.
+ *
+ * All three rings, not only the two answers usually come on: reading just
+ * those left the data ring untouched for as long as a command waited, and
+ * whatever the part said there was seen by nobody until the wait was over.
  */
 static int
 mtk_wait_reply(struct mtk_softc* sc, uint8_t* buffer, size_t* length,
@@ -196,36 +130,32 @@ mtk_wait_reply(struct mtk_softc* sc, uint8_t* buffer, size_t* length,
 {
 	int i, error = ETIMEDOUT;
 
-	/* The command reads the event rings itself, the way it does before the
-	 * receive thread exists, with that thread held off meanwhile. Left to
-	 * the receive thread, answers to unified commands never arrived where
-	 * this could find them, while the same commands sent during attach were
-	 * answered at once. Whatever else turns up meanwhile is handled as
-	 * usual.
-	 */
 	mtx_lock(&sc->sc_rxmtx);
 	for (i = 0; i <= milliseconds; i++) {
-		size_t got = *length;
+		mtk_receive(sc);
 
-		if (mtk_event_read(sc, buffer, &got, 1) != 0)
-			continue;
+		if (sc->sc_replyready != 0) {
+			size_t got = sc->sc_replylen < *length
+				? sc->sc_replylen : *length;
+			uint32_t word0;
 
-		if (got >= MTK_MCU_RXD_SIZE && buffer[0x1d] == sc->sc_seq) {
-			uint32_t word0 = mtk_le32(buffer);
-
-			if (sc->sc_replies_shown < 12) {
-				sc->sc_replies_shown++;
-				device_printf(sc->sc_dev, "answer: type %u flag %u eid %#x"
-					" seq %u option %#x\n", (word0 >> 27) & 0x1f,
-					(word0 >> 16) & 0xf, buffer[0x1c], buffer[0x1d],
-					buffer[0x1e]);
-			}
+			rmb();
+			memcpy(buffer, sc->sc_reply, got);
 			*length = got;
 			error = 0;
+
+			word0 = mtk_le32(buffer);
+			if (sc->sc_replies_shown < 12 || i >= 200) {
+				sc->sc_replies_shown++;
+				device_printf(sc->sc_dev, "answer after %d ms: type %u"
+					" flag %u eid %#x seq %u option %#x\n", i,
+					(word0 >> 27) & 0x1f, (word0 >> 16) & 0xf, buffer[0x1c],
+					buffer[0x1d], buffer[0x1e]);
+			}
 			break;
 		}
 
-		mtk_receive_frame(sc, buffer, got, -1, -1);
+		DELAY(1000);
 	}
 	mtx_unlock(&sc->sc_rxmtx);
 

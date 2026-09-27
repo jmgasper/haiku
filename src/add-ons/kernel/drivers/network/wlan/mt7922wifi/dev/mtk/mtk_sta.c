@@ -96,6 +96,14 @@ put32(uint8_t* where, uint32_t value)
 }
 
 
+static uint32_t
+get32(const uint8_t* where)
+{
+	return where[0] | (where[1] << 8) | (where[2] << 16)
+		| ((uint32_t)where[3] << 24);
+}
+
+
 static int
 mtk_is_5ghz(struct ieee80211_channel* channel)
 {
@@ -210,9 +218,16 @@ mtk_bss_channel(struct mtk_softc* sc, struct ieee80211_channel* channel)
 int
 mtk_bss_update(struct mtk_softc* sc, struct ieee80211_node* ni, int enable)
 {
-	struct ieee80211_channel* channel = ni->ni_chan;
+	struct ieee80211_channel* channel = ni != NULL ? ni->ni_chan : NULL;
 	uint8_t bss[44];
 	int error, five = mtk_is_5ghz(channel);
+
+	/* Leaving needs nothing the node has: the network is named by the
+	 * address kept when its access point was added, and the node may be
+	 * gone - replaced by the next network's - by the time we leave.
+	 */
+	if (ni == NULL && enable)
+		return EINVAL;
 
 	memset(bss, 0, sizeof(bss));
 	bss[0] = 0;				/* bss_idx */
@@ -225,10 +240,12 @@ mtk_bss_update(struct mtk_softc* sc, struct ieee80211_node* ni, int enable)
 	put32(bss + 12, CONNECTION_INFRA_STA);
 	bss[16] = enable ? 0 : 1;		/* conn_state = !enable */
 	bss[17] = 0;				/* wmm_idx */
-	memcpy(bss + 18, ni->ni_bssid, 6);
+	memcpy(bss + 18, ni != NULL ? ni->ni_bssid : sc->sc_ap_bssid, 6);
 	put16(bss + 24, MTK_WCID_OWN);		/* bmc_tx_wlan_idx */
-	put16(bss + 26, ni->ni_intval);		/* beacon interval */
-	bss[28] = ni->ni_dtim_period != 0 ? ni->ni_dtim_period : 1;
+	if (ni != NULL) {
+		put16(bss + 26, ni->ni_intval);	/* beacon interval */
+		bss[28] = ni->ni_dtim_period != 0 ? ni->ni_dtim_period : 1;
+	}
 	bss[29] = five ? PHY_MODE_A : (PHY_MODE_B | PHY_MODE_G);
 	put16(bss + 30, MTK_WCID_OWN);		/* sta_idx */
 	put16(bss + 32, five ? PHY_TYPE_BIT_OFDM
@@ -236,11 +253,19 @@ mtk_bss_update(struct mtk_softc* sc, struct ieee80211_node* ni, int enable)
 
 	put16(bss + 36, UNI_BSS_INFO_QBSS);
 	put16(bss + 38, 8);
-	bss[40] = (ni->ni_flags & IEEE80211_NODE_QOS) != 0;
+	bss[40] = ni != NULL && (ni->ni_flags & IEEE80211_NODE_QOS) != 0;
 
 	error = mtk_mcu_send_uni(sc, UNI_BSS_INFO_UPDATE, bss, sizeof(bss), 1);
-	if (error == 0 && enable)
+	if (error != 0) {
+		device_printf(sc->sc_dev, "network record (%s): %d\n",
+			enable ? "joining" : "leaving", error);
+	} else if (enable) {
 		error = mtk_bss_channel(sc, channel);
+		if (error != 0) {
+			device_printf(sc->sc_dev, "network channel %u: %d\n",
+				ieee80211_chan2ieee(&sc->sc_ic, channel), error);
+		}
+	}
 
 	device_printf(sc->sc_dev, "network %s: %d\n",
 		enable ? "joined" : "left", error);
@@ -415,6 +440,44 @@ mtk_sta_update(struct mtk_softc* sc, struct ieee80211_node* ni,
 }
 
 
+/* The access point's record gone (mt7921_mac_sta_remove): a disconnected
+ * basic record and an emptied WTBL entry, named by the address it was
+ * added under - which, when the stack moves to another access point, is no
+ * longer the address of any node it still has.
+ */
+int
+mtk_sta_remove(struct mtk_softc* sc, uint16_t wcid, const uint8_t* bssid)
+{
+	uint8_t m[40];
+	int error;
+
+	memset(m, 0, sizeof(m));
+	m[0] = 0;				/* bss_idx */
+	m[1] = wcid & 0xff;
+	put16(m + 2, 2);			/* two TLVs */
+	m[4] = 1;				/* is_tlv_append */
+	m[5] = sc->sc_omac;			/* muar_idx */
+	m[6] = wcid >> 8;
+
+	put16(m + 8, STA_REC_BASIC);
+	put16(m + 10, 20);
+	put32(m + 12, CONNECTION_INFRA_AP);
+	m[16] = CONN_STATE_DISCONNECT;
+	memcpy(m + 20, bssid, 6);
+	put16(m + 26, EXTRA_INFO_VER);
+
+	put16(m + 28, STA_REC_WTBL);
+	put16(m + 30, 4 + 8);
+	m[32] = wcid & 0xff;
+	m[33] = WTBL_RESET_AND_SET;
+	m[36] = wcid >> 8;
+
+	error = mtk_mcu_send_uni(sc, UNI_STA_REC_UPDATE, m, sizeof(m), 1);
+	device_printf(sc->sc_dev, "station entry %u removed: %d\n", wcid, error);
+	return error;
+}
+
+
 /* Keep the radio on a channel while a join is being negotiated
  * (mt7921_mcu_set_roc, JOIN): sent without waiting, and granted by an
  * unsolicited ROC event that mtk_receive_frame records.
@@ -425,7 +488,8 @@ mtk_roc(struct mtk_softc* sc, struct ieee80211_channel* channel,
 {
 	uint8_t req[28];
 	uint8_t number = ieee80211_chan2ieee(&sc->sc_ic, channel);
-	int error, i;
+	uint32_t result;
+	int error, i, acked = 0;
 
 	if (sc->sc_roc_active)
 		mtk_roc_abort(sc);
@@ -451,6 +515,10 @@ mtk_roc(struct mtk_softc* sc, struct ieee80211_channel* channel,
 	put32(req + 20, milliseconds);
 	req[24] = 0xff;				/* either band */
 
+	/* Not waited for as a command: the answer that matters is the grant,
+	 * which comes on its own. The command's own result is still worth
+	 * seeing, and is picked up below if it comes.
+	 */
 	error = mtk_mcu_send_uni(sc, UNI_ROC, req, sizeof(req), 0);
 	if (error != 0) {
 		device_printf(sc->sc_dev, "could not ask to stay on channel %u:"
@@ -459,15 +527,33 @@ mtk_roc(struct mtk_softc* sc, struct ieee80211_channel* channel,
 	}
 	sc->sc_roc_active = 1;
 
+	/* Nobody else reads the rings while this waits, so read them here;
+	 * mtk_receive_frame notes the grant when it goes past.
+	 */
+	mtx_lock(&sc->sc_rxmtx);
 	for (i = 0; i < 1000; i++) {
+		mtk_receive(sc);
+		if (!acked && sc->sc_replyready != 0) {
+			acked = 1;
+			if (sc->sc_replylen >= MTK_MCU_RXD_SIZE + 8) {
+				result = get32(sc->sc_reply + MTK_MCU_RXD_SIZE + 4);
+				device_printf(sc->sc_dev, "stay on channel %u: asked, status"
+					" %#x after %d ms\n", number, result, i);
+			}
+		}
 		if (sc->sc_roc_granted != 0)
 			break;
 		DELAY(1000);
 	}
+	mtx_unlock(&sc->sc_rxmtx);
 
 	device_printf(sc->sc_dev, "stay on channel %u: %s after %d ms\n", number,
 		sc->sc_roc_granted != 0 ? "granted" : "not granted", i);
-	return sc->sc_roc_granted != 0 ? 0 : ETIMEDOUT;
+	if (sc->sc_roc_granted == 0) {
+		mtk_roc_abort(sc);
+		return ETIMEDOUT;
+	}
+	return 0;
 }
 
 

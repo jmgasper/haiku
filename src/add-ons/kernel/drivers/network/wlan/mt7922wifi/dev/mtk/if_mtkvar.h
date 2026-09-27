@@ -486,6 +486,8 @@ int		mtk_mcu_send_uni(struct mtk_softc*, uint16_t command,
 void		mtk_wtbl_clear(struct mtk_softc*, uint16_t wcid);
 int		mtk_dev_add(struct mtk_softc*, int enable);
 int		mtk_bss_update(struct mtk_softc*, struct ieee80211_node*, int enable);
+int		mtk_sta_remove(struct mtk_softc*, uint16_t wcid,
+			const uint8_t* bssid);
 int		mtk_sta_update(struct mtk_softc*, struct ieee80211_node*,
 			uint16_t wcid, int state, int enable, int newly);
 int		mtk_roc(struct mtk_softc*, struct ieee80211_channel*,

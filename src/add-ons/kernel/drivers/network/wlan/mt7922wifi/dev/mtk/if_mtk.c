@@ -364,19 +364,21 @@ mtk_getradiocaps(struct ieee80211com* ic, int maxchans, int* nchans,
 
 
 /* Tell the firmware the access point is gone: its station entry and the
- * network record, and any remain-on-channel still held.
+ * network record, and any remain-on-channel still held. Both are named by
+ * the address the access point was added under, not by whatever node the
+ * stack now has: moving to another access point of the same network
+ * replaces the node first, and an entry never removed is one the firmware
+ * refuses to add again (status 0x10003) for every join after.
  */
 static void
-mtk_join_teardown(struct mtk_softc* sc, struct ieee80211_node* ni)
+mtk_join_teardown(struct mtk_softc* sc)
 {
 	mtk_roc_abort(sc);
 
 	if (sc->sc_ap_added) {
 		sc->sc_ap_added = 0;
-		if (ni != NULL) {
-			mtk_sta_update(sc, ni, MTK_WCID_AP, MTK_STA_STATE_NONE, 0, 1);
-			mtk_bss_update(sc, ni, 0);
-		}
+		mtk_sta_remove(sc, MTK_WCID_AP, sc->sc_ap_bssid);
+		mtk_bss_update(sc, NULL, 0);
 		mtk_wtbl_clear(sc, MTK_WCID_AP);
 	}
 }
@@ -404,7 +406,11 @@ mtk_join_prepare(struct mtk_softc* sc, struct ieee80211_node* ni)
 	}
 
 	if (sc->sc_ap_added && !IEEE80211_ADDR_EQ(sc->sc_ap_bssid, ni->ni_bssid))
-		mtk_join_teardown(sc, NULL);
+		mtk_join_teardown(sc);
+
+	/* What the part says during a join is worth seeing each time. */
+	if (sc->sc_events_shown > 20)
+		sc->sc_events_shown = 20;
 
 	if (!sc->sc_ap_added) {
 		mtk_wtbl_clear(sc, MTK_WCID_AP);
@@ -468,13 +474,13 @@ mtk_newstate(struct ieee80211vap* vap, enum ieee80211_state state, int arg)
 		case IEEE80211_S_INIT:
 		case IEEE80211_S_SCAN:
 			if (old >= IEEE80211_S_AUTH)
-				mtk_join_teardown(sc, ni);
+				mtk_join_teardown(sc);
 			break;
 
 		case IEEE80211_S_AUTH:
 		case IEEE80211_S_ASSOC:
 			if (old == IEEE80211_S_RUN)
-				mtk_join_teardown(sc, ni);
+				mtk_join_teardown(sc);
 			error = mtk_join_prepare(sc, ni);
 			break;
 
@@ -896,7 +902,14 @@ mtk_intr(void* arg)
 		device_printf(sc->sc_dev, "the card is talking to us (%#x)\n", status);
 
 	mtk_write(sc, MTK_WFDMA0_HOST_INT_STA, status);
+
+	/* One reader at a time: a command waiting for its answer drains the
+	 * rings itself, and so does the receive thread.
+	 */
+	if (mtx_trylock(&sc->sc_rxmtx) == 0)
+		return;
 	mtk_receive(sc);
+	mtx_unlock(&sc->sc_rxmtx);
 }
 
 
