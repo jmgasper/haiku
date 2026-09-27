@@ -44,6 +44,16 @@ typedef struct {
 	int64_t		time;
 } FrameStore;
 
+/* One NAL unit of the chunk being decoded: where it starts (at its start
+ * code), how long it is, and where its payload starts after the header. */
+typedef struct {
+	size_t	offset;
+	size_t	length;
+	int	type;
+	int	refIdc;
+	size_t	payload;
+} Nal;
+
 struct NvdecH264 {
 	NvdecEngine	*engine;
 	char		*reason;
@@ -90,6 +100,13 @@ struct NvdecH264 {
 
 	uint8_t		*rbsp;
 	size_t		rbspSize;
+
+	/* The NAL units of the chunk being decoded. Each decoder has its own:
+	 * this was once one table for every decoder in the process, so two
+	 * videos playing at once - two tracks, two threads - rewrote each
+	 * other's units mid-decode, and the slice copy then read past a chunk
+	 * with another chunk's offsets and crashed the process. */
+	Nal		*nals;
 	NvdecFrame	current;
 	NvdecStatus	status;
 	uint32_t	pictureCount;
@@ -131,6 +148,11 @@ nvdecH264Create(NvdecEngine *engine, char *reason, size_t reasonSize)
 	NvdecH264 *decoder = calloc(1, sizeof(NvdecH264));
 	if (decoder == NULL)
 		return NULL;
+	decoder->nals = calloc(MAX_SLICES, sizeof(Nal));
+	if (decoder->nals == NULL) {
+		free(decoder);
+		return NULL;
+	}
 	decoder->engine = engine;
 	decoder->reason = reason;
 	decoder->reasonSize = reasonSize;
@@ -160,6 +182,7 @@ nvdecH264Destroy(NvdecH264 *decoder)
 		return;
 	freeSurfaces(decoder);
 	free(decoder->rbsp);
+	free(decoder->nals);
 	free(decoder);
 }
 
@@ -678,14 +701,6 @@ nvdecH264Reset(NvdecH264 *decoder)
 
 /* --------------------------------------------------------------- decoding */
 
-typedef struct {
-	size_t	offset;
-	size_t	length;
-	int	type;
-	int	refIdc;
-	size_t	payload;
-} Nal;
-
 static size_t
 findNals(const uint8_t *data, size_t size, Nal *nals, size_t maxNals)
 {
@@ -697,6 +712,8 @@ findNals(const uint8_t *data, size_t size, Nal *nals, size_t maxNals)
 			continue;
 		}
 		size_t payload = i + 3;
+		if (payload >= size)
+			break;			/* a start code with nothing after it */
 		size_t j = payload;
 		while (j + 3 <= size && !(data[j] == 0 && data[j + 1] == 0 && data[j + 2] == 1))
 			j++;
@@ -704,6 +721,12 @@ findNals(const uint8_t *data, size_t size, Nal *nals, size_t maxNals)
 		/* A start code may be preceded by a zero that belongs to it. */
 		while (end > payload && data[end - 1] == 0)
 			end--;
+		if (end <= payload) {
+			/* Nothing but zeros: no header byte, so no unit. Counting it
+			 * would make its payload length negative. */
+			i = (j + 3 <= size) ? j : size;
+			continue;
+		}
 		nals[count].offset = i;
 		nals[count].length = end - i;
 		nals[count].type = data[payload] & 0x1f;
@@ -770,7 +793,7 @@ fillPictureTable(NvdecH264 *decoder, nvdec_h264_pic_s *setup)
 bool
 nvdecH264Decode(NvdecH264 *decoder, const uint8_t *data, size_t size, int64_t time)
 {
-	static Nal nals[MAX_SLICES];
+	Nal *nals = decoder->nals;
 	size_t nalCount = findNals(data, size, nals, MAX_SLICES);
 	if (nalCount == 0)
 		return setError(decoder, "no NAL units in %zu bytes", size);
@@ -880,6 +903,10 @@ nvdecH264Decode(NvdecH264 *decoder, const uint8_t *data, size_t size, int64_t ti
 	for (size_t i = firstSlice; i < nalCount && sliceCount < MAX_SLICES; i++) {
 		if (nals[i].type != 1 && nals[i].type != 5)
 			continue;
+		if (nals[i].offset > size || nals[i].length > size - nals[i].offset
+			|| streamLength + nals[i].length > size)
+			return setError(decoder, "slice %zu runs past the %zu byte chunk",
+				i, size);
 		offsets[sliceCount++] = (uint32_t)streamLength;
 		memcpy(bits + streamLength, data + nals[i].offset, nals[i].length);
 		streamLength += nals[i].length;
