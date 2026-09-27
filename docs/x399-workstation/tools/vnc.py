@@ -20,7 +20,7 @@ import struct
 import sys
 import time
 
-HOST = "192.168.1.237"
+HOST = "192.168.1.244"
 PORT = 5900
 PASSWORD = "ghostar1"
 

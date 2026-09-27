@@ -151,6 +151,7 @@
  * access point is the first station allocated, and our own interface's entry
  * is the last in the table.
  */
+#define MTK_HOME_CHANNEL		1
 #define MTK_WCID_GLOBAL			0
 #define MTK_WCID_AP			1
 #define MTK_WCID_OWN			19
@@ -371,6 +372,12 @@ struct mtk_softc {
 	 */
 	struct mtx		sc_txmtx;
 
+	/* The rings' one reader at a time: the receive thread, or a command
+	 * collecting its own answer.
+	 */
+	struct mtx		sc_rxmtx;
+	uint32_t		sc_replies_shown;
+
 	/* While the part is sweeping, the radio is its. The stack is stepped
 	 * through its channel list from our own thread instead of being let
 	 * retune underneath the sweep.
@@ -464,6 +471,7 @@ struct mtk_softc {
 	uint32_t		sc_rev;
 	int			sc_owned;
 	uint32_t		sc_badaddr;
+	uint32_t		sc_events_shown;
 };
 
 uint32_t	mtk_read(struct mtk_softc*, uint32_t);
@@ -484,6 +492,7 @@ int		mtk_roc(struct mtk_softc*, struct ieee80211_channel*,
 			uint32_t milliseconds);
 int		mtk_roc_abort(struct mtk_softc*);
 int		mtk_keep_awake(struct mtk_softc*);
+int		mtk_probe_reply(struct mtk_softc*);
 void		mtk_receive_frame(struct mtk_softc*, const uint8_t*, size_t, int, int);
 int		mtk_tune(struct mtk_softc*, uint8_t channel);
 int		mtk_send_frame(struct mtk_softc*, struct mbuf*);

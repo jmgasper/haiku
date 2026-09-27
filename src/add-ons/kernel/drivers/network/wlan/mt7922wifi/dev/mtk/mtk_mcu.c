@@ -194,39 +194,42 @@ static int
 mtk_wait_reply(struct mtk_softc* sc, uint8_t* buffer, size_t* length,
 	int milliseconds)
 {
-	int i;
+	int i, error = ETIMEDOUT;
 
-	if (sc->sc_draining == 0) {
-		for (i = 0; i <= milliseconds; i++) {
-			size_t got = *length;
-
-			if (mtk_event_read(sc, buffer, &got, 1) == 0) {
-				if (got >= MTK_MCU_RXD_SIZE
-						&& buffer[0x1d] == sc->sc_seq) {
-					*length = got;
-					return 0;
-				}
-				mtk_receive_frame(sc, buffer, got, -1, -1);
-			}
-		}
-
-		return ETIMEDOUT;
-	}
-
+	/* The command reads the event rings itself, the way it does before the
+	 * receive thread exists, with that thread held off meanwhile. Left to
+	 * the receive thread, answers to unified commands never arrived where
+	 * this could find them, while the same commands sent during attach were
+	 * answered at once. Whatever else turns up meanwhile is handled as
+	 * usual.
+	 */
+	mtx_lock(&sc->sc_rxmtx);
 	for (i = 0; i <= milliseconds; i++) {
-		if (sc->sc_replyready != 0) {
-			rmb();
-			if (sc->sc_replylen < *length)
-				*length = sc->sc_replylen;
-			memcpy(buffer, sc->sc_reply, *length);
-			sc->sc_replyready = 0;
-			return 0;
+		size_t got = *length;
+
+		if (mtk_event_read(sc, buffer, &got, 1) != 0)
+			continue;
+
+		if (got >= MTK_MCU_RXD_SIZE && buffer[0x1d] == sc->sc_seq) {
+			uint32_t word0 = mtk_le32(buffer);
+
+			if (sc->sc_replies_shown < 12) {
+				sc->sc_replies_shown++;
+				device_printf(sc->sc_dev, "answer: type %u flag %u eid %#x"
+					" seq %u option %#x\n", (word0 >> 27) & 0x1f,
+					(word0 >> 16) & 0xf, buffer[0x1c], buffer[0x1d],
+					buffer[0x1e]);
+			}
+			*length = got;
+			error = 0;
+			break;
 		}
 
-		DELAY(1000);
+		mtk_receive_frame(sc, buffer, got, -1, -1);
 	}
+	mtx_unlock(&sc->sc_rxmtx);
 
-	return ETIMEDOUT;
+	return error;
 }
 
 
@@ -767,6 +770,17 @@ mtk_read_capability(struct mtk_softc* sc)
 }
 
 
+int
+mtk_probe_reply(struct mtk_softc* sc)
+{
+	uint8_t reply[1024];
+	size_t length = sizeof(reply);
+
+	return mtk_mcu_send(sc, MTK_MCU_CE_GET_NIC_CAPAB, MTK_MCU_Q_SET, NULL, 0,
+		reply, &length);
+}
+
+
 /* A command carrying a second identifier beside the first, which says so
  * twice: once by setting it and once by acknowledging that it has.
  */
@@ -910,6 +924,31 @@ mtk_set_timing(struct mtk_softc* sc)
 
 	mtk_modify(sc, MTK_ARB_SCR,
 		MTK_ARB_SCR_TX_DISABLE | MTK_ARB_SCR_RX_DISABLE, 0);
+}
+
+
+/* The channel the radio starts on, as mt7921_mcu_set_chan_info builds it for
+ * SET_RX_PATH: control and centre channel, 20 MHz, the number of transmit
+ * streams, and the receive aerials as a mask.
+ */
+static int
+mtk_set_rx_path(struct mtk_softc* sc, uint8_t channel)
+{
+	uint8_t request[76];
+	uint8_t streams = sc->sc_streams != 0 ? sc->sc_streams : 1;
+
+	memset(request, 0, sizeof(request));
+	request[0] = channel;
+	request[1] = channel;
+	request[2] = 0;				/* 20 MHz */
+	request[3] = streams;
+	request[4] = (1 << streams) - 1;	/* aerials, as a mask */
+	request[5] = 0;				/* CH_SWITCH_NORMAL */
+	request[6] = 0;				/* band 0 */
+	request[10] = channel > 14 ? 1 : 0;	/* nl80211 band */
+
+	return mtk_mcu_send_ext(sc, MTK_EXT_CMD_SET_RX_PATH, request,
+		sizeof(request));
 }
 
 
@@ -1131,6 +1170,17 @@ mtk_radio_init(struct mtk_softc* sc)
 	mtk_write(sc, MTK_WF_RFCR, 0);
 
 	mtk_set_channels(sc);
+
+	/* Start the radio on a home channel (__mt7921_start: SET_RX_PATH with
+	 * the aerials as a mask), and set the air timings, which is what opens
+	 * the radio's transmit and receive gate. Until this the firmware has a
+	 * radio it has not been told to use, and it answers nothing about
+	 * interfaces on it - DEV_INFO_UPDATE went unanswered without it.
+	 */
+	error = mtk_set_rx_path(sc, MTK_HOME_CHANNEL);
+	if (error != 0)
+		device_printf(sc->sc_dev, "the radio would not start: %d\n", error);
+	mtk_set_timing(sc);
 
 	device_printf(sc->sc_dev, "radio ready, filter %#x\n",
 		mtk_read(sc, MTK_WF_RFCR));

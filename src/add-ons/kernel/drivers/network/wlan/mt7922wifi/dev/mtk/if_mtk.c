@@ -745,7 +745,12 @@ mtk_rxwork(void* arg, int pending)
 	struct mtk_softc* sc = arg;
 
 	sc->sc_beat++;
+
+	/* A command waiting for its answer reads the rings itself. */
+	if (mtx_trylock(&sc->sc_rxmtx) == 0)
+		return;
 	mtk_receive(sc);
+	mtx_unlock(&sc->sc_rxmtx);
 }
 
 
@@ -762,6 +767,12 @@ mtk_work(void* arg, int pending)
 		/* Our address has to exist in the firmware before anything is
 		 * done on its behalf, scanning included (mt7921_add_interface).
 		 */
+		/* Whether answers get through at all once the receive thread
+		 * owns the rings: a command known to be answered, asked again.
+		 */
+		device_printf(sc->sc_dev, "asking something with a known answer:"
+			" %d\n", mtk_probe_reply(sc));
+
 		if (!sc->sc_dev_added) {
 			mtk_keep_awake(sc);
 			if (mtk_dev_add(sc, 1) == 0)
@@ -932,6 +943,7 @@ mtk_attach(device_t dev)
 	sc->sc_dev = dev;
 	mtx_init(&sc->sc_cmdmtx, "mtk commands", MTX_NETWORK_LOCK, MTX_DEF);
 	mtx_init(&sc->sc_txmtx, "mtk transmit", MTX_NETWORK_LOCK, MTX_DEF);
+	mtx_init(&sc->sc_rxmtx, "mtk receive", MTX_NETWORK_LOCK, MTX_DEF);
 	callout_init(&sc->sc_poll, 1);
 	sc->sc_tq = taskqueue_create_fast("mtk_taskq", M_NOWAIT,
 		taskqueue_thread_enqueue, &sc->sc_tq);
@@ -1037,6 +1049,13 @@ mtk_attach(device_t dev)
 	if (error != 0)
 		goto fail;
 
+	/* Our address, told to the firmware while nothing else is using the
+	 * rings - the way the native driver did it, where it was answered.
+	 */
+	mtk_keep_awake(sc);
+	if (mtk_dev_add(sc, 1) == 0)
+		sc->sc_dev_added = 1;
+
 	/* Now that the card will say when it has something, listen for it. */
 	rid = 0;
 	sc->sc_irq = bus_alloc_resource_any(dev, SYS_RES_IRQ, &rid,
@@ -1068,6 +1087,7 @@ fail:
 	}
 	mtx_destroy(&sc->sc_cmdmtx);
 	mtx_destroy(&sc->sc_txmtx);
+	mtx_destroy(&sc->sc_rxmtx);
 	mtx_destroy(&sc->sc_mtx);
 	return error;
 }
@@ -1112,6 +1132,7 @@ mtk_detach(device_t dev)
 
 	mtx_destroy(&sc->sc_cmdmtx);
 	mtx_destroy(&sc->sc_txmtx);
+	mtx_destroy(&sc->sc_rxmtx);
 	mtx_destroy(&sc->sc_mtx);
 	return 0;
 }

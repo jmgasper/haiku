@@ -256,6 +256,19 @@ mtk_receive_frame(struct mtk_softc* sc, const uint8_t* data, size_t got,
 	 * something it said itself.
 	 */
 	if (type != MTK_RX_TYPE_NORMAL && type != MTK_RX_TYPE_NORMAL_MCU) {
+		/* What the part says back, for the first few dozen events: event
+		 * id, sequence number, option byte and length, and which ring.
+		 */
+		if (got >= MTK_MCU_RXD_SIZE && sc->sc_events_shown < 40
+				&& (type != MTK_RX_TYPE_EVENT
+					|| ((word0 >> 16) & 0xf) != 1)) {
+			sc->sc_events_shown++;
+			device_printf(sc->sc_dev, "type %u flag %u on ring %d: eid %#x"
+				" seq %u option %#x ext %#x len %zu (waiting for seq %u)\n",
+				type, (word0 >> 16) & 0xf, which, data[0x1c], data[0x1d],
+				data[0x1e], data[0x20], got, sc->sc_seq);
+		}
+
 		if (type != MTK_RX_TYPE_EVENT || ((word0 >> 16) & 0xf) != 1) {
 			/* The end of a sweep is said unprompted, and may carry
 			 * the sequence number of the command that started it -
