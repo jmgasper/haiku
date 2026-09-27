@@ -776,24 +776,50 @@ ether_output(struct ifnet *ifp, struct mbuf *m, struct sockaddr *dst,
 }
 
 
+/* The stack takes received frames off this queue on a thread of its own, and
+ * nothing else bounds it: a reader that falls behind - on a machine busy with
+ * other work, say, while a wireless card hears a whole network's broadcasts -
+ * let it grow without limit, in kernel memory. Past this many frames new ones
+ * are dropped and counted instead. (ifq_maxlen, which FreeBSD would use, is
+ * IFQ_MAXLEN - 50 - and far too few for a gigabit card's bursts.)
+ */
+#define RECEIVE_QUEUE_LIMIT	4096
+
 static void
 ether_input(struct ifnet *ifp, struct mbuf *m)
 {
-	int32 count = 0;
+	struct mbuf *dropped = NULL;
+	int32 count = 0, dropCount = 0;
 
 	IF_LOCK(&ifp->receive_queue);
 	while (m != NULL) {
 		struct mbuf *mn = m->m_nextpkt;
 		m->m_nextpkt = NULL;
 
-		_IF_ENQUEUE(&ifp->receive_queue, m);
-		count++;
+		if (ifp->receive_queue.ifq_len >= RECEIVE_QUEUE_LIMIT) {
+			m->m_nextpkt = dropped;
+			dropped = m;
+			dropCount++;
+		} else {
+			_IF_ENQUEUE(&ifp->receive_queue, m);
+			count++;
+		}
 
 		m = mn;
 	}
 	IF_UNLOCK(&ifp->receive_queue);
 
-	release_sem_etc(ifp->receive_sem, count, B_DO_NOT_RESCHEDULE);
+	while (dropped != NULL) {
+		struct mbuf *next = dropped->m_nextpkt;
+		dropped->m_nextpkt = NULL;
+		m_freem(dropped);
+		dropped = next;
+	}
+	if (dropCount > 0)
+		if_inc_counter(ifp, IFCOUNTER_IQDROPS, dropCount);
+
+	if (count > 0)
+		release_sem_etc(ifp->receive_sem, count, B_DO_NOT_RESCHEDULE);
 }
 
 
