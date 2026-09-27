@@ -721,13 +721,35 @@ mtk_wme_update(struct ieee80211com* ic)
  * This driver used to free the frame and the node on every path, which on
  * a full ring meant each probe request of a scan freed its node twice.
  */
+/* The stack marks a frame protected and leaves protecting it to the driver
+ * (ieee80211_crypto_encap): the security header and, with the cipher done in
+ * software as it is here - the part is given no keys - the encryption and
+ * its MIC. A frame sent marked but not protected is one the access point
+ * throws away, which after the four-way handshake is every frame: the link
+ * came up, the network's broadcasts arrived, and nothing we sent did.
+ */
+static int
+mtk_encap(struct ieee80211_node* ni, struct mbuf* m)
+{
+	const struct ieee80211_frame* wh
+		= mtod(m, const struct ieee80211_frame*);
+
+	if ((wh->i_fc[1] & IEEE80211_FC1_PROTECTED) == 0)
+		return 0;
+
+	return ieee80211_crypto_encap(ni, m) != NULL ? 0 : ENOBUFS;
+}
+
+
 static int
 mtk_transmit(struct ieee80211com* ic, struct mbuf* m)
 {
 	struct mtk_softc* sc = ic->ic_softc;
 	struct ieee80211_node* ni = (struct ieee80211_node*)m->m_pkthdr.rcvif;
-	int error = mtk_send_frame(sc, m);
+	int error = mtk_encap(ni, m);
 
+	if (error == 0)
+		error = mtk_send_frame(sc, m);
 	if (error != 0) {
 		sc->sc_refused++;
 		return error;
@@ -744,8 +766,10 @@ mtk_raw_xmit(struct ieee80211_node* ni, struct mbuf* m,
 	const struct ieee80211_bpf_params* params)
 {
 	struct mtk_softc* sc = ni->ni_ic->ic_softc;
-	int error = mtk_send_frame(sc, m);
+	int error = mtk_encap(ni, m);
 
+	if (error == 0)
+		error = mtk_send_frame(sc, m);
 	if (error != 0) {
 		sc->sc_refused++;
 		m_freem(m);
