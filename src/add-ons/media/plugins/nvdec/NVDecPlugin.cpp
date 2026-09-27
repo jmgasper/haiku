@@ -240,7 +240,7 @@ NVDecDecoder::_AppendChunk(const uint8* data, size_t size)
 
 void
 NVDecDecoder::_Deliver(const NvdecFrame& frame, void* buffer,
-	media_header* mediaHeader)
+	media_header* mediaHeader, bool convert)
 {
 	/* What the file said the picture is need not be what the stream says,
 	 * and the buffer was made from what the file said. */
@@ -250,7 +250,9 @@ NVDecDecoder::_Deliver(const NvdecFrame& frame, void* buffer,
 	if (fitted.height > fHeight)
 		fitted.height = fHeight;
 	const NvdecFrame& frameRef = fitted;
-	if (fColorSpace == B_YCbCr422)
+	if (!convert)
+		;
+	else if (fColorSpace == B_YCbCr422)
 		nvdecFrameToYCbCr422Threaded(&frameRef, (uint8*)buffer, fRowBytes);
 	else
 		nvdecFrameToRGB32Threaded(&frameRef, (uint8*)buffer, fRowBytes, fRange);
@@ -283,10 +285,17 @@ NVDecDecoder::Decode(void* buffer, int64* frameCount, media_header* mediaHeader,
 		fSentParameterSets = true;
 	}
 
+	/* A caller that will not show pictures earlier than some time (the ones
+	 * decoded after a seek, from the keyframe up to the target) says so with
+	 * a negative time_to_decode, and gets them without the pixel conversion. */
+	bigtime_t skipBefore = info != NULL && info->time_to_decode < 0
+		? -info->time_to_decode : 0;
+
 	NvdecFrame frame;
 	for (;;) {
 		if (nvdecH264NextFrame(fDecoder, &frame)) {
-			_Deliver(frame, buffer, mediaHeader);
+			_Deliver(frame, buffer, mediaHeader,
+				skipBefore == 0 || frame.time >= skipBefore);
 			nvdecH264ReleaseFrame(fDecoder, &frame);
 			*frameCount = 1;
 			fFrameNumber++;
@@ -301,7 +310,8 @@ NVDecDecoder::Decode(void* buffer, int64* frameCount, media_header* mediaHeader,
 			/* The file has ended: let go of everything still held. */
 			nvdecH264DrainAll(fDecoder);
 			if (nvdecH264NextFrame(fDecoder, &frame)) {
-				_Deliver(frame, buffer, mediaHeader);
+				_Deliver(frame, buffer, mediaHeader,
+					skipBefore == 0 || frame.time >= skipBefore);
 				nvdecH264ReleaseFrame(fDecoder, &frame);
 				*frameCount = 1;
 				fFrameNumber++;

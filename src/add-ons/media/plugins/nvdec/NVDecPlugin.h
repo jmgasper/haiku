@@ -35,7 +35,7 @@ private:
 			status_t			_ReadParameterSets(const uint8* data, size_t size);
 			status_t			_AppendChunk(const uint8* data, size_t size);
 			void				_Deliver(const NvdecFrame& frame, void* buffer,
-									media_header* mediaHeader);
+									media_header* mediaHeader, bool convert = true);
 
 			NvdecEngine*		fEngine;
 			NvdecH264*			fDecoder;
