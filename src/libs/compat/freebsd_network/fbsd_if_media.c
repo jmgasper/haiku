@@ -218,6 +218,36 @@ ifmedia_ioctl(ifp, ifr, ifm, cmd)
 		int oldmedia;
 		int newmedia = ifr->ifr_media;
 
+		/*
+		 * Haiku's SIOCGIFMEDIA reports the media in use, with its own link
+		 * status bit in it, where FreeBSD's reports the media set. A caller
+		 * written for FreeBSD that reads the word, changes an option and
+		 * writes it back (wpa_supplicant switching to station mode before
+		 * every scan) hands over a word no driver lists, and gets ENXIO.
+		 * The status bit is never part of a media word.
+		 */
+		newmedia &= ~IFM_ACTIVE;
+
+		/*
+		 * And for 802.11, the media in use names the band and rate of the
+		 * current channel. Set as it stands, that locks the interface to
+		 * whichever band it happened to be on. So a word that is the media
+		 * in use with only its options changed is taken as a change of
+		 * options to the media set.
+		 */
+		if (IFM_TYPE(newmedia) == IFM_IEEE80211 && ifm->ifm_cur != NULL) {
+			struct ifmediareq status;
+
+			memset(&status, 0, sizeof(status));
+			status.ifm_current = status.ifm_active = ifm->ifm_cur->ifm_media;
+			(*ifm->ifm_status)(ifp, &status);
+			if ((newmedia & ~IFM_OMASK) == (status.ifm_active & ~IFM_OMASK)
+				&& newmedia != ifm->ifm_cur->ifm_media) {
+				newmedia = (ifm->ifm_cur->ifm_media & ~IFM_OMASK)
+					| (newmedia & IFM_OMASK);
+			}
+		}
+
 		match = ifmedia_match(ifm, newmedia, ifm->ifm_mask);
 		if (match == NULL) {
 			TRACE("ifmedia_ioctl: no media found for 0x%x\n",
