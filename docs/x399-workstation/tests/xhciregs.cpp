@@ -116,6 +116,20 @@ main()
 				" state %u address %u\n", slot, sc[0] & 0xfffff,
 				(sc[0] >> 20) & 0xf, sc[0] >> 27, (sc[1] >> 16) & 0xff,
 				sc[3] >> 27, sc[3] & 0xff);
+			{
+				// endpoint 0's ring: the dequeue pointer is in its first 256
+				// bytes, which start a page (the device's rings are one area)
+				uint32* ep0 = context + contextSize / 4;
+				uint64 dequeue = ((uint64)ep0[3] << 32 | ep0[2]) & ~0xfULL;
+				uint32 ring[16 * 4];
+				if (read_physical(dequeue & ~0xfffULL, ring, sizeof(ring))) {
+					printf("      ep0 ring (dequeue at slot %u):", (unsigned)((dequeue & 0xfff) / 16));
+					for (int t = 0; t < 16; t++)
+						printf(" %u%s", (ring[t * 4 + 3] >> 10) & 0x3f,
+							(ring[t * 4 + 3] & 1) ? "" : "-");
+					printf("\n");
+				}
+			}
 			for (uint32 e = 1; e <= (sc[0] >> 27) && e < 4; e++) {
 				uint32* ep = context + e * contextSize / 4;
 				printf("      ep ctx %u: state %u interval %u mult %u |"
