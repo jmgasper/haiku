@@ -47,6 +47,10 @@ struct xhci_td : public DoublyLinkedListLinkImpl<xhci_td> {
 	uint8		trb_completion_code;
 	int32		td_transferred;
 	int32		trb_left;
+
+	int32		ring_start;
+		// where on the endpoint ring the TRBs were put, when they were put
+		// on the ring itself (see _LinkControlOnRing()); -1 otherwise
 };
 
 
@@ -171,6 +175,8 @@ private:
 
 			status_t			_LinkDescriptorForPipe(xhci_td *descriptor,
 									xhci_endpoint *endpoint);
+			status_t			_LinkControlOnRing(xhci_td *descriptor,
+									xhci_endpoint *endpoint);
 			status_t			_UnlinkDescriptorForPipe(xhci_td *descriptor,
 									xhci_endpoint *endpoint);
 
@@ -241,6 +247,8 @@ private:
 			Stack *				fStack;
 			uint32				fIRQ;
 			bool				fUseMSI;
+			bool				fControlOnRing;
+			bigtime_t			fControlOnRingSince;
 
 			area_id				fErstArea;
 			xhci_erst_element *	fErst;
