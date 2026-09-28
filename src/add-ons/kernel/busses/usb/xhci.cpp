@@ -13,6 +13,7 @@
 
 
 #include <stdio.h>
+#include <stdlib.h>
 
 #include <bus/PCI.h>
 #include <USB3.h>
@@ -521,11 +522,16 @@ XHCI::XHCI(pci_info *info, 	pci_device_module_info* pci, pci_device* device, Sta
 
 	// Experimental, see _LinkControlOnRing(): "control_on_ring asmedia" (or
 	// "all") in the xhci driver settings. It takes effect a minute after the
-	// controller starts, so that booting never depends on it.
+	// controller starts, so that booting does not depend on it, unless
+	// "control_on_ring_after <seconds>" says otherwise.
 	fControlOnRing = false;
 	fControlOnRingSince = system_time() + 60000000;
 	void* settings = load_driver_settings("xhci");
 	if (settings != NULL) {
+		const char* after = get_driver_parameter(settings,
+			"control_on_ring_after", NULL, NULL);
+		if (after != NULL)
+			fControlOnRingSince = system_time() + strtol(after, NULL, 10) * 1000000LL;
 		const char* mode = get_driver_parameter(settings, "control_on_ring",
 			"off", "asmedia");
 		const uint16 device = fPCIInfo->device_id;
