@@ -13,12 +13,10 @@
 
 
 #include <stdio.h>
-#include <stdlib.h>
 
 #include <bus/PCI.h>
 #include <USB3.h>
 #include <KernelExport.h>
-#include <driver_settings.h>
 
 #include <ByteOrder.h>
 #include <util/AutoLock.h>
@@ -518,35 +516,6 @@ XHCI::XHCI(pci_info *info, 	pci_device_module_info* pci, pci_device* device, Sta
 				_SwitchIntelPorts();
 				break;
 		}
-	}
-
-	// Experimental, see _LinkControlOnRing(): "control_on_ring asmedia" (or
-	// "all") in the xhci driver settings. It takes effect a minute after the
-	// controller starts, so that booting does not depend on it, unless
-	// "control_on_ring_after <seconds>" says otherwise.
-	fControlOnRing = false;
-	fControlOnRingSince = system_time() + 60000000;
-	void* settings = load_driver_settings("xhci");
-	if (settings != NULL) {
-		const char* after = get_driver_parameter(settings,
-			"control_on_ring_after", NULL, NULL);
-		if (after != NULL)
-			fControlOnRingSince = system_time() + strtol(after, NULL, 10) * 1000000LL;
-		const char* mode = get_driver_parameter(settings, "control_on_ring",
-			"off", "asmedia");
-		const uint16 device = fPCIInfo->device_id;
-		bool asmedia = fPCIInfo->vendor_id == 0x1b21
-			|| (fPCIInfo->vendor_id == 0x1022
-				&& (device == 0x43b9 || device == 0x43ba || device == 0x43bb
-					|| device == 0x43bc || device == 0x43d5 || device == 0x43ee
-					|| device == 0x43f7));
-		fControlOnRing = strcmp(mode, "all") == 0
-			|| (strcmp(mode, "asmedia") == 0 && asmedia);
-		unload_driver_settings(settings);
-	}
-	if (fControlOnRing) {
-		TRACE_ALWAYS("control transfers go on the endpoint ring itself from a "
-			"minute after start\n");
 	}
 
 	// halt the host controller
@@ -1065,10 +1034,7 @@ XHCI::SubmitControlRequest(Transfer *transfer)
 
 	descriptor->trb_used = index + 1;
 
-	if (fControlOnRing && system_time() >= fControlOnRingSince)
-		status = _LinkControlOnRing(descriptor, endpoint);
-	else
-		status = _LinkDescriptorForPipe(descriptor, endpoint);
+	status = _LinkDescriptorForPipe(descriptor, endpoint);
 	if (status != B_OK) {
 		FreeDescriptor(descriptor);
 		return status;
@@ -1515,7 +1481,6 @@ XHCI::CreateDescriptor(uint32 trbCount, uint32 bufferCount, size_t bufferSize)
 	}
 	result->trb_count = trbCount;
 	result->trb_used = 0;
-	result->ring_start = -1;
 
 	if (bufferSize > 0) {
 		// Due to how the USB stack allocates physical memory, we can't just
@@ -2324,98 +2289,6 @@ XHCI::_LinkDescriptorForPipe(xhci_td *descriptor, xhci_endpoint *endpoint)
 }
 
 
-/*!	Puts a control transfer's TRBs on the endpoint ring itself - Setup, Data
-	(if any), Status, then the Event Data TRB - where _LinkDescriptorForPipe()
-	puts a Link TRB to the TD's own TRBs, which link back to the Event Data
-	TRB. The layout is the one other systems use for control transfers.
-
-	This is an experiment for the ASMedia-designed controllers (ASM2142, and
-	AMD's chipset controllers), which run a control transfer laid out the
-	usual way at one USB transaction per 1 ms frame: 3 ms for any short
-	request to a high speed device, 4 to 6 ms to a full speed keyboard that an
-	AMD controller in the same machine answers in 0.2 ms.
-
-	It is only done while nothing else is queued on the endpoint, so that for
-	anything queued behind it the ring still has the two free TRBs per TD that
-	_LinkDescriptorForPipe() counts on. The Event Data TRB points at the TD's
-	own copy of the Status TRB, exactly as there, so that completion finds the
-	TD the same way.
-*/
-status_t
-XHCI::_LinkControlOnRing(xhci_td *descriptor, xhci_endpoint *endpoint)
-{
-	MutexLocker endpointLocker(&endpoint->lock,
-		mutex_trylock(&endpoint->lock) == B_OK);
-	if (!endpointLocker.IsLocked() || !endpoint->td_list.IsEmpty()) {
-		endpointLocker.Unlock();
-		return _LinkDescriptorForPipe(descriptor, endpoint);
-	}
-
-	// Setup, Data and Status, the Event Data TRB, and an empty TRB to stop at.
-	const uint32 count = descriptor->trb_used;
-	const uint32 needed = count + 2;
-	uint32 start = endpoint->next;
-	int32 wrapLink = -1;
-	if (start + needed > XHCI_ENDPOINT_RING_SIZE) {
-		// Not enough room before the end of the ring: a Link TRB here, and
-		// the transfer from the start of the ring. Nothing is queued, so the
-		// controller has left all of it behind.
-		wrapLink = start;
-		start = 0;
-	}
-
-	xhci_trb* ring = endpoint->trbs;
-	for (uint32 i = 0; i < count; i++) {
-		uint32 flags = descriptor->trbs[i].flags;
-		if (i == 0 && wrapLink < 0) {
-			// The controller may be looking at this TRB: it becomes valid
-			// last, below.
-			flags &= ~TRB_3_CYCLE_BIT;
-		}
-		ring[start + i].address
-			= B_HOST_TO_LENDIAN_INT64(descriptor->trbs[i].address);
-		ring[start + i].status
-			= B_HOST_TO_LENDIAN_INT32(descriptor->trbs[i].status);
-		ring[start + i].flags = B_HOST_TO_LENDIAN_INT32(flags);
-	}
-
-	const uint32 eventData = start + count;
-	ring[eventData].address = B_HOST_TO_LENDIAN_INT64(descriptor->trb_addr
-		+ (count - 1) * sizeof(xhci_trb));
-	ring[eventData].status = B_HOST_TO_LENDIAN_INT32(TRB_2_IRQ(0));
-	ring[eventData].flags = B_HOST_TO_LENDIAN_INT32(
-		TRB_3_TYPE(TRB_TYPE_EVENT_DATA) | TRB_3_IOC_BIT | TRB_3_CYCLE_BIT);
-
-	const uint32 next = eventData + 1;
-	ring[next].address = 0;
-	ring[next].status = 0;
-	ring[next].flags = 0;
-
-	if (wrapLink >= 0) {
-		ring[wrapLink].address = B_HOST_TO_LENDIAN_INT64(endpoint->trb_addr);
-		ring[wrapLink].status = B_HOST_TO_LENDIAN_INT32(TRB_2_IRQ(0));
-		ring[wrapLink].flags
-			= B_HOST_TO_LENDIAN_INT32(TRB_3_TYPE(TRB_TYPE_LINK));
-	}
-
-	descriptor->ring_start = start;
-	endpoint->used++;
-	endpoint->td_list.Add(descriptor);
-
-	memory_write_barrier();
-
-	// Everything is ready: make valid the first TRB the controller will read.
-	const uint32 first = wrapLink >= 0 ? (uint32)wrapLink : start;
-	ring[first].flags |= B_HOST_TO_LENDIAN_INT32(TRB_3_CYCLE_BIT);
-
-	endpoint->next = next;
-	endpointLocker.Unlock();
-
-	Ring(endpoint->device->slot, endpoint->id + 1);
-	return B_OK;
-}
-
-
 status_t
 XHCI::_UnlinkDescriptorForPipe(xhci_td *descriptor, xhci_endpoint *endpoint)
 {
@@ -2977,24 +2850,9 @@ XHCI::HandleTransferComplete(xhci_trb* trb)
 		// The "source" address points to a TRB on the ring.
 		// See if we can figure out what it really corresponds to.
 		const int64 offset = (source - endpoint->trb_addr) / sizeof(xhci_trb);
-		const int32 type = TRB_3_TYPE_GET(
-			B_LENDIAN_TO_HOST_INT32(endpoint->trbs[offset].flags));
+		const int32 type = TRB_3_TYPE_GET(endpoint->trbs[offset].flags);
 		if (type == TRB_TYPE_EVENT_DATA || type == TRB_TYPE_LINK)
 			source = B_LENDIAN_TO_HOST_INT64(endpoint->trbs[offset].address);
-		else {
-			// A TRB of a transfer put on the ring itself (see
-			// _LinkControlOnRing()), reported on its own - an error, or the
-			// endpoint being stopped: stand in the TD's copy of it.
-			for (xhci_td *td = endpoint->td_list.Head(); td != NULL;
-					td = endpoint->td_list.GetNext(td)) {
-				if (td->ring_start >= 0 && offset >= td->ring_start
-					&& offset < td->ring_start + (int64)td->trb_used) {
-					source = td->trb_addr
-						+ (offset - td->ring_start) * sizeof(xhci_trb);
-					break;
-				}
-			}
-		}
 	}
 
 	for (xhci_td *td = endpoint->td_list.Head(); td != NULL; td = endpoint->td_list.GetNext(td)) {

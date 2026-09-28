@@ -81,24 +81,6 @@
 #define WMT_POLL_GAP			500		/* microseconds */
 #define WMT_TIMEOUT			10000000	/* ten seconds */
 
-/* Every control transfer to the MT7922 on the X399 takes 3 ms, and a read
- * made before the radio has taken in the last piece comes back empty after
- * those 3 ms. Asking too soon is what made a download take 21 s. So a download
- * waits before its first read, and learns how long: longer each time a piece
- * still needed a second read, a little shorter each time one read did.
- */
-#define WMT_PACE_UP			250		/* microseconds */
-#define WMT_PACE_DOWN			50
-#define WMT_PACE_MAX			4000
-	/* Past this, waiting is not what the radio needs: stop waiting. */
-
-struct wmt_pacing {
-	bigtime_t	wait;		/* before the first read, in microseconds */
-	bool		off;
-	uint32		commands;
-	uint32		reads;
-};
-
 #define MAX_FIRMWARE_SIZE		(4 * 1024 * 1024)
 #define MAX_SECTIONS			16
 
@@ -192,12 +174,10 @@ send_wmt(bt_usb_dev* bdev, uint8 op, uint8 flag, const uint8* data,
  * which it does while it is finishing a section.
  */
 static status_t
-read_wmt(bt_usb_dev* bdev, uint8 expectedOp, uint8* outFlag,
-	uint32* _reads = NULL)
+read_wmt(bt_usb_dev* bdev, uint8 expectedOp, uint8* outFlag)
 {
 	uint8 buffer[WMT_REPLY_MAX];
 	bigtime_t deadline = system_time() + WMT_TIMEOUT;
-	uint32 reads = 0;
 
 	while (system_time() < deadline) {
 		size_t actual = 0;
@@ -206,9 +186,6 @@ read_wmt(bt_usb_dev* bdev, uint8 expectedOp, uint8* outFlag,
 		status_t status = usb->send_request(bdev->dev, USB_VENDOR_IN,
 			MTK_WMT_READ, MTK_WMT_READ_VALUE, 0, sizeof(buffer), buffer,
 			&actual);
-		reads++;
-		if (_reads != NULL)
-			*_reads = reads;
 		if (status != B_OK)
 			return status;
 
@@ -244,43 +221,13 @@ do_wmt(bt_usb_dev* bdev, uint8 op, uint8 flag, const uint8* data,
 }
 
 
-/* do_wmt() for the pieces of a download: see struct wmt_pacing. */
-static status_t
-do_wmt_paced(bt_usb_dev* bdev, uint8 op, uint8 flag, const uint8* data,
-	size_t dataLength, uint8* outFlag, wmt_pacing* pacing)
-{
-	status_t status = send_wmt(bdev, op, flag, data, dataLength);
-	if (status != B_OK)
-		return status;
-
-	if (!pacing->off && pacing->wait > 0)
-		snooze(pacing->wait);
-
-	uint32 reads = 0;
-	status = read_wmt(bdev, op, outFlag, &reads);
-	pacing->commands++;
-	pacing->reads += reads;
-	if (pacing->off)
-		return status;
-	if (reads > 1) {
-		pacing->wait += WMT_PACE_UP;
-		if (pacing->wait > WMT_PACE_MAX) {
-			pacing->off = true;
-			pacing->wait = 0;
-		}
-	} else if (pacing->wait >= WMT_PACE_DOWN)
-		pacing->wait -= WMT_PACE_DOWN;
-	return status;
-}
-
-
 /* Offer one section to the radio. It may answer that it already holds this
  * one, and then its contents are not sent at all - which is what makes coming
  * back to an already running radio cheap.
  */
 static status_t
 download_section(bt_usb_dev* bdev, const uint8* image, size_t imageSize,
-	uint32 index, wmt_pacing* pacing)
+	uint32 index)
 {
 	size_t mapOffset = PATCH_HEADER_SIZE + GLOBAL_DESC_SIZE
 		+ index * SECTION_MAP_SIZE;
@@ -358,8 +305,8 @@ download_section(bt_usb_dev* bdev, const uint8* image, size_t imageSize,
 			chunkFlag = 2;
 
 		uint8 answer = 0;
-		status_t status = do_wmt_paced(bdev, WMT_PATCH_DOWNLOAD, chunkFlag,
-			data, length, &answer, pacing);
+		status_t status = do_wmt(bdev, WMT_PATCH_DOWNLOAD, chunkFlag, data,
+			length, &answer);
 		if (status != B_OK) {
 			ERROR("%s: sending section %" B_PRIu32 ": %s\n", __func__, index,
 				strerror(status));
@@ -555,10 +502,9 @@ mediatek_setup(bt_usb_dev* bdev)
 		" sections\n", __func__, chipId & 0xffff, imageHardware, sectionCount);
 
 	bigtime_t started = system_time();
-	wmt_pacing pacing = { 0, false, 0, 0 };
 
 	for (uint32 i = 0; i < sectionCount; i++) {
-		status = download_section(bdev, image, imageSize, i, &pacing);
+		status = download_section(bdev, image, imageSize, i);
 		if (status != B_OK) {
 			free(image);
 			return status;
@@ -588,11 +534,8 @@ mediatek_setup(bt_usb_dev* bdev)
 		return status;
 	}
 
-	ERROR("%s: MT%04" B_PRIx32 " ready in %" B_PRIdBIGTIME " ms (%" B_PRIu32
-		" pieces, %" B_PRIu32 " reads, %s %" B_PRIdBIGTIME " us before"
-		" the first)\n", __func__, chipId & 0xffff,
-		(system_time() - started) / 1000, pacing.commands, pacing.reads,
-		pacing.off ? "gave up waiting" : "waiting", pacing.wait);
+	ERROR("%s: MT%04" B_PRIx32 " ready in %" B_PRIdBIGTIME " ms\n", __func__,
+		chipId & 0xffff, (system_time() - started) / 1000);
 
 	return B_OK;
 }
