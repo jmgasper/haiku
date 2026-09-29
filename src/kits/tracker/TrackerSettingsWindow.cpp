@@ -40,6 +40,7 @@ All rights reserved.
 #include <Locale.h>
 #include <ScrollView.h>
 
+#include "NetworkSharesSettings.h"
 #include "TrackerSettings.h"
 #include "TrackerSettingsWindow.h"
 
@@ -122,6 +123,9 @@ TrackerSettingsWindow::TrackerSettingsWindow()
 	fSettingsTypeListView->AddItem(new SettingsItem(
 		B_TRANSLATE("Disk mount"), new AutomountSettingsPanel()),
 		kAutomountSettings);
+	fSettingsTypeListView->AddItem(new SettingsItem(
+		B_TRANSLATE("Network shares"), new NetworkSharesSettingsView()),
+		kNetworkSharesSettings);
 
 	// constraint the listview width so that the longest item fits
 	float width = 0;

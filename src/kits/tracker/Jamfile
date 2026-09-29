@@ -59,6 +59,7 @@ for architectureObject in [ MultiArchSubDirSetup ] {
 			MountMenu.cpp
 			Navigator.cpp
 			NavMenu.cpp
+			NetworkSharesSettings.cpp
 			NodePreloader.cpp
 			NodeWalker.cpp
 			OpenWithWindow.cpp
@@ -133,6 +134,7 @@ DoCatalogs libtracker.so :
 	Model.cpp
 	MountMenu.cpp
 	NavMenu.cpp
+	NetworkSharesSettings.cpp
 	OpenWithWindow.cpp
 	PoseView.cpp
 	QueryContainerWindow.cpp

@@ -58,7 +58,8 @@ public:
 		kDesktopSettings,
 		kWindowsSettings,
 		kSpaceBarSettings,
-		kAutomountSettings
+		kAutomountSettings,
+		kNetworkSharesSettings
 	};
 
 	void ShowPage(SettingsPage page);
