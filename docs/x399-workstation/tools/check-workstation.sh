@@ -97,7 +97,10 @@ $SSH 'set -u
 		|| say no "the desktop is the monitors" "desktop $desk, monitors $union"
 
 	# The accelerant writes what it programmed when a layout is applied.
-	lay=$(grep -a "nvidia_rm: layout:" /var/log/syslog | tail -1 | sed "s/.*layout: //")
+	# It does so once, when the desktop starts, and the syslog is put aside
+	# when it is full: look in the one before as well.
+	lay=$(cat /var/log/syslog.1 /var/log/syslog 2>/dev/null \
+		| grep -a "nvidia_rm: layout:" | tail -1 | sed "s/.*layout: //")
 	[ -n "$lay" ] && say ok "the card was given a layout" "$lay" \
 		|| say no "the card was given a layout" "nothing in the syslog"
 
@@ -140,6 +143,43 @@ $SSH 'set -u
 		| sed -n "s/^adapter [0-9-]*: //p" | head -1)
 	[ -n "$addr" ] && say ok "the stack can reach the adapter" "$addr" \
 		|| say no "the stack can reach the adapter" "no answer"
+
+	echo "network shares"
+	# The add-on is in a package of its own, and so is what it runs in.
+	[ -e /system/add-ons/userlandfs/smbfs ] \
+		&& [ -e /system/servers/userlandfs_server ] \
+		&& say ok "the file system for shares is installed" "" \
+		|| say no "the file system for shares is installed" \
+			"smbfs or userland_fs is missing"
+
+	# The mount server has the list. A share that is to be there when the
+	# system starts and is not is what this is about; one that is mounted by
+	# hand is nobody'"'"'s business.
+	shares=$(cd /boot/home/tests && ./sharectl list 2>/dev/null)
+	wanted=$(echo "$shares" | awk -F"\t" "\$3 == \"startup\"" | grep -c .)
+	missing=$(echo "$shares" | awk -F"\t" \
+		"\$3 == \"startup\" && \$4 == \"unmounted\" {print \$1 \": \" \$5}")
+	if [ "$wanted" -eq 0 ]; then
+		say ok "the shares are mounted" "none is set up"
+	elif [ -z "$missing" ]; then
+		say ok "the shares are mounted" \
+			"$(echo "$shares" | awk -F"\t" "\$3 == \"startup\" {printf \"%s \", \$4}")"
+	else
+		say no "the shares are mounted" "$missing"
+	fi
+
+	# Reading only: what is in a share is its owner'"'"'s.
+	echo "$shares" | awk -F"\t" "\$4 != \"unmounted\" {print \$4}" \
+		| while read -r point; do
+			[ -n "$point" ] || continue
+			out=$(cd /boot/home/tests && ./sharetest "$point" --reading 2>&1)
+			echo "$out" | grep -q "^  NO " \
+				&& echo "no|$point|$(echo "$out" | grep "^  NO " | head -1 | cut -c8-47)" \
+				|| echo "ok|$point|$(echo "$out" | grep -o "[0-9]* MiB/s in large pieces")"
+		done > /tmp/check-shares.log
+	while IFS="|" read -r result point detail; do
+		say $result "$point reads as a disk does" "$detail"
+	done < /tmp/check-shares.log
 
 	echo "the rest"
 	usb=$(listusb | grep -c RootHub)

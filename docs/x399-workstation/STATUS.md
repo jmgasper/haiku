@@ -6,7 +6,7 @@ listed as verified is untested.
 `tools/check-workstation.sh` re-checks the machine against all of this in one
 pass, with nothing set in the environment of the programs it runs, because
 several of these have looked fine while being quietly broken. It last came back
-16 working, 0 not.
+22 working, 0 not.
 
 What still needs someone at the machine: a look at the scaled picture on the
 two 4K monitors, a monitor pulled out and plugged back in (the syslog says
@@ -26,9 +26,42 @@ each USB port, the serial console, and a Bluetooth device to pair with.
 | Bluetooth | TP-Link Archer TX55E, working adapter and discovery | verified: the adapter answers as `90:74:ae:33:d7:cb` "MTK MT7922 #1" and an inquiry finds devices nearby, from a cold boot with nothing done by hand. The radio is a MediaTek MT7922 on USB, which runs a bootloader rather than a Bluetooth controller until it is given firmware - it takes the HCI Reset every stack opens with and never answers. The driver now hands it that firmware at open. Three further faults were in the way: `h2generic` took its event endpoint from the last interface that had one, which on this radio is MediaTek's audio interface, so it listened where no reply is ever sent; it stood isochronous transfers on the SCO endpoints at open, which nothing wants until there is a call; and the server never answered a request for a command the controller refuses outright, which hung the first program to ask for an adapter. Remote name lookup still fails, so discovered devices show an address and no name. Pairing and audio profiles are untried |
 | Wi-Fi | TP-Link Archer TX55E | verified: `mt7922wifi` joins WPA2-PSK/CCMP networks and carries traffic. Joining works from the Wi-Fi preferences (the password prompt, Remember this network, Known networks, Disconnect) and the WiFiStatus Deskbar applet lists networks with signal and lock, and shows the one joined. A saved network is joined again by net_server by itself once the card is up (it starts wpa_supplicant). DHCP configures the interface; with the wired card down the machine resolves names, fetches https pages and moves 50 MB each way (1.9 MB/s up, 2.5 MB/s down). Legacy 802.11a/g rates only for now (no HT/VHT/HE), chosen by the firmware's rate control. The driver is the Linux mt7921 layout in FreeBSD net80211 shape: firmware-offloaded scanning, the firmware's own channel management (remain-on-channel), software CCMP through net80211. It attaches at boot like any other driver and is part of the regular x86_64 image; the driver settings (`mt7922wifi`) can keep it out of the boot (`attach_at_boot false`, or `attach_at_boot_until <time>` for trying boot attachment where only the power switch reaches the machine) and turn on its diagnostics (`debug true`) |
 | Video decoding | H.264 on the card's video engine, and something that plays a film | verified: the GTX 1080 Ti has an NVDEC engine and an NVC2B0 decoder class, and thirteen H.264 streams together with 120 frames of 1080p Big Buck Bunny decode byte for byte identically to ffmpeg's own decoder - multiple references, B pictures, spatial and temporal direct prediction, B pictures used as references, weighted prediction and two coded sequences among them. 1080p decodes at 232 pictures a second, 4.3 ms each, about eight times what playing it needs. It is offered to the whole system as a media add-on, so any program that opens a film gets it, and `NVPlay` plays one with sound, stopping, starting and seeking. What it will not do is field pictures, 4:2:2 or more than eight bits a sample, and because Haiku picks one decoder for a format those refusals mean the film will not play rather than falling back |
+| Network shares | a share of a Windows, Samba or NAS server mounted whenever the system starts, set up in Tracker's preferences | verified with the Music share of the NAS (`//192.168.1.102/Music`, 45 TiB, SMB 3.1.1): added under Tracker preferences > Network shares, it is at `/Music` and on the Desktop seconds after a cold boot, with nothing asked and nothing done by hand. The first try comes before there is a network and fails; the mount server tries again, sooner after the network changes, for fifteen minutes. With the wired network pulled the share went on over the wireless one after the twenty seconds a request is given, failed at once with both gone, and worked again when they were back. `tests/sharetest` reads and writes it as a disk (20 of 20, 45 MiB/s reading, 50 writing). The pieces: `smbfs`, a FUSE file system on libsmb2 6.2 (in `src/libs/libsmb2`), in a package of its own next to `userland_fs`; the mount server, which keeps the list in `~/config/settings/network_shares`, the passwords in the key store and does the mounting; Tracker, which has the page and lists the shares in its Mount menu. Not there: Kerberos (NTLM only), SMB1, looking for servers on the network, and attributes - what Tracker wants to remember about a folder in a share it cannot. The key store asks once for each of three things the mount server does with passwords; on this machine that has been answered |
 | Sleep | S3 suspend and resume | sleeps and wakes; the display comes back, but the NVMe and the network card usually do not. Paused until a serial console arrives, which is also what the one untested path in the vertical sync work needs |
 
 ## Log
+
+- 2026-09-29: network shares. The Music share of the NAS is mounted when the
+  machine starts, and set up where one would look for it, in Tracker's
+  preferences.
+  * Haiku had nothing to mount an SMB share with but what HaikuPorts has,
+    fusesmb on Samba's client library, which shows the whole network as one
+    volume, and libsmb2 4.0.0. `smbfs` is new, on libsmb2 6.2, which is in
+    the tree now. It keeps up to three sessions with the server so that a
+    file being played does not hold up a folder being opened, makes a new
+    session when one is lost and opens the files again that were open, and
+    remembers for five seconds what reading a folder told it about the files
+    in it, which is what Tracker asks next, one file at a time.
+  * userlandfs could mount one volume per FUSE file system. The name of a
+    file system can now be followed by the name of an instance
+    (`smbfs:music`), each of which gets a server of its own. And a FUSE file
+    system that fails to mount can say why: what its `main()` returns, if
+    negative, is what `mount` fails with, so that a wrong password is
+    "Permission denied" rather than "General system error".
+  * Found by `tests/sharetest`, and not by looking at folders: writing with
+    O_APPEND went to the start of the file (the FUSE layer leaves it to the
+    file system to find the end); renaming onto a file that exists failed;
+    and removing a folder that is not empty was reported to have worked,
+    because libsmb2 removes by opening with delete-on-close, which the server
+    grants and then does not do. Nothing was deleted that should not have
+    been. smbfs asks for the deletion itself now and gets the answer.
+  * Packages that replace one of their own name and version stay as they
+    were unless the old one is gone first, and `userland_fs` cannot go while
+    `smbfs` needs it - the package daemon asks on the screen, and waits.
+    `tools/deploy-smbfs.sh` does it in the order that works.
+  * `tools/check-workstation.sh` looked for the display layout in the syslog
+    only, and the syslog is put aside when it is full; it reads the one
+    before as well.
 
 - 2026-09-28: the monitor arrangement survives sleep and reboots, sleeping
   monitors wake, and a Bluetooth mouse moved while it connects stays
