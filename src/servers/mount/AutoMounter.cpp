@@ -38,7 +38,10 @@
 #include <String.h>
 #include <VolumeRoster.h>
 
+#include <NetworkNotifications.h>
+
 #include "MountServer.h"
+#include "NetworkShares.h"
 
 #include "Utilities.h"
 
@@ -374,12 +377,19 @@ AutoMounter::AutoMounter()
 	BServer(kMountServerSignature, false, NULL),
 	fNormalMode(kRestorePreviousVolumes),
 	fRemovableMode(kAllVolumes),
-	fEjectWhenUnmounting(true)
+	fEjectWhenUnmounting(true),
+	fNetworkShares(NULL)
 {
 	set_thread_priority(Thread(), B_LOW_PRIORITY);
 
 	if (!BootedInSafeMode()) {
 		_ReadSettings();
+
+		fNetworkShares = new(std::nothrow) NetworkShares;
+		if (fNetworkShares != NULL && fNetworkShares->Init() != B_OK) {
+			delete fNetworkShares;
+			fNetworkShares = NULL;
+		}
 	} else {
 		// defeat automounter in safe mode, don't even care about the settings
 		fNormalMode = kNoVolumes;
@@ -396,6 +406,9 @@ AutoMounter::~AutoMounter()
 {
 	BLaunchRoster().UnregisterEvent(this, kInitialMountEvent);
 	BDiskDeviceRoster().StopWatching(this);
+	stop_watching_network(this);
+
+	delete fNetworkShares;
 }
 
 
@@ -405,13 +418,29 @@ AutoMounter::ReadyToRun()
 	// Do initial scan
 	_MountVolumes(fNormalMode, fRemovableMode, true);
 	BLaunchRoster().NotifyEvent(this, kInitialMountEvent);
+
+	// The shares do not hold up anyone: they are mounted when they can be,
+	// which is not before there is a network.
+	if (fNetworkShares != NULL) {
+		start_watching_network(B_WATCH_NETWORK_INTERFACE_CHANGES
+			| B_WATCH_NETWORK_LINK_CHANGES, this);
+		fNetworkShares->MountAtStartup();
+	}
 }
 
 
 void
 AutoMounter::MessageReceived(BMessage* message)
 {
+	if (fNetworkShares != NULL && fNetworkShares->HandleMessage(message))
+		return;
+
 	switch (message->what) {
+		case B_NETWORK_MONITOR:
+			if (fNetworkShares != NULL)
+				fNetworkShares->NetworkChanged();
+			break;
+
 		case kMountVolume:
 			_MountVolume(message);
 			break;
@@ -773,6 +802,9 @@ AutoMounter::_UnmountAndEjectVolume(BMessage* message)
 		dev_t device;
 		if (message->FindInt32("device_id", &device) != B_OK)
 			return;
+
+		if (fNetworkShares != NULL)
+			fNetworkShares->VolumeUnmounted(device);
 
 		BVolume volume(device);
 		status_t status = volume.InitCheck();
