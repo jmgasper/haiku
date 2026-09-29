@@ -341,13 +341,14 @@ FUSEFileSystem::_InitializationThread()
 	}
 
 	// call main -- should not return until unmounting
-	fMainFunction(args.ArgumentCount(), args.Arguments());
+	int result = fMainFunction(args.ArgumentCount(), args.Arguments());
 printf("FUSEFileSystem::_InitializationThread(): main() returned!\n");
 
 	if (fInitStatus > 0 && fInitSemaphore >= 0) {
 		// something went wrong early -- main() returned without calling
-		// fuse_main()
-		fInitStatus = B_ERROR;
+		// fuse_main(). A file system that knows what did returns that, as
+		// the error it is, and mounting fails with it.
+		fInitStatus = result < 0 ? result : B_ERROR;
 		delete_sem(fInitSemaphore);
 	}
 

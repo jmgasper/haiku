@@ -310,7 +310,14 @@ FileSystem::Init(const char* name, team_id team, Port::Info* infos, int32 count,
 	// load the settings
 	fSettings = new(nothrow) Settings;
 	if (fSettings) {
-		status_t settingsError = fSettings->SetTo(fName.GetString());
+		// they are the file system's, whichever instance of it this is
+		// ("smbfs:music")
+		char fsName[B_FILE_NAME_LENGTH];
+		strlcpy(fsName, fName.GetString(), sizeof(fsName));
+		if (char* instanceSeparator = strchr(fsName, ':'))
+			*instanceSeparator = '\0';
+
+		status_t settingsError = fSettings->SetTo(fsName);
 		if (settingsError != B_OK) {
 			PRINT(("Failed to load settings: %s\n", strerror(settingsError)));
 			delete fSettings;
