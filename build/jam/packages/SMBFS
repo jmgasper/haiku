@@ -1,0 +1,10 @@
+# smbfs mounts the shares of SMB2 and SMB3 servers. It is an add-on for
+# userlandfs (userland_fs.hpkg) built on libsmb2, which it has inside.
+
+local smbfsPackage = smbfs.hpkg ;
+HaikuPackage $(smbfsPackage) ;
+
+# userlandfs module
+AddFilesToPackage add-ons userlandfs : smbfs ;
+
+BuildHaikuPackage $(smbfsPackage) : smbfs ;
