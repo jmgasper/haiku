@@ -79,10 +79,12 @@ __RCSID("$NetBSD: nsdispatch.c,v 1.37 2012/03/13 21:13:42 christos Exp $");
 #define _NS_PRIVATE
 #include <nsswitch.h>
 #include <pthread.h>
+#include <setjmp.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <syslog.h>
 #include <unistd.h>
 
 #include <libutil.h>
@@ -494,16 +496,44 @@ _nsdbtput(const ns_dbt *dbt)
 
 #ifdef __HAIKU__
 
+static char sConfFilePath[B_PATH_NAME_LENGTH];
+static pthread_once_t sConfFilePathOnce = PTHREAD_ONCE_INIT;
+
+static void
+init_conf_file_path(void)
+{
+	char path[B_PATH_NAME_LENGTH];
+	if (find_directory(B_SYSTEM_SETTINGS_DIRECTORY, 0, false, path,
+			sizeof(path)) != B_OK) {
+		strlcpy(path, "/boot/system/settings", sizeof(path));
+	}
+	strlcat(path, "/network/nsswitch.conf", sizeof(path));
+	strlcpy(sConfFilePath, path, sizeof(sConfFilePath));
+}
+
+/*
+ * The path is put together once. It used to be on every call, in a buffer
+ * all threads share, and _nsconfigure() asks for it before it has its lock:
+ * a thread could find the buffer at "/boot/system/settings", where another
+ * was half way through, open the directory for the file, and have the
+ * scanner end the team over not being able to read it.
+ */
 char *
 nsswitch_conf_file_path(void)
 {
-	static char path[256];
-	find_directory(B_SYSTEM_SETTINGS_DIRECTORY, 0, false, path, sizeof(path));
-	strlcat(path, "/network/nsswitch.conf", sizeof(path));
-	return path;
+	pthread_once(&sConfFilePathOnce, init_conf_file_path);
+	return sConfFilePath;
 }
 
 #endif
+
+/*
+ * Where the scanner goes when it cannot go on, instead of exit(). Only used
+ * with _nsconflock held.
+ */
+jmp_buf _nsyyfatal_jump;
+
+extern void _nsyyrestart(FILE *);
 
 /*
  * This function is called each time nsdispatch() is called.  If this
@@ -523,7 +553,7 @@ _nsconfigure(void)
 
 	pthread_mutex_lock(&_nsconflock);
 
-	if (stat(path, &statbuf) == -1) {
+	if (stat(path, &statbuf) == -1 || !S_ISREG(statbuf.st_mode)) {
 		/*
 		 * No nsswitch.conf; just use whatever configuration we
 		 * currently have, or fall back on the defaults specified
@@ -568,7 +598,19 @@ _nsconfigure(void)
 
 	_nsloadbuiltin();
 
-	_nsyyparse();
+	/*
+	 * The scanner keeps reading what it read last unless told otherwise,
+	 * which is a file that has been closed since. And what it cannot
+	 * read is no reason for the program to end: the configuration is what
+	 * was built in, then.
+	 */
+	if (setjmp(_nsyyfatal_jump) == 0) {
+		_nsyyrestart(_nsyyin);
+		_nsyyparse();
+	} else {
+		syslog(LOG_WARNING, "libc nsdispatch: %s could not be read",
+		    path);
+	}
 	(void) fclose(_nsyyin);
 	if (_nsmapsize != 0)
 		qsort(_nsmap, _nsmapsize, sizeof(*_nsmap), _nsdbtcmp);
