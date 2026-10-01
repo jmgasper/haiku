@@ -31,6 +31,31 @@ each USB port, the serial console, and a Bluetooth device to pair with.
 
 ## Log
 
+- 2026-10-01: scaled screenshots no longer read the desktop back from GPU
+  memory. airShot issue #1 was a roughly four-second wait in
+  `BScreen::GetBitmap`, before its region selector could appear. At 200%
+  density, `DrawingEngine::ReadBitmap` copied the 7680x2160 front buffer
+  before averaging it into the logical 3840x1080 screenshot. Direct windows
+  are disconnected at that density, so the drawing buffer in RAM already
+  contains the complete desktop. Read it instead; keep reading the front
+  buffer at native density so direct-window pixels are still captured.
+  * On the GTX 1070 with both Dell P2415Q displays at 200%, six captures
+    alternating cursor inclusion fell from 3561–3719 ms to 231–476 ms
+    (cursor exclusion includes airShot's 150 ms hide delay). The region
+    overlay appeared 665 ms after the request, including its 250 ms settle
+    delay. `tests/CaptureTiming.cpp` in the airShot repository reproduces
+    the old failure and passes a 1000 ms limit with this server.
+  * Cropped readbacks at a nonzero origin retained every expected RGB pixel,
+    with and without cursor inclusion. The patched server also booted in an
+    isolated QEMU snapshot at 100% density; cropped pixels, six timing checks
+    and an airShot region-to-editor capture passed there.
+  * Deployed by replacing only `servers/app_server` in the installed system
+    package. The previous package is retained under
+    `/boot/home/x399-backup/haiku-before-airshot-issue1-20261001-151457.hpkg`.
+    A warm restart did not return; the documented NanoKVM cold power cycle
+    brought the workstation back with the expected server SHA-256
+    `25b954f22ba732d618ab8781dfe2240035462fdbf0e1e93732a5b8adc7921c24`.
+
 - 2026-09-29: network shares. The Music share of the NAS is mounted when the
   machine starts, and set up where one would look for it, in Tracker's
   preferences.
