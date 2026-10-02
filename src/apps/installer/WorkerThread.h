@@ -37,7 +37,8 @@ public:
 									{ fCancelSemaphore = cancelSemaphore; }
 
 			void				StartInstall(partition_id sourcePartitionID,
-									partition_id targetPartitionID);
+									partition_id targetPartitionID,
+									bool wholeDisk = false);
 			void				WriteBootSector(BMenu* dstMenu);
 
 private:
@@ -45,7 +46,16 @@ private:
 			status_t			_LaunchFinishScript(BPath& path);
 
 			status_t			_PerformInstall(partition_id sourcePartitionID,
-									partition_id targetPartitionID);
+									partition_id targetPartitionID,
+									bool wholeDisk);
+			status_t			_PrepareWholeDisk(partition_id diskID,
+									partition_id& _bootID,
+									partition_id& _espID);
+			status_t			_InitializePartition(partition_id diskID,
+									partition_id partitionID,
+									const char* diskSystem, const char* name,
+									const char* parameters);
+			status_t			_InstallEFILoader(partition_id espID);
 			status_t			_PrepareCleanInstall(
 									const BPath& targetDirectory) const;
 			status_t			_InstallationError(status_t error);

@@ -377,25 +377,19 @@ BootPromptWindow::_UpdateStrings()
 	BString desktopTextHaiku = B_TRANSLATE("Try Haiku");
 	BString installTextHaiku = B_TRANSLATE("Install Haiku");
 
-	BString titleTextDebranded = B_TRANSLATE("Welcome!");
+	// air/OS is not an official Haiku build, so it names itself here.
+	BString titleTextDebranded = B_TRANSLATE("Welcome to air/OS!");
 	BString mainTextDebranded = B_TRANSLATE_COMMENT(
-			"Thank you for trying out our operating system! We hope you'll "
-			"like it!\n\n"
+			"Thank you for trying out air/OS! We hope you'll like it!\n\n"
 			"Please select your preferred language and keymap. Both settings "
 			"can also be changed later.\n\n"
 
-			"Do you wish to install the operating system now, or try it out "
-			"first?",
+			"Do you wish to install air/OS now, or try it out first?",
 
-			"This notice appears when the build of Haiku that's currently "
-			"being used is unofficial, as in, not distributed by Haiku itself."
-			"For other languages, a note could be added: \""
-			"Note: Localization of Haiku applications and other components is "
-			"an on-going effort. You will frequently encounter untranslated "
-			"strings, but if you like, you can join in the work at "
-			"<www.haiku-os.org>.\"");
-	BString desktopTextDebranded = B_TRANSLATE("Try it out");
-	BString installTextDebranded = B_TRANSLATE("Install");
+			"This notice appears in air/OS, a distribution based on Haiku "
+			"that is not distributed by Haiku itself.");
+	BString desktopTextDebranded = B_TRANSLATE("Try air/OS");
+	BString installTextDebranded = B_TRANSLATE("Install air/OS");
 
 #ifdef HAIKU_DISTRO_COMPATIBILITY_OFFICIAL
 	SetTitle(titleTextHaiku);

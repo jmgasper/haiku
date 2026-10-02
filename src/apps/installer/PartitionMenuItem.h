@@ -28,11 +28,15 @@ public:
 			void				SetIsValidTarget(bool isValidTarget);
 			bool				IsValidTarget() const;
 
+			void				SetIsWholeDisk(bool isWholeDisk);
+			bool				IsWholeDisk() const;
+
 private:
 			partition_id		fID;
 			char*				fMenuLabel;
 			char*				fName;
 			bool				fIsValidTarget;
+			bool				fIsWholeDisk;
 };
 
 #endif // PARTITION_MENU_ITEM_H_

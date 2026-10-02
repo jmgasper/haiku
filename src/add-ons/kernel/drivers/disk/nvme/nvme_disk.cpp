@@ -1167,6 +1167,21 @@ nvme_disk_ioctl(void* cookie, uint32 op, void* buffer, size_t length)
 			return user_memcpy(buffer, &geometry, length);
 		}
 
+		case B_GET_DEVICE_NAME:
+		{
+			// the controller's model number, padded with spaces
+			const int8_t* model = info->ctrlr->cdata.mn;
+			size_t modelLength = NVME_MODEL_NUMBER_CHARACTERS;
+			while (modelLength > 0 && (model[modelLength - 1] == ' '
+					|| model[modelLength - 1] == '\0'))
+				modelLength--;
+			char name[NVME_MODEL_NUMBER_CHARACTERS + 1];
+			memcpy(name, model, modelLength);
+			name[modelLength] = '\0';
+			status_t status = user_strlcpy((char*)buffer, name, length);
+			return status < B_OK ? status : B_OK;
+		}
+
 		case B_GET_ICON_NAME:
 			return user_strlcpy((char*)buffer, "devices/drive-harddisk",
 				B_FILE_NAME_LENGTH);

@@ -7,7 +7,9 @@
 #include "WorkerThread.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
+#include <unistd.h>
 
 #include <set>
 #include <string>
@@ -19,14 +21,19 @@
 #include <Directory.h>
 #include <DiskDeviceVisitor.h>
 #include <DiskDeviceTypes.h>
+#include <Drivers.h>
+#include <File.h>
 #include <FindDirectory.h>
 #include <fs_index.h>
+#include <fs_volume.h>
 #include <Locale.h>
 #include <Menu.h>
 #include <MenuItem.h>
 #include <Message.h>
 #include <Messenger.h>
+#include <PartitioningInfo.h>
 #include <Path.h>
+#include <SeparatorItem.h>
 #include <String.h>
 #include <VolumeRoster.h>
 
@@ -187,7 +194,8 @@ WorkerThread::MessageReceived(BMessage* message)
 	switch (message->what) {
 		case MSG_START_INSTALLING:
 			_PerformInstall(message->GetInt32("source", -1),
-				message->GetInt32("target", -1));
+				message->GetInt32("target", -1),
+				message->GetBool("whole disk", false));
 			break;
 
 		case MSG_WRITE_BOOT_SECTOR:
@@ -345,6 +353,61 @@ WorkerThread::InstallEFILoader(partition_id id, bool rename)
 }
 
 
+/*!	What to call a disk: the name its driver reports, or else the kind of
+	disk it is, from the bus in its path.
+*/
+static BString
+disk_model_name(const char* path)
+{
+	char name[B_FILE_NAME_LENGTH] = "";
+	int fd = open(path, O_RDONLY);
+	if (fd >= 0) {
+		if (ioctl(fd, B_GET_DEVICE_NAME, name, sizeof(name)) != 0)
+			name[0] = '\0';
+		close(fd);
+	}
+	BString model(name);
+	model.Trim();
+	if (!model.IsEmpty())
+		return model;
+
+	BString bus(path);
+	bus.RemoveFirst("/dev/disk/");
+	int32 slash = bus.FindFirst('/');
+	if (slash >= 0)
+		bus.Truncate(slash);
+	if (bus == "nvme")
+		return B_TRANSLATE("NVMe disk");
+	if (bus == "mmc")
+		return B_TRANSLATE_COMMENT("MMC disk", "An eMMC chip or an SD card");
+	if (bus == "usb")
+		return B_TRANSLATE("USB disk");
+	if (bus == "virtual")
+		return B_TRANSLATE("Virtual disk");
+	return B_TRANSLATE("Disk");
+}
+
+
+/*!	Lists the names of the volumes on a disk, so that the user can tell the
+	disks apart before choosing one to erase.
+*/
+static void
+append_volume_names(BPartition* partition, BString& names, int32& count)
+{
+	if (partition->ContainsFileSystem() && partition->ContentName().Length() > 0) {
+		if (count < 3) {
+			if (count > 0)
+				names << ", ";
+			names << partition->ContentName();
+		} else if (count == 3)
+			names << ", " B_UTF8_ELLIPSIS;
+		count++;
+	}
+	for (int32 i = 0; BPartition* child = partition->ChildAt(i); i++)
+		append_volume_names(child, names, count);
+}
+
+
 void
 WorkerThread::ScanDisksPartitions(BMenu *srcMenu, BMenu *targetMenu, BMenu* EFIMenu)
 {
@@ -355,15 +418,102 @@ WorkerThread::ScanDisksPartitions(BMenu *srcMenu, BMenu *targetMenu, BMenu* EFIM
 	SourceVisitor srcVisitor(srcMenu);
 	fDDRoster.VisitEachMountedPartition(&srcVisitor, &device, &partition);
 
-	TargetVisitor targetVisitor(targetMenu);
-	fDDRoster.VisitEachPartition(&targetVisitor, &device, &partition);
-
 	BDiskDevice bootDevice;
 	BPartition* bootPartition;
 	partition_id bootId = -1;
-	if (fDDRoster.FindPartitionByMountPoint(BOOT_PATH, &bootDevice, &bootPartition) == B_OK
-		&& bootPartition->Parent() != NULL)
-		bootId = bootPartition->Parent()->ID();
+	partition_id bootDiskId = -1;
+	if (fDDRoster.FindPartitionByMountPoint(BOOT_PATH, &bootDevice,
+			&bootPartition) == B_OK) {
+		bootDiskId = bootDevice.ID();
+		if (bootPartition->Parent() != NULL)
+			bootId = bootPartition->Parent()->ID();
+	}
+
+	// Whole disks come first: installing onto one needs nothing prepared.
+	// The disk must hold what is on the boot volume, the EFI system
+	// partition, and some room to spare.
+	off_t requiredSize = 2LL * 1024 * 1024 * 1024;
+	BVolume bootVolume;
+	if (BVolumeRoster().GetBootVolume(&bootVolume) == B_OK) {
+		off_t used = bootVolume.Capacity() - bootVolume.FreeBytes();
+		off_t needed = used + kEFISystemPartitionSize + 512LL * 1024 * 1024;
+		if (used > 0 && needed > requiredSize)
+			requiredSize = needed;
+	}
+
+	int32 diskCount = 0;
+	BDiskDevice disk;
+	fDDRoster.RewindDevices();
+	while (fDDRoster.GetNextDevice(&disk) == B_OK) {
+		if (disk.IsReadOnlyMedia() || !disk.HasMedia() || disk.Size() <= 0)
+			continue;
+
+		BPath path;
+		disk.GetPath(&path);
+		BString model = disk_model_name(path.Path());
+		char size[20];
+		string_for_size(disk.Size(), size, sizeof(size));
+
+		const char* reason = NULL;
+		if (disk.ID() == bootDiskId)
+			reason = B_TRANSLATE("the disk this system runs from");
+		else if (disk.IsReadOnly())
+			reason = B_TRANSLATE("read-only");
+		else if (disk.Size() < requiredSize)
+			reason = B_TRANSLATE("too small");
+
+		BString label;
+		label.SetToFormat("%s - %s [%s]", model.String(), size, path.Path());
+		BString volumes;
+		int32 volumeCount = 0;
+		append_volume_names(&disk, volumes, volumeCount);
+		if (!volumes.IsEmpty())
+			label << " - " << volumes;
+		if (reason != NULL)
+			label << " (" << reason << ")";
+
+		BString menuLabel;
+		menuLabel.SetToFormat(B_TRANSLATE("Whole disk: %s - %s"),
+			model.String(), size);
+		BString name;
+		name.SetToFormat("%s (%s)", model.String(), size);
+
+		if (diskCount++ == 0) {
+			BMenuItem* header = new BMenuItem(B_TRANSLATE(
+				"Erase a whole disk and set it up for UEFI:"), NULL);
+			header->SetEnabled(false);
+			targetMenu->AddItem(header);
+		}
+		PartitionMenuItem* item = new PartitionMenuItem(name.String(),
+			label.String(), menuLabel.String(),
+			new BMessage(TARGET_PARTITION), disk.ID());
+		item->SetIsWholeDisk(true);
+		item->SetIsValidTarget(reason == NULL);
+		targetMenu->AddItem(item);
+	}
+
+	BMenuItem* separator = NULL;
+	BMenuItem* partitionsHeader = NULL;
+	if (diskCount > 0) {
+		separator = new BSeparatorItem();
+		targetMenu->AddItem(separator);
+		partitionsHeader = new BMenuItem(B_TRANSLATE(
+			"Install onto an existing partition:"), NULL);
+		partitionsHeader->SetEnabled(false);
+		targetMenu->AddItem(partitionsHeader);
+	}
+	int32 itemCount = targetMenu->CountItems();
+
+	TargetVisitor targetVisitor(targetMenu);
+	fDDRoster.VisitEachPartition(&targetVisitor, &device, &partition);
+
+	if (partitionsHeader != NULL && targetMenu->CountItems() == itemCount) {
+		// no partitions to offer
+		targetMenu->RemoveItem(partitionsHeader);
+		targetMenu->RemoveItem(separator);
+		delete partitionsHeader;
+		delete separator;
+	}
 
 	EFIVisitor EFIVisitor(EFIMenu, bootId);
 	fDDRoster.VisitEachPartition(&EFIVisitor, &device, &partition);
@@ -383,12 +533,13 @@ WorkerThread::SetPackagesList(BList *list)
 
 void
 WorkerThread::StartInstall(partition_id sourcePartitionID,
-	partition_id targetPartitionID)
+	partition_id targetPartitionID, bool wholeDisk)
 {
 	// Executed in window thread.
 	BMessage message(MSG_START_INSTALLING);
 	message.AddInt32("source", sourcePartitionID);
 	message.AddInt32("target", targetPartitionID);
+	message.AddBool("whole disk", wholeDisk);
 
 	PostMessage(&message, this);
 }
@@ -400,8 +551,9 @@ WorkerThread::WriteBootSector(BMenu* targetMenu)
 	// Executed in window thread.
 	CALLED();
 
-	PartitionMenuItem* item = (PartitionMenuItem*)targetMenu->FindMarked();
-	if (item == NULL) {
+	PartitionMenuItem* item
+		= dynamic_cast<PartitionMenuItem*>(targetMenu->FindMarked());
+	if (item == NULL || item->IsWholeDisk()) {
 		ERR("bad menu items\n");
 		return;
 	}
@@ -457,7 +609,7 @@ WorkerThread::_LaunchFinishScript(BPath &path)
 
 status_t
 WorkerThread::_PerformInstall(partition_id sourcePartitionID,
-	partition_id targetPartitionID)
+	partition_id targetPartitionID, bool wholeDisk)
 {
 	CALLED();
 
@@ -478,6 +630,15 @@ WorkerThread::_PerformInstall(partition_id sourcePartitionID,
 	if (sourcePartitionID < 0 || targetPartitionID < 0) {
 		ERR("bad source or target partition ID\n");
 		return _InstallationError(err);
+	}
+
+	// A whole disk is erased and partitioned first; the installation then
+	// goes to its new BFS partition. The user has already confirmed this.
+	partition_id espID = -1;
+	if (wholeDisk) {
+		err = _PrepareWholeDisk(targetPartitionID, targetPartitionID, espID);
+		if (err != B_OK)
+			return _InstallationError(err);
 	}
 
 	// check if target is initialized
@@ -704,11 +865,309 @@ WorkerThread::_PerformInstall(partition_id sourcePartitionID,
 	if (err != B_OK)
 		return _InstallationError(err);
 
+	if (wholeDisk) {
+		err = _InstallEFILoader(espID);
+		if (err != B_OK)
+			return _InstallationError(err);
+	}
+
 	err = _LaunchFinishScript(targetDirectory);
 	if (err != B_OK)
 		return _InstallationError(err);
 
 	fOwner.SendMessage(MSG_INSTALL_FINISHED);
+	return B_OK;
+}
+
+
+static status_t
+unmount_all(BPartition* partition)
+{
+	for (int32 i = 0; BPartition* child = partition->ChildAt(i); i++) {
+		status_t status = unmount_all(child);
+		if (status != B_OK)
+			return status;
+	}
+
+	if (!partition->IsMounted())
+		return B_OK;
+
+	// The user agreed to erase the disk, so a volume that is still in use
+	// (a Tracker window on it, say) is unmounted anyway.
+	status_t status = partition->Unmount();
+	if (status != B_OK)
+		status = partition->Unmount(B_FORCE_UNMOUNT);
+	return status;
+}
+
+
+static off_t
+align_up(off_t value, off_t alignment)
+{
+	return (value + alignment - 1) / alignment * alignment;
+}
+
+
+static off_t
+align_down(off_t value, off_t alignment)
+{
+	return value / alignment * alignment;
+}
+
+
+/*!	Erases the disk \a diskID and sets it up to start with UEFI: a GUID
+	partition map, an EFI system partition formatted with FAT32, and the rest
+	of the disk as one BFS partition, which is left mounted. Each step is
+	committed on its own, as DriveSetup does.
+*/
+status_t
+WorkerThread::_PrepareWholeDisk(partition_id diskID, partition_id& _bootID,
+	partition_id& _espID)
+{
+	static const off_t kAlignment = 1024 * 1024;
+
+	BDiskDevice device;
+	status_t status = fDDRoster.GetDeviceWithID(diskID, &device);
+	if (status != B_OK)
+		return status;
+	if (device.IsReadOnly())
+		return B_READ_ONLY_DEVICE;
+
+	_SetStatusMessage(B_TRANSLATE("Erasing the disk" B_UTF8_ELLIPSIS));
+
+	status = unmount_all(&device);
+	if (status != B_OK) {
+		_SetStatusMessage(B_TRANSLATE("A volume on the disk could not be "
+			"unmounted. Close the applications that use it and try again."));
+		return status;
+	}
+
+	// replace whatever is on the disk with an empty GUID partition map
+	status = device.PrepareModifications();
+	if (status != B_OK)
+		return status;
+	if (device.ContentType() != NULL)
+		device.Uninitialize();
+	status = device.ValidateInitialize(kPartitionTypeEFI, NULL, NULL);
+	if (status == B_OK)
+		status = device.Initialize(kPartitionTypeEFI, NULL, NULL);
+	if (status == B_OK)
+		status = device.CommitModifications();
+	else
+		device.CancelModifications();
+	if (status != B_OK) {
+		printf("Installer: writing a GUID partition map failed: %s\n",
+			strerror(status));
+		return status;
+	}
+
+	_SetStatusMessage(B_TRANSLATE("Creating the partitions" B_UTF8_ELLIPSIS));
+
+	status = fDDRoster.GetDeviceWithID(diskID, &device);
+	if (status != B_OK)
+		return status;
+	status = device.PrepareModifications();
+	if (status != B_OK)
+		return status;
+
+	BPartitioningInfo info;
+	status = device.GetPartitioningInfo(&info);
+	off_t spaceOffset = 0;
+	off_t spaceSize = 0;
+	for (int32 i = 0; status == B_OK && i < info.CountPartitionableSpaces();
+			i++) {
+		off_t offset;
+		off_t size;
+		if (info.GetPartitionableSpaceAt(i, &offset, &size) == B_OK
+			&& size > spaceSize) {
+			spaceOffset = offset;
+			spaceSize = size;
+		}
+	}
+	off_t start = align_up(spaceOffset, kAlignment);
+	off_t end = align_down(spaceOffset + spaceSize, kAlignment);
+	if (status == B_OK && end - start < 2 * kEFISystemPartitionSize)
+		status = B_DEVICE_FULL;
+
+	off_t espOffset = start;
+	off_t espSize = kEFISystemPartitionSize;
+	BString espName("EFI system partition");
+	if (status == B_OK) {
+		status = device.ValidateCreateChild(&espOffset, &espSize,
+			"EFI system data", &espName, NULL);
+	}
+	if (status == B_OK) {
+		status = device.CreateChild(espOffset, espSize, "EFI system data",
+			espName.String(), NULL);
+	}
+
+	off_t bootOffset = espOffset + espSize;
+	off_t bootSize = end - bootOffset;
+	BString bootName(kWholeDiskVolumeName);
+	if (status == B_OK) {
+		status = device.ValidateCreateChild(&bootOffset, &bootSize,
+			kPartitionTypeBFS, &bootName, NULL);
+	}
+	if (status == B_OK) {
+		status = device.CreateChild(bootOffset, bootSize, kPartitionTypeBFS,
+			bootName.String(), NULL);
+	}
+	if (status == B_OK)
+		status = device.CommitModifications();
+	else
+		device.CancelModifications();
+	if (status != B_OK) {
+		printf("Installer: creating the partitions failed: %s\n",
+			strerror(status));
+		return status;
+	}
+
+	// find the new partitions again, by where they start
+	status = fDDRoster.GetDeviceWithID(diskID, &device);
+	if (status != B_OK)
+		return status;
+	_espID = -1;
+	_bootID = -1;
+	for (int32 i = 0; BPartition* child = device.ChildAt(i); i++) {
+		if (child->Offset() == espOffset)
+			_espID = child->ID();
+		else if (child->Offset() == bootOffset)
+			_bootID = child->ID();
+	}
+	if (_espID < 0 || _bootID < 0)
+		return B_ENTRY_NOT_FOUND;
+
+	_SetStatusMessage(B_TRANSLATE("Formatting the partitions" B_UTF8_ELLIPSIS));
+
+	status = _InitializePartition(diskID, _espID, kPartitionTypeFAT32, "EFI",
+		"fat 32;\n");
+	if (status == B_OK) {
+		status = _InitializePartition(diskID, _bootID, kPartitionTypeBFS,
+			kWholeDiskVolumeName, "block_size 2048\n");
+	}
+	if (status != B_OK)
+		return status;
+
+	BPartition* boot;
+	status = fDDRoster.GetPartitionWithID(_bootID, &device, &boot);
+	if (status == B_OK && !boot->IsMounted())
+		status = boot->Mount();
+	if (status < B_OK) {
+		printf("Installer: mounting the new partition failed: %s\n",
+			strerror(status));
+		return status;
+	}
+	return B_OK;
+}
+
+
+status_t
+WorkerThread::_InitializePartition(partition_id diskID,
+	partition_id partitionID, const char* diskSystem, const char* name,
+	const char* parameters)
+{
+	BDiskDevice device;
+	status_t status = fDDRoster.GetDeviceWithID(diskID, &device);
+	if (status != B_OK)
+		return status;
+	status = device.PrepareModifications();
+	if (status != B_OK)
+		return status;
+
+	BPartition* partition = device.FindDescendant(partitionID);
+	BString validatedName(name);
+	if (partition == NULL)
+		status = B_ENTRY_NOT_FOUND;
+	if (status == B_OK) {
+		status = partition->ValidateInitialize(diskSystem, &validatedName,
+			parameters);
+	}
+	if (status == B_OK) {
+		status = partition->Initialize(diskSystem, validatedName.String(),
+			parameters);
+	}
+	if (status == B_OK)
+		status = device.CommitModifications();
+	else
+		device.CancelModifications();
+	if (status != B_OK) {
+		printf("Installer: formatting partition %" B_PRId32 " as %s failed: "
+			"%s\n", partitionID, diskSystem, strerror(status));
+	}
+	return status;
+}
+
+
+/*!	Copies the system's EFI loader to the fallback path of the EFI system
+	partition \a espID, which UEFI firmware starts from a disk without being
+	told about it first.
+*/
+status_t
+WorkerThread::_InstallEFILoader(partition_id espID)
+{
+	_SetStatusMessage(B_TRANSLATE("Installing the EFI loader."));
+
+	BPath loaderPath;
+	status_t status = find_directory(B_SYSTEM_DATA_DIRECTORY, &loaderPath);
+	if (status == B_OK)
+		status = loaderPath.Append("platform_loaders/haiku_loader.efi");
+	BFile loader;
+	if (status == B_OK)
+		status = loader.SetTo(loaderPath.Path(), B_READ_ONLY);
+	if (status != B_OK) {
+		printf("Installer: no EFI loader at %s: %s\n", loaderPath.Path(),
+			strerror(status));
+		return status;
+	}
+
+	BDiskDevice device;
+	BPartition* esp;
+	status = fDDRoster.GetPartitionWithID(espID, &device, &esp);
+	if (status == B_OK && !esp->IsMounted())
+		status = esp->Mount();
+	BPath bootDirectory;
+	if (status >= B_OK)
+		status = esp->GetMountPoint(&bootDirectory);
+	if (status == B_OK)
+		status = bootDirectory.Append("EFI/BOOT");
+	if (status == B_OK)
+		status = create_directory(bootDirectory.Path(), 0755);
+	if (status != B_OK) {
+		printf("Installer: cannot prepare the EFI system partition: %s\n",
+			strerror(status));
+		return status;
+	}
+
+	BString name(arch_efi_default_prefix());
+	name << ".EFI";
+	BPath targetPath(bootDirectory.Path(), name.String());
+	BFile target;
+	status = target.SetTo(targetPath.Path(),
+		B_WRITE_ONLY | B_CREATE_FILE | B_ERASE_FILE);
+
+	char buffer[64 * 1024];
+	while (status == B_OK) {
+		ssize_t bytesRead = loader.Read(buffer, sizeof(buffer));
+		if (bytesRead <= 0) {
+			if (bytesRead < 0)
+				status = bytesRead;
+			break;
+		}
+		ssize_t bytesWritten = target.Write(buffer, bytesRead);
+		if (bytesWritten != bytesRead)
+			status = bytesWritten < 0 ? bytesWritten : B_IO_ERROR;
+	}
+	if (status == B_OK)
+		status = target.Sync();
+	target.Unset();
+	if (status != B_OK) {
+		printf("Installer: writing %s failed: %s\n", targetPath.Path(),
+			strerror(status));
+		return status;
+	}
+
+	// Nothing else needs the partition; unmounting it writes everything out.
+	esp->Unmount();
 	return B_OK;
 }
 

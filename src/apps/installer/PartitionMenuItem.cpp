@@ -16,7 +16,8 @@ PartitionMenuItem::PartitionMenuItem(const char* name, const char* label,
 	fID(id),
 	fMenuLabel(strdup(menuLabel)),
 	fName(strdup(name)),
-	fIsValidTarget(true)
+	fIsValidTarget(true),
+	fIsWholeDisk(false)
 {
 }
 
@@ -62,3 +63,16 @@ PartitionMenuItem::IsValidTarget() const
 	return fIsValidTarget;
 }
 
+
+void
+PartitionMenuItem::SetIsWholeDisk(bool isWholeDisk)
+{
+	fIsWholeDisk = isWholeDisk;
+}
+
+
+bool
+PartitionMenuItem::IsWholeDisk() const
+{
+	return fIsWholeDisk;
+}
