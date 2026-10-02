@@ -156,12 +156,24 @@ typedef struct {
 	int			kind;		/* 0 YCbCr422, 1 RGB32, 2 P010 */
 	int			bands;
 	int32			next;
+	/* The helpers and the caller each hold a reference; the last one out
+	 * frees it. It is not on the caller's stack: a caller that stops
+	 * waiting early - interrupted, or killed as its team exits - must not
+	 * leave the helpers reading a stack that is gone. */
+	int32			references;
+	NvdecFrame		frameCopy;
 } Work;
 
-static int32
-convertBand(void *data)
+static void
+releaseWork(Work *work)
 {
-	Work *work = data;
+	if (atomic_add(&work->references, -1) == 1)
+		free(work);
+}
+
+static void
+convertBands(Work *work)
+{
 	for (;;) {
 		int32 band = atomic_add(&work->next, 1);
 		if (band >= work->bands)
@@ -180,6 +192,14 @@ convertBand(void *data)
 			nvdecFrameToYCbCr422(work->frame, work->out, work->outPitch, from, to);
 		}
 	}
+}
+
+static int32
+convertHelper(void *data)
+{
+	Work *work = data;
+	convertBands(work);
+	releaseWork(work);
 	return 0;
 }
 
@@ -195,30 +215,44 @@ convertThreaded(const NvdecFrame *frame, uint8_t *out, size_t outPitch,
 	if (threads < 1)
 		threads = 1;
 
-	Work work = {
-		.frame = frame,
-		.out = out,
-		.outPitch = outPitch,
-		.range = range,
-		.kind = kind,
-		.bands = threads * 2,
-		.next = 0,
-	};
+	Work *work = malloc(sizeof(Work));
+	if (work == NULL) {
+		/* No room even for this: convert on this thread alone. */
+		Work local = { .frame = frame, .out = out, .outPitch = outPitch,
+			.range = range, .kind = kind, .bands = 1, .next = 0 };
+		convertBands(&local);
+		return;
+	}
+	work->frameCopy = *frame;
+	work->frame = &work->frameCopy;
+	work->out = out;
+	work->outPitch = outPitch;
+	work->range = range;
+	work->kind = kind;
+	work->bands = threads * 2;
+	work->next = 0;
+	work->references = 1;
+
 	thread_id helpers[8];
 	int started = 0;
 	for (int i = 0; i < threads - 1 && i < 8; i++) {
-		helpers[started] = spawn_thread(convertBand, "nvdec convert",
-			B_DISPLAY_PRIORITY, &work);
-		if (helpers[started] < 0)
+		atomic_add(&work->references, 1);
+		helpers[started] = spawn_thread(convertHelper, "nvdec convert",
+			B_DISPLAY_PRIORITY, work);
+		if (helpers[started] < 0) {
+			atomic_add(&work->references, -1);
 			break;
+		}
 		resume_thread(helpers[started]);
 		started++;
 	}
-	convertBand(&work);
+	convertBands(work);
 	for (int i = 0; i < started; i++) {
 		status_t ignored;
-		wait_for_thread(helpers[i], &ignored);
+		while (wait_for_thread(helpers[i], &ignored) == B_INTERRUPTED)
+			;
 	}
+	releaseWork(work);
 }
 
 void
