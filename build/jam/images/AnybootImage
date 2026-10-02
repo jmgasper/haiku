@@ -70,7 +70,8 @@ for platform in [ MultiBootSubDirSetup ] {
 
 # TODO: this one seems to cause the build to fail each other run (caching?)
 #RmTemps $(HAIKU_ANYBOOT) : $(baseMBR) ;
-RmTemps $(HAIKU_ANYBOOT) : $(HAIKU_CD_BOOT_IMAGE) ;
+# The CD boot image is kept: it is small, and as a removed temporary it was
+# not rebuilt when only the EFI system partition had changed.
 RmTemps $(HAIKU_ANYBOOT) : $(HAIKU_IMAGE_NAME) ;
 RmTemps $(HAIKU_ANYBOOT) : $(HAIKU_BOOT_FLOPPY) ;
 

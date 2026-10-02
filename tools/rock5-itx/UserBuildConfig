@@ -104,8 +104,12 @@ rule UserBuildConfigRulePreImage
 		local glLibs = <rock5-gl>libEGL_mesa.so.0 <rock5-gl>libEGL.so.1
 			<rock5-gl>libGLESv2.so.2 <rock5-gl>libGLdispatch.so.0
 			<rock5-gl>libOpenGL.so.0 <rock5-gl>libGL.so.1 <rock5-gl>libGLU.so.1
-			<rock5-gl>libsqlite3.so.0 <rock5-gl>libtag.so.2 <rock5-gl>libcurl.so.4
+			<rock5-gl>libsqlite3.so.0 <rock5-gl>libtag.so.2
 			<rock5-gl>libpcre2-8.so.0 <rock5-gl>libscintilla.so <rock5-gl>liblexilla.so ;
+		# air/OS has a libcurl with TLS (lib-arm64 below); this one has none.
+		if $(HAIKU_BUILD_PROFILE) != airos-anyboot {
+			glLibs += <rock5-gl>libcurl.so.4 ;
+		}
 		SEARCH on $(glLibs) = [ FDirName $(extras) lib ] ;
 		AddFilesToHaikuImage system non-packaged lib : $(glLibs) ;
 
@@ -176,6 +180,11 @@ rule UserBuildConfigRulePreImage
 			airosLibs = <airos-lib>$(airosLibs:BS) ;
 			SEARCH on $(airosLibs) = $(airosLibDir) ;
 			AddFilesToHaikuImage system non-packaged lib : $(airosLibs) ;
+
+			# That libcurl (and Summit's) reads the CA certificates from here.
+			local caCertificates = <airos-data>CARootCertificates.pem ;
+			SEARCH on $(caCertificates) = /mnt/HaikuWork/airos/data-arm64/ssl ;
+			AddFilesToHaikuImage system non-packaged data ssl : $(caCertificates) ;
 		}
 
 		# Booting from the eMMC needs sdhci admitted before any volume is

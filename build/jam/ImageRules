@@ -1610,7 +1610,7 @@ rule BuildCDBootImageEFI image : bootfloppy : bootefi : extrafiles
 	if $(HAIKU_NIGHTLY_BUILD) = 1 {
 		VOLID on $(image) = haiku-nightly-$(TARGET_ARCH) ;
 	} else {
-		VOLID on $(image) = haiku-$(HAIKU_VERSION)-$(TARGET_ARCH) ;
+		VOLID on $(image) = airOS-$(TARGET_ARCH) ;
 	}
 
 	BOOTEFI on $(image) = $(bootefi) ;
@@ -1726,7 +1726,7 @@ actions BuildEfiSystemPartition1
 	EFIICON="$(2[2])"
 	LOADER="$(2[3])"
 
-	${FATFS} --initialize "$(<)" 'Haiku ESP'
+	${FATFS} --initialize "$(<)" 'airOS ESP'
 	echo "mkdir myfs/EFI" | ${FATFS} $(<)
 	echo "mkdir myfs/KEYS" | ${FATFS} $(<)
 	echo "mkdir myfs/EFI/BOOT" | ${FATFS} $(<)
