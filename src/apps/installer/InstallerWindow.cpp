@@ -9,6 +9,7 @@
 #include "InstallerWindow.h"
 
 #include <stdio.h>
+#include <string.h>
 #include <strings.h>
 
 #include <Alert.h>
@@ -371,6 +372,11 @@ InstallerWindow::MessageReceived(BMessage *msg)
 					B_TRANSLATE("An error was encountered and the "
 					"installation was not completed:\n\n"
 					"Error:  %s"), strerror(error));
+				const char* context;
+				if (msg->FindString("context", &context) == B_OK) {
+					strlcat(errorMessage, "\n\n", sizeof(errorMessage));
+					strlcat(errorMessage, context, sizeof(errorMessage));
+				}
 				BAlert* alert = new BAlert("error", errorMessage, B_TRANSLATE("OK"));
 				alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);
 				alert->Go();

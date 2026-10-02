@@ -11,9 +11,11 @@
 #include <stdio.h>
 #include <unistd.h>
 
+#include <functional>
 #include <set>
 #include <string>
 #include <strings.h>
+#include <syslog.h>
 
 #include <Alert.h>
 #include <Autolock.h>
@@ -875,6 +877,10 @@ WorkerThread::_PerformInstall(partition_id sourcePartitionID,
 	if (err != B_OK)
 		return _InstallationError(err);
 
+	// Write everything out before saying that it is done: the computer may
+	// well be switched off right then.
+	sync();
+
 	fOwner.SendMessage(MSG_INSTALL_FINISHED);
 	return B_OK;
 }
@@ -915,10 +921,50 @@ align_down(off_t value, off_t alignment)
 }
 
 
+/*!	Applies one change to the disk \a diskID and writes it: \a modify gets
+	a freshly read and prepared device. The kernel rescans a disk after it
+	has been written to, and a change prepared against the state from before
+	that rescan is refused (B_BAD_VALUE for a stale change counter, or
+	B_BUSY), so such a change is tried again, on the disk as it is now.
+	\a modify must therefore work from whatever state it finds.
+*/
+status_t
+WorkerThread::_ModifyDisk(partition_id diskID,
+	const std::function<status_t(BDiskDevice&)>& modify)
+{
+	status_t status = B_ERROR;
+	for (int32 attempt = 0; attempt < 10; attempt++) {
+		if (attempt > 0)
+			snooze(500000);
+
+		BDiskDevice device;
+		status = fDDRoster.GetDeviceWithID(diskID, &device);
+		if (status != B_OK)
+			return status;
+		status = device.PrepareModifications();
+		if (status == B_OK) {
+			status = modify(device);
+			if (status == B_OK)
+				status = device.CommitModifications();
+			else
+				device.CancelModifications();
+		}
+		if (status == B_OK)
+			return B_OK;
+		syslog(LOG_NOTICE, "Installer: changing disk %" B_PRId32 " failed "
+			"(attempt %" B_PRId32 "): %s\n", diskID, attempt + 1,
+			strerror(status));
+		if (status != B_BAD_VALUE && status != B_BUSY)
+			break;
+	}
+	return status;
+}
+
+
 /*!	Erases the disk \a diskID and sets it up to start with UEFI: a GUID
 	partition map, an EFI system partition formatted with FAT32, and the rest
 	of the disk as one BFS partition, which is left mounted. Each step is
-	committed on its own, as DriveSetup does.
+	written on its own, as DriveSetup does.
 */
 status_t
 WorkerThread::_PrepareWholeDisk(partition_id diskID, partition_id& _bootID,
@@ -937,88 +983,84 @@ WorkerThread::_PrepareWholeDisk(partition_id diskID, partition_id& _bootID,
 
 	status = unmount_all(&device);
 	if (status != B_OK) {
-		_SetStatusMessage(B_TRANSLATE("A volume on the disk could not be "
-			"unmounted. Close the applications that use it and try again."));
+		fErrorContext = B_TRANSLATE("A volume on the disk could not be "
+			"unmounted. Close the applications that use it and try again.");
 		return status;
 	}
 
 	// replace whatever is on the disk with an empty GUID partition map
-	status = device.PrepareModifications();
-	if (status != B_OK)
+	status = _ModifyDisk(diskID, [](BDiskDevice& disk) {
+		if (disk.ContentType() != NULL)
+			disk.Uninitialize();
+		status_t status = disk.ValidateInitialize(kPartitionTypeEFI, NULL,
+			NULL);
+		if (status == B_OK)
+			status = disk.Initialize(kPartitionTypeEFI, NULL, NULL);
 		return status;
-	if (device.ContentType() != NULL)
-		device.Uninitialize();
-	status = device.ValidateInitialize(kPartitionTypeEFI, NULL, NULL);
-	if (status == B_OK)
-		status = device.Initialize(kPartitionTypeEFI, NULL, NULL);
-	if (status == B_OK)
-		status = device.CommitModifications();
-	else
-		device.CancelModifications();
+	});
 	if (status != B_OK) {
-		printf("Installer: writing a GUID partition map failed: %s\n",
-			strerror(status));
+		fErrorContext = B_TRANSLATE("The disk could not be erased.");
 		return status;
 	}
 
 	_SetStatusMessage(B_TRANSLATE("Creating the partitions" B_UTF8_ELLIPSIS));
 
-	status = fDDRoster.GetDeviceWithID(diskID, &device);
-	if (status != B_OK)
-		return status;
-	status = device.PrepareModifications();
-	if (status != B_OK)
-		return status;
-
-	BPartitioningInfo info;
-	status = device.GetPartitioningInfo(&info);
-	off_t spaceOffset = 0;
-	off_t spaceSize = 0;
-	for (int32 i = 0; status == B_OK && i < info.CountPartitionableSpaces();
-			i++) {
-		off_t offset;
-		off_t size;
-		if (info.GetPartitionableSpaceAt(i, &offset, &size) == B_OK
-			&& size > spaceSize) {
-			spaceOffset = offset;
-			spaceSize = size;
+	off_t espOffset = -1;
+	off_t bootOffset = -1;
+	status = _ModifyDisk(diskID, [&](BDiskDevice& disk) {
+		// start from an empty partition map, also after a failed attempt
+		for (int32 i = disk.CountChildren() - 1; i >= 0; i--) {
+			status_t status = disk.DeleteChild(i);
+			if (status != B_OK)
+				return status;
 		}
-	}
-	off_t start = align_up(spaceOffset, kAlignment);
-	off_t end = align_down(spaceOffset + spaceSize, kAlignment);
-	if (status == B_OK && end - start < 2 * kEFISystemPartitionSize)
-		status = B_DEVICE_FULL;
 
-	off_t espOffset = start;
-	off_t espSize = kEFISystemPartitionSize;
-	BString espName("EFI system partition");
-	if (status == B_OK) {
-		status = device.ValidateCreateChild(&espOffset, &espSize,
-			"EFI system data", &espName, NULL);
-	}
-	if (status == B_OK) {
-		status = device.CreateChild(espOffset, espSize, "EFI system data",
-			espName.String(), NULL);
-	}
+		BPartitioningInfo info;
+		status_t status = disk.GetPartitioningInfo(&info);
+		if (status != B_OK)
+			return status;
+		off_t spaceOffset = 0;
+		off_t spaceSize = 0;
+		for (int32 i = 0; i < info.CountPartitionableSpaces(); i++) {
+			off_t offset;
+			off_t size;
+			if (info.GetPartitionableSpaceAt(i, &offset, &size) == B_OK
+				&& size > spaceSize) {
+				spaceOffset = offset;
+				spaceSize = size;
+			}
+		}
+		off_t start = align_up(spaceOffset, kAlignment);
+		off_t end = align_down(spaceOffset + spaceSize, kAlignment);
+		if (end - start < 2 * kEFISystemPartitionSize)
+			return (status_t)B_DEVICE_FULL;
 
-	off_t bootOffset = espOffset + espSize;
-	off_t bootSize = end - bootOffset;
-	BString bootName(kWholeDiskVolumeName);
-	if (status == B_OK) {
-		status = device.ValidateCreateChild(&bootOffset, &bootSize,
-			kPartitionTypeBFS, &bootName, NULL);
-	}
-	if (status == B_OK) {
-		status = device.CreateChild(bootOffset, bootSize, kPartitionTypeBFS,
-			bootName.String(), NULL);
-	}
-	if (status == B_OK)
-		status = device.CommitModifications();
-	else
-		device.CancelModifications();
+		espOffset = start;
+		off_t espSize = kEFISystemPartitionSize;
+		BString espName("EFI system partition");
+		// The kernel refuses to create a child without a parameter string.
+		status = disk.ValidateCreateChild(&espOffset, &espSize,
+			"EFI system data", &espName, "");
+		if (status == B_OK) {
+			status = disk.CreateChild(espOffset, espSize, "EFI system data",
+				espName.String(), "");
+		}
+		if (status != B_OK)
+			return status;
+
+		bootOffset = espOffset + espSize;
+		off_t bootSize = end - bootOffset;
+		BString bootName(kWholeDiskVolumeName);
+		status = disk.ValidateCreateChild(&bootOffset, &bootSize,
+			kPartitionTypeBFS, &bootName, "");
+		if (status == B_OK) {
+			status = disk.CreateChild(bootOffset, bootSize, kPartitionTypeBFS,
+				bootName.String(), "");
+		}
+		return status;
+	});
 	if (status != B_OK) {
-		printf("Installer: creating the partitions failed: %s\n",
-			strerror(status));
+		fErrorContext = B_TRANSLATE("The partitions could not be created.");
 		return status;
 	}
 
@@ -1034,8 +1076,10 @@ WorkerThread::_PrepareWholeDisk(partition_id diskID, partition_id& _bootID,
 		else if (child->Offset() == bootOffset)
 			_bootID = child->ID();
 	}
-	if (_espID < 0 || _bootID < 0)
+	if (_espID < 0 || _bootID < 0) {
+		fErrorContext = B_TRANSLATE("The partitions could not be created.");
 		return B_ENTRY_NOT_FOUND;
+	}
 
 	_SetStatusMessage(B_TRANSLATE("Formatting the partitions" B_UTF8_ELLIPSIS));
 
@@ -1045,16 +1089,21 @@ WorkerThread::_PrepareWholeDisk(partition_id diskID, partition_id& _bootID,
 		status = _InitializePartition(diskID, _bootID, kPartitionTypeBFS,
 			kWholeDiskVolumeName, "block_size 2048\n");
 	}
-	if (status != B_OK)
+	if (status != B_OK) {
+		fErrorContext = B_TRANSLATE("The partitions could not be "
+			"formatted.");
 		return status;
+	}
 
 	BPartition* boot;
 	status = fDDRoster.GetPartitionWithID(_bootID, &device, &boot);
 	if (status == B_OK && !boot->IsMounted())
 		status = boot->Mount();
 	if (status < B_OK) {
-		printf("Installer: mounting the new partition failed: %s\n",
+		syslog(LOG_ERR, "Installer: mounting the new partition failed: %s\n",
 			strerror(status));
+		fErrorContext = B_TRANSLATE("The new partition could not be "
+			"mounted.");
 		return status;
 	}
 	return B_OK;
@@ -1066,35 +1115,19 @@ WorkerThread::_InitializePartition(partition_id diskID,
 	partition_id partitionID, const char* diskSystem, const char* name,
 	const char* parameters)
 {
-	BDiskDevice device;
-	status_t status = fDDRoster.GetDeviceWithID(diskID, &device);
-	if (status != B_OK)
+	return _ModifyDisk(diskID, [=](BDiskDevice& disk) {
+		BPartition* partition = disk.FindDescendant(partitionID);
+		if (partition == NULL)
+			return (status_t)B_ENTRY_NOT_FOUND;
+		BString validatedName(name);
+		status_t status = partition->ValidateInitialize(diskSystem,
+			&validatedName, parameters);
+		if (status == B_OK) {
+			status = partition->Initialize(diskSystem, validatedName.String(),
+				parameters);
+		}
 		return status;
-	status = device.PrepareModifications();
-	if (status != B_OK)
-		return status;
-
-	BPartition* partition = device.FindDescendant(partitionID);
-	BString validatedName(name);
-	if (partition == NULL)
-		status = B_ENTRY_NOT_FOUND;
-	if (status == B_OK) {
-		status = partition->ValidateInitialize(diskSystem, &validatedName,
-			parameters);
-	}
-	if (status == B_OK) {
-		status = partition->Initialize(diskSystem, validatedName.String(),
-			parameters);
-	}
-	if (status == B_OK)
-		status = device.CommitModifications();
-	else
-		device.CancelModifications();
-	if (status != B_OK) {
-		printf("Installer: formatting partition %" B_PRId32 " as %s failed: "
-			"%s\n", partitionID, diskSystem, strerror(status));
-	}
-	return status;
+	});
 }
 
 
@@ -1115,8 +1148,9 @@ WorkerThread::_InstallEFILoader(partition_id espID)
 	if (status == B_OK)
 		status = loader.SetTo(loaderPath.Path(), B_READ_ONLY);
 	if (status != B_OK) {
-		printf("Installer: no EFI loader at %s: %s\n", loaderPath.Path(),
+		syslog(LOG_ERR, "Installer: no EFI loader at %s: %s\n", loaderPath.Path(),
 			strerror(status));
+		fErrorContext = B_TRANSLATE("The EFI loader was not found.");
 		return status;
 	}
 
@@ -1133,8 +1167,9 @@ WorkerThread::_InstallEFILoader(partition_id espID)
 	if (status == B_OK)
 		status = create_directory(bootDirectory.Path(), 0755);
 	if (status != B_OK) {
-		printf("Installer: cannot prepare the EFI system partition: %s\n",
+		syslog(LOG_ERR, "Installer: cannot prepare the EFI system partition: %s\n",
 			strerror(status));
+		fErrorContext = B_TRANSLATE("The EFI loader could not be installed.");
 		return status;
 	}
 
@@ -1161,8 +1196,9 @@ WorkerThread::_InstallEFILoader(partition_id espID)
 		status = target.Sync();
 	target.Unset();
 	if (status != B_OK) {
-		printf("Installer: writing %s failed: %s\n", targetPath.Path(),
+		syslog(LOG_ERR, "Installer: writing %s failed: %s\n", targetPath.Path(),
 			strerror(status));
+		fErrorContext = B_TRANSLATE("The EFI loader could not be installed.");
 		return status;
 	}
 
@@ -1229,8 +1265,12 @@ WorkerThread::_InstallationError(status_t error)
 	BMessage statusMessage(MSG_RESET);
 	if (error == B_CANCELED)
 		_SetStatusMessage(B_TRANSLATE("Installation canceled."));
-	else
+	else {
 		statusMessage.AddInt32("error", error);
+		if (!fErrorContext.IsEmpty())
+			statusMessage.AddString("context", fErrorContext);
+	}
+	fErrorContext.Truncate(0);
 	ERR("_PerformInstall failed");
 	fOwner.SendMessage(&statusMessage);
 	return error;

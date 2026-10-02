@@ -6,11 +6,14 @@
 #ifndef WORKER_THREAD_H
 #define WORKER_THREAD_H
 
+#include <functional>
+
 #include <DiskDevice.h>
 #include <DiskDeviceRoster.h>
 #include <Looper.h>
 #include <Messenger.h>
 #include <Partition.h>
+#include <String.h>
 #include <Volume.h>
 
 class BList;
@@ -48,6 +51,9 @@ private:
 			status_t			_PerformInstall(partition_id sourcePartitionID,
 									partition_id targetPartitionID,
 									bool wholeDisk);
+			status_t			_ModifyDisk(partition_id diskID,
+									const std::function<status_t(
+										BDiskDevice&)>& modify);
 			status_t			_PrepareWholeDisk(partition_id diskID,
 									partition_id& _bootID,
 									partition_id& _espID);
@@ -79,6 +85,7 @@ private:
 			BList*				fPackages;
 			off_t				fSpaceRequired;
 			sem_id				fCancelSemaphore;
+			BString				fErrorContext;
 };
 
 #endif // WORKER_THREAD_H
