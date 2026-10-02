@@ -62,7 +62,7 @@ DispatchEvent(struct hci_event_header* header, int32 code, size_t size)
 // Where the time goes between the server starting and the radio answering:
 // every step of the way is logged with the time since boot, since the radio
 // has been seen coming up minutes after the rest of the system.
-static void
+void
 LogStartup(const char* format, ...)
 {
 	char message[256];

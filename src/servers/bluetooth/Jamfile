@@ -7,6 +7,7 @@ AddResources bluetooth_server : bluetooth_server.rdef ;
 Application bluetooth_server
  	:
 	BluetoothServer.cpp
+	ControllerFirmware.cpp
 	DeviceManager.cpp
 	HCIControllerAccessor.cpp
 	HCITransportAccessor.cpp

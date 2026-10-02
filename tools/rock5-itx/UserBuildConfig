@@ -54,13 +54,20 @@ rule UserBuildConfigRulePreImage
 		AddFilesToHaikuImage home config settings rock5-lab : $(labEnable) ;
 	}
 	local bootscripts = <rock5-lab>UserBootscript
-		<rock5-lab>UserSetupEnvironment <rock5-lab>start-ax210-bluetooth.sh ;
+		<rock5-lab>UserSetupEnvironment ;
+	if ! $(ROCK5_FULL_IMAGE) {
+		# The minimum image has no system bluetooth_server: a helper loads
+		# the controller firmware and starts a non-packaged server. A full
+		# image's server is a launch_daemon service that loads the firmware
+		# itself (src/servers/bluetooth/ControllerFirmware.cpp).
+		bootscripts += <rock5-lab>start-ax210-bluetooth.sh ;
+		# Run by the Bluetooth preferences "Start service" button.
+		local bluetoothHook = <rock5-lab>start-services ;
+		SEARCH on $(bluetoothHook) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
+		AddFilesToHaikuImage home config settings bluetooth : $(bluetoothHook) ;
+	}
 	SEARCH on $(bootscripts) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
 	AddFilesToHaikuImage home config settings boot : $(bootscripts) ;
-	# Run by the Bluetooth preferences "Start service" button.
-	local bluetoothHook = <rock5-lab>start-services ;
-	SEARCH on $(bluetoothHook) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
-	AddFilesToHaikuImage home config settings bluetooth : $(bluetoothHook) ;
 	local pcieSettings = <rock5-lab>rk3588_pcie ;
 	SEARCH on $(pcieSettings) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
 	AddFilesToHaikuImage home config settings kernel drivers : $(pcieSettings) ;

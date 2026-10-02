@@ -1,6 +1,6 @@
 SubDir HAIKU_TOP src apps bluetoothstatus ;
 
-UsePrivateHeaders bluetooth ;
+UsePrivateHeaders app bluetooth ;
 
 # Deskbar loads this applet into its own team, where an older system
 # libbluetooth.so may be found first; build the few kit pieces in.

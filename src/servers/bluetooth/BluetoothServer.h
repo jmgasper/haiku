@@ -26,6 +26,10 @@
 
 #define BT "bluetooth_server: "
 
+// Logs a step of bringing up the radios, with the time since boot.
+void LogStartup(const char* format, ...)
+	__attribute__((format(printf, 1, 2)));
+
 typedef enum {
 	BLACKBOARD_GENERAL = 0,
 	BLACKBOARD_DEVICEMANAGER,
