@@ -69,7 +69,10 @@ NVDecDecoder::GetCodecInfo(media_codec_info* info)
 			sizeof(info->pretty_name));
 		return;
 	}
-	strlcpy(info->short_name, "nvdec h264", sizeof(info->short_name));
+	/* "2" since it holds sixteen reference frames: programs that sent such
+	 * streams elsewhere, knowing the first version could not, tell the two
+	 * apart by this name. */
+	strlcpy(info->short_name, "nvdec h264 2", sizeof(info->short_name));
 	strlcpy(info->pretty_name, "H.264 on the graphics card (NVDEC)",
 		sizeof(info->pretty_name));
 }

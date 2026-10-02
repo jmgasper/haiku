@@ -219,10 +219,12 @@ prepareForSequence(NvdecH264 *decoder, const H264Sps *sps)
 	decoder->codedHeight = mbHeight * 16;
 	decoder->dpbSize = dpbSize;
 	/* One surface for the picture being decoded, and enough for everything
-	 * the stream may still need. */
+	 * the stream may still need: seventeen with sixteen reference frames,
+	 * which is as many as the engine has places for. Sixteen here left
+	 * such streams one short, and only their first pictures came out. */
 	decoder->surfaceCount = dpbSize + 1;
-	if (decoder->surfaceCount > 16)
-		decoder->surfaceCount = 16;
+	if (decoder->surfaceCount > MAX_SURFACES)
+		decoder->surfaceCount = MAX_SURFACES;
 
 	int subWidth = (sps->chromaFormatIdc == 3) ? 1 : 2;
 	int subHeight = (sps->chromaFormatIdc >= 2) ? 1 : 2;
