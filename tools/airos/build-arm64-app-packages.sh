@@ -608,19 +608,26 @@ INFO"' _ "$work/PackageInfo.template" > "$work/Natter.PackageInfo"
 SUMMIT_SRC=${SUMMIT_SRC:-$WORK/build/summit-arm64/summit}
 SUMMIT_WEBKIT_VERSION=${SUMMIT_WEBKIT_VERSION:-1.10.0-1}
 
-# set_rpath <ELF file> <new rpath>: in place, as long as it is no longer than
-# the old one (CMake's file(RPATH_CHANGE), which keeps appended resources).
+# set_rpath <ELF file> <new rpath>: in place. CMake's file(RPATH_CHANGE)
+# keeps appended resources but cannot make the RPATH longer or add one;
+# patchelf (PATCHELF) does both. Haiku's runtime loader resolves a library's
+# dependencies with that library's own RPATH only, so every library of the
+# engine needs one.
+PATCHELF=${PATCHELF:-$WORK/toolchains/patchelf/bin/patchelf}
 set_rpath() {
 	local old
 	old=$(readelf -d "$1" | sed -n 's/.*(R\(UN\)\{0,1\}PATH).*\[\(.*\)\]/\2/p')
-	[[ -n $old ]] || return 0
-	local script=$APPBUILD/.relocate.cmake
-	printf 'file(RPATH_CHANGE FILE [==[%s]==] OLD_RPATH [==[%s]==] NEW_RPATH [==[%s]==])\n' \
-		"$1" "$old" "$2" > "$script"
-	local status=0
-	cmake -P "$script" >/dev/null 2>&1 || status=$?
-	rm -f "$script"
-	return $status
+	[[ $old == "$2" ]] && return 0
+	if [[ -n $old ]]; then
+		local script=$APPBUILD/.relocate.cmake status=0
+		printf 'file(RPATH_CHANGE FILE [==[%s]==] OLD_RPATH [==[%s]==] NEW_RPATH [==[%s]==])\n' \
+			"$1" "$old" "$2" > "$script"
+		cmake -P "$script" >/dev/null 2>&1 || status=$?
+		rm -f "$script"
+		[[ $status == 0 ]] && return 0
+	fi
+	[[ -x $PATCHELF ]] || die "cannot set the RPATH of $1 without patchelf ($PATCHELF)"
+	"$PATCHELF" --force-rpath --set-rpath "$2" "$1"
 }
 
 # The engine's public API: every header of its Haiku API and the C base
@@ -674,18 +681,7 @@ build_summit_webkit() {
 			cp "$(readlink -f "$source")" "$STAGE/$engine/lib/$needed"
 			chmod 644 "$STAGE/$engine/lib/$needed"
 			"$STRIP" --strip-unneeded "$STAGE/$engine/lib/$needed"
-			# A library whose RPATH is too short to rewrite still loads: the
-			# processes find everything in %A/lib, and so does libWebKit's
-			# own RPATH for programs elsewhere, as long as this library needs
-			# nothing but the system.
-			if ! set_rpath "$STAGE/$engine/lib/$needed" '$ORIGIN'; then
-				local own
-				for own in $(readelf -d "$STAGE/$engine/lib/$needed" \
-						| sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'); do
-					[[ -e $SYSROOT/boot/system/lib/$own ]] && continue
-					echo "warning: $needed keeps its RPATH and needs $own" >&2
-				done
-			fi
+			set_rpath "$STAGE/$engine/lib/$needed" '$ORIGIN'
 			pending+=("$engine/lib/$needed")
 		done
 	done
