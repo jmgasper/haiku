@@ -80,7 +80,7 @@ Branches
 | --- | --- |
 | `rock5-itx` (default) | ARM64 and the Radxa ROCK 5 ITX, plus everything shared |
 | `x399-workstation` | x86_64 workstation: Threadripper X399, NVIDIA Pascal, MT7922 |
-| `airos-branding` | the air/OS artwork and About window, merged into the above |
+| `airos-branding` | the air/OS artwork and *About this system* (merged into `rock5-itx`) |
 
 Trying and building air/OS
 --------------------------

@@ -74,3 +74,33 @@ how the contact sheet above is made. `trace_wordmark.py` is the one-off that
 traced the wordmark from the brand sheet.
 
 ![desktop](airos-desktop-preview.png)
+
+## Installed on the ROCK 5 ITX (2026-10-02)
+
+The board's NVMe install ("Haiku NVMe") runs this branding:
+
+- `haiku.hpkg` built from `airos-branding` under the `@rock5full-mmc` profile,
+  SHA-256 `280fa016d146cae056d1e2060a08b2b52713f90ab2a751ae457b33196b13f5b0`,
+  copied over the installed `haiku-r1~beta6_hrev60097_335_dirty-1-arm64.hpkg`
+  (file name kept). The previous package
+  (`aa66e8ffb087e205c1d57bd638cbe5cee925cdeaaee9a44dbff383ded62f96ad`) is in
+  `/boot/home/rock5-lab/airos-backup/haiku-before-airos.hpkg`. `uname`
+  reports `hrev60097+339`.
+- The ESP's `EFI/BOOT/BOOTAA64.EFI` was replaced with that package's
+  `haiku_loader.efi` (`f91edce4…030d`) by `tools/rock5-itx/install-efi-loader.sh`;
+  the previous loader (`4e5dfb49…1c31`) is `BOOTAA64.EFI.rock5-previous` next
+  to it.
+
+Seen over the NanoKVM after two reboots: the air/OS boot screen with the
+stage icons advancing; the desktop picture, which replaced the Desktop's old
+default (its attribute still named Haiku's logo, which this build never
+shipped); the Deskbar logo; the boot volume and `/boot/system` icons;
+*About this system* (logo, `air/OS, Haiku R1/beta6 (arm64)`, the air/OS and
+Haiku sections); DriveSetup's boot partition mark. The same build was first
+checked in QEMU from a fresh image, where the picture appears on the first
+boot. Not seen on hardware: the Installer's logo window (its information
+panel opens first), the dark Deskbar variant and HaikuDepot's badge.
+
+To go back, copy the backup package over the installed name, and
+`BOOTAA64.EFI.rock5-previous` over `BOOTAA64.EFI`; or pick the previous
+system state from the boot menu.
