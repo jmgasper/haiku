@@ -90,9 +90,9 @@ DisplayLayout::~DisplayLayout()
 
 
 /*!	Reads what the hardware currently has: every connector with a monitor,
-	its EDID, and the region and scale the accelerant drives it with.
-	Anything the user decided about a display (whether it is primary) is
-	carried over from the previous reading.
+	its EDID, and the region and scale the accelerant drives it with, and
+	which outputs mirror another. Anything the user decided about a display
+	(whether it is primary) is carried over from the previous reading.
 */
 status_t
 DisplayLayout::ReadOutputs(HWInterface* interface)
@@ -138,6 +138,7 @@ DisplayLayout::ReadOutputs(HWInterface* interface)
 		display.primary = false;
 		display.hasEDID = false;
 		display.pinned = false;
+		display.mirrorOf = kNotMirrored;
 
 		if (output.edid_length >= sizeof(edid1_raw)) {
 			edid1_info edid;
@@ -186,11 +187,33 @@ DisplayLayout::ReadOutputs(HWInterface* interface)
 		}
 		fDisplays.push_back(display);
 	}
+
+	// A mirror shows the region of the output that starts where its own
+	// region does.
+	for (uint32 i = 0; i < count; i++) {
+		if ((outputs[i].flags & B_DISPLAY_OUTPUT_MIRROR) == 0
+			|| !fDisplays[i].IsEnabled())
+			continue;
+		for (uint32 j = 0; j < count; j++) {
+			if (j == i || (outputs[j].flags & B_DISPLAY_OUTPUT_MIRROR) != 0
+				|| !fDisplays[j].IsEnabled()
+				|| outputs[j].x != outputs[i].x
+				|| outputs[j].y != outputs[i].y)
+				continue;
+			fDisplays[i].mirrorOf = fDisplays[j].id;
+			fDisplays[i].frame = fDisplays[j].frame;
+			if (fDisplays[i].primary) {
+				fDisplays[i].primary = false;
+				fDisplays[j].primary = true;
+			}
+			break;
+		}
+	}
 	free(outputs);
 
 	if (PrimaryDisplay() == NULL) {
 		for (size_t i = 0; i < fDisplays.size(); i++) {
-			if (fDisplays[i].IsEnabled()) {
+			if (fDisplays[i].IsEnabled() && !fDisplays[i].IsMirror()) {
 				fDisplays[i].primary = true;
 				break;
 			}
@@ -221,6 +244,7 @@ DisplayLayout::SetSingle(BRect frame, uint16 scale, const monitor_info* info)
 	display.heightCM = 0;
 	display.hasEDID = info != NULL;
 	display.pinned = false;
+	display.mirrorOf = kNotMirrored;
 	memset(&display.native, 0, sizeof(display.native));
 	memset(&display.timing, 0, sizeof(display.timing));
 	display.native.h_display = display.timing.h_display
@@ -249,10 +273,15 @@ DisplayLayout::SetSingle(BRect frame, uint16 scale, const monitor_info* info)
 	\a keepCurrent, displays that are already enabled keep their present
 	place and scale and only newcomers are placed, which is what a monitor
 	being plugged in wants: nothing that is on screen moves.
+	A display remembered as the mirror of another mirrors it again when that
+	monitor is connected too.
 */
 void
 DisplayLayout::Configure(const BMessage& saved, bool keepCurrent)
 {
+	std::vector<BString> mirrorKeys(fDisplays.size());
+	std::vector<BString> mirrorConnectors(fDisplays.size());
+
 	bool anyPrimary = false;
 	for (size_t i = 0; i < fDisplays.size(); i++) {
 		DisplayInfo& display = fDisplays[i];
@@ -260,12 +289,14 @@ DisplayLayout::Configure(const BMessage& saved, bool keepCurrent)
 		if (!display.IsConnected()) {
 			display.flags &= ~B_DISPLAY_OUTPUT_ENABLED;
 			display.primary = false;
+			display.mirrorOf = kNotMirrored;
 			continue;
 		}
 		if (keepCurrent && display.IsEnabled()) {
 			anyPrimary |= display.primary;
 			continue;
 		}
+		display.mirrorOf = kNotMirrored;
 
 		BMessage found;
 		if (_FindSaved(saved, display, found) != NULL) {
@@ -305,6 +336,14 @@ DisplayLayout::Configure(const BMessage& saved, bool keepCurrent)
 			display.scale = scale;
 			display.timing = timing;
 			display.primary = primary && enabled;
+			const char* mirrorKey;
+			const char* mirrorConnector;
+			if (found.FindString("mirror key", &mirrorKey) == B_OK) {
+				mirrorKeys[i] = mirrorKey;
+				if (found.FindString("mirror connector", &mirrorConnector)
+						== B_OK)
+					mirrorConnectors[i] = mirrorConnector;
+			}
 			int32 width2 = (timing.h_display * 100 + scale / 2) / scale;
 			int32 height2 = (timing.v_display * 100 + scale / 2) / scale;
 			display.frame = BRect(x, y, x + width2 - 1, y + height2 - 1);
@@ -321,12 +360,33 @@ DisplayLayout::Configure(const BMessage& saved, bool keepCurrent)
 		anyPrimary |= display.primary;
 	}
 
+	// The monitors the remembered mirrors show: the same monitor on the same
+	// connector first, then the same monitor anywhere.
+	for (size_t i = 0; i < fDisplays.size(); i++) {
+		if (mirrorKeys[i].IsEmpty())
+			continue;
+		const DisplayInfo* source = NULL;
+		for (size_t j = 0; j < fDisplays.size(); j++) {
+			const DisplayInfo& other = fDisplays[j];
+			if (j == i || !other.IsConnected() || other.key != mirrorKeys[i])
+				continue;
+			if (other.name == mirrorConnectors[i]) {
+				source = &other;
+				break;
+			}
+			if (source == NULL)
+				source = &other;
+		}
+		if (source != NULL)
+			fDisplays[i].mirrorOf = source->id;
+	}
+
 	// New displays go to the right of everything else, in connector order.
 	float right = 0;
 	for (size_t i = 0; i < fDisplays.size(); i++) {
 		const DisplayInfo& display = fDisplays[i];
 		if (display.IsConnected() && display.IsEnabled()
-			&& display.frame.IsValid())
+			&& !display.IsMirror() && display.frame.IsValid())
 			right = std::max(right, display.frame.right + 1);
 	}
 	for (size_t i = 0; i < fDisplays.size(); i++) {
@@ -362,22 +422,33 @@ DisplayLayout::Configure(const BMessage& saved, bool keepCurrent)
 		}
 	}
 
+	_ResolveMirrors();
 	_Separate();
 	_CloseGaps();
+	_PlaceMirrors();
 	_Normalize();
 }
 
 
 /*!	Takes a layout a client asks for. The request holds one "display"
 	message per display it wants changed, by "id": "enabled", "frame" (whose
-	left/top is used), "scale", "mode width"/"mode height"/"mode refresh"
-	and "primary". Displays not mentioned keep what they have.
+	left/top is used), "scale", "mode width"/"mode height"/"mode refresh",
+	"primary", and "mirror", the id of the display it is to show the same
+	part of the desktop as, or -1 for its own. Displays not mentioned keep
+	what they have.
+	A mirror takes the place of its source, and its scale is what fits the
+	source's part of the desktop on it. Making a mirror the main display
+	makes it the source of the others instead.
 */
 status_t
 DisplayLayout::ApplyRequest(const BMessage& request)
 {
 	for (size_t i = 0; i < fDisplays.size(); i++)
 		fDisplays[i].pinned = false;
+
+	// what was asked of mirrors, to tell whether it could be done
+	std::vector<std::pair<uint32, uint32> > mirrorRequests;
+	uint32 requestedPrimary = kNotMirrored;
 
 	BMessage displayMessage;
 	for (int32 i = 0; request.FindMessage("display", i, &displayMessage)
@@ -420,12 +491,44 @@ DisplayLayout::ApplyRequest(const BMessage& request)
 			timing.pixel_clock = (uint32)(refresh * width * height / 1000);
 			display->timing = timing;
 		}
+		bool wasMirror = display->IsMirror();
+		int32 mirrorOf;
+		if (displayMessage.FindInt32("mirror", &mirrorOf) == B_OK) {
+			if (mirrorOf < 0) {
+				// It keeps the size things had on it, in a scale it can
+				// be set to.
+				display->mirrorOf = kNotMirrored;
+				display->scale = _ScaleStep(display->scale);
+			} else {
+				if ((uint32)mirrorOf == display->id
+					|| _DisplayByID(mirrorOf) == NULL)
+					return B_BAD_VALUE;
+				display->mirrorOf = mirrorOf;
+			}
+			mirrorRequests.push_back(
+				std::make_pair(display->id, display->mirrorOf));
+		}
+
 		BRect frame;
 		BPoint origin;
 		if (displayMessage.FindRect("frame", &frame) == B_OK)
 			origin = frame.LeftTop();
-		else if (displayMessage.FindPoint("origin", &origin) != B_OK)
+		else if (displayMessage.FindPoint("origin", &origin) != B_OK) {
 			origin = display->frame.LeftTop();
+			if (wasMirror && !display->IsMirror()) {
+				// Out of its source's place, to the right of the others;
+				// the source is not to give way to it.
+				origin.x = 0;
+				origin.y = 0;
+				for (size_t j = 0; j < fDisplays.size(); j++) {
+					const DisplayInfo& other = fDisplays[j];
+					if (&other != display && other.IsEnabled()
+						&& !other.IsMirror())
+						origin.x = std::max(origin.x, other.frame.right + 1);
+				}
+				display->pinned = false;
+			}
+		}
 
 		int32 logicalWidth = (display->timing.h_display * 100
 			+ display->scale / 2) / display->scale;
@@ -440,7 +543,35 @@ DisplayLayout::ApplyRequest(const BMessage& request)
 			for (size_t j = 0; j < fDisplays.size(); j++)
 				fDisplays[j].primary = false;
 			display->primary = true;
+			requestedPrimary = display->id;
 		}
+	}
+
+	// A mirror made the main display becomes the source of its group. (The
+	// main display made a mirror hands that role to its source instead.)
+	for (size_t i = 0; i < fDisplays.size(); i++) {
+		DisplayInfo& display = fDisplays[i];
+		if (display.id != requestedPrimary || !display.IsMirror())
+			continue;
+		DisplayInfo* source = _DisplayByID(display.mirrorOf);
+		display.mirrorOf = kNotMirrored;
+		if (source == NULL)
+			break;
+		for (size_t j = 0; j < fDisplays.size(); j++) {
+			if (fDisplays[j].mirrorOf == source->id)
+				fDisplays[j].mirrorOf = display.id;
+		}
+		source->mirrorOf = display.id;
+		display.frame.OffsetTo(source->frame.LeftTop());
+		display.pinned = true;
+		display.scale = _ScaleStep(display.scale);
+		int32 logicalWidth = (display.timing.h_display * 100
+			+ display.scale / 2) / display.scale;
+		int32 logicalHeight = (display.timing.v_display * 100
+			+ display.scale / 2) / display.scale;
+		display.frame.right = display.frame.left + logicalWidth - 1;
+		display.frame.bottom = display.frame.top + logicalHeight - 1;
+		break;
 	}
 
 	bool anyEnabled = false;
@@ -453,13 +584,25 @@ DisplayLayout::ApplyRequest(const BMessage& request)
 	if (primary == NULL || !primary->IsEnabled()) {
 		for (size_t i = 0; i < fDisplays.size(); i++) {
 			fDisplays[i].primary = fDisplays[i].IsConnected()
-				&& fDisplays[i].IsEnabled() && primary == NULL;
+				&& fDisplays[i].IsEnabled() && !fDisplays[i].IsMirror()
+				&& primary == NULL;
 			if (fDisplays[i].primary)
 				primary = &fDisplays[i];
 		}
 	}
 
+	_ResolveMirrors();
+	for (size_t i = 0; i < mirrorRequests.size(); i++) {
+		const DisplayInfo* display = DisplayByID(mirrorRequests[i].first);
+		if (display != NULL && display->IsEnabled()
+			&& display->mirrorOf != mirrorRequests[i].second) {
+			// The source is off or a mirror itself, or more of it would
+			// have to be shown than the monitor has pixels.
+			return B_BAD_VALUE;
+		}
+	}
 	_Separate();
+	_PlaceMirrors();
 	_Normalize();
 	return B_OK;
 }
@@ -478,6 +621,8 @@ DisplayLayout::GetConfigs(std::vector<display_output_config>& configs) const
 		memset(&config, 0, sizeof(config));
 		config.id = display.id;
 		config.flags = display.IsEnabled() ? B_DISPLAY_OUTPUT_ENABLED : 0;
+		if (display.IsEnabled() && display.IsMirror())
+			config.flags |= B_DISPLAY_OUTPUT_MIRROR;
 		config.x = (int32)display.frame.left;
 		config.y = (int32)display.frame.top;
 		config.scale = display.scale;
@@ -515,6 +660,12 @@ DisplayLayout::Store(BMessage& saved) const
 		entry.AddInt32("width", display.timing.h_display);
 		entry.AddInt32("height", display.timing.v_display);
 		entry.AddFloat("refresh", display.RefreshRate());
+		const DisplayInfo* source = display.IsMirror()
+			? DisplayByID(display.mirrorOf) : NULL;
+		if (source != NULL) {
+			entry.AddString("mirror key", source->key);
+			entry.AddString("mirror connector", source->name);
+		}
 		saved.AddMessage("display", &entry);
 	}
 
@@ -565,6 +716,8 @@ DisplayLayout::Archive(BMessage& into, HWInterface* interface) const
 		entry.AddBool("connected", display.IsConnected());
 		entry.AddBool("enabled", display.IsEnabled());
 		entry.AddBool("primary", display.primary);
+		entry.AddInt32("mirror", display.IsMirror()
+			? (int32)display.mirrorOf : -1);
 		entry.AddRect("frame", display.frame);
 		entry.AddInt32("scale", display.scale);
 		entry.AddInt32("render scale", display.renderScale);
@@ -619,7 +772,8 @@ const DisplayInfo*
 DisplayLayout::PrimaryDisplay() const
 {
 	for (size_t i = 0; i < fDisplays.size(); i++) {
-		if (fDisplays[i].primary && fDisplays[i].IsEnabled())
+		if (fDisplays[i].primary && fDisplays[i].IsEnabled()
+			&& !fDisplays[i].IsMirror())
 			return &fDisplays[i];
 	}
 	return NULL;
@@ -627,7 +781,8 @@ DisplayLayout::PrimaryDisplay() const
 
 
 /*!	The enabled display holding most of \a frame; when none holds any of
-	it, the one nearest to its center.
+	it, the one nearest to its center. A mirror is never the answer: its
+	source has the same frame.
 */
 const DisplayInfo*
 DisplayLayout::DisplayFor(BRect frame) const
@@ -636,7 +791,7 @@ DisplayLayout::DisplayFor(BRect frame) const
 	float bestArea = 0;
 	for (size_t i = 0; i < fDisplays.size(); i++) {
 		const DisplayInfo& display = fDisplays[i];
-		if (!display.IsEnabled())
+		if (!display.IsEnabled() || display.IsMirror())
 			continue;
 		BRect common = display.frame & frame;
 		if (!common.IsValid())
@@ -661,7 +816,7 @@ DisplayLayout::DisplayNearest(BPoint point) const
 	float bestDistance = 0;
 	for (size_t i = 0; i < fDisplays.size(); i++) {
 		const DisplayInfo& display = fDisplays[i];
-		if (!display.IsEnabled())
+		if (!display.IsEnabled() || display.IsMirror())
 			continue;
 		float dx = 0, dy = 0;
 		if (point.x < display.frame.left)
@@ -750,6 +905,17 @@ DisplayLayout::HasScaledDisplay() const
 }
 
 
+bool
+DisplayLayout::HasMirror() const
+{
+	for (size_t i = 0; i < fDisplays.size(); i++) {
+		if (fDisplays[i].IsEnabled() && fDisplays[i].IsMirror())
+			return true;
+	}
+	return false;
+}
+
+
 /*!	A scale to start a monitor at, from its pixel density: a 4K monitor of
 	24 inches is nearly 190 dots per inch, twice what most programs and
 	fonts were sized for.
@@ -820,6 +986,104 @@ DisplayLayout::_DisplayByID(uint32 id)
 }
 
 
+/*!	A mirror needs a source that is enabled and not a mirror itself (a
+	mirror of a mirror shows what that one shows), and a monitor with at
+	least as many pixels as the source's part of the desktop: the display
+	engines enlarge but never shrink. A display without one shows its own
+	part of the desktop again. The main display is never a mirror; its
+	source is the main display instead.
+*/
+void
+DisplayLayout::_ResolveMirrors()
+{
+	for (size_t i = 0; i < fDisplays.size(); i++) {
+		DisplayInfo& display = fDisplays[i];
+		if (!display.IsMirror())
+			continue;
+
+		const DisplayInfo* source = DisplayByID(display.mirrorOf);
+		for (size_t hops = 0; source != NULL && source->IsMirror()
+				&& source != &display && hops < fDisplays.size(); hops++)
+			source = DisplayByID(source->mirrorOf);
+
+		if (source == NULL || source == &display || source->IsMirror()
+			|| !source->IsConnected() || !source->IsEnabled()
+			|| !display.IsConnected() || !display.IsEnabled()
+			|| _MirrorScale(display, *source) < 100) {
+			display.mirrorOf = kNotMirrored;
+			continue;
+		}
+		display.mirrorOf = source->id;
+	}
+
+	for (size_t i = 0; i < fDisplays.size(); i++) {
+		DisplayInfo& display = fDisplays[i];
+		if (!display.IsMirror() || !display.primary)
+			continue;
+		display.primary = false;
+		DisplayInfo* source = _DisplayByID(display.mirrorOf);
+		if (source != NULL)
+			source->primary = true;
+	}
+
+	_PlaceMirrors();
+}
+
+
+/*!	The largest scale a user can choose that is not above \a scale. */
+/*static*/ uint16
+DisplayLayout::_ScaleStep(uint16 scale)
+{
+	uint16 step = kScales[0];
+	for (size_t i = 0; i < sizeof(kScales) / sizeof(kScales[0]); i++) {
+		if (kScales[i] <= scale)
+			step = kScales[i];
+	}
+	return step;
+}
+
+
+/*!	Every mirror takes its source's frame, and the scale that fits it. */
+void
+DisplayLayout::_PlaceMirrors()
+{
+	for (size_t i = 0; i < fDisplays.size(); i++) {
+		DisplayInfo& display = fDisplays[i];
+		if (!display.IsMirror())
+			continue;
+		const DisplayInfo* source = DisplayByID(display.mirrorOf);
+		if (source == NULL)
+			continue;
+		display.frame = source->frame;
+		display.scale = _MirrorScale(display, *source);
+	}
+}
+
+
+/*!	How much \a mirror enlarges its source's part of the desktop: as much as
+	fits its mode in both directions. A monitor like the source's gets the
+	source's own scale; one of another shape shows black bars.
+*/
+/*static*/ uint16
+DisplayLayout::_MirrorScale(const DisplayInfo& mirror,
+	const DisplayInfo& source)
+{
+	if (mirror.timing.h_display == source.timing.h_display
+		&& mirror.timing.v_display == source.timing.v_display)
+		return source.scale;
+
+	float width = source.frame.Width() + 1;
+	float height = source.frame.Height() + 1;
+	if (width < 1 || height < 1 || mirror.timing.h_display == 0
+		|| mirror.timing.v_display == 0)
+		return source.scale;
+
+	float fit = std::min(mirror.timing.h_display / width,
+		mirror.timing.v_display / height);
+	return (uint16)std::min(400.0f, floorf(fit * 100 + 0.5f));
+}
+
+
 /*!	Finds what the settings remember about \a display: the same monitor on
 	the same connector first, then the same monitor anywhere.
 */
@@ -848,8 +1112,8 @@ DisplayLayout::_FindSaved(const BMessage& saved, const DisplayInfo& display,
 }
 
 
-/*!	Enabled displays must not overlap: one that does is moved right until
-	it does not. Displays the current request placed stay where they were
+/*!	Enabled displays must not overlap, mirrors aside: one that does is moved
+	right until it does not. Displays the current request placed stay where they were
 	put; the others give way, in their order from left to right. Moving one
 	display onto another therefore pushes the other aside, which is how a
 	swap is asked for with a single move.
@@ -859,7 +1123,8 @@ DisplayLayout::_Separate()
 {
 	std::vector<DisplayInfo*> enabled;
 	for (size_t i = 0; i < fDisplays.size(); i++) {
-		if (fDisplays[i].IsConnected() && fDisplays[i].IsEnabled())
+		if (fDisplays[i].IsConnected() && fDisplays[i].IsEnabled()
+			&& !fDisplays[i].IsMirror())
 			enabled.push_back(&fDisplays[i]);
 	}
 	std::stable_sort(enabled.begin(), enabled.end(),
@@ -910,7 +1175,8 @@ DisplayLayout::_CloseGaps()
 {
 	std::vector<DisplayInfo*> enabled;
 	for (size_t i = 0; i < fDisplays.size(); i++) {
-		if (fDisplays[i].IsConnected() && fDisplays[i].IsEnabled())
+		if (fDisplays[i].IsConnected() && fDisplays[i].IsEnabled()
+			&& !fDisplays[i].IsMirror())
 			enabled.push_back(&fDisplays[i]);
 	}
 	std::stable_sort(enabled.begin(), enabled.end(),

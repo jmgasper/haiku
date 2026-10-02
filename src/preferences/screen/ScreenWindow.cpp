@@ -299,6 +299,11 @@ ScreenWindow::ScreenWindow(ScreenSettings* settings)
 	fZoomBox->SetValue(fCurrentLayout.ZoomToDisplay()
 		? B_CONTROL_ON : B_CONTROL_OFF);
 
+	fMirrorBox = new BCheckBox("mirror", B_TRANSLATE("Mirror displays"),
+		new BMessage(kMsgMirrorDisplays));
+	fMirrorBox->SetToolTip(B_TRANSLATE("Every display shows what the main "
+		"display shows."));
+
 	// The details of the selected display, on the right
 
 	BView* detailsView = _BuildDetailsPanel();
@@ -324,6 +329,7 @@ ScreenWindow::ScreenWindow(ScreenSettings* settings)
 					.Add(fBackgroundsButton)
 					.AddGlue()
 					.End()
+				.Add(fMirrorBox)
 				.Add(fZoomBox)
 				.End()
 			.Add(new BSeparatorView(B_VERTICAL))
@@ -1064,11 +1070,32 @@ ScreenWindow::_UpdateDetails()
 	fPrimaryBox->SetEnabled(fHasLayout && display->enabled
 		&& !display->primary);
 
-	// controls that make no sense for a disabled display
+	// controls that make no sense for a disabled display; a mirror is as
+	// large as its source's part of the desktop allows
 	fResolutionField->SetEnabled(display->enabled);
 	fRefreshField->SetEnabled(display->enabled
 		&& fRefreshMenu->CountItems() > 0);
-	fScaleField->SetEnabled(fCurrentLayout.CanScale() && display->enabled);
+	fScaleField->SetEnabled(fCurrentLayout.CanScale() && display->enabled
+		&& !display->IsMirror());
+	if (display->IsMirror()) {
+		fScaleField->SetToolTip(B_TRANSLATE("A mirror shows the main "
+			"display's desktop as large as it fits."));
+	} else if (fCurrentLayout.CanScale())
+		fScaleField->SetToolTip((const char*)NULL);
+
+	_UpdateMirrorBox();
+}
+
+
+void
+ScreenWindow::_UpdateMirrorBox()
+{
+	bool canMirror = fPendingLayout.CanMirror();
+	if (canMirror && fMirrorBox->IsHidden(fMirrorBox))
+		fMirrorBox->Show();
+	else if (!canMirror && !fMirrorBox->IsHidden(fMirrorBox))
+		fMirrorBox->Hide();
+	fMirrorBox->SetValue(fPendingLayout.MirrorState());
 }
 
 
@@ -1206,6 +1233,12 @@ ScreenWindow::_UpdateTitle(const display_state& display)
 		add_part(subtitle, part);
 	}
 
+	if (display.IsMirror()) {
+		part.SetToFormat(B_TRANSLATE("mirrors display %" B_PRId32),
+			fPendingLayout.NumberOf(display.mirrorOf));
+		add_part(subtitle, part);
+	}
+
 	fSubtitleView->SetText(subtitle.String());
 	if (subtitle.Length() == 0) {
 		if (!fSubtitleView->IsHidden(fSubtitleView))
@@ -1276,6 +1309,26 @@ ScreenWindow::_ApplyLayout()
 	if (fPendingLayout.SameArrangement(fCurrentLayout))
 		return;
 
+	int32 mirrorID, sourceID;
+	if (fPendingLayout.FindTooSmallMirror(mirrorID, sourceID)) {
+		BString text = B_TRANSLATE("Display %mirror% has fewer pixels than "
+			"what display %source% shows, and cannot mirror it.\n\n"
+			"Choose a larger scale for display %source%, or a higher "
+			"resolution for display %mirror%.");
+		BString number;
+		number << fPendingLayout.NumberOf(mirrorID);
+		text.ReplaceAll("%mirror%", number);
+		number.SetTo("");
+		number << fPendingLayout.NumberOf(sourceID);
+		text.ReplaceAll("%source%", number);
+		BAlert* alert = new BAlert(B_TRANSLATE("Mirror displays"),
+			text.String(), B_TRANSLATE("OK"), NULL, NULL, B_WIDTH_AS_USUAL,
+			B_WARNING_ALERT);
+		alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);
+		alert->Go(NULL);
+		return;
+	}
+
 	// make checkpoint, so we can undo these changes
 	fUndoLayout = fCurrentLayout;
 	_ApplyLayoutState(fPendingLayout, true);
@@ -1323,12 +1376,25 @@ ScreenWindow::_IdentifyDisplays()
 			continue;
 
 		int32 thisNumber = number++;
-		if (!display->enabled || !display->frame.IsValid())
+		if (!display->enabled || !display->frame.IsValid()
+			|| display->IsMirror())
 			continue;
 
+		// Mirrors show the badge of their source, and their numbers on it.
+		BString numbers;
+		numbers << thisNumber;
 		BString label = display->monitor.Length() > 0
 			? display->monitor : display->name;
-		IdentifyWindow* window = new IdentifyWindow(thisNumber,
+		for (int32 j = 0; j < fCurrentLayout.CountDisplays(); j++) {
+			const display_state* mirror = fCurrentLayout.DisplayAt(j);
+			if (!mirror->connected || !mirror->enabled
+				|| mirror->mirrorOf != display->id)
+				continue;
+			numbers << " | " << fCurrentLayout.NumberOf(mirror->id);
+			label = B_TRANSLATE("Mirrored");
+		}
+
+		IdentifyWindow* window = new IdentifyWindow(numbers.String(),
 			label.String(), display->frame);
 		window->Show();
 	}
@@ -1989,8 +2055,10 @@ ScreenWindow::MessageReceived(BMessage* message)
 			if (display == NULL)
 				break;
 
-			if (fPrimaryBox->Value() == B_CONTROL_ON)
+			if (fPrimaryBox->Value() == B_CONTROL_ON) {
 				fPendingLayout.SetPrimary(display->id);
+				fPendingLayout.Normalize();
+			}
 
 			_UpdateArrangementView();
 			_UpdateDetails();
@@ -2020,6 +2088,13 @@ ScreenWindow::MessageReceived(BMessage* message)
 
 		case kMsgZoomToDisplay:
 			BPrivate::set_zoom_to_display(fZoomBox->Value() == B_CONTROL_ON);
+			break;
+
+		case kMsgMirrorDisplays:
+			fPendingLayout.SetMirrored(fMirrorBox->Value() != B_CONTROL_OFF);
+			_UpdateArrangementView();
+			_UpdateDetails();
+			_CheckApplyEnabled();
 			break;
 
 		case kMsgReloadLayout:

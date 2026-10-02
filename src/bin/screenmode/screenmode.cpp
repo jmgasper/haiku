@@ -29,6 +29,7 @@ enum {
 	kOptionPrimary,
 	kOptionDisplayMode,
 	kOptionZoomToDisplay,
+	kOptionMirror,
 };
 
 static struct option const kLongOptions[] = {
@@ -49,6 +50,7 @@ static struct option const kLongOptions[] = {
 	{"primary", no_argument, 0, kOptionPrimary},
 	{"display-mode", required_argument, 0, kOptionDisplayMode},
 	{"zoom-to-display", required_argument, 0, kOptionZoomToDisplay},
+	{"mirror", required_argument, 0, kOptionMirror},
 	{NULL}
 };
 
@@ -105,6 +107,23 @@ print_mode(const display_mode& displayMode, const screen_mode& mode)
 }
 
 
+/*!	The number of the display with \a id in the list, as the options take
+	it, or 0.
+*/
+static int32
+display_number(const BMessage& layout, int32 id)
+{
+	BMessage display;
+	for (int32 i = 0; layout.FindMessage("display", i, &display) == B_OK;
+			i++) {
+		int32 displayID;
+		if (display.FindInt32("id", &displayID) == B_OK && displayID == id)
+			return i + 1;
+	}
+	return 0;
+}
+
+
 static void
 print_displays(bool shortOutput)
 {
@@ -130,7 +149,7 @@ print_displays(bool shortOutput)
 	BMessage display;
 	for (int32 i = 0; layout.FindMessage("display", i, &display) == B_OK;
 			i++) {
-		int32 id, scale, width, height, nativeWidth, nativeHeight;
+		int32 id, scale, width, height, nativeWidth, nativeHeight, mirror;
 		float refresh, nativeRefresh, widthCM, heightCM;
 		const char* name;
 		const char* monitor;
@@ -154,12 +173,15 @@ print_displays(bool shortOutput)
 		display.FindFloat("native refresh", &nativeRefresh);
 		display.FindFloat("width cm", &widthCM);
 		display.FindFloat("height cm", &heightCM);
+		if (display.FindInt32("mirror", &mirror) != B_OK)
+			mirror = -1;
+		int32 mirrorNumber = mirror >= 0 ? display_number(layout, mirror) : 0;
 
 		if (shortOutput) {
 			printf("%" B_PRId32 " %s %d %d %g %g %" B_PRId32 " %" B_PRId32
-				" %" B_PRId32 " %g %d\n", i + 1, name, enabled, connected,
-				displayFrame.left, displayFrame.top, scale, width, height,
-				refresh, primary);
+				" %" B_PRId32 " %g %d %" B_PRId32 "\n", i + 1, name, enabled,
+				connected, displayFrame.left, displayFrame.top, scale, width,
+				height, refresh, primary, mirrorNumber);
 			continue;
 		}
 
@@ -175,6 +197,9 @@ print_displays(bool shortOutput)
 			printf("   scale %" B_PRId32 "%%: %g x %g at %g, %g\n", scale,
 				displayFrame.Width() + 1, displayFrame.Height() + 1,
 				displayFrame.left, displayFrame.top);
+			if (mirrorNumber > 0) {
+				printf("   mirrors display %" B_PRId32 "\n", mirrorNumber);
+			}
 		}
 		if (widthCM > 0) {
 			printf("   %.0f x %.0f cm, %.0f dpi\n", widthCM, heightCM,
@@ -247,6 +272,9 @@ usage(int status)
 		"      --position <x> <y>\twhere its top left corner goes\n"
 		"      --display-mode <w>x<h>[@<hz>]\n"
 		"      --enable, --disable, --primary\n"
+		"      --mirror <n|name|off>\tshow what that display shows, or its "
+			"own part\n"
+		"\t\t\tof the desktop again\n"
 		"      --zoom-to-display on|off\n"
 		"\t\t\twhether maximizing a window fills only the display it "
 			"is on\n",
@@ -277,6 +305,7 @@ main(int argc, char** argv)
 	const char* displayName = NULL;
 	BMessage displayRequest;
 	bool changeDisplay = false;
+	const char* mirrorName = NULL;
 	int zoomToDisplay = -1;
 
 	// TODO: add a possibility to set a virtual screen size in addition to
@@ -334,6 +363,10 @@ main(int argc, char** argv)
 				changeDisplay = true;
 				break;
 			}
+			case kOptionMirror:
+				mirrorName = optarg;
+				changeDisplay = true;
+				break;
 			case kOptionZoomToDisplay:
 				if (!strcasecmp(optarg, "on") || !strcasecmp(optarg, "yes")
 					|| !strcmp(optarg, "1"))
@@ -473,6 +506,20 @@ main(int argc, char** argv)
 			fprintf(stderr, "%s: There is no display \"%s\"\n", kProgramName,
 				displayName);
 			return 1;
+		}
+		if (mirrorName != NULL) {
+			int32 mirror = -1;
+			if (strcasecmp(mirrorName, "off") != 0
+				&& strcasecmp(mirrorName, "no") != 0
+				&& strcasecmp(mirrorName, "none") != 0) {
+				mirror = find_display(layout, mirrorName);
+				if (mirror < 0) {
+					fprintf(stderr, "%s: There is no display \"%s\"\n",
+						kProgramName, mirrorName);
+					return 1;
+				}
+			}
+			displayRequest.AddInt32("mirror", mirror);
 		}
 		displayRequest.AddInt32("id", id);
 		BMessage request;

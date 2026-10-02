@@ -10,6 +10,7 @@
 
 #include <algorithm>
 
+#include <Control.h>
 #include <InterfacePrivate.h>
 
 
@@ -36,6 +37,7 @@ display_state::display_state()
 	connected(true),
 	enabled(true),
 	primary(false),
+	mirrorOf(-1),
 	frame(0, 0, -1, -1),
 	scale(100),
 	nativeWidth(0),
@@ -81,6 +83,8 @@ display_state::SetTo(const BMessage& message)
 		enabled = true;
 	if (message.FindBool("primary", &primary) != B_OK)
 		primary = false;
+	if (message.FindInt32("mirror", &mirrorOf) != B_OK || mirrorOf < 0)
+		mirrorOf = -1;
 	if (message.FindRect("frame", &frame) != B_OK)
 		frame = BRect(0, 0, -1, -1);
 	if (message.FindInt32("scale", &scale) != B_OK || scale <= 0)
@@ -152,18 +156,23 @@ display_state::UpdateFrameSize()
 }
 
 
-/*!	Compares only what is sent to the app_server on Apply. */
+/*!	Compares only what is sent to the app_server on Apply. A mirror's
+	place and scale follow from its source.
+*/
 bool
 display_state::SameSettings(const display_state& other) const
 {
 	if (id != other.id || enabled != other.enabled
-		|| primary != other.primary || scale != other.scale
+		|| primary != other.primary || mirrorOf != other.mirrorOf
 		|| modeWidth != other.modeWidth || modeHeight != other.modeHeight
 		|| !refresh_rates_equal(modeRefresh, other.modeRefresh))
 		return false;
 
+	if (!IsMirror() && scale != other.scale)
+		return false;
+
 	// The position of a disabled display does not matter
-	if (enabled && frame.LeftTop() != other.frame.LeftTop())
+	if (enabled && !IsMirror() && frame.LeftTop() != other.frame.LeftTop())
 		return false;
 
 	return true;
@@ -360,6 +369,33 @@ DisplayLayoutState::CountEnabled() const
 
 
 int32
+DisplayLayoutState::CountConnected() const
+{
+	int32 count = 0;
+	for (size_t i = 0; i < fDisplays.size(); i++) {
+		if (fDisplays[i].connected)
+			count++;
+	}
+	return count;
+}
+
+
+int32
+DisplayLayoutState::NumberOf(int32 id) const
+{
+	int32 number = 1;
+	for (size_t i = 0; i < fDisplays.size(); i++) {
+		if (!fDisplays[i].connected)
+			continue;
+		if (fDisplays[i].id == id)
+			return number;
+		number++;
+	}
+	return 0;
+}
+
+
+int32
 DisplayLayoutState::PrimaryID() const
 {
 	for (size_t i = 0; i < fDisplays.size(); i++) {
@@ -400,15 +436,16 @@ DisplayLayoutState::Frame() const
 
 
 /*!	Mirrors what the app_server does with a request: overlapping displays are
-	separated by pushing later ones to the right, and the union of the enabled
-	displays is moved to 0,0.
+	separated by pushing later ones to the right, mirrors take their source's
+	place, and the union of the enabled displays is moved to 0,0.
 */
 void
 DisplayLayoutState::Normalize()
 {
 	std::vector<display_state*> enabled;
 	for (size_t i = 0; i < fDisplays.size(); i++) {
-		if (fDisplays[i].connected && fDisplays[i].enabled)
+		if (fDisplays[i].connected && fDisplays[i].enabled
+			&& !fDisplays[i].IsMirror())
 			enabled.push_back(&fDisplays[i]);
 	}
 	std::sort(enabled.begin(), enabled.end(),
@@ -430,6 +467,8 @@ DisplayLayoutState::Normalize()
 		}
 	}
 
+	_PlaceMirrors();
+
 	BRect frame = Frame();
 	if (!frame.IsValid())
 		return;
@@ -439,9 +478,29 @@ DisplayLayoutState::Normalize()
 }
 
 
+/*!	The main display is never a mirror: making a mirror the main display
+	makes it the source of its group, which is what the app_server does.
+*/
 void
 DisplayLayoutState::SetPrimary(int32 id)
 {
+	display_state* display = DisplayByID(id);
+	if (display != NULL && display->IsMirror()) {
+		display_state* source = DisplayByID(display->mirrorOf);
+		display->mirrorOf = -1;
+		if (source != NULL) {
+			for (size_t i = 0; i < fDisplays.size(); i++) {
+				if (fDisplays[i].mirrorOf == source->id)
+					fDisplays[i].mirrorOf = id;
+			}
+			source->mirrorOf = id;
+			display->frame.OffsetTo(source->frame.LeftTop());
+		}
+		display->scale = _ScaleStep(display->scale);
+		display->UpdateFrameSize();
+		_PlaceMirrors();
+	}
+
 	for (size_t i = 0; i < fDisplays.size(); i++)
 		fDisplays[i].primary = fDisplays[i].id == id;
 }
@@ -457,6 +516,15 @@ DisplayLayoutState::SetEnabled(int32 id, bool enabled)
 		return;
 
 	display->enabled = enabled;
+	if (!enabled) {
+		// what mirrored it shows its own part now
+		for (size_t i = 0; i < fDisplays.size(); i++) {
+			if (fDisplays[i].mirrorOf == id)
+				_Unmirror(fDisplays[i]);
+		}
+		if (display->IsMirror())
+			_Unmirror(*display);
+	}
 
 	// The primary display must be an enabled one
 	if (!enabled && display->primary) {
@@ -475,6 +543,9 @@ DisplayLayoutState::SetEnabled(int32 id, bool enabled)
 void
 DisplayLayoutState::SetDefaults()
 {
+	for (size_t i = 0; i < fDisplays.size(); i++)
+		fDisplays[i].mirrorOf = -1;
+
 	float left = 0;
 	for (size_t i = 0; i < fDisplays.size(); i++) {
 		display_state& display = fDisplays[i];
@@ -546,8 +617,10 @@ DisplayLayoutState::BuildRequest(BMessage& request) const
 		BMessage entry;
 		entry.AddInt32("id", display.id);
 		entry.AddBool("enabled", display.enabled);
+		entry.AddInt32("mirror", display.mirrorOf);
 		entry.AddRect("frame", display.frame);
-		entry.AddInt32("scale", display.scale);
+		if (!display.IsMirror())
+			entry.AddInt32("scale", display.scale);
 		if (display.modeWidth > 0 && display.modeHeight > 0) {
 			entry.AddInt32("mode width", display.modeWidth);
 			entry.AddInt32("mode height", display.modeHeight);
@@ -557,4 +630,253 @@ DisplayLayoutState::BuildRequest(BMessage& request) const
 			entry.AddBool("primary", true);
 		request.AddMessage("display", &entry);
 	}
+}
+
+
+//	#pragma mark - mirroring
+
+
+/*!	Mirroring needs a driver that arranges the displays, and two of them. */
+bool
+DisplayLayoutState::CanMirror() const
+{
+	return fHasLayout && CountConnected() >= 2;
+}
+
+
+int32
+DisplayLayoutState::MirrorState() const
+{
+	int32 primary = PrimaryID();
+	int32 others = 0;
+	int32 mirrors = 0;
+	for (size_t i = 0; i < fDisplays.size(); i++) {
+		const display_state& display = fDisplays[i];
+		if (!display.connected || !display.enabled || display.id == primary)
+			continue;
+		others++;
+		if (display.mirrorOf == primary)
+			mirrors++;
+	}
+	if (mirrors == 0)
+		return B_CONTROL_OFF;
+	return mirrors == others ? B_CONTROL_ON : B_CONTROL_PARTIALLY_ON;
+}
+
+
+/*!	With \a mirrored, every connected display shows what the main display
+	shows. A display with fewer pixels than the main display's part of the
+	desktop cannot do that (the display engine only enlarges): the main
+	display is then scaled up until it fits, or, failing that, all of them
+	are set to a resolution they share.
+	Without, every mirror shows its own part again, to the right of the
+	others.
+*/
+void
+DisplayLayoutState::SetMirrored(bool mirrored)
+{
+	if (!mirrored) {
+		for (size_t i = 0; i < fDisplays.size(); i++) {
+			if (fDisplays[i].IsMirror())
+				_Unmirror(fDisplays[i]);
+		}
+		Normalize();
+		return;
+	}
+
+	display_state* source = DisplayByID(PrimaryID());
+	if (source == NULL)
+		return;
+	for (size_t i = 0; i < fDisplays.size(); i++) {
+		display_state& display = fDisplays[i];
+		if (!display.connected || display.id == source->id)
+			continue;
+		display.enabled = true;
+		display.mirrorOf = source->id;
+	}
+
+	if (!_MirrorsFit(*source, source->scale)) {
+		bool fixed = false;
+		for (size_t i = 0; i < fScales.size() && !fixed; i++) {
+			if (fScales[i] > source->scale && _MirrorsFit(*source, fScales[i])) {
+				source->scale = fScales[i];
+				source->UpdateFrameSize();
+				fixed = true;
+			}
+		}
+		if (!fixed)
+			_SetCommonMode(*source);
+	}
+
+	Normalize();
+}
+
+
+/*!	A mirror that would have to show more pixels than it has; the app_server
+	refuses such a layout.
+*/
+bool
+DisplayLayoutState::FindTooSmallMirror(int32& mirrorID, int32& sourceID) const
+{
+	for (size_t i = 0; i < fDisplays.size(); i++) {
+		const display_state& display = fDisplays[i];
+		if (!display.connected || !display.enabled || !display.IsMirror())
+			continue;
+		const display_state* source = DisplayByID(display.mirrorOf);
+		if (source != NULL && _MirrorScale(display, *source) < 100) {
+			mirrorID = display.id;
+			sourceID = source->id;
+			return true;
+		}
+	}
+	return false;
+}
+
+
+/*!	Every mirror takes its source's frame, and the scale that fits it, the
+	way the app_server works them out.
+*/
+void
+DisplayLayoutState::_PlaceMirrors()
+{
+	for (size_t i = 0; i < fDisplays.size(); i++) {
+		display_state& display = fDisplays[i];
+		if (!display.IsMirror())
+			continue;
+		const display_state* source = DisplayByID(display.mirrorOf);
+		if (source == NULL || source->IsMirror() || !source->enabled) {
+			_Unmirror(display);
+			continue;
+		}
+		display.frame = source->frame;
+		display.scale = std::max((int32)100, _MirrorScale(display, *source));
+	}
+}
+
+
+/*!	The display shows its own part of the desktop again, at the size things
+	had on it, to the right of the displays that are not mirrors.
+*/
+void
+DisplayLayoutState::_Unmirror(display_state& display)
+{
+	display.mirrorOf = -1;
+	display.scale = _ScaleStep(display.scale);
+
+	float right = 0;
+	for (size_t i = 0; i < fDisplays.size(); i++) {
+		const display_state& other = fDisplays[i];
+		if (&other != &display && other.connected && other.enabled
+			&& !other.IsMirror())
+			right = std::max(right, other.frame.right + 1);
+	}
+	display.frame.OffsetTo(right, 0);
+	display.UpdateFrameSize();
+}
+
+
+bool
+DisplayLayoutState::_MirrorsFit(const display_state& source,
+	int32 scale) const
+{
+	display_state scaled = source;
+	scaled.scale = scale;
+	scaled.UpdateFrameSize();
+	for (size_t i = 0; i < fDisplays.size(); i++) {
+		const display_state& display = fDisplays[i];
+		if (display.connected && display.enabled
+			&& display.mirrorOf == source.id
+			&& _MirrorScale(display, scaled) < 100)
+			return false;
+	}
+	return true;
+}
+
+
+/*!	Sets the source and its mirrors to the largest resolution all of them
+	offer, at 100%.
+*/
+bool
+DisplayLayoutState::_SetCommonMode(display_state& source)
+{
+	int32 bestWidth = 0;
+	int32 bestHeight = 0;
+	for (size_t i = 0; i < source.modes.size(); i++) {
+		const display_mode_entry& mode = source.modes[i];
+		if ((int64)mode.width * mode.height <= (int64)bestWidth * bestHeight)
+			continue;
+		bool everywhere = true;
+		for (size_t j = 0; j < fDisplays.size() && everywhere; j++) {
+			const display_state& display = fDisplays[j];
+			if (display.connected && display.mirrorOf == source.id
+				&& !display.HasMode(mode.width, mode.height))
+				everywhere = false;
+		}
+		if (everywhere) {
+			bestWidth = mode.width;
+			bestHeight = mode.height;
+		}
+	}
+	if (bestWidth == 0)
+		return false;
+
+	for (size_t i = 0; i < fDisplays.size(); i++) {
+		display_state& display = fDisplays[i];
+		if (display.id != source.id && display.mirrorOf != source.id)
+			continue;
+		// the rate it has if it offers it there, else the highest
+		float refresh = 0;
+		bool keep = false;
+		for (size_t j = 0; j < display.modes.size(); j++) {
+			const display_mode_entry& mode = display.modes[j];
+			if (mode.width != bestWidth || mode.height != bestHeight)
+				continue;
+			if (refresh_rates_equal(mode.refresh, display.modeRefresh))
+				keep = true;
+			refresh = std::max(refresh, mode.refresh);
+		}
+		display.modeWidth = bestWidth;
+		display.modeHeight = bestHeight;
+		if (!keep)
+			display.modeRefresh = refresh;
+		display.scale = 100;
+		display.UpdateFrameSize();
+	}
+	return true;
+}
+
+
+/*!	How much \a mirror enlarges its source's part of the desktop, the way
+	the app_server works it out: a monitor like the source's gets its scale,
+	another as much as fits both ways.
+*/
+/*static*/ int32
+DisplayLayoutState::_MirrorScale(const display_state& mirror,
+	const display_state& source)
+{
+	if (mirror.modeWidth == source.modeWidth
+		&& mirror.modeHeight == source.modeHeight)
+		return source.scale;
+
+	float width = source.frame.Width() + 1;
+	float height = source.frame.Height() + 1;
+	if (width < 1 || height < 1 || mirror.modeWidth <= 0
+		|| mirror.modeHeight <= 0)
+		return source.scale;
+
+	float fit = std::min(mirror.modeWidth / width, mirror.modeHeight / height);
+	return (int32)std::min(400.0f, floorf(fit * 100 + 0.5f));
+}
+
+
+/*!	The largest scale one can choose that is not above \a scale. */
+int32
+DisplayLayoutState::_ScaleStep(int32 scale) const
+{
+	int32 step = fScales.empty() ? 100 : fScales[0];
+	for (size_t i = 0; i < fScales.size(); i++) {
+		if (fScales[i] <= scale)
+			step = fScales[i];
+	}
+	return step;
 }

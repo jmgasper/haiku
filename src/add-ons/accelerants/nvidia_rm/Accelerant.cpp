@@ -156,6 +156,9 @@ private:
 		uint16 width, height;		// its size, in frame buffer pixels
 		uint16 scale;				// percent
 		uint16 renderScale;			// frame buffer pixels per logical pixel, percent
+		bool mirror = false;		// shows the region of the output that starts
+									// at the same place, enlarged by scale /
+									// renderScale and centred on the monitor
 		std::vector<uint8> edid;
 	};
 	std::vector<Output> fOutputs;
@@ -738,7 +741,7 @@ void NvAccelerant::BuildLayoutMode()
 	for (const auto &output: fOutputs) {
 		if (!output.enabled)
 			continue;
-		if (primary == nullptr)
+		if (primary == nullptr || (primary->mirror && !output.mirror))
 			primary = &output;
 		minX = std::min(minX, output.x);
 		minY = std::min(minY, output.y);
@@ -1127,6 +1130,22 @@ void NvAccelerant::ApplyLayout(NvKmsBitmap &framebuffer)
 		// frame buffer is stretched over it.
 		head.viewPortOut = {.x = 0, .y = 0, .width = timings.hVisible, .height = timings.vVisible};
 		head.viewPortSizeIn = {.width = output.width, .height = output.height};
+		if (output.mirror) {
+			// A mirror of another shape gets its source's picture as large as
+			// it fits, with black bars on the sides that are left over.
+			uint32 width = ((uint32)output.width * output.scale + output.renderScale / 2)
+				/ output.renderScale;
+			uint32 height = ((uint32)output.height * output.scale + output.renderScale / 2)
+				/ output.renderScale;
+			width = std::min<uint32>(width, timings.hVisible);
+			height = std::min<uint32>(height, timings.vVisible);
+			if (width != timings.hVisible || height != timings.vVisible) {
+				head.viewPortOut = {.x = (NvU16)((timings.hVisible - width) / 2),
+					.y = (NvU16)((timings.vVisible - height) / 2),
+					.width = (NvU16)width, .height = (NvU16)height};
+				head.viewPortOutSpecified = true;
+			}
+		}
 		head.flip.viewPortIn.specified = true;
 		head.flip.viewPortIn.point = {.x = (NvU16)output.x, .y = (NvU16)output.y};
 		auto &layer = head.flip.layer[NVKMS_MAIN_LAYER];
@@ -1211,6 +1230,8 @@ void NvAccelerant::FillDisplayOutput(const Output &output, display_output &info)
 		info.flags |= B_DISPLAY_OUTPUT_CONNECTED;
 	if (output.enabled)
 		info.flags |= B_DISPLAY_OUTPUT_ENABLED;
+	if (output.enabled && output.mirror)
+		info.flags |= B_DISPLAY_OUTPUT_MIRROR;
 	info.x = output.x;
 	info.y = output.y;
 	info.width = output.width;
@@ -1265,8 +1286,10 @@ void NvAccelerant::SetDisplayLayout(const display_output_config* configs, uint32
 
 	// Work on a copy so that a refused layout leaves the current one alone.
 	std::vector<Output> outputs = fOutputs;
-	for (auto &output: outputs)
+	for (auto &output: outputs) {
 		output.enabled = false;
+		output.mirror = false;
+	}
 
 	NvU32 usedHeads = 0;
 	uint32 enabled = 0;
@@ -1328,6 +1351,7 @@ void NvAccelerant::SetDisplayLayout(const display_output_config* configs, uint32
 		}
 
 		output->enabled = true;
+		output->mirror = (config.flags & B_DISPLAY_OUTPUT_MIRROR) != 0;
 		output->mode = timing;
 		output->scale = config.scale;
 		output->renderScale = renderScale;
@@ -1340,6 +1364,26 @@ void NvAccelerant::SetDisplayLayout(const display_output_config* configs, uint32
 	if (enabled == 0)
 		RaiseErrno(EINVAL);
 
+	// A mirror scans exactly its source's region: the output without the
+	// flag whose region starts at the same place.
+	for (auto &output: outputs) {
+		if (!output.enabled || !output.mirror)
+			continue;
+		const Output *source = nullptr;
+		for (const auto &candidate: outputs) {
+			if (candidate.enabled && !candidate.mirror && candidate.x == output.x
+				&& candidate.y == output.y)
+				source = &candidate;
+		}
+		if (source == nullptr) {
+			debug_printf("nvidia_rm: layout has %s mirror nothing at %" B_PRId32 ",%" B_PRId32 "\n",
+				output.name, output.x, output.y);
+			RaiseErrno(EINVAL);
+		}
+		output.width = source->width;
+		output.height = source->height;
+	}
+
 	fOutputs = outputs;
 	BuildLayoutMode();
 	ReadModeList();
@@ -1348,10 +1392,10 @@ void NvAccelerant::SetDisplayLayout(const display_output_config* configs, uint32
 		if (!output.enabled)
 			continue;
 		debug_printf("nvidia_rm: layout: %s head %" B_PRIu32 " %ux%u@%u at %" B_PRId32 ",%" B_PRId32
-			" scale %u%% (%ux%u, drawn at %u%%)\n", output.name, output.head,
+			" scale %u%% (%ux%u, drawn at %u%%)%s\n", output.name, output.head,
 			(unsigned)output.mode.timings.hVisible, (unsigned)output.mode.timings.vVisible,
 			(unsigned)(output.mode.timings.RRx1k / 1000), output.x, output.y, output.scale,
-			output.width, output.height, output.renderScale);
+			output.width, output.height, output.renderScale, output.mirror ? " mirror" : "");
 	}
 
 	*mode = ToHaikuMode(fLayoutMode);

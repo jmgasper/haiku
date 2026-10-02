@@ -40,6 +40,8 @@ struct display_state {
 	bool			connected;
 	bool			enabled;
 	bool			primary;
+	int32			mirrorOf;		// the display this one shows the same
+									// part of the desktop as, or -1
 	BRect			frame;			// desktop (logical) coordinates
 	int32			scale;			// percent
 	int32			nativeWidth;
@@ -56,6 +58,7 @@ struct display_state {
 			void		UpdateFrameSize();
 			bool		SameSettings(const display_state& other) const;
 			bool		HasMode(int32 width, int32 height) const;
+			bool		IsMirror() const { return mirrorOf >= 0; }
 			float		DiagonalInches() const;
 			int32		DPI() const;
 };
@@ -77,8 +80,12 @@ public:
 			const display_state* DisplayByID(int32 id) const;
 			int32				IndexOf(int32 id) const;
 			int32				CountEnabled() const;
+			int32				CountConnected() const;
 			int32				PrimaryID() const;
 			int32				FirstEnabledID() const;
+			int32				NumberOf(int32 id) const;
+									// as the displays are numbered for the
+									// user: connected ones, from 1
 
 			bool				HasLayout() const { return fHasLayout; }
 			bool				CanScale() const { return fCanScale; }
@@ -96,11 +103,30 @@ public:
 			void				SetEnabled(int32 id, bool enabled);
 			void				SetDefaults();
 
+			bool				CanMirror() const;
+			int32				MirrorState() const;
+									// B_CONTROL_ON when every other enabled
+									// display mirrors the main one,
+									// B_CONTROL_PARTIALLY_ON when some do
+			void				SetMirrored(bool mirrored);
+			bool				FindTooSmallMirror(int32& mirrorID,
+									int32& sourceID) const;
+
 			bool				SameIDs(const DisplayLayoutState& other) const;
 			bool				SameArrangement(
 									const DisplayLayoutState& other) const;
 
 			void				BuildRequest(BMessage& request) const;
+
+private:
+			void				_PlaceMirrors();
+			void				_Unmirror(display_state& display);
+			bool				_MirrorsFit(const display_state& source,
+									int32 scale) const;
+			bool				_SetCommonMode(display_state& source);
+	static	int32				_MirrorScale(const display_state& mirror,
+									const display_state& source);
+			int32				_ScaleStep(int32 scale) const;
 
 private:
 			std::vector<display_state> fDisplays;

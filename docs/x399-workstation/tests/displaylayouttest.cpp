@@ -10,6 +10,11 @@
  * both claimed x = 0 and connector order won. The same case run the old way
  * is kept as a check that the test still sees that failure.
  *
+ * The mirror cases follow: one monitor showing what another shows, kept
+ * across boots and unplugging, the main display deciding which is which,
+ * and monitors of other sizes enlarging, or refused when they would have
+ * to shrink.
+ *
  * Build and run: tools/build-displaylayout-test.sh
  */
 
@@ -39,8 +44,13 @@ struct FakeOutput {
 	char	name[16];
 	bool	connected;
 	bool	enabled;
-	int32	x;
+	bool	mirror;
+	int32	x;			// frame buffer pixels
 	int32	y;
+	uint16	scale;
+	uint16	renderScale;
+	display_timing native;
+	display_timing timing;
 };
 
 
@@ -57,15 +67,34 @@ uhd_timing()
 }
 
 
-// Everything at 100 percent, so logical and frame buffer pixels agree.
+static display_timing
+fhd_timing()
+{
+	display_timing timing = {};
+	timing.pixel_clock = 148500;
+	timing.h_display = 1920;
+	timing.h_total = 2200;
+	timing.v_display = 1080;
+	timing.v_total = 1125;
+	return timing;
+}
+
+
+// Places outputs and works out their regions the way the nvidia_rm
+// accelerant does; a mirror's region is its source's.
 class FakeAccelerant : public HWInterface {
 public:
-	void Add(uint32 id, const char* name)
+	void Add(uint32 id, const char* name,
+		display_timing native = uhd_timing())
 	{
 		FakeOutput output = {};
 		output.id = id;
 		strlcpy(output.name, name, sizeof(output.name));
 		output.connected = true;
+		output.scale = 100;
+		output.renderScale = 100;
+		output.native = native;
+		output.timing = native;
 		fOutputs.push_back(output);
 	}
 
@@ -91,15 +120,18 @@ public:
 			output.id = fake.id;
 			strlcpy(output.name, fake.name, sizeof(output.name));
 			output.flags = (fake.connected ? B_DISPLAY_OUTPUT_CONNECTED : 0)
-				| (fake.enabled ? B_DISPLAY_OUTPUT_ENABLED : 0);
+				| (fake.enabled ? B_DISPLAY_OUTPUT_ENABLED : 0)
+				| (fake.enabled && fake.mirror ? B_DISPLAY_OUTPUT_MIRROR : 0);
 			output.x = fake.x;
 			output.y = fake.y;
-			output.width = 3840;
-			output.height = 2160;
-			output.scale = 100;
-			output.render_scale = 100;
-			output.native_timing = uhd_timing();
-			output.timing = uhd_timing();
+			output.width = fake.timing.h_display * fake.renderScale
+				/ fake.scale;
+			output.height = fake.timing.v_display * fake.renderScale
+				/ fake.scale;
+			output.scale = fake.scale;
+			output.render_scale = fake.renderScale;
+			output.native_timing = fake.native;
+			output.timing = fake.timing;
 		}
 		*_outputs = outputs;
 		*_count = fOutputs.size();
@@ -118,14 +150,30 @@ public:
 	{
 		for (FakeOutput& output : fOutputs) {
 			output.enabled = false;
+			output.mirror = false;
 			for (const display_output_config& config : configs) {
 				if (config.id != output.id || !output.connected)
 					continue;
 				output.enabled = (config.flags & B_DISPLAY_OUTPUT_ENABLED) != 0;
-				output.x = config.x;
-				output.y = config.y;
+				output.mirror = (config.flags & B_DISPLAY_OUTPUT_MIRROR) != 0;
+				output.renderScale = config.render_scale == 0
+					? 100 : config.render_scale;
+				output.scale = config.scale;
+				output.x = config.x * output.renderScale / 100;
+				output.y = config.y * output.renderScale / 100;
+				output.timing = config.timing.h_display != 0
+					? config.timing : output.native;
 			}
 		}
+	}
+
+	const FakeOutput* Output(uint32 id) const
+	{
+		for (const FakeOutput& output : fOutputs) {
+			if (output.id == id)
+				return &output;
+		}
+		return NULL;
 	}
 
 private:
@@ -172,7 +220,74 @@ request(DisplayLayout& layout, FakeAccelerant& hardware, BMessage& saved,
 }
 
 
+// A request with one display message, as Screen or screenmode send it,
+// worked out on a copy the way Desktop::SetDisplayLayout() does.
+static status_t
+request_message(DisplayLayout& layout, FakeAccelerant& hardware,
+	BMessage& saved, const BMessage& display)
+{
+	BMessage message;
+	message.AddMessage("display", &display);
+	DisplayLayout changed = layout;
+	status_t status = changed.ApplyRequest(message);
+	if (status != B_OK)
+		return status;
+	layout = changed;
+	std::vector<display_output_config> configs;
+	layout.GetConfigs(configs);
+	hardware.Apply(configs);
+	layout.ReadOutputs(&hardware);
+	layout.Store(saved);
+	return B_OK;
+}
+
+
+static status_t
+request_mirror(DisplayLayout& layout, FakeAccelerant& hardware,
+	BMessage& saved, uint32 id, int32 mirrorOf)
+{
+	BMessage display;
+	display.AddInt32("id", id);
+	display.AddInt32("mirror", mirrorOf);
+	return request_message(layout, hardware, saved, display);
+}
+
+
 static int sFailures = 0;
+
+
+static void
+check(bool ok, const char* what)
+{
+	printf("  %s %s\n", ok ? "ok  " : "FAIL", what);
+	if (!ok)
+		sFailures++;
+}
+
+
+static void
+expect_mirror(const DisplayLayout& layout, uint32 id, uint32 source,
+	const char* what)
+{
+	const DisplayInfo* display = layout.DisplayByID(id);
+	const DisplayInfo* other = layout.DisplayByID(source);
+	bool ok = display != NULL && other != NULL && display->IsEnabled()
+		&& display->mirrorOf == source && display->frame == other->frame;
+	printf("  %s %s: %s mirrors %s\n", ok ? "ok  " : "FAIL", what,
+		display != NULL ? display->name.String() : "?",
+		other != NULL ? other->name.String() : "?");
+	if (!ok)
+		sFailures++;
+}
+
+
+static void
+expect_own(const DisplayLayout& layout, uint32 id, const char* what)
+{
+	const DisplayInfo* display = layout.DisplayByID(id);
+	check(display != NULL && display->IsEnabled() && !display->IsMirror(),
+		what);
+}
 
 
 static void
@@ -295,6 +410,132 @@ column_of_three()
 }
 
 
+static void
+mirror_pair()
+{
+	printf("mirror: two alike monitors showing the same\n");
+	FakeAccelerant hardware;
+	hardware.Add(1, "DP-2");
+	hardware.Add(2, "DP-4");
+	DisplayLayout layout;
+	BMessage saved;
+	configure(layout, hardware, saved, false);
+
+	check(request_mirror(layout, hardware, saved, 2, 1) == B_OK,
+		"mirror requested");
+	expect_mirror(layout, 2, 1, "requested");
+	expect(layout, 1, 0, 0, "source stays");
+	check(layout.Frame() == BRect(0, 0, 3839, 2159),
+		"the desktop is one monitor");
+	check(hardware.Output(2)->mirror && !hardware.Output(1)->mirror
+		&& hardware.Output(2)->x == 0 && hardware.Output(2)->y == 0,
+		"the accelerant got the mirror at the source's place");
+	check(layout.PrimaryDisplay() != NULL
+		&& layout.PrimaryDisplay()->id == 1, "the source is the main display");
+	check(layout.DisplayFor(BRect(10, 10, 100, 100))->id == 1,
+		"windows belong to the source");
+
+	DisplayLayout booted;
+	configure(booted, hardware, saved, false);
+	expect_mirror(booted, 2, 1, "after a reboot");
+
+	// the source asleep: the mirror shows the desktop by itself
+	hardware.SetConnected(1, false);
+	configure(booted, hardware, saved, false);
+	expect_own(booted, 2, "source gone, the mirror is on its own");
+	expect(booted, 2, 0, 0, "source gone");
+	hardware.SetConnected(1, true);
+	configure(booted, hardware, saved, false);
+	expect_mirror(booted, 2, 1, "source back");
+
+	// making the mirror the main display swaps the roles
+	BMessage primary;
+	primary.AddInt32("id", 2);
+	primary.AddBool("primary", true);
+	check(request_message(booted, hardware, saved, primary) == B_OK,
+		"main display requested on the mirror");
+	expect_mirror(booted, 1, 2, "roles swapped");
+	check(booted.PrimaryDisplay() != NULL
+		&& booted.PrimaryDisplay()->id == 2, "the new source is main");
+
+	check(request_mirror(booted, hardware, saved, 1, -1) == B_OK,
+		"mirror turned off");
+	expect_own(booted, 1, "own part again");
+	expect(booted, 2, 0, 0, "source keeps its place");
+	expect(booted, 1, 3840, 0, "the former mirror goes to the right");
+
+	DisplayLayout again;
+	configure(again, hardware, saved, false);
+	expect_own(again, 1, "still on its own after a reboot");
+	expect(again, 1, 3840, 0, "still on the right after a reboot");
+}
+
+
+static void
+mirror_sizes()
+{
+	printf("mirror: monitors of other sizes, shapes and scales\n");
+	FakeAccelerant hardware;
+	hardware.Add(1, "HDMI-1", fhd_timing());
+	hardware.Add(2, "DP-1", uhd_timing());
+	DisplayLayout layout;
+	BMessage saved;
+	configure(layout, hardware, saved, false);
+
+	check(request_mirror(layout, hardware, saved, 2, 1) == B_OK,
+		"4K mirrors 1080p");
+	expect_mirror(layout, 2, 1, "4K mirrors 1080p");
+	check(layout.DisplayByID(2)->scale == 200, "the 4K monitor enlarges 2x");
+	check(layout.RenderScale() == 100, "drawn at the source's density");
+
+	check(request_mirror(layout, hardware, saved, 2, -1) == B_OK,
+		"mirror off");
+	check(layout.DisplayByID(2)->scale == 200,
+		"the 4K monitor keeps showing things at the size it did");
+
+	BMessage scale;
+	scale.AddInt32("id", 2);
+	scale.AddInt32("scale", 100);
+	check(request_message(layout, hardware, saved, scale) == B_OK,
+		"4K at 100%");
+	check(request_mirror(layout, hardware, saved, 1, 2) == B_BAD_VALUE,
+		"1080p cannot show a 4K desktop at 100%");
+	expect_own(layout, 1, "refused, nothing changed");
+
+	scale.ReplaceInt32("scale", 200);
+	check(request_message(layout, hardware, saved, scale) == B_OK,
+		"4K at 200%");
+	check(request_mirror(layout, hardware, saved, 1, 2) == B_OK,
+		"now 1080p fits");
+	expect_mirror(layout, 1, 2, "1080p mirrors 4K at 200%");
+	check(layout.PrimaryDisplay() != NULL
+		&& layout.PrimaryDisplay()->id == 2,
+		"the main display made a mirror hands that role to its source");
+	check(layout.DisplayByID(1)->scale == 100
+		&& layout.RenderScale() == 100, "the 4K one is enlarged from 1080p");
+
+	// a mirror of another shape gets black bars
+	FakeAccelerant wide;
+	display_timing wuxga = fhd_timing();
+	wuxga.v_display = 1200;
+	wuxga.v_total = 1235;
+	wide.Add(1, "DP-0", fhd_timing());
+	wide.Add(2, "DP-2", wuxga);
+	DisplayLayout shapes;
+	BMessage shapesSaved;
+	configure(shapes, wide, shapesSaved, false);
+	check(request_mirror(shapes, wide, shapesSaved, 2, 1) == B_OK,
+		"1920x1200 mirrors 1920x1080");
+	expect_mirror(shapes, 2, 1, "16:10 mirrors 16:9");
+	check(shapes.DisplayByID(2)->scale == 100
+		&& shapes.Frame() == BRect(0, 0, 1919, 1079),
+		"1:1 with bars, the desktop stays 16:9");
+	check(request_mirror(shapes, wide, shapesSaved, 2, -1) == B_OK
+		&& request_mirror(shapes, wide, shapesSaved, 1, 2) == B_BAD_VALUE,
+		"1920x1080 cannot show 1920x1200");
+}
+
+
 int
 main()
 {
@@ -302,6 +543,8 @@ main()
 	swapped_pair(true);
 	row_of_three();
 	column_of_three();
+	mirror_pair();
+	mirror_sizes();
 	printf(sFailures == 0 ? "all passed\n" : "%d FAILED\n", sFailures);
 	return sFailures == 0 ? 0 : 1;
 }

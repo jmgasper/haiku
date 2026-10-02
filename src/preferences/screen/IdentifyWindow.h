@@ -13,12 +13,13 @@ class BMessageRunner;
 
 
 /*!	A borderless badge shown in the middle of a display for a few seconds,
-	with the display's number and monitor name.
+	with the display's number and monitor name - or, for mirrored displays,
+	all their numbers.
 */
 class IdentifyWindow : public BWindow {
 public:
-								IdentifyWindow(int32 number, const char* name,
-									BRect displayFrame);
+								IdentifyWindow(const char* number,
+									const char* name, BRect displayFrame);
 	virtual						~IdentifyWindow();
 
 	virtual	void				MessageReceived(BMessage* message);

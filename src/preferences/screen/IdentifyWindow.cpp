@@ -25,18 +25,18 @@ static const bigtime_t kIdentifyDuration = 3000000;
 
 class IdentifyView : public BView {
 public:
-								IdentifyView(BRect frame, int32 number,
+								IdentifyView(BRect frame, const char* number,
 									const char* name);
 
 	virtual	void				Draw(BRect updateRect);
 
 private:
-			int32				fNumber;
+			BString				fNumber;
 			BString				fName;
 };
 
 
-IdentifyView::IdentifyView(BRect frame, int32 number, const char* name)
+IdentifyView::IdentifyView(BRect frame, const char* number, const char* name)
 	:
 	BView(frame, "identify", B_FOLLOW_ALL, B_WILL_DRAW),
 	fNumber(number),
@@ -70,17 +70,22 @@ IdentifyView::Draw(BRect updateRect)
 	SetDrawingMode(B_OP_OVER);
 	SetLowColor(background);
 
-	// the number, very large
+	// the number, very large, but not wider than the badge
 	BFont numberFont(be_bold_font);
 	numberFont.SetSize(std::max(24.0f, floorf(bounds.Height() * 0.5f)));
+	float maxWidth = bounds.Width() - 2 * radius;
+	float width = numberFont.StringWidth(fNumber.String());
+	if (width > maxWidth && width > 0) {
+		numberFont.SetSize(std::max(12.0f,
+			floorf(numberFont.Size() * maxWidth / width)));
+	}
 	SetFont(&numberFont);
 
 	font_height numberHeight;
 	numberFont.GetHeight(&numberHeight);
 	float numberTextHeight = ceilf(numberHeight.ascent + numberHeight.descent);
 
-	char number[16];
-	snprintf(number, sizeof(number), "%" B_PRId32, fNumber);
+	const char* number = fNumber.String();
 	float numberWidth = StringWidth(number);
 
 	// the monitor name below it
@@ -116,7 +121,7 @@ IdentifyView::Draw(BRect updateRect)
 //	#pragma mark - IdentifyWindow
 
 
-IdentifyWindow::IdentifyWindow(int32 number, const char* name,
+IdentifyWindow::IdentifyWindow(const char* number, const char* name,
 	BRect displayFrame)
 	:
 	BWindow(BRect(0, 0, 199, 119), "identify", B_NO_BORDER_WINDOW_LOOK,
