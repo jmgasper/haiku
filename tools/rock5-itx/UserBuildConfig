@@ -5,15 +5,35 @@
 # 7.28 GiB eMMC. A profile name outside bootstrap-/minimum-/test- selects the
 # regular image definition, and one outside nightly-/release- adds none of the
 # HaikuPorts system packages that arm64 has no repository for.
+#
+# The air/OS release (airos-anyboot) is the same full image as a hybrid ISO
+# with an EFI system partition, to boot from a USB stick, a CD or the
+# NanoKVM's virtual drive and install from. It leaves out the lab's remote
+# shell and probes.
 if $(HAIKU_BUILD_PROFILE) = rock5full-mmc {
     HAIKU_IMAGE_SIZE = 6144 ;
     HAIKU_MMC_NAME = haiku-rock5full-mmc.image ;
+} else if $(HAIKU_BUILD_PROFILE) = airos-anyboot {
+    HAIKU_IMAGE_SIZE ?= 2560 ;
+    HAIKU_IMAGE_LABEL = airOS ;
 } else {
     HAIKU_IMAGE_SIZE = 300 ;
     HAIKU_MMC_NAME = haiku-arm64-mmc.image ;
 }
 
 DefineBuildProfile rock5full-mmc : haiku-mmc-image : "haiku-rock5full.mmc" ;
+DefineBuildProfile airos-anyboot : anyboot-image : "airos-arm64.iso" ;
+
+# The full image: every application, the fork's GL stack, firmware and the
+# owner's applications. The lab image is the minimum one.
+ROCK5_FULL_IMAGE = ;
+ROCK5_LAB_IMAGE = 1 ;
+if $(HAIKU_BUILD_PROFILE) in rock5full-mmc airos-anyboot {
+	ROCK5_FULL_IMAGE = 1 ;
+}
+if $(HAIKU_BUILD_PROFILE) = airos-anyboot {
+	ROCK5_LAB_IMAGE = ;
+}
 
 DeferredSubInclude HAIKU_TOP tools rock5-itx ;
 
@@ -24,7 +44,8 @@ rule UserBuildConfigRulePreImage
 	# private overlay (a shadow line for baron and the opt-in file, see
 	# shell_image.py) lives outside the tree; without it nothing is added.
 	local labOverlay = /mnt/HaikuWork/rock5-image-extras/lab ;
-	if [ Glob $(labOverlay) : shadow ] && [ Glob $(labOverlay) : enable-shell ] {
+	if $(ROCK5_LAB_IMAGE) && [ Glob $(labOverlay) : shadow ]
+			&& [ Glob $(labOverlay) : enable-shell ] {
 		local labShadow = <rock5-lab-files>shadow ;
 		SEARCH on $(labShadow) = $(labOverlay) ;
 		AddFilesToHaikuImage system settings etc : $(labShadow) ;
@@ -46,18 +67,22 @@ rule UserBuildConfigRulePreImage
 	local itsSettings = <rock5-lab>gicv3_its ;
 	SEARCH on $(itsSettings) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
 	AddFilesToHaikuImage home config settings kernel drivers : $(itsSettings) ;
-	AddFilesToHaikuImage home config non-packaged bin
-		: rock5_memory_probe rock5_platform_probe rock5_cache_probe rock5_file_transfer
-			rock5_services_probe rock5_pci_config_probe rock5_network_probe
-			rock5_memcpy_probe rock5_profile_probe rock5_asid_probe
-			rock5_mali_firmware_probe rock5_mali_resource_probe rock5_mali_client_probe
-			rock5_mali_vm_probe rock5_mali_queue_probe rock5_display_probe ;
-	AddFilesToHaikuImage home config non-packaged bin : rock5_ahci_probe rock5_mmc_probe ;
+	if $(ROCK5_LAB_IMAGE) {
+		AddFilesToHaikuImage home config non-packaged bin
+			: rock5_memory_probe rock5_platform_probe rock5_cache_probe
+				rock5_file_transfer rock5_services_probe rock5_pci_config_probe
+				rock5_network_probe rock5_memcpy_probe rock5_profile_probe
+				rock5_asid_probe rock5_mali_firmware_probe
+				rock5_mali_resource_probe rock5_mali_client_probe
+				rock5_mali_vm_probe rock5_mali_queue_probe rock5_display_probe ;
+		AddFilesToHaikuImage home config non-packaged bin
+			: rock5_ahci_probe rock5_mmc_probe ;
+	}
 	# Intel is the QEMU DMA fixture. Native RTL8125 trials additionally require
 	# the explicit onboard firmware profile and legacy_interrupts setting.
 	# The regular image definition packages iaxwifi200 and the other Wi-Fi
 	# drivers for arm64; the minimum-based lab image only gets the AX210's.
-	if $(HAIKU_BUILD_PROFILE) = rock5full-mmc {
+	if $(ROCK5_FULL_IMAGE) {
 		AddDriversToHaikuImage net : ipro1000 rtl8125 ;
 	} else {
 		AddDriversToHaikuImage net : ipro1000 rtl8125 iaxwifi200 ;
@@ -74,7 +99,7 @@ rule UserBuildConfigRulePreImage
 	# has no arm64 mesa package, so GLTeapot is filtered out of the regular
 	# image definition), the Mali firmware and the owner's applications.
 	# air/OS dropped the Haiku3d demo.
-	if $(HAIKU_BUILD_PROFILE) = rock5full-mmc {
+	if $(ROCK5_FULL_IMAGE) {
 		local extras = /mnt/HaikuWork/rock5-image-extras ;
 		local glLibs = <rock5-gl>libEGL_mesa.so.0 <rock5-gl>libEGL.so.1
 			<rock5-gl>libGLESv2.so.2 <rock5-gl>libGLdispatch.so.0
@@ -124,14 +149,34 @@ rule UserBuildConfigRulePreImage
 		# /boot/system/apps with their icons, their data files and the
 		# data/deskbar/menu/Applications symlink that lists them in Deskbar --
 		# none of which a loose binary under non-packaged can have.
-		local ownerPackages = <rock5-pkg>amp-0.2.0~alpha-1-arm64.hpkg
-			<rock5-pkg>kiri-0.0.1~alpha-1-arm64.hpkg
-			<rock5-pkg>turbochook-0.1.2~alpha-1-arm64.hpkg
-			<rock5-pkg>rock5_glinfo-1.0.0-1-arm64.hpkg
+		local ownerPackages = <rock5-pkg>rock5_glinfo-1.0.0-1-arm64.hpkg
 			<rock5-pkg>rock5_ffmpeg-6.1.6-2-arm64.hpkg
 			<rock5-pkg>wpa_supplicant-2.11.haiku.1-1-arm64.hpkg ;
+		if $(HAIKU_BUILD_PROFILE) != airos-anyboot {
+			ownerPackages += <rock5-pkg>amp-0.2.0~alpha-1-arm64.hpkg
+				<rock5-pkg>kiri-0.0.1~alpha-1-arm64.hpkg
+				<rock5-pkg>turbochook-0.1.2~alpha-1-arm64.hpkg ;
+		}
 		SEARCH on $(ownerPackages) = [ FDirName $(extras) packages ] ;
 		AddFilesToHaikuImage system packages : $(ownerPackages) ;
+
+		# air/OS ships current builds of every one of the owner's
+		# applications, Summit (the default web browser) and its engine, from
+		# tools/airos/build-arm64-app-packages.sh and build-summit-arm64.sh,
+		# and the libraries they need that Haiku has no arm64 package for.
+		if $(HAIKU_BUILD_PROFILE) = airos-anyboot {
+			local airosPackageDir = /mnt/HaikuWork/airos/packages-arm64 ;
+			local airosPackages = [ Glob $(airosPackageDir) : *.hpkg ] ;
+			airosPackages = <airos-pkg>$(airosPackages:BS) ;
+			SEARCH on $(airosPackages) = $(airosPackageDir) ;
+			AddFilesToHaikuImage system packages : $(airosPackages) ;
+
+			local airosLibDir = /mnt/HaikuWork/airos/lib-arm64 ;
+			local airosLibs = [ Glob $(airosLibDir) : *.so* ] ;
+			airosLibs = <airos-lib>$(airosLibs:BS) ;
+			SEARCH on $(airosLibs) = $(airosLibDir) ;
+			AddFilesToHaikuImage system non-packaged lib : $(airosLibs) ;
+		}
 
 		# Booting from the eMMC needs sdhci admitted before any volume is
 		# mounted: the loader reads this directory off the boot volume itself

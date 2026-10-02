@@ -294,6 +294,12 @@ main(int argc, char *argv[])
 
 	// TODO: MacEFI (HFS) maybe someday
 
+	// Without a BIOS loader (on EFI-only platforms) nothing else writes the
+	// boot signature, and firmware would not read the partition table.
+	static const uint8_t kSignature[2] = { 0x55, 0xaa };
+	ssize_t written = pwrite(outputFileHandle, kSignature, 2, kBlockSize - 2);
+	checkError(written != 2, "failed to write the boot signature");
+
 	free(sCopyBuffer);
 	return 0;
 }

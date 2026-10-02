@@ -20,10 +20,29 @@ actions BuildAnybootImageEfi1 {
 	$(2[1]) -b $(2[2]) -e $(2[3]) $(2[4]) $(2[5]) $(1)
 }
 
-local baseMBR = base_mbr.bin ;
-local mbrSource = [ FDirName $(HAIKU_TOP) src bin writembr mbr.S ] ;
-BuildMBR $(baseMBR) : $(mbrSource) ;
-MakeLocate $(baseMBR) : $(HAIKU_OUTPUT_DIR) ;
+# EFI-only platforms (arm64, riscv64): no BIOS boot code in the MBR.
+rule BuildAnybootImageEfiOnly anybootImage : efiPart : isoPart : imageFile {
+	local anyboot = <build>anyboot ;
+
+	Depends $(anybootImage) : $(anyboot) ;
+	Depends $(anybootImage) : $(isoPart) ;
+	Depends $(anybootImage) : $(efiPart) ;
+	Depends $(anybootImage) : $(imageFile) ;
+
+	BuildAnybootImageEfiOnly1 $(anybootImage) : $(anyboot) $(efiPart) $(isoPart) $(imageFile) ;
+}
+
+actions BuildAnybootImageEfiOnly1 {
+	$(2[1]) -e $(2[2]) $(2[3]) $(2[4]) $(1)
+}
+
+local baseMBR ;
+if bios_ia32 in $(HAIKU_BOOT_TARGETS) {
+	baseMBR = base_mbr.bin ;
+	local mbrSource = [ FDirName $(HAIKU_TOP) src bin writembr mbr.S ] ;
+	BuildMBR $(baseMBR) : $(mbrSource) ;
+	MakeLocate $(baseMBR) : $(HAIKU_OUTPUT_DIR) ;
+}
 MakeLocate $(HAIKU_ANYBOOT) : $(HAIKU_ANYBOOT_DIR) ;
 
 # Currently the Anyboot image is available only for EFI+BIOS or BIOS-only
@@ -37,9 +56,14 @@ for platform in [ MultiBootSubDirSetup ] {
 			local efiPartition = esp.image ;
 			MakeLocateDebug $(efiPartition) : system boot ;
 			BuildEfiSystemPartition $(efiPartition) : $(efiLoader) ;
-			BuildAnybootImageEfi $(HAIKU_ANYBOOT) : $(baseMBR)
-				: $(efiPartition) : $(HAIKU_CD_BOOT_IMAGE)
-				: $(HAIKU_IMAGE_NAME) ;
+			if $(baseMBR) {
+				BuildAnybootImageEfi $(HAIKU_ANYBOOT) : $(baseMBR)
+					: $(efiPartition) : $(HAIKU_CD_BOOT_IMAGE)
+					: $(HAIKU_IMAGE_NAME) ;
+			} else {
+				BuildAnybootImageEfiOnly $(HAIKU_ANYBOOT) : $(efiPartition)
+					: $(HAIKU_CD_BOOT_IMAGE) : $(HAIKU_IMAGE_NAME) ;
+			}
 		}
 	}
 }

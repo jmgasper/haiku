@@ -1620,8 +1620,12 @@ rule BuildCDBootImageEFI image : bootfloppy : bootefi : extrafiles
 actions BuildCDBootImageEFI1
 {
 	$(RM) $(<)
-	xorriso -as mkisofs -b $(BOOTIMG) -eltorito-alt-boot -no-emul-boot -e $(BOOTEFI) \
-		-r -J -V $(VOLID) -o $(<) $(>[1]) $(>[2]) $(>[3-])
+	biosBoot=
+	if [ -n "$(BOOTIMG)" ]; then
+		biosBoot="-b $(BOOTIMG) -eltorito-alt-boot"
+	fi
+	xorriso -as mkisofs $biosBoot -no-emul-boot -e $(BOOTEFI) \
+		-r -J -V $(VOLID) -o $(<) $(>)
 }
 
 
