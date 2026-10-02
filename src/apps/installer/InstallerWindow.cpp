@@ -22,12 +22,14 @@
 #include <Directory.h>
 #include <FindDirectory.h>
 #include <LayoutBuilder.h>
+#include <IconUtils.h>
 #include <LayoutUtils.h>
 #include <Locale.h>
 #include <MenuBar.h>
 #include <MenuField.h>
 #include <Path.h>
 #include <PopUpMenu.h>
+#include <Resources.h>
 #include <Roster.h>
 #include <Screen.h>
 #include <ScrollView.h>
@@ -36,8 +38,6 @@
 #include <StatusBar.h>
 #include <String.h>
 #include <TextView.h>
-#include <TranslationUtils.h>
-#include <TranslatorFormats.h>
 
 #include "tracker_private.h"
 
@@ -129,8 +129,10 @@ LogoView::GetPreferredSize(float* _width, float* _height)
 	float width = 0.0;
 	float height = 0.0;
 	if (fLogo) {
-		width = fLogo->Bounds().Width();
-		height = fLogo->Bounds().Height();
+		// room around the logo, which has no margin of its own
+		float inset = roundf(be_control_look->DefaultLabelSpacing() * 2);
+		width = fLogo->Bounds().Width() + inset * 2;
+		height = fLogo->Bounds().Height() + inset * 2;
 	}
 	if (_width)
 		*_width = width;
@@ -142,18 +144,30 @@ LogoView::GetPreferredSize(float* _width, float* _height)
 void
 LogoView::_Init()
 {
-	SetDrawingMode(B_OP_OVER);
+	SetDrawingMode(B_OP_ALPHA);
+	SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
 
-#ifdef HAIKU_DISTRO_COMPATIBILITY_OFFICIAL
-	rgb_color bgColor = ui_color(B_DOCUMENT_BACKGROUND_COLOR);
+	// The air/OS logo is vector data: it needs no PNG translator (arm64
+	// has none) and follows the font size. It is 64 units wide, 21 tall.
+	fLogo = NULL;
+	const char* name = ui_color(B_DOCUMENT_BACKGROUND_COLOR).IsLight()
+		? "airos_logo" : "airos_logo_dark";
+	size_t size;
+	const void* data = BApplication::AppResources()->LoadResource(
+		B_VECTOR_ICON_TYPE, name, &size);
+	if (data == NULL)
+		return;
 
-	if (bgColor.IsLight())
-		fLogo = BTranslationUtils::GetBitmap(B_PNG_FORMAT, "logo.png");
-	else
-		fLogo = BTranslationUtils::GetBitmap(B_PNG_FORMAT, "logo_dark.png");
-#else
-	fLogo = BTranslationUtils::GetBitmap(B_PNG_FORMAT, "walter_logo.png");
-#endif
+	float width = roundf(be_plain_font->Size() * 17);
+	float height = ceilf(width * 21 / 64);
+	fLogo = new(std::nothrow) BBitmap(BRect(0, 0, width - 1, height - 1),
+		B_RGBA32);
+	if (fLogo != NULL && (fLogo->InitCheck() != B_OK
+			|| BIconUtils::GetVectorIcon((const uint8*)data, size, fLogo)
+				!= B_OK)) {
+		delete fLogo;
+		fLogo = NULL;
+	}
 }
 
 

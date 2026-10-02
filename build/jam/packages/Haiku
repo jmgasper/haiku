@@ -280,6 +280,11 @@ local logoArtwork =
 SEARCH on $(logoArtwork) = [ FDirName $(HAIKU_TOP) data artwork ] ;
 AddFilesToPackage data artwork : $(logoArtwork) ;
 
+# the air/OS desktop picture, Tracker's default background
+local airosArtwork = <airos-artwork>airos-desktop.tga ;
+SEARCH on $(airosArtwork) = [ FDirName $(HAIKU_TOP) data artwork airos ] ;
+AddFilesToPackage data artwork : $(airosArtwork) ;
+
 # Mail spell check dictionaries
 local spellFiles = words geekspeak ;
 spellFiles = $(spellFiles:G=spell) ;
