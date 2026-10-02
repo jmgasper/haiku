@@ -31,6 +31,35 @@ each USB port, the serial console, and a Bluetooth device to pair with.
 
 ## Log
 
+- 2026-10-02: direct windows stay connected at a higher density
+  (Summit issue #16). At 200 percent app_server disconnected every direct
+  window, because the frame buffer is not in the coordinates a window draws
+  in, so a program that composites at the screen's density with the GPU -
+  Summit's pages, airTime's films - had to read each frame back from video
+  memory and have app_server copy it twice more (about 10 ms of each WebGL
+  frame in the browser).
+  * A window with the new flag `B_DIRECT_DEVICE_PIXELS` (`Window.h`, 0x400;
+    in the constructor or through `SetFlags()`) stays connected. Its bounds
+    and clipping come in frame buffer pixels, rounded as the Painter rounds.
+    `direct_buffer_info` gains `device_scale` (the density in percent, 200
+    at 200 percent), `drawing_bits_area` and `drawing_bytes_per_row` in the
+    first three words of the old reserved space, so programs built against
+    the old header read them as `_reserved1[0..2]`.
+  * `drawing_bits_area` is app_server's own copy of the screen, which it
+    draws into and copies to the frame buffer: a direct window writes its
+    pixels there too, or the next copy erases them; screenshots and the VNC
+    server read it, so they show what the window drew. The back buffer is an
+    area of its own now (it was a heap block), so handing it out hands out
+    nothing else.
+  * `tests/directscale.cpp` paints its visible rectangles into both buffers
+    on the 200 percent P2415Q: its one pixel border lands exactly inside
+    app_server's window frame in `nvscanout --dump` and in a screenshot,
+    and the clipping follows the window when it moves. airTime draws films
+    at full density through it, a 4K HDR film at 24 frames/s windowed and
+    full screen, and a screenshot shows the picture.
+  * Deployed as `servers/app_server` in a repacked haiku package and a power
+    cycle (`install-staged-haiku-pkg.sh`).
+
 - 2026-10-02: displays can mirror each other. A display is now either a part
   of the desktop of its own or the mirror of another: it takes its source's
   place and the scale that fits the source's part on its own mode, and the
