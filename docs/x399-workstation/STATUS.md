@@ -6,7 +6,7 @@ listed as verified is untested.
 `tools/check-workstation.sh` re-checks the machine against all of this in one
 pass, with nothing set in the environment of the programs it runs, because
 several of these have looked fine while being quietly broken. It last came back
-22 working, 0 not.
+23 working, 0 not (2026-10-02, with the monitors mirrored).
 
 What still needs someone at the machine: a look at the scaled picture on the
 two 4K monitors, a monitor pulled out and plugged back in (the syslog says
@@ -22,7 +22,7 @@ each USB port, the serial console, and a Bluetooth device to pair with.
 | USB | all controllers and ports enumerate devices | all 5 xHCI controllers start and publish a root hub; the NanoKVM enumerates on the ASM2142. The individual ports need devices plugged into them |
 | Audio | ALC1220 analog output, HDMI audio | verified both: two outputs, each clocking its stream at the hardware's own rate (48322 and 48321 frames a second against the 48000 asked for). The graphics card's codec needed a change to Haiku's hda driver, which discarded any codec whose converters are all digital. The monitor reports it takes stereo. What nobody here can check is whether a speaker makes a sound |
 | Graphics | GTX 1070/1080 Ti accelerated 2D/3D, 3-4 monitors | 3D verified: Vulkan on the GPU (1.4 TFLOP/s compute, 57 Gpixel/s fill) and OpenGL 4.5 through it, with frames copied straight into the screen's own frame buffer in video memory rather than sent through the host - a lit sphere at 1600x900 goes from 209 to 970 frames a second. Vertical sync works (locks to 60.0) now that the accelerant hands out a retrace semaphore. Any program gets the GPU, with nothing set in its environment. Three heads driving one spanning desktop is verified, but with the third and second forced rather than plugged in. 2D is not accelerated at all: it runs four to eight times slower than drawing in memory, which is still far more than a desktop needs at one monitor |
-| Displays | two 4K monitors usable at arm's length: per-monitor scaling, arrangement, per-monitor maximize, hot plug | verified on the two Dell P2415Q (DisplayPort): each monitor is a region of one frame buffer that the display engine scales up to the panel, at 100 to 250 percent in steps of 25, chosen per monitor. app_server arranges the monitors (side by side, stacked, swapped, one off), remembers the arrangement per monitor identity, keeps the mouse off the parts of the desktop no monitor shows, moves windows along with their monitor, and maximizes a window to the monitor most of it is on (the classic whole-desktop maximize is a setting). Two 24-inch 4K monitors come up at 200 percent, a 3840x1080 desktop drawn at full density with no settings at all; text is sharp in the frame buffer itself. The Screen preferences show the monitors as they stand and let them be dragged into place, identified by number on each screen, and read out from their EDID. Monitors coming and going are noticed two ways, but nobody was at the machine to plug one, so that path is untested. Frame buffer and VESA hardware gets the same scaling done in software, untested here |
+| Displays | two 4K monitors usable at arm's length: per-monitor scaling, arrangement, mirroring, per-monitor maximize, hot plug | verified on the two Dell P2415Q (DisplayPort): each monitor is a region of one frame buffer that the display engine scales up to the panel, at 100 to 250 percent in steps of 25, chosen per monitor. app_server arranges the monitors (side by side, stacked, swapped, one off, or one mirroring another), remembers the arrangement per monitor identity, keeps the mouse off the parts of the desktop no monitor shows, moves windows along with their monitor, and maximizes a window to the monitor most of it is on (the classic whole-desktop maximize is a setting). Two 24-inch 4K monitors come up at 200 percent, a 3840x1080 desktop drawn at full density with no settings at all; text is sharp in the frame buffer itself. The Screen preferences show the monitors as they stand and let them be dragged into place, identified by number on each screen, and read out from their EDID. Monitors coming and going are noticed two ways, but nobody was at the machine to plug one, so that path is untested. Frame buffer and VESA hardware gets the same scaling done in software, untested here |
 | Bluetooth | TP-Link Archer TX55E, working adapter and discovery | verified: the adapter answers as `90:74:ae:33:d7:cb` "MTK MT7922 #1" and an inquiry finds devices nearby, from a cold boot with nothing done by hand. The radio is a MediaTek MT7922 on USB, which runs a bootloader rather than a Bluetooth controller until it is given firmware - it takes the HCI Reset every stack opens with and never answers. The driver now hands it that firmware at open. Three further faults were in the way: `h2generic` took its event endpoint from the last interface that had one, which on this radio is MediaTek's audio interface, so it listened where no reply is ever sent; it stood isochronous transfers on the SCO endpoints at open, which nothing wants until there is a call; and the server never answered a request for a command the controller refuses outright, which hung the first program to ask for an adapter. Remote name lookup still fails, so discovered devices show an address and no name. Pairing and audio profiles are untried |
 | Wi-Fi | TP-Link Archer TX55E | verified: `mt7922wifi` joins WPA2-PSK/CCMP networks and carries traffic. Joining works from the Wi-Fi preferences (the password prompt, Remember this network, Known networks, Disconnect) and the WiFiStatus Deskbar applet lists networks with signal and lock, and shows the one joined. A saved network is joined again by net_server by itself once the card is up (it starts wpa_supplicant). DHCP configures the interface; with the wired card down the machine resolves names, fetches https pages and moves 50 MB each way (1.9 MB/s up, 2.5 MB/s down). Legacy 802.11a/g rates only for now (no HT/VHT/HE), chosen by the firmware's rate control. The driver is the Linux mt7921 layout in FreeBSD net80211 shape: firmware-offloaded scanning, the firmware's own channel management (remain-on-channel), software CCMP through net80211. It attaches at boot like any other driver and is part of the regular x86_64 image; the driver settings (`mt7922wifi`) can keep it out of the boot (`attach_at_boot false`, or `attach_at_boot_until <time>` for trying boot attachment where only the power switch reaches the machine) and turn on its diagnostics (`debug true`) |
 | Video decoding | H.264 on the card's video engine, and something that plays a film | verified: the GTX 1080 Ti has an NVDEC engine and an NVC2B0 decoder class, and thirteen H.264 streams together with 120 frames of 1080p Big Buck Bunny decode byte for byte identically to ffmpeg's own decoder - multiple references, B pictures, spatial and temporal direct prediction, B pictures used as references, weighted prediction and two coded sequences among them. 1080p decodes at 232 pictures a second, 4.3 ms each, about eight times what playing it needs. It is offered to the whole system as a media add-on, so any program that opens a film gets it, and `NVPlay` plays one with sound, stopping, starting and seeking. What it will not do is field pictures, 4:2:2 or more than eight bits a sample, and because Haiku picks one decoder for a format those refusals mean the film will not play rather than falling back |
@@ -30,6 +30,32 @@ each USB port, the serial console, and a Bluetooth device to pair with.
 | Sleep | S3 suspend and resume | sleeps and wakes; the display comes back, but the NVMe and the network card usually do not. Paused until a serial console arrives, which is also what the one untested path in the vertical sync work needs |
 
 ## Log
+
+- 2026-10-02: displays can mirror each other. A display is now either a part
+  of the desktop of its own or the mirror of another: it takes its source's
+  place and the scale that fits the source's part on its own mode, and the
+  accelerant hears of it through `B_DISPLAY_OUTPUT_MIRROR` on the output's
+  config. `nvidia_rm` points the mirror's head at exactly its source's
+  region (letterboxed when the monitors differ in shape; a mirror that would
+  have to shrink the picture is refused, the engine only enlarges). The
+  Screen preferences have a "Mirror displays" check box, shown with two
+  monitors or more, that mirrors every display onto the main one; the group
+  is drawn as one display numbered "1 | 2", a second click on it selects
+  the other member, and "Main display" on a mirror swaps the roles.
+  `screenmode --display 2 --mirror 1` (and `--mirror off`) does the same
+  from a shell.
+  * Both P2415Q at 200%: `nvidia_rm: layout: DP-4 head 1 3840x2160@59 at
+    0,0 ... mirror`, both DP links trained and SHOWING, the desktop
+    1920x1080; un-mirrored from the preferences, the countdown's Undo put
+    the mirror back, the swapped roles applied, and after a power cycle the
+    mirror came back by itself. `check-workstation.sh` 23 working, 0 not,
+    while mirrored. The picture on the panels was not seen (no camera).
+  * `tests/displaylayouttest` adds two mirror cases (alike and differently
+    sized monitors, reboot, unplugged source, role swap, too small a
+    mirror); all pass on the workstation.
+  * Tracker stretched a scaled-to-fit desktop picture whenever the screen
+    changed shape (it followed the view's resize); it is fitted again now.
+  * Left as the user had it: DP-4 on the left, DP-2 on the right and main.
 
 - 2026-10-01: scaled screenshots no longer read the desktop back from GPU
   memory. airShot issue #1 was a roughly four-second wait in
