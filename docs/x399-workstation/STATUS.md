@@ -59,6 +59,29 @@ each USB port, the serial console, and a Bluetooth device to pair with.
     full screen, and a screenshot shows the picture.
   * Deployed as `servers/app_server` in a repacked haiku package and a power
     cycle (`install-staged-haiku-pkg.sh`).
+  * Summit uses it (its pages are copied into the frame buffer by the GPU;
+    Summit's docs/hidpi.md). Getting there hung the machine eight times -
+    no ping on either interface, nothing reached the syslog - in two ways
+    that are kernel faults, not app_server's, and are still open:
+    1. **fork() of a team that maps the frame buffer.** A connected direct
+       window's application clones the frame buffer area (BDirectWindow's
+       daemon, `ServerMemoryAllocator::AddArea`). WebKit's launcher then
+       forked the browser to start a web process, and the fork copies that
+       device memory mapping copy on write: hung within seconds, every time
+       (directscale and the GL probe never fork, so never hit it). Summit
+       now starts processes with `load_image()`. Fork should share, or not
+       inherit, areas backed by device memory.
+    2. **A team that dies while nvidia_rm holds pages it locked.** A web
+       process imported a clone of app_server's back buffer as host memory
+       for the GPU (`os_lock_user_pages`, 8100 pages); when it quit without
+       freeing the import first, the machine hung before any
+       `os_unlock_user_pages` was logged. `team_delete_team()` removes the
+       address space and only later, in `~Team()`, puts the io_context that
+       closes the driver, so the unlock comes after the mapping is gone. A
+       program that frees its imports before it exits (eglTerminate) is
+       fine. Closing a dying team's descriptors before its address space
+       goes, or having the driver watch the team, would fix it; until then
+       Summit does not import that memory by default.
 
 - 2026-10-02: displays can mirror each other. A display is now either a part
   of the desktop of its own or the mirror of another: it takes its source's
