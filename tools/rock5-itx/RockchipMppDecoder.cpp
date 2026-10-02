@@ -107,9 +107,15 @@ public:
 		}
 		if (format->type == B_MEDIA_RAW_VIDEO
 			&& format->u.raw_video.display.format != B_NO_COLOR_SPACE
-			&& format->u.raw_video.display.format != B_RGB32) {
+			&& format->u.raw_video.display.format != B_RGB32
+			&& format->u.raw_video.display.format != B_YCbCr422) {
 			return B_MEDIA_BAD_FORMAT;
 		}
+		// Luma and chroma (Y0 Cb Y1 Cr) cost a repacking only; a player that
+		// scales the picture anyway converts it to pixels in the same pass.
+		fOutputSpace = format->type == B_MEDIA_RAW_VIDEO
+			&& format->u.raw_video.display.format == B_YCbCr422
+			? B_YCbCr422 : B_RGB32;
 		status_t status = _ReadFrame(fCachedFrame, fCachedHeader);
 		if (status != B_OK)
 			return status;
@@ -118,10 +124,10 @@ public:
 		raw.interlace = 1;
 		raw.first_active = 0;
 		raw.last_active = fHeight - 1;
-		raw.display.format = B_RGB32;
+		raw.display.format = fOutputSpace;
 		raw.display.line_width = fWidth;
 		raw.display.line_count = fHeight;
-		raw.display.bytes_per_row = fWidth * 4;
+		raw.display.bytes_per_row = fWidth * _BytesPerPixel();
 		format->type = B_MEDIA_RAW_VIDEO;
 		format->require_flags = 0;
 		format->deny_flags = B_MEDIA_MAUI_UNDEFINED_FLAGS;
@@ -137,6 +143,8 @@ public:
 		if (fBsf != NULL)
 			av_bsf_flush(fBsf);
 		fCachedFrame.clear();
+		fPending.clear();
+		fHasPending = false;
 		fEndOfInput = false;
 		fEosSent = false;
 		fSubmittedPackets = 0;
@@ -234,6 +242,41 @@ private:
 		return status;
 	}
 
+	/*!	Hands a prepared packet to MPP. B_WOULD_BLOCK means its input queue
+		is full: the packet is kept, pictures are taken out to make room, and
+		it is offered again. Failing there (as this once did after ten
+		milliseconds) ended playback of every film with B-frames. */
+	status_t _Put(const std::vector<uint8_t>& bytes, bigtime_t startTime,
+		bool eos)
+	{
+		MppPacket packet = NULL;
+		bigtime_t t0 = system_time();
+		MPP_RET result = mpp_packet_init(&packet,
+			bytes.empty() ? NULL : (void*)bytes.data(), bytes.size());
+		if (result == MPP_OK) {
+			mpp_packet_set_pts(packet, startTime);
+			if (eos)
+				mpp_packet_set_eos(packet);
+			result = fApi->decode_put_packet(fContext, packet);
+		}
+		sSpent[1] += system_time() - t0;
+		if (packet != NULL)
+			mpp_packet_deinit(&packet);
+		if (fSubmittedPackets < 4 || (result != MPP_OK
+				&& result != MPP_ERR_BUFFER_FULL)) {
+			fprintf(stderr, "RockchipMppDecoder: packet=%u stream=%zu"
+				" pts=%lld result=%d\n", fSubmittedPackets, bytes.size(),
+				(long long)startTime, result);
+		}
+		if (result == MPP_ERR_BUFFER_FULL)
+			return B_WOULD_BLOCK;
+		if (result != MPP_OK)
+			return B_ERROR;
+		fSubmittedPackets++;
+		fPollsAfterSubmit = 0;
+		return B_OK;
+	}
+
 	status_t _Submit(const void* chunk, size_t size, bigtime_t startTime,
 		bool eos)
 	{
@@ -243,31 +286,20 @@ private:
 			if (status != B_OK)
 				return status;
 		}
-		MppPacket packet = NULL;
-		MPP_RET result = mpp_packet_init(&packet,
-			bytes.empty() ? NULL : bytes.data(), bytes.size());
-		if (result == MPP_OK) {
-			mpp_packet_set_pts(packet, startTime);
-			if (eos)
-				mpp_packet_set_eos(packet);
-			for (int attempt = 0; attempt < 10; attempt++) {
-				result = fApi->decode_put_packet(fContext, packet);
-				if (result == MPP_OK)
-					break;
-				snooze(1000);
-			}
+		status_t status = _Put(bytes, startTime, eos);
+		if (status == B_WOULD_BLOCK) {
+			fPending.swap(bytes);
+			fPendingTime = startTime;
+			fPendingEos = eos;
+			fHasPending = true;
+			return B_OK;
 		}
-		if (packet != NULL)
-			mpp_packet_deinit(&packet);
-		if (fSubmittedPackets < 4 || result != MPP_OK) {
-			fprintf(stderr, "RockchipMppDecoder: packet=%u input=%zu stream=%zu"
-				" pts=%lld result=%d\n", fSubmittedPackets, size, bytes.size(),
-				(long long)startTime, result);
-		}
-		fSubmittedPackets++;
-		if (result == MPP_OK)
-			fPollsAfterSubmit = 0;
-		return result == MPP_OK ? B_OK : B_ERROR;
+		return status;
+	}
+
+	int _BytesPerPixel() const
+	{
+		return fOutputSpace == B_YCbCr422 ? 2 : 4;
 	}
 
 	status_t _ConvertFrame(MppFrame frame, std::vector<uint8_t>& output,
@@ -286,40 +318,87 @@ private:
 			|| mpp_frame_get_discard(frame) != 0) {
 			return B_ERROR;
 		}
-		AVPixelFormat sourceFormat;
+		size_t lumaBytes = (size_t)horizontal * vertical;
+		switch (format & MPP_FRAME_FMT_MASK) {
+			case MPP_FMT_YUV420SP:
+			case MPP_FMT_YUV420SP_VU:
+			case MPP_FMT_YUV420P:
+				break;
+			default:
+				return B_NOT_SUPPORTED;
+		}
+
+		// Semi-planar 4:2:0 to Y0 Cb Y1 Cr is a repacking: done here it is
+		// a few milliseconds a 1080p picture; swscale's general path took
+		// several times that.
+		if (fOutputSpace == B_YCbCr422 && (format & MPP_FRAME_FMT_MASK)
+				!= MPP_FMT_YUV420P) {
+			bool swap = (format & MPP_FRAME_FMT_MASK) == MPP_FMT_YUV420SP_VU;
+			size_t rowBytes = (size_t)width * 2;
+			output.resize(rowBytes * height);
+			int pairs = width / 2;
+			for (int y = 0; y < height; y++) {
+				const uint8_t* luma = pixels + (size_t)y * horizontal;
+				const uint8_t* chroma = pixels + lumaBytes
+					+ (size_t)(y / 2) * horizontal;
+				uint8_t* out = output.data() + rowBytes * y;
+				int u = swap ? 1 : 0;
+				int v = swap ? 0 : 1;
+				for (int x = 0; x < pairs; x++) {
+					out[4 * x + 0] = luma[2 * x];
+					out[4 * x + 1] = chroma[2 * x + u];
+					out[4 * x + 2] = luma[2 * x + 1];
+					out[4 * x + 3] = chroma[2 * x + v];
+				}
+			}
+			return _FinishFrame(frame, output, header, width, height, format,
+				horizontal, vertical);
+		}
+
+		AVPixelFormat sourceFormat = AV_PIX_FMT_NONE;
 		const uint8_t* planes[4] = {pixels, NULL, NULL, NULL};
 		int strides[4] = {horizontal, 0, 0, 0};
 		switch (format & MPP_FRAME_FMT_MASK) {
 			case MPP_FMT_YUV420SP:
 				sourceFormat = AV_PIX_FMT_NV12;
-				planes[1] = pixels + (size_t)horizontal * vertical;
+				planes[1] = pixels + lumaBytes;
 				strides[1] = horizontal;
 				break;
 			case MPP_FMT_YUV420SP_VU:
 				sourceFormat = AV_PIX_FMT_NV21;
-				planes[1] = pixels + (size_t)horizontal * vertical;
+				planes[1] = pixels + lumaBytes;
 				strides[1] = horizontal;
 				break;
-			case MPP_FMT_YUV420P:
+			default:
 				sourceFormat = AV_PIX_FMT_YUV420P;
-				planes[1] = pixels + (size_t)horizontal * vertical;
-				planes[2] = planes[1] + (size_t)horizontal * vertical / 4;
+				planes[1] = pixels + lumaBytes;
+				planes[2] = planes[1] + lumaBytes / 4;
 				strides[1] = strides[2] = horizontal / 2;
 				break;
-			default:
-				return B_NOT_SUPPORTED;
 		}
+		AVPixelFormat targetFormat = fOutputSpace == B_YCbCr422
+			? AV_PIX_FMT_YUYV422 : AV_PIX_FMT_RGB32;
+		int bytesPerPixel = _BytesPerPixel();
 		fSws = sws_getCachedContext(fSws, width, height, sourceFormat,
-			width, height, AV_PIX_FMT_RGB32, SWS_FAST_BILINEAR, NULL, NULL, NULL);
+			width, height, targetFormat, SWS_FAST_BILINEAR, NULL, NULL, NULL);
 		if (fSws == NULL)
 			return B_ERROR;
-		output.resize((size_t)width * height * 4);
+		output.resize((size_t)width * height * bytesPerPixel);
 		uint8_t* destination[4] = {output.data(), NULL, NULL, NULL};
-		int destinationStride[4] = {width * 4, 0, 0, 0};
+		int destinationStride[4] = {width * bytesPerPixel, 0, 0, 0};
 		if (sws_scale(fSws, planes, strides, 0, height, destination,
 				destinationStride) != height) {
 			return B_ERROR;
 		}
+		return _FinishFrame(frame, output, header, width, height, format,
+			horizontal, vertical);
+	}
+
+	status_t _FinishFrame(MppFrame frame, std::vector<uint8_t>& output,
+		media_header& header, int width, int height, MppFrameFormat format,
+		int horizontal, int vertical)
+	{
+		int bytesPerPixel = _BytesPerPixel();
 		fWidth = width;
 		fHeight = height;
 		if (fDecodedFrames < 4) {
@@ -337,15 +416,39 @@ private:
 		header.u.raw_video.field_gamma = 1.0f;
 		header.u.raw_video.display_line_width = width;
 		header.u.raw_video.display_line_count = height;
-		header.u.raw_video.bytes_per_row = width * 4;
+		header.u.raw_video.bytes_per_row = width * bytesPerPixel;
 		return B_OK;
+	}
+
+	static bigtime_t sSpent[4];	// get_frame, put, convert, chunk
+
+	void _CountPath(int path)
+	{
+		static uint32 counts[8];
+		static bigtime_t last = 0;
+		counts[path]++;
+		bigtime_t now = system_time();
+		if (getenv("MPP_TRACE_LOOP") != NULL && now - last > 2000000) {
+			fprintf(stderr, "RockchipMppDecoder: loop frames=%u info=%u "
+				"put-ok=%u full=%u submit=%u eos=%u idle=%u getframe-err=%u"
+				" | get %lldms put %lldms convert %lldms chunk %lldms\n",
+				counts[0], counts[1], counts[2], counts[3], counts[4],
+				counts[5], counts[6], counts[7], (long long)sSpent[0] / 1000,
+				(long long)sSpent[1] / 1000, (long long)sSpent[2] / 1000,
+				(long long)sSpent[3] / 1000);
+			last = now;
+		}
 	}
 
 	status_t _ReadFrame(std::vector<uint8_t>& output, media_header& header)
 	{
 		for (int step = 0; step < 20000; step++) {
 			MppFrame frame = NULL;
+			bigtime_t t0 = system_time();
 			MPP_RET result = fApi->decode_get_frame(fContext, &frame);
+			sSpent[0] += system_time() - t0;
+			if (result != MPP_OK)
+				_CountPath(7);
 			if (result != MPP_OK)
 				return B_ERROR;
 			if (frame != NULL) {
@@ -369,10 +472,14 @@ private:
 					if (result != MPP_OK)
 						return B_ERROR;
 					fPollsAfterSubmit = 0;
+					_CountPath(1);
 					continue;
 				}
+				_CountPath(0);
 				bool eos = mpp_frame_get_eos(frame);
+				bigtime_t t1 = system_time();
 				status_t status = _ConvertFrame(frame, output, header);
+				sSpent[2] += system_time() - t1;
 				mpp_frame_deinit(&frame);
 				if (status == B_OK)
 					return B_OK;
@@ -380,22 +487,44 @@ private:
 					return B_LAST_BUFFER_ERROR;
 				return status;
 			}
-			if (fSubmittedPackets > 0 && fPollsAfterSubmit < 30) {
-				fPollsAfterSubmit++;
-				snooze(1000);
+			if (fHasPending) {
+				status_t status = _Put(fPending, fPendingTime, fPendingEos);
+				if (status == B_OK) {
+					fHasPending = false;
+					fPending.clear();
+					if (fPendingEos)
+						fEosSent = true;
+					_CountPath(2);
+					continue;
+				}
+				if (status != B_WOULD_BLOCK)
+					return status;
+				// Full: a picture has to come out before more can go in.
+				_CountPath(3);
+				snooze(500);
 				continue;
 			}
-
+			// Waiting for a picture after each packet (as this once did, for
+			// up to 30 ms) starves a decoder that needs the packets after a
+			// picture before it can put it out (B-frames): keep its input
+			// full instead, and let BUFFER_FULL say when to wait.
 			if (!fEndOfInput) {
 				const void* chunk = NULL;
 				size_t size = 0;
 				media_header chunkHeader = {};
+				bigtime_t t2 = system_time();
 				status_t status = GetNextChunk(&chunk, &size, &chunkHeader);
+				sSpent[3] += system_time() - t2;
 				if (status == B_OK) {
 					fLastInputTime = chunkHeader.start_time;
 					status = _Submit(chunk, size, fLastInputTime, false);
 					if (status != B_OK)
 						return status;
+					_CountPath(4);
+					// Let the decoder threads take the packet before asking
+					// for a picture again.
+					if (fHasPending)
+						snooze(500);
 					continue;
 				}
 				if (status != B_LAST_BUFFER_ERROR)
@@ -406,9 +535,12 @@ private:
 				status_t status = _Submit(NULL, 0, fLastInputTime, true);
 				if (status != B_OK)
 					return status;
-				fEosSent = true;
+				if (!fHasPending)
+					fEosSent = true;
+				_CountPath(5);
 				continue;
 			}
+			_CountPath(6);
 			snooze(1000);
 		}
 		return fEndOfInput ? B_LAST_BUFFER_ERROR : B_TIMED_OUT;
@@ -432,7 +564,15 @@ private:
 	uint32 fSubmittedPackets = 0;
 	uint32 fDecodedFrames = 0;
 	uint32 fPollsAfterSubmit = 30;
+	color_space fOutputSpace = B_RGB32;
+	std::vector<uint8_t> fPending;
+	bigtime_t fPendingTime = 0;
+	bool fPendingEos = false;
+	bool fHasPending = false;
 };
+
+
+bigtime_t RockchipMppDecoder::sSpent[4];
 
 
 class RockchipMppPlugin : public DecoderPlugin {

@@ -63,21 +63,21 @@ RestoredStateMatches(const Snapshot& before, const Snapshot& after)
 		&& after.softReset68 == before.softReset68;
 }
 
-// Hardware supplies SnapshotNow(), WritePower(offset, hiwordValue), and
-// WaitPower(mask, set) / WaitIdle(mask, set). Each wait is time bounded.
-template<class Hardware, class Probe>
-void
-CycleVdpuPower(Hardware& hardware, PowerCycle& output, Probe probe)
+// The first half of a power cycle: from the state the firmware leaves to
+// powered. False if the domain did not come up; PowerOffVdpu() then puts back
+// whatever was touched.
+template<class Hardware>
+bool
+PowerOnVdpu(Hardware& hardware, PowerCycle& result)
 {
-	PowerCycle result = {};
+	result = PowerCycle();
 	result.version = kPowerCycleVersion;
 	result.result = kPowerInvalidState;
 	result.restoreResult = kPowerOK;
 	result.before = hardware.SnapshotNow();
 	if (!InitialStateMatches(result.before)) {
 		result.after = result.before;
-		output = result;
-		return;
+		return false;
 	}
 
 	// All VDPU parent-domain clocks are ungated in the admitted firmware state.
@@ -86,7 +86,7 @@ CycleVdpuPower(Hardware& hardware, PowerCycle& output, Probe probe)
 	result.flags |= 1;
 	if (!hardware.WaitPower(kVdpuRepair, true)) {
 		result.result = kPowerOnTimeout;
-		goto restore;
+		return false;
 	}
 
 	// Leave NIU idle after the domain reports power and memory repair.
@@ -94,14 +94,24 @@ CycleVdpuPower(Hardware& hardware, PowerCycle& output, Probe probe)
 	result.flags |= 2;
 	if (!hardware.WaitIdle(kVdpuIdle, false)) {
 		result.result = kPowerIdleTimeout;
-		goto restore;
+		return false;
 	}
 	result.powered = hardware.SnapshotNow();
 	result.flags |= 4;
 	result.result = kPowerOK;
-	probe();
+	return true;
+}
 
-restore:
+
+// The second half: back to the firmware's state, checked against the
+// snapshot PowerOnVdpu() took. Nothing happens if PowerOnVdpu() refused the
+// state it found.
+template<class Hardware>
+void
+PowerOffVdpu(Hardware& hardware, PowerCycle& result)
+{
+	if ((result.flags & 1) == 0)
+		return;
 	// A timeout may still leave the domain powered. Request NIU idle before
 	// switching it off, then restore the original idle-request bit.
 	if (hardware.PowerIsOn(kVdpuRepair)) {
@@ -119,6 +129,19 @@ restore:
 		&& !RestoredStateMatches(result.before, result.after)) {
 		result.restoreResult = kPowerRestoreMismatch;
 	}
+}
+
+
+// Hardware supplies SnapshotNow(), WritePower(offset, hiwordValue), and
+// WaitPower(mask, set) / WaitIdle(mask, set). Each wait is time bounded.
+template<class Hardware, class Probe>
+void
+CycleVdpuPower(Hardware& hardware, PowerCycle& output, Probe probe)
+{
+	PowerCycle result;
+	if (PowerOnVdpu(hardware, result))
+		probe();
+	PowerOffVdpu(hardware, result);
 	output = result;
 }
 
@@ -177,46 +200,49 @@ RestoredRkvdec0StateMatches(const Snapshot& before, const Snapshot& after)
 		&& after.softReset68 == before.softReset68;
 }
 
-// Core 0 is missing from this EDK2 FDT. This diagnostic is restricted to the
-// validated Rock 5 ITX board, exact observed clock state and an opt-in setting.
-// The register and PMU layout is from Linux mainline 75f2c0b36907.
-template<class Hardware, class Probe>
-void
-CycleRkvdec0Power(Hardware& hardware, PowerCycle& output, Probe probe)
+template<class Hardware>
+bool
+PowerOnRkvdec0(Hardware& hardware, PowerCycle& result)
 {
-	PowerCycle result = {};
+	result = PowerCycle();
 	result.version = kPowerCycleVersion;
 	result.result = kPowerInvalidState;
 	result.restoreResult = kPowerOK;
 	result.before = hardware.SnapshotNow();
 	if (!InitialRkvdec0StateMatches(result.before)) {
 		result.after = result.before;
-		output = result;
-		return;
+		return false;
 	}
 
 	hardware.WritePower(kPowerGateOffset, kRkvdec0Gate << 16);
 	result.flags |= 1;
 	if (!hardware.WaitRkvdec0Power(true)) {
 		result.result = kPowerOnTimeout;
-		goto restore;
+		return false;
 	}
 	if (!hardware.WaitRkvdec0Memory(true)) {
 		result.result = kPowerMemoryTimeout;
-		goto restore;
+		return false;
 	}
 	hardware.WritePower(kIdleRequestOffset, kRkvdec0Idle << 16);
 	result.flags |= 2;
 	if (!hardware.WaitIdle(kRkvdec0Idle, false)) {
 		result.result = kPowerIdleTimeout;
-		goto restore;
+		return false;
 	}
 	result.powered = hardware.SnapshotNow();
 	result.flags |= 4;
 	result.result = kPowerOK;
-	probe();
+	return true;
+}
 
-restore:
+
+template<class Hardware>
+void
+PowerOffRkvdec0(Hardware& hardware, PowerCycle& result)
+{
+	if ((result.flags & 1) == 0)
+		return;
 	if (hardware.PowerIsOn(kRkvdec0Repair)) {
 		hardware.WritePower(kIdleRequestOffset,
 			(kRkvdec0Idle << 16) | kRkvdec0Idle);
@@ -235,6 +261,20 @@ restore:
 		&& !RestoredRkvdec0StateMatches(result.before, result.after)) {
 		result.restoreResult = kPowerRestoreMismatch;
 	}
+}
+
+
+// Core 0 is missing from this EDK2 FDT. This diagnostic is restricted to the
+// validated Rock 5 ITX board, exact observed clock state and an opt-in setting.
+// The register and PMU layout is from Linux mainline 75f2c0b36907.
+template<class Hardware, class Probe>
+void
+CycleRkvdec0Power(Hardware& hardware, PowerCycle& output, Probe probe)
+{
+	PowerCycle result;
+	if (PowerOnRkvdec0(hardware, result))
+		probe();
+	PowerOffRkvdec0(hardware, result);
 	output = result;
 }
 
@@ -280,43 +320,49 @@ RestoredAv1StateMatches(const Snapshot& before, const Snapshot& after)
 		&& after.softReset68 == before.softReset68;
 }
 
-template<class Hardware, class Probe>
-void
-CycleAv1Power(Hardware& hardware, PowerCycle& output, Probe probe)
+template<class Hardware>
+bool
+PowerOnAv1(Hardware& hardware, PowerCycle& result)
 {
-	PowerCycle result = {};
+	result = PowerCycle();
 	result.version = kPowerCycleVersion;
 	result.result = kPowerInvalidState;
 	result.restoreResult = kPowerOK;
 	result.before = hardware.SnapshotNow();
 	if (!InitialAv1StateMatches(result.before)) {
 		result.after = result.before;
-		output = result;
-		return;
+		return false;
 	}
 
 	hardware.WritePower(kPowerGateOffset, kAv1Gate << 16);
 	result.flags |= 1;
 	if (!hardware.WaitAv1Power(true)) {
 		result.result = kPowerOnTimeout;
-		goto restore;
+		return false;
 	}
 	if (!hardware.WaitAv1Memory(true)) {
 		result.result = kPowerMemoryTimeout;
-		goto restore;
+		return false;
 	}
 	hardware.WritePower(kIdleRequestOffset, kAv1Idle << 16);
 	result.flags |= 2;
 	if (!hardware.WaitIdle(kAv1Idle, false)) {
 		result.result = kPowerIdleTimeout;
-		goto restore;
+		return false;
 	}
 	result.powered = hardware.SnapshotNow();
 	result.flags |= 4;
 	result.result = kPowerOK;
-	probe();
+	return true;
+}
 
-restore:
+
+template<class Hardware>
+void
+PowerOffAv1(Hardware& hardware, PowerCycle& result)
+{
+	if ((result.flags & 1) == 0)
+		return;
 	if (hardware.PowerIsOn(kAv1Repair)) {
 		hardware.WritePower(kIdleRequestOffset, (kAv1Idle << 16) | kAv1Idle);
 		if (!hardware.WaitIdle(kAv1Idle, true))
@@ -333,6 +379,17 @@ restore:
 		&& !RestoredAv1StateMatches(result.before, result.after)) {
 		result.restoreResult = kPowerRestoreMismatch;
 	}
+}
+
+
+template<class Hardware, class Probe>
+void
+CycleAv1Power(Hardware& hardware, PowerCycle& output, Probe probe)
+{
+	PowerCycle result;
+	if (PowerOnAv1(hardware, result))
+		probe();
+	PowerOffAv1(hardware, result);
 	output = result;
 }
 
