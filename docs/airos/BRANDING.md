@@ -81,27 +81,41 @@ traced the wordmark from the brand sheet.
 
 The board's NVMe install ("Haiku NVMe") runs this branding:
 
-- `haiku.hpkg` built from `airos-branding` under the `@rock5full-mmc` profile,
-  SHA-256 `280fa016d146cae056d1e2060a08b2b52713f90ab2a751ae457b33196b13f5b0`,
-  copied over the installed `haiku-r1~beta6_hrev60097_335_dirty-1-arm64.hpkg`
-  (file name kept). The previous package
+- `haiku.hpkg` built from `airos-branding` at `hrev60097+342` under the
+  `@rock5full-mmc` profile, SHA-256
+  `f236f88a1c70fcc671ccc516432f4ca8c9a22ad8526c6eb1193165141b99a505`, copied
+  over the installed `haiku-r1~beta6_hrev60097_335_dirty-1-arm64.hpkg` (file
+  name kept). The package that was there before air/OS
   (`aa66e8ffb087e205c1d57bd638cbe5cee925cdeaaee9a44dbff383ded62f96ad`) is in
-  `/boot/home/rock5-lab/airos-backup/haiku-before-airos.hpkg`. `uname`
-  reports `hrev60097+339`.
-- The ESP's `EFI/BOOT/BOOTAA64.EFI` was replaced with that package's
-  `haiku_loader.efi` (`f91edce4…030d`) by `tools/rock5-itx/install-efi-loader.sh`;
-  the previous loader (`4e5dfb49…1c31`) is `BOOTAA64.EFI.rock5-previous` next
-  to it.
+  `/boot/home/rock5-lab/airos-backup/haiku-before-airos.hpkg`, with the loose
+  `Haiku3d` demo that was in `/boot/system/non-packaged/demos`.
+- The ESP's `EFI/BOOT/BOOTAA64.EFI` is the loader built at `hrev60097+339`
+  (`f91edce4…030d`), installed by `tools/rock5-itx/install-efi-loader.sh`; it
+  differs from the package's `+342` loader only in the revision string. The
+  loader from before air/OS (`4e5dfb49…1c31`) is `BOOTAA64.EFI.rock5-previous`
+  next to it.
 
-Seen over the NanoKVM after two reboots: the air/OS boot screen with the
+The first air/OS package (`280fa016…`) shipped `data/deskbar/menu_entries` as
+an empty directory instead of the 251-byte virtual directory file, so the
+Deskbar menu had no Applications, Demos, Desktop applets or Preferences. A
+failed `SetType` in a parallel build had been worked around by hand with
+`mkdir`; the file is now built by the normal rule, and the package was checked
+entry by entry (type, mode, attributes, data file sizes) against the one it
+replaces. The only other difference is `lib/libroot.so`, whose old copy had
+icon and signature attributes that no rule gives it, most likely stale
+entries in the shared build's emulated attribute store.
+
+Seen over the NanoKVM after the reboots: the air/OS boot screen with the
 stage icons advancing; the desktop picture, which replaced the Desktop's old
 default (its attribute still named Haiku's logo, which this build never
-shipped); the Deskbar logo; the boot volume and `/boot/system` icons;
-*About this system* (logo, `air/OS, Haiku R1/beta6 (arm64)`, the air/OS and
-Haiku sections); DriveSetup's boot partition mark. The same build was first
-checked in QEMU from a fresh image, where the picture appears on the first
-boot. Not seen on hardware: the Installer's logo window (its information
-panel opens first), the dark Deskbar variant and HaikuDepot's badge.
+shipped); the Deskbar logo and its full menu (Applications, Demos without
+Haiku3d, Desktop applets, Preferences); the boot volume and `/boot/system`
+icons; *About this system* (logo, `air/OS, Haiku R1/beta6 (arm64)`, the air/OS
+and Haiku sections); DriveSetup's boot partition mark; no Leaves in
+`add-ons/Screen Savers`. The same builds were first checked in QEMU from a
+fresh image. Not seen on hardware: the Installer's logo window (its
+information panel opens first), the dark Deskbar variant and HaikuDepot's
+badge.
 
 To go back, copy the backup package over the installed name, and
 `BOOTAA64.EFI.rock5-previous` over `BOOTAA64.EFI`; or pick the previous
