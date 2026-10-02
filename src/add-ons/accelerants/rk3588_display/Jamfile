@@ -9,6 +9,7 @@ Addon rk3588_display.accelerant :
 	accelerant.cpp
 	cursor.cpp
 	hooks.cpp
+	layout.cpp
 	mode.cpp
 	: libaccelerantscommon.a
 ;

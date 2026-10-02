@@ -120,9 +120,13 @@ create_mode_list(void)
 }
 
 
+// With two displays the one mode is the desktop of their layout: the one
+// app_server asked for last, until it is set.
 uint32
 rk3588_accelerant_mode_count(void)
 {
+	if (is_dual())
+		return 1;
 	return gInfo->shared_info->modeCount;
 }
 
@@ -130,7 +134,19 @@ rk3588_accelerant_mode_count(void)
 status_t
 rk3588_get_mode_list(display_mode* list)
 {
+	if (is_dual()) {
+		list[0] = dual_preferred_mode();
+		return B_OK;
+	}
 	memcpy(list, gInfo->mode_list, gInfo->shared_info->modeCount * sizeof(display_mode));
+	return B_OK;
+}
+
+
+status_t
+rk3588_get_preferred_display_mode(display_mode* mode)
+{
+	*mode = dual_preferred_mode();
 	return B_OK;
 }
 
@@ -138,6 +154,12 @@ rk3588_get_mode_list(display_mode* list)
 status_t
 rk3588_set_display_mode(display_mode* mode)
 {
+	if (mode != NULL && is_dual() && gInfo->dual_pending
+		&& mode->virtual_width == gInfo->dual_pending_width
+		&& mode->virtual_height == kFrameHeight && mode->space == B_RGB32) {
+		// the layout app_server asked for takes effect
+		return apply_dual_layout();
+	}
 	if (mode == NULL || !is_mode_supported(mode))
 		return B_UNSUPPORTED;
 	display_mode current = current_display_mode();

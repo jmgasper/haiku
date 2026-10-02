@@ -51,6 +51,24 @@ get_accelerant_hook(uint32 feature, void* data)
 			if (feature == B_DPMS_MODE)
 				return (void*)rk3588_dpms_mode;
 			return (void*)rk3588_set_dpms_mode;
+		case B_GET_PREFERRED_DISPLAY_MODE:
+		case B_GET_DISPLAY_OUTPUT_COUNT:
+		case B_GET_DISPLAY_OUTPUTS:
+		case B_GET_DISPLAY_OUTPUT_MODES:
+		case B_SET_DISPLAY_LAYOUT:
+			// HDMI1 and DP1 as two displays app_server arranges, on the
+			// dual profile with a sink on DP1.
+			if (!is_dual())
+				return NULL;
+			if (feature == B_GET_PREFERRED_DISPLAY_MODE)
+				return (void*)rk3588_get_preferred_display_mode;
+			if (feature == B_GET_DISPLAY_OUTPUT_COUNT)
+				return (void*)rk3588_display_output_count;
+			if (feature == B_GET_DISPLAY_OUTPUTS)
+				return (void*)rk3588_get_display_outputs;
+			if (feature == B_GET_DISPLAY_OUTPUT_MODES)
+				return (void*)rk3588_get_display_output_modes;
+			return (void*)rk3588_set_display_layout;
 		case B_SET_CURSOR_BITMAP:
 		case B_MOVE_CURSOR:
 		case B_SHOW_CURSOR:

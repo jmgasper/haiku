@@ -2111,7 +2111,7 @@ main()
 	// releasing the frame buffer, clones, refusals and failure cleanup.
 	static_assert(sizeof(AccelerantInfo) == 80, "Accelerant ABI layout changed");
 	static_assert(sizeof(RetraceRearm) == 32, "Re-arm ABI layout changed");
-	static_assert(sizeof(SharedInfo) == 244, "Shared info ABI layout changed");
+	static_assert(sizeof(SharedInfo) == 392, "Shared info ABI layout changed");
 	Prepare();
 	controller.resources = good;
 	controller.accelerantEnabled = false;
@@ -3155,6 +3155,103 @@ main()
 	sAllowModeSet = false;
 	controller.dpDesktopEnabled = controller.dpSpanEnabled = false;
 	sDpLinkUp = false;
+	// The dual profile: with DP1's hot-plug pin high, the spanning desktop as
+	// two displays app_server arranges. Mirrored, both windows show the
+	// buffer's start one screen wide; side by side either way round, each its
+	// half; the pointer is on each port at its place there. HDMI1's mode set
+	// is refused while both run, and release puts the firmware windows back.
+	// With the pin low, nothing of DP1 is touched and HDMI1 is acquired alone.
+	controller.dpDualEnabled = true;
+	controller.cursorEnabled = controller.cursorHooksEnabled = true;
+	controller.modeSetEnabled = true;
+	assert(Free(primary) == B_OK);
+	assert(Open(&controller, "", O_RDWR, &opened) == B_OK);
+	primary = (Handle*)opened;
+	Prepare(); sAllowDp = true; sAllowModeSet = true; sAllowCursor = true; sAllowEdid = true;
+	sGpioPort = 1u << 29;
+	sBootInfo = frame_buffer_boot_info{17, 0xed940000, 0xffff000012340000ull, 640, 480, 32, 2560, 0};
+	sVopOverrides[0x1c14] = 0xed940000; sVopOverrides[0x1c1c] = 640; sVopOverrides[0x1c20] = 0x01df027f;
+	sVopOverrides[0x1c24] = 0x01df027f;
+	sVopOverrides[0xe48] = (800u << 16) | 96; sVopOverrides[0xe4c] = (144u << 16) | 784;
+	sVopOverrides[0xe50] = (525u << 16) | 2; sVopOverrides[0xe54] = (35u << 16) | 515;
+	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_OK && sSpanHdmi && sDpDesktop);
+	acc = {}; acc.version = kAccelerantVersion;
+	assert(Control(primary, kGetAccelerantInfo, &acc, sizeof(acc)) == B_OK);
+	assert((acc.flags & kAccelerantDual) != 0 && (acc.flags & kAccelerantModeSet) == 0);
+	assert(acc.width == 3840 && acc.bytesPerRow == 15360);
+	assert(sShared->hdmiX == 0 && sShared->dpX == 1920 && sShared->width == 3840);
+	ModeRequest dualMode = {}; dualMode.version = kModeVersion;
+	assert(Control(primary, kSetDisplayMode, &dualMode, sizeof(dualMode)) == B_NOT_ALLOWED);
+	PowerRequest dualPower = {}; dualPower.version = kPowerVersion; dualPower.mode = kPowerOff;
+	assert(Control(primary, kSetPowerMode, &dualPower, sizeof(dualPower)) == B_NOT_ALLOWED);
+	CursorBitmap* dualBitmap = new CursorBitmap();
+	dualBitmap->version = kCursorVersion; dualBitmap->width = dualBitmap->height = 22; dualBitmap->bytesPerRow = 88;
+	memset(dualBitmap->data, 0xff, sizeof(dualBitmap->data));
+	assert(Control(primary, kSetCursorBitmap, dualBitmap, sizeof(*dualBitmap)) == B_OK && dualBitmap->result == kCursorOK);
+	delete dualBitmap;
+	CursorShow dualShow = {}; dualShow.version = kCursorVersion; dualShow.visible = 1;
+	assert(Control(primary, kShowCursor, &dualShow, sizeof(dualShow)) == B_OK && dualShow.result == kCursorOK);
+	// mirrored
+	DualLayout dual = {}; dual.version = kDualLayoutVersion; dual.hdmiX = 0; dual.dpX = 0;
+	assert(Control(primary, kSetDualLayout, &dual, sizeof(dual)) == B_OK && dual.result == kDpOK);
+	assert(dual.width == 1920 && dual.bytesPerRow == 7680);
+	assert(sVopOverrides[0x1c14] == kModelFramePhysical && sVopOverrides[0x1c1c] == 1920);
+	assert(sVopOverrides[0x1814] == kModelFramePhysical && sVopOverrides[0x181c] == 1920);
+	assert(sVopOverrides[0x1c20] == 0x0437077f && sVopOverrides[0x1820] == 0x0437077f);
+	assert(sShared->width == 1920 && sShared->bytesPerRow == 7680 && sShared->hTotal == 2200
+		&& sShared->pixelClockKHz == 148500 && sShared->hdmiX == 0 && sShared->dpX == 0);
+	assert(sConsole.width == 1920 && sConsole.bytesPerRow == 7680);
+	acc = {}; acc.version = kAccelerantVersion;
+	assert(Control(primary, kGetAccelerantInfo, &acc, sizeof(acc)) == B_OK && acc.width == 1920
+		&& acc.bytesPerRow == 7680);
+	CursorMove dualMove = {}; dualMove.version = kCursorVersion; dualMove.x = 100; dualMove.y = 500;
+	assert(Control(primary, kMoveCursor, &dualMove, sizeof(dualMove)) == B_OK && dualMove.result == kCursorOK);
+	assert(sVopOverrides[0x1e10] == 1 && sVopOverrides[0x1e28] == ((500u << 16) | 100));
+	assert(sVopOverrides[0x1a10] == 1 && sVopOverrides[0x1a28] == ((500u << 16) | 100));
+	// side by side, DP1 on the left
+	dual.hdmiX = 1920; dual.dpX = 0;
+	assert(Control(primary, kSetDualLayout, &dual, sizeof(dual)) == B_OK && dual.width == 3840);
+	assert(sVopOverrides[0x1c14] == kModelFramePhysical + 7680 && sVopOverrides[0x1c1c] == 3840);
+	assert(sVopOverrides[0x1814] == kModelFramePhysical && sVopOverrides[0x181c] == 3840);
+	assert(sShared->width == 3840 && sShared->hTotal == 4400 && sShared->pixelClockKHz == 297000);
+	assert(sConsole.width == 3840 && sConsole.bytesPerRow == 15360);
+	dualMove.x = 3000;
+	assert(Control(primary, kMoveCursor, &dualMove, sizeof(dualMove)) == B_OK && dualMove.result == kCursorOK);
+	assert(sVopOverrides[0x1e10] == 1 && sVopOverrides[0x1e28] == ((500u << 16) | 1080));
+	assert(sVopOverrides[0x1a10] == 0);
+	// anything else is refused and changes nothing
+	dual.hdmiX = 100; dual.dpX = 0;
+	assert(Control(primary, kSetDualLayout, &dual, sizeof(dual)) == B_BAD_VALUE);
+	dual.hdmiX = 1920; dual.dpX = 1920;
+	assert(Control(primary, kSetDualLayout, &dual, sizeof(dual)) == B_BAD_VALUE);
+	dual.version = kDualLayoutVersion + 1; dual.hdmiX = 0; dual.dpX = 0;
+	assert(Control(primary, kSetDualLayout, &dual, sizeof(dual)) == B_BAD_VALUE);
+	assert(Control(primary, kSetDualLayout, &dual, sizeof(dual) - 1) == B_BAD_VALUE);
+	assert(sVopOverrides[0x1c14] == kModelFramePhysical + 7680 && sShared->width == 3840);
+	// another handle does not own the desktop
+	void* dualOther = NULL;
+	assert(Open(&controller, "", O_RDWR, &dualOther) == B_OK);
+	dual.version = kDualLayoutVersion;
+	assert(Control((Handle*)dualOther, kSetDualLayout, &dual, sizeof(dual)) == B_NO_INIT);
+	assert(Close((Handle*)dualOther) == B_OK && Free((Handle*)dualOther) == B_OK);
+	assert(Close(primary) == B_OK && !sSpanHdmi && !sDpDesktop);
+	assert(sVopOverrides[0x1c14] == 0xed940000 && sVopOverrides[0x1c1c] == 640 && sVopOverrides[0x1c20] == 0x01df027f);
+	assert(sVopOverrides[0x1814] == 0xed940000 && sVopOverrides[0x1a10] == 0 && sVopOverrides[0x1e10] == 0);
+	assert(sConsole.width == 640 && sHandler == NULL && sAreas.empty());
+	// DP1's pin low: HDMI1 alone (the 640x480 firmware desktop is not one it takes)
+	sDpLinkUp = false;
+	assert(Free(primary) == B_OK);
+	assert(Open(&controller, "", O_RDWR, &opened) == B_OK);
+	primary = (Handle*)opened;
+	Prepare(); sAllowDp = true; sAllowModeSet = true; sAllowCursor = true; sAllowEdid = true;
+	sGpioPort = 0;
+	sBootInfo = frame_buffer_boot_info{17, 0xed940000, 0xffff000012340000ull, 640, 480, 32, 2560, 0};
+	sDpWrites.clear();
+	assert(Control(primary, kAcquireFrameBuffer, NULL, 0) == B_NOT_SUPPORTED && !sDpDesktop
+		&& sDpWrites.empty() && sOwner == NULL);
+	controller.dpDualEnabled = false;
+	controller.modeSetEnabled = false;
+	sAllowEdid = false;
 	assert(Close(reader) == B_OK && Free(reader) == B_OK && Free(primary) == B_OK);
 	controller.dpAuxEnabled = false;
 	sAllowDp = false;

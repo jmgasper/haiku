@@ -73,6 +73,7 @@ struct Controller {
 	bool dpAuxEnabled; // the second connector's DP path may be brought up to its AUX channel
 	bool dpDesktopEnabled; // the accelerant's frame buffer goes to the second connector (DP1)
 	bool dpSpanEnabled; // one 3840x1080 frame buffer: left half on HDMI1, right half on DP1
+	bool dpDualEnabled; // HDMI1 and, with a sink there at acquisition, DP1 as a second display
 };
 
 // One open file handle. Only writable handles (the accelerant profile) may
@@ -152,13 +153,16 @@ static bool sDpLinkUp = false; // DP1 trained and video port 1 running since an 
 // The spanning desktop: HDMI1's port and window as the firmware left them,
 // the mode it was raised to, and the result.
 static const uint32_t kSpanWidth = 2 * kFrameWidth;
-static uint32_t sFrameWidth = kFrameWidth; // of the acquired buffer
+static uint32_t sFrameWidth = kFrameWidth; // the desktop's width in the acquired buffer
 static bool sSpanHdmi = false; // HDMI1's window scans the left half
 static uint32_t sSpanPort = 0, sSpanWindow = 0;
 static uint32_t sSpanFirmware[3] = {}; // HDMI1 window address, virtual width, active size
 static uint32_t sSpanModeResult = 0;
 static uint32_t sDpFirmwareWindow[3] = {}; // address, virtual width, active size
 static uint32_t sDpDesktopWindow = 0; // the firmware desktop window ESMART0 cloned
+// The two-display desktop: where each port's screen starts in the desktop.
+static uint32_t sHdmiOriginX = 0;
+static uint32_t sDpOriginX = kFrameWidth;
 static status_t RestoreScanout(Controller* controller);
 static status_t AcquireFrameBuffer(Handle* handle);
 static status_t AcquireDpFrameBuffer(Handle* handle);
@@ -167,6 +171,8 @@ static status_t ChangeDisplayMode(Handle* handle, ModeRequest& request);
 static status_t ChangePowerMode(Handle* handle, PowerRequest& request);
 static status_t CursorControl(Handle* handle, uint32 op, void* buffer, size_t length);
 static status_t DpControl(Handle* handle, void* buffer, size_t length);
+static bool DpSinkPresent(Controller* controller);
+static status_t SetDualLayout(Handle* handle, DualLayout& layout);
 static uint32_t ProgramCursor(uint32_t& polls, bool wait = true);
 static int32 RetraceInterrupt(void* data);
 static void ReleaseFrameBuffer(Controller* controller);
@@ -673,8 +679,13 @@ InitDriver(device_node* node, void** cookie)
 		// The span cursor profile runs the spanning desktop with app_server's
 		// pointer on one cursor window per port.
 		bool spanCursor = strcmp(profile, "rock5-itx-edk2-v1.1-display-dp-span-cursor") == 0;
+		// The dual profile is the cursor desktop on HDMI1, with DP1 as a
+		// second display beside it or mirroring it when DP1 has a sink at
+		// acquisition; app_server arranges the two.
+		controller->dpDualEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-dual") == 0;
 		controller->cursorHooksEnabled
-			= strcmp(profile, "rock5-itx-edk2-v1.1-display-cursor-desktop") == 0 || spanCursor;
+			= strcmp(profile, "rock5-itx-edk2-v1.1-display-cursor-desktop") == 0 || spanCursor
+				|| controller->dpDualEnabled;
 		// The DP AUX profile touches only the second connector's path; HDMI1
 		// stays with the firmware.
 		controller->dpAuxEnabled = strcmp(profile, "rock5-itx-edk2-v1.1-display-dp-aux") == 0;
@@ -699,7 +710,7 @@ InitDriver(device_node* node, void** cookie)
 		unload_driver_settings(settings);
 	dprintf("rk3588_display: validated VOP2 %#" B_PRIx64 " and HDMI TX1 %#" B_PRIx64
 		" resources; observation only; EDID %s; scanout %s; accelerant %s; modeset %s; cursor %s;"
-		" cursor hooks %s; dp aux %s%s%s\n",
+		" cursor hooks %s; dp aux %s%s%s%s\n",
 		controller->resources.vopBase, controller->resources.hdmiBase,
 		controller->edidEnabled ? "enabled" : "disabled",
 		controller->scanoutEnabled ? "enabled" : "disabled",
@@ -709,7 +720,8 @@ InitDriver(device_node* node, void** cookie)
 		controller->cursorHooksEnabled ? "enabled" : "disabled",
 		controller->dpAuxEnabled ? "enabled" : "disabled",
 		controller->dpDesktopEnabled ? "; dp desktop enabled" : "",
-		controller->dpSpanEnabled ? "; dp span enabled" : "");
+		controller->dpSpanEnabled ? "; dp span enabled" : "",
+		controller->dpDualEnabled ? "; dp dual enabled" : "");
 	*cookie = controller;
 	return B_OK;
 }
@@ -771,6 +783,9 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 			return B_BUSY;
 		if (controller->dpDesktopEnabled)
 			return AcquireDpFrameBuffer(handle);
+		if (controller->dpDualEnabled && DpSinkPresent(controller)
+			&& AcquireDpFrameBuffer(handle) == B_OK)
+			return B_OK;
 		return AcquireFrameBuffer(handle);
 	}
 	if (op == kGetAccelerantInfo) {
@@ -810,6 +825,10 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 		if (request.version != kModeVersion)
 			return B_BAD_VALUE;
 		MutexLocker locker(sHardwareLock);
+		if (sDpDesktop) {
+			// HDMI1's mode set is for HDMI1 alone, not for the DP desktops.
+			return B_NOT_ALLOWED;
+		}
 		status_t status = ChangeDisplayMode(handle, request);
 		if (status != B_OK)
 			return status;
@@ -830,6 +849,8 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 		if (request.version != kPowerVersion)
 			return B_BAD_VALUE;
 		MutexLocker locker(sHardwareLock);
+		if (sDpDesktop)
+			return B_NOT_ALLOWED;
 		status_t status = ChangePowerMode(handle, request);
 		if (status != B_OK)
 			return status;
@@ -896,6 +917,26 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 		if (area < B_OK)
 			return area;
 		return _user_get_area_info(area, (area_info*)buffer);
+	}
+	if (op == kSetDualLayout) {
+		if (!controller->dpDualEnabled)
+			return B_DEV_INVALID_IOCTL;
+		if (!handle->writable)
+			return B_NOT_ALLOWED;
+		if (length != sizeof(DualLayout))
+			return B_BAD_VALUE;
+		if (buffer == NULL)
+			return B_BAD_ADDRESS;
+		DualLayout layout;
+		if (user_memcpy(&layout, buffer, sizeof(layout)) != B_OK)
+			return B_BAD_ADDRESS;
+		if (layout.version != kDualLayoutVersion)
+			return B_BAD_VALUE;
+		MutexLocker locker(sHardwareLock);
+		status_t status = SetDualLayout(handle, layout);
+		if (status != B_OK)
+			return status;
+		return user_memcpy(buffer, &layout, sizeof(layout));
 	}
 	if (op == kDpProbe)
 		return DpControl(handle, buffer, length);
@@ -1621,10 +1662,14 @@ ProgramCursor(uint32_t& polls, bool wait)
 	uint32_t enabledBefore = sCursorState.regionControl;
 	uint32_t result;
 	if (sDpDesktop && sSpanHdmi) {
-		// One window per port, each clipped to its own 1920x1080 screen: the
-		// left one on HDMI1's port over its window, the right one on DP1's.
+		// One window per port, each clipped to its own 1920x1080 screen, at
+		// the place that screen has in the desktop: HDMI1's on its port over
+		// its window, DP1's on port 1 (both at 0 when they mirror).
+		int32_t x = sCursorState.x;
+		sCursorState.x = x - (int32_t)sHdmiOriginX;
 		result = ApplyCursor(hardware, sCursorState, sCursorCommit, sCursor.physical, sSpanPort,
 			sSpanWindow, kFrameWidth, kFrameHeight, polls, wait);
+		sCursorState.x = x;
 		uint32_t rightEnabledBefore = sCursorRight.regionControl;
 		uint32_t window = sCursorRight.window, mixer = sCursorRight.mixer, regionControl
 			= sCursorRight.regionControl, displayStart = sCursorRight.displayStart, address = sCursorRight.address;
@@ -1634,7 +1679,7 @@ ProgramCursor(uint32_t& polls, bool wait)
 		sCursorRight.regionControl = regionControl;
 		sCursorRight.displayStart = displayStart;
 		sCursorRight.address = address;
-		sCursorRight.x = sCursorState.x - (int32_t)kFrameWidth;
+		sCursorRight.x = sCursorState.x - (int32_t)sDpOriginX;
 		uint32_t rightPolls = 0;
 		uint32_t right = ApplyCursor(hardware, sCursorRight, sCursorRightCommit, sCursor.physical,
 			kVopPort1, kDpWindow, kFrameWidth, kFrameHeight, rightPolls, wait);
@@ -2137,6 +2182,22 @@ AcquireDpFrameBuffer(Handle* handle)
 	Controller* controller = handle->controller;
 	if (!ResourcesMatch(controller->resources))
 		return B_NOT_SUPPORTED;
+	// The two-display desktop starts out as the spanning one.
+	bool span = controller->dpSpanEnabled || controller->dpDualEnabled;
+	EdidRequest hdmiEdid = {};
+	hdmiEdid.version = kEdidVersion;
+	hdmiEdid.result = kEdidNotReady;
+	if (controller->dpDualEnabled) {
+		// HDMI1's sink, read while the firmware still runs its port.
+		EdidHardware edid;
+		uint32_t result = kEdidNotReady;
+		if (edid.Prepare(controller->resources, hdmiEdid.hotPlug, result) == B_OK) {
+			if (edid.Ready())
+				ReadEdidBlock(edid, 0, hdmiEdid);
+			else
+				hdmiEdid.result = result;
+		}
+	}
 	DpProbeRequest* request = (DpProbeRequest*)calloc(1, sizeof(DpProbeRequest));
 	if (request == NULL)
 		return B_NO_MEMORY;
@@ -2146,10 +2207,10 @@ AcquireDpFrameBuffer(Handle* handle)
 	} requestFree = {request};
 	request->version = kDpVersion;
 	request->flags = kDpProbeEdid | kDpProbeTrain | kDpProbeVideo | kDpProbeWindow;
-	uint32_t width = controller->dpSpanEnabled ? kSpanWidth : kFrameWidth;
+	uint32_t width = span ? kSpanWidth : kFrameWidth;
 	uint32_t bytesPerRow = width * 4;
 	// DP1 shows the right half of a spanning buffer, all of a single one.
-	uint32_t offset = controller->dpSpanEnabled ? kFrameBytesPerRow : 0;
+	uint32_t offset = span ? kFrameBytesPerRow : 0;
 	status_t status = AllocateContiguous(sFrame, "RK3588 display frame buffer", bytesPerRow * kFrameHeight,
 		false);
 	if (status != B_OK)
@@ -2206,7 +2267,7 @@ AcquireDpFrameBuffer(Handle* handle)
 	shared.width = width;
 	shared.height = kFrameHeight;
 	shared.bytesPerRow = bytesPerRow;
-	strncpy(shared.name, controller->dpSpanEnabled ? "RK3588 VOP2 HDMI TX1 + DP TX1" : "RK3588 VOP2 DP TX1",
+	strncpy(shared.name, span ? "RK3588 VOP2 HDMI TX1 + DP TX1" : "RK3588 VOP2 DP TX1",
 		sizeof(shared.name) - 1);
 	if (request->edidBytes == sizeof(shared.edid)) {
 		memcpy(shared.edid, request->edid, sizeof(shared.edid));
@@ -2221,7 +2282,12 @@ AcquireDpFrameBuffer(Handle* handle)
 	shared.vSyncStart = kDp1080p60.vSyncStart;
 	shared.vSyncEnd = kDp1080p60.vSyncEnd;
 	shared.vTotal = kDp1080p60.vTotal;
-	if (controller->dpSpanEnabled) {
+	shared.hdmiX = 0;
+	shared.dpX = kFrameWidth;
+	shared.hdmiEdidResult = hdmiEdid.result;
+	if (hdmiEdid.result == kEdidOK)
+		memcpy(shared.hdmiEdid, hdmiEdid.data, sizeof(shared.hdmiEdid));
+	if (span) {
 		// Two 1080p60 ports side by side, described as one mode twice as wide
 		// with the horizontal timing doubled, so the refresh rate stays 60 Hz.
 		shared.pixelClockKHz = 2 * kDp1080p60.clock;
@@ -2260,8 +2326,10 @@ AcquireDpFrameBuffer(Handle* handle)
 	sCursorState.version = kCursorVersion;
 	// The spanning desktop's left screen keeps HDMI1's qualified cursor
 	// window; DP1's screen uses ESMART1 above ESMART0.
-	sCursorState.window = controller->dpSpanEnabled ? kVopCursorWindow : kDpCursorWindow;
-	sCursorState.mixer = controller->dpSpanEnabled ? kVopCursorMixer : kDpCursorMixer;
+	sCursorState.window = span ? kVopCursorWindow : kDpCursorWindow;
+	sCursorState.mixer = span ? kVopCursorMixer : kDpCursorMixer;
+	sHdmiOriginX = 0;
+	sDpOriginX = kFrameWidth;
 	memset(&sCursorRight, 0, sizeof(sCursorRight));
 	sCursorRight.version = kCursorVersion;
 	sCursorRight.window = kDpCursorWindow;
@@ -2286,8 +2354,11 @@ AcquireDpFrameBuffer(Handle* handle)
 		}
 		// HDMI1's half before the retrace handler exists: the port stop polls
 		// its own hold-valid status while no handler is installed.
-		if (controller->dpSpanEnabled)
+		if (span)
 			StartHdmiSpan(controller, request->desktopWindow);
+		// Two displays app_server can arrange, once HDMI1 runs 1080p too.
+		if (controller->dpDualEnabled && sSpanHdmi && sSpanModeResult == kModeOK)
+			sAccelerant.flags |= kAccelerantDual;
 		if (StartRetrace(kVopPort1, controller->resources.vopInterrupt) == B_OK) {
 			sAccelerant.flags |= kAccelerantRetrace;
 			sAccelerant.retraceSemaphore = sRetraceSemaphore;
@@ -2353,10 +2424,117 @@ ReleaseDpFrameBuffer(Controller* controller)
 	sOwner = NULL;
 	sDpDesktop = false;
 	sFrameWidth = kFrameWidth;
+	sHdmiOriginX = 0;
+	sDpOriginX = kFrameWidth;
 	dprintf("rk3588_display: frame buffer released; dp1 back to firmware %#" B_PRIx32 " result=%"
 		B_PRIu32 " polls=%" B_PRIu32 " retraces=%" B_PRId32 " calls=%" B_PRId32 " spurious=%" B_PRId32
 		"\n", sDpFirmwareWindow[0], result, polls, sRetraces, sInterruptCalls, sInterruptSpurious);
 	memset(&sAccelerant, 0, sizeof(sAccelerant));
+}
+
+
+// Whether DP1 has a sink: its hot-plug pin, read only once the path's power
+// domain and clocks are seen on (the probe's own precondition), or a link
+// that an earlier acquisition brought up.
+static bool
+DpSinkPresent(Controller* controller)
+{
+	if (sDpLinkUp)
+		return true;
+	DpHardware hardware;
+	if (hardware.Prepare(controller->resources, false) != B_OK)
+		return false;
+	bool present = (hardware.ReadGpio(kGpioExternal) & kGpioHotPlugBit) != 0;
+	dprintf("rk3588_display: dp1 hot-plug %s\n", present ? "high: two displays" : "low: hdmi1 alone");
+	return present;
+}
+
+
+// Points HDMI1's window and then DP1's at their screens of the buffer, each
+// committed and read back on its own port, at the row pitch of a desktop
+// \a width wide. Returns kDpOK or why a window did not take it.
+static uint32_t
+ProgramDualWindows(uint32_t hdmiX, uint32_t dpX, uint32_t width, uint32_t& polls)
+{
+	MappedVop vop;
+	uint32_t base = kVopEsmartBase + sSpanWindow * kVopEsmartStride;
+	uint32_t hdmiAddress = sFrame.physical + hdmiX * 4;
+	vop.WriteVop(base + kVopEsmartRegionVirtual, width);
+	vop.WriteVop(base + kVopEsmartRegionAddress, hdmiAddress);
+	vop.WriteVop(kVopConfigDone, kVopConfigDoneEnable | (1u << sSpanPort) | ((1u << sSpanPort) << 16));
+	polls = 0;
+	while ((vop.ReadVop(kVopConfigDone) & (1u << sSpanPort)) != 0 && polls < kScanoutPollLimit) {
+		polls++;
+		spin(kScanoutPollMicros);
+	}
+	bool hdmiOK = vop.ReadVop(base + kVopEsmartRegionAddress) == hdmiAddress
+		&& vop.ReadVop(base + kVopEsmartRegionVirtual) == width;
+
+	uint32_t dpPolls = 0;
+	uint32_t result = DpSwapWindow(vop, sFrame.physical + dpX * 4, width,
+		((kFrameHeight - 1) << 16) | (kFrameWidth - 1), 0, dpPolls);
+	polls += dpPolls;
+	if (!hdmiOK && result == kDpOK)
+		result = kDpWindowVerifyFailed;
+	return result;
+}
+
+
+// The two-display desktop's arrangement (see DualLayout): only the two
+// windows move, and the row pitch follows the desktop's width; neither
+// port's mode changes. A window that does not take it puts both back.
+static status_t
+SetDualLayout(Handle* handle, DualLayout& layout)
+{
+	if (sOwner != handle || !sDpDesktop || !sSpanHdmi || sVopRegisters == NULL
+		|| (sAccelerant.flags & kAccelerantDual) == 0) {
+		return B_NO_INIT;
+	}
+	bool mirrored = layout.hdmiX == layout.dpX;
+	if (mirrored ? layout.hdmiX != 0
+			: !((layout.hdmiX == 0 && layout.dpX == kFrameWidth)
+				|| (layout.hdmiX == kFrameWidth && layout.dpX == 0))) {
+		return B_BAD_VALUE;
+	}
+	uint32_t width = mirrored ? kFrameWidth : kSpanWidth;
+	uint32_t bytesPerRow = width * 4;
+
+	layout.result = ProgramDualWindows(layout.hdmiX, layout.dpX, width, layout.polls);
+	if (layout.result != kDpOK) {
+		uint32_t polls = 0;
+		uint32_t restored = ProgramDualWindows(sHdmiOriginX, sDpOriginX, sFrameWidth, polls);
+		dprintf("rk3588_display: dual layout hdmi1 at %" B_PRIu32 " dp1 at %" B_PRIu32
+			" failed result=%" B_PRIu32 "; restore result=%" B_PRIu32 "\n", layout.hdmiX,
+			layout.dpX, layout.result, restored);
+		return B_ERROR;
+	}
+
+	sHdmiOriginX = layout.hdmiX;
+	sDpOriginX = layout.dpX;
+	sFrameWidth = width;
+	sAccelerant.width = width;
+	sAccelerant.bytesPerRow = bytesPerRow;
+	sShared->width = width;
+	sShared->bytesPerRow = bytesPerRow;
+	sShared->hdmiX = layout.hdmiX;
+	sShared->dpX = layout.dpX;
+	// One 1080p60 screen, or two described as one twice as wide.
+	uint32_t factor = mirrored ? 1 : 2;
+	sShared->pixelClockKHz = factor * kDp1080p60.clock;
+	sShared->hSyncStart = factor * kDp1080p60.hSyncStart;
+	sShared->hSyncEnd = factor * kDp1080p60.hSyncEnd;
+	sShared->hTotal = factor * kDp1080p60.hTotal;
+	frame_buffer_update((addr_t)sFrame.address, width, kFrameHeight, 32, bytesPerRow);
+	if (sCursorProgrammed && CursorWindowLive()) {
+		uint32_t cursorPolls = 0;
+		ProgramCursor(cursorPolls, false);
+	}
+	layout.width = width;
+	layout.bytesPerRow = bytesPerRow;
+	dprintf("rk3588_display: dual layout hdmi1 at %" B_PRIu32 " dp1 at %" B_PRIu32 " (%s) width=%"
+		B_PRIu32 " polls=%" B_PRIu32 "\n", layout.hdmiX, layout.dpX,
+		mirrored ? "mirrored" : "side by side", width, layout.polls);
+	return B_OK;
 }
 
 

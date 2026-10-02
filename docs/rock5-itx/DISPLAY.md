@@ -1109,6 +1109,55 @@ default for an 85 dpi display. Not covered: a second connector's layout
 (the driver drives one head for app_server), and the scale menu in the
 resolution-changing case on this driver, which offers a single mode.
 
+## Two displays, side by side or mirrored (2026-10-02)
+
+The `rock5-itx-edk2-v1.1-display-dual` profile makes HDMI1 and DP1 two
+displays app_server arranges. It is the cursor desktop on HDMI1 until
+acquisition: then, with DP1's hot-plug pin (GPIO3_D5) high, read only after
+the same power-domain and clock-gate checks the DP probe makes, the driver
+brings up the qualified spanning desktop of stage 5b (one 3840-wide buffer,
+DP1 trained, HDMI1 raised to 1080p, a cursor window per port) and reads
+HDMI1's EDID first, while the firmware still runs its port. With the pin
+low, or if DP1 does not come up, HDMI1 is acquired alone exactly as before.
+
+The accelerant then exports the display-output hooks (`HDMI-1`, `DP-1`,
+each 1920x1080 at 60 Hz with its own EDID) and the preferred mode. Each
+port's screen starts at desktop column 0 or 1920 of the buffer: side by
+side in either order the desktop is 3840x1080 at a 15360-byte pitch;
+mirrored, both windows scan the buffer's start, the pitch drops to 7680 and
+the desktop is 1920x1080 (at the wide pitch app_server would have reported
+a 64-bit kernel console). `kSetDualLayout` only rewrites the two windows'
+address and pitch, commits each on its own port and reads them back, and
+puts both back if either does not take it; neither port's mode changes.
+Both displays are always on and drawn at one scale (the engine scales
+neither); DPMS and HDMI1's mode set are refused while both run, as on the
+spanning profile.
+
+Verified on the board (NanoKVM on HDMI1, a Dell U2414H on DP1 through the
+RA620; `hrev60097+543`, haiku.hpkg plus the non-packaged driver and
+accelerant): `dp1 hot-plug high: two displays`, DP1 trained at 5.4 Gb/s x2,
+`screenmode -d` lists HDMI-1 (VCS) and DP-1 (DELL U2414H) side by side.
+`screenmode --display 2 --mirror 1` and the Screen preferences' "Mirror
+displays" switch live; read back from VOP2, ESMART0 (DP1, port 1) and
+ESMART2 (HDMI1, port 2) both scan `0x10fb9000` at pitch 1920 when mirrored,
+and ESMART0 moves to `+0x1e00` at pitch 3840 side by side; both cursor
+windows show the pointer at the same place, or split at the seam. The
+countdown's automatic undo put the mirror back. DP1's picture itself is
+only visible on the Dell. `test_display_resources.py` covers the profile:
+mirrored and swapped layouts with their registers and console, the cursor
+per port, refused layouts and owners, refused mode set and power, release,
+and the HDMI1-only path when the pin is low.
+
+To use it on an install, set `firmware_profile
+rock5-itx-edk2-v1.1-display-dual` in
+`~/config/settings/kernel/drivers/rk3588_display` and reboot. The image
+still ships the cursor desktop profile: its settings file is shared with
+branches whose driver does not know the dual one. The driver and
+accelerant are non-packaged files of the image
+(`/boot/system/non-packaged/add-ons/...`), so updating `haiku.hpkg` alone
+does not update them. Not done: hot plug on DP1 after acquisition, turning
+one display off, and vertical arrangements.
+
 ## Later stages
 
 3. Modes beyond the PLL table (the fractional-rate calculation) or the

@@ -26,12 +26,25 @@ struct accelerant_info {
 	area_id frame_buffer_area;
 	void* frame_buffer;
 	uint32 dpms_mode; // the primary's last accepted DPMS request, 0 before any
+
+	// the two-display layout app_server asked for, until its mode is set
+	bool dual_pending;
+	uint32 dual_pending_hdmi_x;
+	uint32 dual_pending_dp_x;
+	uint32 dual_pending_width;
+	uint32 dual_pending_scale;
+	uint32 dual_pending_mirror;
 };
 
 extern accelerant_info* gInfo;
 
 status_t create_mode_list(void);
 display_mode current_display_mode(void);
+
+bool is_dual(void);
+display_mode dual_layout_mode(uint32 width);
+display_mode dual_preferred_mode(void);
+status_t apply_dual_layout(void);
 
 extern "C" {
 status_t rk3588_init_accelerant(int device);
@@ -56,6 +69,13 @@ status_t rk3588_set_cursor_bitmap(uint16 width, uint16 height, uint16 hotX, uint
 	color_space space, uint16 bytesPerRow, const uint8* data);
 void rk3588_move_cursor(uint16 x, uint16 y);
 void rk3588_show_cursor(bool visible);
+status_t rk3588_get_preferred_display_mode(display_mode* mode);
+
+uint32 rk3588_display_output_count(void);
+status_t rk3588_get_display_outputs(display_output* outputs, uint32* count);
+status_t rk3588_get_display_output_modes(uint32 id, display_mode* modes, uint32* count);
+status_t rk3588_set_display_layout(const display_output_config* configs, uint32 count,
+	display_mode* mode);
 }
 
 #endif // RK3588_DISPLAY_ACCELERANT_PRIVATE_H

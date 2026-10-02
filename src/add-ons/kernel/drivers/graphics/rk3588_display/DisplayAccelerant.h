@@ -23,6 +23,7 @@ static const uint32_t kGetAccelerantInfo = 0x52444905;
 static const uint32_t kCloneFrameBuffer = 0x52444906; // fills an area_info
 static const uint32_t kGetDeviceName = 0x52444907; // B_PATH_NAME_LENGTH bytes
 static const uint32_t kRearmRetrace = 0x52444908; // diagnostic: re-enable the frame-start interrupt
+static const uint32_t kSetDualLayout = 0x52444911; // writable handle, two-display desktop acquired
 static const uint32_t kAccelerantVersion = 1;
 static const char kAccelerantSignature[] = "rk3588_display.accelerant";
 static const char kDevicePath[] = "graphics/rk3588_display/0";
@@ -38,6 +39,24 @@ static const uint32_t kAccelerantRetrace = 4; // frame-start interrupt drives th
 static const uint32_t kAccelerantModeSet = 8; // native mode changes and power control are admitted
 static const uint32_t kAccelerantCursor = 16; // the hardware cursor window is admitted (ioctls)
 static const uint32_t kAccelerantCursorHooks = 32; // the accelerant hands app_server's pointer to it
+static const uint32_t kAccelerantDual = 64; // HDMI1 and DP1 are two displays (kSetDualLayout)
+
+// The two-display desktop of the rock5-itx-edk2-v1.1-display-dual profile:
+// one buffer two screens wide, each port's window showing one screen of it.
+// The x of each window is 0 or kFrameWidth; at the same place they mirror
+// each other and the buffer is used one screen wide. Only the windows move:
+// both ports keep their 1080p60 mode.
+static const uint32_t kDualLayoutVersion = 1;
+
+struct DualLayout {
+	uint32_t version; // in: kDualLayoutVersion
+	uint32_t hdmiX; // in: the desktop column HDMI1's screen starts at
+	uint32_t dpX; // in: the same for DP1
+	uint32_t width; // out: the desktop's width
+	uint32_t bytesPerRow; // out
+	uint32_t result; // out: kDpOK, or why DP1's window did not take it
+	uint32_t polls; // out: REG_CFG_DONE polls of both ports
+};
 
 // Video-port interrupt words (VP_INT_EN/CLR/STATUS at 0xa0 + 0x10 per port):
 // the low half holds the bits, the high half the write mask. The frame-start
@@ -107,6 +126,16 @@ struct SharedInfo {
 	char name[32];
 	uint32_t powerMode; // kPowerOn or kPowerOff (DisplayModeSet.h)
 	uint32_t syncFlags; // kModePositiveHSync | kModePositiveVSync of the current mode
+
+	// The two-display desktop (kAccelerantDual): where each port's screen
+	// sits, and HDMI1's own EDID (the one above is DP1's). The scale and
+	// which output app_server calls the mirror are the accelerant's.
+	uint32_t hdmiX;
+	uint32_t dpX;
+	uint32_t hdmiEdidResult;
+	uint8_t hdmiEdid[128];
+	uint32_t layoutScale; // percent, 0 for 100
+	uint32_t mirrorOutput; // 0, or the output flagged B_DISPLAY_OUTPUT_MIRROR
 };
 
 
