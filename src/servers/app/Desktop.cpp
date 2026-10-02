@@ -3807,9 +3807,12 @@ Desktop::_ConfigureDisplayLayout(::HWInterface* interface, bool switchMode)
 		return status;
 	}
 
-	// what the accelerant made of it
+	// What the accelerant made of it. This is not stored: the settings keep
+	// what the user chose, and an arrangement worked out here may be missing
+	// a monitor that is asleep or not answering yet, with the others moved up
+	// to fill its place. Remembering that would lose the user's order once
+	// the monitor is back.
 	fDisplays.ReadOutputs(interface);
-	_StoreDisplayLayout();
 	return B_OK;
 }
 

@@ -25,6 +25,7 @@ if $(HAIKU_IS_BOOTSTRAP) != 1
 		haiku_extras
 		makefile_engine
 		netfs
+		nvm
 		userland_fs
 		] ;
 	if $(HAIKU_INCLUDE_SOURCES) = 1 {

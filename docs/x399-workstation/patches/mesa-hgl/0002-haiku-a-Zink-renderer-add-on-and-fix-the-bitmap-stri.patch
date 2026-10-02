@@ -1,0 +1,119 @@
+From 9d3b24d30ee2506804e759d1e39eb011e4e955a8 Mon Sep 17 00:00:00 2001
+From: x399 <x399@lab>
+Date: Fri, 18 Sep 2026 15:34:46 +1000
+Subject: [PATCH 02/14] haiku: a Zink renderer add-on, and fix the bitmap
+ stride of the winsys
+
+The add-on is the software renderer's target with the screen created by
+zink, so Haiku's OpenGL kit renders through Vulkan; HGL_NO_ZINK falls
+back to software.  Two things had to be fixed for a hardware driver:
+the front buffer has to be flushed with the pipe context, which zink
+needs to read the image back, and the Haiku winsys asked BBitmap for a
+default row size while telling the driver an aligned one, so anything
+copying with the advertised stride ran off the end of the bitmap.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ src/gallium/drivers/zink/zink_resource.c          |  9 +++++++--
+ src/gallium/targets/haiku-zink/GalliumContext.cpp | 10 ++++++++--
+ src/gallium/targets/haiku-zink/meson.build        |  2 +-
+ src/gallium/winsys/sw/hgl/hgl_sw_winsys.cpp       |  7 ++++++-
+ 4 files changed, 22 insertions(+), 6 deletions(-)
+
+diff --git a/src/gallium/drivers/zink/zink_resource.c b/src/gallium/drivers/zink/zink_resource.c
+index f8fdfb0..9002096 100644
+--- a/src/gallium/drivers/zink/zink_resource.c
++++ b/src/gallium/drivers/zink/zink_resource.c
+@@ -46,7 +46,8 @@
+ #include "util/os_file.h"
+ #include "frontend/sw_winsys.h"
+ 
+-#if !defined(_WIN32) && !defined(__APPLE__)
++/* Haiku has no DRM, and so no dma-buf sharing. */
++#if !defined(_WIN32) && !defined(__APPLE__) && !defined(__HAIKU__)
+ #define ZINK_USE_DMABUF
+ #endif
+ 
+@@ -708,7 +709,11 @@ resource_object_create(struct zink_screen *screen, const struct pipe_resource *t
+ 
+       VkResult result = VKSCR(CreateImage)(screen->dev, &ici, NULL, &obj->image);
+       if (result != VK_SUCCESS) {
+-         debug_printf("vkCreateImage failed\n");
++         fprintf(stderr, "zink: vkCreateImage failed (%d): format %d type %d "
++                 "%ux%ux%u mips %u layers %u samples %u tiling %d usage %#x flags %#x\n",
++                 result, ici.format, ici.imageType, ici.extent.width, ici.extent.height,
++                 ici.extent.depth, ici.mipLevels, ici.arrayLayers, ici.samples,
++                 ici.tiling, ici.usage, ici.flags);
+          goto fail1;
+       }
+ 
+diff --git a/src/gallium/targets/haiku-zink/GalliumContext.cpp b/src/gallium/targets/haiku-zink/GalliumContext.cpp
+index 34bdc14..569cd3c 100644
+--- a/src/gallium/targets/haiku-zink/GalliumContext.cpp
++++ b/src/gallium/targets/haiku-zink/GalliumContext.cpp
+@@ -12,7 +12,9 @@
+ 
+ #include <stdlib.h>
+ 
++extern "C" {
+ #include "zink/zink_public.h"
++}
+ 
+ #include <stdio.h>
+ #include <algorithm>
+@@ -356,7 +358,8 @@ GalliumContext::SwapBuffers(context_id contextID)
+ 
+ 	// flush back buffer and swap buffers if double buffering is used
+ 	if (buffer->textures[ST_ATTACHMENT_BACK_LEFT] != NULL) {
+-		buffer->screen->flush_frontbuffer(buffer->screen, NULL, buffer->textures[ST_ATTACHMENT_BACK_LEFT],
++		buffer->screen->flush_frontbuffer(buffer->screen, context->st->pipe,
++			buffer->textures[ST_ATTACHMENT_BACK_LEFT],
+ 			0, 0, buffer->winsysContext, NULL);
+ 		std::swap(buffer->textures[ST_ATTACHMENT_FRONT_LEFT], buffer->textures[ST_ATTACHMENT_BACK_LEFT]);
+ 		p_atomic_inc(&buffer->stfbi->stamp);
+@@ -382,7 +385,10 @@ GalliumContext::Draw(context_id contextID, BRect updateRect)
+ 	if (buffer->textures[ST_ATTACHMENT_FRONT_LEFT] == NULL)
+ 		return;
+ 
+-	buffer->screen->flush_frontbuffer(buffer->screen, NULL, buffer->textures[ST_ATTACHMENT_FRONT_LEFT],
++	// A hardware driver reads the rendered image back through the context, so
++	// it has to be passed along; the software drivers ignore it.
++	buffer->screen->flush_frontbuffer(buffer->screen, context->st->pipe,
++		buffer->textures[ST_ATTACHMENT_FRONT_LEFT],
+ 		0, 0, buffer->winsysContext, NULL);
+ }
+ 
+diff --git a/src/gallium/targets/haiku-zink/meson.build b/src/gallium/targets/haiku-zink/meson.build
+index cef32d7..9e73893 100644
+--- a/src/gallium/targets/haiku-zink/meson.build
++++ b/src/gallium/targets/haiku-zink/meson.build
+@@ -22,7 +22,7 @@ libzinkpipe = shared_library(
+   dependencies : [
+     driver_zink, driver_swrast, cpp.find_library('be'),
+     cpp.find_library('translation'), cpp.find_library('network'),
+-    dep_unwind, idep_mesautil, idep_nir,
++    dep_unwind, idep_mesautil, idep_nir, idep_xmlconfig,
+   ],
+   install : true,
+ )
+diff --git a/src/gallium/winsys/sw/hgl/hgl_sw_winsys.cpp b/src/gallium/winsys/sw/hgl/hgl_sw_winsys.cpp
+index 564f9f6..23cd5d1 100644
+--- a/src/gallium/winsys/sw/hgl/hgl_sw_winsys.cpp
++++ b/src/gallium/winsys/sw/hgl/hgl_sw_winsys.cpp
+@@ -130,10 +130,15 @@ hgl_winsys_displaytarget_create(struct sw_winsys* winsys,
+ 
+ 	if (textureUsage & PIPE_BIND_DISPLAY_TARGET) {
+ 		haikuDisplayTarget->data = NULL;
++		// Ask for the rows to be as long as the stride we report, so that a
++		// driver copying into the mapped bitmap with that stride stays inside
++		// it, and then report what the bitmap actually settled on.
+ 		haikuDisplayTarget->bitmap = new BBitmap(
+-			BRect(0, 0, width - 1, height - 1),
++			BRect(0, 0, width - 1, height - 1), 0,
+ 			haikuDisplayTarget->colorSpace,
+ 			haikuDisplayTarget->stride);
++		haikuDisplayTarget->stride = haikuDisplayTarget->bitmap->BytesPerRow();
++		haikuDisplayTarget->size = haikuDisplayTarget->stride * blockSize;
+ 	} else {
+ 		haikuDisplayTarget->data
+ 			= align_malloc(haikuDisplayTarget->size, alignment);

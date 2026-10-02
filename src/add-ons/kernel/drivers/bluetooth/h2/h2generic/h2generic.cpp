@@ -793,17 +793,13 @@ device_control(void* cookie, uint32 msg, void* params, size_t size)
 			}
 			#endif
 
-			// TODO: Do this only when SCO is needed
-			if ((bdev->driver_info & BT_SCO_NOT_WORKING) == 0) {
-				for (i = 0; i < MAX_SCO_IN_WINDOW; i++) {
-					err = submit_rx_sco(bdev);
-					if (err != B_OK && i == 0) {
-						bdev->state &= ~ANCILLYANT;
-						ERROR("%s: Queuing failed at submit_rx_sco()\n", __func__);
-						break;
-					}
-				}
-			}
+			// SCO carries voice, and nothing here asks for voice until a
+			// connection wants it. Listening for it anyway means standing
+			// isochronous transfers on an endpoint whose alternate setting
+			// reserves bandwidth every frame, which the bus honours whether
+			// or not anything is said - and on the MediaTek MT7922 that is
+			// enough to keep the events we do need from getting through. Wait
+			// until a SCO connection exists, as the note here has long asked.
 
 			bdev->state |= RUNNING;
 

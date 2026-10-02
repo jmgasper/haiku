@@ -1,0 +1,226 @@
+From 80658d3adcb451ed546e399d2729c9d1590be2b5 Mon Sep 17 00:00:00 2001
+From: x399 <x399@lab>
+Date: Fri, 18 Sep 2026 15:34:46 +1000
+Subject: [PATCH 3/7] nvrm: page kinds for pre-Turing GPUs, and a submission
+ timeout
+
+The page kind numbering the driver mapped to resman's allocation
+attributes is Turing's; on Pascal the same numbers mean other things, so
+every depth buffer was rejected (kind 0x11 is S8Z24 there, not 0x3).
+Both tables are now selected by the 3d class.
+
+A channel that hits an error never signals its semaphore, which hung the
+application in the flush; it now gives up after NVK_NVRM_TIMEOUT_MS and
+reports the channel state, which lets NVK dump the failing command
+buffer.  NVK_NO_XFB hides transform feedback, for bisecting.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ src/nouveau/vulkan/nvk_physical_device.c      |  8 +-
+ .../vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c        | 15 +++
+ src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_va.c | 91 ++++++++++++++-----
+ 3 files changed, 91 insertions(+), 23 deletions(-)
+
+diff --git a/src/nouveau/vulkan/nvk_physical_device.c b/src/nouveau/vulkan/nvk_physical_device.c
+index 1028177..594cfb6 100644
+--- a/src/nouveau/vulkan/nvk_physical_device.c
++++ b/src/nouveau/vulkan/nvk_physical_device.c
+@@ -4,6 +4,8 @@
+  */
+ #include "nvk_physical_device.h"
+ 
++#include "util/u_debug.h"
++
+ #include "nak.h"
+ #include "nvk_buffer.h"
+ #include "nvk_descriptor_types.h"
+@@ -301,7 +303,9 @@ nvk_get_device_extensions(const struct nvk_instance *instance,
+ #endif
+       .EXT_texel_buffer_alignment = true,
+       .EXT_tooling_info = true,
+-      .EXT_transform_feedback = true,
++      /* Debug aid while bringing up pre-Turing GPUs: NVK_NO_XFB=1 hides
++       * transform feedback, which OpenGL drivers use on every draw. */
++      .EXT_transform_feedback = !debug_get_bool_option("NVK_NO_XFB", false),
+       .EXT_vertex_attribute_divisor = true,
+       .EXT_vertex_input_dynamic_state = true,
+       .EXT_ycbcr_2plane_444_formats = true,
+@@ -721,7 +725,7 @@ nvk_get_device_features(const struct nv_device_info *info,
+       .texelBufferAlignment = true,
+ 
+       /* VK_EXT_transform_feedback */
+-      .transformFeedback = true,
++      .transformFeedback = !debug_get_bool_option("NVK_NO_XFB", false),
+       .geometryStreams = true,
+ 
+       /* VK_EXT_vertex_input_dynamic_state */
+diff --git a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c
+index bba5b6f..13413fc 100644
+--- a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c
++++ b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c
+@@ -6,6 +6,7 @@
+ #include "nvkmd_nvrm.h"
+ 
+ #include "util/u_debug.h"
++#include "util/os_time.h"
+ 
+ #include <stdio.h>
+ #include <string.h>
+@@ -349,6 +350,11 @@ nvkmd_nvrm_exec_ctx_flush(struct nvkmd_ctx *_ctx,
+     * short while before blocking on the channel's event. */
+    const uint64_t target = hasDoorbell ? ctx->wSeq : (uint32_t)ctx->wSeq;
+    const int spinLimit = debug_get_num_option("NVK_NVRM_SPIN", 50000);
++   /* A channel that hit an error never signals its semaphore, so give up
++    * rather than hanging the application for ever. */
++   const uint64_t timeout_us =
++      debug_get_num_option("NVK_NVRM_TIMEOUT_MS", 10000) * 1000ull;
++   const int64_t waitStart = os_time_get();
+    for (int round = 0;; round++) {
+       uint64_t rSeq = hasDoorbell ? *semAdr : *(uint32_t*)semAdr;
+       if (rSeq == target) {
+@@ -367,6 +373,15 @@ nvkmd_nvrm_exec_ctx_flush(struct nvkmd_ctx *_ctx,
+ 			}
+ 		};
+ 		int pollRes = poll(pollFds, 1, 1);
++		if (timeout_us != 0 && (uint64_t)(os_time_get() - waitStart) > timeout_us) {
++			fprintf(stderr, "nvrm: channel %#x did not finish within %" PRIu64
++				" ms: rSeq %#" PRIx64 ", wSeq %#" PRIx64 ", GPGet %" PRIu32
++				", GPPut %" PRIu32 ", error notifier %#x\n",
++				(unsigned)ctx->hChannel, timeout_us / 1000, rSeq, ctx->wSeq,
++				userD->GPGet, userD->GPPut,
++				notifiers[NV_CHANNELGPFIFO_NOTIFICATION_TYPE_ERROR].info32);
++			return VK_ERROR_DEVICE_LOST;
++		}
+ 		if (getenv("NVK_NVRM_DEBUG") != NULL && (round - spinLimit) % 1000 == 0) {
+ 			NV906F_CTRL_GET_MMU_FAULT_INFO_PARAMS faultInfo = {0};
+ 			NV_STATUS faultRes = nvRmApiControl(&rm, ctx->hChannel, NV906F_CTRL_CMD_GET_MMU_FAULT_INFO,
+diff --git a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_va.c b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_va.c
+index 6e8a40b..2918bd1 100644
+--- a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_va.c
++++ b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_va.c
+@@ -60,55 +60,104 @@ nvkmd_nvrm_alloc_va(struct nvkmd_dev *_dev,
+ 		.alignment = align_B,
+ 		.hVASpace = pdev->hVaSpace,
+ 	};
+-	switch (pte_kind) {
+-		case 0x1:
++	/* Resman derives the page kind of a virtual allocation from these
++	 * attributes, so they have to describe exactly the kind NIL picked for the
++	 * image.  The kind numbering changed with Turing, hence the two tables. */
++	const bool preTuring = pdev->base.dev_info.cls_eng3d < 0xc597 /* TURING_A */;
++	enum {
++		KIND_OTHER,	/* colour or untyped memory, the kind only says how it tiles */
++		KIND_Z16,
++		KIND_S8,
++		KIND_S8Z24,
++		KIND_Z24S8,
++		KIND_ZF32,
++		KIND_ZF32_X24S8,
++		KIND_PITCH,
++		KIND_UNKNOWN,
++	} kind = KIND_UNKNOWN;
++
++	if (preTuring) {
++		/* pascal/gp100/dev_mmu.h */
++		switch (pte_kind) {
++			case 0x00: kind = KIND_PITCH; break;
++			case 0x01: kind = KIND_Z16; break;
++			case 0x11: kind = KIND_S8Z24; break;
++			case 0x2a: kind = KIND_S8; break;
++			case 0x46: kind = KIND_Z24S8; break;
++			case 0x7b: kind = KIND_ZF32; break;
++			case 0xc3: kind = KIND_ZF32_X24S8; break;
++			case 0xfe: kind = KIND_OTHER; break; /* GENERIC_16BX2: block linear colour */
++		}
++	} else {
++		/* turing/tu102/dev_mmu.h */
++		switch (pte_kind) {
++			case 0x00: kind = KIND_PITCH; break;
++			case 0x01: kind = KIND_Z16; break;
++			case 0x02: kind = KIND_S8; break;
++			case 0x03: kind = KIND_S8Z24; break;
++			case 0x04: kind = KIND_ZF32_X24S8; break;
++			case 0x05: kind = KIND_Z24S8; break;
++			case 0x06: kind = KIND_OTHER; break; /* GENERIC_MEMORY */
++		}
++	}
++
++	switch (kind) {
++		case KIND_PITCH:
++		case KIND_OTHER:
++			if (kind == KIND_OTHER) {
++				params.type = NVOS32_TYPE_IMAGE;
++				params.attr |= DRF_DEF(OS32, _ATTR, _FORMAT, _BLOCK_LINEAR);
++			}
++			break;
++		case KIND_Z16:
+ 			params.type = NVOS32_TYPE_DEPTH;
+ 			params.attr |= DRF_DEF(OS32, _ATTR, _DEPTH, _16);
+-			params.attr |= DRF_DEF(OS32, _ATTR, _FORMAT, _PITCH);
++			params.attr |= DRF_DEF(OS32, _ATTR, _FORMAT, _BLOCK_LINEAR);
+ 			params.attr |= DRF_DEF(OS32, _ATTR, _Z_TYPE, _FIXED);
+ 			params.attr |= DRF_DEF(OS32, _ATTR, _ZS_PACKING, _Z16);
+ 			params.attr |= DRF_DEF(OS32, _ATTR, _COMPR, _NONE);
+ 			break;
+-		case 0x2:
++		case KIND_S8:
+ 			params.type = NVOS32_TYPE_STENCIL;
+ 			params.attr |= DRF_DEF(OS32, _ATTR, _DEPTH, _8);
+-			params.attr |= DRF_DEF(OS32, _ATTR, _FORMAT, _PITCH);
++			params.attr |= DRF_DEF(OS32, _ATTR, _FORMAT, _BLOCK_LINEAR);
+ 			params.attr |= DRF_DEF(OS32, _ATTR, _Z_TYPE, _FIXED);
+ 			params.attr |= DRF_DEF(OS32, _ATTR, _ZS_PACKING, _S8);
+ 			params.attr |= DRF_DEF(OS32, _ATTR, _COMPR, _NONE);
+ 			break;
+-		case 0x3:
+-			params.type = NVOS32_TYPE_STENCIL;
++		case KIND_S8Z24:
++			params.type = NVOS32_TYPE_DEPTH;
+ 			params.attr |= DRF_DEF(OS32, _ATTR, _DEPTH, _32);
+ 			params.attr |= DRF_DEF(OS32, _ATTR, _FORMAT, _BLOCK_LINEAR);
+ 			params.attr |= DRF_DEF(OS32, _ATTR, _Z_TYPE, _FIXED);
+ 			params.attr |= DRF_DEF(OS32, _ATTR, _ZS_PACKING, _S8Z24);
+ 			params.attr |= DRF_DEF(OS32, _ATTR, _COMPR, _NONE);
+ 			break;
+-		case 0x4:
++		case KIND_Z24S8:
+ 			params.type = NVOS32_TYPE_DEPTH;
+-			params.attr |= DRF_DEF(OS32, _ATTR, _DEPTH, _64);
+-			params.attr |= DRF_DEF(OS32, _ATTR, _FORMAT, _BLOCK_LINEAR);
+-			params.attr |= DRF_DEF(OS32, _ATTR, _Z_TYPE, _FLOAT);
+-			params.attr |= DRF_DEF(OS32, _ATTR, _ZS_PACKING, _Z32_X24S8);
+-			params.attr |= DRF_DEF(OS32, _ATTR, _COMPR, _NONE);
+-			break;
+-		case 0x5:
+-			params.type = NVOS32_TYPE_STENCIL;
+ 			params.attr |= DRF_DEF(OS32, _ATTR, _DEPTH, _32);
+ 			params.attr |= DRF_DEF(OS32, _ATTR, _FORMAT, _BLOCK_LINEAR);
+ 			params.attr |= DRF_DEF(OS32, _ATTR, _Z_TYPE, _FIXED);
+ 			params.attr |= DRF_DEF(OS32, _ATTR, _ZS_PACKING, _Z24S8);
+ 			params.attr |= DRF_DEF(OS32, _ATTR, _COMPR, _NONE);
+ 			break;
+-		case 0:
+-		case 0x6:
++		case KIND_ZF32:
++			params.type = NVOS32_TYPE_DEPTH;
++			params.attr |= DRF_DEF(OS32, _ATTR, _DEPTH, _32);
++			params.attr |= DRF_DEF(OS32, _ATTR, _FORMAT, _BLOCK_LINEAR);
++			params.attr |= DRF_DEF(OS32, _ATTR, _Z_TYPE, _FLOAT);
++			params.attr |= DRF_DEF(OS32, _ATTR, _ZS_PACKING, _Z32);
++			params.attr |= DRF_DEF(OS32, _ATTR, _COMPR, _NONE);
+ 			break;
+-		case 0xfe: /* NV_MMU_PTE_KIND_GENERIC_16BX2: block linear color before Turing */
+-			params.type = NVOS32_TYPE_IMAGE;
++		case KIND_ZF32_X24S8:
++			params.type = NVOS32_TYPE_DEPTH;
++			params.attr |= DRF_DEF(OS32, _ATTR, _DEPTH, _64);
+ 			params.attr |= DRF_DEF(OS32, _ATTR, _FORMAT, _BLOCK_LINEAR);
++			params.attr |= DRF_DEF(OS32, _ATTR, _Z_TYPE, _FLOAT);
++			params.attr |= DRF_DEF(OS32, _ATTR, _ZS_PACKING, _Z32_X24S8);
++			params.attr |= DRF_DEF(OS32, _ATTR, _COMPR, _NONE);
+ 			break;
+-		default:
++		case KIND_UNKNOWN:
+ 			fprintf(stderr, "[!] unsupported pte_kind(%#x)\n", pte_kind);
+ 			return VK_ERROR_UNKNOWN;
+ 	}

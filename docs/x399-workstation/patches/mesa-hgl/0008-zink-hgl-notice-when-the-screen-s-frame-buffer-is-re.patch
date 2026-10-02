@@ -1,0 +1,118 @@
+From df0aa0c3f2377cd13be1cf783fe1eb018185fe49 Mon Sep 17 00:00:00 2001
+From: jmgasper <jmgasper@gmail.com>
+Date: Fri, 18 Sep 2026 18:29:26 +1000
+Subject: [PATCH 08/14] zink/hgl: notice when the screen's frame buffer is
+ replaced
+
+A mode set makes a new frame buffer, and the renderer was only looking
+at the row pitch to decide whether the one it holds is still the one on
+screen. Two modes of the same width - 1920x1080 and 1920x1200, say -
+share a pitch, so it would have gone on painting into a surface nobody
+was scanning out. The window system gives the frame buffer's address,
+which changes every time, so key the cache on that as well.
+
+Verified by changing the mode under a running GL program: it takes hold
+of each new frame buffer and the desktop comes through intact.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ src/gallium/drivers/zink/zink_screen.c          | 13 ++++++++++---
+ src/gallium/drivers/zink/zink_screen.h          |  1 +
+ src/gallium/targets/haiku-zink/ZinkRenderer.cpp |  1 +
+ src/gallium/winsys/sw/hgl/hgl_sw_winsys.h       |  5 ++++-
+ 4 files changed, 16 insertions(+), 4 deletions(-)
+
+diff --git a/src/gallium/drivers/zink/zink_screen.c b/src/gallium/drivers/zink/zink_screen.c
+index 8cfc488..ad63d04 100644
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -1502,10 +1502,14 @@ present_into_host_memory(struct zink_screen *screen, struct zink_context *ctx,
+ // and shares. It is video memory, so a frame copied there does not cross the
+ // bus at all - a 1920x1080 frame costs about a millisecond instead of three.
+ static bool
+-acquire_scanout(struct zink_screen *screen, uint32_t bytes_per_row)
++acquire_scanout(struct zink_screen *screen,
++                const struct hgl_scanout_target *target)
+ {
++   const uint32_t bytes_per_row = target->bytes_per_row;
++
+    if (screen->scanout.buffer != VK_NULL_HANDLE) {
+-      if (screen->scanout.row_pitch == bytes_per_row)
++      if (screen->scanout.bits == target->bits &&
++          screen->scanout.row_pitch == bytes_per_row)
+          return true;
+ 
+       /* The mode changed under us; the frame buffer we hold is the old one.
+@@ -1519,6 +1523,7 @@ acquire_scanout(struct zink_screen *screen, uint32_t bytes_per_row)
+       screen->scanout.height = 0;
+       screen->scanout.row_pitch = 0;
+       screen->scanout.size = 0;
++      screen->scanout.bits = NULL;
+       screen->scanout.tried = false;
+    }
+    if (screen->scanout.tried)
+@@ -1584,6 +1589,7 @@ acquire_scanout(struct zink_screen *screen, uint32_t bytes_per_row)
+    screen->scanout.height = scanout.height;
+    screen->scanout.row_pitch = scanout.rowPitch;
+    screen->scanout.size = scanout.size;
++   screen->scanout.bits = target->bits;
+    screen->scanout.tried = false;
+    return true;
+ }
+@@ -1659,7 +1665,7 @@ present_into_scanout(struct zink_screen *screen, struct zink_context *ctx,
+    if (blocksize != 4)
+       return false;
+ 
+-   if (!acquire_scanout(screen, target->bytes_per_row))
++   if (!acquire_scanout(screen, target))
+       return false;
+ 
+    VkBufferImageCopy regions[HGL_MAX_SCANOUT_CLIPS];
+@@ -1722,6 +1728,7 @@ zink_represent_into_scanout(struct pipe_screen *pscreen,
+    const bool trace = getenv("ZINK_SCANOUT_TRACE") != NULL;
+ 
+    if (screen->scanout.buffer == VK_NULL_HANDLE ||
++       screen->scanout.bits != target.bits ||
+        screen->scanout.row_pitch != target.bytes_per_row)
+       RETURN_WHY("no scanout held");
+ 
+diff --git a/src/gallium/drivers/zink/zink_screen.h b/src/gallium/drivers/zink/zink_screen.h
+index 7b83729..796f4c1 100644
+--- a/src/gallium/drivers/zink/zink_screen.h
++++ b/src/gallium/drivers/zink/zink_screen.h
+@@ -200,6 +200,7 @@ struct zink_screen {
+       uint32_t height;
+       uint32_t row_pitch;
+       uint64_t size;
++      void *bits;       /* what the window system calls it, to spot a new one */
+       bool tried;       /* asked for once; do not ask again if refused */
+ 
+       /* For putting the last frame back when a window that has stopped
+diff --git a/src/gallium/targets/haiku-zink/ZinkRenderer.cpp b/src/gallium/targets/haiku-zink/ZinkRenderer.cpp
+index 96ae7bb..4e00fe5 100644
+--- a/src/gallium/targets/haiku-zink/ZinkRenderer.cpp
++++ b/src/gallium/targets/haiku-zink/ZinkRenderer.cpp
+@@ -236,6 +236,7 @@ ZinkRenderer::ScanoutTarget(struct hgl_scanout_target *target)
+ 
+ 	target->origin_x = fInfo->window_bounds.left;
+ 	target->origin_y = fInfo->window_bounds.top;
++	target->bits = fInfo->bits;
+ 	target->bytes_per_row = fInfo->bytes_per_row;
+ 	target->num_clips = fInfo->clip_list_count;
+ 	for (uint32 i = 0; i < fInfo->clip_list_count; i++) {
+diff --git a/src/gallium/winsys/sw/hgl/hgl_sw_winsys.h b/src/gallium/winsys/sw/hgl/hgl_sw_winsys.h
+index cea1f8a..85d53b9 100644
+--- a/src/gallium/winsys/sw/hgl/hgl_sw_winsys.h
++++ b/src/gallium/winsys/sw/hgl/hgl_sw_winsys.h
+@@ -41,7 +41,10 @@
+ struct hgl_scanout_target {
+ 	int32_t origin_x;
+ 	int32_t origin_y;
+-	uint32_t bytes_per_row;		// of the screen, to check it is the one we hold
++	// The frame buffer the window system is showing. A mode set makes a new
++	// one, and its address is how a renderer holding the old one finds out.
++	void *bits;
++	uint32_t bytes_per_row;
+ 	uint32_t num_clips;
+ 	struct {
+ 		// screen coordinates, the right and bottom edges included

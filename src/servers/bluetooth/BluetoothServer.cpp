@@ -4,6 +4,7 @@
  * All rights reserved. Distributed under the terms of the MIT License.
  */
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -25,6 +26,8 @@
 #include <bluetooth/HCI/btHCI_command.h>
 #include <bluetooth/L2CAP/btL2CAP.h>
 #include <bluetooth/bluetooth.h>
+
+#include <LELog.h>
 
 #include "BluetoothServer.h"
 #include "Debug.h"
@@ -58,10 +61,27 @@ DispatchEvent(struct hci_event_header* header, int32 code, size_t size)
 }
 
 
+// Where the time goes between the server starting and the radio answering:
+// every step of the way is logged with the time since boot, since the radio
+// has been seen coming up minutes after the rest of the system.
+static void
+LogStartup(const char* format, ...)
+{
+	char message[256];
+	va_list args;
+	va_start(args, format);
+	vsnprintf(message, sizeof(message), format, args);
+	va_end(args);
+	Bluetooth::LELog(Bluetooth::LE_LOG_INFO, "server", "%s (%" B_PRId64
+		" ms after boot)", message, system_time() / 1000);
+}
+
+
 BluetoothServer::BluetoothServer()
 	:
 	BApplication(BLUETOOTH_SIGNATURE)
 {
+	LogStartup("application started");
 	fDeviceManager = new DeviceManager();
 	fLocalDevicesList.MakeEmpty();
 	fWatchersList.MakeEmpty();
@@ -102,10 +122,12 @@ void BluetoothServer::ArgvReceived(int32 argc, char **argv)
 
 void BluetoothServer::ReadyToRun(void)
 {
+	LogStartup("looking for radios");
 	fDeviceManager->StartMonitoringDevice("bluetooth/h2");
 	fDeviceManager->StartMonitoringDevice("bluetooth/h3");
 	fDeviceManager->StartMonitoringDevice("bluetooth/h4");
 	fDeviceManager->StartMonitoringDevice("bluetooth/h5");
+	LogStartup("watching for radios");
 
 	if (fEventListener2->Launch() != B_OK)
 		TRACE_BT("General: Bluetooth event listener failed\n");
@@ -155,8 +177,15 @@ void BluetoothServer::MessageReceived(BMessage* message)
 
 			BPath path(str.String());
 
+			LogStartup("opening %s", str.String());
 			LocalDeviceImpl* lDeviceImpl
 				= LocalDeviceImpl::CreateTransportAccessor(&path);
+			if (lDeviceImpl == NULL) {
+				LogStartup("%s could not be opened", str.String());
+				break;
+			}
+			LogStartup("%s open as hci %" B_PRId32, str.String(),
+				lDeviceImpl->GetID());
 
 			if (lDeviceImpl->GetID() >= 0) {
 				fLocalDevicesList.AddItem(lDeviceImpl);
@@ -770,6 +799,7 @@ BluetoothServer::_RemoveDeskbarIcon()
 int
 main(int /*argc*/, char** /*argv*/)
 {
+	LogStartup("starting");
 	BluetoothServer* bluetoothServer = new BluetoothServer;
 
 	bluetoothServer->Run();

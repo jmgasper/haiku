@@ -1,0 +1,69 @@
+From 3e5ec21567d17666af514bec64d056f9e42b68a0 Mon Sep 17 00:00:00 2001
+From: jmgasper <jmgasper@gmail.com>
+Date: Sat, 19 Sep 2026 00:01:37 +1000
+Subject: [PATCH 11/14] zink/hgl: do not reach inside a Zink screen that is not
+ one
+
+When no Vulkan device can be used the software rasterizer stands in, and
+redrawing a window called two functions that cast the screen to a Zink
+one regardless - locking a mutex that was whatever happened to be at
+that offset. It only showed up once a program was run the way the
+Deskbar runs one, with nothing set in its environment.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ src/gallium/targets/haiku-zink/GalliumContext.cpp | 11 +++++++++++
+ src/gallium/targets/haiku-zink/GalliumContext.h   |  4 ++++
+ 2 files changed, 15 insertions(+)
+
+diff --git a/src/gallium/targets/haiku-zink/GalliumContext.cpp b/src/gallium/targets/haiku-zink/GalliumContext.cpp
+index 6654d15..3b159a5 100644
+--- a/src/gallium/targets/haiku-zink/GalliumContext.cpp
++++ b/src/gallium/targets/haiku-zink/GalliumContext.cpp
+@@ -50,6 +50,7 @@ extern "C" {
+ 
+ int32 GalliumContext::fDisplayRefCount = 0;
+ hgl_display* GalliumContext::fDisplay = NULL;
++bool GalliumContext::fIsZink = false;
+ 
+ GalliumContext::GalliumContext(ulong options)
+ 	:
+@@ -105,6 +106,7 @@ GalliumContext::CreateDisplay()
+ 	struct pipe_screen* screen = NULL;
+ 	if (getenv("HGL_NO_ZINK") == NULL)
+ 		screen = zink_create_screen(winsys);
++	fIsZink = screen != NULL;
+ 	if (screen == NULL) {
+ 		ERROR("%s: no Vulkan device, falling back to software\n", __func__);
+ 		screen = sw_screen_create(winsys);
+@@ -388,6 +390,15 @@ GalliumContext::Draw(context_id contextID, BRect updateRect)
+ 	// This runs on the window's thread while the application's own thread may
+ 	// be drawing, so it must not go near the application's context.
+ 	//
++	// Both of these reach inside a Zink screen, so neither may be called when
++	// the software rasterizer is standing in for one.
++	if (!fIsZink) {
++		buffer->screen->flush_frontbuffer(buffer->screen, NULL,
++			buffer->textures[ST_ATTACHMENT_FRONT_LEFT], 0, 0,
++			buffer->winsysContext, NULL);
++		return;
++	}
++
+ 	// A window drawn into the screen itself has nothing in the window system's
+ 	// bitmap, so the last frame is put back from the front buffer instead -
+ 	// which only happens once the application has stopped drawing, since while
+diff --git a/src/gallium/targets/haiku-zink/GalliumContext.h b/src/gallium/targets/haiku-zink/GalliumContext.h
+index 1947b96..ffbe781 100644
+--- a/src/gallium/targets/haiku-zink/GalliumContext.h
++++ b/src/gallium/targets/haiku-zink/GalliumContext.h
+@@ -48,6 +48,10 @@ private:
+ 		ulong				fOptions;
+ 		static int32		fDisplayRefCount;
+ 		static hgl_display*	fDisplay;
++		// Whether the screen really is a Zink one: the software rasterizer
++		// stands in when no Vulkan device can be used, and the calls that
++		// reach inside a Zink screen must not be made on it.
++		static bool			fIsZink;
+ 
+ 		// Context Management
+ 		struct hgl_context*	fContext[CONTEXT_MAX];

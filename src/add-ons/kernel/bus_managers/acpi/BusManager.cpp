@@ -789,10 +789,16 @@ prepare_sleep_state(uint8 state, void (*wakeFunc)(void), size_t size)
 		physical_entry wakeVector;
 		status_t status;
 
-		// Note: The supplied code must already be locked into memory.
-		status = get_memory_map((const void*)wakeFunc, size, &wakeVector, 1);
-		if (status != B_OK)
-			return status;
+		if (size == 0) {
+			// wakeFunc is already the physical address of the vector
+			wakeVector.address = (phys_addr_t)(addr_t)wakeFunc;
+		} else {
+			// Note: The supplied code must already be locked into memory.
+			status = get_memory_map((const void*)wakeFunc, size, &wakeVector,
+				1);
+			if (status != B_OK)
+				return status;
+		}
 
 #	if B_HAIKU_PHYSICAL_BITS > 32
 		if (wakeVector.address >= 0x100000000LL) {
@@ -800,8 +806,9 @@ prepare_sleep_state(uint8 state, void (*wakeFunc)(void), size_t size)
 				"vector, but we have a physical address >= 4 GB\n");
 		}
 #	endif
-		acpiStatus = AcpiSetFirmwareWakingVector(wakeVector.address,
-			wakeVector.address);
+		// Only set the real mode vector: a 64 bit vector would make the
+		// firmware enter it in protected mode.
+		acpiStatus = AcpiSetFirmwareWakingVector(wakeVector.address, 0);
 		if (acpiStatus != AE_OK)
 			return B_ERROR;
 	}
@@ -824,15 +831,30 @@ enter_sleep_state(uint8 state)
 	cpu_status cpu = disable_interrupts();
 	status = AcpiEnterSleepState(state);
 	restore_interrupts(cpu);
-	panic("AcpiEnterSleepState should not return.");
-	if (status != AE_OK)
-		return B_ERROR;
+	if (state == ACPI_POWER_STATE_OFF)
+		panic("AcpiEnterSleepState should not return.");
 
-	/*status = AcpiLeaveSleepState(state);
-	if (status != AE_OK)
-		return B_ERROR;*/
+	// When sleeping succeeds, the system resumes through the firmware waking
+	// vector instead of returning here.
+	ERROR("enter_sleep_state(%d) failed: %s\n", state,
+		AcpiFormatException(status));
+	return B_ERROR;
+}
 
-	return B_OK;
+
+status_t
+leave_sleep_state(uint8 state, bool prepare)
+{
+	ACPI_STATUS status;
+
+	TRACE("leave_sleep_state %d, prepare %d\n", state, prepare);
+
+	if (prepare)
+		status = AcpiLeaveSleepStatePrep(state);
+	else
+		status = AcpiLeaveSleepState(state);
+
+	return status == AE_OK ? B_OK : B_ERROR;
 }
 
 
@@ -930,5 +952,6 @@ struct acpi_module_info gACPIModule = {
 	reboot,
 	get_table,
 	read_bit_register,
-	write_bit_register
+	write_bit_register,
+	leave_sleep_state
 };

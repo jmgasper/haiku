@@ -90,6 +90,8 @@ All rights reserved.
 #include "VirtualDirectoryWindow.h"
 
 
+static const uint32 kMountErrorAlertClosed = 'Tmec';
+
 #undef B_TRANSLATION_CONTEXT
 #define B_TRANSLATION_CONTEXT "Tracker"
 
@@ -535,6 +537,40 @@ TTracker::MessageReceived(BMessage* message)
 		case kMountVolume:
 		case kMountAllNow:
 			MountServer().SendMessage(message);
+			break;
+
+		case kMountNetworkShare:
+			// how that went is known when the server has answered
+			MountServer().SendMessage(message, this);
+			break;
+
+		case kNetworkShareReply:
+		{
+			status_t error = message->GetInt32("error", B_OK);
+			if (error == B_OK)
+				break;
+
+			BString text(B_TRANSLATE("The share \"%name%\" could not be "
+				"mounted:\n\n%error%"));
+			text.ReplaceFirst("%name%", message->GetString("name", ""));
+			text.ReplaceFirst("%error%", strerror(error));
+
+			// not waited for, there is more to Tracker than this
+			BAlert* alert = new BAlert(B_TRANSLATE("Mount error"), text,
+				B_TRANSLATE("Network shares" B_UTF8_ELLIPSIS),
+				B_TRANSLATE("OK"), NULL, B_WIDTH_AS_USUAL, B_WARNING_ALERT);
+			alert->SetShortcut(1, B_ESCAPE);
+			alert->Go(new BInvoker(new BMessage(kMountErrorAlertClosed),
+				this));
+			break;
+		}
+
+		case kMountErrorAlertClosed:
+			if (message->GetInt32("which", 1) == 0) {
+				ShowSettingsWindow();
+				fSettingsWindow->ShowPage(
+					TrackerSettingsWindow::kNetworkSharesSettings);
+			}
 			break;
 
 		case B_RESTORE_BACKGROUND_IMAGE:

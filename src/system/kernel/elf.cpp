@@ -280,6 +280,77 @@ create_image_struct()
 }
 
 
+#if defined(__x86_64__)
+static const int32 kMaxFixedAddressImages = 8;
+static elf_image_info* sFixedAddressImages[kMaxFixedAddressImages];
+
+
+/*!	Reserves all parts of the fixed add-on range that are not used by
+	fixed-address images, so that other kernel allocations stay out of it.
+	The caller must hold sImageLoadMutex.
+*/
+static void
+update_fixed_add_on_reservation()
+{
+	struct Span {
+		addr_t start;
+		addr_t end;
+	};
+	Span spans[kMaxFixedAddressImages * 2];
+	int32 spanCount = 0;
+	for (int32 i = 0; i < kMaxFixedAddressImages; i++) {
+		elf_image_info* image = sFixedAddressImages[i];
+		if (image == NULL)
+			continue;
+		const elf_region* regions[] = { &image->text_region,
+			&image->data_region };
+		for (size_t j = 0; j < B_COUNT_OF(regions); j++) {
+			if (regions[j]->size == 0)
+				continue;
+			Span span = { regions[j]->start,
+				regions[j]->start + regions[j]->size };
+			int32 k = spanCount++;
+			while (k > 0 && spans[k - 1].start > span.start) {
+				spans[k] = spans[k - 1];
+				k--;
+			}
+			spans[k] = span;
+		}
+	}
+
+	vm_unreserve_address_range(VMAddressSpace::KernelID(),
+		(void*)KERNEL_FIXED_ADD_ON_BASE, KERNEL_FIXED_ADD_ON_SIZE);
+
+	addr_t next = KERNEL_FIXED_ADD_ON_BASE;
+	for (int32 i = 0; i <= spanCount; i++) {
+		addr_t end = i < spanCount ? spans[i].start
+			: KERNEL_FIXED_ADD_ON_BASE + KERNEL_FIXED_ADD_ON_SIZE;
+		if (end > next) {
+			void* address = (void*)next;
+			vm_reserve_address_range(VMAddressSpace::KernelID(), &address,
+				B_EXACT_ADDRESS, end - next, 0);
+		}
+		if (i < spanCount && spans[i].end > next)
+			next = spans[i].end;
+	}
+}
+
+
+static bool
+set_fixed_address_image(elf_image_info* image, bool add)
+{
+	for (int32 i = 0; i < kMaxFixedAddressImages; i++) {
+		if (add ? sFixedAddressImages[i] == NULL
+				: sFixedAddressImages[i] == image) {
+			sFixedAddressImages[i] = add ? image : NULL;
+			return true;
+		}
+	}
+	return false;
+}
+#endif
+
+
 static void
 delete_elf_image(struct elf_image_info *image)
 {
@@ -288,6 +359,14 @@ delete_elf_image(struct elf_image_info *image)
 
 	if (image->data_region.id >= 0)
 		delete_area(image->data_region.id);
+
+#if defined(__x86_64__)
+	if (image->fixed_address) {
+		// return the image's ranges to the fixed add-on reservation
+		set_fixed_address_image(image, false);
+		update_fixed_add_on_reservation();
+	}
+#endif
 
 	if (image->vnode)
 		vfs_put_vnode(image->vnode);
@@ -2109,6 +2188,8 @@ load_kernel_add_on(const char *path)
 	ssize_t length;
 	bool textSectionWritable = false;
 	int executableHeaderCount = 0;
+	addr_t loadBase;
+	bool fixedAddress = false;
 
 	TRACE(("elf_load_kspace: entry path '%s'\n", path));
 
@@ -2196,6 +2277,30 @@ load_kernel_add_on(const char *path)
 
 	reservedSize = 0;
 	length = 0;
+	loadBase = 0;
+
+#if defined(__x86_64__)
+	// Non-PIC add-ons built for GCC's kernel code model (for example, vendor
+	// objects that cannot be rebuilt) are linked as ET_EXEC images at a fixed
+	// address in the top 2 GB and must be mapped exactly there.
+	if (elfHeader->e_type == ET_EXEC) {
+		fixedAddress = true;
+		loadBase = ~(addr_t)0;
+		for (int32 i = 0; i < elfHeader->e_phnum; i++) {
+			if (programHeaders[i].p_type == PT_LOAD
+				&& ROUNDDOWN(programHeaders[i].p_vaddr, B_PAGE_SIZE)
+					< loadBase) {
+				loadBase = ROUNDDOWN(programHeaders[i].p_vaddr, B_PAGE_SIZE);
+			}
+		}
+		if (loadBase < KERNEL_FIXED_ADD_ON_BASE) {
+			dprintf("%s: fixed-address add-on outside the fixed add-on "
+				"range\n", fileName);
+			status = B_NOT_AN_EXECUTABLE;
+			goto error3;
+		}
+	}
+#endif
 
 	for (int32 i = 0; i < elfHeader->e_phnum; i++) {
 		size_t end;
@@ -2207,7 +2312,7 @@ load_kernel_add_on(const char *path)
 			+ (programHeaders[i].p_vaddr % B_PAGE_SIZE), B_PAGE_SIZE);
 
 		end = ROUNDUP(programHeaders[i].p_memsz + programHeaders[i].p_vaddr,
-			B_PAGE_SIZE);
+			B_PAGE_SIZE) - loadBase;
 		if (end > reservedSize)
 			reservedSize = end;
 
@@ -2219,12 +2324,33 @@ load_kernel_add_on(const char *path)
 	// inbetween.
 	if ((ssize_t)reservedSize > length + 8 * 1024) {
 		status = B_BAD_DATA;
-		goto error1;
+		goto error3;
 	}
 
+#if defined(__x86_64__)
+	if (fixedAddress) {
+		// The fixed add-on range was reserved at boot. Replace the
+		// reservation of the image's span with one that exactly covers it.
+		if (loadBase + reservedSize - 1
+				> KERNEL_FIXED_ADD_ON_BASE + KERNEL_FIXED_ADD_ON_SIZE - 1
+			|| !set_fixed_address_image(image, true)) {
+			dprintf("%s: fixed-address add-on does not fit into the fixed "
+				"add-on range\n", fileName);
+			status = B_NO_MEMORY;
+			goto error3;
+		}
+		image->fixed_address = true;
+		vm_unreserve_address_range(VMAddressSpace::KernelID(),
+			(void*)KERNEL_FIXED_ADD_ON_BASE, KERNEL_FIXED_ADD_ON_SIZE);
+		reservedAddress = (void*)loadBase;
+	}
+#endif
 	// reserve that space and allocate the areas from that one
 	if (vm_reserve_address_range(VMAddressSpace::KernelID(), &reservedAddress,
-			B_ANY_KERNEL_ADDRESS, reservedSize, 0) < B_OK) {
+			fixedAddress ? B_EXACT_ADDRESS : B_ANY_KERNEL_ADDRESS,
+			reservedSize, 0) < B_OK) {
+		dprintf("%s: could not reserve %#" B_PRIxSIZE " bytes\n", fileName,
+			reservedSize);
 		status = B_NO_MEMORY;
 		goto error3;
 	}
@@ -2303,7 +2429,7 @@ load_kernel_add_on(const char *path)
 		}
 
 		region->start = (addr_t)reservedAddress + ROUNDDOWN(
-			programHeaders[i].p_vaddr, B_PAGE_SIZE);
+			programHeaders[i].p_vaddr, B_PAGE_SIZE) - loadBase;
 		region->size = ROUNDUP(programHeaders[i].p_memsz
 			+ (programHeaders[i].p_vaddr % B_PAGE_SIZE), B_PAGE_SIZE);
 		region->id = create_area(regionName, (void **)&region->start,
@@ -2365,6 +2491,10 @@ load_kernel_add_on(const char *path)
 	// reserve this any longer
 	vm_unreserve_address_range(VMAddressSpace::KernelID(), reservedAddress,
 		reservedSize);
+#if defined(__x86_64__)
+	if (fixedAddress)
+		update_fixed_add_on_reservation();
+#endif
 
 	if (sLoadElfSymbols)
 		load_elf_symbol_table(fd, image);

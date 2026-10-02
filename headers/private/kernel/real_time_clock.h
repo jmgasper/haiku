@@ -26,6 +26,7 @@ void set_real_time_clock_usecs(bigtime_t currentTime);
 
 status_t rtc_init(struct kernel_args *args);
 bigtime_t rtc_boot_time(void);
+void rtc_resync_from_hardware(void);
 	// Returns the time at which the system was booted in microseconds since Jan 1, 1970 UTC.
 
 // Both functions use the passed struct tm only partially

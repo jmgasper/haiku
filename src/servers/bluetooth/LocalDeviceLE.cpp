@@ -69,6 +69,9 @@ static const bigtime_t kScanRefreshInterval = 10000000;
 static const bigtime_t kInquiryLimit = 70000000;
 // Notices may wait briefly for a busy client; advertisements never wait.
 static const bigtime_t kNoticeTimeout = 250000;
+// A controller answers a setup command within milliseconds; one that has not
+// in this long never will.
+static const bigtime_t kCommandTimeout = 5000000;
 
 
 static const char*
@@ -108,6 +111,7 @@ LocalDeviceImpl::_SendLECommand(uint16 opcode, const void* data, size_t length)
 		memcpy(command + HCI_COMMAND_HDR_SIZE, data, length);
 	LOG(LE_LOG_TRACE, "HCI command %#06x (%zu parameter bytes)", opcode,
 		length);
+	fLECommandSince = system_time();
 	status_t status = fHCIDelegate->IssueCommand(command,
 		HCI_COMMAND_HDR_SIZE + length);
 	if (status != B_OK) {
@@ -513,6 +517,27 @@ LocalDeviceImpl::LEPulse()
 			_UpdateLE();
 		} else
 			fLECancelRequested = true;
+	}
+
+	// The event masks and the scan move on only when the controller answers
+	// the command before; an answer that never comes (a controller still
+	// starting up, a transfer lost on the bus) would leave LE stalled for
+	// good, with bonded devices never reconnected. Start that step over.
+	const bool masksWaiting = fLEMaskState == LE_MASKS_CLASSIC
+		|| fLEMaskState == LE_MASKS_LE;
+	const bool scanWaiting = fLEScanState == LE_SCAN_PARAMETERS
+		|| fLEScanState == LE_SCAN_ENABLE || fLEScanState == LE_SCAN_DISABLE;
+	if ((masksWaiting || scanWaiting)
+		&& system_time() - fLECommandSince > kCommandTimeout) {
+		LOG(LE_LOG_ERROR, "no answer from the controller for %d s while "
+			"%s; starting that over", (int)(kCommandTimeout / 1000000),
+			masksWaiting ? "setting the event masks"
+				: ScanStateName(fLEScanState));
+		if (masksWaiting)
+			fLEMaskState = LE_MASKS_NONE;
+		if (scanWaiting)
+			fLEScanState = LE_SCAN_IDLE;
+		_UpdateLE();
 	}
 
 	if (fClassicInquiryActive

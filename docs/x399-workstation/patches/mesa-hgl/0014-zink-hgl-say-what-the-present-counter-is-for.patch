@@ -1,0 +1,29 @@
+From 7e9162eb0f22dd29210f07a02648b0c6b78c9988 Mon Sep 17 00:00:00 2001
+From: jmgasper <jmgasper@gmail.com>
+Date: Sat, 19 Sep 2026 03:32:47 +1000
+Subject: [PATCH 14/14] zink/hgl: say what the present counter is for
+
+It is not bookkeeping anybody needs; it is the thing that showed frames
+stop when the window system says stop, which is how the staircase left
+by a dragged window was traced to the repaint rather than to ordering.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ src/gallium/targets/haiku-zink/ZinkRenderer.h | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/gallium/targets/haiku-zink/ZinkRenderer.h b/src/gallium/targets/haiku-zink/ZinkRenderer.h
+index bc946ca..2fdd658 100644
+--- a/src/gallium/targets/haiku-zink/ZinkRenderer.h
++++ b/src/gallium/targets/haiku-zink/ZinkRenderer.h
+@@ -58,6 +58,10 @@ private:
+ 			bool				fPresentedIntoScanout;
+ 			// whether ScanoutTarget took fInfoLocker and still holds it
+ 			bool				fScanoutTargetHeld;
++			// how many frames went into the screen since the window system
++			// last said anything, reported under ZINK_SCANOUT_TRACE. It is
++			// what shows whether a frame can be drawn at a place the window
++			// has already left.
+ 			int32				fPresentCount = 0;
+ 			// when the window last moved or its clipping changed
+ 			bigtime_t			fLastPlacementChange = 0;

@@ -6,8 +6,9 @@ SubDirHdrs $(HAIKU_TOP) src kits tracker ;
 Application mount_server
 	:
 	AutoMounter.cpp
+	NetworkShares.cpp
 	:
-	libbe.so tracker localestub [ TargetLibstdc++ ]
+	libbe.so tracker shared bnetapi localestub [ TargetLibstdc++ ]
 	:
 	mount_server.rdef
 ;
@@ -16,4 +17,5 @@ DoCatalogs mount_server :
 	x-vnd.Haiku-mount_server
 	:
 	AutoMounter.cpp
+	NetworkShares.cpp
 ;

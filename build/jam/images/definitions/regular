@@ -325,6 +325,12 @@ SYSTEM_ADD_ONS_DRIVERS_NET += [ FFilterByBuildFeatures
 		realtekwifi8187
 		zydwifi1211
 	}@ # x86,x86_64,riscv64,arm64
+	# MediaTek MT7921/MT7922 (Wi-Fi 6, M.2 and PCIe), so far tried only on
+	# x86_64. Its firmware is not in HaikuPorts; see
+	# docs/x399-workstation/UserBuildConfig.standard.
+	x86_64 @{
+		mt7922wifi
+	}@ # x86_64
 	# Legacy PCI and CardBus cards
 	x86,x86_64,riscv64 @{
 		aironetwifi

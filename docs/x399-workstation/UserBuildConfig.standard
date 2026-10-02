@@ -1,0 +1,34 @@
+# The fork's standard x86_64 deploy: what a regular build adds beyond what the
+# repository itself builds. Include it from the build directory's
+# UserBuildConfig:
+#
+#   include /path/to/haiku/docs/x399-workstation/UserBuildConfig.standard ;
+#
+# then `jam -q @nightly-anyboot` (or @nightly-raw).
+#
+# Firmware is its vendors', redistributed by linux-firmware, and stays out of
+# Git. Build the packages first; they are architecture-neutral, so the ones
+# rock5-itx builds serve x86 unchanged:
+#
+#   docs/x399-workstation/tools/build-mediatek-wifi-firmware-package.sh
+#       -> mediatek_wifi_firmwares (MT7921/MT7922 Wi-Fi, for mt7922wifi)
+#   tools/rock5-itx/build-bluetooth-firmware-packages.sh
+#       -> intel_, realtek_ and mediatek_bluetooth_firmwares
+#          (bt_firmware and h2generic's MediaTek download)
+#
+# and put them in X399_FIRMWARE_PACKAGES (default below). Intel, Ralink and
+# Realtek Wi-Fi firmware comes from HaikuPorts with the regular image.
+#
+# nvm needs nothing here: it is built from data/nvm and is in every regular
+# image (build/jam/images/HaikuImage).
+
+X399_FIRMWARE_PACKAGES ?= /mnt/HaikuWork/x399/pkgs/firmware ;
+
+local x399FirmwarePackages =
+	<x399-firmware>mediatek_wifi_firmwares-20240318-1-any.hpkg
+	<x399-firmware>mediatek_bluetooth_firmwares-20240318-1-any.hpkg
+	<x399-firmware>intel_bluetooth_firmwares-20240318-1-any.hpkg
+	<x399-firmware>realtek_bluetooth_firmwares-20240318-1-any.hpkg
+	;
+SEARCH on $(x399FirmwarePackages) = $(X399_FIRMWARE_PACKAGES) ;
+AddFilesToHaikuImage system packages : $(x399FirmwarePackages) ;

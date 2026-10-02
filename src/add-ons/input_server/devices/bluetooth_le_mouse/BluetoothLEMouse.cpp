@@ -21,6 +21,7 @@
 #include <Message.h>
 #include <OS.h>
 #include <bluetooth/LocalDevice.h>
+#include <bluetooth/bdaddrUtils.h>
 
 #include <atomic>
 #include <math.h>
@@ -142,15 +143,36 @@ private:
 			announcedIdle = false;
 
 			// The Bluetooth server may start after us. LocalDevice objects
-			// are owned by the kit and cannot be deleted, so keep one.
-			if (local == NULL)
-				local = Bluetooth::LocalDevice::GetLocalDevice();
+			// are owned by the kit and cannot be deleted, so keep one; only
+			// a restarted server makes us let go of it (and leak it).
 			if (local == NULL) {
+				bigtime_t asked = system_time();
+				local = Bluetooth::LocalDevice::GetLocalDevice();
+				if (local != NULL) {
+					LOG(LE_LOG_DEBUG, "adapter hci %" B_PRId32 " ready after %"
+						B_PRId64 " ms", local->ID(),
+						(system_time() - asked) / 1000);
+				}
+			}
+			if (local == NULL) {
+				// At boot the server and the radio come up after us; look
+				// again soon, so that the mouse is back the moment they are.
 				LOG(LE_LOG_DEBUG, "no Bluetooth adapter yet");
-				_Sleep(5000000);
+				_Sleep(1000000);
 				continue;
 			}
 			bdaddr_t address = local->GetBluetoothAddress();
+			bdaddr_t failed = bdaddrUtils::LocalAddress();
+			if (memcmp(address.b, failed.b, sizeof(address.b)) == 0) {
+				// The kit answers this when the server it was given the
+				// adapter by is gone - after bluetooth_server restarted, say.
+				// That adapter will never answer again; ask for the new one.
+				LOG(LE_LOG_INFO, "the Bluetooth server is gone; asking the "
+					"new one for its adapter");
+				local = NULL;
+				_Sleep(1000000);
+				continue;
+			}
 			int32 hciID = local->ID();
 
 			bool anyMatching = false;
@@ -161,6 +183,11 @@ private:
 					continue;
 				anyMatching = true;
 				_UseMouse(hciID, mouse);
+			}
+			if (!anyMatching) {
+				char text[18];
+				LOG(LE_LOG_DEBUG, "no paired mouse belongs to adapter %s",
+					Bluetooth::LEAddressString(address.b, text));
 			}
 			// Scanning already paced the loop; back off when nothing
 			// belongs to this adapter.

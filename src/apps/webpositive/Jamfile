@@ -67,6 +67,16 @@ for architectureObject in [ MultiArchSubDirSetup ] {
 		UsePrivateHeaders interface netservices shared tracker ;
 		SubDirHdrs $(HAIKU_TOP) src kits tracker ;
 
+		# Summit's libWebKitLegacy (build/jam/BuildFeatures) needs the
+		# engine's libraries found at link time.
+		local engineLibraryDirectory
+			= [ BuildFeatureAttribute webkit : engineLibraryDirectory ] ;
+		if $(engineLibraryDirectory) {
+			LINKFLAGS on WebPositive
+				+= -Wl,-rpath-link,$(engineLibraryDirectory) ;
+			Depends WebPositive : [ BuildFeatureAttribute webkit : engine ] ;
+		}
+
 		Application WebPositive :
 			$(sources)
 			:

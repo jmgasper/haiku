@@ -62,6 +62,7 @@ private:
 	status_t _Exchange(const uint8* request, size_t requestLength,
 		uint8 expectedOpcode, std::vector<uint8>& response);
 	status_t _Receive(std::vector<uint8>& response);
+	bool _HandlePeerPDU(const std::vector<uint8>& pdu);
 
 	int fSocket;
 	uint8 fLastATTError;

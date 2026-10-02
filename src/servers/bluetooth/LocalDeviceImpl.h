@@ -137,6 +137,8 @@ private:
 	LEMaskState fLEMaskState;
 	LEScanState fLEScanState;
 	bigtime_t fLEScanSince;
+	bigtime_t fLECommandSince;
+		// when the last LE command went to the controller
 	bool fClassicInquiryActive;
 	bigtime_t fClassicInquirySince;
 	std::vector<BMessenger> fLEScanListeners;

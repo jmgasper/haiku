@@ -13,10 +13,15 @@
 #include "DesktopSettings.h"
 #include "DesktopSettingsPrivate.h"
 
+#include <errno.h>
+#include <stdio.h>
+#include <unistd.h>
+
 #include <Directory.h>
 #include <File.h>
 #include <FindDirectory.h>
 #include <Path.h>
+#include <String.h>
 
 #include <DefaultColors.h>
 #include <InterfaceDefs.h>
@@ -29,6 +34,36 @@
 #include "GlobalSubpixelSettings.h"
 #include "ServerConfig.h"
 #include "SystemPalette.h"
+
+
+/*!	Replaces the settings file at \a path with \a settings in a way that
+	survives the power going out: the new contents are written next to the
+	file and flushed to disk before they take its place, so that the file is
+	always either the old one or the new one. Writing over the file directly
+	can leave it empty or garbled when the machine is reset before the file
+	cache is written back, and the settings then fall back to their defaults
+	- the monitor arrangement among them.
+*/
+static status_t
+write_settings(const BPath& path, const BMessage& settings)
+{
+	BString temporary(path.Path());
+	temporary << ".new";
+
+	BFile file;
+	status_t status = file.SetTo(temporary.String(),
+		B_CREATE_FILE | B_ERASE_FILE | B_WRITE_ONLY);
+	if (status == B_OK)
+		status = settings.Flatten(&file, NULL);
+	if (status == B_OK)
+		status = file.Sync();
+	file.Unset();
+	if (status == B_OK && rename(temporary.String(), path.Path()) != 0)
+		status = errno;
+	if (status != B_OK)
+		unlink(temporary.String());
+	return status;
+}
 
 
 DesktopSettingsPrivate::DesktopSettingsPrivate(server_read_only_memory* shared)
@@ -380,12 +415,7 @@ DesktopSettingsPrivate::Save(uint32 mask)
 				settings.AddMessage("workspace", &fWorkspaceMessages[i]);
 			}
 
-			BFile file;
-			status = file.SetTo(path.Path(), B_CREATE_FILE | B_ERASE_FILE
-				| B_READ_WRITE);
-			if (status == B_OK) {
-				status = settings.Flatten(&file, NULL);
-			}
+			status = write_settings(path, settings);
 		}
 	}
 
@@ -408,12 +438,7 @@ DesktopSettingsPrivate::Save(uint32 mask)
 
 			settings.AddInt32("hinting", gDefaultHintingMode);
 
-			BFile file;
-			status = file.SetTo(path.Path(), B_CREATE_FILE | B_ERASE_FILE
-				| B_READ_WRITE);
-			if (status == B_OK) {
-				status = settings.Flatten(&file, NULL);
-			}
+			status = write_settings(path, settings);
 		}
 	}
 
@@ -426,12 +451,18 @@ DesktopSettingsPrivate::Save(uint32 mask)
 				(int32)fFocusFollowsMouseMode);
 			settings.AddBool("accept first click", fAcceptFirstClick);
 
-			BFile file;
-			status = file.SetTo(path.Path(), B_CREATE_FILE | B_ERASE_FILE
-				| B_READ_WRITE);
-			if (status == B_OK) {
-				status = settings.Flatten(&file, NULL);
-			}
+			status = write_settings(path, settings);
+		}
+	}
+
+	if (mask & kDisplaySettings) {
+		BPath path(basePath);
+		if (path.Append("displays") == B_OK) {
+			BMessage settings('asdp');
+			settings.AddBool("zoom to display", fZoomToDisplay);
+			settings.AddMessage("layout", &fDisplaysMessage);
+
+			status = write_settings(path, settings);
 		}
 	}
 
@@ -457,12 +488,7 @@ DesktopSettingsPrivate::Save(uint32 mask)
 			BMessage settings('asdg');
 			settings.AddBool("show", fShowAllDraggers);
 
-			BFile file;
-			status = file.SetTo(path.Path(), B_CREATE_FILE | B_ERASE_FILE
-				| B_READ_WRITE);
-			if (status == B_OK) {
-				status = settings.Flatten(&file, NULL);
-			}
+			status = write_settings(path, settings);
 		}
 	}
 
@@ -498,12 +524,7 @@ DesktopSettingsPrivate::Save(uint32 mask)
 				settings.AddInt32(colorName, (const int32&)fShared.colors[i]);
 			}
 
-			BFile file;
-			status = file.SetTo(path.Path(), B_CREATE_FILE | B_ERASE_FILE
-				| B_READ_WRITE);
-			if (status == B_OK) {
-				status = settings.Flatten(&file, NULL);
-			}
+			status = write_settings(path, settings);
 		}
 	}
 

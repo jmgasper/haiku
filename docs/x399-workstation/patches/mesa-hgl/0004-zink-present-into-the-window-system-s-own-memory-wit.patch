@@ -1,0 +1,283 @@
+From 5959749ff32935fd11bb5a29cd37d84663d134cf Mon Sep 17 00:00:00 2001
+From: x399 <x399@lab>
+Date: Fri, 18 Sep 2026 16:53:41 +1000
+Subject: [PATCH 04/14] zink: present into the window system's own memory with
+ the GPU
+
+A frame used to be read back from the GPU by the CPU and copied into the
+window's bitmap.  With VK_EXT_external_memory_host the bitmap itself can
+be handed to the GPU, so the copy that presents the frame writes the
+application's memory directly and the CPU never touches the pixels; the
+buffers the window system rotates through are imported once and kept.
+Redrawing a window no longer goes through the GPU at all - the frame is
+already in the bitmap, so it is simply shown again, which also keeps the
+window's thread away from the context.
+
+ZINK_NO_HOST_PRESENT falls back to the copy through the CPU.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ src/gallium/drivers/zink/zink_device_info.py  |   5 +
+ src/gallium/drivers/zink/zink_public.h        |   6 +
+ src/gallium/drivers/zink/zink_screen.c        | 155 ++++++++++++++++++
+ src/gallium/drivers/zink/zink_screen.h        |  12 ++
+ .../targets/haiku-zink/GalliumContext.cpp     |  10 +-
+ 5 files changed, 183 insertions(+), 5 deletions(-)
+
+diff --git a/src/gallium/drivers/zink/zink_device_info.py b/src/gallium/drivers/zink/zink_device_info.py
+index 0599721..278a772 100644
+--- a/src/gallium/drivers/zink/zink_device_info.py
++++ b/src/gallium/drivers/zink/zink_device_info.py
+@@ -67,6 +67,11 @@ EXTENSIONS = [
+     Extension("VK_KHR_external_memory_fd"),
+     Extension("VK_KHR_external_semaphore_fd"),
+     Extension("VK_EXT_external_memory_dma_buf"),
++    # Lets the frame be copied straight into the memory the window system
++    # gave us, instead of through the CPU.
++    Extension("VK_EXT_external_memory_host",
++        alias="ext_host_mem",
++        properties=True),
+     Extension("VK_EXT_queue_family_foreign"),
+     Extension("VK_EXT_provoking_vertex",
+        alias="pv",
+diff --git a/src/gallium/drivers/zink/zink_public.h b/src/gallium/drivers/zink/zink_public.h
+index a5a4f6b..8c16f71 100644
+--- a/src/gallium/drivers/zink/zink_public.h
++++ b/src/gallium/drivers/zink/zink_public.h
+@@ -31,6 +31,12 @@ struct pipe_screen_config;
+ struct pipe_screen *
+ zink_create_screen(struct sw_winsys *winsys);
+ 
++void
++zink_display_frontbuffer(struct pipe_screen *pscreen,
++                         struct pipe_resource *pres,
++                         void *winsys_drawable_handle,
++                         struct pipe_box *sub_box);
++
+ struct pipe_screen *
+ zink_drm_create_screen(int fd, const struct pipe_screen_config *config);
+ #endif
+diff --git a/src/gallium/drivers/zink/zink_screen.c b/src/gallium/drivers/zink/zink_screen.c
+index c5e6087..029b66b 100644
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -23,6 +23,8 @@
+ 
+ #include "zink_screen.h"
+ 
++#include "util/u_threaded_context.h"
++
+ #include "zink_compiler.h"
+ #include "zink_context.h"
+ #include "zink_device_info.h"
+@@ -1330,6 +1332,146 @@ init_queue(struct zink_screen *screen)
+       screen->thread_queue = screen->queue;
+ }
+ 
++// Copy the rendered image straight into the memory the window system handed us,
++// with the GPU, so the frame never travels through the CPU. The memory is
++// imported once and kept until the window system hands us a different buffer.
++static bool
++present_into_host_memory(struct zink_screen *screen, struct zink_context *ctx,
++                         struct zink_resource *res, void *map, unsigned stride,
++                         struct pipe_resource *pres, unsigned level,
++                         unsigned layer)
++{
++   if (ctx == NULL)
++      return false;
++
++   const unsigned height = u_minify(pres->height0, level);
++   const unsigned alignment =
++      screen->info.ext_host_mem_props.minImportedHostPointerAlignment;
++   if (alignment == 0 || ((uintptr_t)map & (alignment - 1)) != 0)
++      return false;
++
++   const uint64_t size = align64((uint64_t)stride * height, alignment);
++
++   /* Find the buffer among the ones we have already imported, or import it
++    * into the first free slot.
++    */
++   unsigned slot = ARRAY_SIZE(screen->present_imports);
++   for (unsigned i = 0; i < ARRAY_SIZE(screen->present_imports); i++) {
++      if (screen->present_imports[i].map == map &&
++          screen->present_imports[i].size >= size) {
++         slot = i;
++         break;
++      }
++      if (screen->present_imports[i].map == NULL && slot == ARRAY_SIZE(screen->present_imports))
++         slot = i;
++   }
++   if (slot == ARRAY_SIZE(screen->present_imports))
++      return false;
++
++   if (screen->present_imports[slot].map != map ||
++       screen->present_imports[slot].size < size) {
++      if (screen->present_imports[slot].buffer != VK_NULL_HANDLE) {
++         VKSCR(DestroyBuffer)(screen->dev, screen->present_imports[slot].buffer, NULL);
++         VKSCR(FreeMemory)(screen->dev, screen->present_imports[slot].memory, NULL);
++         screen->present_imports[slot].buffer = VK_NULL_HANDLE;
++         screen->present_imports[slot].memory = VK_NULL_HANDLE;
++         screen->present_imports[slot].map = NULL;
++      }
++
++      VkMemoryHostPointerPropertiesEXT props = {
++         VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT
++      };
++      if (VKSCR(GetMemoryHostPointerPropertiesEXT)(screen->dev,
++             VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
++             map, &props) != VK_SUCCESS || props.memoryTypeBits == 0)
++         return false;
++
++      VkImportMemoryHostPointerInfoEXT import = {
++         .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
++         .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
++         .pHostPointer = map,
++      };
++      VkMemoryAllocateInfo mai = {
++         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
++         .pNext = &import,
++         .allocationSize = size,
++         .memoryTypeIndex = ffs(props.memoryTypeBits) - 1,
++      };
++      if (VKSCR(AllocateMemory)(screen->dev, &mai, NULL,
++                                &screen->present_imports[slot].memory) != VK_SUCCESS)
++         return false;
++
++      VkBufferCreateInfo bci = {
++         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
++         .size = size,
++         .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
++      };
++      if (VKSCR(CreateBuffer)(screen->dev, &bci, NULL,
++                              &screen->present_imports[slot].buffer) != VK_SUCCESS) {
++         VKSCR(FreeMemory)(screen->dev, screen->present_imports[slot].memory, NULL);
++         screen->present_imports[slot].memory = VK_NULL_HANDLE;
++         return false;
++      }
++      if (VKSCR(BindBufferMemory)(screen->dev, screen->present_imports[slot].buffer,
++                                  screen->present_imports[slot].memory, 0) != VK_SUCCESS) {
++         VKSCR(DestroyBuffer)(screen->dev, screen->present_imports[slot].buffer, NULL);
++         VKSCR(FreeMemory)(screen->dev, screen->present_imports[slot].memory, NULL);
++         screen->present_imports[slot].buffer = VK_NULL_HANDLE;
++         screen->present_imports[slot].memory = VK_NULL_HANDLE;
++         return false;
++      }
++
++      screen->present_imports[slot].map = map;
++      screen->present_imports[slot].size = size;
++   }
++
++   struct zink_batch *batch = &ctx->batch;
++   zink_batch_no_rp(ctx);
++   zink_resource_image_barrier(ctx, res, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
++                               VK_ACCESS_TRANSFER_READ_BIT,
++                               VK_PIPELINE_STAGE_TRANSFER_BIT);
++
++   const unsigned blocksize = util_format_get_blocksize(pres->format);
++   VkBufferImageCopy region = {
++      .bufferOffset = 0,
++      .bufferRowLength = blocksize ? stride / blocksize : 0,
++      .bufferImageHeight = height,
++      .imageSubresource = {
++         .aspectMask = res->aspect,
++         .mipLevel = level,
++         .baseArrayLayer = layer,
++         .layerCount = 1,
++      },
++      .imageExtent = { u_minify(pres->width0, level), height, 1 },
++   };
++   VKCTX(CmdCopyImageToBuffer)(batch->state->cmdbuf, res->obj->image,
++                               res->layout,
++                               screen->present_imports[slot].buffer, 1, &region);
++
++   // The window system reads the memory as soon as we return, so the copy has
++   // to have happened by then.
++   ctx->base.flush(&ctx->base, NULL, 0);
++   zink_fence_wait(&ctx->base);
++   return true;
++}
++
++// Show the frame that is already in the window system's buffer again, without
++// touching the GPU: what a window needs when it is merely redrawn.
++void
++zink_display_frontbuffer(struct pipe_screen *pscreen,
++                         struct pipe_resource *pres,
++                         void *winsys_drawable_handle,
++                         struct pipe_box *sub_box)
++{
++   struct zink_screen *screen = zink_screen(pscreen);
++   struct zink_resource *res = zink_resource(pres);
++
++   if (screen->winsys != NULL && res->dt != NULL) {
++      screen->winsys->displaytarget_display(screen->winsys, res->dt,
++                                            winsys_drawable_handle, sub_box);
++   }
++}
++
+ static void
+ zink_flush_frontbuffer(struct pipe_screen *pscreen,
+                        struct pipe_context *pcontext,
+@@ -1346,6 +1488,19 @@ zink_flush_frontbuffer(struct pipe_screen *pscreen,
+      return;
+    void *map = winsys->displaytarget_map(winsys, res->dt, 0);
+ 
++   if (map && pcontext != NULL && screen->info.have_EXT_external_memory_host &&
++       getenv("ZINK_NO_HOST_PRESENT") == NULL &&
++       present_into_host_memory(screen,
++                                /* the frontend hands us the threaded
++                                 * context's wrapper; the work below goes
++                                 * straight to the driver's own context */
++                                zink_context(threaded_context_unwrap_sync(pcontext)),
++                                res, map, res->dt_stride, pres, level, layer)) {
++      winsys->displaytarget_unmap(winsys, res->dt);
++      winsys->displaytarget_display(winsys, res->dt, winsys_drawable_handle, sub_box);
++      return;
++   }
++
+    if (map) {
+       struct pipe_transfer *transfer = NULL;
+       void *res_map = pipe_texture_map(pcontext, pres, level, layer, PIPE_MAP_READ, 0, 0,
+diff --git a/src/gallium/drivers/zink/zink_screen.h b/src/gallium/drivers/zink/zink_screen.h
+index b93673e..06ae00b 100644
+--- a/src/gallium/drivers/zink/zink_screen.h
++++ b/src/gallium/drivers/zink/zink_screen.h
+@@ -177,6 +177,18 @@ struct zink_screen {
+    } null_descriptor_hashes;
+ 
+    VkExtent2D maxSampleLocationGridSize[5];
++
++   /* The window system's own buffers, imported so that the GPU can present
++    * into them instead of the frame travelling through the CPU.  There is one
++    * per buffer the window system rotates through, and importing is dear
++    * enough that they are worth keeping.
++    */
++   struct {
++      void *map;
++      uint64_t size;
++      VkDeviceMemory memory;
++      VkBuffer buffer;
++   } present_imports[4];
+ };
+ 
+ 
+diff --git a/src/gallium/targets/haiku-zink/GalliumContext.cpp b/src/gallium/targets/haiku-zink/GalliumContext.cpp
+index 569cd3c..2781c67 100644
+--- a/src/gallium/targets/haiku-zink/GalliumContext.cpp
++++ b/src/gallium/targets/haiku-zink/GalliumContext.cpp
+@@ -385,11 +385,11 @@ GalliumContext::Draw(context_id contextID, BRect updateRect)
+ 	if (buffer->textures[ST_ATTACHMENT_FRONT_LEFT] == NULL)
+ 		return;
+ 
+-	// A hardware driver reads the rendered image back through the context, so
+-	// it has to be passed along; the software drivers ignore it.
+-	buffer->screen->flush_frontbuffer(buffer->screen, context->st->pipe,
+-		buffer->textures[ST_ATTACHMENT_FRONT_LEFT],
+-		0, 0, buffer->winsysContext, NULL);
++	// This runs on the window's thread while the application's own thread may
++	// be drawing, so it must not touch the GPU: the front buffer the window
++	// system holds already has the last frame in it, so just show it again.
++	zink_display_frontbuffer(buffer->screen,
++		buffer->textures[ST_ATTACHMENT_FRONT_LEFT], buffer->winsysContext, NULL);
+ }
+ 
+ 

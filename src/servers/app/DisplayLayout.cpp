@@ -363,6 +363,7 @@ DisplayLayout::Configure(const BMessage& saved, bool keepCurrent)
 	}
 
 	_Separate();
+	_CloseGaps();
 	_Normalize();
 }
 
@@ -881,6 +882,90 @@ DisplayLayout::_Separate()
 			}
 		}
 	}
+}
+
+
+/*!	Whether two frames share part of an edge, or overlap: the mouse can go
+	from one to the other. Meeting at a corner is not enough.
+*/
+static bool
+touches(const BRect& a, const BRect& b)
+{
+	bool overlapX = a.left <= b.right && b.left <= a.right;
+	bool overlapY = a.top <= b.bottom && b.top <= a.bottom;
+	bool adjacentX = a.left <= b.right + 1 && b.left <= a.right + 1;
+	bool adjacentY = a.top <= b.bottom + 1 && b.top <= a.bottom + 1;
+	return (overlapX && adjacentY) || (overlapY && adjacentX);
+}
+
+
+/*!	Enabled displays that remember places beside a monitor that is not there
+	now would leave a hole in the desktop the mouse cannot cross. Going from
+	the top left, each display that touches none before it moves left or up
+	to the nearest one, or, when none is beside or below it, next to the
+	rightmost one.
+*/
+void
+DisplayLayout::_CloseGaps()
+{
+	std::vector<DisplayInfo*> enabled;
+	for (size_t i = 0; i < fDisplays.size(); i++) {
+		if (fDisplays[i].IsConnected() && fDisplays[i].IsEnabled())
+			enabled.push_back(&fDisplays[i]);
+	}
+	std::stable_sort(enabled.begin(), enabled.end(),
+		[](const DisplayInfo* a, const DisplayInfo* b) {
+			if (a->frame.left != b->frame.left)
+				return a->frame.left < b->frame.left;
+			return a->frame.top < b->frame.top;
+		});
+
+	bool moved = false;
+	for (size_t i = 1; i < enabled.size(); i++) {
+		BRect& frame = enabled[i]->frame;
+		bool connected = false;
+		float shiftX = -1;
+		float shiftY = -1;
+		const DisplayInfo* rightmost = NULL;
+		for (size_t j = 0; j < i && !connected; j++) {
+			const BRect& other = enabled[j]->frame;
+			if (touches(frame, other)) {
+				connected = true;
+				break;
+			}
+			if (rightmost == NULL || other.right > rightmost->frame.right)
+				rightmost = enabled[j];
+			if (frame.top <= other.bottom && other.top <= frame.bottom
+				&& other.right < frame.left) {
+				float gap = frame.left - other.right - 1;
+				if (shiftX < 0 || gap < shiftX)
+					shiftX = gap;
+			}
+			if (frame.left <= other.right && other.left <= frame.right
+				&& other.bottom < frame.top) {
+				float gap = frame.top - other.bottom - 1;
+				if (shiftY < 0 || gap < shiftY)
+					shiftY = gap;
+			}
+		}
+		if (connected)
+			continue;
+
+		if (shiftX >= 0 && (shiftY < 0 || shiftX <= shiftY))
+			frame.OffsetBy(-shiftX, 0);
+		else if (shiftY >= 0)
+			frame.OffsetBy(0, -shiftY);
+		else if (rightmost != NULL) {
+			frame.OffsetTo(rightmost->frame.right + 1,
+				rightmost->frame.top);
+		}
+		moved = true;
+	}
+
+	// Closing up cannot put two displays on top of each other in a row or a
+	// column; anything more tangled is still kept apart.
+	if (moved)
+		_Separate();
 }
 
 

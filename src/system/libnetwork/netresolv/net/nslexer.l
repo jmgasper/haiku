@@ -36,12 +36,17 @@ __RCSID("$NetBSD: nslexer.l,v 1.13 2012/06/25 22:32:45 abs Exp $");
 #endif /* LIBC_SCCS and not lint */
 
 #include <ctype.h>
+#include <setjmp.h>
+#include <stdio.h>
 #define _NS_PRIVATE
 #include <nsswitch.h>
 #include <string.h>
 #include <syslog.h>
 
 #include "nsparser.h"
+
+/* flex has exit() for this, and with it the program that asked for a name */
+#define YY_FATAL_ERROR(msg)	_nsyyfatal(msg)
 
 %}
 
@@ -98,6 +103,15 @@ _nsyywrap(void)
 {
 	return 1;
 } /* _nsyywrap */
+
+void
+_nsyyfatal(const char *msg)
+{
+	extern jmp_buf _nsyyfatal_jump;
+
+	syslog(LOG_ERR, "libc nsdispatch: %s: %s", _PATH_NS_CONF, msg);
+	longjmp(_nsyyfatal_jump, 1);
+} /* _nsyyfatal */
 
 void
 _nsyyerror(const char *msg)

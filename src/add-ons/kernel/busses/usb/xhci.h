@@ -98,6 +98,8 @@ public:
 	virtual	const char *		TypeName() const { return "xhci"; }
 
 			status_t			Start();
+			status_t			Suspend();
+			status_t			Resume();
 	virtual	status_t			SubmitTransfer(Transfer *transfer);
 			status_t			SubmitControlRequest(Transfer *transfer);
 			status_t			SubmitNormalRequest(Transfer *transfer);
@@ -128,6 +130,7 @@ private:
 			// Controller resets
 			status_t			ControllerReset();
 			status_t			ControllerHalt();
+			void				_SetInterruptModeration();
 
 			// Interrupt functions
 	static	int32				InterruptHandler(void *data);
@@ -248,6 +251,10 @@ private:
 
 			area_id				fDcbaArea;
 			struct xhci_device_context_array * fDcba;
+			phys_addr_t			fDcbaPhysical;
+			phys_addr_t			fErstPhysical;
+			phys_addr_t			fCmdRingPhysical;
+			bool				fPortsDisconnected;
 
 			spinlock			fSpinlock;
 

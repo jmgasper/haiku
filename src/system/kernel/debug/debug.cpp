@@ -1640,6 +1640,32 @@ check_pending_repeats(void* /*data*/, int /*iteration*/)
 }
 
 
+/*!	Locks the output spinlock without the deadlock detection of
+	acquire_spinlock(): with on-screen debug output, printing is slow enough
+	that many CPUs printing at the same time (for example while the
+	application processors initialize on machines with dozens of CPUs) can
+	legitimately wait longer than that detection allows.
+*/
+class DebugOutputSpinLocker {
+public:
+	DebugOutputSpinLocker()
+	{
+		fState = disable_interrupts();
+		while (!try_acquire_spinlock(&sSpinlock))
+			cpu_pause();
+	}
+
+	~DebugOutputSpinLocker()
+	{
+		release_spinlock(&sSpinlock);
+		restore_interrupts(fState);
+	}
+
+private:
+	cpu_status fState;
+};
+
+
 static void
 dprintf_args(const char* format, va_list args, bool notifySyslog)
 {
@@ -1650,10 +1676,10 @@ dprintf_args(const char* format, va_list args, bool notifySyslog)
 			args);
 		length = std::min(length, (int32)OUTPUT_BUFFER_SIZE - 1);
 
-		InterruptsSpinLocker _(sSpinlock);
+		DebugOutputSpinLocker _;
 		debug_output(sOutputBuffer, length, notifySyslog);
 	} else {
-		InterruptsSpinLocker _(sSpinlock);
+		DebugOutputSpinLocker _;
 
 		int32 length = vsnprintf(sInterruptOutputBuffer, OUTPUT_BUFFER_SIZE,
 			format, args);

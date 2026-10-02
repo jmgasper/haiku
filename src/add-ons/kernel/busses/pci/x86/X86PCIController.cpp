@@ -134,6 +134,13 @@ X86PCIController::UninitDriver()
 
 
 status_t
+X86PCIController::GetRootBus(uint32 index, uint8& bus)
+{
+	return B_BAD_INDEX;
+}
+
+
+status_t
 X86PCIController::ReadIrq(uint8 bus, uint8 device, uint8 function,
 	uint8 pin, uint8& irq)
 {
@@ -337,6 +344,46 @@ X86PCIControllerMeth2::GetMaxBusDevices(int32& count)
 // #pragma mark - X86PCIControllerMethPcie
 
 
+void
+X86PCIControllerMethPcie::_ReadAdditionalHostBridge(device_node* node)
+{
+	acpi_device_module_info* acpiDeviceModule;
+	acpi_device acpiDevice;
+	if (gDeviceManager->get_driver(node, (driver_module_info**)&acpiDeviceModule,
+			(void**)&acpiDevice) != B_OK) {
+		return;
+	}
+
+	Vector<uint8>& rootBuses = fECAMPCIController.fRootBusNumbers;
+	Vector<pci_resource_range>& ranges = fECAMPCIController.fResourceRanges;
+	int32 rootBusCount = rootBuses.Count();
+	int32 rangeCount = ranges.Count();
+	acpiDeviceModule->walk_resources(acpiDevice, (char*)"_CRS",
+		ECAMPCIControllerACPI::AcpiCrsScanCallback, &fECAMPCIController);
+
+	// Only accept bridges that decode a root bus not seen before, so that
+	// the windows of a bridge are never added twice.
+	bool isNew = false;
+	for (int32 i = rootBusCount; i < rootBuses.Count(); i++) {
+		bool known = false;
+		for (int32 j = 0; j < rootBusCount; j++)
+			known |= rootBuses[j] == rootBuses[i];
+		isNew |= !known;
+	}
+
+	if (!isNew) {
+		while (rootBuses.Count() > rootBusCount)
+			rootBuses.PopBack();
+		while (ranges.Count() > rangeCount)
+			ranges.PopBack();
+		return;
+	}
+
+	for (int32 i = rootBusCount; i < rootBuses.Count(); i++)
+		dprintf("PCI: additional host bridge with root bus %u\n", rootBuses[i]);
+}
+
+
 status_t
 X86PCIControllerMethPcie::InitDriverInt(device_node* node)
 {
@@ -346,8 +393,8 @@ X86PCIControllerMethPcie::InitDriverInt(device_node* node)
 
 	// search ACPI
 	device_node *acpiNode = NULL;
+	device_node* deviceRoot = gDeviceManager->get_root_node();
 	{
-		device_node* deviceRoot = gDeviceManager->get_root_node();
 		device_attr acpiAttrs[] = {
 			{ B_DEVICE_BUS, B_STRING_TYPE, { .string = "acpi" }},
 			{ ACPI_DEVICE_HID_ITEM, B_STRING_TYPE, { .string = "PNP0A08" }},
@@ -358,6 +405,28 @@ X86PCIControllerMethPcie::InitDriverInt(device_node* node)
 	}
 
 	status = fECAMPCIController.ReadResourceInfo(acpiNode);
+	if (status == B_OK) {
+		// Processors with several dies (such as AMD Threadripper) expose
+		// one host bridge per die within the same PCI segment. Collect the
+		// windows and root bus numbers of the additional bridges.
+		if (fECAMPCIController.fRootBusNumbers.IsEmpty())
+			fECAMPCIController.fRootBusNumbers.Add(fECAMPCIController.fStartBusNumber);
+
+		static const char* const kHostBridgeHIDs[] = {"PNP0A08", "PNP0A03"};
+		for (const char* hid : kHostBridgeHIDs) {
+			device_attr attrs[] = {
+				{ B_DEVICE_BUS, B_STRING_TYPE, { .string = "acpi" }},
+				{ ACPI_DEVICE_HID_ITEM, B_STRING_TYPE, { .string = hid }},
+				{ NULL }
+			};
+			device_node* node = NULL;
+			while (gDeviceManager->find_child_node(deviceRoot, attrs, &node) == B_OK) {
+				if (node == acpiNode)
+					continue;
+				_ReadAdditionalHostBridge(node);
+			}
+		}
+	}
 
 	for (int i = 0;; i++) {
 		pci_resource_range resource;
@@ -421,5 +490,16 @@ X86PCIControllerMethPcie::GetRange(uint32 index, pci_resource_range* range)
 		return B_BAD_INDEX;
 
 	*range = fResourceRanges[index];
+	return B_OK;
+}
+
+
+status_t
+X86PCIControllerMethPcie::GetRootBus(uint32 index, uint8& bus)
+{
+	if (index >= (uint32)fECAMPCIController.fRootBusNumbers.Count())
+		return B_BAD_INDEX;
+
+	bus = fECAMPCIController.fRootBusNumbers[index];
 	return B_OK;
 }

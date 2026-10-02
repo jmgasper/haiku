@@ -123,6 +123,22 @@ pci_root_std_ops(int32 op, ...)
 }
 
 
+static status_t
+pci_root_suspend(void* cookie, int32 state)
+{
+	gPCI->SaveConfiguration();
+	return B_OK;
+}
+
+
+static status_t
+pci_root_resume(void* cookie)
+{
+	gPCI->RestoreConfiguration();
+	return B_OK;
+}
+
+
 struct pci_root_module_info gPCIRootModule = {
 	{
 		{
@@ -138,6 +154,8 @@ struct pci_root_module_info gPCIRootModule = {
 		pci_root_register_child_devices,
 		NULL,	// rescan devices
 		NULL,	// device removed
+		pci_root_suspend,
+		pci_root_resume,
 	},
 
 	&pci_read_config,

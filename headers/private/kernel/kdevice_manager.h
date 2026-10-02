@@ -24,6 +24,26 @@ status_t device_manager_init_post_modules(struct kernel_args *args);
 
 recursive_lock* device_manager_get_lock();
 
+typedef status_t (*device_manager_power_hook)(void* cookie, bool resume,
+	int32 state);
+
+status_t device_manager_add_power_hook(device_manager_power_hook hook,
+	void* cookie, const char* name);
+void device_manager_set_suspend_verbose(bool verbose);
+void device_manager_suspend_trace(const char* format, ...);
+void device_manager_clear_suspend_trace(void);
+size_t device_manager_get_suspend_trace(char* buffer, size_t size);
+status_t device_manager_remove_power_hook(device_manager_power_hook hook,
+	void* cookie);
+enum {
+	DEVICE_MANAGER_SKIP_POWER_HOOKS	= 0x01,
+	DEVICE_MANAGER_SKIP_DEVICE_TREE	= 0x02,
+		// debugging aids for narrowing down a driver that hangs
+};
+
+status_t device_manager_suspend(int32 state, uint32 flags);
+status_t device_manager_resume(uint32 flags);
+
 #ifdef __cplusplus
 }
 #endif

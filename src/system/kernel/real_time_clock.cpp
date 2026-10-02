@@ -73,6 +73,16 @@ rtc_hw_to_system(void)
 }
 
 
+/*!	Resynchronizes the real time clock with the hardware clock, e.g. after
+	the system time was stopped while sleeping.
+*/
+void
+rtc_resync_from_hardware(void)
+{
+	rtc_hw_to_system();
+}
+
+
 bigtime_t
 rtc_boot_time(void)
 {

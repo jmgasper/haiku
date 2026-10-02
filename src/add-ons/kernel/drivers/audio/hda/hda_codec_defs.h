@@ -72,6 +72,8 @@ enum pin_dev_type {
 #define VID_GET_DIGITAL_CONVERTER_CONTROL	0xf0d00
 #define VID_SET_DIGITAL_CONVERTER_CONTROL1	0x70d00
 #define VID_SET_DIGITAL_CONVERTER_CONTROL2	0x70e00
+// Digital Converter Control 1: the converter passes nothing until DIGEN is set
+#define DIGITAL_CONVERTER_ENABLE			0x01
 #define VID_GET_POWER_STATE					0xf0500
 #define VID_SET_POWER_STATE					0x70500
 #define VID_GET_SDI_SELECT					0xf0400

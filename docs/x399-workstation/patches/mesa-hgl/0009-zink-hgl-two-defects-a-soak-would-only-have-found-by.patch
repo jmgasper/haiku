@@ -1,0 +1,84 @@
+From ec00ad8f8c2ca88dc1ec916e96d1f7a74c3f1b82 Mon Sep 17 00:00:00 2001
+From: jmgasper <jmgasper@gmail.com>
+Date: Fri, 18 Sep 2026 22:53:47 +1000
+Subject: [PATCH 09/14] zink/hgl: two defects a soak would only have found by
+ luck
+
+The application's thread replaces the screen's frame buffer on a mode
+set while the window's thread may be reading it to put the last frame
+back, which is a use after free waiting for someone to change their
+resolution at the wrong moment. The replacement now happens with the
+lock held; finding it unchanged, which is every frame but the first and
+the ones after a mode set, still takes no lock.
+
+The frame is copied into the screen with no conversion, but nothing
+checked that the two agree on what a pixel is.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ src/gallium/drivers/zink/zink_screen.c        | 26 +++++++++++++++++++
+ .../targets/haiku-zink/ZinkRenderer.cpp       |  5 ++++
+ 2 files changed, 31 insertions(+)
+
+diff --git a/src/gallium/drivers/zink/zink_screen.c b/src/gallium/drivers/zink/zink_screen.c
+index ad63d04..01085cb 100644
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -1498,15 +1498,41 @@ present_into_host_memory(struct zink_screen *screen, struct zink_context *ctx,
+ 
+ 
+ #ifdef __HAIKU__
++static bool acquire_scanout_locked(struct zink_screen *screen,
++                                   const struct hgl_scanout_target *target);
++
+ // Take hold of the screen's frame buffer, which the graphics driver publishes
+ // and shares. It is video memory, so a frame copied there does not cross the
+ // bus at all - a 1920x1080 frame costs about a millisecond instead of three.
++//
++// This runs on the application's thread while the window's thread may be
++// putting the last frame back through the same buffer, so the buffer is only
++// ever replaced with the lock held. Finding it unchanged, which is every frame
++// but the first and the ones after a mode set, takes no lock at all.
+ static bool
+ acquire_scanout(struct zink_screen *screen,
+                 const struct hgl_scanout_target *target)
+ {
+    const uint32_t bytes_per_row = target->bytes_per_row;
+ 
++   /* The common case: the buffer we hold is still the one on screen. */
++   if (screen->scanout.buffer != VK_NULL_HANDLE &&
++       screen->scanout.bits == target->bits &&
++       screen->scanout.row_pitch == bytes_per_row)
++      return true;
++
++   simple_mtx_lock(&screen->scanout.represent_lock);
++   const bool ok = acquire_scanout_locked(screen, target);
++   simple_mtx_unlock(&screen->scanout.represent_lock);
++   return ok;
++}
++
++static bool
++acquire_scanout_locked(struct zink_screen *screen,
++                       const struct hgl_scanout_target *target)
++{
++   const uint32_t bytes_per_row = target->bytes_per_row;
++
+    if (screen->scanout.buffer != VK_NULL_HANDLE) {
+       if (screen->scanout.bits == target->bits &&
+           screen->scanout.row_pitch == bytes_per_row)
+diff --git a/src/gallium/targets/haiku-zink/ZinkRenderer.cpp b/src/gallium/targets/haiku-zink/ZinkRenderer.cpp
+index 4e00fe5..1c6631d 100644
+--- a/src/gallium/targets/haiku-zink/ZinkRenderer.cpp
++++ b/src/gallium/targets/haiku-zink/ZinkRenderer.cpp
+@@ -234,6 +234,11 @@ ZinkRenderer::ScanoutTarget(struct hgl_scanout_target *target)
+ 		return false;
+ 	}
+ 
++	// The frame is copied into the screen a pixel at a time with no conversion,
++	// so the two have to agree on what a pixel is.
++	if (fInfo->pixel_format != B_RGB32 && fInfo->pixel_format != B_RGBA32)
++		return false;
++
+ 	target->origin_x = fInfo->window_bounds.left;
+ 	target->origin_y = fInfo->window_bounds.top;
+ 	target->bits = fInfo->bits;

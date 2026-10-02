@@ -17,6 +17,7 @@
 #include <Locker.h>
 #include <Path.h>
 #include <PathFinder.h>
+#include <String.h>
 #include <StringList.h>
 
 #include <image_private.h>
@@ -66,6 +67,17 @@ UserlandFSServer::~UserlandFSServer()
 status_t
 UserlandFSServer::Init(const char* fileSystem, port_id port)
 {
+	// The name of the file system may be followed by the name of an instance
+	// ("smbfs:music"). The kernel add-on starts a server per name, so this
+	// is how a file system that can do with one volume only, as the FUSE ones,
+	// gets mounted more than once. The add-on is the same for all of them.
+	BString addOnName(fileSystem);
+	int32 instanceSeparator = addOnName.FindFirst(':');
+	if (instanceSeparator >= 0)
+		addOnName.Truncate(instanceSeparator);
+	if (addOnName.IsEmpty())
+		RETURN_ERROR(B_BAD_VALUE);
+
 	// get the add-on path
 	BPathFinder pathFinder;
 	BStringList paths;
@@ -80,7 +92,7 @@ UserlandFSServer::Init(const char* fileSystem, port_id port)
 		if (error != B_OK)
 			RETURN_ERROR(error);
 
-		error = addOnPath.Append(fileSystem);
+		error = addOnPath.Append(addOnName.String());
 		if (error != B_OK)
 			RETURN_ERROR(error);
 
@@ -111,7 +123,8 @@ UserlandFSServer::Init(const char* fileSystem, port_id port)
 		RETURN_ERROR(error);
 
 	// create the FileSystem interface
-	error = createFSFunction.function(fileSystem, fAddOnImage, &fFileSystem);
+	error = createFSFunction.function(addOnName.String(), fAddOnImage,
+		&fFileSystem);
 	if (error != B_OK)
 		RETURN_ERROR(error);
 

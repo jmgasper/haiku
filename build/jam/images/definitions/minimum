@@ -8,6 +8,7 @@ SYSTEM_BIN = [ FFilterByBuildFeatures
 	beep
 	bfsinfo
 	bt_firmware
+	bt_le
 	catattr
 	checkfs
 	checkitout
