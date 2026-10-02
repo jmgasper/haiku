@@ -30,7 +30,9 @@ BMutablePartition::UninitializeContents()
 	SetContentName(NULL);
 	SetContentParameters(NULL);
 	SetContentSize(0);
-	SetBlockSize(Parent()->BlockSize());
+	// a disk device has no parent and keeps its own block size
+	if (Parent() != NULL)
+		SetBlockSize(Parent()->BlockSize());
 	SetContentType(NULL);
 	SetStatus(B_PARTITION_UNINITIALIZED);
 	ClearFlags(B_PARTITION_FILE_SYSTEM | B_PARTITION_PARTITIONING_SYSTEM);
