@@ -621,6 +621,7 @@ fillFrame(NvdecH264 *decoder, const FrameStore *store, NvdecFrame *frame)
 	frame->pitch = decoder->pitch;
 	frame->luma = luma;
 	frame->chroma = chroma;
+	frame->bitDepth = 8;
 	frame->pictureOrder = store->poc;
 	frame->time = store->time;
 }

@@ -1,9 +1,15 @@
-/* H.264 on the graphics card, offered to every program that plays video.
+/* H.264 and H.265 on the graphics card.
  *
  * Haiku picks one decoder for a format, by add-on directory, so this one takes
  * H.264 away from libavcodec wherever it is installed. It decodes what the
  * card's engine can - eight bit 4:2:0, progressive - and refuses the rest
  * rather than producing a wrong picture.
+ *
+ * H.265 is not offered to the media kit, because a stream this cannot decode
+ * would then not play at all: a program that wants it - one that falls back
+ * to software on its own - instantiates the decoder and sets it up with an
+ * H.265 format. Main and Main 10 are decoded. Ten-bit pictures can be had as
+ * they are, as NVDEC_COLOR_SPACE_P010.
  */
 #ifndef NVDEC_PLUGIN_H
 #define NVDEC_PLUGIN_H
@@ -13,7 +19,13 @@
 extern "C" {
 #include "nvdec_convert.h"
 #include "nvdec_h264.h"
+#include "nvdec_hevc.h"
 }
+
+/* Not one of Haiku's: a plane of sixteen-bit luma samples with the value in
+ * the top bits, then one of Cb and Cr in pairs with half as many lines, both
+ * bytes_per_row bytes a line. Only given to a caller that asks for it. */
+#define NVDEC_COLOR_SPACE_P010	((color_space)0x50303130)	/* 'P010' */
 
 
 class NVDecDecoder : public Decoder {
@@ -37,8 +49,17 @@ private:
 			void				_Deliver(const NvdecFrame& frame, void* buffer,
 									media_header* mediaHeader, bool convert = true);
 
+			bool				_DecodeUnit(const uint8* data, size_t size,
+									bigtime_t time);
+			bool				_NextFrame(NvdecFrame* frame);
+			void				_ReleaseFrame(const NvdecFrame& frame);
+			void				_DrainAll();
+			const char*			_LastError();
+
 			NvdecEngine*		fEngine;
+			bool				fHevc;
 			NvdecH264*			fDecoder;
+			NvdecHevc*			fHevcDecoder;
 			char				fReason[256];
 
 			/* A chunk from an MPEG-4 file is a run of length-prefixed units
@@ -61,6 +82,7 @@ private:
 			bigtime_t			fLastTime;
 			int64				fFrameNumber;
 			NvdecColorRange		fRange;
+			int					fBitDepth;
 };
 
 

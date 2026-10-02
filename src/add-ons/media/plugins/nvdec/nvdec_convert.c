@@ -23,6 +23,30 @@ clamp(int value)
 	return (uint8_t)(value < 0 ? 0 : (value > 255 ? 255 : value));
 }
 
+/* One line of a plane, `count` samples from column `x`, as eight bit samples.
+ * Sixteen bytes are consecutive in the card's arrangement, so a line is
+ * gathered in runs of that many: sixteen samples, or eight of the sixteen-bit
+ * ones, of which the top byte is kept. */
+static inline void
+gatherLine(const NvdecFrame *frame, const uint8_t *plane, int x, int y,
+	int count, uint8_t *out)
+{
+	if (frame->bitDepth <= 8) {
+		for (int i = 0; i < count; i += 16) {
+			int run = (count - i) < 16 ? (count - i) : 16;
+			memcpy(out + i, plane + nvdecTileOffset(x + i, y, frame->pitch), run);
+		}
+		return;
+	}
+	for (int i = 0; i < count; i += 8) {
+		int run = (count - i) < 8 ? (count - i) : 8;
+		const uint8_t *from = plane
+			+ nvdecTileOffset((x + i) * 2, y, frame->pitch);
+		for (int k = 0; k < run; k++)
+			out[i + k] = from[2 * k + 1];
+	}
+}
+
 void
 nvdecFrameToRGB32(const NvdecFrame *frame, uint8_t *out, size_t outPitch,
 	int fromLine, int toLine, NvdecColorRange range)
@@ -39,18 +63,8 @@ nvdecFrameToRGB32(const NvdecFrame *frame, uint8_t *out, size_t outPitch,
 	if (width > NVDEC_MAX_WIDTH)
 		return;
 	for (int y = fromLine; y < toLine; y++) {
-		/* Sixteen columns are consecutive bytes in the card's arrangement,
-		 * so gather a line of luma and a line of chroma in those runs. */
-		for (int x = 0; x < width; x += 16) {
-			int count = (width - x) < 16 ? (width - x) : 16;
-			memcpy(luma + x, frame->luma
-				+ nvdecTileOffset(left + x, top + y, frame->pitch), count);
-		}
-		for (int x = 0; x < width; x += 16) {
-			int count = (width - x) < 16 ? (width - x) : 16;
-			memcpy(chroma + x, frame->chroma
-				+ nvdecTileOffset(left + x, (top + y) / 2, frame->pitch), count);
-		}
+		gatherLine(frame, frame->luma, left, top + y, width, luma);
+		gatherLine(frame, frame->chroma, left, (top + y) / 2, width, chroma);
 		uint8_t *line = out + (size_t)y * outPitch;
 		for (int x = 0; x < width; x++) {
 			int yy = (luma[x] - 16) * c->yMul;
@@ -79,19 +93,55 @@ nvdecFrameToYCbCr422(const NvdecFrame *frame, uint8_t *out, size_t outPitch,
 	if (width > NVDEC_MAX_WIDTH)
 		return;
 	for (int y = fromLine; y < toLine; y++) {
-		for (int x = 0; x < width; x += 16) {
-			int count = (width - x) < 16 ? (width - x) : 16;
-			memcpy(luma + x, frame->luma
-				+ nvdecTileOffset(left + x, top + y, frame->pitch), count);
-			memcpy(chroma + x, frame->chroma
-				+ nvdecTileOffset(left + x, (top + y) / 2, frame->pitch), count);
-		}
+		gatherLine(frame, frame->luma, left, top + y, width, luma);
+		gatherLine(frame, frame->chroma, left, (top + y) / 2, width, chroma);
 		uint8_t *line = out + (size_t)y * outPitch;
 		for (int x = 0; x + 1 < width; x += 2) {
 			line[2 * x + 0] = chroma[x];		/* Cb */
 			line[2 * x + 1] = luma[x];
 			line[2 * x + 2] = chroma[x + 1];	/* Cr */
 			line[2 * x + 3] = luma[x + 1];
+		}
+	}
+}
+
+void
+nvdecFrameToP010(const NvdecFrame *frame, uint8_t *out, size_t outPitch,
+	int fromLine, int toLine)
+{
+	const int width = frame->width;
+	const int left = frame->cropLeft;
+	const int top = frame->cropTop;
+	uint8_t *chromaOut = out + outPitch * (size_t)frame->height;
+	for (int y = fromLine; y < toLine; y++) {
+		uint16_t *line = (uint16_t *)(out + (size_t)y * outPitch);
+		uint16_t *chromaLine = (y & 1) == 0
+			? (uint16_t *)(chromaOut + (size_t)(y / 2) * outPitch) : NULL;
+		if (frame->bitDepth > 8) {
+			/* Already sixteen bits a sample: runs of eight samples are
+			 * consecutive, so this is a copy in the card's order. */
+			for (int x = 0; x < width; x += 8) {
+				int run = (width - x) < 8 ? (width - x) : 8;
+				memcpy(line + x, frame->luma + nvdecTileOffset((left + x) * 2,
+					top + y, frame->pitch), (size_t)run * 2);
+				if (chromaLine != NULL) {
+					memcpy(chromaLine + x, frame->chroma + nvdecTileOffset(
+						(left + x) * 2, (top + y) / 2, frame->pitch),
+						(size_t)run * 2);
+				}
+			}
+			continue;
+		}
+		uint8_t luma[NVDEC_MAX_WIDTH + 32], chroma[NVDEC_MAX_WIDTH + 32];
+		if (width > NVDEC_MAX_WIDTH)
+			return;
+		gatherLine(frame, frame->luma, left, top + y, width, luma);
+		for (int x = 0; x < width; x++)
+			line[x] = (uint16_t)(luma[x] << 8);
+		if (chromaLine != NULL) {
+			gatherLine(frame, frame->chroma, left, (top + y) / 2, width, chroma);
+			for (int x = 0; x < width; x++)
+				chromaLine[x] = (uint16_t)(chroma[x] << 8);
 		}
 	}
 }
@@ -103,7 +153,7 @@ typedef struct {
 	uint8_t			*out;
 	size_t			outPitch;
 	NvdecColorRange		range;
-	bool			toRGB;
+	int			kind;		/* 0 YCbCr422, 1 RGB32, 2 P010 */
 	int			bands;
 	int32			next;
 } Work;
@@ -121,9 +171,11 @@ convertBand(void *data)
 		int to = (int)((int64)height * (band + 1) / work->bands) & ~1;
 		if (band == work->bands - 1)
 			to = height;
-		if (work->toRGB) {
+		if (work->kind == 1) {
 			nvdecFrameToRGB32(work->frame, work->out, work->outPitch,
 				from, to, work->range);
+		} else if (work->kind == 2) {
+			nvdecFrameToP010(work->frame, work->out, work->outPitch, from, to);
 		} else {
 			nvdecFrameToYCbCr422(work->frame, work->out, work->outPitch, from, to);
 		}
@@ -133,7 +185,7 @@ convertBand(void *data)
 
 static void
 convertThreaded(const NvdecFrame *frame, uint8_t *out, size_t outPitch,
-	NvdecColorRange range, bool toRGB)
+	NvdecColorRange range, int kind)
 {
 	system_info info;
 	get_system_info(&info);
@@ -148,7 +200,7 @@ convertThreaded(const NvdecFrame *frame, uint8_t *out, size_t outPitch,
 		.out = out,
 		.outPitch = outPitch,
 		.range = range,
-		.toRGB = toRGB,
+		.kind = kind,
 		.bands = threads * 2,
 		.next = 0,
 	};
@@ -173,11 +225,17 @@ void
 nvdecFrameToRGB32Threaded(const NvdecFrame *frame, uint8_t *out, size_t outPitch,
 	NvdecColorRange range)
 {
-	convertThreaded(frame, out, outPitch, range, true);
+	convertThreaded(frame, out, outPitch, range, 1);
 }
 
 void
 nvdecFrameToYCbCr422Threaded(const NvdecFrame *frame, uint8_t *out, size_t outPitch)
 {
-	convertThreaded(frame, out, outPitch, NVDEC_RANGE_BT601, false);
+	convertThreaded(frame, out, outPitch, NVDEC_RANGE_BT601, 0);
+}
+
+void
+nvdecFrameToP010Threaded(const NvdecFrame *frame, uint8_t *out, size_t outPitch)
+{
+	convertThreaded(frame, out, outPitch, NVDEC_RANGE_BT601, 2);
 }

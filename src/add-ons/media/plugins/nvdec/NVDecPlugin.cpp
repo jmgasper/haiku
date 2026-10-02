@@ -11,14 +11,22 @@
 /* libavcodec's number for H.264. The reader describes every encoded stream
  * with it, so this is how a format is recognised without linking to it. */
 #define CODEC_ID_H264	27
+#define CODEC_ID_HEVC	173
 
 #define ACCESS_UNIT_START	(1 << 20)
+
+/* NVDEC_TIMING=1: say every sixty pictures where the time went. */
+static bool sTiming = getenv("NVDEC_TIMING") != NULL;
+static bigtime_t sEngineTime, sConvertTime, sChunkTime;
+static int sTimedUnits, sTimedFrames;
 
 
 NVDecDecoder::NVDecDecoder()
 	:
 	fEngine(NULL),
+	fHevc(false),
 	fDecoder(NULL),
+	fHevcDecoder(NULL),
 	fLengthSize(0),
 	fAccessUnit(NULL),
 	fAccessUnitSize(0),
@@ -33,7 +41,8 @@ NVDecDecoder::NVDecDecoder()
 	fFrameTime(0),
 	fLastTime(0),
 	fFrameNumber(0),
-	fRange(NVDEC_RANGE_BT709)
+	fRange(NVDEC_RANGE_BT709),
+	fBitDepth(8)
 {
 }
 
@@ -42,6 +51,8 @@ NVDecDecoder::~NVDecDecoder()
 {
 	if (fDecoder != NULL)
 		nvdecH264Destroy(fDecoder);
+	if (fHevcDecoder != NULL)
+		nvdecHevcDestroy(fHevcDecoder);
 	if (fEngine != NULL)
 		nvdecClose(fEngine);
 	free(fAccessUnit);
@@ -52,6 +63,12 @@ NVDecDecoder::~NVDecDecoder()
 void
 NVDecDecoder::GetCodecInfo(media_codec_info* info)
 {
+	if (fHevc) {
+		strlcpy(info->short_name, "nvdec hevc", sizeof(info->short_name));
+		strlcpy(info->pretty_name, "H.265 on the graphics card (NVDEC)",
+			sizeof(info->pretty_name));
+		return;
+	}
 	strlcpy(info->short_name, "nvdec h264", sizeof(info->short_name));
 	strlcpy(info->pretty_name, "H.264 on the graphics card (NVDEC)",
 		sizeof(info->pretty_name));
@@ -66,6 +83,49 @@ NVDecDecoder::_ReadParameterSets(const uint8* data, size_t size)
 {
 	if (size == 0)
 		return B_OK;
+
+	if (fHevc) {
+		if (data[0] != 1 || size < 23) {
+			fLengthSize = 0;
+			fParameterSets = (uint8*)malloc(size);
+			if (fParameterSets == NULL)
+				return B_NO_MEMORY;
+			memcpy(fParameterSets, data, size);
+			fParameterSetsSize = size;
+			return B_OK;
+		}
+		/* An HEVCDecoderConfigurationRecord: 22 bytes of header, then
+		 * arrays of NAL units by type. */
+		fBitDepth = (data[19] & 7) + 8;
+		fLengthSize = (data[21] & 3) + 1;
+		size_t capacity = size * 2 + 64;
+		fParameterSets = (uint8*)malloc(capacity);
+		if (fParameterSets == NULL)
+			return B_NO_MEMORY;
+		fParameterSetsSize = 0;
+		int arrays = data[22];
+		size_t at = 23;
+		for (int a = 0; a < arrays && at + 3 <= size; a++) {
+			int count = (data[at + 1] << 8) | data[at + 2];
+			at += 3;
+			for (int i = 0; i < count && at + 2 <= size; i++) {
+				size_t length = ((size_t)data[at] << 8) | data[at + 1];
+				at += 2;
+				if (at + length > size
+					|| fParameterSetsSize + length + 4 > capacity) {
+					return B_OK;
+				}
+				fParameterSets[fParameterSetsSize++] = 0;
+				fParameterSets[fParameterSetsSize++] = 0;
+				fParameterSets[fParameterSetsSize++] = 0;
+				fParameterSets[fParameterSetsSize++] = 1;
+				memcpy(fParameterSets + fParameterSetsSize, data + at, length);
+				fParameterSetsSize += length;
+				at += length;
+			}
+		}
+		return B_OK;
+	}
 
 	if (data[0] != 1 || size < 7) {
 		/* Already a piece of stream with start codes. */
@@ -120,7 +180,9 @@ NVDecDecoder::Setup(media_format* ioEncodedFormat, const void* infoBuffer,
 			&description) != B_OK) {
 		return B_ERROR;
 	}
-	if (description.u.misc.codec != CODEC_ID_H264)
+	if (description.u.misc.codec == CODEC_ID_HEVC)
+		fHevc = true;
+	else if (description.u.misc.codec != CODEC_ID_H264)
 		return B_ERROR;
 
 	fReason[0] = '\0';
@@ -129,8 +191,11 @@ NVDecDecoder::Setup(media_format* ioEncodedFormat, const void* infoBuffer,
 		fprintf(stderr, "nvdec: the card's decoder is not available: %s\n", fReason);
 		return B_ERROR;
 	}
-	fDecoder = nvdecH264Create(fEngine, fReason, sizeof(fReason));
-	if (fDecoder == NULL) {
+	if (fHevc)
+		fHevcDecoder = nvdecHevcCreate(fEngine, fReason, sizeof(fReason));
+	else
+		fDecoder = nvdecH264Create(fEngine, fReason, sizeof(fReason));
+	if (fDecoder == NULL && fHevcDecoder == NULL) {
 		nvdecClose(fEngine);
 		fEngine = NULL;
 		return B_NO_MEMORY;
@@ -171,6 +236,8 @@ NVDecDecoder::NegotiateOutputFormat(media_format* ioDecodedFormat)
 	uint32 wanted = ioDecodedFormat->u.raw_video.display.format;
 	if (wanted == B_YCbCr422)
 		fColorSpace = B_YCbCr422;
+	else if (wanted == (uint32)NVDEC_COLOR_SPACE_P010 && fHevc)
+		fColorSpace = NVDEC_COLOR_SPACE_P010;
 	else
 		fColorSpace = B_RGB32;
 
@@ -178,7 +245,7 @@ NVDecDecoder::NegotiateOutputFormat(media_format* ioDecodedFormat)
 	format.u.raw_video.display.line_width = fWidth;
 	format.u.raw_video.display.line_count = fHeight;
 	format.u.raw_video.last_active = fHeight - 1;
-	fRowBytes = (size_t)fWidth * (fColorSpace == B_YCbCr422 ? 2 : 4);
+	fRowBytes = (size_t)fWidth * (fColorSpace == B_RGB32 ? 4 : 2);
 	format.u.raw_video.display.bytes_per_row = fRowBytes;
 
 	*ioDecodedFormat = format;
@@ -191,6 +258,8 @@ NVDecDecoder::SeekedTo(int64 frame, bigtime_t time)
 {
 	if (fDecoder != NULL)
 		nvdecH264Reset(fDecoder);
+	if (fHevcDecoder != NULL)
+		nvdecHevcReset(fHevcDecoder);
 	fAccessUnitUsed = 0;
 	fSentParameterSets = false;
 	fFrameNumber = frame;
@@ -250,18 +319,32 @@ NVDecDecoder::_Deliver(const NvdecFrame& frame, void* buffer,
 	if (fitted.height > fHeight)
 		fitted.height = fHeight;
 	const NvdecFrame& frameRef = fitted;
+	bigtime_t convertStart = system_time();
 	if (!convert)
 		;
 	else if (fColorSpace == B_YCbCr422)
 		nvdecFrameToYCbCr422Threaded(&frameRef, (uint8*)buffer, fRowBytes);
+	else if (fColorSpace == NVDEC_COLOR_SPACE_P010)
+		nvdecFrameToP010Threaded(&frameRef, (uint8*)buffer, fRowBytes);
 	else
 		nvdecFrameToRGB32Threaded(&frameRef, (uint8*)buffer, fRowBytes, fRange);
 
+	sConvertTime += system_time() - convertStart;
+	if (sTiming && ++sTimedFrames % 60 == 0) {
+		fprintf(stderr, "nvdec: %d units %.1f ms each in the engine, %d "
+			"pictures %.1f ms each converting, %.1f ms each waiting for "
+			"chunks\n", sTimedUnits, sEngineTime / 1000.0 / sTimedUnits,
+			sTimedFrames, sConvertTime / 1000.0 / sTimedFrames,
+			sChunkTime / 1000.0 / sTimedUnits);
+		sEngineTime = sConvertTime = sChunkTime = 0;
+		sTimedUnits = sTimedFrames = 0;
+	}
 	mediaHeader->type = B_MEDIA_RAW_VIDEO;
 	mediaHeader->start_time = frame.time != 0 ? frame.time : fLastTime;
 	mediaHeader->file_pos = 0;
 	mediaHeader->orig_size = 0;
-	mediaHeader->size_used = fRowBytes * fHeight;
+	mediaHeader->size_used = fRowBytes * fHeight
+		* (fColorSpace == NVDEC_COLOR_SPACE_P010 ? 3 : 2) / 2;
 	mediaHeader->u.raw_video.display_line_width = fWidth;
 	mediaHeader->u.raw_video.display_line_count = fHeight;
 	mediaHeader->u.raw_video.bytes_per_row = fRowBytes;
@@ -273,15 +356,65 @@ NVDecDecoder::_Deliver(const NvdecFrame& frame, void* buffer,
 }
 
 
+bool
+NVDecDecoder::_DecodeUnit(const uint8* data, size_t size, bigtime_t time)
+{
+	bigtime_t at = system_time();
+	bool result = fHevc ? nvdecHevcDecode(fHevcDecoder, data, size, time)
+		: nvdecH264Decode(fDecoder, data, size, time);
+	sEngineTime += system_time() - at;
+	sTimedUnits++;
+	return result;
+}
+
+
+bool
+NVDecDecoder::_NextFrame(NvdecFrame* frame)
+{
+	if (fHevc)
+		return nvdecHevcNextFrame(fHevcDecoder, frame);
+	return nvdecH264NextFrame(fDecoder, frame);
+}
+
+
+void
+NVDecDecoder::_ReleaseFrame(const NvdecFrame& frame)
+{
+	if (fHevc)
+		nvdecHevcReleaseFrame(fHevcDecoder, &frame);
+	else
+		nvdecH264ReleaseFrame(fDecoder, &frame);
+}
+
+
+void
+NVDecDecoder::_DrainAll()
+{
+	if (fHevc)
+		nvdecHevcDrainAll(fHevcDecoder);
+	else
+		nvdecH264DrainAll(fDecoder);
+}
+
+
+const char*
+NVDecDecoder::_LastError()
+{
+	if (fHevc)
+		return nvdecHevcLastError(fHevcDecoder);
+	return nvdecH264LastError(fDecoder);
+}
+
+
 status_t
 NVDecDecoder::Decode(void* buffer, int64* frameCount, media_header* mediaHeader,
 	media_decode_info* info)
 {
-	if (fDecoder == NULL)
+	if (fDecoder == NULL && fHevcDecoder == NULL)
 		return B_NO_INIT;
 
 	if (!fSentParameterSets && fParameterSetsSize > 0) {
-		nvdecH264Decode(fDecoder, fParameterSets, fParameterSetsSize, 0);
+		_DecodeUnit(fParameterSets, fParameterSetsSize, 0);
 		fSentParameterSets = true;
 	}
 
@@ -293,10 +426,10 @@ NVDecDecoder::Decode(void* buffer, int64* frameCount, media_header* mediaHeader,
 
 	NvdecFrame frame;
 	for (;;) {
-		if (nvdecH264NextFrame(fDecoder, &frame)) {
+		if (_NextFrame(&frame)) {
 			_Deliver(frame, buffer, mediaHeader,
 				skipBefore == 0 || frame.time >= skipBefore);
-			nvdecH264ReleaseFrame(fDecoder, &frame);
+			_ReleaseFrame(frame);
 			*frameCount = 1;
 			fFrameNumber++;
 			return B_OK;
@@ -305,14 +438,16 @@ NVDecDecoder::Decode(void* buffer, int64* frameCount, media_header* mediaHeader,
 		const void* chunk = NULL;
 		size_t chunkSize = 0;
 		media_header chunkHeader;
+		bigtime_t chunkStart = system_time();
 		status_t status = GetNextChunk(&chunk, &chunkSize, &chunkHeader);
+		sChunkTime += system_time() - chunkStart;
 		if (status != B_OK) {
 			/* The file has ended: let go of everything still held. */
-			nvdecH264DrainAll(fDecoder);
-			if (nvdecH264NextFrame(fDecoder, &frame)) {
+			_DrainAll();
+			if (_NextFrame(&frame)) {
 				_Deliver(frame, buffer, mediaHeader,
 					skipBefore == 0 || frame.time >= skipBefore);
-				nvdecH264ReleaseFrame(fDecoder, &frame);
+				_ReleaseFrame(frame);
 				*frameCount = 1;
 				fFrameNumber++;
 				return B_OK;
@@ -325,9 +460,8 @@ NVDecDecoder::Decode(void* buffer, int64* frameCount, media_header* mediaHeader,
 			return B_NO_MEMORY;
 		if (fAccessUnitUsed == 0)
 			continue;
-		if (!nvdecH264Decode(fDecoder, fAccessUnit, fAccessUnitUsed,
-				chunkHeader.start_time)) {
-			fprintf(stderr, "nvdec: %s\n", nvdecH264LastError(fDecoder));
+		if (!_DecodeUnit(fAccessUnit, fAccessUnitUsed, chunkHeader.start_time)) {
+			fprintf(stderr, "nvdec: %s\n", _LastError());
 			/* One bad picture should not end the film. */
 			continue;
 		}
