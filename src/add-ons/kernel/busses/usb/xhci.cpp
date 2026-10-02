@@ -2025,10 +2025,12 @@ XHCI::AllocateDevice(Hub *parent, int8 hubAddress, uint8 hubPort,
 		TRACE("getting the hub descriptor\n");
 		size_t actualLength = 0;
 		usb_hub_descriptor hubDescriptor;
+		const uint8 descriptorType = speed >= USB_SPEED_SUPERSPEED
+			? USB_DESCRIPTOR_SUPERSPEED_HUB : USB_DESCRIPTOR_HUB;
 		status = pipe.SendRequest(
 			USB_REQTYPE_DEVICE_IN | USB_REQTYPE_CLASS,			// type
 			USB_REQUEST_GET_DESCRIPTOR,							// request
-			USB_DESCRIPTOR_HUB << 8,							// value
+			descriptorType << 8,								// value
 			0,													// index
 			sizeof(usb_hub_descriptor),							// length
 			(void *)&hubDescriptor,								// buffer
