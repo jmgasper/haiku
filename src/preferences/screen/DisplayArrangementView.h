@@ -18,6 +18,8 @@ class DisplayLayoutState;
 /*!	Shows the connected displays as they are arranged on the desktop and
 	lets the user drag them around. Changes are reported to the window with
 	kMsgDisplayMoved; clicks with kMsgDisplaySelected.
+	Displays that mirror another are drawn with it, as one display carrying
+	all their numbers; clicking it again selects the next of them.
 */
 class DisplayArrangementView : public BView {
 public:
@@ -49,6 +51,7 @@ private:
 				BRect			frame;
 				bool			enabled;
 				bool			primary;
+				int32			mirrorOf;
 			};
 
 			void				_UpdateScale();
@@ -56,6 +59,8 @@ private:
 			BRect				_EntryRect(int32 index) const;
 			BRect				_NumberRect(int32 index) const;
 			int32				_EntryAt(BPoint where) const;
+			bool				_InGroup(int32 index, int32 id) const;
+			std::vector<int32>	_Group(int32 index) const;
 			BRect				_Snap(const BRect& frame, int32 index) const;
 			void				_DrawEntry(int32 index,
 									const BRect& updateRect);
@@ -72,6 +77,7 @@ private:
 			BPoint				fDragStart;
 			BRect				fDragOriginalFrame;
 			bool				fDragMoved;
+			bool				fCycleOnClick;
 };
 
 

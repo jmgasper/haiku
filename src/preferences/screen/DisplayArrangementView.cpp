@@ -39,7 +39,8 @@ DisplayArrangementView::DisplayArrangementView(const char* name)
 	fScale(1.0f),
 	fOrigin(0, 0),
 	fDragIndex(-1),
-	fDragMoved(false)
+	fDragMoved(false),
+	fCycleOnClick(false)
 {
 	SetViewUIColor(B_PANEL_BACKGROUND_COLOR);
 	SetToolTip(B_TRANSLATE("Drag the displays to arrange them."));
@@ -121,7 +122,13 @@ DisplayArrangementView::SetDisplays(const DisplayLayoutState& state)
 		item.frame = display->frame;
 		item.enabled = display->enabled;
 		item.primary = display->primary;
+		item.mirrorOf = display->enabled ? display->mirrorOf : -1;
 		fEntries.push_back(item);
+	}
+
+	for (size_t i = 0; i < fEntries.size(); i++) {
+		if (_Group((int32)i).size() > 1)
+			fEntries[i].label = B_TRANSLATE("Mirrored");
 	}
 
 	_UpdateScale();
@@ -165,7 +172,7 @@ DisplayArrangementView::Draw(BRect updateRect)
 	StrokeRoundRect(bounds, 4, 4);
 
 	for (int32 i = 0; i < (int32)fEntries.size(); i++) {
-		if (i == fDragIndex)
+		if (i == fDragIndex || fEntries[i].mirrorOf >= 0)
 			continue;
 		_DrawEntry(i, updateRect);
 	}
@@ -181,10 +188,19 @@ DisplayArrangementView::_DrawEntry(int32 index, const BRect& updateRect)
 {
 	const entry& item = fEntries[index];
 	BRect rect = _EntryRect(index);
-	if (!rect.IsValid() || !rect.Intersects(updateRect))
+	std::vector<int32> group = _Group(index);
+	if (group.size() > 1) {
+		// the mirrors, stacked behind
+		rect.right -= 4;
+		rect.bottom -= 4;
+	}
+	BRect area = rect;
+	if (group.size() > 1)
+		area.OffsetBy(4, 4);
+	if (!rect.IsValid() || !(rect | area).Intersects(updateRect))
 		return;
 
-	bool selected = item.id == fSelectedID;
+	bool selected = _InGroup(index, fSelectedID);
 
 	rgb_color background = ui_color(B_PANEL_BACKGROUND_COLOR);
 	rgb_color base = ui_color(B_CONTROL_BACKGROUND_COLOR);
@@ -207,6 +223,14 @@ DisplayArrangementView::_DrawEntry(int32 index, const BRect& updateRect)
 
 	float radius = std::max(3.0f, std::min(rect.Width(), rect.Height())
 		* 0.06f);
+
+	if (group.size() > 1) {
+		BRect behind = area;
+		be_control_look->DrawButtonFrame(this, behind, updateRect, radius,
+			tint_color(base, B_DARKEN_1_TINT), background, flags);
+		be_control_look->DrawButtonBackground(this, behind, updateRect,
+			radius, tint_color(base, B_DARKEN_1_TINT), flags);
+	}
 
 	be_control_look->DrawButtonFrame(this, rect, updateRect, radius, base,
 		background, flags);
@@ -242,9 +266,33 @@ DisplayArrangementView::_DrawEntry(int32 index, const BRect& updateRect)
 	float numberTextHeight = ceilf(numberHeight.ascent
 		+ numberHeight.descent);
 
-	char number[16];
-	snprintf(number, sizeof(number), "%" B_PRId32, item.number);
-	float numberWidth = StringWidth(number);
+	// a mirrored group shows all its numbers, the selected one strongest
+	std::vector<BString> numbers;
+	for (size_t i = 0; i < group.size(); i++) {
+		BString number;
+		number << fEntries[group[i]].number;
+		numbers.push_back(number);
+	}
+	const char* separator = " | ";
+	float numberWidth = 0;
+	for (size_t i = 0; i < numbers.size(); i++) {
+		numberWidth += StringWidth(numbers[i].String());
+		if (i > 0)
+			numberWidth += StringWidth(separator);
+	}
+	if (numberWidth > rect.Width() - 8 && numberWidth > 0) {
+		numberFont.SetSize(std::max(8.0f,
+			floorf(numberFont.Size() * (rect.Width() - 8) / numberWidth)));
+		SetFont(&numberFont);
+		numberFont.GetHeight(&numberHeight);
+		numberTextHeight = ceilf(numberHeight.ascent + numberHeight.descent);
+		numberWidth = 0;
+		for (size_t i = 0; i < numbers.size(); i++) {
+			numberWidth += StringWidth(numbers[i].String());
+			if (i > 0)
+				numberWidth += StringWidth(separator);
+		}
+	}
 
 	// the monitor name, if there is room for it
 	BFont labelFont(be_plain_font);
@@ -264,8 +312,22 @@ DisplayArrangementView::_DrawEntry(int32 index, const BRect& updateRect)
 		+ (showLabel ? labelTextHeight + spacing : 0);
 	float top = rect.top + (rect.Height() - totalHeight) / 2;
 
-	DrawString(number, BPoint(rect.left + (rect.Width() - numberWidth) / 2,
-		top + numberHeight.ascent));
+	BPoint position(rect.left + (rect.Width() - numberWidth) / 2,
+		top + numberHeight.ascent);
+	rgb_color dimmed = mix_color(textColor, base, 110);
+	for (size_t i = 0; i < numbers.size(); i++) {
+		if (i > 0) {
+			SetHighColor(dimmed);
+			DrawString(separator, position);
+			position.x += StringWidth(separator);
+		}
+		bool strong = group.size() == 1
+			|| fEntries[group[i]].id == fSelectedID;
+		SetHighColor(strong ? textColor : dimmed);
+		DrawString(numbers[i].String(), position);
+		position.x += StringWidth(numbers[i].String());
+	}
+	SetHighColor(textColor);
 
 	if (showLabel) {
 		SetFont(&labelFont);
@@ -289,7 +351,9 @@ DisplayArrangementView::MouseDown(BPoint where)
 	if (index < 0)
 		return;
 
-	if (fEntries[index].id != fSelectedID) {
+	bool groupSelected = _InGroup(index, fSelectedID);
+	fCycleOnClick = groupSelected && _Group(index).size() > 1;
+	if (!groupSelected) {
 		fSelectedID = fEntries[index].id;
 		Invalidate();
 
@@ -350,6 +414,18 @@ DisplayArrangementView::MouseUp(BPoint where)
 	} else if (_NumberRect(index).Contains(where)) {
 		// A click on the number badge identifies the displays
 		Window()->PostMessage(kMsgIdentifyDisplays, Window());
+	} else if (fCycleOnClick) {
+		// another click on a mirrored group selects its next display
+		std::vector<int32> group = _Group(index);
+		for (size_t i = 0; i < group.size(); i++) {
+			if (fEntries[group[i]].id != fSelectedID)
+				continue;
+			fSelectedID = fEntries[group[(i + 1) % group.size()]].id;
+			BMessage message(kMsgDisplaySelected);
+			message.AddInt32("id", fSelectedID);
+			Window()->PostMessage(&message, Window());
+			break;
+		}
 	}
 
 	Invalidate();
@@ -417,6 +493,14 @@ DisplayArrangementView::_EntryRect(int32 index) const
 	if (index < 0 || index >= (int32)fEntries.size())
 		return BRect(0, 0, -1, -1);
 
+	// a mirror is where its source is drawn, even while that is dragged
+	if (fEntries[index].mirrorOf >= 0) {
+		for (int32 i = 0; i < (int32)fEntries.size(); i++) {
+			if (fEntries[i].id == fEntries[index].mirrorOf)
+				return _EntryRect(i);
+		}
+	}
+
 	BRect rect = _ViewRect(fEntries[index].frame);
 	// leave a small gap between adjacent displays
 	rect.InsetBy(2, 2);
@@ -443,12 +527,44 @@ DisplayArrangementView::_NumberRect(int32 index) const
 int32
 DisplayArrangementView::_EntryAt(BPoint where) const
 {
-	// the topmost (last drawn) display wins
+	// the topmost (last drawn) display wins; mirrors are drawn with their
+	// source
 	for (int32 i = (int32)fEntries.size() - 1; i >= 0; i--) {
-		if (_EntryRect(i).Contains(where))
+		if (fEntries[i].mirrorOf < 0 && _EntryRect(i).Contains(where))
 			return i;
 	}
 	return -1;
+}
+
+
+/*!	Whether the display \a id is the one at \a index or one of its
+	mirrors.
+*/
+bool
+DisplayArrangementView::_InGroup(int32 index, int32 id) const
+{
+	std::vector<int32> group = _Group(index);
+	for (size_t i = 0; i < group.size(); i++) {
+		if (fEntries[group[i]].id == id)
+			return true;
+	}
+	return false;
+}
+
+
+/*!	The display at \a index followed by the ones that mirror it. */
+std::vector<int32>
+DisplayArrangementView::_Group(int32 index) const
+{
+	std::vector<int32> group;
+	if (index < 0 || index >= (int32)fEntries.size())
+		return group;
+	group.push_back(index);
+	for (int32 i = 0; i < (int32)fEntries.size(); i++) {
+		if (i != index && fEntries[i].mirrorOf == fEntries[index].id)
+			group.push_back(i);
+	}
+	return group;
 }
 
 
@@ -473,7 +589,7 @@ DisplayArrangementView::_Snap(const BRect& frame, int32 index) const
 	float centerY = (frame.top + frame.bottom) / 2;
 
 	for (int32 i = 0; i < (int32)fEntries.size(); i++) {
-		if (i == index || !fEntries[i].enabled)
+		if (i == index || !fEntries[i].enabled || fEntries[i].mirrorOf >= 0)
 			continue;
 
 		const BRect& other = fEntries[i].frame;

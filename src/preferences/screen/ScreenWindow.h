@@ -70,6 +70,7 @@ private:
 									const DisplayLayoutState& state,
 									bool showAlert);
 			void				_IdentifyDisplays();
+			void				_UpdateMirrorBox();
 			void				_LaunchBackgrounds();
 
 	// classic single screen path
@@ -119,6 +120,7 @@ private:
 			BButton*			fIdentifyButton;
 			BButton*			fBackgroundsButton;
 			BCheckBox*			fZoomBox;
+			BCheckBox*			fMirrorBox;
 
 			BStringView*		fTitleView;
 			BStringView*		fSubtitleView;

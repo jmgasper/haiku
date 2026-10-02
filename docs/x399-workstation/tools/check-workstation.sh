@@ -80,7 +80,8 @@ $SSH 'set -u
 	echo "displays"
 	# screenmode -d asks app_server for the monitors it arranges; each line
 	# of the short form is one monitor: number, connector, enabled,
-	# connected, x, y, scale, width, height, refresh, main.
+	# connected, x, y, scale, width, height, refresh, main, and the number
+	# of the monitor it mirrors (0 for none).
 	displays=$(screenmode -d -s 2>/dev/null)
 	count=$(echo "$displays" | grep -c "^[0-9]")
 	[ "$count" -ge 1 ] && say ok "app_server arranges the monitors" \
@@ -92,7 +93,7 @@ $SSH 'set -u
 	# (screenmode -s would print the frame buffer, which is larger when the
 	# desktop is drawn at high density.)
 	desk=$(screenmode -d 2>/dev/null | sed -n "s/^Desktop: \([0-9]*\) x \([0-9]*\).*/\1x\2/p")
-	union=$(echo "$displays" | awk "\$3==1 {r=\$5+int((\$8*100+\$7/2)/\$7); b=\$6+int((\$9*100+\$7/2)/\$7); if (r>w) w=r; if (b>h) h=b} END {print w\"x\"h}")
+	union=$(echo "$displays" | awk "\$3==1 && \$12+0==0 {r=\$5+int((\$8*100+\$7/2)/\$7); b=\$6+int((\$9*100+\$7/2)/\$7); if (r>w) w=r; if (b>h) h=b} END {print w\"x\"h}")
 	[ "$desk" = "$union" ] && say ok "the desktop is the monitors" "$desk" \
 		|| say no "the desktop is the monitors" "desktop $desk, monitors $union"
 
