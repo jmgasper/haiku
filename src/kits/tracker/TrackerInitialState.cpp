@@ -57,6 +57,7 @@ All rights reserved.
 #include "pr_server.h"
 
 #include "Attributes.h"
+#include "Background.h"
 #include "AttributeStream.h"
 #include "BackgroundImage.h"
 #include "Bitmaps.h"
@@ -816,6 +817,10 @@ TTracker::InstallTemporaryBackgroundImages()
 				(BString(path.Path()) << defaultBackgroundImage).String(),
 				BackgroundImage::kScaledToFit, B_ORIGIN, 0xffffffff, true);
 			::InstallTemporaryBackgroundImages(&dir, &message);
+
+			// The Desktop window was set up before this ran; tell it, as
+			// the Backgrounds preferences do.
+			PostMessage(B_RESTORE_BACKGROUND_IMAGE);
 		}
 	}
 }
