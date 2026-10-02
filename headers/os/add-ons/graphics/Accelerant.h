@@ -203,6 +203,13 @@ enum {
 											/* output's frame buffer region */
 											/* to the monitor's resolution */
 	B_DISPLAY_OUTPUT_INTERNAL	= 1 << 3,	/* a built-in panel */
+	B_DISPLAY_OUTPUT_MIRROR		= 1 << 4,	/* the output shows what another */
+											/* one shows: the enabled output */
+											/* without this flag whose region */
+											/* starts at the same place. Its */
+											/* scale fits that region to the */
+											/* monitor; what is left over is */
+											/* black. */
 };
 
 typedef struct {
@@ -233,7 +240,8 @@ typedef struct {
 
 typedef struct {
 	uint32			id;
-	uint32			flags;				/* B_DISPLAY_OUTPUT_ENABLED */
+	uint32			flags;				/* B_DISPLAY_OUTPUT_ENABLED, */
+										/* B_DISPLAY_OUTPUT_MIRROR */
 	int32			x;					/* position, in logical pixels */
 	int32			y;
 	uint16			scale;				/* percent, see display_output */

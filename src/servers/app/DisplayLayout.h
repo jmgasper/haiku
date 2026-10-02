@@ -18,6 +18,10 @@
 class HWInterface;
 
 
+// A display that is not a mirror of another.
+static const uint32 kNotMirrored = ~(uint32)0;
+
+
 // One monitor of the desktop: which connector it is on, what the EDID says
 // about it, and where it sits in the frame buffer. Frames are in frame buffer
 // pixels, which is what every window and the cursor are measured in; a
@@ -47,11 +51,18 @@ struct DisplayInfo {
 	bool			hasEDID;
 	bool			pinned;			// placed by the current request; stays
 									// put when overlaps are resolved
+	uint32			mirrorOf;		// the display this one shows the same
+									// part of the desktop as, or
+									// kNotMirrored. A mirror has its
+									// source's frame; its scale fits that
+									// frame to its own mode.
 
 	bool			IsConnected() const
 						{ return (flags & B_DISPLAY_OUTPUT_CONNECTED) != 0; }
 	bool			IsEnabled() const
 						{ return (flags & B_DISPLAY_OUTPUT_ENABLED) != 0; }
+	bool			IsMirror() const
+						{ return mirrorOf != kNotMirrored; }
 	float			RefreshRate() const;
 	float			NativeRefreshRate() const;
 	float			DPI() const;
@@ -100,6 +111,7 @@ public:
 			BRegion				Region() const;
 			bool				IsEmpty() const { return fDisplays.empty(); }
 			bool				HasScaledDisplay() const;
+			bool				HasMirror() const;
 			uint16				RenderScale() const;
 									// the density everything is drawn at, in
 									// percent: the smallest display scale,
@@ -114,6 +126,11 @@ public:
 	static	bool				IsValidScale(uint16 scale);
 
 private:
+			void				_ResolveMirrors();
+			void				_PlaceMirrors();
+	static	uint16				_MirrorScale(const DisplayInfo& mirror,
+									const DisplayInfo& source);
+	static	uint16				_ScaleStep(uint16 scale);
 			void				_Normalize();
 			void				_Separate();
 			void				_CloseGaps();

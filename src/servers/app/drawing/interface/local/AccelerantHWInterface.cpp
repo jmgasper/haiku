@@ -1378,12 +1378,14 @@ AccelerantHWInterface::SetDisplayLayout(const display_output_config* configs,
 		if (status == B_OK) {
 			// Every output of a layout is drawn at the same density, and
 			// the logical size is the rectangle around the enabled outputs.
+			// A mirror shows its source's part, whatever its own size.
 			uint16 renderScale = 100;
 			int32 right = 0, bottom = 0;
 			for (uint32 i = 0; i < count; i++) {
 				if (configs[i].render_scale > renderScale)
 					renderScale = configs[i].render_scale;
-				if ((configs[i].flags & B_DISPLAY_OUTPUT_ENABLED) == 0)
+				if ((configs[i].flags & B_DISPLAY_OUTPUT_ENABLED) == 0
+					|| (configs[i].flags & B_DISPLAY_OUTPUT_MIRROR) != 0)
 					continue;
 				uint16 scale = configs[i].scale == 0 ? 100 : configs[i].scale;
 				int32 width = (configs[i].timing.h_display * 100 + scale / 2)
