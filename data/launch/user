@@ -62,11 +62,15 @@ target desktop {
 	}
 }
 
+# Both need the user environment as much as the desktop does: without it,
+# ICU may not find its data (as on arm64), leaving the language list empty.
 target first_boot {
+	env /system/boot/SetupEnvironment
 	job x-vnd.Haiku-FirstBootPrompt
 }
 
 target installer {
+	env /system/boot/SetupEnvironment
 	job x-vnd.Haiku-Installer
 }
 
