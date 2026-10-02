@@ -22,7 +22,6 @@ HaikuSubInclude firstbootprompt ;
 HaikuSubInclude fontdemo ;
 HaikuSubInclude glteapot ;
 HaikuSubInclude gradients ;
-HaikuSubInclude haiku3d ;
 HaikuSubInclude haikudepot ;
 HaikuSubInclude icon-o-matic ;
 HaikuSubInclude installer ;

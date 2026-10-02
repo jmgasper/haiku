@@ -71,8 +71,9 @@ rule UserBuildConfigRulePreImage
 	AddFilesToHaikuImage system non-packaged add-ons accelerants : rk3588_display.accelerant ;
 
 	# The eMMC install additionally carries the fork's own OpenGL stack (Haiku
-	# has no arm64 mesa package, so GLTeapot and Haiku3d are filtered out of the
-	# regular image definition), the Mali firmware and the owner's applications.
+	# has no arm64 mesa package, so GLTeapot is filtered out of the regular
+	# image definition), the Mali firmware and the owner's applications.
+	# air/OS dropped the Haiku3d demo.
 	if $(HAIKU_BUILD_PROFILE) = rock5full-mmc {
 		local extras = /mnt/HaikuWork/rock5-image-extras ;
 		local glLibs = <rock5-gl>libEGL_mesa.so.0 <rock5-gl>libEGL.so.1
@@ -114,7 +115,7 @@ rule UserBuildConfigRulePreImage
 
 		# packagefs owns /boot/system, so anything not in a package has to live
 		# under non-packaged to be visible at all. Deskbar lists both.
-		local glDemos = <rock5-gl>GLTeapot <rock5-gl>Haiku3d ;
+		local glDemos = <rock5-gl>GLTeapot ;
 		SEARCH on $(glDemos) = [ FDirName $(extras) apps ] ;
 		AddFilesToHaikuImage system non-packaged demos : $(glDemos) ;
 

@@ -94,7 +94,6 @@ SYSTEM_DEMOS += [ FFilterByBuildFeatures
 	Cortex@expat
 	FontDemo
 	GLTeapot@mesa
-	$(HAIKU_INCLUDE_TRADEMARKS)Haiku3d@mesa
 	Mandelbrot
 	OverlayImage
 	Pairs
@@ -266,7 +265,6 @@ SYSTEM_ADD_ONS_SCREENSAVERS += [ FFilterByBuildFeatures
 	Gravity@mesa
 	Icons
 	IFS
-	Leaves
 	Message
 	Nebula
 	Shelf

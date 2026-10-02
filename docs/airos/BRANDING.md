@@ -35,9 +35,11 @@ or JPEG translator (libpng and libjpeg are not available as arm64 build
 packages), so a PNG logo would not show at all; for the same reason the desktop
 picture is a run-length encoded TGA.
 
-Left as they are: the Haiku3d demo (it is about the HAIKU letters), the Leaves
-screen saver, Haiku's own credits and trademarks in *About this system*, the
-Haiku logo artwork in `data/artwork`, and the `.VolumeIcon.icns` that only
+Removed: the Haiku3d demo (it renders the HAIKU letters) and the Leaves screen
+saver, from the build, the regular image and the ROCK 5 profile's extra demos.
+
+Left as they are: Haiku's own credits and trademarks in *About this system*,
+the Haiku logo artwork in `data/artwork`, and the `.VolumeIcon.icns` that only
 Mac-style boot pickers show.
 
 ## Icon style
