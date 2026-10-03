@@ -17,7 +17,8 @@ unset PKG_CONFIG_PATH
 mkdir -p "$ROOT"
 [ -d "$ROOT/mesa-25.3.6" ] || cp -a "$BASE/mesa-25.3.6" "$ROOT/"
 
-if [ "${1:-}" = configure ] || [ ! -f "$ROOT/build/build.ninja" ]; then
+CONFIGURE=${1:-}
+if [ "$CONFIGURE" = configure ] || [ ! -f "$ROOT/build/build.ninja" ]; then
     rm -rf "$ROOT/build"
     meson setup "$ROOT/build" "$ROOT/mesa-25.3.6" \
         --cross-file="$BASE/haiku-aarch64.ini" --prefix="$ROOT/install" \
@@ -30,14 +31,37 @@ if [ "${1:-}" = configure ] || [ ! -f "$ROOT/build/build.ninja" ]; then
         -Dzlib=disabled -Dxmlconfig=disabled -Dmesa-clc=system \
         -Dprecomp-compiler=system -Dspirv-tools=disabled
 fi
-[ "${1:-}" = configure ] && exit 0
-ninja -C "$ROOT/build" -j"${HAIKU_JOBS:-12}"
+[ "$CONFIGURE" = configure ] || ninja -C "$ROOT/build" -j"${HAIKU_JOBS:-12}"
+
+# The Vulkan driver (v3dv) is a build of its own: libvulkan_broadcom.so.
+# There is no Vulkan loader for arm64 Haiku and no window system layer; a
+# program links the library and starts from vk_icdGetInstanceProcAddr (see
+# vk_probe.c).
+if [ "$CONFIGURE" = configure ] || [ ! -f "$ROOT/build-vk/build.ninja" ]; then
+    rm -rf "$ROOT/build-vk"
+    meson setup "$ROOT/build-vk" "$ROOT/mesa-25.3.6" \
+        --cross-file="$BASE/haiku-aarch64.ini" --prefix="$ROOT/install-vk" \
+        --libdir=lib --buildtype=debugoptimized --wrap-mode=nofallback \
+        -Dplatforms=haiku -Dexpat=disabled '-Dgallium-drivers=[]' \
+        -Dgallium-va=disabled -Dvulkan-drivers=broadcom \
+        -Dshader-cache=disabled -Dgles1=disabled -Dgles2=disabled \
+        -Dopengl=false -Dgbm=disabled -Dglx=disabled -Degl=disabled \
+        -Dglvnd=disabled -Dllvm=disabled -Dvalgrind=disabled \
+        -Dbuild-tests=false '-Dtools=[]' -Dzstd=disabled -Dzlib=disabled \
+        -Dxmlconfig=disabled -Dmesa-clc=system -Dprecomp-compiler=system \
+        -Dspirv-tools=disabled
+fi
+[ "$CONFIGURE" = configure ] && exit 0
+ninja -C "$ROOT/build-vk" -j"${HAIKU_JOBS:-12}"
 
 # What the image build takes (tools/rpi4/UserBuildConfig): the stripped
 # library and the EGL vendor file that names it.
 mkdir -p "$ROOT/stage"
 "$WORK/build/arm64/cross-tools-arm64/bin/aarch64-unknown-haiku-strip" \
     -o "$ROOT/stage/libEGL_mesa.so.0" "$ROOT/build/src/egl/libEGL_mesa.so.0.0.0"
+"$WORK/build/arm64/cross-tools-arm64/bin/aarch64-unknown-haiku-strip" \
+    -o "$ROOT/stage/libvulkan_broadcom.so" \
+    "$ROOT/build-vk/src/broadcom/vulkan/libvulkan_broadcom.so"
 cat > "$ROOT/stage/10_mesa.json" <<'JSON'
 {
   "file_format_version": "1.0.0",

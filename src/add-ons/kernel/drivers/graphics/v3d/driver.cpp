@@ -164,6 +164,13 @@ struct v3d_file {
 	uint32			syncCount;
 };
 
+// A sync object is signalled once the job whose number it holds is done.
+// "Job 0" is always done; a sync object that waits to be given a job or to
+// be signalled by hand holds this instead:
+#define SYNC_UNSIGNALED		UINT64_MAX
+#define SYNC_SIGNALED		1
+#define MAX_OUT_SYNCS		16
+
 
 static device_manager_info* sDeviceManager;
 static rpi_firmware_module_info* sFirmware;
@@ -943,7 +950,7 @@ wait_for_job(v3d_info* info, uint64 seqno, int64 timeout)
 */
 static status_t
 submit_job(v3d_file* file, v3d_job* job, const uint32* handles, uint32 count,
-	uint32 outSync)
+	const uint32* outSyncs, uint32 outSyncCount)
 {
 	v3d_info* info = file->device;
 
@@ -955,11 +962,13 @@ submit_job(v3d_file* file, v3d_job* job, const uint32* handles, uint32 count,
 
 	MutexLocker locker(info->lock);
 
-	if (outSync != 0 && (outSync > file->syncCount
-			|| file->syncs[outSync - 1] == 0)) {
-		free(job->bos);
-		free(job);
-		return B_BAD_VALUE;
+	for (uint32 i = 0; i < outSyncCount; i++) {
+		if (outSyncs[i] == 0 || outSyncs[i] > file->syncCount
+			|| file->syncs[outSyncs[i] - 1] == 0) {
+			free(job->bos);
+			free(job);
+			return B_BAD_VALUE;
+		}
 	}
 
 	for (uint32 i = 0; i < count; i++) {
@@ -980,8 +989,8 @@ submit_job(v3d_file* file, v3d_job* job, const uint32* handles, uint32 count,
 	job->seqno = ++info->submitted;
 	for (uint32 i = 0; i < job->boCount; i++)
 		job->bos[i]->lastJob = job->seqno;
-	if (outSync != 0)
-		file->syncs[outSync - 1] = job->seqno + 1;
+	for (uint32 i = 0; i < outSyncCount; i++)
+		file->syncs[outSyncs[i] - 1] = job->seqno + 1;
 
 	job->next = NULL;
 	if (info->lastJob != NULL)
@@ -992,6 +1001,58 @@ submit_job(v3d_file* file, v3d_job* job, const uint32* handles, uint32 count,
 	locker.Unlock();
 
 	release_sem(info->jobSemaphore);
+	return B_OK;
+}
+
+
+/*!	The sync objects a job signals: the single out_sync of the request, or
+	the list of the multi-sync extension (Vulkan). The extension's in_syncs
+	need no handling: jobs run in the order they were submitted.
+*/
+static status_t
+read_out_syncs(uint32 flags, uint64 extensions, uint32 outSync,
+	uint32* outSyncs, uint32& _count)
+{
+	_count = 0;
+	if ((flags & DRM_V3D_SUBMIT_EXTENSION) == 0) {
+		if (outSync != 0)
+			outSyncs[_count++] = outSync;
+		return B_OK;
+	}
+
+	uint64 address = extensions;
+	for (int32 i = 0; address != 0 && i < 8; i++) {
+		drm_v3d_extension header;
+		if (!IS_USER_ADDRESS(address)
+			|| user_memcpy(&header, (void*)(addr_t)address, sizeof(header))
+				!= B_OK) {
+			return B_BAD_ADDRESS;
+		}
+
+		if (header.id == DRM_V3D_EXT_ID_MULTI_SYNC) {
+			drm_v3d_multi_sync sync;
+			if (user_memcpy(&sync, (void*)(addr_t)address, sizeof(sync))
+					!= B_OK) {
+				return B_BAD_ADDRESS;
+			}
+			if (sync.out_sync_count > MAX_OUT_SYNCS)
+				return B_BAD_VALUE;
+			for (uint32 k = 0; k < sync.out_sync_count; k++) {
+				drm_v3d_sem semaphore;
+				uint64 entry = sync.out_syncs + k * sizeof(drm_v3d_sem);
+				if (!IS_USER_ADDRESS(entry)
+					|| user_memcpy(&semaphore, (void*)(addr_t)entry,
+						sizeof(semaphore)) != B_OK) {
+					return B_BAD_ADDRESS;
+				}
+				outSyncs[_count++] = semaphore.handle;
+			}
+		} else {
+			// CPU jobs and their kin
+			return B_NOT_SUPPORTED;
+		}
+		address = header.next;
+	}
 	return B_OK;
 }
 
@@ -1212,10 +1273,10 @@ get_param(v3d_info* info, drm_v3d_get_param& request)
 		case DRM_V3D_PARAM_SUPPORTS_TFU:
 		case DRM_V3D_PARAM_SUPPORTS_CSD:
 		case DRM_V3D_PARAM_SUPPORTS_CACHE_FLUSH:
+		case DRM_V3D_PARAM_SUPPORTS_MULTISYNC_EXT:
 			request.value = 1;
 			break;
 		case DRM_V3D_PARAM_SUPPORTS_PERFMON:
-		case DRM_V3D_PARAM_SUPPORTS_MULTISYNC_EXT:
 		case DRM_V3D_PARAM_SUPPORTS_CPU_QUEUE:
 		case DRM_V3D_PARAM_MAX_PERF_COUNTERS:
 		case DRM_V3D_PARAM_SUPPORTS_SUPER_PAGES:
@@ -1379,8 +1440,16 @@ v3d_control(void* cookie, uint32 op, void* buffer, size_t length)
 			status_t status = copy_in(job->cl, buffer, length);
 			uint32 count = job->cl.bo_handle_count;
 			if (status == B_OK && (count > V3D_MAX_JOB_BOS
-					|| (job->cl.flags & ~DRM_V3D_SUBMIT_CL_FLUSH_CACHE) != 0)) {
+					|| (job->cl.flags & ~(DRM_V3D_SUBMIT_CL_FLUSH_CACHE
+						| DRM_V3D_SUBMIT_EXTENSION)) != 0)) {
 				status = B_BAD_VALUE;
+			}
+
+			uint32 outSyncs[MAX_OUT_SYNCS];
+			uint32 outSyncCount = 0;
+			if (status == B_OK) {
+				status = read_out_syncs(job->cl.flags, job->cl.extensions,
+					job->cl.out_sync, outSyncs, outSyncCount);
 			}
 
 			uint32* handles = NULL;
@@ -1401,7 +1470,8 @@ v3d_control(void* cookie, uint32 op, void* buffer, size_t length)
 				return status;
 			}
 
-			status = submit_job(file, job, handles, count, job->cl.out_sync);
+			status = submit_job(file, job, handles, count, outSyncs,
+				outSyncCount);
 			free(handles);
 			return status;
 		}
@@ -1419,9 +1489,18 @@ v3d_control(void* cookie, uint32 op, void* buffer, size_t length)
 				return status;
 			}
 
+			uint32 outSyncs[MAX_OUT_SYNCS];
+			uint32 outSyncCount = 0;
+			status = read_out_syncs(job->tfu.flags, job->tfu.extensions,
+				job->tfu.out_sync, outSyncs, outSyncCount);
+			if (status != B_OK) {
+				free(job);
+				return status;
+			}
+
 			uint32 handles[4];
 			memcpy(handles, job->tfu.bo_handles, sizeof(handles));
-			return submit_job(file, job, handles, 4, job->tfu.out_sync);
+			return submit_job(file, job, handles, 4, outSyncs, outSyncCount);
 		}
 
 		case V3D_HAIKU_SUBMIT_CSD:
@@ -1435,6 +1514,13 @@ v3d_control(void* cookie, uint32 op, void* buffer, size_t length)
 			uint32 count = job->csd.bo_handle_count;
 			if (status == B_OK && count > V3D_MAX_JOB_BOS)
 				status = B_BAD_VALUE;
+
+			uint32 outSyncs[MAX_OUT_SYNCS];
+			uint32 outSyncCount = 0;
+			if (status == B_OK) {
+				status = read_out_syncs(job->csd.flags, job->csd.extensions,
+					job->csd.out_sync, outSyncs, outSyncCount);
+			}
 
 			uint32* handles = NULL;
 			if (status == B_OK && count != 0) {
@@ -1454,13 +1540,19 @@ v3d_control(void* cookie, uint32 op, void* buffer, size_t length)
 				return status;
 			}
 
-			status = submit_job(file, job, handles, count, job->csd.out_sync);
+			status = submit_job(file, job, handles, count, outSyncs,
+				outSyncCount);
 			free(handles);
 			return status;
 		}
 
 		case V3D_HAIKU_SYNC_CREATE:
 		{
+			v3d_haiku_handle create;
+			status_t status = copy_in(create, buffer, length);
+			if (status != B_OK)
+				return status;
+
 			MutexLocker locker(info->lock);
 
 			uint32 index = 0;
@@ -1478,8 +1570,9 @@ v3d_control(void* cookie, uint32 op, void* buffer, size_t length)
 				file->syncCount = count;
 			}
 
-			// in use, standing for "job 0", which is always done
-			file->syncs[index] = 1;
+			// in use; signalled unless asked otherwise
+			file->syncs[index] = (create.pad & V3D_HAIKU_SYNC_UNSIGNALED) != 0
+				? SYNC_UNSIGNALED : SYNC_SIGNALED;
 			locker.Unlock();
 
 			v3d_haiku_handle request = {index + 1, 0};
@@ -1522,12 +1615,38 @@ v3d_control(void* cookie, uint32 op, void* buffer, size_t length)
 					seqno -= (uint64)1 << 31;
 				request.seqno = seqno;
 			} else if (op != V3D_HAIKU_SEQNO_WAIT) {
-				MutexLocker locker(info->lock);
-				if (request.handle == 0 || request.handle > file->syncCount
-					|| file->syncs[request.handle - 1] == 0) {
-					return B_BAD_VALUE;
+				// A sync object without a job yet: wait for it to get one
+				// (or to be signalled) if asked to, in small steps; nothing
+				// here waits like that in earnest.
+				bigtime_t end = request.timeout_ns < 0 ? B_INFINITE_TIMEOUT
+					: system_time() + request.timeout_ns / 1000;
+				while (true) {
+					MutexLocker locker(info->lock);
+					if (request.handle == 0
+						|| request.handle > file->syncCount
+						|| file->syncs[request.handle - 1] == 0) {
+						return B_BAD_VALUE;
+					}
+					uint64 state = file->syncs[request.handle - 1];
+					if (state != SYNC_UNSIGNALED) {
+						request.seqno = state - 1;
+						break;
+					}
+					locker.Unlock();
+
+					if (op == V3D_HAIKU_SYNC_GET
+						|| (request.pad & V3D_HAIKU_SYNC_WAIT_FOR_SUBMIT)
+							== 0) {
+						return B_BAD_VALUE;
+					}
+					if (system_time() >= end)
+						return B_TIMED_OUT;
+					snooze(500);
 				}
-				request.seqno = file->syncs[request.handle - 1] - 1;
+				if (request.timeout_ns >= 0) {
+					bigtime_t now = system_time();
+					request.timeout_ns = now >= end ? 0 : (end - now) * 1000;
+				}
 			}
 
 			if (op == V3D_HAIKU_SYNC_GET)
@@ -1536,6 +1655,35 @@ v3d_control(void* cookie, uint32 op, void* buffer, size_t length)
 			status = wait_for_job(info, request.seqno, request.timeout_ns);
 			return status == B_WOULD_BLOCK ? B_TIMED_OUT : status;
 		}
+	}
+
+	if (op == V3D_HAIKU_SYNC_RESET || op == V3D_HAIKU_SYNC_SIGNAL
+		|| op == V3D_HAIKU_SYNC_TRANSFER) {
+		v3d_haiku_sync request;
+		status_t status = copy_in(request, buffer, length);
+		if (status != B_OK)
+			return status;
+
+		MutexLocker locker(info->lock);
+		if (request.handle == 0 || request.handle > file->syncCount
+			|| file->syncs[request.handle - 1] == 0) {
+			return B_BAD_VALUE;
+		}
+
+		if (op == V3D_HAIKU_SYNC_RESET)
+			file->syncs[request.handle - 1] = SYNC_UNSIGNALED;
+		else if (op == V3D_HAIKU_SYNC_SIGNAL)
+			file->syncs[request.handle - 1] = SYNC_SIGNALED;
+		else {
+			// "seqno" names the sync object whose state is taken over
+			uint32 source = (uint32)request.seqno;
+			if (source == 0 || source > file->syncCount
+				|| file->syncs[source - 1] == 0) {
+				return B_BAD_VALUE;
+			}
+			file->syncs[request.handle - 1] = file->syncs[source - 1];
+		}
+		return B_OK;
 	}
 
 	// Not a display driver: app_server asks every device under graphics/

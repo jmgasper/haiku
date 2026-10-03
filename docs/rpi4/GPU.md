@@ -2,7 +2,9 @@
 
 State 2026-10-03: OpenGL runs on the GPU. GLTeapot renders in a window at
 about 315 FPS (`evidence/teapot6.jpg`); the offscreen probe is pixel-exact
-from 128x128 to 1920x1080 with and without a depth buffer. Vulkan is open.
+from 128x128 to 1920x1080 with and without a depth buffer. Vulkan (Mesa's
+v3dv, 2026-10-04) renders without a window: `rpi4_vk_probe` reports "V3D
+4.2.14.0, Vulkan 1.3.328" and reads back a clear and a triangle exactly.
 
 ## Pieces
 
@@ -29,7 +31,10 @@ from 128x128 to 1920x1080 with and without a depth buffer. Vulkan is open.
   frame/flush done, out-of-memory in the binner (the driver hands it another
   buffer) and MMU errors. A job that does not finish in 5 s is reported with
   the core's registers and a summary of its buffers, and the core is reset.
-- Sync objects are job sequence numbers; a fence is a token for one.
+- Sync objects are job sequence numbers; a fence is a token for one. For
+  Vulkan a sync object can also be reset or signalled by hand, take over
+  another one's state, and be waited for before it has a job; the multi-sync
+  extension of the submit requests names several to signal.
 
 ## Mesa
 
@@ -68,10 +73,12 @@ The probe:
 
 ## Open
 
-- **Vulkan (v3dv).** Not started. It needs real DRM sync objects (create,
-  wait, import/export, the multisync extension) instead of the sequence
-  number stand-ins, the CPU job queue, a Vulkan loader for arm64 and a window
-  system layer for Haiku (Mesa has none; headless would be the first step).
+- **Vulkan beyond the probe.** There is no Vulkan loader for arm64 Haiku
+  (programs link `libvulkan_broadcom.so` and start from
+  `vk_icdGetInstanceProcAddr`) and no window system layer, so nothing can
+  present yet. Sync files, timeline semaphores, the CPU job queue (indirect
+  compute, timestamp and performance queries) and PRIME are not there.
+  Nothing beyond the probe's two frames has been run.
 - Presentation without the read-back copy.
 - 8 GB boards: buffers above 4 GB cannot be mapped by this MMU setup
   (28-bit page numbers are fine, but the driver has only been run on 4 GB).

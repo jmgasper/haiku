@@ -69,6 +69,10 @@ rule UserBuildConfigRulePreImage
 		local mesaLib = <rpi4-mesa>libEGL_mesa.so.0 ;
 		SEARCH on $(mesaLib) = $(mesaStage) ;
 		AddFilesToHaikuImage system non-packaged lib : $(mesaLib) ;
+		# Vulkan: Mesa's v3dv. No loader; programs link the driver.
+		local vulkanLib = <rpi4-mesa>libvulkan_broadcom.so ;
+		SEARCH on $(vulkanLib) = $(mesaStage) ;
+		AddFilesToHaikuImage system non-packaged lib : $(vulkanLib) ;
 		local vendorFile = <rpi4-mesa>10_mesa.json ;
 		SEARCH on $(vendorFile) = $(mesaStage) ;
 		AddFilesToHaikuImage system non-packaged add-ons opengl egl_vendor.d

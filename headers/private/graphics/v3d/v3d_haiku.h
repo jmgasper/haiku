@@ -18,8 +18,9 @@
 	- There are no DRM sync objects or sync files. Jobs run strictly in the
 	  order they were submitted and every job has a sequence number; a
 	  "sync object" here just remembers the number of the last job it was
-	  given as out_sync. in_sync handles are accepted and ignored: the order
-	  already guarantees what they ask for.
+	  given as out_sync (also through the multi-sync extension), or that it
+	  was signalled or reset by hand. in_sync handles are accepted and
+	  ignored: the order already guarantees what they ask for.
 	- No PRIME/dma-buf. */
 
 
@@ -54,7 +55,20 @@ enum {
 		// returns that job's sequence number
 	V3D_HAIKU_SEQNO_WAIT,
 		// waits for a job by its sequence number
+	V3D_HAIKU_SYNC_RESET,
+		// back to "not signalled, no job"
+	V3D_HAIKU_SYNC_SIGNAL,
+		// signalled without a job
+	V3D_HAIKU_SYNC_TRANSFER,
+		// takes over the state of the sync object named in "seqno"
 };
+
+// v3d_haiku_handle.pad of V3D_HAIKU_SYNC_CREATE: the sync object starts
+// without a job and not signalled (DRM's default; Vulkan relies on it).
+#define V3D_HAIKU_SYNC_UNSIGNALED		0x1
+// v3d_haiku_sync.pad of V3D_HAIKU_SYNC_WAIT: a sync object without a job is
+// waited for as well, instead of being an error.
+#define V3D_HAIKU_SYNC_WAIT_FOR_SUBMIT	0x1
 
 // As the handle of V3D_HAIKU_SEQNO_WAIT: "seqno" is a fence token, the low
 // 31 bits of the sequence number of a job submitted earlier.

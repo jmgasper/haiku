@@ -36,3 +36,27 @@ goes into `/boot/system/non-packaged/add-ons/opengl/egl_vendor.d/`.
 `gl_probe.cpp` is an offscreen GLES 2 test with full pixel readback: a clear,
 then a triangle. Build it with the cross compiler against the same sysroot
 (see the command in docs/rpi4/GPU.md).
+
+## Vulkan (v3dv)
+
+The same script builds `libvulkan_broadcom.so` in a second build directory.
+What the patch changes for it:
+
+- `src/util/u_sync_provider_haiku.c`: Mesa's Vulkan runtime reaches DRM sync
+  objects through a small provider interface; this one talks to the render
+  device (create, wait, reset, signal, transfer). No sync files, no timelines.
+- `src/vulkan/runtime/meson.build`, `src/util/meson.build`: build the DRM
+  sync object type and that provider on Haiku.
+- `v3dv_device.c`: the device is `/dev/graphics/v3d/0` (no DRM device list,
+  no display device), the heap size comes from `get_system_info()`, and the
+  cache UUIDs from the version and build time (there is no build-id note).
+- `v3dv_bo.c`: buffers are mapped by the driver, as in the GL driver; the
+  buffer cache's mutex is initialized.
+- `v3dv_wsi.c`, `v3dv_image.c`: nothing to present on; no DRM format
+  modifiers.
+
+`vk_probe.c` links the driver directly (there is no Vulkan loader for arm64
+Haiku) and renders into an image without a window: a clear, and a triangle
+with two shaders written out as SPIR-V words by hand. Build it like the GL
+probe, with `-I<mesa>/include -L<build-vk>/src/broadcom/vulkan
+-lvulkan_broadcom`, and run it with the library in `LIBRARY_PATH`.
