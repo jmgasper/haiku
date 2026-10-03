@@ -459,6 +459,10 @@ for platform in [ MultiBootSubDirSetup ] {
 			case riscv :
 				BuildBiosLoader haiku_loader.$(TARGET_BOOT_PLATFORM) : <revisioned>boot_loader_$(TARGET_BOOT_PLATFORM) ;
 
+			case rpi :
+				# a flat image, loaded by the firmware like a Linux kernel
+				BuildBiosLoader haiku_loader.$(TARGET_BOOT_PLATFORM) : <revisioned>boot_loader_$(TARGET_BOOT_PLATFORM) ;
+
 			case next_m68k :
 				BuildAoutLoader haiku_loader.$(TARGET_BOOT_PLATFORM) : <revisioned>boot_loader_$(TARGET_BOOT_PLATFORM) ;
 

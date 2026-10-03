@@ -181,6 +181,8 @@ for platform in [ MultiBootSubDirSetup ] {
 		} else if $(TARGET_BOOT_PLATFORM) = u-boot {
 			BuildSDImage $(HAIKU_MMC_NAME) :
 				$(HAIKU_IMAGE) haiku_loader.$(TARGET_BOOT_PLATFORM) haiku-floppyboot.tgz.$(TARGET_BOOT_PLATFORM) boot.scr ;
+		} else if $(TARGET_BOOT_PLATFORM) = rpi {
+			# has an image of its own, see RpiBootImage
 		} else {
 			BuildSDImage $(HAIKU_MMC_NAME) :
 				$(HAIKU_IMAGE) haiku_loader.$(TARGET_BOOT_PLATFORM) boot.scr ;

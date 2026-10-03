@@ -1,0 +1,21 @@
+# air/OS on the Raspberry Pi 4: the firmware starts the air/OS loader directly,
+# the way it starts a Linux kernel. See docs/rpi4/BOOT.md.
+
+arm_64bit=1
+enable_gic=1
+
+# The loader has no Linux image header, so say where it is linked.
+kernel=airos-loader.img
+kernel_address=0x80000
+
+# The kernel and the modules that mount the boot volume, loaded right behind
+# the loader. The loader finds it through /chosen in the device tree.
+initramfs airos-boot.tgz followkernel
+
+# Serial console on GPIO 14/15 (PL011, 115200 8N1). This turns Bluetooth off.
+enable_uart=1
+uart_2ndstage=1
+dtoverlay=disable-bt
+
+disable_overscan=1
+disable_splash=1

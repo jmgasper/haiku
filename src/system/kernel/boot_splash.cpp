@@ -46,7 +46,9 @@ boot_splash_init(uint8 *bootSplash)
 {
 	TRACE("boot_splash_init: enter\n");
 
-	if (debug_screen_output_enabled())
+	// A loader that showed no splash screen (debug output on the frame
+	// buffer, for example) has no icons for us either.
+	if (debug_screen_output_enabled() || bootSplash == NULL)
 		return;
 
 	sInfo = (frame_buffer_boot_info *)get_boot_item(FRAME_BUFFER_BOOT_INFO,

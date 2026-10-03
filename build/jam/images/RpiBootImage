@@ -1,0 +1,193 @@
+# The Raspberry Pi boot files (arm64): the boot archive that the firmware
+# loads along with the loader, and an SD card image with a FAT boot partition
+# and the system on BFS.
+#
+#	jam -q @<profile> airos-rpi-boot-archive
+#	jam -q @<profile> airos-rpi-image
+#
+# The firmware files (start4.elf, fixup4.dat, the device trees and overlays)
+# are not part of the tree: HAIKU_RPI_FIRMWARE_DIR names a directory filled by
+# tools/rpi4/fetch-firmware.sh.
+
+HAIKU_RPI_BOOT_ARCHIVE_CONTAINER_NAME = airos-rpi-boot-archive-container ;
+HAIKU_CONTAINER_GRIST on $(HAIKU_RPI_BOOT_ARCHIVE_CONTAINER_NAME)
+	= RpiBootArchive ;
+HAIKU_INSTALL_TARGETS_VAR on $(HAIKU_RPI_BOOT_ARCHIVE_CONTAINER_NAME)
+	= HAIKU_RPI_BOOT_ARCHIVE_INSTALL_TARGETS ;
+HAIKU_CONTAINER_SYSTEM_DIR_TOKENS on $(HAIKU_RPI_BOOT_ARCHIVE_CONTAINER_NAME)
+	= system ;
+
+local container = $(HAIKU_RPI_BOOT_ARCHIVE_CONTAINER_NAME) ;
+
+# Everything the kernel needs until it has mounted the boot volume. The
+# modules are the same builds as the ones in the system package.
+local busManagers = fdt mmc pci scsi usb ;
+local mmcBusses = sdhci ;
+local pciBusses = <pci>ecam ;
+local usbBusses = <usb>xhci ;
+local fileSystems = bfs packagefs ;
+local generic = dpc scsi_periph ;
+local partitioningSystems = intel efi_gpt session ;
+local mmcDrivers = mmc_disk ;
+local diskDrivers = usb_disk ;
+local scsiDrivers = scsi_disk ;
+
+AddFilesToContainer $(container) : system add-ons kernel bus_managers
+	: $(busManagers) ;
+AddFilesToContainer $(container) : system add-ons kernel busses mmc
+	: $(mmcBusses) ;
+AddFilesToContainer $(container) : system add-ons kernel busses pci
+	: $(pciBusses) ;
+AddFilesToContainer $(container) : system add-ons kernel busses usb
+	: $(usbBusses) ;
+AddFilesToContainer $(container) : system add-ons kernel file_systems
+	: $(fileSystems) ;
+AddFilesToContainer $(container) : system add-ons kernel generic
+	: $(generic) ;
+AddFilesToContainer $(container) : system add-ons kernel partitioning_systems
+	: $(partitioningSystems) ;
+AddNewDriversToContainer $(container) : disk mmc : $(mmcDrivers) ;
+AddNewDriversToContainer $(container) : disk : $(diskDrivers) ;
+AddNewDriversToContainer $(container) : disk scsi : $(scsiDrivers) ;
+
+AddFilesToContainer $(container) : system
+	: <revisioned>kernel_$(TARGET_ARCH) ;
+
+AddBootModuleSymlinksToContainer $(container) :
+	$(busManagers) $(mmcBusses) $(pciBusses) $(usbBusses) $(fileSystems)
+	$(generic) $(partitioningSystems) $(mmcDrivers) $(diskDrivers)
+	$(scsiDrivers)
+;
+
+
+#pragma mark - the archive
+
+
+HAIKU_RPI_BOOT_ARCHIVE = airos-boot.tgz ;
+MakeLocate $(HAIKU_RPI_BOOT_ARCHIVE) : $(HAIKU_OUTPUT_DIR) ;
+
+NotFile $(container) ;
+
+local initVarsScript = <RpiBootArchive>airos-rpi-boot-init-vars ;
+MakeLocate $(initVarsScript) : $(HAIKU_OUTPUT_DIR) ;
+Always $(initVarsScript) ;
+
+AddVariableToScript $(initVarsScript) : tmpDir
+	: [ FDirName $(HAIKU_TMP_DIR) rpi-boot-archive ] ;
+AddVariableToScript $(initVarsScript) : addBuildCompatibilityLibDir
+	: "export $(HOST_ADD_BUILD_COMPATIBILITY_LIB_DIR)" ;
+AddTargetVariableToScript $(initVarsScript) : <build>copyattr ;
+
+local makeDirsScript = <RpiBootArchive>airos-rpi-boot-make-dirs ;
+local copyFilesScript = <RpiBootArchive>airos-rpi-boot-copy-files ;
+MakeLocate $(makeDirsScript) $(copyFilesScript) : $(HAIKU_OUTPUT_DIR) ;
+
+CreateContainerMakeDirectoriesScript $(container) : $(makeDirsScript) ;
+CreateContainerCopyFilesScript $(container) : $(copyFilesScript) ;
+
+BuildNetBootArchive $(HAIKU_RPI_BOOT_ARCHIVE) :
+	$(initVarsScript)
+	$(makeDirsScript)
+	$(copyFilesScript)
+;
+
+RmTemps $(HAIKU_RPI_BOOT_ARCHIVE) :
+	$(initVarsScript)
+	$(makeDirsScript)
+	$(copyFilesScript)
+;
+
+NotFile airos-rpi-boot-archive ;
+Depends airos-rpi-boot-archive : $(HAIKU_RPI_BOOT_ARCHIVE) ;
+
+
+#pragma mark - the SD card image
+
+
+HAIKU_RPI_IMAGE_NAME ?= airos-rpi4.img ;
+HAIKU_RPI_FIRMWARE_DIR ?= [ FDirName $(HAIKU_OUTPUT_DIR) rpi-firmware ] ;
+# in MiB
+HAIKU_RPI_BOOT_PARTITION_SIZE ?= 256 ;
+
+rule BuildRpiSDImage image : loader : archive : textFiles
+{
+	local mbrtool = <build>mbrtool ;
+	local fatshell = <build>fat_shell ;
+
+	Depends $(image) : $(mbrtool) $(fatshell) $(HAIKU_IMAGE) $(loader)
+		$(archive) $(textFiles) ;
+
+	RPI_OS_SIZE on $(image) = $(HAIKU_IMAGE_SIZE) ;
+	RPI_BOOT_SIZE on $(image) = $(HAIKU_RPI_BOOT_PARTITION_SIZE) ;
+	RPI_FIRMWARE_DIR on $(image) = $(HAIKU_RPI_FIRMWARE_DIR) ;
+
+	BuildRpiSDImage1 $(image) : $(mbrtool) $(fatshell) $(HAIKU_IMAGE)
+		$(loader) $(archive) $(textFiles) ;
+}
+
+# out : mbrtool fatshell os_image loader archive config.txt cmdline.txt
+actions BuildRpiSDImage1
+{
+	$(RM) $(1)
+
+	export $(HOST_ADD_BUILD_COMPATIBILITY_LIB_DIR)
+
+	firmware="$(RPI_FIRMWARE_DIR)"
+	for file in start4.elf fixup4.dat bcm2711-rpi-4-b.dtb ; do
+		if [ ! -f "$firmware/$file" ] ; then
+			echo "Raspberry Pi firmware file $firmware/$file is missing;" \
+				"run tools/rpi4/fetch-firmware.sh" >&2
+			exit 1
+		fi
+	done
+
+	# in KiB; the first partition starts at 4 MiB
+	BEGIN=4096
+	BOOT_SIZE=`expr $(RPI_BOOT_SIZE) \* 1024`
+	OS_START=`expr $BEGIN + $BOOT_SIZE`
+	OS_SIZE=`expr $(RPI_OS_SIZE) \* 1024`
+
+	dd if=/dev/zero of=$(1) bs=1024 count=0 seek=$OS_START 2>/dev/null
+
+	# FAT32 (LBA) for the firmware, then BFS
+	$(2[1]) $(1) 0 0x0c $BEGIN $BOOT_SIZE
+	$(2[1]) $(1) 1 0xeb $OS_START $OS_SIZE
+
+	FATFS="$(2[2]) --start-offset `expr $BEGIN \* 1024`"
+	$FATFS --end-offset `expr $OS_START \* 1024` --initialize "$(1)" 'AIROS BOOT'
+
+	# FAT cannot store Haiku attributes
+	echo "cp --ignore-attributes :$(2[4]) myfs/airos-loader.img" | $FATFS $(1)
+	echo "cp --ignore-attributes :$(2[5]) myfs/airos-boot.tgz" | $FATFS $(1)
+	echo "cp --ignore-attributes :$(2[6]) myfs/config.txt" | $FATFS $(1)
+	echo "cp --ignore-attributes :$(2[7]) myfs/cmdline.txt" | $FATFS $(1)
+
+	for file in "$firmware"/*.elf "$firmware"/*.dat "$firmware"/*.dtb \
+			"$firmware"/LICENCE.broadcom ; do
+		[ -f "$file" ] || continue
+		echo "cp --ignore-attributes :$file myfs/`basename $file`" | $FATFS $(1)
+	done
+
+	echo "mkdir myfs/overlays" | $FATFS $(1)
+	for file in "$firmware"/overlays/* ; do
+		[ -f "$file" ] || continue
+		echo "cp --ignore-attributes :$file myfs/overlays/`basename $file`" \
+			| $FATFS $(1)
+	done
+
+	echo "ls -l myfs" | $FATFS $(1)
+
+	cat $(2[3]) >> $(1)
+}
+
+if $(TARGET_ARCH) = arm64 {
+	local rpiTextFiles = <rpi-boot>config.txt <rpi-boot>cmdline.txt ;
+	SEARCH on $(rpiTextFiles) = [ FDirName $(HAIKU_TOP) data boot rpi ] ;
+
+	MakeLocate $(HAIKU_RPI_IMAGE_NAME) : $(HAIKU_OUTPUT_DIR) ;
+	BuildRpiSDImage $(HAIKU_RPI_IMAGE_NAME) : haiku_loader.rpi
+		: $(HAIKU_RPI_BOOT_ARCHIVE) : $(rpiTextFiles) ;
+
+	NotFile airos-rpi-image ;
+	Depends airos-rpi-image : $(HAIKU_RPI_IMAGE_NAME) ;
+}

@@ -173,6 +173,9 @@ include [ FDirName $(HAIKU_BUILD_RULES_DIR) images CDBootImage ] ;
 include [ FDirName $(HAIKU_BUILD_RULES_DIR) images HaikuCD ] ;
 include [ FDirName $(HAIKU_BUILD_RULES_DIR) images AnybootImage ] ;
 include [ FDirName $(HAIKU_BUILD_RULES_DIR) images MMCImage ] ;
+if $(TARGET_ARCH) = arm64 {
+	include [ FDirName $(HAIKU_BUILD_RULES_DIR) images RpiBootImage ] ;
+}
 
 # Check whether all requested optional packages do actually exist.
 local package ;
