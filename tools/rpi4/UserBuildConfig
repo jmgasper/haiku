@@ -107,21 +107,14 @@ rule UserBuildConfigRulePreImage
 		SEARCH on $(packages) = [ FDirName $(extras) packages ] ;
 		AddFilesToHaikuImage system packages : $(packages) ;
 
-		# the owner's applications and Summit
-		local airosPackageDir = /mnt/HaikuWork/airos/packages-arm64 ;
-		local airosPackages = [ Glob $(airosPackageDir) : *.hpkg ] ;
-		airosPackages = <airos-pkg>$(airosPackages:BS) ;
-		SEARCH on $(airosPackages) = $(airosPackageDir) ;
-		AddFilesToHaikuImage system packages : $(airosPackages) ;
-
-		# packages built for this board (tools/airos/
-		# build-arm64-app-packages.sh /mnt/HaikuWork/rpi4/packages-arm64
-		# <app>): Clipper so far
-		local rpi4PackageDir = /mnt/HaikuWork/rpi4/packages-arm64 ;
-		local rpi4Packages = [ Glob $(rpi4PackageDir) : *.hpkg ] ;
-		rpi4Packages = <rpi4-app-pkg>$(rpi4Packages:BS) ;
-		SEARCH on $(rpi4Packages) = $(rpi4PackageDir) ;
-		AddFilesToHaikuImage system packages : $(rpi4Packages) ;
+		# The owner's applications and Summit: the arm64 packages of the
+		# air/OS release, with the ones rebuilt for this board in place of
+		# their namesakes (tools/rpi4/stage-packages.sh collects them).
+		local imagePackageDir = /mnt/HaikuWork/rpi4/image-packages ;
+		local imagePackages = [ Glob $(imagePackageDir) : *.hpkg ] ;
+		imagePackages = <rpi4-app-pkg>$(imagePackages:BS) ;
+		SEARCH on $(imagePackages) = $(imagePackageDir) ;
+		AddFilesToHaikuImage system packages : $(imagePackages) ;
 
 		# airTime, the movie player (apps/airTime, tools/build-arm64.sh and
 		# tools/package-haiku.sh there)

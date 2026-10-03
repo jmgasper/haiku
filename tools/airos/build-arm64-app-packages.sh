@@ -32,6 +32,9 @@
 #   SUMMIT_ENGINE=...            engine build dir with lib/libWebKit.so
 #   SUMMIT_ENGINE_LOG=...        its ninja log
 #   SUMMIT_WEBKIT_SRC=...        Source/WebKit of the engine tree (API headers)
+#   SUMMIT_ENGINE_EXTRA_DEPS=... a second dependency prefix, for an engine built
+#                                with GL compositing and WebGL (see
+#                                tools/rpi4/summit/build-gl-deps.sh)
 #
 # For every application this:
 #   1. snapshots the working tree of the repository (tracked files plus
@@ -710,6 +713,11 @@ build_summit_webkit() {
 			source=""
 			[[ -e $SUMMIT_ENGINE/lib/$needed ]] && source=$SUMMIT_ENGINE/lib/$needed
 			[[ -z $source && -e $TLS_DEPS/lib/$needed ]] && source=$TLS_DEPS/lib/$needed
+			# what a GL engine build needs on top (FreeType, Fontconfig,
+			# HarfBuzz, libepoxy: tools/rpi4/summit/build-gl-deps.sh)
+			[[ -z $source && -n ${SUMMIT_ENGINE_EXTRA_DEPS:-} \
+				&& -e $SUMMIT_ENGINE_EXTRA_DEPS/lib/$needed ]] \
+				&& source=$SUMMIT_ENGINE_EXTRA_DEPS/lib/$needed
 			if [[ -z $source ]]; then
 				case $needed in
 					libtracker.so|libtranslation.so|libmedia.so|libtextencoding.so) continue ;;
@@ -723,6 +731,11 @@ build_summit_webkit() {
 			pending+=("$engine/lib/$needed")
 		done
 	done
+	# Fontconfig's configuration, where that build of it looks for it
+	if [[ -n ${SUMMIT_ENGINE_EXTRA_DEPS:-} && -d $SUMMIT_ENGINE_EXTRA_DEPS/etc/fonts ]]; then
+		mkdir -p "$STAGE/$engine/etc"
+		cp -RL "$SUMMIT_ENGINE_EXTRA_DEPS/etc/fonts" "$STAGE/$engine/etc/"
+	fi
 	# libWebKit.so for programs that link the engine (Natter, Summit)
 	ln -s libWebKit.so.1 "$STAGE/$engine/lib/libWebKit.so"
 	# the public headers, as the x86_64 package has them
