@@ -20,6 +20,58 @@ extern "C" {
 #include <rk_mpi.h>
 }
 
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#endif
+
+
+// Not among Haiku's colour spaces; the same codes as airTime's and the NVDEC
+// add-on's. Both are a plane of luma followed by one of Cb and Cr in pairs,
+// with bytes_per_row between the rows of each.
+static const color_space kColorSpaceNV12 = (color_space)0x4e563132;	// 'NV12'
+static const color_space kColorSpaceP010 = (color_space)0x50303130;	// 'P010'
+
+
+/*!	Unpacks a row of the decoder's ten-bit samples (four in five bytes, the
+	least significant bits first, as Linux's NV15) into P010's sixteen-bit
+	ones, which hold the value in their top ten bits. */
+static void
+unpack_ten_bit_row(const uint8_t* in, uint16_t* out, int samples)
+{
+	int x = 0;
+#if defined(__aarch64__)
+	// Each sample is in the little-endian pair of bytes starting at byte
+	// 10 * k / 8 of its group of four, 2 * (k % 4) bits up.
+	static const uint8_t kGather[16] = {0, 1, 1, 2, 2, 3, 3, 4,
+		5, 6, 6, 7, 7, 8, 8, 9};
+	static const int16_t kShift[8] = {6, 4, 2, 0, 6, 4, 2, 0};
+	const uint8x16_t gather = vld1q_u8(kGather);
+	const int16x8_t shift = vld1q_s16(kShift);
+	const uint16x8_t mask = vdupq_n_u16(0xffc0);
+	// Sixteen bytes are read for every ten used: stop while that stays
+	// within the row.
+	for (; samples - x >= 16; x += 8, in += 10, out += 8) {
+		uint16x8_t pairs = vreinterpretq_u16_u8(vqtbl1q_u8(vld1q_u8(in),
+			gather));
+		vst1q_u16(out, vandq_u16(vshlq_u16(pairs, shift), mask));
+	}
+#endif
+	for (; x + 4 <= samples; x += 4, in += 5, out += 4) {
+		out[0] = (uint16_t)((in[0] | (in[1] & 0x03) << 8) << 6);
+		out[1] = (uint16_t)((in[1] >> 2 | (in[2] & 0x0f) << 6) << 6);
+		out[2] = (uint16_t)((in[2] >> 4 | (in[3] & 0x3f) << 4) << 6);
+		out[3] = (uint16_t)((in[3] >> 6 | in[4] << 2) << 6);
+	}
+	if (x < samples) {
+		// A last, incomplete group.
+		uint8_t group[5] = {};
+		memcpy(group, in, (size_t)((samples - x) * 10 + 7) / 8);
+		uint16_t values[4];
+		unpack_ten_bit_row(group, values, 4);
+		memcpy(out, values, (size_t)(samples - x) * sizeof(uint16_t));
+	}
+}
+
 
 class RockchipMppDecoder : public Decoder {
 public:
@@ -27,6 +79,7 @@ public:
 
 	~RockchipMppDecoder() override
 	{
+		_DropHeldFrame();
 		if (fSws != NULL)
 			sws_freeContext(fSws);
 		if (fBsf != NULL)
@@ -98,6 +151,11 @@ public:
 		return _CreateContext();
 	}
 
+	/*!	Besides B_RGB32 and B_YCbCr422, the pictures can be had as they come
+		from the decoder, a plane of luma and one of chroma: NV12 when they are
+		eight bit, P010 when they are ten (NV12 then keeps the top eight). Those
+		cost a copy, where the others are a conversion of every sample, done
+		on the thread that decodes. */
 	status_t NegotiateOutputFormat(media_format* format) override
 	{
 		if (format == NULL || (format->type != B_MEDIA_RAW_VIDEO
@@ -105,20 +163,26 @@ public:
 				&& format->type != B_MEDIA_NO_TYPE)) {
 			return B_MEDIA_BAD_FORMAT;
 		}
-		if (format->type == B_MEDIA_RAW_VIDEO
-			&& format->u.raw_video.display.format != B_NO_COLOR_SPACE
-			&& format->u.raw_video.display.format != B_RGB32
-			&& format->u.raw_video.display.format != B_YCbCr422) {
+		color_space wanted = format->type == B_MEDIA_RAW_VIDEO
+			? format->u.raw_video.display.format : B_NO_COLOR_SPACE;
+		if (wanted != B_NO_COLOR_SPACE && wanted != B_RGB32
+			&& wanted != B_YCbCr422 && wanted != kColorSpaceNV12
+			&& wanted != kColorSpaceP010) {
 			return B_MEDIA_BAD_FORMAT;
 		}
-		// Luma and chroma (Y0 Cb Y1 Cr) cost a repacking only; a player that
-		// scales the picture anyway converts it to pixels in the same pass.
-		fOutputSpace = format->type == B_MEDIA_RAW_VIDEO
-			&& format->u.raw_video.display.format == B_YCbCr422
-			? B_YCbCr422 : B_RGB32;
-		status_t status = _ReadFrame(fCachedFrame, fCachedHeader);
-		if (status != B_OK)
-			return status;
+		// The first picture says how large and how deep they are; it is kept
+		// for the first Decode(), however often this is asked.
+		if (fHeldFrame == NULL) {
+			status_t status = _NextPicture(&fHeldFrame);
+			if (status != B_OK)
+				return status;
+		}
+		bool tenBit = _IsTenBit(fHeldFrame);
+		if (wanted == kColorSpaceP010 && !tenBit)
+			return B_MEDIA_BAD_FORMAT;
+		fOutputSpace = wanted == B_NO_COLOR_SPACE ? B_RGB32 : wanted;
+		fWidth = mpp_frame_get_width(fHeldFrame);
+		fHeight = mpp_frame_get_height(fHeldFrame);
 
 		media_raw_video_format raw = fInputFormat.u.encoded_video.output;
 		raw.interlace = 1;
@@ -127,7 +191,7 @@ public:
 		raw.display.format = fOutputSpace;
 		raw.display.line_width = fWidth;
 		raw.display.line_count = fHeight;
-		raw.display.bytes_per_row = fWidth * _BytesPerPixel();
+		raw.display.bytes_per_row = _RowBytes();
 		format->type = B_MEDIA_RAW_VIDEO;
 		format->require_flags = 0;
 		format->deny_flags = B_MEDIA_MAUI_UNDEFINED_FLAGS;
@@ -135,20 +199,26 @@ public:
 		return B_OK;
 	}
 
+	/*!	MPP is reset rather than made again: that keeps its picture buffers
+		(a quarter of a gigabyte for a 4K film, which the driver clears
+		before handing out again), and a context destroyed while it decoded
+		kept one of them for good. */
 	status_t SeekedTo(int64, bigtime_t) override
 	{
-		_DestroyContext();
-		if (_CreateContext() != B_OK)
-			return B_ERROR;
+		_DropHeldFrame();
+		if (fContext == NULL || fApi->reset(fContext) != MPP_OK) {
+			_DestroyContext();
+			if (_CreateContext() != B_OK)
+				return B_ERROR;
+		}
 		if (fBsf != NULL)
 			av_bsf_flush(fBsf);
-		fCachedFrame.clear();
 		fPending.clear();
 		fHasPending = false;
 		fEndOfInput = false;
 		fEosSent = false;
+		fEosReached = false;
 		fSubmittedPackets = 0;
-		fPollsAfterSubmit = 30;
 		return B_OK;
 	}
 
@@ -157,32 +227,47 @@ public:
 	{
 		if (buffer == NULL || frameCount == NULL || header == NULL)
 			return B_BAD_VALUE;
-		std::vector<uint8_t> frame;
-		media_header decodedHeader = {};
-		if (!fCachedFrame.empty()) {
-			frame.swap(fCachedFrame);
-			decodedHeader = fCachedHeader;
-		} else {
-			status_t status = _ReadFrame(frame, decodedHeader);
+		if (fWidth <= 0 || fHeight <= 0)
+			return B_NO_INIT;
+		MppFrame frame = fHeldFrame;
+		fHeldFrame = NULL;
+		if (frame == NULL) {
+			status_t status = _NextPicture(&frame);
 			if (status != B_OK)
 				return status;
 		}
-		memcpy(buffer, frame.data(), frame.size());
+		bigtime_t t0 = system_time();
+		status_t status = _ConvertFrame(frame, static_cast<uint8_t*>(buffer),
+			*header);
+		sSpent[2] += system_time() - t0;
+		mpp_frame_deinit(&frame);
+		if (status != B_OK)
+			return status;
 		*frameCount = 1;
-		*header = decodedHeader;
 		return B_OK;
 	}
 
 private:
 	void _DestroyContext()
 	{
-		if (fContext != NULL)
+		if (fContext != NULL) {
+			// Stopped first, as FFmpeg's rkmpp decoder does: destroyed in
+			// the middle of a picture, MPP did not give its buffer back.
+			fApi->reset(fContext);
 			mpp_destroy(fContext);
+		}
 		fContext = NULL;
 		fApi = NULL;
 		if (fFrameGroup != NULL)
 			mpp_buffer_group_put(fFrameGroup);
 		fFrameGroup = NULL;
+	}
+
+	void _DropHeldFrame()
+	{
+		if (fHeldFrame != NULL)
+			mpp_frame_deinit(&fHeldFrame);
+		fHeldFrame = NULL;
 	}
 
 	status_t _CreateContext()
@@ -200,14 +285,21 @@ private:
 	{
 		RK_U32 split = 1;
 		RK_S64 inputTimeout = 0;
+		if (fApi->control(fContext, MPP_SET_INPUT_TIMEOUT, &inputTimeout)
+				!= MPP_OK
+			|| fApi->control(fContext, MPP_DEC_SET_PARSER_SPLIT_MODE, &split)
+				!= MPP_OK) {
+			return B_ERROR;
+		}
+		// NV12 is what MPP gives anyway; asked for, it also makes the RK3588's
+		// AV1 decoder cut ten-bit pictures to eight, so AV1 is not asked.
 		MppFrameFormat outputFormat = MPP_FMT_YUV420SP;
-		return fApi->control(fContext, MPP_SET_INPUT_TIMEOUT, &inputTimeout)
-				== MPP_OK
-			&& fApi->control(fContext, MPP_DEC_SET_PARSER_SPLIT_MODE, &split)
-				== MPP_OK
+		if (fCoding != MPP_VIDEO_CodingAV1
 			&& fApi->control(fContext, MPP_DEC_SET_OUTPUT_FORMAT, &outputFormat)
-				== MPP_OK
-			? B_OK : B_ERROR;
+				!= MPP_OK) {
+			return B_ERROR;
+		}
+		return B_OK;
 	}
 
 	status_t _PreparePacket(const void* chunk, size_t size, bigtime_t startTime,
@@ -273,7 +365,6 @@ private:
 		if (result != MPP_OK)
 			return B_ERROR;
 		fSubmittedPackets++;
-		fPollsAfterSubmit = 0;
 		return B_OK;
 	}
 
@@ -297,12 +388,27 @@ private:
 		return status;
 	}
 
-	int _BytesPerPixel() const
+	static bool _IsTenBit(MppFrame frame)
 	{
-		return fOutputSpace == B_YCbCr422 ? 2 : 4;
+		return (mpp_frame_get_fmt(frame) & MPP_FRAME_FMT_MASK)
+			== MPP_FMT_YUV420SP_10BIT;
 	}
 
-	status_t _ConvertFrame(MppFrame frame, std::vector<uint8_t>& output,
+	size_t _RowBytes() const
+	{
+		// The planar layouts keep whole pairs of chroma samples in a row.
+		size_t evenWidth = ((size_t)fWidth + 1) & ~(size_t)1;
+		if (fOutputSpace == kColorSpaceNV12)
+			return evenWidth;
+		if (fOutputSpace == kColorSpaceP010)
+			return evenWidth * 2;
+		return (size_t)fWidth * (fOutputSpace == B_YCbCr422 ? 2 : 4);
+	}
+
+	/*!	Writes the picture into the caller's buffer in the negotiated format
+		and size. A picture of another size (the stream changed) is cut or
+		left short rather than overrunning the buffer. */
+	status_t _ConvertFrame(MppFrame frame, uint8_t* output,
 		media_header& header)
 	{
 		MppBuffer buffer = mpp_frame_get_buffer(frame);
@@ -312,111 +418,156 @@ private:
 		int height = mpp_frame_get_height(frame);
 		int horizontal = mpp_frame_get_hor_stride(frame);
 		int vertical = mpp_frame_get_ver_stride(frame);
-		MppFrameFormat format = mpp_frame_get_fmt(frame);
-		if (pixels == NULL || width <= 0 || height <= 0 || horizontal < width
-			|| vertical < height || mpp_frame_get_errinfo(frame) != 0
-			|| mpp_frame_get_discard(frame) != 0) {
+		MppFrameFormat format = (MppFrameFormat)(mpp_frame_get_fmt(frame)
+			& MPP_FRAME_FMT_MASK);
+		bool tenBit = format == MPP_FMT_YUV420SP_10BIT;
+		if (pixels == NULL || width <= 0 || height <= 0
+			|| horizontal < (tenBit ? width * 10 / 8 : width)
+			|| vertical < height) {
 			return B_ERROR;
 		}
-		size_t lumaBytes = (size_t)horizontal * vertical;
-		switch (format & MPP_FRAME_FMT_MASK) {
-			case MPP_FMT_YUV420SP:
-			case MPP_FMT_YUV420SP_VU:
-			case MPP_FMT_YUV420P:
-				break;
-			default:
-				return B_NOT_SUPPORTED;
+		if (format != MPP_FMT_YUV420SP && format != MPP_FMT_YUV420SP_VU
+			&& !tenBit) {
+			return B_NOT_SUPPORTED;
+		}
+		const uint8_t* chroma = pixels + (size_t)horizontal * vertical;
+		bool swap = format == MPP_FMT_YUV420SP_VU;
+		if (width != fWidth || height != fHeight) {
+			if (fDecodedFrames < 8) {
+				fprintf(stderr, "RockchipMppDecoder: %dx%d picture for %dx%d\n",
+					width, height, fWidth, fHeight);
+			}
+			width = std::min(width, fWidth);
+			height = std::min(height, fHeight);
+		}
+		int chromaRows = (height + 1) / 2;
+		int chromaSamples = (width + 1) & ~1;
+		size_t rowBytes = _RowBytes();
+		uint8_t* outChroma = output + rowBytes * fHeight;
+
+		if (fOutputSpace == kColorSpaceP010 && tenBit) {
+			for (int y = 0; y < height; y++) {
+				unpack_ten_bit_row(pixels + (size_t)y * horizontal,
+					reinterpret_cast<uint16_t*>(output + rowBytes * y), width);
+			}
+			for (int y = 0; y < chromaRows; y++) {
+				unpack_ten_bit_row(chroma + (size_t)y * horizontal,
+					reinterpret_cast<uint16_t*>(outChroma + rowBytes * y),
+					chromaSamples);
+			}
+			return _FinishFrame(frame, header, horizontal, vertical);
+		}
+
+		if (fOutputSpace == kColorSpaceNV12 && !tenBit && !swap) {
+			for (int y = 0; y < height; y++) {
+				memcpy(output + rowBytes * y, pixels + (size_t)y * horizontal,
+					width);
+			}
+			for (int y = 0; y < chromaRows; y++) {
+				memcpy(outChroma + rowBytes * y,
+					chroma + (size_t)y * horizontal, chromaSamples);
+			}
+			return _FinishFrame(frame, header, horizontal, vertical);
+		}
+
+		// Everything else starts from eight-bit NV12 (or NV21): ten-bit
+		// samples keep their top eight bits.
+		const uint8_t* luma8 = pixels;
+		const uint8_t* chroma8 = chroma;
+		int stride8 = horizontal;
+		if (tenBit) {
+			stride8 = chromaSamples;
+			fNarrow.resize((size_t)stride8 * (height + chromaRows));
+			std::vector<uint16_t> row(chromaSamples);
+			for (int y = 0; y < height + chromaRows; y++) {
+				const uint8_t* in = y < height
+					? pixels + (size_t)y * horizontal
+					: chroma + (size_t)(y - height) * horizontal;
+				unpack_ten_bit_row(in, row.data(), y < height ? width
+					: chromaSamples);
+				uint8_t* out = fNarrow.data() + (size_t)y * stride8;
+				for (int x = 0; x < (y < height ? width : chromaSamples); x++)
+					out[x] = row[x] >> 8;
+			}
+			luma8 = fNarrow.data();
+			chroma8 = luma8 + (size_t)stride8 * height;
+		}
+
+		if (fOutputSpace == kColorSpaceNV12) {
+			for (int y = 0; y < height; y++)
+				memcpy(output + rowBytes * y, luma8 + (size_t)y * stride8, width);
+			for (int y = 0; y < chromaRows; y++) {
+				const uint8_t* in = chroma8 + (size_t)y * stride8;
+				uint8_t* out = outChroma + rowBytes * y;
+				for (int x = 0; x < chromaSamples; x += 2) {
+					out[x] = in[x + (swap ? 1 : 0)];
+					out[x + 1] = in[x + (swap ? 0 : 1)];
+				}
+			}
+			return _FinishFrame(frame, header, horizontal, vertical);
 		}
 
 		// Semi-planar 4:2:0 to Y0 Cb Y1 Cr is a repacking: done here it is
 		// a few milliseconds a 1080p picture; swscale's general path took
 		// several times that.
-		if (fOutputSpace == B_YCbCr422 && (format & MPP_FRAME_FMT_MASK)
-				!= MPP_FMT_YUV420P) {
-			bool swap = (format & MPP_FRAME_FMT_MASK) == MPP_FMT_YUV420SP_VU;
-			size_t rowBytes = (size_t)width * 2;
-			output.resize(rowBytes * height);
+		if (fOutputSpace == B_YCbCr422) {
 			int pairs = width / 2;
+			int u = swap ? 1 : 0;
+			int v = swap ? 0 : 1;
 			for (int y = 0; y < height; y++) {
-				const uint8_t* luma = pixels + (size_t)y * horizontal;
-				const uint8_t* chroma = pixels + lumaBytes
-					+ (size_t)(y / 2) * horizontal;
-				uint8_t* out = output.data() + rowBytes * y;
-				int u = swap ? 1 : 0;
-				int v = swap ? 0 : 1;
+				const uint8_t* luma = luma8 + (size_t)y * stride8;
+				const uint8_t* pair = chroma8 + (size_t)(y / 2) * stride8;
+				uint8_t* out = output + rowBytes * y;
 				for (int x = 0; x < pairs; x++) {
 					out[4 * x + 0] = luma[2 * x];
-					out[4 * x + 1] = chroma[2 * x + u];
+					out[4 * x + 1] = pair[2 * x + u];
 					out[4 * x + 2] = luma[2 * x + 1];
-					out[4 * x + 3] = chroma[2 * x + v];
+					out[4 * x + 3] = pair[2 * x + v];
 				}
 			}
-			return _FinishFrame(frame, output, header, width, height, format,
-				horizontal, vertical);
+			return _FinishFrame(frame, header, horizontal, vertical);
 		}
 
-		AVPixelFormat sourceFormat = AV_PIX_FMT_NONE;
-		const uint8_t* planes[4] = {pixels, NULL, NULL, NULL};
-		int strides[4] = {horizontal, 0, 0, 0};
-		switch (format & MPP_FRAME_FMT_MASK) {
-			case MPP_FMT_YUV420SP:
-				sourceFormat = AV_PIX_FMT_NV12;
-				planes[1] = pixels + lumaBytes;
-				strides[1] = horizontal;
-				break;
-			case MPP_FMT_YUV420SP_VU:
-				sourceFormat = AV_PIX_FMT_NV21;
-				planes[1] = pixels + lumaBytes;
-				strides[1] = horizontal;
-				break;
-			default:
-				sourceFormat = AV_PIX_FMT_YUV420P;
-				planes[1] = pixels + lumaBytes;
-				planes[2] = planes[1] + lumaBytes / 4;
-				strides[1] = strides[2] = horizontal / 2;
-				break;
-		}
-		AVPixelFormat targetFormat = fOutputSpace == B_YCbCr422
-			? AV_PIX_FMT_YUYV422 : AV_PIX_FMT_RGB32;
-		int bytesPerPixel = _BytesPerPixel();
-		fSws = sws_getCachedContext(fSws, width, height, sourceFormat,
-			width, height, targetFormat, SWS_FAST_BILINEAR, NULL, NULL, NULL);
+		const uint8_t* planes[4] = {luma8, chroma8, NULL, NULL};
+		int strides[4] = {stride8, stride8, 0, 0};
+		fSws = sws_getCachedContext(fSws, width, height,
+			swap ? AV_PIX_FMT_NV21 : AV_PIX_FMT_NV12, width, height,
+			AV_PIX_FMT_RGB32, SWS_FAST_BILINEAR, NULL, NULL, NULL);
 		if (fSws == NULL)
 			return B_ERROR;
-		output.resize((size_t)width * height * bytesPerPixel);
-		uint8_t* destination[4] = {output.data(), NULL, NULL, NULL};
-		int destinationStride[4] = {width * bytesPerPixel, 0, 0, 0};
+		uint8_t* destination[4] = {output, NULL, NULL, NULL};
+		int destinationStride[4] = {(int)rowBytes, 0, 0, 0};
 		if (sws_scale(fSws, planes, strides, 0, height, destination,
 				destinationStride) != height) {
 			return B_ERROR;
 		}
-		return _FinishFrame(frame, output, header, width, height, format,
-			horizontal, vertical);
+		return _FinishFrame(frame, header, horizontal, vertical);
 	}
 
-	status_t _FinishFrame(MppFrame frame, std::vector<uint8_t>& output,
-		media_header& header, int width, int height, MppFrameFormat format,
+	status_t _FinishFrame(MppFrame frame, media_header& header,
 		int horizontal, int vertical)
 	{
-		int bytesPerPixel = _BytesPerPixel();
-		fWidth = width;
-		fHeight = height;
 		if (fDecodedFrames < 4) {
-			fprintf(stderr, "RockchipMppDecoder: frame=%u %dx%d stride=%dx%d"
-				" format=%#x pts=%lld\n", fDecodedFrames, width, height,
-				horizontal, vertical, format, (long long)mpp_frame_get_pts(frame));
+			fprintf(stderr, "RockchipMppDecoder: frame=%u %ux%u stride=%dx%d"
+				" format=%#x output=%#x pts=%lld\n", fDecodedFrames,
+				mpp_frame_get_width(frame), mpp_frame_get_height(frame),
+				horizontal, vertical, mpp_frame_get_fmt(frame),
+				(unsigned)fOutputSpace, (long long)mpp_frame_get_pts(frame));
 		}
 		fDecodedFrames++;
 		memset(&header, 0, sizeof(header));
 		header.type = B_MEDIA_RAW_VIDEO;
 		RK_S64 pts = mpp_frame_get_pts(frame);
 		header.start_time = pts >= 0 ? pts : fLastInputTime;
-		header.size_used = output.size();
+		size_t rowBytes = _RowBytes();
+		header.size_used = rowBytes * fHeight;
+		if (fOutputSpace == kColorSpaceNV12 || fOutputSpace == kColorSpaceP010)
+			header.size_used += rowBytes * ((fHeight + 1) / 2);
 		header.file_pos = -1;
 		header.u.raw_video.field_gamma = 1.0f;
-		header.u.raw_video.display_line_width = width;
-		header.u.raw_video.display_line_count = height;
-		header.u.raw_video.bytes_per_row = width * bytesPerPixel;
+		header.u.raw_video.display_line_width = fWidth;
+		header.u.raw_video.display_line_count = fHeight;
+		header.u.raw_video.bytes_per_row = rowBytes;
 		return B_OK;
 	}
 
@@ -424,39 +575,47 @@ private:
 
 	void _CountPath(int path)
 	{
-		static uint32 counts[8];
+		static uint32 counts[9];
 		static bigtime_t last = 0;
 		counts[path]++;
 		bigtime_t now = system_time();
 		if (getenv("MPP_TRACE_LOOP") != NULL && now - last > 2000000) {
 			fprintf(stderr, "RockchipMppDecoder: loop frames=%u info=%u "
 				"put-ok=%u full=%u submit=%u eos=%u idle=%u getframe-err=%u"
-				" | get %lldms put %lldms convert %lldms chunk %lldms\n",
-				counts[0], counts[1], counts[2], counts[3], counts[4],
-				counts[5], counts[6], counts[7], (long long)sSpent[0] / 1000,
-				(long long)sSpent[1] / 1000, (long long)sSpent[2] / 1000,
-				(long long)sSpent[3] / 1000);
+				" dropped=%u | get %lldms put %lldms convert %lldms"
+				" chunk %lldms\n", counts[0], counts[1], counts[2], counts[3],
+				counts[4], counts[5], counts[6], counts[7], counts[8],
+				(long long)sSpent[0] / 1000, (long long)sSpent[1] / 1000,
+				(long long)sSpent[2] / 1000, (long long)sSpent[3] / 1000);
 			last = now;
 		}
 	}
 
-	status_t _ReadFrame(std::vector<uint8_t>& output, media_header& header)
+	/*!	The next picture MPP puts out, fed with packets until it does.
+		Pictures it marks as broken (those after a seek that refer to ones
+		before it) or to be left out are not shown, as FFmpeg's rkmpp
+		decoder does not show them. */
+	status_t _NextPicture(MppFrame* _frame)
 	{
+		if (fEosReached)
+			return B_LAST_BUFFER_ERROR;
 		for (int step = 0; step < 20000; step++) {
 			MppFrame frame = NULL;
 			bigtime_t t0 = system_time();
 			MPP_RET result = fApi->decode_get_frame(fContext, &frame);
 			sSpent[0] += system_time() - t0;
-			if (result != MPP_OK)
+			if (result != MPP_OK) {
 				_CountPath(7);
-			if (result != MPP_OK)
 				return B_ERROR;
+			}
 			if (frame != NULL) {
 				if (mpp_frame_get_info_change(frame)) {
 					fprintf(stderr, "RockchipMppDecoder: info-change %ux%u"
-						" stride=%ux%u buffer=%zu\n", mpp_frame_get_width(frame),
-						mpp_frame_get_height(frame), mpp_frame_get_hor_stride(frame),
-						mpp_frame_get_ver_stride(frame), mpp_frame_get_buf_size(frame));
+						" stride=%ux%u buffer=%zu format=%#x\n",
+						mpp_frame_get_width(frame), mpp_frame_get_height(frame),
+						mpp_frame_get_hor_stride(frame),
+						mpp_frame_get_ver_stride(frame),
+						mpp_frame_get_buf_size(frame), mpp_frame_get_fmt(frame));
 					if (fFrameGroup == NULL
 						&& mpp_buffer_group_get_internal(&fFrameGroup,
 							MPP_BUFFER_TYPE_DMA_HEAP) != MPP_OK) {
@@ -471,21 +630,24 @@ private:
 					mpp_frame_deinit(&frame);
 					if (result != MPP_OK)
 						return B_ERROR;
-					fPollsAfterSubmit = 0;
 					_CountPath(1);
 					continue;
 				}
-				_CountPath(0);
-				bool eos = mpp_frame_get_eos(frame);
-				bigtime_t t1 = system_time();
-				status_t status = _ConvertFrame(frame, output, header);
-				sSpent[2] += system_time() - t1;
-				mpp_frame_deinit(&frame);
-				if (status == B_OK)
-					return B_OK;
+				bool eos = mpp_frame_get_eos(frame) != 0;
 				if (eos)
-					return B_LAST_BUFFER_ERROR;
-				return status;
+					fEosReached = true;
+				if (mpp_frame_get_buffer(frame) == NULL
+					|| mpp_frame_get_errinfo(frame) != 0
+					|| mpp_frame_get_discard(frame) != 0) {
+					mpp_frame_deinit(&frame);
+					if (eos)
+						return B_LAST_BUFFER_ERROR;
+					_CountPath(8);
+					continue;
+				}
+				_CountPath(0);
+				*_frame = frame;
+				return B_OK;
 			}
 			if (fHasPending) {
 				status_t status = _Put(fPending, fPendingTime, fPendingEos);
@@ -554,16 +716,16 @@ private:
 	MppBufferGroup fFrameGroup = NULL;
 	AVBSFContext* fBsf = NULL;
 	SwsContext* fSws = NULL;
-	std::vector<uint8_t> fCachedFrame;
-	media_header fCachedHeader = {};
+	MppFrame fHeldFrame = NULL;
+	std::vector<uint8_t> fNarrow;
 	bigtime_t fLastInputTime = 0;
 	int fWidth = 0;
 	int fHeight = 0;
 	bool fEndOfInput = false;
 	bool fEosSent = false;
+	bool fEosReached = false;
 	uint32 fSubmittedPackets = 0;
 	uint32 fDecodedFrames = 0;
-	uint32 fPollsAfterSubmit = 30;
 	color_space fOutputSpace = B_RGB32;
 	std::vector<uint8_t> fPending;
 	bigtime_t fPendingTime = 0;

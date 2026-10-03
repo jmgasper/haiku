@@ -117,3 +117,66 @@ VDPU and AV1 off after decoding.
 
 The player's `BSoundPlayer` path and AAC decode are working. Physical audio
 output qualification is tracked separately with the board audio work.
+
+## Ten-bit HEVC and 4K playback
+
+On 2026-10-03 `00_rockchip_mpp` gained HEVC Main 10 output and the driver
+lighter cache maintenance; airTime 1.0.0-11 uses both. The film tested was a
+3840x1600 HEVC Main 10 HDR10 UHD Blu-ray encode (23 GB, DTS-HD audio) read
+from an SMB share, played in airTime on the NVMe installation at 1920x1080.
+
+The add-on:
+
+- turns MPP's ten-bit output (`MPP_FMT_YUV420SP_10BIT`, four samples in five
+  bytes, Linux's NV15) into P010 with NEON, 2.1 ms a 4K picture; the
+  unpacking matches a scalar reference bit for bit;
+- offers eight-bit pictures as NV12, a copy of rows, where the B_YCbCr422
+  repacking took a single thread most of a 4K picture's time; B_RGB32 and
+  B_YCbCr422 remain, from either depth;
+- converts straight into the caller's buffer, keeps the first picture for
+  `Decode()` however often the output format is negotiated, and leaves out
+  pictures MPP marks broken or discarded (those after a seek that refer to
+  pictures before it), as FFmpeg's rkmpp decoder does;
+- no longer asks MPP for NV12 when the stream is AV1: on the RK3588 that
+  request makes VPU981 cut ten-bit pictures to eight. Ten-bit AV1 comes out
+  in the same five-bytes-for-four layout as RKVDEC's and becomes P010;
+- resets MPP on a seek instead of destroying it. Destroyed in the middle of
+  a picture it kept that picture's buffer (14 MB of the DMA pool at 4K) for
+  good, and a new context allocated and cleared all of its buffers again.
+
+The driver no longer cleans and invalidates the buffers only the decoder
+uses: reference pictures, the one errors are concealed from, motion vectors
+and row caches (RKVDEC registers 131-142, 164-179, 181-196). MPP writes
+none of them; a missing reference gets a new buffer, cleaned when it was
+handed out. The stream, the tables and the picture being decoded are still
+maintained before and after every job. VPU981 (AV1) jobs leave out their
+seven references' luma, chroma, motion vector and tile table registers and
+the decoder's column and synchronisation buffers in the same way; the
+post-processor's output and every register not identified stay
+maintained. The power-down log line now also gives the time spent in the
+decoder.
+
+The DMA pool is 640 MiB by default (it was 320). A 4K ten-bit AV1 stream
+keeps more pictures of 21 MiB than 320 MiB holds; the rest came from write
+combining memory, from which the add-on's unpacking took 58 ms a picture
+instead of a few, and the stream played at 15 pictures a second. The
+driver now logs, once, when a buffer misses the pool; `dma_pool_mb` sets a
+smaller pool on boards with less memory.
+
+| Measurement (the film above) | Before | After |
+| --- | --- | --- |
+| Decoder in airTime | libavcodec (Main 10 refused) | RKVDEC, P010 |
+| Pictures shown per second (24 wanted) | 1-2 | 24.0, none dropped |
+| airTime decode time a picture | 100 ms | 10 ms |
+| VPU job, average (decoding alone) | 17.2-17.9 ms | 8.1 ms (5.3 ms) |
+| VPU job, slowest | 47-50 ms | 24.8 ms |
+
+A 4K ten-bit HDR10 AV1 clip (SVT-AV1, 24 pictures a second) went from
+libavcodec to VPU981 at 23.9 pictures a second, none dropped; its jobs took
+20 ms (13 ms decoding), where full maintenance took 34 ms.
+
+Seeks across the whole film (to 5, 10, 20, 41, 66, 90 and 135 minutes)
+resumed at 24 pictures a second with no buffer left behind; scanning at 8x
+and -16x showed 9-10 key frames a second. 1080p H.264 (Blu-ray x264),
+3840x1600 eight-bit SDR HEVC, 1080p ten-bit SDR HEVC and a 3832x1596 Dolby
+Vision/HDR10 MP4 all played on RKVDEC at 24 pictures a second.
