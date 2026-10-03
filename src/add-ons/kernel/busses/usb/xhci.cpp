@@ -373,6 +373,7 @@ XHCI::XHCI(pci_info *info, 	pci_device_module_info* pci, pci_device* device, Sta
 		fInterruptInstalled(false),
 		fBrokenPortDisable(platform != NULL && platform->broken_port_disable),
 		fUSB2Only(platform != NULL && platform->usb2_only),
+		fTRBOverfetch(false),
 		fErstArea(-1),
 		fDcbaArea(-1),
 		fDcbaPhysical(0),
@@ -398,6 +399,7 @@ XHCI::XHCI(pci_info *info, 	pci_device_module_info* pci, pci_device* device, Sta
 	B_INITIALIZE_SPINLOCK(&fSpinlock);
 	mutex_init(&fFinishedLock, "XHCI finished transfers");
 	mutex_init(&fEventLock, "XHCI event handler");
+	mutex_init(&fChunkLock, "XHCI descriptor chunks");
 
 	if (BusManager::InitCheck() < B_OK) {
 		TRACE_ERROR("bus manager failed to init\n");
@@ -425,6 +427,10 @@ XHCI::XHCI(pci_info *info, 	pci_device_module_info* pci, pci_device* device, Sta
 		}
 
 		mapSize = fPCIInfo->u.h0.base_register_sizes[0];
+
+		// The VL805 reads TRBs ahead and can use them stale.
+		fTRBOverfetch = fPCIInfo->vendor_id == 0x1106
+			&& fPCIInfo->device_id == 0x3483;
 
 #ifdef __aarch64__
 		// PCI host bridges of ARM SoCs do not snoop the CPU caches as a
@@ -659,6 +665,7 @@ XHCI::~XHCI()
 
 	mutex_destroy(&fFinishedLock);
 	mutex_destroy(&fEventLock);
+	mutex_destroy(&fChunkLock);
 
 	if (fInterruptInstalled)
 		remove_io_interrupt_handler(fIRQ, InterruptHandler, (void *)this);
@@ -1097,7 +1104,7 @@ XHCI::SubmitControlRequest(Transfer *transfer)
 	if (status != B_OK)
 		return status;
 
-	xhci_td *descriptor = CreateDescriptor(3, 1, requestData->Length);
+	xhci_td *descriptor = CreateDescriptor(3, 1, requestData->Length, endpoint);
 	if (descriptor == NULL)
 		return B_NO_MEMORY;
 	descriptor->transfer = transfer;
@@ -1236,7 +1243,7 @@ XHCI::SubmitNormalRequest(Transfer *transfer)
 		}
 	}
 
-	xhci_td* td = CreateDescriptor(trbCount, trbCount, trbSize);
+	xhci_td* td = CreateDescriptor(trbCount, trbCount, trbSize, endpoint);
 	if (td == NULL)
 		return B_NO_MEMORY;
 
@@ -1568,7 +1575,8 @@ XHCI::NotifyPipeChange(Pipe *pipe, usb_change change)
 
 
 xhci_td *
-XHCI::CreateDescriptor(uint32 trbCount, uint32 bufferCount, size_t bufferSize)
+XHCI::CreateDescriptor(uint32 trbCount, uint32 bufferCount, size_t bufferSize,
+	xhci_endpoint* endpoint)
 {
 	const bool inKDL = debug_debugger_running();
 
@@ -1590,11 +1598,47 @@ XHCI::CreateDescriptor(uint32 trbCount, uint32 bufferCount, size_t bufferSize)
 	// We always allocate 1 more TRB than requested, so that
 	// _LinkDescriptorForPipe() has room to insert a link TRB.
 	trbCount++;
-	if (AllocateChunk((void **)&result->trbs, &result->trb_addr,
-			(trbCount * sizeof(xhci_trb))) < B_OK) {
+	result->trbs = NULL;
+	result->trb_allocated = trbCount;
+	result->chunk_slot = -1;
+	result->chunk_endpoint = -1;
+	if (fTRBOverfetch) {
+		// Whatever the controller reads past the Link TRB has to be this
+		// descriptor's own, and the memory has to stay with the endpoint.
+		result->trb_allocated = (trbCount + XHCI_TRB_GUARD_COUNT + 7) & ~7;
+		if (!inKDL && endpoint != NULL && endpoint->device != NULL) {
+			result->chunk_slot = endpoint->device->slot;
+			result->chunk_endpoint = endpoint->id;
+
+			MutexLocker locker(fChunkLock);
+			xhci_td_chunk* chunks = endpoint->device->td_chunks[endpoint->id];
+			xhci_td_chunk* best = NULL;
+			for (int32 i = 0; i < XHCI_MAX_TRANSFERS; i++) {
+				if (chunks[i].trbs == NULL
+					|| chunks[i].count < result->trb_allocated) {
+					continue;
+				}
+				if (best == NULL || chunks[i].count < best->count)
+					best = &chunks[i];
+			}
+			if (best != NULL) {
+				result->trbs = best->trbs;
+				result->trb_addr = best->trb_addr;
+				result->trb_allocated = best->count;
+				best->trbs = NULL;
+			}
+		}
+	}
+	if (result->trbs == NULL
+		&& AllocateChunk((void **)&result->trbs, &result->trb_addr,
+			(result->trb_allocated * sizeof(xhci_trb))) < B_OK) {
 		TRACE_ERROR("failed to allocate TRBs\n");
 		FreeDescriptor(result);
 		return NULL;
+	}
+	if (fTRBOverfetch) {
+		memset(result->trbs, 0, result->trb_allocated * sizeof(xhci_trb));
+		_DeviceMemoryBarrier();
 	}
 	result->trb_count = trbCount;
 	result->trb_used = 0;
@@ -1679,8 +1723,35 @@ XHCI::FreeDescriptor(xhci_td *descriptor)
 	const bool inKDL = debug_debugger_running();
 
 	if (descriptor->trbs != NULL) {
-		FreeChunk(descriptor->trbs, descriptor->trb_addr,
-			(descriptor->trb_count * sizeof(xhci_trb)));
+		xhci_td_chunk chunk = { descriptor->trbs, descriptor->trb_addr,
+			descriptor->trb_allocated };
+
+		if (descriptor->chunk_slot >= 0 && !inKDL) {
+			// Keep the memory for the endpoint's next descriptors. When
+			// all places are taken, the smallest chunk goes.
+			MutexLocker locker(fChunkLock);
+			xhci_td_chunk* chunks = fDevices[descriptor->chunk_slot]
+				.td_chunks[descriptor->chunk_endpoint];
+			xhci_td_chunk* place = NULL;
+			for (int32 i = 0; i < XHCI_MAX_TRANSFERS; i++) {
+				if (chunks[i].trbs == NULL) {
+					place = &chunks[i];
+					break;
+				}
+				if (place == NULL || chunks[i].count < place->count)
+					place = &chunks[i];
+			}
+			if (place->trbs == NULL || place->count < chunk.count) {
+				xhci_td_chunk evicted = *place;
+				*place = chunk;
+				chunk = evicted;
+			}
+		}
+
+		if (chunk.trbs != NULL) {
+			FreeChunk(chunk.trbs, chunk.trb_addr,
+				chunk.count * sizeof(xhci_trb));
+		}
 	}
 	if (descriptor->buffers != NULL) {
 		size_t totalSize = descriptor->buffer_size * descriptor->buffer_count;
@@ -1927,7 +1998,7 @@ XHCI::AllocateDevice(Hub *parent, int8 hubAddress, uint8 hubPort,
 
 	device->trb_area = AllocateArea((void **)&device->trbs,
 		&device->trb_addr, sizeof(xhci_trb) * (XHCI_MAX_ENDPOINTS - 1)
-			* XHCI_ENDPOINT_RING_SIZE, "XHCI endpoint trbs");
+			* XHCI_ENDPOINT_RING_STRIDE, "XHCI endpoint trbs");
 	if (device->trb_area < B_OK) {
 		TRACE_ERROR("unable to create a device trbs area\n");
 		CleanupDevice(device);
@@ -2128,6 +2199,8 @@ XHCI::CleanupDevice(xhci_device *device)
 		fDcba->baseAddress[device->slot] = 0;
 	}
 
+	_FreeDescriptorChunks(device);
+
 	if (device->trb_addr != 0)
 		delete_area(device->trb_area);
 	if (device->input_ctx_addr != 0)
@@ -2136,6 +2209,23 @@ XHCI::CleanupDevice(xhci_device *device)
 		delete_area(device->device_ctx_area);
 
 	memset((void*)device, 0, sizeof(xhci_device));
+}
+
+
+void
+XHCI::_FreeDescriptorChunks(xhci_device* device)
+{
+	MutexLocker locker(fChunkLock);
+	for (int32 i = 0; i < XHCI_MAX_ENDPOINTS - 1; i++) {
+		for (int32 j = 0; j < XHCI_MAX_TRANSFERS; j++) {
+			xhci_td_chunk& chunk = device->td_chunks[i][j];
+			if (chunk.trbs == NULL)
+				continue;
+			FreeChunk(chunk.trbs, chunk.trb_addr,
+				chunk.count * sizeof(xhci_trb));
+			chunk.trbs = NULL;
+		}
+	}
 }
 
 
@@ -2197,9 +2287,9 @@ XHCI::_InsertEndpointForPipe(Pipe *pipe)
 		endpoint->used = 0;
 		endpoint->next = 0;
 
-		endpoint->trbs = device->trbs + id * XHCI_ENDPOINT_RING_SIZE;
+		endpoint->trbs = device->trbs + id * XHCI_ENDPOINT_RING_STRIDE;
 		endpoint->trb_addr = device->trb_addr
-			+ id * XHCI_ENDPOINT_RING_SIZE * sizeof(xhci_trb);
+			+ id * XHCI_ENDPOINT_RING_STRIDE * sizeof(xhci_trb);
 		memset(endpoint->trbs, 0,
 			sizeof(xhci_trb) * XHCI_ENDPOINT_RING_SIZE);
 
@@ -2990,9 +3080,11 @@ XHCI::HandleTransferComplete(xhci_trb* trb)
 			&& completionCode != COMP_STOPPED && completionCode != COMP_STOPPED_LENGTH_INVALID) {
 		TRACE_ALWAYS("transfer error on slot %" B_PRId8 " endpoint %" B_PRId8
 			": %s (remainder %" B_PRId32 ", transferred %" B_PRId32
-			", burst payload %" B_PRIuSIZE ", event flags %#" B_PRIx32 ")\n",
+			", burst payload %" B_PRIuSIZE ", event flags %#" B_PRIx32
+			", TRB %#" B_PRIx64 ")\n",
 			slot, endpointNumber, xhci_error_string(completionCode), remainder,
-			transferred, (size_t)endpoint->max_burst_payload, flags);
+			transferred, (size_t)endpoint->max_burst_payload, flags,
+			B_LENDIAN_TO_HOST_INT64(trb->address));
 	}
 
 	phys_addr_t source = B_LENDIAN_TO_HOST_INT64(trb->address);

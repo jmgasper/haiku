@@ -30,7 +30,7 @@ in the documents named in the table.
 | 3 | USB | **Works on the board.** `<pci>bcm2711` brings the PCIe link up and has the VL805's firmware loaded; the xHCI driver runs it with uncached DMA memory. USB 3 flash drive, the NanoKVM's disk, keyboard, mouse and tablet enumerate; a click sent through the KVM opens the Deskbar menu | 2026-10-03: `evidence/serial/boot9.log`, `listusb`, `evidence/usb-click2.jpg` |
 | 4 | GPU (Vulkan / OpenGL) | **OpenGL works on the GPU; Vulkan renders headless.** Kernel: the `v3d` driver (power, buffers through the MMU, bin/render, TFU and compute jobs in submission order, sync objects). User space: Mesa 25.3.6 built for Haiku (`tools/rpi4/mesa`): the `v3d` Gallium driver and the `v3dv` Vulkan driver. GLTeapot renders in a window at about 300 FPS, also on a card flashed from scratch; `rpi4_gl_probe` (GLES 3.1) is pixel-exact up to 1920x1080 with and without depth; `rpi4_vk_probe` ("V3D 4.2.14.0", Vulkan 1.3) reads back a clear and a triangle exactly. **Open:** a Vulkan loader and window system layer (nothing presents through Vulkan), presentation without a copy. See `GPU.md` | 2026-10-04: probe output over telnet, `evidence/teapot6.jpg`, `evidence/stage5-clean-teapot.jpg` |
 | 5 | Multi-display + Screen preferences | **Works through the firmware's compositor; HDMI1's picture not seen.** `rpi_display` driver + accelerant: one frame buffer, one firmware plane per HDMI output, the fork's display layout hooks. Screen preferences and `screenmode` arrange the two outputs, mirror them, and set per-display resolution and scale (the firmware scales); the layout survives a restart. The lab's HDMI1 monitor is not detected by the firmware, so output 2 ran forced at 640x480 and unseen. **Open:** real mode setting, hot plug, DPMS, hardware cursor. See `DISPLAY.md` | 2026-10-03: `evidence/layout-*.jpg`, `evidence/screen-prefs.jpg`, `screenmode -d` over telnet |
-| 6 | Wi-Fi + Wi-Fi tool | **Works: scan, WPA2 join, traffic.** `broadcomfmac`: OpenBSD's `bwfm` on the compatibility layer with an SDIO host of its own for the CYW43455. Joined "Gaspers" (WPA2-PSK/CCMP, 802.11ac), DHCP, ping 1.2 ms, 8 MB in 1.0 s over Wi-Fi alone with Ethernet down (66 Mbit/s, checksum matching); scan while connected; leave and rejoin. The Wi-Fi preferences lists the networks (`evidence/wifi-prefs.jpg`). Driver and firmware are in the `rpi4-airos` profile; a card flashed from scratch on 2026-10-04 scans with both Wi-Fi and Bluetooth. **Open:** join by clicking in the Wi-Fi tool not tried (KVM mouse input broken on this image: xHCI "TRB" transfer errors on the NanoKVM's HID endpoints), sending speed unmeasured. See `WIFI.md` | 2026-10-03: `ifconfig` output and pings over telnet, `evidence/wifi-prefs.jpg` |
+| 6 | Wi-Fi + Wi-Fi tool | **Works: scan, WPA2 join, traffic.** `broadcomfmac`: OpenBSD's `bwfm` on the compatibility layer with an SDIO host of its own for the CYW43455. Joined "Gaspers" (WPA2-PSK/CCMP, 802.11ac), DHCP, ping 1.2 ms, 8 MB in 1.0 s over Wi-Fi alone with Ethernet down (66 Mbit/s, checksum matching); scan while connected; leave and rejoin. The Wi-Fi preferences lists the networks (`evidence/wifi-prefs.jpg`). Driver and firmware are in the `rpi4-airos` profile; a card flashed from scratch on 2026-10-04 scans with both Wi-Fi and Bluetooth. **Open:** join by clicking in the Wi-Fi tool not tried (KVM input was broken then; it works since the xHCI fix below), sending speed unmeasured. See `WIFI.md` | 2026-10-03: `ifconfig` output and pings over telnet, `evidence/wifi-prefs.jpg` |
 | 7 | Bluetooth / BLE + Bluetooth tool | **The controller is up; LE scan, connect and GATT work.** `h4bcm`: an H4 transport on the mini UART for the BCM4345C0, with the patch file loaded at open and the board's address from the device tree. The Bluetooth preferences shows the controller and nearby devices; `bt_le` scans, connects to an LE device and reads its services. Driver and patch file are in the image profile. **Open:** pairing and profiles untested (no device to pair here), 115200 baud. See `BLUETOOTH.md` | 2026-10-04: `evidence/bluetooth-prefs.jpg`, `bt_le` output over telnet |
 | 8 | Media decoding, airTime | **airTime runs; software decoding only, no sound.** The arm64 airTime package plays H.264 1080p30 at 30 fps with libavcodec; HEVC 1080p30 reaches 18.8 fps. **Open:** sound output (HDMI and jack need VCHIQ), hardware decoding (firmware codec through VCHIQ for H.264, the HEVC block). See `MEDIA.md` | 2026-10-04: `evidence/airtime1.jpg`, airTime Stats over telnet |
 | 9 | Summit with GPU acceleration and WebGL | **Works.** A second arm64 build of Summit's WebKit with Skia, GL compositing and WebGL (`summit_webkit` 1.10.0-2) on Mesa's v3d. get.webgl.org reports WebGL and spins its cube; the WebGL Aquarium runs at 21 fps (500 fish, 1024x1024). **Open:** only those two pages were tried; no measurements against the software engine. See `SUMMIT.md` | 2026-10-04: `evidence/summit-gl1.jpg`, `evidence/summit-aquarium.jpg` |
@@ -98,33 +98,39 @@ legacy SDHCI (the lab's QEMU device tree moves the emmc2 node there) and
 that model has no DMA (the driver falls back to the data register); QEMU
 emulates neither PCIe nor GENET.
 
-## Open: USB input through the NanoKVM is unreliable
+## Fixed: USB input through the NanoKVM was unreliable
 
-Seen 2026-10-03 on the full image: on most boots the NanoKVM's keyboard,
-mouse and tablet interfaces stop early ("transfer error on slot 3 endpoint 9
-or 11: TRB", then `usb_hid: error waiting for report`), and later the hub's
-own control requests time out ("hub 7: error updating port status"). Of the
-six or so boots checked, a KVM click worked on one (the Deskbar opened) and
-input stopped again within minutes. The same errors are in serial logs back to stage 3, so
-this is not new with the display or Wi-Fi drivers. Flash drive and RNDIS on
-the same hub keep working. Not yet understood: the errors hit interrupt IN
-endpoints of the high speed composite device; suspects are the interrupt
-endpoint setup in xhci for the VL805 and lost PCIe interrupts (the rings are
-in uncached memory and a full barrier precedes each doorbell, so stale ring
-contents are unlikely). One real
-defect was fixed on the way (low/full speed interrupt endpoints were
-configured with a zero payload per interval).
+Cause (2026-10-04): the VL805 reads up to four TRBs past the one it executes
+and can later use what it read, stale, when another ring comes to use that
+memory (Linux: `XHCI_TRB_OVERFETCH` for this chip). This driver puts every
+transfer's TRBs in a small chunk of its own from one shared pool, so the TRBs
+after a descriptor's Link TRB were other endpoints' descriptors or data
+buffers, and the endpoint rings of a device lay back to back. The controller
+then ran old contents: an endpoint that stayed idle (cycle bit clear), a "TRB"
+error (another transfer type's TRB), transaction errors on the flash drive,
+hub control requests that timed out. Three HID interrupt endpoints submitting
+small descriptors side by side hit it on almost every boot.
 
-Tried on 2026-10-04 and taken out again, because the error stayed (always
-"TRB" on the tablet's interrupt IN endpoint, 6 byte packets, at the first
-transfer after usb_hid starts):
-- Raspberry Pi's Linux tree marks the VL805 with `XHCI_AVOID_DQ_ON_LINK` ("the
-  xHC does not correctly parse link TRBs if the HW dequeue pointer is set to
-  one"). This driver links every transfer into the ring with a Link TRB, and
-  restarts a ring at its first entry. Starting rings with a No Op entry did
-  not remove the error, and control transfers failed twice on that boot.
-- Limiting interrupt IN transfers to one packet (in case the controller
-  refuses transfers longer than the endpoint's Max ESIT Payload): no change.
-The other VL805 quirks of that tree (`XHCI_EP_CTX_BROKEN_DCS`,
-`XHCI_ZHAOXIN_TRB_FETCH`, `XHCI_VLI_HUB_TT_QUIRK`) have not been looked at. Whether the Logitech mouse on
-the other port works was not checked: nobody can see or move it from here.
+Fix in `xhci.cpp`: four unused TRBs follow every endpoint ring (all
+controllers); on the VL805 every descriptor's TRBs are followed by at least
+four zeroed ones and the memory stays with its endpoint (a per-endpoint chunk
+cache, released when the device goes).
+
+Measured with `tools/rpi4/kvm-hid-probe.sh` (20 reports per function written on
+the KVM) 30 s after each start:
+
+| driver | boots | keyboard / mouse / tablet delivered | errors in syslog |
+|---|---|---|---|
+| before | 3 (2 warm, 1 cold) | 20 / 9-10 / 0-8 | hub timeouts, halted endpoints, transaction and TRB errors on every boot |
+| fixed | 8 (5 warm, 3 cold) | 20 / 20 / 20 on every boot | none (only the stalled HID request the KVM does not support) |
+
+End to end on the fixed driver: a command typed through the KVM keyboard ran
+in Terminal, and a KVM click opened the Deskbar menu
+(`evidence/usbhid-key1.jpg`, `evidence/usbhid-click5.jpg`).
+
+Still open:
+- The KVM's absolute pointer is mapped over the whole desktop. With both HDMI
+  outputs on (3840 wide) a KVM click lands at twice its x: use
+  `nanokvm.py click --width 3840`, or the browser pointer is off.
+- The Logitech mouse on the other port enumerates and shows no errors; nobody
+  has moved it.

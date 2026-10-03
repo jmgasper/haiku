@@ -49,12 +49,25 @@ struct xhci_platform_info {
  * (one for the link TRB, and one for the Event Data TRB). */
 #define XHCI_ENDPOINT_RING_SIZE	(XHCI_MAX_TRANSFERS * 2)
 
+/* Some controllers (the VIA VL805) read up to four TRBs past the one they
+ * execute, and may later take what they read for the contents of another
+ * ring that has come to use that memory. Unused TRBs follow every endpoint
+ * ring, and for those controllers every transfer descriptor's TRBs. */
+#define XHCI_TRB_GUARD_COUNT	4
+#define XHCI_ENDPOINT_RING_STRIDE \
+	(XHCI_ENDPOINT_RING_SIZE + XHCI_TRB_GUARD_COUNT)
+
 
 struct xhci_td : public DoublyLinkedListLinkImpl<xhci_td> {
 	xhci_trb*	trbs;
 	phys_addr_t	trb_addr;
 	uint32		trb_count;
 	uint32		trb_used;
+	uint32		trb_allocated;
+		// TRBs in the allocation, guard included
+	int16		chunk_slot;
+	int16		chunk_endpoint;
+		// the endpoint whose chunk cache the TRBs return to, or -1
 
 	void**		buffers;
 	phys_addr_t* buffer_addrs;
@@ -86,12 +99,23 @@ struct xhci_endpoint {
 };
 
 
+struct xhci_td_chunk {
+	xhci_trb*	trbs;
+	phys_addr_t	trb_addr;
+	uint32		count;
+};
+
+
 struct xhci_device {
 	uint8 slot;
 	uint8 address;
 	area_id trb_area;
 	phys_addr_t trb_addr;
-	struct xhci_trb *trbs; // [XHCI_MAX_ENDPOINTS - 1][XHCI_ENDPOINT_RING_SIZE]
+	struct xhci_trb *trbs; // [XHCI_MAX_ENDPOINTS - 1][XHCI_ENDPOINT_RING_STRIDE]
+
+	// TRB memory of finished transfer descriptors, kept per endpoint so that
+	// it never moves from one ring to another (see XHCI_TRB_GUARD_COUNT).
+	xhci_td_chunk td_chunks[XHCI_MAX_ENDPOINTS - 1][XHCI_MAX_TRANSFERS];
 
 	area_id input_ctx_area;
 	phys_addr_t input_ctx_addr;
@@ -180,8 +204,10 @@ private:
 
 			// Descriptor management
 			xhci_td *			CreateDescriptor(uint32 trbCount,
-									uint32 bufferCount, size_t bufferSize);
+									uint32 bufferCount, size_t bufferSize,
+									xhci_endpoint* endpoint = NULL);
 			void				FreeDescriptor(xhci_td *descriptor);
+			void				_FreeDescriptorChunks(xhci_device* device);
 
 			size_t				WriteDescriptor(xhci_td *descriptor,
 									generic_io_vec *vector, size_t vectorCount, bool physical);
@@ -277,6 +303,8 @@ private:
 			bool				fInterruptInstalled;
 			bool				fBrokenPortDisable;
 			bool				fUSB2Only;
+			bool				fTRBOverfetch;
+			mutex				fChunkLock;
 
 			area_id				fErstArea;
 			xhci_erst_element *	fErst;
