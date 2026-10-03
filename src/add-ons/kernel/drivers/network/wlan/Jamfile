@@ -16,6 +16,9 @@ SubInclude HAIKU_TOP src add-ons kernel drivers network wlan realtekwifi8187 ;
 SubInclude HAIKU_TOP src add-ons kernel drivers network wlan zydwifi1211 ;
 
 SubInclude HAIKU_TOP src add-ons kernel drivers network wlan mt7922wifi ;
+if $(TARGET_ARCH) = arm64 {
+	SubInclude HAIKU_TOP src add-ons kernel drivers network wlan broadcomfmac ;
+}
 
 # Native drivers
 SubInclude HAIKU_TOP src add-ons kernel drivers network wlan mt7922 ;
