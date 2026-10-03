@@ -416,6 +416,75 @@ fdt_get_size_cells(const void* fdt, int node)
 }
 
 
+static uint64
+fdt_read_cells(const uint32*& cells, uint32 count)
+{
+	uint64 value = 0;
+	for (uint32 i = 0; i < count; i++)
+		value = (value << 32) | fdt32_to_cpu(*cells++);
+	return value;
+}
+
+
+/*!	Translates \a address, which is in the address space of the children of
+	\a bus, into a CPU address: through the "ranges" of \a bus and of every
+	bus above it. An empty "ranges" is the identity. A bus without the
+	property has an address space of its own (I2C and the like), and the
+	address is returned as it is.
+*/
+static uint64
+fdt_translate_address(int bus, uint64 address)
+{
+	while (bus >= 0) {
+		int parent = fdt_parent_offset(gFDT, bus);
+		if (parent < 0)
+			break;
+
+		int length;
+		const uint32* ranges = (const uint32*)fdt_getprop(gFDT, bus, "ranges",
+			&length);
+		if (ranges == NULL)
+			break;
+
+		if (length > 0) {
+			uint32 childCells = 2;
+			uint32 sizeCells = 1;
+			uint32 parentCells = 2;
+			const uint32* cells = (const uint32*)fdt_getprop(gFDT, bus,
+				"#address-cells", NULL);
+			if (cells != NULL)
+				childCells = fdt32_to_cpu(*cells);
+			cells = (const uint32*)fdt_getprop(gFDT, bus, "#size-cells", NULL);
+			if (cells != NULL)
+				sizeCells = fdt32_to_cpu(*cells);
+			cells = (const uint32*)fdt_getprop(gFDT, parent, "#address-cells",
+				NULL);
+			if (cells != NULL)
+				parentCells = fdt32_to_cpu(*cells);
+
+			// PCI-style three-cell child addresses are not plain addresses.
+			if (childCells > 2 || parentCells > 2 || sizeCells > 2)
+				break;
+
+			const uint32* end = ranges + length / 4;
+			while (ranges + childCells + parentCells + sizeCells <= end) {
+				uint64 childBase = fdt_read_cells(ranges, childCells);
+				uint64 parentBase = fdt_read_cells(ranges, parentCells);
+				uint64 size = fdt_read_cells(ranges, sizeCells);
+				if (address >= childBase && address - childBase < size) {
+					address = address - childBase + parentBase;
+					break;
+				}
+			}
+		}
+
+		bus = parent;
+	}
+
+	return address;
+}
+
+
 static bool
 fdt_device_get_reg(fdt_device* dev, uint32 ord, uint64* regs, uint64* len)
 {
@@ -461,6 +530,7 @@ fdt_device_get_reg(fdt_device* dev, uint32 ord, uint64* regs, uint64* len)
 			return false;
 	}
 
+	*regs = fdt_translate_address(fdt_parent_offset(gFDT, fdtNode), *regs);
 	return true;
 }
 

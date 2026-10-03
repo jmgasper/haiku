@@ -22,7 +22,7 @@ local container = $(HAIKU_RPI_BOOT_ARCHIVE_CONTAINER_NAME) ;
 # Everything the kernel needs until it has mounted the boot volume. The
 # modules are the same builds as the ones in the system package.
 local busManagers = fdt mmc pci scsi usb ;
-local mmcBusses = sdhci ;
+local mmcBusses = bcm2711_emmc2 ;
 local pciBusses = <pci>ecam ;
 local usbBusses = <usb>xhci ;
 local fileSystems = bfs packagefs ;

@@ -239,7 +239,6 @@ rpi_start(void* fdt)
 	fdt_init(fdt);
 	mmu_init();
 
-	mailbox_init();
 	video_init();
 	console_init();
 	init_boot_options();

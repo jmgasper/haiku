@@ -26,6 +26,7 @@ extern "C" {
 #include <libfdt.h>
 }
 
+#include "mailbox.h"
 #include "serial.h"
 
 
@@ -285,8 +286,11 @@ init_uart_node(int node)
 
 	const uint32* frequency = (const uint32*)fdt_getprop(gFDT, node,
 		"clock-frequency", NULL);
+	uint32 rate;
 	if (frequency != NULL)
 		uart.clock = fdt32_to_cpu(*frequency);
+	else if (mailbox_get_clock_rate(MAILBOX_CLOCK_UART, false, rate) == B_OK)
+		uart.clock = rate;
 
 	return true;
 }
@@ -383,6 +387,7 @@ fdt_init(void* fdt)
 		panic("No device tree from the firmware");
 	gFDT = fdt;
 
+	mailbox_init();
 	init_uart();
 	serial_init();
 		// from here on dprintf() reaches the UART
@@ -403,13 +408,23 @@ fdt_init(void* fdt)
 void
 fdt_set_kernel_args()
 {
-	// libfdt wants the tree 8-byte aligned
-	uint32 size = fdt_totalsize(gFDT);
-	gKernelArgs.arch_args.fdt = kernel_args_malloc(size, 8);
-	if (gKernelArgs.arch_args.fdt != NULL)
-		memcpy(gKernelArgs.arch_args.fdt, gFDT, size);
-	else
+	// The kernel gets a copy with room for what is added below; libfdt wants
+	// the tree 8-byte aligned.
+	uint32 size = fdt_totalsize(gFDT) + 1024;
+	void* copy = kernel_args_malloc(size, 8);
+	if (copy == NULL || fdt_open_into(gFDT, copy, size) != 0)
 		panic("No memory for the device tree");
+	gKernelArgs.arch_args.fdt = copy;
+
+	// The firmware owns the clocks. Until the kernel can ask it, tell the
+	// SD controller's driver what its clock runs at.
+	int node = fdt_node_offset_by_compatible(copy, -1, "brcm,bcm2711-emmc2");
+	uint32 rate;
+	if (node >= 0
+		&& mailbox_get_clock_rate(MAILBOX_CLOCK_EMMC2, false, rate) == B_OK) {
+		fdt_setprop_u32(copy, node, "clock-frequency", rate);
+		dprintf("EMMC2 clock: %" B_PRIu32 " Hz\n", rate);
+	}
 
 	const uart_info& uart = gKernelArgs.arch_args.uart;
 	dprintf("UART: %s at %#" B_PRIx64 ", irq %" B_PRIu32 "\n",

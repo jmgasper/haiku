@@ -15,3 +15,7 @@ KernelAddon sdhci :
 	sdhci_acpi.cpp
 	sdhci_pci.cpp
 ;
+
+if $(TARGET_ARCH) = arm64 {
+	SubInclude HAIKU_TOP src add-ons kernel busses mmc bcm2711_emmc2 ;
+}

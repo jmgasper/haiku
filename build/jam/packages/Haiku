@@ -40,6 +40,7 @@ AddFilesToPackage add-ons kernel busses i2c :
 	pch_i2c@x86,x86_64
 	;
 AddFilesToPackage add-ons kernel busses mmc :
+	bcm2711_emmc2@arm64
 	sdhci
 	;
 AddFilesToPackage add-ons kernel busses pci :
@@ -326,6 +327,7 @@ AddBootModuleSymlinksToPackage
 	ahci
 	ata
 	ata_adapter
+	bcm2711_emmc2@arm64
 	bfs
 	dpc
 	efi_gpt
