@@ -14,7 +14,9 @@
 #include <vm/vm.h>
 #include <arch/arm64/cache_line_size.h>
 #include <fcntl.h>
+#include <new>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 #include "VpuInterface.h"
@@ -30,6 +32,8 @@ static mutex sHardwareLock = MUTEX_INITIALIZER("RK3588 VPU hardware");
 static struct OpenHandle* sOpenHandles = NULL;
 static uint32_t sNextBufferHandle = 0;
 
+class PowerHardware;
+
 struct Controller {
 	device_node* node;
 	ResourceInfo resources;
@@ -39,6 +43,35 @@ struct Controller {
 	bool decodeEnabled;
 	bool av1DecodeEnabled;
 	MppValidationStats mppStats;
+
+	// Decoding sessions. Cycling the domains around every job cost tens of
+	// milliseconds a picture; they now come up with the first job and go
+	// down when the last client that decoded closes the device (or after a
+	// job that failed, so the next one starts from a clean block).
+	PowerHardware* hardware;
+	PowerCycle vdpuSession;
+	PowerCycle rkvdec0Session;
+	PowerCycle av1Session;
+	bool vdpuPowered;
+	bool rkvdec0Powered;
+	bool av1Powered;
+	int32_t decodeClients;
+	area_id rkvdec0Area;
+	void* rkvdec0Registers;
+	area_id av1Area;
+	void* av1Registers;
+	uint32_t jobs;
+	bigtime_t jobTime;
+	bigtime_t slowestJob;
+
+	// Picture buffers must be physically contiguous below 4 GiB. Asked for
+	// one at a time, they stop fitting once a running desktop has broken
+	// that memory up; a pool taken when the driver starts keeps them coming.
+	area_id poolArea;
+	uint8_t* poolAddress;
+	uint64_t poolPhysical;
+	size_t poolPages;
+	uint8_t* poolMap;
 };
 
 struct MppPendingJob {
@@ -47,6 +80,9 @@ struct MppPendingJob {
 	uint64_t readAddress;
 	uint32_t readBytes;
 	bool valid;
+	// The buffers the job reads and writes, for cache maintenance.
+	struct DmaBuffer* buffers[96];
+	uint32_t bufferCount;
 };
 
 
@@ -61,6 +97,7 @@ struct OpenHandle {
 	uint64_t allocatedBytes;
 	struct DmaBuffer* buffers;
 	MppPendingJob mppJob;
+	bool decodes;
 };
 
 struct DmaBuffer {
@@ -71,9 +108,22 @@ struct DmaBuffer {
 	void* kernelAddress;
 	uint64_t physical;
 	size_t bytes;
+	ssize_t poolPage;		// first page in the pool, or -1
 };
 
 static DmaBuffer* FindTeamBuffer(team_id owner, uint32_t handle);
+
+
+static void
+RememberJobBuffer(MppPendingJob& job, DmaBuffer* buffer)
+{
+	for (uint32_t index = 0; index < job.bufferCount; index++) {
+		if (job.buffers[index] == buffer)
+			return;
+	}
+	if (job.bufferCount < sizeof(job.buffers) / sizeof(job.buffers[0]))
+		job.buffers[job.bufferCount++] = buffer;
+}
 
 static bool
 IsAv1AddressRegister(uint32_t index)
@@ -194,6 +244,7 @@ ValidateMppJob(OpenHandle* opened, const MppServiceRequest* userRequests)
 			if (allocation == NULL)
 				return B_ENTRY_NOT_FOUND;
 			job.registers[128 + index] = (uint32_t)allocation->physical;
+			RememberJobBuffer(job, allocation);
 			trial.addressHandles++;
 		}
 	} else {
@@ -206,6 +257,7 @@ ValidateMppJob(OpenHandle* opened, const MppServiceRequest* userRequests)
 				return B_ENTRY_NOT_FOUND;
 			av1Handles[index] = handle;
 			job.registers[index] = (uint32_t)allocation->physical;
+			RememberJobBuffer(job, allocation);
 			trial.addressHandles++;
 		}
 	}
@@ -254,6 +306,8 @@ ValidateMppJob(OpenHandle* opened, const MppServiceRequest* userRequests)
 	controller->mppStats.addressHandles += trial.addressHandles;
 	controller->mppStats.offsetEntries += trial.offsetEntries;
 	controller->mppStats.lastStatus = trial.lastStatus;
+	static uint32_t sValidations = 0;
+	if (sValidations++ < 4 || trial.lastStatus != B_OK)
 	dprintf("rk3588_vpu: validated MPP job client=%u mode=%u writes=%u reads=%u offsets=%u"
 		" rcb=%u handles=%u entries=%u; submission %s\n",
 		opened->mppClientType, decodeMode,
@@ -263,8 +317,158 @@ ValidateMppJob(OpenHandle* opened, const MppServiceRequest* userRequests)
 	return trial.lastStatus;
 }
 
-static const size_t kMaximumBufferBytes = 16 * 1024 * 1024;
-static const size_t kMaximumClientBytes = 64 * 1024 * 1024;
+static const size_t kMaximumBufferBytes = 32 * 1024 * 1024;
+// MPP keeps up to 35 pictures for an H.264 stream: 146 MiB at 1080p.
+static const size_t kMaximumClientBytes = 768 * 1024 * 1024;
+static const size_t kDefaultPoolMegabytes = 320;
+
+
+// #pragma mark - DMA pool
+
+
+// Writes back and drops the lines a pool buffer has in the caches, so the
+// decoder sees what the processor wrote and the processor then reads what
+// the decoder wrote. Buffers outside the pool are write combining already.
+static void
+SyncBufferForDevice(DmaBuffer* buffer)
+{
+	if (buffer->poolPage < 0)
+		return;
+	static size_t sLine = 0;
+	if (sLine == 0) {
+		uint64_t ctr = 0;
+		asm volatile("mrs %0, ctr_el0" : "=r"(ctr));
+		sLine = arm64_data_cache_line_size(ctr);
+	}
+	addr_t start = (addr_t)buffer->kernelAddress;
+	addr_t end = start + buffer->bytes;
+	memory_full_barrier();
+	for (addr_t p = start; p < end; p += sLine)
+		asm volatile("dc civac, %0" :: "r"(p) : "memory");
+	asm volatile("dsb sy" ::: "memory");
+}
+
+
+static void
+SyncJobBuffers(const MppPendingJob& job)
+{
+	for (uint32_t index = 0; index < job.bufferCount; index++)
+		SyncBufferForDevice(job.buffers[index]);
+}
+
+
+static bool
+PoolRunFree(const Controller* controller, size_t first, size_t count)
+{
+	for (size_t page = first; page < first + count; page++) {
+		if ((controller->poolMap[page / 8] & (1u << (page % 8))) != 0)
+			return false;
+	}
+	return true;
+}
+
+
+static void
+PoolMark(Controller* controller, size_t first, size_t count, bool used)
+{
+	for (size_t page = first; page < first + count; page++) {
+		if (used)
+			controller->poolMap[page / 8] |= 1u << (page % 8);
+		else
+			controller->poolMap[page / 8] &= ~(1u << (page % 8));
+	}
+}
+
+
+// First fit; returns the first page of the run or -1.
+static ssize_t
+PoolAllocate(Controller* controller, size_t count)
+{
+	if (controller->poolMap == NULL || count == 0
+		|| count > controller->poolPages) {
+		return -1;
+	}
+	size_t page = 0;
+	while (page + count <= controller->poolPages) {
+		if (PoolRunFree(controller, page, count)) {
+			PoolMark(controller, page, count, true);
+			return (ssize_t)page;
+		}
+		// Skip past the used page that stopped this run.
+		size_t next = page;
+		while (next < page + count
+			&& (controller->poolMap[next / 8] & (1u << (next % 8))) == 0)
+			next++;
+		page = next + 1;
+	}
+	return -1;
+}
+
+
+static void
+CreateDmaPool(Controller* controller, size_t megabytes)
+{
+	controller->poolArea = -1;
+	if (megabytes == 0)
+		return;
+	size_t bytes = megabytes * 1024 * 1024;
+	virtual_address_restrictions virtualRestrictions = {};
+	physical_address_restrictions physicalRestrictions = {};
+	physicalRestrictions.high_address = UINT64_C(1) << 32;
+	physicalRestrictions.alignment = B_PAGE_SIZE;
+	void* address = NULL;
+	area_id area = create_area_etc(B_SYSTEM_TEAM, "RK3588 VPU DMA pool", bytes,
+		B_CONTIGUOUS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, 0, 0,
+		&virtualRestrictions, &physicalRestrictions, &address);
+	if (area < B_OK) {
+		dprintf("rk3588_vpu: no DMA pool of %zu MiB: %s\n", megabytes,
+			strerror(area));
+		return;
+	}
+	physical_entry entry = {};
+	if (get_memory_map(address, bytes, &entry, 1) != B_OK
+		|| entry.size < bytes || entry.address >= (UINT64_C(1) << 32)
+		|| bytes > (UINT64_C(1) << 32) - entry.address) {
+		delete_area(area);
+		dprintf("rk3588_vpu: DMA pool not below 4 GiB\n");
+		return;
+	}
+	// Pool memory stays cacheable, for the processor and its users: reading
+	// a decoded picture out of write combining memory cost 23 ms at 720p.
+	// The decoder does not snoop the caches, so every job cleans and
+	// invalidates the buffers it uses before and after it runs.
+	uint64_t ctr = 0;
+	asm volatile("mrs %0, ctr_el0" : "=r"(ctr));
+	size_t line = arm64_data_cache_line_size(ctr);
+	for (addr_t p = (addr_t)address; p < (addr_t)address + bytes; p += line)
+		asm volatile("dc civac, %0" :: "r"(p) : "memory");
+	memory_full_barrier();
+	size_t pages = bytes / B_PAGE_SIZE;
+	uint8_t* map = (uint8_t*)calloc((pages + 7) / 8, 1);
+	if (map == NULL) {
+		delete_area(area);
+		return;
+	}
+	controller->poolArea = area;
+	controller->poolAddress = (uint8_t*)address;
+	controller->poolPhysical = entry.address;
+	controller->poolPages = pages;
+	controller->poolMap = map;
+	dprintf("rk3588_vpu: DMA pool of %zu MiB at %#" B_PRIx64 "\n", megabytes,
+		entry.address);
+}
+
+
+static void
+DeleteDmaPool(Controller* controller)
+{
+	if (controller->poolArea >= B_OK)
+		delete_area(controller->poolArea);
+	free(controller->poolMap);
+	controller->poolArea = -1;
+	controller->poolMap = NULL;
+	controller->poolPages = 0;
+}
 
 
 static void
@@ -274,6 +478,10 @@ DeleteBuffer(OpenHandle* opened, DmaBuffer* buffer)
 		vm_delete_area(opened->owner, buffer->userArea, true);
 	if (buffer->kernelArea >= B_OK)
 		delete_area(buffer->kernelArea);
+	if (buffer->poolPage >= 0) {
+		PoolMark(opened->controller, buffer->poolPage,
+			buffer->bytes / B_PAGE_SIZE, false);
+	}
 	free(buffer);
 }
 
@@ -315,19 +523,41 @@ AllocateBuffer(OpenHandle* opened, BufferAllocation& request)
 	buffer->kernelArea = -1;
 	buffer->userArea = -1;
 	buffer->bytes = bytes;
+	buffer->poolPage = -1;
 	virtual_address_restrictions virtualRestrictions = {};
 	physical_address_restrictions physicalRestrictions = {};
 	physical_entry entry = {};
 	uint64_t ctr = 0;
 	size_t line = 0;
 	void* userAddress = NULL;
+	status_t status = B_OK;
 	physicalRestrictions.high_address = UINT64_C(1) << 32;
 	physicalRestrictions.alignment = B_PAGE_SIZE;
+
+	buffer->poolPage = PoolAllocate(opened->controller, bytes / B_PAGE_SIZE);
+	if (buffer->poolPage >= 0) {
+		Controller* controller = opened->controller;
+		size_t offset = (size_t)buffer->poolPage * B_PAGE_SIZE;
+		buffer->physical = controller->poolPhysical + offset;
+		buffer->kernelAddress = controller->poolAddress + offset;
+		// The pool is reused: what another client decoded must not show.
+		memset(buffer->kernelAddress, 0, bytes);
+		SyncBufferForDevice(buffer);
+		buffer->userArea = vm_map_physical_memory(opened->owner,
+			"RK3588 VPU DMA mapping", &userAddress,
+			B_ANY_ADDRESS | B_WRITE_BACK_MEMORY, bytes,
+			B_READ_AREA | B_WRITE_AREA, buffer->physical, false);
+		status = buffer->userArea;
+		if (status < B_OK)
+			goto fail;
+		goto mapped;
+	}
+
 	buffer->kernelArea = create_area_etc(B_SYSTEM_TEAM, "RK3588 VPU DMA buffer",
 		bytes, B_CONTIGUOUS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
 		0, 0, &virtualRestrictions, &physicalRestrictions,
 		&buffer->kernelAddress);
-	status_t status = buffer->kernelArea;
+	status = buffer->kernelArea;
 	if (status < B_OK)
 		goto fail;
 	status = get_memory_map(buffer->kernelAddress, bytes, &entry, 1);
@@ -360,6 +590,7 @@ AllocateBuffer(OpenHandle* opened, BufferAllocation& request)
 	status = buffer->userArea;
 	if (status < B_OK)
 		goto fail;
+mapped:
 	buffer->handle = ++sNextBufferHandle;
 	request.handle = buffer->handle;
 	request.bytes = bytes;
@@ -883,7 +1114,7 @@ public:
 		return B_OK;
 	}
 
-	status_t RunRkvdec0Job(const MppPendingJob& job)
+	status_t RunRkvdec0Job(const MppPendingJob& job, void* mapped = NULL)
 	{
 		if (!job.valid || job.readBytes == 0 || job.readBytes > 128)
 			return B_BAD_VALUE;
@@ -894,12 +1125,15 @@ public:
 			|| (state.idleStatus & (kVdpuIdle | kRkvdec0Idle)) != 0
 			|| (state.memoryStatus & kRkvdec0Memory) != 0)
 			return B_NOT_ALLOWED;
-		void* blockAddress = NULL;
-		AreaDeleter blockArea(map_physical_memory("RKVDEC0 decode registers",
-			0xfdc38000, B_PAGE_SIZE, B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY,
-			B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, &blockAddress));
-		if (blockArea.Get() < B_OK)
-			return blockArea.Get();
+		void* blockAddress = mapped;
+		AreaDeleter blockArea;
+		if (blockAddress == NULL) {
+			blockArea.SetTo(map_physical_memory("RKVDEC0 decode registers",
+				0xfdc38000, B_PAGE_SIZE, B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY,
+				B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, &blockAddress));
+			if (blockArea.Get() < B_OK)
+				return blockArea.Get();
+		}
 		volatile uint32_t* registers
 			= (volatile uint32_t*)((uint8_t*)blockAddress + 0x100);
 		const volatile uint32_t* iommu
@@ -943,7 +1177,7 @@ public:
 		return (status & terminal) != 0 ? B_OK : B_TIMED_OUT;
 	}
 
-	status_t RunAv1Job(const MppPendingJob& job)
+	status_t RunAv1Job(const MppPendingJob& job, void* mapped = NULL)
 	{
 		if (!job.valid || job.readBytes != sizeof(job.registers))
 			return B_BAD_VALUE;
@@ -957,13 +1191,16 @@ public:
 			|| (state.softReset68 & 0x36) != 0) {
 			return B_NOT_ALLOWED;
 		}
-		void* address = NULL;
-		AreaDeleter area(map_physical_memory("AV1 VPU981 decode registers",
-			0xfdc70000, B_PAGE_SIZE,
-			B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY,
-			B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, &address));
-		if (area.Get() < B_OK)
-			return area.Get();
+		void* address = mapped;
+		AreaDeleter area;
+		if (address == NULL) {
+			area.SetTo(map_physical_memory("AV1 VPU981 decode registers",
+				0xfdc70000, B_PAGE_SIZE,
+				B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY,
+				B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, &address));
+			if (area.Get() < B_OK)
+				return area.Get();
+		}
 		volatile uint32_t* registers = (volatile uint32_t*)address;
 		memory_read_barrier();
 		if (registers[0] != kAv1HardwareId || registers[309] != kAv1BuildId)
@@ -990,7 +1227,8 @@ public:
 				break;
 			snooze(50);
 		} while (system_time() < deadline);
-		dprintf("rk3588_vpu: AV1 terminal status=%#" B_PRIx32 "\n", status);
+		if ((status & (1u << 12)) == 0)
+			dprintf("rk3588_vpu: AV1 terminal status=%#" B_PRIx32 "\n", status);
 		uint32_t readback[512];
 		for (uint32_t index = 0; index < 512; index++)
 			readback[index] = registers[index];
@@ -1010,6 +1248,110 @@ private:
 	const volatile uint32_t* fClock = NULL;
 	volatile uint32_t* fPower = NULL;
 };
+
+
+// #pragma mark - decoding sessions
+
+
+// With sHardwareLock held.
+static void
+PowerDownDecoder(Controller* controller)
+{
+	if (controller->hardware == NULL)
+		return;
+	PowerHardware& hardware = *controller->hardware;
+	if (controller->rkvdec0Powered) {
+		PowerOffRkvdec0(hardware, controller->rkvdec0Session);
+		controller->rkvdec0Powered = false;
+	}
+	if (controller->av1Powered) {
+		PowerOffAv1(hardware, controller->av1Session);
+		controller->av1Powered = false;
+	}
+	if (controller->vdpuPowered) {
+		PowerOffVdpu(hardware, controller->vdpuSession);
+		controller->vdpuPowered = false;
+	}
+	dprintf("rk3588_vpu: decoder powered down after %" B_PRIu32 " jobs,"
+		" %" B_PRId64 " us a job, slowest %" B_PRId64 " us; restore"
+		" %u/%u/%u\n", controller->jobs,
+		controller->jobs > 0 ? controller->jobTime / controller->jobs : 0,
+		controller->slowestJob, controller->vdpuSession.restoreResult,
+		controller->rkvdec0Session.restoreResult,
+		controller->av1Session.restoreResult);
+	controller->jobs = 0;
+	controller->jobTime = 0;
+	controller->slowestJob = 0;
+}
+
+
+// With sHardwareLock held: brings up the parent and the decoder's domain if
+// they are not up, and maps the decoder's registers once.
+static status_t
+EnsureDecoderPowered(Controller* controller, bool rkvdec)
+{
+	if (controller->hardware == NULL) {
+		PowerHardware* hardware = new(std::nothrow) PowerHardware;
+		if (hardware == NULL)
+			return B_NO_MEMORY;
+		status_t status = hardware->Init(controller->resources);
+		if (status != B_OK) {
+			delete hardware;
+			return status;
+		}
+		controller->hardware = hardware;
+	}
+	PowerHardware& hardware = *controller->hardware;
+
+	if (!controller->vdpuPowered) {
+		if (!PowerOnVdpu(hardware, controller->vdpuSession)) {
+			PowerOffVdpu(hardware, controller->vdpuSession);
+			dprintf("rk3588_vpu: VDPU did not power up: %u/%u\n",
+				controller->vdpuSession.result,
+				controller->vdpuSession.restoreResult);
+			return B_ERROR;
+		}
+		controller->vdpuPowered = true;
+	}
+
+	bool& powered = rkvdec ? controller->rkvdec0Powered
+		: controller->av1Powered;
+	PowerCycle& session = rkvdec ? controller->rkvdec0Session
+		: controller->av1Session;
+	if (!powered) {
+		bool on = rkvdec ? PowerOnRkvdec0(hardware, session)
+			: PowerOnAv1(hardware, session);
+		if (!on) {
+			if (rkvdec)
+				PowerOffRkvdec0(hardware, session);
+			else
+				PowerOffAv1(hardware, session);
+			dprintf("rk3588_vpu: %s did not power up: %u/%u\n",
+				rkvdec ? "RKVDEC0" : "AV1", session.result,
+				session.restoreResult);
+			if (!controller->rkvdec0Powered && !controller->av1Powered)
+				PowerDownDecoder(controller);
+			return B_ERROR;
+		}
+		powered = true;
+	}
+
+	area_id& area = rkvdec ? controller->rkvdec0Area : controller->av1Area;
+	void*& registers = rkvdec ? controller->rkvdec0Registers
+		: controller->av1Registers;
+	if (registers == NULL) {
+		area = map_physical_memory(rkvdec ? "RKVDEC0 decode registers"
+				: "AV1 VPU981 decode registers",
+			rkvdec ? 0xfdc38000 : 0xfdc70000, B_PAGE_SIZE,
+			B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY,
+			B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, &registers);
+		if (area < B_OK) {
+			registers = NULL;
+			return area;
+		}
+	}
+	return B_OK;
+}
 
 
 static float
@@ -1042,6 +1384,10 @@ InitDriver(device_node* node, void** cookie)
 	Controller* controller = (Controller*)calloc(1, sizeof(Controller));
 	if (controller == NULL)
 		return B_NO_MEMORY;
+	controller->poolArea = -1;
+	controller->rkvdec0Area = -1;
+	controller->av1Area = -1;
+	size_t poolMegabytes = 0;
 	device_node* parent = sDeviceManager->get_parent_node(node);
 	bool valid = ReadResources(parent, controller->resources);
 	void* settings = load_driver_settings("rk3588_vpu");
@@ -1063,6 +1409,12 @@ InitDriver(device_node* node, void** cookie)
 		profile = get_driver_parameter(settings, "av1_decode_profile", "", "");
 		controller->av1DecodeEnabled = strcmp(profile,
 			"rock5-itx-edk2-v1.1-vpu981-av1") == 0;
+		if (controller->decodeEnabled || controller->av1DecodeEnabled) {
+			const char* pool = get_driver_parameter(settings, "dma_pool_mb",
+				NULL, NULL);
+			poolMegabytes = pool != NULL ? strtoul(pool, NULL, 10)
+				: kDefaultPoolMegabytes;
+		}
 	}
 	if (settings != NULL)
 		unload_driver_settings(settings);
@@ -1073,6 +1425,7 @@ InitDriver(device_node* node, void** cookie)
 		return B_NOT_SUPPORTED;
 	}
 	controller->node = node;
+	CreateDmaPool(controller, poolMegabytes);
 	dprintf("rk3588_vpu: validated VDPU and IOMMU resources;"
 		" VDPU power cycle %s, RKVDEC0 power cycle %s, AV1 power cycle %s,"
 		" RKVDEC decode %s, AV1 decode %s\n",
@@ -1085,7 +1438,23 @@ InitDriver(device_node* node, void** cookie)
 	return B_OK;
 }
 
-static void UninitDriver(void* cookie) { free(cookie); }
+static void
+UninitDriver(void* cookie)
+{
+	Controller* controller = (Controller*)cookie;
+	{
+		MutexLocker locker(sHardwareLock);
+		PowerDownDecoder(controller);
+		delete controller->hardware;
+		controller->hardware = NULL;
+		if (controller->rkvdec0Area >= B_OK)
+			delete_area(controller->rkvdec0Area);
+		if (controller->av1Area >= B_OK)
+			delete_area(controller->av1Area);
+	}
+	DeleteDmaPool(controller);
+	free(controller);
+}
 static status_t InitDevice(void* driver, void** device) { *device = driver; return B_OK; }
 static void UninitDevice(void*) {}
 
@@ -1139,6 +1508,8 @@ Free(void* cookie)
 			break;
 		}
 	}
+	if (opened->decodes && --opened->controller->decodeClients == 0)
+		PowerDownDecoder(opened->controller);
 	while (opened->buffers != NULL) {
 		DmaBuffer* buffer = opened->buffers;
 		opened->buffers = buffer->next;
@@ -1203,35 +1574,39 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 					|| !controller->av1CycleEnabled))) {
 				return B_NOT_ALLOWED;
 			}
-			PowerHardware hardware;
-			status = hardware.Init(controller->resources);
-			if (status != B_OK)
+			status = EnsureDecoderPowered(controller, rkvdec);
+			if (status != B_OK) {
+				opened->mppJob.valid = false;
+				controller->mppStats.lastStatus = status;
 				return status;
-			PowerCycle parent = {};
-			PowerCycle child = {};
-			status_t jobStatus = B_NOT_ALLOWED;
-			CycleVdpuPower(hardware, parent, [&] {
-				if (rkvdec) {
-					CycleRkvdec0Power(hardware, child, [&] {
-						jobStatus = hardware.RunRkvdec0Job(opened->mppJob);
-					});
-				} else {
-					CycleAv1Power(hardware, child, [&] {
-						jobStatus = hardware.RunAv1Job(opened->mppJob);
-					});
-				}
-			});
+			}
+			if (!opened->decodes) {
+				opened->decodes = true;
+				controller->decodeClients++;
+			}
+			bigtime_t started = system_time();
+			SyncJobBuffers(opened->mppJob);
+			status = rkvdec
+				? controller->hardware->RunRkvdec0Job(opened->mppJob,
+					controller->rkvdec0Registers)
+				: controller->hardware->RunAv1Job(opened->mppJob,
+					controller->av1Registers);
+			SyncJobBuffers(opened->mppJob);
+			bigtime_t spent = system_time() - started;
 			opened->mppJob.valid = false;
-			if (parent.result != kPowerOK || parent.restoreResult != kPowerOK
-				|| child.result != kPowerOK || child.restoreResult != kPowerOK) {
-				status = B_ERROR;
-			} else
-				status = jobStatus;
+			controller->jobs++;
+			controller->jobTime += spent;
+			if (spent > controller->slowestJob)
+				controller->slowestJob = spent;
 			opened->mppCompletionReady = status == B_OK;
 			controller->mppStats.lastStatus = status;
-			dprintf("rk3588_vpu: MPP job status=%#x parent=%u/%u"
-				" child=%u/%u\n", status, parent.result,
-				parent.restoreResult, child.result, child.restoreResult);
+			if (status != B_OK) {
+				// Start the next job from a block that was powered off.
+				dprintf("rk3588_vpu: MPP job failed (%s) after %" B_PRId64
+					" us; powering the decoder down\n", strerror(status),
+					spent);
+				PowerDownDecoder(controller);
+			}
 			return status;
 		}
 		bool mappingRequest = request.command == kMppAttachBuffer
