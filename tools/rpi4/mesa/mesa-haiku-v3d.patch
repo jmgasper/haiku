@@ -446,6 +446,37 @@ diff --color -ruN '--exclude=*.orig' '--exclude=__pycache__' -x '*.pyc' a/src/ga
          screen->bo_handles = util_hash_table_create_ptr_keys();
  
  #if USE_V3D_SIMULATOR
+diff --color -ruN '--exclude=*.orig' '--exclude=__pycache__' -x '*.pyc' a/src/gallium/frontends/hgl/hgl.c mesa-25.3.6/src/gallium/frontends/hgl/hgl.c
+--- a/src/gallium/frontends/hgl/hgl.c	2026-09-18 22:57:25.275721209 +1000
++++ b/src/gallium/frontends/hgl/hgl.c	2026-10-03 22:27:15.581661033 +1000
+@@ -124,6 +124,27 @@
+ 				case ST_ATTACHMENT_DEPTH_STENCIL:
+ 					format = buffer->visual.depth_stencil_format;
+ 					bind = PIPE_BIND_DEPTH_STENCIL;
++					if (format != PIPE_FORMAT_NONE
++						&& !buffer->screen->is_format_supported(buffer->screen,
++							format, buffer->target, 0, 0, bind)) {
++						// Not every driver has the visual's layout of depth
++						// and stencil (V3D only has the other byte order).
++						static const enum pipe_format kFormats[] = {
++							PIPE_FORMAT_S8_UINT_Z24_UNORM,
++							PIPE_FORMAT_Z24_UNORM_S8_UINT,
++							PIPE_FORMAT_X8Z24_UNORM,
++							PIPE_FORMAT_Z24X8_UNORM,
++							PIPE_FORMAT_Z16_UNORM
++						};
++						for (unsigned k = 0; k < ARRAY_SIZE(kFormats); k++) {
++							if (buffer->screen->is_format_supported(
++									buffer->screen, kFormats[k], buffer->target,
++									0, 0, bind)) {
++								format = kFormats[k];
++								break;
++							}
++						}
++					}
+ 					break;
+ 				default:
+ 					format = PIPE_FORMAT_NONE;
 diff --color -ruN '--exclude=*.orig' '--exclude=__pycache__' -x '*.pyc' a/src/gallium/winsys/v3d/drm/v3d_drm_public.h mesa-25.3.6/src/gallium/winsys/v3d/drm/v3d_drm_public.h
 --- a/src/gallium/winsys/v3d/drm/v3d_drm_public.h	2026-02-20 05:55:18.000000000 +1100
 +++ b/src/gallium/winsys/v3d/drm/v3d_drm_public.h	2026-10-03 21:21:09.009729017 +1000

@@ -19,8 +19,11 @@
 #include <GLES2/gl2.h>
 
 
-static const int kWidth = 128;
-static const int kHeight = 96;
+// PROBE_WIDTH, PROBE_HEIGHT, PROBE_DEPTH=1 (a depth buffer, depth test on;
+// 2 to 5 are variations, see below)
+// and PROBE_TRIANGLES=n (the triangle drawn n times) vary the job.
+static int kWidth = 128;
+static int kHeight = 96;
 
 
 static bool
@@ -53,6 +56,13 @@ int
 main(int argc, char** argv)
 {
 	int only = argc > 1 ? atoi(argv[1]) : 0;
+	if (getenv("PROBE_WIDTH") != NULL)
+		kWidth = atoi(getenv("PROBE_WIDTH"));
+	if (getenv("PROBE_HEIGHT") != NULL)
+		kHeight = atoi(getenv("PROBE_HEIGHT"));
+	bool depth = getenv("PROBE_DEPTH") != NULL;
+	int triangles = getenv("PROBE_TRIANGLES") != NULL
+		? atoi(getenv("PROBE_TRIANGLES")) : 1;
 
 	EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
 	if (!check(eglInitialize(display, NULL, NULL), "eglInitialize"))
@@ -62,6 +72,7 @@ main(int argc, char** argv)
 		EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
 		EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
 		EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
+		EGL_DEPTH_SIZE, depth ? 16 : 0,
 		EGL_NONE
 	};
 	EGLConfig config;
@@ -86,18 +97,29 @@ main(int argc, char** argv)
 		return 1;
 	}
 
-	printf("renderer: %s\nversion: %s\n", glGetString(GL_RENDERER),
-		glGetString(GL_VERSION));
+	EGLint samples = -1, depthBits = -1, stencilBits = -1;
+	eglGetConfigAttrib(display, config, EGL_SAMPLES, &samples);
+	eglGetConfigAttrib(display, config, EGL_DEPTH_SIZE, &depthBits);
+	eglGetConfigAttrib(display, config, EGL_STENCIL_SIZE, &stencilBits);
+	printf("renderer: %s\nversion: %s\nconfig: %d samples, %d depth bits, %d "
+		"stencil bits\n", glGetString(GL_RENDERER), glGetString(GL_VERSION),
+		(int)samples, (int)depthBits, (int)stencilBits);
 	fflush(stdout);
 
 	bool ok = true;
-	static unsigned char pixels[kWidth * kHeight * 4];
+	unsigned char* pixels = (unsigned char*)malloc(kWidth * kHeight * 4);
+	size_t pixelBytes = kWidth * kHeight * 4;
+	// PROBE_DEPTH=2: a depth buffer in the configuration, but no depth test
+	if (depth && atoi(getenv("PROBE_DEPTH")) == 1) {
+		glEnable(GL_DEPTH_TEST);
+		glClearDepthf(1.0f);
+	}
 	glViewport(0, 0, kWidth, kHeight);
 
 	if (only == 0 || only == 1) {
 		glClearColor(0.2f, 0.4f, 0.6f, 1.0f);
-		glClear(GL_COLOR_BUFFER_BIT);
-		memset(pixels, 0xa5, sizeof(pixels));
+		glClear(GL_COLOR_BUFFER_BIT | (depth ? GL_DEPTH_BUFFER_BIT : 0));
+		memset(pixels, 0xa5, pixelBytes);
 		glReadPixels(0, 0, kWidth, kHeight, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
 		int wrong = 0;
 		for (int i = 0; i < kWidth * kHeight; i++) {
@@ -128,9 +150,22 @@ main(int argc, char** argv)
 		glEnableVertexAttribArray(0);
 
 		glClearColor(0.0f, 0.0f, 1.0f, 1.0f);
-		glClear(GL_COLOR_BUFFER_BIT);
-		glDrawArrays(GL_TRIANGLES, 0, 3);
-		memset(pixels, 0xa5, sizeof(pixels));
+		// PROBE_DEPTH=3: a job that stores nothing but depth
+		if (depth && atoi(getenv("PROBE_DEPTH")) == 3) {
+			glClear(GL_DEPTH_BUFFER_BIT);
+			triangles = 0;
+		} else if (depth && atoi(getenv("PROBE_DEPTH")) >= 4) {
+			// 4: everything cleared at once (no clear by drawing a quad on
+			// V3D 4.2), 5: the same with the depth test on
+			if (atoi(getenv("PROBE_DEPTH")) == 5)
+				glEnable(GL_DEPTH_TEST);
+			glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT
+				| GL_STENCIL_BUFFER_BIT);
+		} else
+			glClear(GL_COLOR_BUFFER_BIT | (depth ? GL_DEPTH_BUFFER_BIT : 0));
+		for (int i = 0; i < triangles; i++)
+			glDrawArrays(GL_TRIANGLES, 0, 3);
+		memset(pixels, 0xa5, pixelBytes);
 		glReadPixels(0, 0, kWidth, kHeight, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
 
 		int red = 0, blue = 0, other = 0;
@@ -145,6 +180,18 @@ main(int argc, char** argv)
 		}
 		printf("triangle: %d red, %d blue, %d other of %d\n", red, blue, other,
 			kWidth * kHeight);
+		if (other != 0) {
+			// a coarse picture of what came back, top row first
+			for (int y = kHeight - 4; y >= 0; y -= 8) {
+				for (int x = 4; x < kWidth; x += 8) {
+					const unsigned char* p = pixels + 4 * (y * kWidth + x);
+					putchar(p[0] == 255 && p[2] == 0 ? 'R'
+						: p[0] == 0 && p[2] == 255 ? 'B'
+						: p[0] == 0xa5 ? '.' : '?');
+				}
+				putchar('\n');
+			}
+		}
 		const unsigned char* low = pixels + 4 * (2 * kWidth + 2);
 		const unsigned char* high = pixels
 			+ 4 * ((kHeight - 3) * kWidth + kWidth - 3);

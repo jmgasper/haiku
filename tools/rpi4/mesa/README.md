@@ -21,6 +21,10 @@ What the patch does:
   cache's mutex is initialized (Haiku asserts on a zeroed mutex).
 - `v3d_drm_winsys.c`: `v3d_haiku_screen_create()` opens the device; stubs for
   the scan-out helpers that only exist with DRM.
+- `frontends/hgl/hgl.c`: the depth/stencil buffer gets a format the driver
+  supports. The frontend asked for `Z24_UNORM_S8_UINT` whatever the driver;
+  V3D only has `S8_UINT_Z24_UNORM`, and with the unsupported one the depth
+  store went out with a colour format and wedged the core's render thread.
 - `egl_haiku.cpp`, `egl/meson.build`: the V3D screen is used whenever the
   device exists (`HAIKU_V3D_DEVICE` names another, `LIBGL_ALWAYS_SOFTWARE`
   skips it); presentation is the ROCK 5 port's copy into a window bitmap.

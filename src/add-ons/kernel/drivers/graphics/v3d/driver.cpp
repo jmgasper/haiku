@@ -51,7 +51,7 @@
 #include "v3d_regs.h"
 
 
-#define TRACE_V3D
+//#define TRACE_V3D
 #ifdef TRACE_V3D
 #	define TRACE(x...) dprintf("v3d: " x)
 #else
@@ -749,6 +749,25 @@ run_cl(v3d_info* info, v3d_job* job, v3d_bo*& overflow)
 			"memory %#x + %#x, tile state %#x\n", events, args.qma, args.qms,
 			args.qts);
 		dump_gpu_memory(info, read32(info->core, V3D_CLE_CT1CA));
+		for (uint32 i = 0; i < job->boCount; i++) {
+			// which of the job's buffers the core got to write
+			v3d_bo* bo = job->bos[i];
+			uint32 used = 0;
+			for (uint32 k = 0; k < bo->pageCount; k++) {
+				const uint32* words = (const uint32*)(bo->address
+					+ k * B_PAGE_SIZE);
+				for (uint32 w = 0; w < B_PAGE_SIZE / 4; w++) {
+					if (words[w] != 0) {
+						used++;
+						break;
+					}
+				}
+			}
+			dprintf("v3d: buffer %#" B_PRIx32 ": %" B_PRIu32 " of %" B_PRIu32
+				" pages in use, first word %#" B_PRIx32 "\n",
+				bo->page << V3D_PAGE_SHIFT, used, bo->pageCount,
+				*(uint32*)bo->address);
+		}
 		dump_registers("core", info->core, 0x000, 0x200);
 		dump_registers("core", info->core, 0x300, 0x320);
 		dump_registers("core", info->core, 0x400, 0x500);
