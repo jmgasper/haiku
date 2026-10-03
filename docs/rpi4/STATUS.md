@@ -93,5 +93,18 @@ endpoint setup in xhci for the VL805 and lost PCIe interrupts (the rings are
 in uncached memory and a full barrier precedes each doorbell, so stale ring
 contents are unlikely). One real
 defect was fixed on the way (low/full speed interrupt endpoints were
-configured with a zero payload per interval). Whether the Logitech mouse on
+configured with a zero payload per interval).
+
+Tried on 2026-10-04 and taken out again, because the error stayed (always
+"TRB" on the tablet's interrupt IN endpoint, 6 byte packets, at the first
+transfer after usb_hid starts):
+- Raspberry Pi's Linux tree marks the VL805 with `XHCI_AVOID_DQ_ON_LINK` ("the
+  xHC does not correctly parse link TRBs if the HW dequeue pointer is set to
+  one"). This driver links every transfer into the ring with a Link TRB, and
+  restarts a ring at its first entry. Starting rings with a No Op entry did
+  not remove the error, and control transfers failed twice on that boot.
+- Limiting interrupt IN transfers to one packet (in case the controller
+  refuses transfers longer than the endpoint's Max ESIT Payload): no change.
+The other VL805 quirks of that tree (`XHCI_EP_CTX_BROKEN_DCS`,
+`XHCI_ZHAOXIN_TRB_FETCH`, `XHCI_VLI_HUB_TT_QUIRK`) have not been looked at. Whether the Logitech mouse on
 the other port works was not checked: nobody can see or move it from here.
