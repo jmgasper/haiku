@@ -5,3 +5,4 @@ UsePrivateHeaders graphics ;
 # lab programs for the Raspberry Pi 4 port
 SimpleTest rpi4_v3d_probe : v3d_probe.cpp ;
 SimpleTest rpi4_fetch : fetch.cpp : network ;
+SimpleTest rpi4_fw : fw.cpp ;

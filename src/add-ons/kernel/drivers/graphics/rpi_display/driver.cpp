@@ -1,0 +1,659 @@
+/*
+ * Copyright 2026, air/OS. All rights reserved.
+ * Distributed under the terms of the MIT License.
+ */
+
+/*	The Raspberry Pi 4's HDMI outputs through the VideoCore firmware.
+
+	The firmware sets the outputs' video modes at boot and runs the
+	compositor (HVS). This driver owns one frame buffer and asks the firmware
+	for one plane per output, each showing a region of that buffer scaled to
+	the output's mode: the "firmware KMS" property tags. The accelerant
+	decides the regions (app_server's display layout). */
+
+
+#include <new>
+#include <stdlib.h>
+#include <string.h>
+
+#include <bus/FDT.h>
+#include <device_manager.h>
+#include <Drivers.h>
+#include <KernelExport.h>
+
+#include <boot_item.h>
+#include <frame_buffer_console.h>
+#include <graphic_driver.h>
+#include <lock.h>
+#include <team.h>
+#include <util/AutoLock.h>
+#include <vm/vm.h>
+
+#include <rpi_display.h>
+#include <rpi_firmware.h>
+
+
+#define RPI_DISPLAY_DRIVER_MODULE_NAME	"drivers/graphics/rpi_display/driver_v1"
+#define RPI_DISPLAY_DEVICE_MODULE_NAME	"drivers/graphics/rpi_display/device_v1"
+
+#define ERROR(x...)	dprintf("rpi_display: " x)
+#define INFO(x...)	dprintf("rpi_display: " x)
+
+// property tags
+#define TAG_GET_EDID_BLOCK_DISPLAY		0x00030023
+#define TAG_FB_GET_PHYSICAL_SIZE		0x00040003
+#define TAG_FB_GET_NUM_DISPLAYS			0x00040013
+#define TAG_FB_GET_DISPLAY_ID			0x00040016
+#define TAG_FB_SET_DISPLAY_NUM			0x00048013
+#define TAG_SET_PLANE					0x00048015
+
+#define VC_IMAGE_XRGB8888				44
+// plane ids are the firmware's, counted across the displays
+#define PLANES_PER_DISPLAY				3
+#define PLANE_LAYER						1
+	// above the firmware's own frame buffer (the boot console)
+
+// The VideoCore sees the ARM's first gigabyte at this bus address.
+#define VC_BUS_OFFSET					0xc0000000
+
+struct firmware_plane {
+	uint8	display;
+	uint8	plane_id;
+	uint8	image_type;
+	int8	layer;
+	uint16	width;
+	uint16	height;
+	uint16	pitch;
+	uint16	vpitch;
+	uint32	src_x;			// 16.16
+	uint32	src_y;
+	uint32	src_w;
+	uint32	src_h;
+	int16	dst_x;
+	int16	dst_y;
+	uint16	dst_w;
+	uint16	dst_h;
+	uint8	alpha;
+	uint8	num_planes;
+	uint8	is_vu;
+	uint8	color_encoding;
+	uint32	planes[4];
+	uint32	transform;
+};
+
+struct display_info {
+	device_node*	node;
+	mutex			lock;
+	int32			openCount;
+	void*			owner;			// the cookie that set a layout
+
+	area_id			sharedArea;
+	rpi_display_shared_info* shared;
+
+	area_id			bufferArea;
+	uint8*			buffer;
+	phys_addr_t		bufferAddress;
+	size_t			bufferSize;
+};
+
+
+static device_manager_info* sDeviceManager;
+static rpi_firmware_module_info* sFirmware;
+
+
+//	#pragma mark - firmware
+
+
+static status_t
+set_plane(const firmware_plane& plane)
+{
+	firmware_plane request = plane;
+	return sFirmware->property(TAG_SET_PLANE, &request, sizeof(request));
+}
+
+
+static void
+remove_plane(uint32 index, uint32 display)
+{
+	firmware_plane plane = {};
+	plane.display = display;
+	plane.plane_id = index * PLANES_PER_DISPLAY;
+	set_plane(plane);
+}
+
+
+/*!	What the firmware set up at boot: the displays and their modes. */
+static status_t
+read_outputs(display_info* info)
+{
+	rpi_display_shared_info& shared = *info->shared;
+
+	uint32 count = 0;
+	status_t status = sFirmware->property(TAG_FB_GET_NUM_DISPLAYS, &count,
+		sizeof(count));
+	if (status != B_OK)
+		return status;
+	if (count > RPI_DISPLAY_MAX_OUTPUTS)
+		count = RPI_DISPLAY_MAX_OUTPUTS;
+
+	for (uint32 i = 0; i < count; i++) {
+		rpi_display_output& output = shared.outputs[i];
+
+		// the frame buffer tags work on the display selected last
+		uint32 number = i;
+		sFirmware->property(TAG_FB_SET_DISPLAY_NUM, &number, sizeof(number));
+		uint32 id[2] = { i, 0 };
+		uint32 size[2] = { 0, 0 };
+		if (sFirmware->property(TAG_FB_GET_DISPLAY_ID, id, sizeof(id)) != B_OK
+			|| sFirmware->property(TAG_FB_GET_PHYSICAL_SIZE, size,
+				sizeof(size)) != B_OK
+			|| size[0] == 0 || size[1] == 0) {
+			continue;
+		}
+
+		output.id = id[0];
+		output.flags = RPI_DISPLAY_OUTPUT_CONNECTED;
+		output.native_width = size[0];
+		output.native_height = size[1];
+
+		// EDID: block 0 and its first extension
+		for (uint32 block = 0; block < 2; block++) {
+			struct {
+				uint32	block;
+				uint32	display;
+				uint8	data[128];
+			} edid = { block, i, {} };
+			uint32 status32[2];
+			if (sFirmware->property(TAG_GET_EDID_BLOCK_DISPLAY, &edid,
+					sizeof(edid)) != B_OK) {
+				break;
+			}
+			memcpy(status32, &edid, sizeof(status32));
+			static const uint8 kHeader[8]
+				= { 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0 };
+			if (status32[1] != 0
+				|| (block == 0 && memcmp(edid.data, kHeader, 8) != 0)) {
+				break;
+			}
+			memcpy(output.edid + block * 128, edid.data, 128);
+			output.edid_length = (block + 1) * 128;
+			if (block == 0 && edid.data[126] == 0)
+				break;
+		}
+
+		INFO("output %" B_PRIu32 ": display id %" B_PRIu32 ", %ux%u, %"
+			B_PRIu32 " bytes of EDID\n", i, output.id, output.native_width,
+			output.native_height, output.edid_length);
+	}
+
+	uint32 number = 0;
+	sFirmware->property(TAG_FB_SET_DISPLAY_NUM, &number, sizeof(number));
+
+	// The firmware answers for a display without a monitor with the other
+	// display's EDID; that says nothing about this one.
+	if (count == 2 && shared.outputs[1].edid_length != 0
+		&& shared.outputs[0].edid_length == shared.outputs[1].edid_length
+		&& memcmp(shared.outputs[0].edid, shared.outputs[1].edid,
+			shared.outputs[0].edid_length) == 0) {
+		shared.outputs[1].edid_length = 0;
+	}
+
+	shared.output_count = count;
+	return count > 0 && (shared.outputs[0].flags
+			& RPI_DISPLAY_OUTPUT_CONNECTED) != 0 ? B_OK : B_DEVICE_NOT_FOUND;
+}
+
+
+//	#pragma mark - frame buffer
+
+
+/*!	A frame buffer of at least \a size bytes: contiguous, where the
+	VideoCore reaches it, write-combining. An existing one that is large
+	enough stays.
+*/
+static status_t
+ensure_buffer(display_info* info, size_t size)
+{
+	size = ROUNDUP(size, B_PAGE_SIZE);
+	if (info->bufferArea >= 0 && info->bufferSize >= size)
+		return B_OK;
+
+	virtual_address_restrictions virtualRestrictions = {};
+	physical_address_restrictions physicalRestrictions = {};
+	physicalRestrictions.high_address = 1ull << 30;
+	void* address;
+	area_id area = create_area_etc(B_SYSTEM_TEAM, "rpi display frame buffer",
+		size, B_CONTIGUOUS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, 0, 0,
+		&virtualRestrictions, &physicalRestrictions, &address);
+	if (area < 0)
+		return area;
+
+	physical_entry entry;
+	status_t status = get_memory_map(address, size, &entry, 1);
+	if (status == B_OK) {
+		status = vm_set_area_memory_type(area, entry.address,
+			B_WRITE_COMBINING_MEMORY);
+	}
+	if (status != B_OK) {
+		delete_area(area);
+		return status;
+	}
+	memset(address, 0, size);
+
+	// Whoever still maps the old buffer keeps its memory; nothing shows it.
+	if (info->bufferArea >= 0)
+		delete_area(info->bufferArea);
+
+	info->bufferArea = area;
+	info->buffer = (uint8*)address;
+	info->bufferAddress = entry.address;
+	info->bufferSize = size;
+	info->shared->generation++;
+	info->shared->physical_address = entry.address;
+	return B_OK;
+}
+
+
+static status_t
+set_layout(display_info* info, const rpi_display_layout& layout)
+{
+	rpi_display_shared_info& shared = *info->shared;
+
+	if (layout.version != RPI_DISPLAY_VERSION || layout.width == 0
+		|| layout.height == 0 || layout.width > 8192 || layout.height > 8192) {
+		return B_BAD_VALUE;
+	}
+
+	uint32 enabled = 0;
+	for (uint32 i = 0; i < shared.output_count; i++) {
+		const rpi_display_output& request = layout.outputs[i];
+		if ((request.flags & RPI_DISPLAY_OUTPUT_ENABLED) == 0)
+			continue;
+		if ((shared.outputs[i].flags & RPI_DISPLAY_OUTPUT_CONNECTED) == 0
+			|| request.x < 0 || request.y < 0 || request.width == 0
+			|| request.height == 0
+			|| request.x + request.width > (int32)layout.width
+			|| request.y + request.height > (int32)layout.height) {
+			return B_BAD_VALUE;
+		}
+		enabled++;
+	}
+	if (enabled == 0)
+		return B_BAD_VALUE;
+
+	uint32 bytesPerRow = layout.width * 4;
+	status_t status = ensure_buffer(info, (size_t)bytesPerRow * layout.height);
+	if (status != B_OK)
+		return status;
+
+	for (uint32 i = 0; i < shared.output_count; i++) {
+		rpi_display_output& output = shared.outputs[i];
+		const rpi_display_output& request = layout.outputs[i];
+		if ((output.flags & RPI_DISPLAY_OUTPUT_CONNECTED) == 0)
+			continue;
+
+		if ((request.flags & RPI_DISPLAY_OUTPUT_ENABLED) == 0) {
+			output.flags = RPI_DISPLAY_OUTPUT_CONNECTED;
+			remove_plane(i, output.id);
+			continue;
+		}
+
+		// the region as large as it gets on the output with its shape kept
+		uint32 width = output.native_width;
+		uint32 height = (uint64)request.height * width / request.width;
+		if (height > output.native_height) {
+			height = output.native_height;
+			width = (uint64)request.width * height / request.height;
+		}
+		// a pixel of rounding is not worth a border
+		if (output.native_width - width <= 2)
+			width = output.native_width;
+		if (output.native_height - height <= 2)
+			height = output.native_height;
+
+		firmware_plane plane = {};
+		plane.display = output.id;
+		plane.plane_id = i * PLANES_PER_DISPLAY;
+		plane.image_type = VC_IMAGE_XRGB8888;
+		plane.layer = PLANE_LAYER;
+		plane.width = layout.width;
+		plane.height = layout.height;
+		plane.pitch = bytesPerRow;
+		plane.vpitch = 1;
+		plane.src_x = request.x << 16;
+		plane.src_y = request.y << 16;
+		plane.src_w = request.width << 16;
+		plane.src_h = request.height << 16;
+		plane.dst_x = (output.native_width - width) / 2;
+		plane.dst_y = (output.native_height - height) / 2;
+		plane.dst_w = width;
+		plane.dst_h = height;
+		plane.alpha = 0xff;
+		plane.num_planes = 1;
+		plane.planes[0] = (uint32)info->bufferAddress | VC_BUS_OFFSET;
+		status = set_plane(plane);
+		if (status != B_OK) {
+			ERROR("the firmware did not take output %" B_PRIu32 "'s plane: "
+				"%s\n", i, strerror(status));
+			return status;
+		}
+
+		output.flags = RPI_DISPLAY_OUTPUT_CONNECTED | RPI_DISPLAY_OUTPUT_ENABLED
+			| (request.flags & RPI_DISPLAY_OUTPUT_MIRROR);
+		output.x = request.x;
+		output.y = request.y;
+		output.width = request.width;
+		output.height = request.height;
+		output.mode_width = request.mode_width;
+		output.mode_height = request.mode_height;
+		output.scale = request.scale;
+		output.render_scale = request.render_scale;
+
+		INFO("output %" B_PRIu32 ": %ux%u at %" B_PRId32 ",%" B_PRId32
+			" of %" B_PRIu32 "x%" B_PRIu32 " shown %" B_PRIu32 "x%" B_PRIu32
+			"%s\n", i, request.width, request.height, request.x, request.y,
+			layout.width, layout.height, width, height,
+			(request.flags & RPI_DISPLAY_OUTPUT_MIRROR) != 0 ? ", mirror" : "");
+	}
+
+	shared.width = layout.width;
+	shared.height = layout.height;
+	shared.bytes_per_row = bytesPerRow;
+
+	// the kernel's console and debugger follow
+	frame_buffer_update((addr_t)info->buffer, layout.width, layout.height, 32,
+		bytesPerRow);
+	return B_OK;
+}
+
+
+/*!	Back to the firmware's own frame buffer, for the console. */
+static void
+release_layout(display_info* info)
+{
+	rpi_display_shared_info& shared = *info->shared;
+	for (uint32 i = 0; i < shared.output_count; i++) {
+		if ((shared.outputs[i].flags & RPI_DISPLAY_OUTPUT_ENABLED) != 0)
+			remove_plane(i, shared.outputs[i].id);
+		shared.outputs[i].flags &= RPI_DISPLAY_OUTPUT_CONNECTED;
+	}
+
+	frame_buffer_boot_info* bootInfo = (frame_buffer_boot_info*)get_boot_item(
+		FRAME_BUFFER_BOOT_INFO, NULL);
+	if (bootInfo != NULL) {
+		frame_buffer_update(bootInfo->frame_buffer, bootInfo->width,
+			bootInfo->height, bootInfo->depth, bootInfo->bytes_per_row);
+	}
+}
+
+
+//	#pragma mark - device
+
+
+static status_t
+display_init_device(void* _info, void** _cookie)
+{
+	display_info* info = (display_info*)_info;
+
+	info->sharedArea = create_area("rpi display shared info",
+		(void**)&info->shared, B_ANY_KERNEL_ADDRESS,
+		ROUNDUP(sizeof(rpi_display_shared_info), B_PAGE_SIZE), B_FULL_LOCK,
+		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA | B_CLONEABLE_AREA);
+	if (info->sharedArea < 0)
+		return info->sharedArea;
+	memset(info->shared, 0, sizeof(rpi_display_shared_info));
+	info->shared->version = RPI_DISPLAY_VERSION;
+	info->bufferArea = -1;
+
+	status_t status = read_outputs(info);
+	if (status != B_OK) {
+		ERROR("no display from the firmware: %s\n", strerror(status));
+		delete_area(info->sharedArea);
+		return status;
+	}
+
+	// Room for the outputs side by side, taken while contiguous memory is
+	// still easy to find.
+	const rpi_display_shared_info& shared = *info->shared;
+	uint32 width = 0, height = 0;
+	for (uint32 i = 0; i < shared.output_count; i++) {
+		width += shared.outputs[i].native_width;
+		if (shared.outputs[i].native_height > height)
+			height = shared.outputs[i].native_height;
+	}
+	status = ensure_buffer(info, (size_t)width * 4 * height);
+	if (status != B_OK) {
+		ERROR("no memory for the frame buffer: %s\n", strerror(status));
+		delete_area(info->sharedArea);
+		return status;
+	}
+
+	mutex_init(&info->lock, "rpi display");
+	*_cookie = info;
+	return B_OK;
+}
+
+
+static void
+display_uninit_device(void* cookie)
+{
+	display_info* info = (display_info*)cookie;
+	mutex_destroy(&info->lock);
+	if (info->bufferArea >= 0)
+		delete_area(info->bufferArea);
+	delete_area(info->sharedArea);
+}
+
+
+static status_t
+display_open(void* _info, const char* path, int openMode, void** _cookie)
+{
+	display_info* info = (display_info*)_info;
+
+	// the cookie only tells one open from another
+	void* cookie = malloc(1);
+	if (cookie == NULL)
+		return B_NO_MEMORY;
+
+	atomic_add(&info->openCount, 1);
+	*_cookie = cookie;
+	return B_OK;
+}
+
+
+static status_t
+display_close(void* cookie)
+{
+	return B_OK;
+}
+
+
+// device_manager hands the hooks the cookie of open(); the device is found
+// through a global, there is only one.
+static display_info* sInfo;
+
+
+static status_t
+display_free(void* cookie)
+{
+	display_info* info = sInfo;
+	MutexLocker locker(info->lock);
+	if (info->owner == cookie) {
+		release_layout(info);
+		info->owner = NULL;
+	}
+	atomic_add(&info->openCount, -1);
+	free(cookie);
+	return B_OK;
+}
+
+
+static status_t
+display_control(void* cookie, uint32 op, void* buffer, size_t length)
+{
+	display_info* info = sInfo;
+
+	switch (op) {
+		case B_GET_ACCELERANT_SIGNATURE:
+			return user_strlcpy((char*)buffer, RPI_DISPLAY_ACCELERANT,
+				B_FILE_NAME_LENGTH) < B_OK ? B_BAD_ADDRESS : B_OK;
+
+		case RPI_DISPLAY_GET_SHARED_AREA:
+			return user_memcpy(buffer, &info->sharedArea, sizeof(area_id));
+
+		case RPI_DISPLAY_SET_LAYOUT:
+		{
+			rpi_display_layout layout;
+			if (length != sizeof(layout))
+				return B_BAD_VALUE;
+			status_t status = user_memcpy(&layout, buffer, sizeof(layout));
+			if (status != B_OK)
+				return status;
+
+			MutexLocker locker(info->lock);
+			if (info->owner != NULL && info->owner != cookie)
+				return B_BUSY;
+			status = set_layout(info, layout);
+			if (status == B_OK)
+				info->owner = cookie;
+			return status;
+		}
+
+		case RPI_DISPLAY_CLONE_FRAME_BUFFER:
+		{
+			MutexLocker locker(info->lock);
+			void* address = NULL;
+			area_id area = vm_clone_area(team_get_current_team_id(),
+				"rpi display frame buffer", &address, B_ANY_ADDRESS,
+				B_READ_AREA | B_WRITE_AREA, 0, info->bufferArea, true);
+			if (area < 0)
+				return area;
+
+			area_info areaInfo = {};
+			areaInfo.area = area;
+			areaInfo.address = address;
+			areaInfo.size = info->bufferSize;
+			status_t status = user_memcpy(buffer, &areaInfo, sizeof(areaInfo));
+			if (status != B_OK)
+				vm_delete_area(team_get_current_team_id(), area, true);
+			return status;
+		}
+	}
+
+	return B_DEV_INVALID_IOCTL;
+}
+
+
+//	#pragma mark - driver
+
+
+static float
+display_supports_device(device_node* parent)
+{
+	const char* bus;
+	if (sDeviceManager->get_attr_string(parent, B_DEVICE_BUS, &bus, false)
+			!= B_OK || strcmp(bus, "fdt") != 0) {
+		return -1.0f;
+	}
+
+	// The compositor's node stands for the display hardware; the firmware
+	// drives it.
+	const char* compatible;
+	if (sDeviceManager->get_attr_string(parent, "fdt/compatible", &compatible,
+			false) != B_OK || strcmp(compatible, "brcm,bcm2711-hvs") != 0) {
+		return -1.0f;
+	}
+
+	return 1.0f;
+}
+
+
+static status_t
+display_register_device(device_node* parent)
+{
+	device_attr attributes[] = {
+		{ B_DEVICE_PRETTY_NAME, B_STRING_TYPE,
+			{ .string = "Raspberry Pi HDMI outputs" } },
+		{}
+	};
+
+	return sDeviceManager->register_node(parent, RPI_DISPLAY_DRIVER_MODULE_NAME,
+		attributes, NULL, NULL);
+}
+
+
+static status_t
+display_init_driver(device_node* node, void** _cookie)
+{
+	display_info* info = (display_info*)calloc(1, sizeof(display_info));
+	if (info == NULL)
+		return B_NO_MEMORY;
+	info->node = node;
+	sInfo = info;
+	*_cookie = info;
+	return B_OK;
+}
+
+
+static void
+display_uninit_driver(void* cookie)
+{
+	free(cookie);
+}
+
+
+static status_t
+display_register_child_devices(void* cookie)
+{
+	display_info* info = (display_info*)cookie;
+	return sDeviceManager->publish_device(info->node, RPI_DISPLAY_DEVICE,
+		RPI_DISPLAY_DEVICE_MODULE_NAME);
+}
+
+
+module_dependency module_dependencies[] = {
+	{B_DEVICE_MANAGER_MODULE_NAME, (module_info**)&sDeviceManager},
+	{RPI_FIRMWARE_MODULE_NAME, (module_info**)&sFirmware},
+	{}
+};
+
+static device_module_info sDisplayDevice = {
+	{
+		RPI_DISPLAY_DEVICE_MODULE_NAME,
+		0,
+		NULL
+	},
+	display_init_device,
+	display_uninit_device,
+	NULL,	// removed
+	display_open,
+	display_close,
+	display_free,
+	NULL,	// read
+	NULL,	// write
+	NULL,	// io
+	display_control,
+	NULL,	// select
+	NULL,	// deselect
+};
+
+static driver_module_info sDisplayDriver = {
+	{
+		RPI_DISPLAY_DRIVER_MODULE_NAME,
+		0,
+		NULL
+	},
+	display_supports_device,
+	display_register_device,
+	display_init_driver,
+	display_uninit_driver,
+	display_register_child_devices,
+	NULL,	// rescan
+	NULL,	// removed
+};
+
+module_info* modules[] = {
+	(module_info*)&sDisplayDriver,
+	(module_info*)&sDisplayDevice,
+	NULL
+};

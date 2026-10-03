@@ -18,6 +18,8 @@ uart_2ndstage=1
 dtoverlay=disable-bt
 
 disable_overscan=1
+# one frame buffer per HDMI output
+max_framebuffers=2
 disable_splash=1
 
 # cmdline.txt takes the loader's options, each a word of its own:

@@ -18,3 +18,10 @@ KernelAddon <driver>kdl :
 KernelAddon <driver>test :
 	test.c
 	;
+
+if $(TARGET_ARCH) = arm64 {
+	# lab device for the Raspberry Pi's firmware; in no image
+	KernelAddon <driver>rpi_property :
+		rpi_property.cpp
+		;
+}

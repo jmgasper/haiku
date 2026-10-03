@@ -138,6 +138,7 @@ AddNewDriversToPackage disk virtual :
 	virtio_block@arm,arm64,riscv64
 	;
 AddNewDriversToPackage graphics :
+	rpi_display@arm64
 	v3d@arm64
 	virtio_gpu
 	;
@@ -381,6 +382,10 @@ AddFilesToPackage add-ons accelerants :
 	framebuffer.accelerant
 	virtio_gpu.accelerant
 	$(SYSTEM_ADD_ONS_ACCELERANTS) ;
+if $(TARGET_ARCH) = arm64 {
+	# the Raspberry Pi 4's HDMI outputs
+	AddFilesToPackage add-ons accelerants : rpi_display.accelerant ;
+}
 AddFilesToPackage add-ons locale catalogs :
 	$(SYSTEM_ADD_ONS_LOCALE_CATALOGS) ;
 
