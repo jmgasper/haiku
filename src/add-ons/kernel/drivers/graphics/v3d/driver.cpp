@@ -51,6 +51,12 @@
 #include "v3d_regs.h"
 
 
+#define TRACE_V3D
+#ifdef TRACE_V3D
+#	define TRACE(x...) dprintf("v3d: " x)
+#else
+#	define TRACE(x...) ;
+#endif
 #define INFO(x...)	dprintf("v3d: " x)
 #define ERROR(x...)	dprintf("v3d: " x)
 
@@ -242,6 +248,35 @@ power_on(v3d_info* info)
 	if (status != B_OK)
 		ERROR("the bus bridges to the core do not open\n");
 	return status;
+}
+
+
+static void
+asb_disable(v3d_info* info, uint32 reg)
+{
+	write32(info->asb, reg,
+		PM_PASSWORD | read32(info->asb, reg) | ASB_REQ_STOP);
+
+	bigtime_t timeout = system_time() + 10000;
+	while ((read32(info->asb, reg) & ASB_ACK) == 0) {
+		if (system_time() > timeout)
+			break;
+		spin(5);
+	}
+}
+
+
+/*!	The other way around: close the bridges before the core goes into
+	reset, or the bus hangs on the next access.
+*/
+static void
+power_off(v3d_info* info)
+{
+	asb_disable(info, ASB_V3D_S_CTRL);
+	asb_disable(info, ASB_V3D_M_CTRL);
+	sFirmware->set_clock_state(RPI_FIRMWARE_CLOCK_V3D, false);
+	write32(info->pm, PM_GRAFX,
+		PM_PASSWORD | (read32(info->pm, PM_GRAFX) & ~PM_V3DRSTN));
 }
 
 
@@ -505,20 +540,22 @@ init_hardware(v3d_info* info)
 static void
 reset_hardware(v3d_info* info)
 {
-	ERROR("resetting the core; error status %#" B_PRIx32 ", bin at %#"
-		B_PRIx32 ", render at %#" B_PRIx32 "\n",
-		read32(info->core, V3D_ERR_STAT), read32(info->core, V3D_CLE_CT0CA),
-		read32(info->core, V3D_CLE_CT1CA));
+	ERROR("resetting the core; error status %#" B_PRIx32 ", interrupts %#"
+		B_PRIx32 ", bin: status %#" B_PRIx32 " at %#" B_PRIx32 ", render: "
+		"status %#" B_PRIx32 " at %#" B_PRIx32 ", MMU control %#" B_PRIx32
+		"\n", read32(info->core, V3D_ERR_STAT),
+		read32(info->core, V3D_CTL_INT_STS), read32(info->core, V3D_CLE_CT0CS),
+		read32(info->core, V3D_CLE_CT0CA), read32(info->core, V3D_CLE_CT1CS),
+		read32(info->core, V3D_CLE_CT1CA), read32(info->hub, V3D_MMU_CTL));
 
 	write32(info->core, V3D_CTL_INT_MSK_SET, 0xffffffff);
 	write32(info->hub, V3D_HUB_INT_MSK_SET, 0xffffffff);
 
-	write32(info->pm, PM_GRAFX,
-		PM_PASSWORD | (read32(info->pm, PM_GRAFX) & ~PM_V3DRSTN));
+	// through the power domain, as its reset line does on Linux
+	power_off(info);
 	spin(10);
-	write32(info->pm, PM_GRAFX,
-		PM_PASSWORD | read32(info->pm, PM_GRAFX) | PM_V3DRSTN);
-	spin(10);
+	if (power_on(info) != B_OK)
+		ERROR("the core does not come back\n");
 
 	init_hardware(info);
 	info->resets++;
@@ -600,6 +637,51 @@ wait_for_event(v3d_info* info, uint32 mask, bigtime_t timeout)
 //	#pragma mark - jobs
 
 
+static void
+dump_registers(const char* name, volatile uint8* base, uint32 from, uint32 to)
+{
+	dprintf("v3d: %s registers:", name);
+	for (uint32 reg = from; reg < to; reg += 4) {
+		uint32 value = read32(base, reg);
+		if (value != 0)
+			dprintf(" %03" B_PRIx32 "=%" B_PRIx32, reg, value);
+	}
+	dprintf("\n");
+}
+
+
+/*!	Debug output: the buffer that holds GPU address \a address and the
+	bytes around it.
+*/
+static void
+dump_gpu_memory(v3d_info* info, uint32 address)
+{
+	MutexLocker locker(info->lock);
+
+	uint32 page = address >> V3D_PAGE_SHIFT;
+	for (v3d_bo* bo = info->buffers; bo != NULL; bo = bo->next) {
+		if (page < bo->page || page >= bo->page + bo->pageCount)
+			continue;
+
+		uint32 offset = address - (bo->page << V3D_PAGE_SHIFT);
+		uint32 from = offset >= 32 ? offset - 32 : 0;
+		uint32 to = std::min((size_t)offset + 32, bo->size);
+		dprintf("v3d: %#" B_PRIx32 " is at offset %#" B_PRIx32 " of the %"
+			B_PRIuSIZE " byte buffer at %#" B_PRIx32 ":", address, offset,
+			bo->size, bo->page << V3D_PAGE_SHIFT);
+		for (uint32 i = from; i < to; i++) {
+			dprintf("%s%02x", i == offset ? " [" : " ", bo->address[i]);
+			if (i == offset)
+				dprintf("]");
+		}
+		dprintf("\n");
+		return;
+	}
+
+	dprintf("v3d: %#" B_PRIx32 " is in no buffer\n", address);
+}
+
+
 static status_t
 run_cl(v3d_info* info, v3d_job* job, v3d_bo*& overflow)
 {
@@ -633,6 +715,7 @@ run_cl(v3d_info* info, v3d_job* job, v3d_bo*& overflow)
 				// The binner ran out of memory for its tile lists: give
 				// it more. The render list still needs it; the job keeps
 				// it until it is done.
+				TRACE("binner out of memory\n");
 				MutexLocker locker(info->lock);
 				v3d_bo* more;
 				if (create_buffer(info, V3D_OVERFLOW_SIZE, more) != B_OK)
@@ -647,6 +730,8 @@ run_cl(v3d_info* info, v3d_job* job, v3d_bo*& overflow)
 				write32(info->core, V3D_PTB_BPOS, more->size);
 				continue;
 			}
+			ERROR("the binner did not finish (events %#" B_PRIx32 ")\n",
+				events);
 			return (events & EVENT_MMU_ERROR) != 0 ? B_BAD_ADDRESS
 				: B_TIMED_OUT;
 		}
@@ -659,8 +744,19 @@ run_cl(v3d_info* info, v3d_job* job, v3d_bo*& overflow)
 
 	uint32 events = wait_for_event(info, V3D_INT_FRDONE | EVENT_MMU_ERROR,
 		5000000);
-	if ((events & V3D_INT_FRDONE) == 0)
+	if ((events & V3D_INT_FRDONE) == 0) {
+		ERROR("the render list did not finish (events %#" B_PRIx32 "); tile "
+			"memory %#x + %#x, tile state %#x\n", events, args.qma, args.qms,
+			args.qts);
+		dump_gpu_memory(info, read32(info->core, V3D_CLE_CT1CA));
+		dump_registers("core", info->core, 0x000, 0x200);
+		dump_registers("core", info->core, 0x300, 0x320);
+		dump_registers("core", info->core, 0x400, 0x500);
+		dump_registers("core", info->core, 0x800, 0x830);
+		dump_registers("core", info->core, 0xf00, 0xf30);
+		dump_registers("hub", info->hub, 0x000, 0x070);
 		return (events & EVENT_MMU_ERROR) != 0 ? B_BAD_ADDRESS : B_TIMED_OUT;
+	}
 
 	if ((args.flags & DRM_V3D_SUBMIT_CL_FLUSH_CACHE) != 0)
 		clean_caches(info);
@@ -744,6 +840,13 @@ executor_thread(void* data)
 			info->lastJob = NULL;
 		locker.Unlock();
 
+		TRACE("job %" B_PRIu64 " type %" B_PRIu32 ", %" B_PRIu32 " buffers"
+			", bcl %#x-%#x rcl %#x-%#x\n", job->seqno, job->type,
+			job->boCount, job->type == JOB_CL ? job->cl.bcl_start : 0,
+			job->type == JOB_CL ? job->cl.bcl_end : 0,
+			job->type == JOB_CL ? job->cl.rcl_start : 0,
+			job->type == JOB_CL ? job->cl.rcl_end : 0);
+
 		v3d_bo* overflow = NULL;
 		status_t status;
 		switch (job->type) {
@@ -757,6 +860,8 @@ executor_thread(void* data)
 				status = run_csd(info, job);
 				break;
 		}
+
+		TRACE("job %" B_PRIu64 " done: %s\n", job->seqno, strerror(status));
 
 		if (status != B_OK) {
 			ERROR("job %" B_PRIu64 " (type %" B_PRIu32 ") failed: %s\n",
@@ -805,8 +910,9 @@ wait_for_job(v3d_info* info, uint64 seqno, int64 timeout)
 		if (timeout == 0)
 			return B_WOULD_BLOCK;
 
-		status_t status = entry.Wait(
-			B_ABSOLUTE_TIMEOUT | B_CAN_INTERRUPT, deadline);
+		status_t status = timeout < 0
+			? entry.Wait(B_CAN_INTERRUPT)
+			: entry.Wait(B_ABSOLUTE_TIMEOUT | B_CAN_INTERRUPT, deadline);
 		if (status == B_TIMED_OUT || status == B_INTERRUPTED)
 			return status;
 	}
@@ -1386,7 +1492,17 @@ v3d_control(void* cookie, uint32 op, void* buffer, size_t length)
 			if (status != B_OK)
 				return status;
 
-			if (op != V3D_HAIKU_SEQNO_WAIT) {
+			if (op == V3D_HAIKU_SEQNO_WAIT
+				&& request.handle == V3D_HAIKU_TOKEN) {
+				// a fence token: the low 31 bits of the sequence number of
+				// a job that has been submitted
+				MutexLocker locker(info->lock);
+				uint64 seqno = (info->submitted & ~(uint64)0x7fffffff)
+					| (request.seqno & 0x7fffffff);
+				if (seqno > info->submitted)
+					seqno -= (uint64)1 << 31;
+				request.seqno = seqno;
+			} else if (op != V3D_HAIKU_SEQNO_WAIT) {
 				MutexLocker locker(info->lock);
 				if (request.handle == 0 || request.handle > file->syncCount
 					|| file->syncs[request.handle - 1] == 0) {

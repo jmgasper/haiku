@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Configure and build Mesa's v3d driver for air/OS (Raspberry Pi 4).
+#
+# This sits on top of the ROCK 5's pinned Haiku Mesa port: it uses that
+# build's sysroot, cross file and libglvnd (BASE), and a copy of its patched
+# Mesa 25.3.6 source with the v3d patch of this directory applied on top.
+#   build.sh [configure|build]     (default: both, configuring only once)
+set -euo pipefail
+BASE=${RPI4_MESA_BASE:-/mnt/HaikuWork/artifacts/mali-system-opengl-build/20260918T125722Z}
+ROOT=${RPI4_MESA_ROOT:-/mnt/HaikuWork/rpi4/mesa}
+WORK=/mnt/HaikuWork
+export PATH=$WORK/toolchains/mesa-python/bin:$WORK/toolchains/mesa-host/bin:$WORK/toolchains/host/usr/bin:$PATH
+export LD_LIBRARY_PATH=$WORK/toolchains/mesa-native-deps/usr/lib/x86_64-linux-gnu:$WORK/toolchains/mesa-native-deps/usr/lib/llvm-18/lib
+export TMPDIR=$WORK/tmp
+unset PKG_CONFIG_PATH
+
+mkdir -p "$ROOT"
+[ -d "$ROOT/mesa-25.3.6" ] || cp -a "$BASE/mesa-25.3.6" "$ROOT/"
+
+if [ "${1:-}" = configure ] || [ ! -f "$ROOT/build/build.ninja" ]; then
+    rm -rf "$ROOT/build"
+    meson setup "$ROOT/build" "$ROOT/mesa-25.3.6" \
+        --cross-file="$BASE/haiku-aarch64.ini" --prefix="$ROOT/install" \
+        --libdir=lib --buildtype=debugoptimized --wrap-mode=nofallback \
+        -Dplatforms=haiku -Dexpat=disabled -Dgallium-drivers=v3d,softpipe \
+        -Dgallium-va=disabled '-Dvulkan-drivers=[]' -Dshader-cache=disabled \
+        -Dgles1=disabled -Dgles2=enabled -Dopengl=true -Dgbm=disabled \
+        -Dglx=disabled -Degl=enabled -Dglvnd=enabled -Dllvm=disabled \
+        -Dvalgrind=disabled -Dbuild-tests=false '-Dtools=[]' -Dzstd=disabled \
+        -Dzlib=disabled -Dxmlconfig=disabled -Dmesa-clc=system \
+        -Dprecomp-compiler=system -Dspirv-tools=disabled
+fi
+[ "${1:-}" = configure ] && exit 0
+ninja -C "$ROOT/build" -j"${HAIKU_JOBS:-12}"

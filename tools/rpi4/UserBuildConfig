@@ -44,7 +44,8 @@ DeferredSubInclude HAIKU_TOP tools rpi4 ;
 rule UserBuildConfigRulePreImage
 {
 	if $(RPI4_LAB_IMAGE) {
-		AddFilesToHaikuImage home config non-packaged bin : rpi4_v3d_probe ;
+		AddFilesToHaikuImage home config non-packaged bin
+			: rpi4_v3d_probe rpi4_fetch ;
 	}
 
 	if $(RPI4_AIROS_IMAGE) {

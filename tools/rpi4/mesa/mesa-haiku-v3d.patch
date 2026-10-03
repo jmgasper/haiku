@@ -1,0 +1,524 @@
+diff --color -ruN '--exclude=*.orig' '--exclude=__pycache__' -x '*.pyc' a/include/libsync.h mesa-25.3.6/include/libsync.h
+--- a/include/libsync.h	1970-01-01 11:00:00.000000000 +1100
++++ b/include/libsync.h	2026-10-03 21:20:19.265207243 +1000
+@@ -0,0 +1,39 @@
++/*
++ * Copyright 2026, air/OS. All rights reserved.
++ * SPDX-License-Identifier: MIT
++ */
++
++/* air/OS (Haiku): there are no sync files. The V3D device runs jobs in
++ * submission order, so a job never has to wait for a fence explicitly; see
++ * include/xf86drm.h. These keep v3d's fence import paths compiling. */
++#ifndef HAIKU_V3D_LIBSYNC_H
++#define HAIKU_V3D_LIBSYNC_H
++
++#ifndef __HAIKU__
++#error This libsync.h is the air/OS stand-in.
++#endif
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++static inline int
++sync_wait(int fd, int timeout)
++{
++   (void)fd; (void)timeout;
++   return 0;
++}
++
++static inline int
++sync_accumulate(const char *name, int *fd1, int fd2)
++{
++   (void)name;
++   *fd1 = fd2;
++   return 0;
++}
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* HAIKU_V3D_LIBSYNC_H */
+diff --color -ruN '--exclude=*.orig' '--exclude=__pycache__' -x '*.pyc' a/include/xf86drm.h mesa-25.3.6/include/xf86drm.h
+--- a/include/xf86drm.h	1970-01-01 11:00:00.000000000 +1100
++++ b/include/xf86drm.h	2026-10-03 21:20:19.264559052 +1000
+@@ -0,0 +1,202 @@
++/*
++ * Copyright 2026, air/OS. All rights reserved.
++ * SPDX-License-Identifier: MIT
++ */
++
++/* air/OS (Haiku): what Mesa's v3d driver uses of libdrm, on top of the V3D
++ * render device (/dev/graphics/v3d/0, see headers/private/graphics/v3d in
++ * the air/OS tree). The device takes the drm_v3d_* structures as they are;
++ * this only translates the request codes and stands in for sync objects.
++ *
++ * There are no sync files: a "sync file descriptor" from
++ * drmSyncobjExportSyncFile() is a token for a job's sequence number, not a
++ * file descriptor. It must not be closed or duplicated; v3d_fence.c knows.
++ */
++#ifndef HAIKU_V3D_XF86DRM_H
++#define HAIKU_V3D_XF86DRM_H
++
++#ifndef __HAIKU__
++#error This xf86drm.h is the air/OS stand-in for libdrm.
++#endif
++
++#include <errno.h>
++#include <stdint.h>
++#include <string.h>
++#include <unistd.h>
++#include <time.h>
++
++#include <Drivers.h>
++
++#include "drm-uapi/drm.h"
++#include "drm-uapi/v3d_drm.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define HAIKU_V3D_DEVICE_PATH "/dev/graphics/v3d/0"
++
++enum {
++   HAIKU_V3D_FIRST_OP = B_DEVICE_OP_CODES_END + 0x7600,
++   HAIKU_V3D_GET_PARAM = HAIKU_V3D_FIRST_OP,
++   HAIKU_V3D_CREATE_BO,
++   HAIKU_V3D_MMAP_BO,
++   HAIKU_V3D_GET_BO_OFFSET,
++   HAIKU_V3D_WAIT_BO,
++   HAIKU_V3D_SUBMIT_CL,
++   HAIKU_V3D_SUBMIT_TFU,
++   HAIKU_V3D_SUBMIT_CSD,
++   HAIKU_V3D_CLOSE_BO,
++   HAIKU_V3D_SYNC_CREATE,
++   HAIKU_V3D_SYNC_DESTROY,
++   HAIKU_V3D_SYNC_WAIT,
++   HAIKU_V3D_SYNC_GET,
++   HAIKU_V3D_SEQNO_WAIT,
++};
++
++struct haiku_v3d_handle {
++   uint32_t handle;
++   uint32_t pad;
++};
++
++struct haiku_v3d_sync {
++   uint32_t handle;
++   uint32_t pad;
++   uint64_t seqno;
++   int64_t timeout_ns;
++};
++
++/* handle value that marks "seqno" as a 31-bit fence token */
++#define HAIKU_V3D_TOKEN 0xffffffffu
++
++static inline int
++drmIoctl(int fd, unsigned long request, void *arg)
++{
++   switch (request) {
++   case DRM_IOCTL_V3D_GET_PARAM:
++      return ioctl(fd, HAIKU_V3D_GET_PARAM, arg, sizeof(struct drm_v3d_get_param));
++   case DRM_IOCTL_V3D_CREATE_BO:
++      return ioctl(fd, HAIKU_V3D_CREATE_BO, arg, sizeof(struct drm_v3d_create_bo));
++   case DRM_IOCTL_V3D_MMAP_BO:
++      /* returns the address of the mapping in "offset" */
++      return ioctl(fd, HAIKU_V3D_MMAP_BO, arg, sizeof(struct drm_v3d_mmap_bo));
++   case DRM_IOCTL_V3D_GET_BO_OFFSET:
++      return ioctl(fd, HAIKU_V3D_GET_BO_OFFSET, arg, sizeof(struct drm_v3d_get_bo_offset));
++   case DRM_IOCTL_V3D_WAIT_BO:
++      return ioctl(fd, HAIKU_V3D_WAIT_BO, arg, sizeof(struct drm_v3d_wait_bo));
++   case DRM_IOCTL_V3D_SUBMIT_CL:
++      return ioctl(fd, HAIKU_V3D_SUBMIT_CL, arg, sizeof(struct drm_v3d_submit_cl));
++   case DRM_IOCTL_V3D_SUBMIT_TFU:
++      return ioctl(fd, HAIKU_V3D_SUBMIT_TFU, arg, sizeof(struct drm_v3d_submit_tfu));
++   case DRM_IOCTL_V3D_SUBMIT_CSD:
++      return ioctl(fd, HAIKU_V3D_SUBMIT_CSD, arg, sizeof(struct drm_v3d_submit_csd));
++   case DRM_IOCTL_GEM_CLOSE: {
++      struct haiku_v3d_handle handle = { ((struct drm_gem_close *)arg)->handle, 0 };
++      return ioctl(fd, HAIKU_V3D_CLOSE_BO, &handle, sizeof(handle));
++   }
++   default:
++      /* flink names, performance monitors, CPU jobs */
++      errno = ENOSYS;
++      return -1;
++   }
++}
++
++static inline int
++drmSyncobjCreate(int fd, uint32_t flags, uint32_t *handle)
++{
++   struct haiku_v3d_handle request = { 0, 0 };
++   (void)flags;
++   if (ioctl(fd, HAIKU_V3D_SYNC_CREATE, &request, sizeof(request)) != 0)
++      return -errno;
++   *handle = request.handle;
++   return 0;
++}
++
++static inline int
++drmSyncobjDestroy(int fd, uint32_t handle)
++{
++   struct haiku_v3d_handle request = { handle, 0 };
++   return ioctl(fd, HAIKU_V3D_SYNC_DESTROY, &request, sizeof(request)) != 0
++      ? -errno : 0;
++}
++
++static inline int64_t
++haiku_v3d_relative_timeout(int64_t absolute_ns)
++{
++   struct timespec now;
++   int64_t now_ns;
++   if (absolute_ns == INT64_MAX)
++      return -1;
++   clock_gettime(CLOCK_MONOTONIC, &now);
++   now_ns = (int64_t)now.tv_sec * 1000000000ll + now.tv_nsec;
++   return absolute_ns > now_ns ? absolute_ns - now_ns : 0;
++}
++
++/* timeout_nsec is absolute (CLOCK_MONOTONIC), as in libdrm */
++static inline int
++drmSyncobjWait(int fd, uint32_t *handles, unsigned num_handles,
++               int64_t timeout_nsec, unsigned flags, uint32_t *first_signaled)
++{
++   (void)flags;
++   for (unsigned i = 0; i < num_handles; i++) {
++      struct haiku_v3d_sync request = { handles[i], 0, 0,
++         haiku_v3d_relative_timeout(timeout_nsec) };
++      if (ioctl(fd, HAIKU_V3D_SYNC_WAIT, &request, sizeof(request)) != 0)
++         return -ETIME;
++   }
++   if (first_signaled != NULL)
++      *first_signaled = 0;
++   return 0;
++}
++
++/* The "sync file" is a token: the low 31 bits of the job's sequence number. */
++static inline int
++drmSyncobjExportSyncFile(int fd, uint32_t handle, int *sync_file_fd)
++{
++   struct haiku_v3d_sync request = { handle, 0, 0, 0 };
++   if (ioctl(fd, HAIKU_V3D_SYNC_GET, &request, sizeof(request)) != 0)
++      return -errno;
++   *sync_file_fd = (int)(request.seqno & 0x7fffffff);
++   return 0;
++}
++
++static inline int
++drmSyncobjImportSyncFile(int fd, uint32_t handle, int sync_file_fd)
++{
++   /* Jobs run in submission order: there is nothing to import. */
++   (void)fd; (void)handle; (void)sync_file_fd;
++   return 0;
++}
++
++/* Waits for the job behind a token; timeout_ns is relative, negative waits
++ * for good. Returns 0 once the job is done. */
++static inline int
++haiku_v3d_wait_token(int fd, int token, int64_t timeout_ns)
++{
++   struct haiku_v3d_sync request = { HAIKU_V3D_TOKEN, 0, (uint32_t)token,
++      timeout_ns };
++   return ioctl(fd, HAIKU_V3D_SEQNO_WAIT, &request, sizeof(request)) != 0
++      ? -errno : 0;
++}
++
++static inline int
++drmPrimeHandleToFD(int fd, uint32_t handle, uint32_t flags, int *prime_fd)
++{
++   (void)fd; (void)handle; (void)flags; (void)prime_fd;
++   errno = ENOSYS;
++   return -1;
++}
++
++static inline int
++drmPrimeFDToHandle(int fd, int prime_fd, uint32_t *handle)
++{
++   (void)fd; (void)prime_fd; (void)handle;
++   errno = ENOSYS;
++   return -1;
++}
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* HAIKU_V3D_XF86DRM_H */
+diff --color -ruN '--exclude=*.orig' '--exclude=__pycache__' -x '*.pyc' a/src/egl/drivers/haiku/egl_haiku.cpp mesa-25.3.6/src/egl/drivers/haiku/egl_haiku.cpp
+--- a/src/egl/drivers/haiku/egl_haiku.cpp	2026-09-18 22:57:25.275387170 +1000
++++ b/src/egl/drivers/haiku/egl_haiku.cpp	2026-10-03 21:21:09.009519212 +1000
+@@ -55,6 +55,11 @@
+ #ifdef GALLIUM_PANFROST
+ #include "panfrost/pan_public.h"
+ #endif
++#ifdef GALLIUM_V3D
++extern "C" {
++#include "v3d/drm/v3d_drm_public.h"
++}
++#endif
+ 
+ #include <Bitmap.h>
+ 
+@@ -454,6 +459,19 @@
+    disp->DriverData = (void *)hgl_dpy;
+ 
+    struct pipe_screen *screen = NULL;
++#ifdef GALLIUM_V3D
++   /* Raspberry Pi: the V3D render device whenever its driver published it.
++    * HAIKU_V3D_DEVICE names another one; LIBGL_ALWAYS_SOFTWARE skips it. */
++   if (!disp->Options.ForceSoftware) {
++      const char *v3d_device = getenv("HAIKU_V3D_DEVICE");
++      if (v3d_device == NULL || *v3d_device == '\0')
++         v3d_device = "/dev/graphics/v3d/0";
++      if (access(v3d_device, R_OK | W_OK) == 0)
++         screen = v3d_haiku_screen_create(v3d_device);
++      if (screen != NULL)
++         hgl_dpy->native_csf = true;
++   }
++#endif
+ #ifdef GALLIUM_PANFROST
+    const char *device = getenv("HAIKU_CSF_DEVICE");
+    bool explicit_device = device != NULL && *device != '\0';
+@@ -462,7 +480,7 @@
+       /* System default: the Mali CSF device whenever the driver published it. */
+       device = kHaikuDefaultCsfDevice;
+    }
+-   if (device != NULL && *device != '\0') {
++   if (screen == NULL && device != NULL && *device != '\0') {
+       hgl_dpy->native_csf = true;
+       /* An explicit native device must never become a software fallback. */
+       if (!disp->Options.ForceSoftware)
+@@ -475,7 +493,7 @@
+    }
+    if (device == NULL || *device == '\0')
+ #endif
+-   {
++   if (screen == NULL) {
+       struct sw_winsys *winsys = hgl_create_sw_winsys();
+       if (winsys) {
+          screen = sw_screen_create(winsys);
+diff --color -ruN '--exclude=*.orig' '--exclude=__pycache__' -x '*.pyc' a/src/egl/meson.build mesa-25.3.6/src/egl/meson.build
+--- a/src/egl/meson.build	2026-09-18 22:57:25.275387170 +1000
++++ b/src/egl/meson.build	2026-10-03 21:21:09.009674995 +1000
+@@ -148,7 +148,7 @@
+   incs_for_egl += [include_directories('../gallium/frontends/hgl')]
+ 
+   link_for_egl += [libmesa, libgallium, libswhgl, libsthgl, libglapi]
+-  deps_for_egl += [cpp.find_library('be'), driver_swrast, driver_panfrost, idep_xmlconfig]
++  deps_for_egl += [cpp.find_library('be'), driver_swrast, driver_panfrost, driver_v3d, idep_xmlconfig]
+ elif with_platform_windows
+   c_args_for_egl += [
+     '-DEGLAPI=', '-DPUBLIC='
+diff --color -ruN '--exclude=*.orig' '--exclude=__pycache__' -x '*.pyc' a/src/gallium/drivers/v3d/v3d_bufmgr.c mesa-25.3.6/src/gallium/drivers/v3d/v3d_bufmgr.c
+--- a/src/gallium/drivers/v3d/v3d_bufmgr.c	2026-02-20 05:55:18.000000000 +1100
++++ b/src/gallium/drivers/v3d/v3d_bufmgr.c	2026-10-03 21:55:23.247233107 +1000
+@@ -26,7 +26,11 @@
+ #include <sys/mman.h>
+ #include <fcntl.h>
+ #include <xf86drm.h>
++#ifdef __HAIKU__
++#include <OS.h>
++#else
+ #include <xf86drmMode.h>
++#endif
+ 
+ #include "util/perf/cpu_trace.h"
+ #include "util/u_hash_table.h"
+@@ -207,7 +211,12 @@
+                 } else
+ #endif
+                 {
++#ifdef __HAIKU__
++                        /* the driver's clone of the buffer in this team */
++                        delete_area(area_for(bo->map));
++#else
+                         munmap(bo->map, bo->size);
++#endif
+                         VG(VALGRIND_FREELIKE_BLOCK(bo->map, 0));
+                 }
+         }
+@@ -472,6 +481,13 @@
+                 .timeout_ns = timeout_ns,
+         };
+         int ret = v3d_ioctl(fd, DRM_IOCTL_V3D_WAIT_BO, &wait);
++#ifdef __HAIKU__
++        /* Haiku's error codes are negative already, and its timeout is not
++         * ETIME.
++         */
++        if (ret == -1)
++                return errno == B_TIMED_OUT ? -ETIME : -abs(errno);
++#endif
+         if (ret == -1)
+                 return -errno;
+         else
+@@ -525,9 +541,15 @@
+                 abort();
+         }
+ 
++#ifdef __HAIKU__
++        /* The driver has mapped the buffer; "offset" is the address. */
++        bo->map = (void *)(uintptr_t)offset;
++        if (bo->map == NULL) {
++#else
+         bo->map = mmap(NULL, bo->size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                        bo->screen->fd, offset);
+         if (bo->map == MAP_FAILED) {
++#endif
+                 fprintf(stderr, "mmap of bo %d (offset 0x%016llx, size %d) failed\n",
+                         bo->handle, (long long)offset, bo->size);
+                 abort();
+diff --color -ruN '--exclude=*.orig' '--exclude=__pycache__' -x '*.pyc' a/src/gallium/drivers/v3d/v3d_fence.c mesa-25.3.6/src/gallium/drivers/v3d/v3d_fence.c
+--- a/src/gallium/drivers/v3d/v3d_fence.c	2026-02-20 05:55:18.000000000 +1100
++++ b/src/gallium/drivers/v3d/v3d_fence.c	2026-10-03 21:20:09.086903434 +1000
+@@ -59,7 +59,10 @@
+ 
+         if (pipe_reference(old ? &old->reference : NULL,
+                            f ? &f->reference : NULL)) {
++#ifndef __HAIKU__
++                /* On Haiku the "fd" is a job token, not a descriptor. */
+                 close(old->fd);
++#endif
+                 free(old);
+         }
+         *p = f;
+@@ -86,6 +89,15 @@
+ 
+         MESA_TRACE_FUNC();
+ 
++#ifdef __HAIKU__
++        (void)syncobj;
++        ret = haiku_v3d_wait_token(screen->fd, fence->fd,
++                                   timeout_ns == OS_TIMEOUT_INFINITE
++                                   ? -1 : (int64_t)MIN2(timeout_ns,
++                                                        (uint64_t)INT64_MAX));
++        return ret == 0;
++#endif
++
+         ret = drmSyncobjCreate(screen->fd, 0, &syncobj);
+         if (ret) {
+                 fprintf(stderr, "Failed to create syncobj to wait on: %d\n",
+diff --color -ruN '--exclude=*.orig' '--exclude=__pycache__' -x '*.pyc' a/src/gallium/drivers/v3d/v3d_screen.c mesa-25.3.6/src/gallium/drivers/v3d/v3d_screen.c
+--- a/src/gallium/drivers/v3d/v3d_screen.c	2026-02-20 05:55:18.000000000 +1100
++++ b/src/gallium/drivers/v3d/v3d_screen.c	2026-10-03 21:43:18.253968067 +1000
+@@ -22,7 +22,11 @@
+  * IN THE SOFTWARE.
+  */
+ 
++#ifdef __HAIKU__
++#include <OS.h>
++#else
+ #include <sys/sysinfo.h>
++#endif
+ 
+ #include "common/v3d_device_info.h"
+ #include "common/v3d_limits.h"
+@@ -218,10 +222,17 @@
+         /* GL_MAX_COMPUTE_SHARED_MEMORY_SIZE */
+         caps->max_local_size = 32768;
+ 
++#ifdef __HAIKU__
++        system_info si;
++        get_system_info(&si);
++        uint64_t totalram = (uint64_t)si.max_pages * B_PAGE_SIZE;
++#else
+         struct sysinfo si;
+         sysinfo(&si);
+-        caps->max_global_size = si.totalram;
+-        caps->max_mem_alloc_size = MIN2(V3D_MAX_BUFFER_RANGE, si.totalram);
++        uint64_t totalram = si.totalram;
++#endif
++        caps->max_global_size = totalram;
++        caps->max_mem_alloc_size = MIN2(V3D_MAX_BUFFER_RANGE, totalram);
+ 
+         caps->max_compute_units = 1;
+         caps->subgroup_sizes = 16;
+@@ -787,6 +798,10 @@
+ 
+         list_inithead(&screen->bo_cache.time_list);
+         (void)mtx_init(&screen->bo_handles_mutex, mtx_plain);
++        /* Not every libc's zeroed mutex is an initialized one (Haiku's
++         * asserts on it).
++         */
++        (void)mtx_init(&screen->bo_cache.lock, mtx_plain);
+         screen->bo_handles = util_hash_table_create_ptr_keys();
+ 
+ #if USE_V3D_SIMULATOR
+diff --color -ruN '--exclude=*.orig' '--exclude=__pycache__' -x '*.pyc' a/src/gallium/winsys/v3d/drm/v3d_drm_public.h mesa-25.3.6/src/gallium/winsys/v3d/drm/v3d_drm_public.h
+--- a/src/gallium/winsys/v3d/drm/v3d_drm_public.h	2026-02-20 05:55:18.000000000 +1100
++++ b/src/gallium/winsys/v3d/drm/v3d_drm_public.h	2026-10-03 21:21:09.009729017 +1000
+@@ -33,4 +33,9 @@
+ struct pipe_screen *v3d_drm_screen_create_renderonly(int fd, struct renderonly *ro,
+                                                      const struct pipe_screen_config *config);
+ 
++#ifdef __HAIKU__
++/* Opens the V3D render device of air/OS and creates the screen on it. */
++struct pipe_screen *v3d_haiku_screen_create(const char *device);
++#endif
++
+ #endif /* __V3D_DRM_PUBLIC_H__ */
+diff --color -ruN '--exclude=*.orig' '--exclude=__pycache__' -x '*.pyc' a/src/gallium/winsys/v3d/drm/v3d_drm_winsys.c mesa-25.3.6/src/gallium/winsys/v3d/drm/v3d_drm_winsys.c
+--- a/src/gallium/winsys/v3d/drm/v3d_drm_winsys.c	2026-02-20 05:55:18.000000000 +1100
++++ b/src/gallium/winsys/v3d/drm/v3d_drm_winsys.c	2026-10-03 21:21:31.120308175 +1000
+@@ -45,3 +45,59 @@
+    return u_pipe_screen_lookup_or_create(fd, config,
+                                          ro, v3d_screen_create);
+ }
++
++#ifdef __HAIKU__
++#include "renderonly/renderonly.h"
++#include "util/driconf.h"
++#include "util/xmlconfig.h"
++#include "util/macros.h"
++
++static const driOptionDescription haiku_v3d_options[] = {
++#include "v3d/driinfo_v3d.h"
++};
++
++struct pipe_screen *
++v3d_haiku_screen_create(const char *device)
++{
++   int fd = open(device, O_RDWR | O_CLOEXEC);
++   if (fd < 0)
++      return NULL;
++
++   driOptionCache info = {0}, options = {0};
++   driParseOptionInfo(&info, haiku_v3d_options, ARRAY_SIZE(haiku_v3d_options));
++   const struct pipe_screen_config config = {
++      .options = &options,
++      .options_info = &info,
++   };
++   /* Not through the screen cache: its key is the device's inode, and the
++    * screen owns this descriptor. */
++   struct pipe_screen *screen = v3d_screen_create(fd, &config, NULL);
++   if (screen == NULL)
++      close(fd);
++   driDestroyOptionCache(&options);
++   driDestroyOptionInfo(&info);
++   return screen;
++}
++
++/* There is no KMS device to scan out through; v3d only reaches these with a
++ * renderonly object, which the Haiku screen never has. The auxiliary
++ * library that implements them is not built without DRM. */
++void
++renderonly_scanout_destroy(struct renderonly_scanout *scanout,
++                           struct renderonly *ro)
++{
++   (void)scanout;
++   (void)ro;
++}
++
++struct renderonly_scanout *
++renderonly_create_gpu_import_for_resource(struct pipe_resource *rsc,
++                                          struct renderonly *ro,
++                                          struct winsys_handle *out_handle)
++{
++   (void)rsc;
++   (void)ro;
++   (void)out_handle;
++   return NULL;
++}
++#endif

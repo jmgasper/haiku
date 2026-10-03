@@ -56,6 +56,10 @@ enum {
 		// waits for a job by its sequence number
 };
 
+// As the handle of V3D_HAIKU_SEQNO_WAIT: "seqno" is a fence token, the low
+// 31 bits of the sequence number of a job submitted earlier.
+#define V3D_HAIKU_TOKEN	0xffffffffu
+
 struct v3d_haiku_handle {
 	uint32	handle;
 	uint32	pad;
