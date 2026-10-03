@@ -12,10 +12,11 @@ kernel_address=0x80000
 # the loader. The loader finds it through /chosen in the device tree.
 initramfs airos-boot.tgz followkernel
 
-# Serial console on GPIO 14/15 (PL011, 115200 8N1). This turns Bluetooth off.
+# Serial console on GPIO 14/15 (PL011, 115200 8N1). Bluetooth gets the mini
+# UART (GPIO 30 to 33).
 enable_uart=1
 uart_2ndstage=1
-dtoverlay=disable-bt
+dtoverlay=miniuart-bt
 
 disable_overscan=1
 # one frame buffer per HDMI output

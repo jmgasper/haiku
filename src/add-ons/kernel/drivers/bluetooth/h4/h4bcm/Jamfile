@@ -1,0 +1,8 @@
+SubDir HAIKU_TOP src add-ons kernel drivers bluetooth h4 h4bcm ;
+
+UsePrivateHeaders net kernel bluetooth drivers ;
+UsePrivateKernelHeaders ;
+
+KernelAddon h4bcm :
+	h4bcm.cpp
+	;

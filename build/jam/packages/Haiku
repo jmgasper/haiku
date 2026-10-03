@@ -180,6 +180,12 @@ AddDriversToPackage audio old :
 	$(SYSTEM_ADD_ONS_DRIVERS_AUDIO_OLD) ;
 AddDriversToPackage bluetooth h2 :
 	$(SYSTEM_ADD_ONS_DRIVERS_BT_H2) ;
+if $(TARGET_ARCH) = arm64 {
+	# the Raspberry Pi 4's onboard controller, behind a UART
+	AddDriversToPackage bluetooth h4 :
+		h4bcm
+		;
+}
 AddDriversToPackage midi :
 	$(SYSTEM_ADD_ONS_DRIVERS_MIDI) ;
 AddDriversToPackage bus :

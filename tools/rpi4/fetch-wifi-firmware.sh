@@ -3,7 +3,7 @@
 # Raspberry Pi's firmware-nonfree repository, under the names the
 # broadcomfmac driver asks for. Redistributable (Cypress licence), not part
 # of this tree.
-#   fetch-wifi-firmware.sh [directory]
+#   fetch-wifi-firmware.sh [Wi-Fi directory] [Bluetooth directory]
 set -euo pipefail
 DIR=${1:-/mnt/HaikuWork/rpi4/wifi/firmware}
 BASE=https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bookworm/debian/config/brcm80211
@@ -16,3 +16,11 @@ fetch brcmfmac43455-sdio.clm_blob cypress/cyfmac43455-sdio.clm_blob
 fetch brcmfmac43455-sdio.txt brcm/brcmfmac43455-sdio.txt
 (cd "$DIR" && sha256sum brcmfmac43455-sdio.* > SHA256SUMS)
 echo "CYW43455 firmware -> $DIR"
+
+# The Bluetooth half of the chip: its patch file, for the h4bcm driver.
+BT_DIR=${2:-/mnt/HaikuWork/rpi4/bluetooth}
+mkdir -p "$BT_DIR"
+[ -s "$BT_DIR/BCM4345C0.hcd" ] || curl -sfL --retry 3 -o "$BT_DIR/BCM4345C0.hcd" \
+    https://github.com/RPi-Distro/bluez-firmware/raw/bookworm/debian/firmware/broadcom/BCM4345C0.hcd
+(cd "$BT_DIR" && sha256sum BCM4345C0.hcd > SHA256SUMS)
+echo "BCM4345C0 patch -> $BT_DIR"
