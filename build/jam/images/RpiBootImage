@@ -23,7 +23,7 @@ local container = $(HAIKU_RPI_BOOT_ARCHIVE_CONTAINER_NAME) ;
 # modules are the same builds as the ones in the system package.
 local busManagers = fdt mmc pci scsi usb ;
 local mmcBusses = bcm2711_emmc2 ;
-local pciBusses = <pci>ecam ;
+local pciBusses = <pci>ecam <pci>bcm2711 ;
 local usbBusses = <usb>xhci ;
 local fileSystems = bfs packagefs ;
 local generic = dpc scsi_periph ;
