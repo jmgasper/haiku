@@ -42,7 +42,9 @@ Hub::Hub(Object *parent, int8 hubAddress, uint8 hubPort,
 	}
 
 	TRACE("getting hub descriptor...\n");
-	const bool superSpeed = speed >= USB_SPEED_SUPERSPEED;
+	// Root hubs are emulated by their controller driver with the USB 2
+	// descriptor whatever their speed.
+	const bool superSpeed = speed >= USB_SPEED_SUPERSPEED && !isRootHub;
 	size_t actualLength;
 	status_t status = GetDescriptor(superSpeed
 			? USB_DESCRIPTOR_SUPERSPEED_HUB : USB_DESCRIPTOR_HUB, 0, 0,
@@ -69,7 +71,7 @@ Hub::Hub(Object *parent, int8 hubAddress, uint8 hubPort,
 		fHubDescriptor.num_ports = USB_MAX_PORT_COUNT;
 	}
 
-	if (superSpeed && !isRootHub) {
+	if (superSpeed) {
 		// A hub on a root hub port is at depth 0, each hub above adds one.
 		uint16 depth = 0;
 		Object* rootObject = GetBusManager()->RootObject();
