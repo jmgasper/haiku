@@ -83,13 +83,15 @@ emulates neither PCIe nor GENET.
 Seen 2026-10-03 on the full image: on most boots the NanoKVM's keyboard,
 mouse and tablet interfaces stop early ("transfer error on slot 3 endpoint 9
 or 11: TRB", then `usb_hid: error waiting for report`), and later the hub's
-own control requests time out ("hub 7: error updating port status"). On one
-boot in five or so a KVM click works (the Deskbar opened) and then stops
-again within minutes. The same errors are in serial logs back to stage 3, so
+own control requests time out ("hub 7: error updating port status"). Of the
+six or so boots checked, a KVM click worked on one (the Deskbar opened) and
+input stopped again within minutes. The same errors are in serial logs back to stage 3, so
 this is not new with the display or Wi-Fi drivers. Flash drive and RNDIS on
 the same hub keep working. Not yet understood: the errors hit interrupt IN
 endpoints of the high speed composite device; suspects are the interrupt
-endpoint setup in xhci for the VL805 and lost PCIe interrupts. One real
+endpoint setup in xhci for the VL805 and lost PCIe interrupts (the rings are
+in uncached memory and a full barrier precedes each doorbell, so stale ring
+contents are unlikely). One real
 defect was fixed on the way (low/full speed interrupt endpoints were
 configured with a zero payload per interval). Whether the Logitech mouse on
 the other port works was not checked: nobody can see or move it from here.
