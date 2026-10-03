@@ -3,6 +3,26 @@
 Board in the lab: Raspberry Pi 4 Model B rev 1.5, 4 GB (board code c03115),
 EEPROM bootloader 2022-01-25, firmware 1.20260915. Branch `rpi4`.
 
+**The image.** `jam -q @rpi4-airos build airos-rpi-image` (after
+`tools/rpi4/stage-packages.sh` and the fetch scripts) writes
+`airos-rpi4.img`, 4 GB: a FAT boot partition with the Raspberry Pi firmware,
+the air/OS loader and boot archive, and the BFS system partition with the
+full branded air/OS. Write it to an SD card as it is. A card flashed from the
+image of 2026-10-04 was checked on the board: desktop on HDMI0, Ethernet,
+Wi-Fi joins a WPA2 network, Bluetooth scans, GLTeapot and Summit's WebGL
+Aquarium run on the GPU side by side (`evidence/final-image.jpg`), the clock
+is set from the network at start. (The image file was rebuilt once after that
+check, for the clock script alone, and that last file was not flashed.)
+
+**What is open**, most important first: no sound output and no hardware video
+decoding (both need a VCHIQ port, and sound needs someone who can listen);
+USB keyboard and mouse through the lab's KVM fail on most boots; the second
+HDMI output has never shown a picture to anyone (the lab's monitor is not
+detected); nothing presents through Vulkan (no loader, no window system
+layer); pairing a Bluetooth device and joining Wi-Fi by clicking in the
+tools are untested; Aurora needs Node.js. Details in the sections below and
+in the documents named in the table.
+
 | # | Stage | State | Evidence |
 | --- | --- | --- | --- |
 | 1 | SD card / boot | **Works on the board.** The minimum image boots from the SD card to the desktop, 1920x1080 on HDMI0, four cores at 1.5 GHz, serial console through loader and kernel | 2026-10-03: KVM screenshot of the desktop; serial capture `evidence/serial/boot3.log` |

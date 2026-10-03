@@ -1,13 +1,17 @@
 #!/bin/sh
 # The Raspberry Pi has no battery-backed clock: every start begins in 1970,
 # and nothing that checks a certificate works until the time is right. Set it
-# from the network as soon as there is one.
+# from the network as soon as there is one. An attempt made before the
+# network is up does not come back, so each one gets a time limit.
 
 (
-	for attempt in $(seq 1 30); do
-		if /boot/system/preferences/Time --update > /dev/null 2>&1; then
-			exit 0
+	for attempt in $(seq 1 60); do
+		if ifconfig | grep "inet addr" | grep -v -q -e "127\.0\.0\.1" -e "addr: --"; then
+			if timeout 30 /boot/system/preferences/Time --update \
+					> /dev/null 2>&1; then
+				exit 0
+			fi
 		fi
-		sleep 10
+		sleep 5
 	done
 ) &
