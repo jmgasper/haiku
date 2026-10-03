@@ -16,3 +16,19 @@ if $(HAIKU_BUILD_PROFILE) = minimum-rpi4 {
 HAIKU_IMAGE_LABEL = airOS ;
 
 DefineBuildProfile minimum-rpi4 : image : "haiku-rpi4-minimum.image" ;
+
+# The lab overlay: files that only make sense on the lab's board. It is
+# switched on by the presence of /mnt/HaikuWork/rpi4/state/lab-image.
+RPI4_LAB_IMAGE = ;
+if [ Glob /mnt/HaikuWork/rpi4/state : lab-image ] {
+	RPI4_LAB_IMAGE = 1 ;
+}
+
+rule UserBuildConfigRulePreImage
+{
+	if $(RPI4_LAB_IMAGE) {
+		local bootscripts = <rpi4-lab>UserBootscript ;
+		SEARCH on $(bootscripts) = [ FDirName $(HAIKU_TOP) tools rpi4 ] ;
+		AddFilesToHaikuImage home config settings boot : $(bootscripts) ;
+	}
+}

@@ -175,7 +175,7 @@ actions BuildRpiSDImage1
 			| $FATFS $(1)
 	done
 
-	echo "ls -l myfs" | $FATFS $(1)
+	echo "ls myfs" | $FATFS $(1)
 
 	cat $(2[3]) >> $(1)
 }

@@ -205,6 +205,7 @@ platform_start_kernel(void)
 	dprintf("Entering the kernel at %#" B_PRIxADDR " with %" B_PRIu32
 		" CPUs\n", kernelEntry, gKernelArgs.num_cpus);
 
+	serial_flush();
 	smp_boot_other_cpus(kernelEntry);
 
 	arch_enter_kernel(&gKernelArgs, kernelEntry,

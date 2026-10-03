@@ -121,6 +121,15 @@ arch_debug_console_init(kernel_args *args)
 
 	sArchDebugUART->InitEarly();
 
+	// The PL011's constructor runs a loopback test that leaves the baud
+	// rate divisor at 1. Where the boot loader knows the clock, set the
+	// port up again; otherwise the firmware's settings are all there is.
+	if (strncmp(args->arch_args.uart.kind, UART_KIND_PL011,
+			sizeof(args->arch_args.uart.kind)) == 0
+		&& args->arch_args.uart.clock > 0) {
+		sArchDebugUART->InitPort(115200);
+	}
+
 	return B_OK;
 }
 

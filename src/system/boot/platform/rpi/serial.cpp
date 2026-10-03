@@ -58,3 +58,13 @@ serial_getc(bool wait)
 		return -1;
 	return sUART->GetChar(wait);
 }
+
+
+void
+serial_flush()
+{
+	// The kernel sets the port up again, which garbles what is still in
+	// the FIFO.
+	if (sUART != NULL)
+		sUART->FlushTx();
+}
