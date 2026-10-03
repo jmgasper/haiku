@@ -1,0 +1,13 @@
+#!/bin/sh
+# The Raspberry Pi has no battery-backed clock: every start begins in 1970,
+# and nothing that checks a certificate works until the time is right. Set it
+# from the network as soon as there is one.
+
+(
+	for attempt in $(seq 1 30); do
+		if /boot/system/preferences/Time --update > /dev/null 2>&1; then
+			exit 0
+		fi
+		sleep 10
+	done
+) &

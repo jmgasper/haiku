@@ -142,16 +142,17 @@ rule UserBuildConfigRulePreImage
 		SEARCH on $(localeSettings) = [ FDirName $(HAIKU_TOP) data boot rpi ] ;
 		AddFilesToHaikuImage home config settings : $(localeSettings) ;
 
+		# no clock on the board: the time comes from the network at start
+		local bootscript = <rpi4-settings>UserBootscript ;
+		SEARCH on $(bootscript) = [ FDirName $(HAIKU_TOP) data boot rpi ] ;
+		AddFilesToHaikuImage home config settings boot : $(bootscript) ;
+
 		local caCertificates = <airos-data>CARootCertificates.pem ;
 		SEARCH on $(caCertificates) = /mnt/HaikuWork/airos/data-arm64/ssl ;
 		AddFilesToHaikuImage system non-packaged data ssl : $(caCertificates) ;
 	}
 
 	if $(RPI4_LAB_IMAGE) {
-		local bootscripts = <rpi4-lab>UserBootscript ;
-		SEARCH on $(bootscripts) = [ FDirName $(HAIKU_TOP) tools rpi4 ] ;
-		AddFilesToHaikuImage home config settings boot : $(bootscripts) ;
-
 		# A telnet login for the lab, with an account whose password hash
 		# lives outside the tree (state/lab-overlay, made once per lab).
 		local overlay = /mnt/HaikuWork/rpi4/state/lab-overlay ;
