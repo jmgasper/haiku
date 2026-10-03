@@ -32,3 +32,13 @@
 		fi
 	done
 ) &
+
+# The lab overlay's telnet service (system/settings/network/services) is
+# picked up by net_server; say on the serial console where the board is.
+(
+	sleep 20
+	echo RPI4_LAB_STATE_BEGIN
+	ifconfig
+	ls -l /dev/net
+	echo RPI4_LAB_STATE_END
+) > /dev/dprintf 2>&1 &

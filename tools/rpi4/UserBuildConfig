@@ -30,5 +30,17 @@ rule UserBuildConfigRulePreImage
 		local bootscripts = <rpi4-lab>UserBootscript ;
 		SEARCH on $(bootscripts) = [ FDirName $(HAIKU_TOP) tools rpi4 ] ;
 		AddFilesToHaikuImage home config settings boot : $(bootscripts) ;
+
+		# A telnet login for the lab, with an account whose password hash
+		# lives outside the tree (state/lab-overlay, made once per lab).
+		local overlay = /mnt/HaikuWork/rpi4/state/lab-overlay ;
+		if [ Glob $(overlay) : shadow ] {
+			local shadow = <rpi4-lab>shadow ;
+			SEARCH on $(shadow) = $(overlay) ;
+			AddFilesToHaikuImage system settings etc : $(shadow) ;
+			local services = <rpi4-lab>services ;
+			SEARCH on $(services) = $(overlay) ;
+			AddFilesToHaikuImage system settings network : $(services) ;
+		}
 	}
 }
