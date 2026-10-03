@@ -335,29 +335,32 @@ bwfm_sdio_poller(void *arg)
 	/*
 	 * The bus task runs here, not on the shared task queue: the callers
 	 * that wait for a command's response sit on that queue's one thread.
-	 * The host has no interrupt of its own yet, so the card's interrupt
-	 * line is looked at a hundred times a second, a thousand while there
-	 * is traffic; whoever has something to send wakes the thread.
+	 * The card's interrupt and whoever has something to send wake the
+	 * thread; the line is also looked at ten times a second in case an
+	 * interrupt got lost.
 	 */
-	bigtime_t lastWork = 0;
 	while (sc->sc_poll) {
-		/* look more often while frames are coming in */
-		bigtime_t wait = system_time() - lastWork < 200000 ? 1000 : 10000;
 		status_t status = acquire_sem_etc(sc->sc_poll_sem, 1,
-		    B_RELATIVE_TIMEOUT, wait);
+		    B_RELATIVE_TIMEOUT, 100000);
 		if (!sc->sc_poll)
 			break;
-		if (rpi_sdio_card_interrupt()) {
-			lastWork = system_time();
-			status = B_OK;
-		}
-		if (status == B_OK) {
+		if (status == B_OK || rpi_sdio_card_interrupt()) {
 			mtx_lock(&Giant);
 			bwfm_sdio_task(sc);
 			mtx_unlock(&Giant);
 		}
+		/* the handler turned the interrupt off; the card is served now */
+		rpi_sdio_enable_card_interrupt();
 	}
 	return 0;
+}
+
+static void
+bwfm_sdio_card_interrupt(void *arg)
+{
+	struct bwfm_sdio_softc *sc = arg;
+
+	release_sem_etc(sc->sc_poll_sem, 1, B_DO_NOT_RESCHEDULE);
 }
 
 static void
@@ -655,6 +658,11 @@ bwfm_sdio_preinit(struct bwfm_softc *bwfm)
 		sc->sc_ih = sc;
 		/* the card signals function 1 and 2 events on its line */
 		bwfm_sdio_write_1(sc, 0x04, 0x07);
+		if (rpi_sdio_set_interrupt_handler(bwfm_sdio_card_interrupt,
+		    sc) == B_OK)
+			rpi_sdio_enable_card_interrupt();
+		else
+			printf("%s: no card interrupt, polling\n", DEVNAME(sc));
 		resume_thread(sc->sc_poller);
 	}
 #else
@@ -962,6 +970,7 @@ bwfm_sdio_haiku_detach(device_t dev)
 		bwfm_stop(ifp);
 
 	if (sc->sc_poll) {
+		rpi_sdio_set_interrupt_handler(NULL, NULL);
 		sc->sc_poll = 0;
 		release_sem(sc->sc_poll_sem);
 		wait_for_thread(sc->sc_poller, &result);

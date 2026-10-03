@@ -42,6 +42,13 @@ status_t	rpi_sdio_enable_function(uint32 function, bool enable);
 /*!	Whether the card raises its interrupt line right now. */
 bool		rpi_sdio_card_interrupt(void);
 
+/*!	The card interrupt: \a handler is called in interrupt context when the
+	card raises its line, and the interrupt is then off until
+	rpi_sdio_enable_card_interrupt() is called again (the line stays raised
+	until the card's function has been served). */
+status_t	rpi_sdio_set_interrupt_handler(void (*handler)(void*), void* data);
+void		rpi_sdio_enable_card_interrupt(void);
+
 #ifdef __cplusplus
 }
 #endif

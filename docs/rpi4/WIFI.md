@@ -2,9 +2,9 @@
 
 State 2026-10-03: the onboard Wi-Fi scans, joins a WPA2 network and carries
 traffic. Tested on the lab's network ("Gaspers", WPA2-PSK/CCMP, 802.11ac):
-DHCP address, ping to the board 0.9/1.4/2.4 ms, an 8 MB file pulled over
-Wi-Fi with a matching checksum, and with Ethernet taken down the board stayed
-reachable and pinged the gateway over Wi-Fi alone.
+DHCP address, ping to the board 0.5/1.2/35.6 ms (min/avg/max of 100), and
+with Ethernet taken down the board stayed reachable over Wi-Fi alone and
+pulled 8 MB into a RAM disk in 1.0 s (about 66 Mbit/s, checksum matching).
 
 ## Pieces
 
@@ -43,8 +43,9 @@ four-way handshake runs in the kernel's OpenBSD net80211.
   compatibility layer. A command waited on that thread for a response the
   same thread had to fetch, so every command from the driver's task timed
   out. The SDIO bus task now runs on a thread of the driver's.
-- That thread also stands in for the card interrupt: it looks at the card's
-  interrupt line every 10 ms, every 1 ms while there is traffic.
+- The SDIO host raises the card interrupt (the controller's interrupt line,
+  shared with the SD card slot's controller) and wakes that thread; the
+  interrupt stays off until the thread has served the card.
 - A background scan hook, so that the network list can be refreshed while
   associated (net80211 refuses a scan request in RUN without one).
 - A detach routine: Haiku unloads the driver when its file is replaced.
@@ -60,10 +61,12 @@ four-way handshake runs in the kernel's OpenBSD net80211.
 
 ## Open
 
-- The host has no interrupt: the SD controller's card interrupt (GIC SPI 126)
-  would replace the polling. Data goes word by word through the data register
-  (no DMA). Throughput has not been measured apart from the SD card's write
-  speed (8 MB in 12 s, which is the card).
+- Commands and data are still polled, and data goes word by word through the
+  data register (no DMA): 66 Mbit/s received is what that gives. Sending was
+  not measured.
+- A packaged driver wins over a copy under non-packaged: to try a new build
+  on an installed system, block the packaged one in
+  `/boot/system/settings/packages` (`BlockedEntries`).
 - The Wi-Fi preferences window lists the networks; joining by clicking in it
   was not tried because KVM mouse input is broken on this image (see
   STATUS.md).

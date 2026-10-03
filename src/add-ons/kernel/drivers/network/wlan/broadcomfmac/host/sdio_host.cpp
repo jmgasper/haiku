@@ -9,7 +9,8 @@
 	are 32 bits wide and must be accessed that way (transfer mode and
 	command are written together), and two writes need more than two card
 	clock cycles between them. Commands and data are polled; data goes
-	through the data register a word at a time. */
+	through the data register a word at a time. Only the card's own
+	interrupt (its functions asking for service) uses the interrupt line. */
 
 
 #include "sdio_host.h"
@@ -36,6 +37,8 @@
 
 // where the BCM2711 has things (ARM physical addresses)
 #define SDHCI_BASE				0xfe300000
+#define SDHCI_INTERRUPT			(126 + 32)
+	// shared with the other SD controller (the card slot's)
 #define GPIO_BASE				0xfe200000
 #define GPIO_FSEL3				0x0c	// pins 30 to 39, three bits each
 #define GPIO_PULL2				0xec	// pins 32 to 47, two bits each
@@ -118,6 +121,12 @@ static mutex sLock = MUTEX_INITIALIZER("broadcomfmac sdio");
 static uint32 sBaseClock;
 static uint32 sClock;
 static uint16 sBlockSize[MAX_FUNCTIONS];
+static void (*sCardHandler)(void*);
+static void* sCardHandlerData;
+static bool sInterruptInstalled;
+static spinlock sInterruptLock = B_SPINLOCK_INITIALIZER;
+
+static int32 card_interrupt(void* data);
 
 
 static inline uint32
@@ -500,6 +509,12 @@ rpi_sdio_init(void)
 void
 rpi_sdio_uninit(void)
 {
+	if (sInterruptInstalled) {
+		write_reg(REG_INTERRUPT_ENABLE, 0);
+		remove_io_interrupt_handler(SDHCI_INTERRUPT, card_interrupt, NULL);
+		sInterruptInstalled = false;
+	}
+	sCardHandler = NULL;
 	if (sRegisters != NULL && sFirmware != NULL) {
 		write_reg(REG_INTERRUPT_MASK, 0);
 		set_power(false);
@@ -615,4 +630,59 @@ bool
 rpi_sdio_card_interrupt(void)
 {
 	return sRegisters != NULL && (read_reg(REG_INTERRUPT) & INT_CARD) != 0;
+}
+
+
+static int32
+card_interrupt(void* data)
+{
+	// only the card interrupt is ever let through to the line
+	if ((read_reg(REG_INTERRUPT_ENABLE) & INT_CARD) == 0
+		|| (read_reg(REG_INTERRUPT) & INT_CARD) == 0) {
+		return B_UNHANDLED_INTERRUPT;
+	}
+
+	// The line stays raised until the function is served: off until then.
+	acquire_spinlock(&sInterruptLock);
+	*(volatile uint32*)(sRegisters + REG_INTERRUPT_ENABLE) = 0;
+	memory_full_barrier();
+	release_spinlock(&sInterruptLock);
+
+	if (sCardHandler != NULL)
+		sCardHandler(sCardHandlerData);
+	return B_INVOKE_SCHEDULER;
+}
+
+
+status_t
+rpi_sdio_set_interrupt_handler(void (*handler)(void*), void* data)
+{
+	if (sRegisters == NULL)
+		return B_NO_INIT;
+
+	sCardHandlerData = data;
+	sCardHandler = handler;
+	if (handler == NULL || sInterruptInstalled)
+		return B_OK;
+
+	status_t status = install_io_interrupt_handler(SDHCI_INTERRUPT,
+		card_interrupt, NULL, 0);
+	if (status == B_OK)
+		sInterruptInstalled = true;
+	return status;
+}
+
+
+void
+rpi_sdio_enable_card_interrupt(void)
+{
+	if (sRegisters == NULL || !sInterruptInstalled)
+		return;
+
+	cpu_status state = disable_interrupts();
+	acquire_spinlock(&sInterruptLock);
+	*(volatile uint32*)(sRegisters + REG_INTERRUPT_ENABLE) = INT_CARD;
+	memory_full_barrier();
+	release_spinlock(&sInterruptLock);
+	restore_interrupts(state);
 }
