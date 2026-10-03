@@ -95,8 +95,14 @@ ENGINE_DIR=/boot/system/lib/summit-webkit
 export TMPDIR=$WORK/tmp
 HOSTBIN=$APPBUILD/.hostbin
 FARM=$APPBUILD/.deps-arm64
-CXX_ARM64="${CROSS}g++ --sysroot=$SYSROOT -L$FARM/lib -Wl,-rpath-link,$TLS_DEPS/lib"
-CC_ARM64="${CROSS}gcc --sysroot=$SYSROOT -L$FARM/lib -Wl,-rpath-link,$TLS_DEPS/lib"
+# The arm64 cross compiler links only libgcc.a, which carries a private copy
+# of the unwinder: the program's frames are registered with that copy while
+# libstdc++'s __cxa_throw unwinds with libgcc_s.so.1, finds no frames and
+# calls std::terminate. Every C++ exception aborted (Summit died at start on a
+# damaged profile.json). These specs link libgcc_s ahead of libgcc.
+UNWIND_SPECS=$HOSTBIN/shared-unwinder.specs
+CXX_ARM64="${CROSS}g++ --sysroot=$SYSROOT -specs=$UNWIND_SPECS -L$FARM/lib -Wl,-rpath-link,$TLS_DEPS/lib"
+CC_ARM64="${CROSS}gcc --sysroot=$SYSROOT -specs=$UNWIND_SPECS -L$FARM/lib -Wl,-rpath-link,$TLS_DEPS/lib"
 STRIP=${CROSS}strip
 
 die() { echo "error: $*" >&2; exit 1; }
@@ -121,6 +127,7 @@ setup_host_tools() {
 	printf '#!/bin/sh\nexec "%s" "$@"\n' "$TOOLS/xres" > "$HOSTBIN/xres"
 	printf '#!/bin/sh\nexit 0\n' > "$HOSTBIN/mimeset"
 	chmod 755 "$HOSTBIN/rc" "$HOSTBIN/xres" "$HOSTBIN/mimeset"
+	printf '*libgcc:\n-lgcc_s -lgcc\n\n' > "$UNWIND_SPECS"
 	export PATH="$HOSTBIN:$PATH"
 }
 
@@ -532,6 +539,8 @@ set(CMAKE_SYSTEM_PROCESSOR aarch64)
 set(CMAKE_SYSROOT $SYSROOT)
 set(CMAKE_C_COMPILER ${CROSS}gcc)
 set(CMAKE_CXX_COMPILER ${CROSS}g++)
+set(CMAKE_EXE_LINKER_FLAGS_INIT -specs=$UNWIND_SPECS)
+set(CMAKE_SHARED_LINKER_FLAGS_INIT -specs=$UNWIND_SPECS)
 set(CMAKE_FIND_ROOT_PATH $SYSROOT/boot/system $SYSROOT/boot/system/develop)
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY BOTH)
@@ -607,6 +616,8 @@ INFO"' _ "$work/PackageInfo.template" > "$work/Natter.PackageInfo"
 # x86_64 one: WebProcess and NetworkProcess there, the libraries in lib/.
 SUMMIT_SRC=${SUMMIT_SRC:-$WORK/build/summit-arm64/summit}
 SUMMIT_WEBKIT_VERSION=${SUMMIT_WEBKIT_VERSION:-1.10.0-1}
+# Raise to replace an installed package built from the same Summit commit.
+SUMMIT_REVISION=${SUMMIT_REVISION:-1}
 
 # set_rpath <ELF file> <new rpath>: in place. CMake's file(RPATH_CHANGE)
 # keeps appended resources but cannot make the RPATH longer or add one;
@@ -765,7 +776,7 @@ PY
 	done
 	wait
 	for object in "${objects[@]}"; do [[ -e $object ]] || die "Summit: $object did not compile"; done
-	${CROSS}g++ --sysroot="$SYSROOT" "${objects[@]}" -L"$SUMMIT_ENGINE/lib" -L"$FARM/lib" \
+	${CROSS}g++ --sysroot="$SYSROOT" -specs="$UNWIND_SPECS" "${objects[@]}" -L"$SUMMIT_ENGINE/lib" -L"$FARM/lib" \
 		-Wl,-rpath-link,"$SUMMIT_ENGINE/lib" -Wl,-rpath-link,"$TLS_DEPS/lib" \
 		-Wl,-rpath-link,"$SYSROOT/boot/system/lib" -Wl,-rpath,"$ENGINE_DIR/lib" \
 		-lWebKit -lbe -lnetwork -lcrypto -lbnetapi -ltranslation -ltracker -lgame \
@@ -778,7 +789,7 @@ PY
 	deskbar_link apps/Summit Summit
 	docs summit README.md LICENSE
 	local version
-	version="0.1.0~git$(git -C "$SUMMIT_SRC" log -1 --format=%cd --date=format:%Y%m%d)-1"
+	version="0.1.0~git$(git -C "$SUMMIT_SRC" log -1 --format=%cd --date=format:%Y%m%d)-$SUMMIT_REVISION"
 	cat > "$STAGE/.PackageInfo" <<INFO
 name			summit
 version			$version
