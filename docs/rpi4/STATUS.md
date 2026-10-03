@@ -7,7 +7,7 @@ EEPROM bootloader 2022-01-25, firmware 1.20260915. Branch `rpi4`.
 | --- | --- | --- | --- |
 | 1 | SD card / boot | **Works on the board.** The minimum image boots from the SD card to the desktop, 1920x1080 on HDMI0, four cores at 1.5 GHz, serial console through loader and kernel | 2026-10-03: KVM screenshot of the desktop; serial capture `evidence/serial/boot3.log` |
 | 2 | Ethernet | Driver written (`bcm_genet`), builds, **not run on the board yet** | - |
-| 3 | USB | Not started (needs the PCIe host bridge and the VL805) | - |
+| 3 | USB | PCIe host bridge driver written (`<pci>bcm2711`, with the VL805 firmware request), builds, **not run on the board yet**. The xHCI driver is the existing PCI one | - |
 | 4 | GPU (Vulkan / OpenGL) | Not started | - |
 | 5 | Multi-display, Screens preferences | Not started (HDMI0 only, firmware frame buffer) | - |
 | 6 | Wi-Fi | Not started | - |
@@ -15,6 +15,22 @@ EEPROM bootloader 2022-01-25, firmware 1.20260915. Branch `rpi4`.
 | 8 | Media decoding, airTime | Not started | - |
 | 9 | Summit with GPU and WebGL | Not started | - |
 | 10 | The other apps | Not started | - |
+
+Also done, outside the stage list:
+
+- **The full air/OS image** (`jam -q @rpi4-airos build airos-rpi-image`, 4 GB):
+  branding, the owner's applications, Summit, firmware packages. Boots to the
+  branded desktop in QEMU's raspi4b (2026-10-03, `evidence/qemu-airos.png`);
+  not yet written to the board's card.
+- **Restart and shutdown** through the BCM2835 watchdog: initializes in QEMU,
+  not exercised on the board.
+- **Regression check of the shared changes** (fdt `ranges` translation, PL011
+  set-up in the kernel, framebuffer driver remap order): an EFI image from
+  the same tree boots in QEMU's `virt` machine with a readable serial console
+  (2026-10-03).
+
+The lab's NanoKVM stopped answering after a reboot on 2026-10-03 (ping only);
+everything marked "not run on the board" waits for it.
 
 ## What stage 1 consists of
 
