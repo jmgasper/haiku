@@ -6,8 +6,8 @@ EEPROM bootloader 2022-01-25, firmware 1.20260915. Branch `rpi4`.
 | # | Stage | State | Evidence |
 | --- | --- | --- | --- |
 | 1 | SD card / boot | **Works on the board.** The minimum image boots from the SD card to the desktop, 1920x1080 on HDMI0, four cores at 1.5 GHz, serial console through loader and kernel | 2026-10-03: KVM screenshot of the desktop; serial capture `evidence/serial/boot3.log` |
-| 2 | Ethernet | Driver written (`bcm_genet`), builds, **not run on the board yet** | - |
-| 3 | USB | PCIe host bridge driver written (`<pci>bcm2711`, with the VL805 firmware request), builds, **not run on the board yet**. The xHCI driver is the existing PCI one | - |
+| 2 | Ethernet | **Works on the board.** `bcm_genet`: 1000 Mbit/s full duplex, DHCP address, the lab's telnet shell and file push run over it | 2026-10-03: `evidence/serial/boot6.log`, `shell.py 192.168.1.209 ifconfig` |
+| 3 | USB | **Works on the board.** `<pci>bcm2711` brings the PCIe link up and has the VL805's firmware loaded; the xHCI driver runs it with uncached DMA memory. USB 3 flash drive, the NanoKVM's disk, keyboard, mouse and tablet enumerate; a click sent through the KVM opens the Deskbar menu | 2026-10-03: `evidence/serial/boot9.log`, `listusb`, `evidence/usb-click2.jpg` |
 | 4 | GPU (Vulkan / OpenGL) | Not started | - |
 | 5 | Multi-display, Screens preferences | Not started (HDMI0 only, firmware frame buffer) | - |
 | 6 | Wi-Fi | Not started | - |
@@ -22,15 +22,24 @@ Also done, outside the stage list:
   branding, the owner's applications, Summit, firmware packages. Boots to the
   branded desktop in QEMU's raspi4b (2026-10-03, `evidence/qemu-airos.png`);
   not yet written to the board's card.
-- **Restart and shutdown** through the BCM2835 watchdog: initializes in QEMU,
-  not exercised on the board.
+- **Restart** through the BCM2835 watchdog works on the board (`shutdown -r`
+  over telnet, `evidence/serial/boot8.log` shows the EEPROM banner again).
+  Shutdown (stay off) is not exercised yet.
 - **Regression check of the shared changes** (fdt `ranges` translation, PL011
   set-up in the kernel, framebuffer driver remap order): an EFI image from
   the same tree boots in QEMU's `virt` machine with a readable serial console
   (2026-10-03).
 
-The lab's NanoKVM stopped answering after a reboot on 2026-10-03 (ping only);
-everything marked "not run on the board" waits for it.
+Open points from stages 2 and 3:
+
+- GENET runs promiscuous with one queue and copies every packet; no
+  checksum offload, no multicast filter.
+- The PCIe inbound window covers the first 4 GB at PCI address 0: fine for
+  the 1/2/4 GB boards, not for RAM above 4 GB on the 8 GB board.
+- xHCI interrupts are INTx (no MSI controller driver).
+- USB HID logs a stalled control request and a "Context state" error when
+  the NanoKVM's keyboard is set up; input works regardless.
+- throughput is unmeasured for both.
 
 ## What stage 1 consists of
 

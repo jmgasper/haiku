@@ -95,8 +95,8 @@
 // where the devices' registers go in PCI address space
 static const uint64 kPciMemoryBase = 0xfc000000;
 static const uint64 kPciMemorySize = 0x04000000;
-// RAM as devices see it: at 0, large enough for every board
-static const uint64 kInboundSize = 8ull << 30;
+// RAM as devices see it: the first 4 GB, at PCI address 0
+static const uint64 kInboundSize = 4ull << 30;
 
 
 device_manager_info* gDeviceManager;
@@ -302,6 +302,18 @@ BCM2711PCIController::_Init()
 	// The PCI bus manager leaves bus numbers to the firmware, and there is
 	// none: the one link behind the root port is bus 1.
 	_Write(PCI_primary_bus, 0x00010100);
+
+	// Likewise the root port's windows: the PCI bus manager hands the
+	// devices their addresses out of what the bridge forwards. All of the
+	// device memory goes to bus 1; no I/O ports, no prefetchable window
+	// (base above limit).
+	uint32 base = (uint32)(kPciMemoryBase >> 16) & 0xfff0;
+	uint32 limit = (uint32)((kPciMemoryBase + kPciMemorySize - 1) >> 16) & 0xfff0;
+	_Write(PCI_memory_base, limit << 16 | base);
+	_Write(PCI_prefetchable_memory_base, 0x0000fff0);
+	*(volatile uint16*)(fRegs + PCI_io_base) = 0x00f0;
+	*(volatile uint16*)(fRegs + PCI_command)
+		= PCI_command_memory | PCI_command_master;
 
 	INFO("registers %#" B_PRIx64 ", link %s, device memory %#" B_PRIx64
 		" (PCI %#" B_PRIx64 "), %" B_PRIu64 " MB\n", regs,

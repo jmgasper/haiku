@@ -425,6 +425,18 @@ XHCI::XHCI(pci_info *info, 	pci_device_module_info* pci, pci_device* device, Sta
 		}
 
 		mapSize = fPCIInfo->u.h0.base_register_sizes[0];
+
+#ifdef __aarch64__
+		// PCI host bridges of ARM SoCs do not snoop the CPU caches as a
+		// rule (the Raspberry Pi 4's does not), and nothing says which do:
+		// keep everything the controller reads or writes in uncached memory.
+		fDMAAllocator = new(std::nothrow) PhysicalMemoryAllocator(
+			"XHCI noncoherent DMA", 8, B_PAGE_SIZE * 32, 64, true);
+		if (fDMAAllocator == NULL || fDMAAllocator->InitCheck() != B_OK) {
+			TRACE_ERROR("could not allocate noncoherent DMA pool\n");
+			return;
+		}
+#endif
 	} else if (platform != NULL) {
 		physicalAddress = platform->register_base;
 		mapSize = platform->register_size;
