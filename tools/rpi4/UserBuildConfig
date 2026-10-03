@@ -114,6 +114,15 @@ rule UserBuildConfigRulePreImage
 		SEARCH on $(airosPackages) = $(airosPackageDir) ;
 		AddFilesToHaikuImage system packages : $(airosPackages) ;
 
+		# packages built for this board (tools/airos/
+		# build-arm64-app-packages.sh /mnt/HaikuWork/rpi4/packages-arm64
+		# <app>): Clipper so far
+		local rpi4PackageDir = /mnt/HaikuWork/rpi4/packages-arm64 ;
+		local rpi4Packages = [ Glob $(rpi4PackageDir) : *.hpkg ] ;
+		rpi4Packages = <rpi4-app-pkg>$(rpi4Packages:BS) ;
+		SEARCH on $(rpi4Packages) = $(rpi4PackageDir) ;
+		AddFilesToHaikuImage system packages : $(rpi4Packages) ;
+
 		# airTime, the movie player (apps/airTime, tools/build-arm64.sh and
 		# tools/package-haiku.sh there)
 		local airTime = <airtime-pkg>airtime-1.0.0-12-arm64.hpkg ;

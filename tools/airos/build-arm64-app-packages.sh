@@ -6,7 +6,7 @@
 #   tools/airos/build-arm64-app-packages.sh [OUTPUT_DIR] [APP ...]
 #
 #   OUTPUT_DIR  where the packages go (default /mnt/HaikuWork/airos/packages-arm64)
-#   APP         any of: airshot burrow kiri lcdmonitor amp turbochook natter
+#   APP         any of: airshot clipper burrow kiri lcdmonitor amp turbochook natter
 #               summit_webkit summit
 #               (default: all of them, natter last)
 #
@@ -400,6 +400,33 @@ build_airshot() {
 	retarget_package_info "$SRC/resources/airShot.PackageInfo" "$STAGE/.PackageInfo"
 	add_attributes "$BUILDDIR/airShot.rsrc" apps/airShot
 	finish_package airshot apps/airShot add-ons/input_server/filters/airShot
+}
+
+# --- Clipper ----------------------------------------------------------------
+# The clipboard manager: the application and its two input_server add-ons
+# (global shortcuts, paste injection), staged as its tools/package-haiku.sh
+# does.
+build_clipper() {
+	note Clipper
+	snapshot clipper clipper
+	local private=$SYSROOT/boot/system/develop/headers/private
+	make -C "$SRC" -s -j"$JOBS" BUILD=build-arm64 CXX="$CXX_ARM64" \
+		APP_CPPFLAGS="-I$private/interface" \
+		RC="$TOOLS/rc/rc" XRES="$TOOLS/xres" MIMESET=true all
+	stage_begin
+	install_binary "$BUILDDIR/Clipper" "$BUILDDIR/Clipper.rsrc" apps/Clipper
+	install_binary "$BUILDDIR/Clipper_filter" - add-ons/input_server/filters/Clipper_shortcuts
+	install_binary "$BUILDDIR/Clipper_device" - add-ons/input_server/devices/Clipper_paste
+	docs clipper README.md LICENSE docs
+	install_file 644 "$SRC/LICENSE" data/licenses/MIT
+	deskbar_link apps/Clipper Clipper
+	# its requires list is on one line; the retargeting reads one per line
+	sed 's/^requires { *\(.*\) *}$/requires {\n\t\1\n}/' \
+		"$SRC/resources/Clipper.PackageInfo" > "$BUILDDIR/Clipper.PackageInfo"
+	retarget_package_info "$BUILDDIR/Clipper.PackageInfo" "$STAGE/.PackageInfo"
+	add_attributes "$BUILDDIR/Clipper.rsrc" apps/Clipper
+	finish_package clipper apps/Clipper add-ons/input_server/filters/Clipper_shortcuts \
+		add-ons/input_server/devices/Clipper_paste
 }
 
 # --- Burrow -----------------------------------------------------------------
@@ -826,7 +853,7 @@ main() {
 	setup_host_tools
 	setup_dependency_farm
 	local app
-	for app in airshot burrow kiri lcdmonitor amp turbochook natter summit_webkit summit; do
+	for app in airshot clipper burrow kiri lcdmonitor amp turbochook natter summit_webkit summit; do
 		wanted "$app" && "build_$app"
 	done
 	note summary
