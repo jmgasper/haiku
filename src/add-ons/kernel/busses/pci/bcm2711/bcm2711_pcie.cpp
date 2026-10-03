@@ -299,6 +299,10 @@ BCM2711PCIController::_Init()
 	_Write(RC_CFG_PRIV1_ID_VAL3,
 		(_Read(RC_CFG_PRIV1_ID_VAL3) & ~CLASS_CODE_MASK) | 0x060400);
 
+	// The PCI bus manager leaves bus numbers to the firmware, and there is
+	// none: the one link behind the root port is bus 1.
+	_Write(PCI_primary_bus, 0x00010100);
+
 	INFO("registers %#" B_PRIx64 ", link %s, device memory %#" B_PRIx64
 		" (PCI %#" B_PRIx64 "), %" B_PRIu64 " MB\n", regs,
 		fLinkUp ? "up" : "down", fHostMemoryBase, kPciMemoryBase,

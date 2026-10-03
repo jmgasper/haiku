@@ -423,6 +423,11 @@ genet_interrupt(void* data)
 static void
 genet_stop(genet_info* info)
 {
+	// The MAC may still be held in reset (the bit is in the flush control
+	// register); its registers cannot be touched before it is released.
+	write32(info, SYS_RBUF_FLUSH_CTRL, 0);
+	spin(10);
+
 	write32(info, INTRL2_0 + INTRL2_CPU_MASK_SET, 0xffffffff);
 	write32(info, INTRL2_0 + INTRL2_CPU_CLEAR, 0xffffffff);
 	write32(info, INTRL2_1 + INTRL2_CPU_MASK_SET, 0xffffffff);
