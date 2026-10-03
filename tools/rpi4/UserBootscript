@@ -6,8 +6,7 @@
 
 (
 	mkdir -p /boot-fat
-	mount -t fat /dev/disk/mmc/0/0/raw /boot-fat 2>/dev/null \
-		|| mount -t fat /dev/disk/mmc/0/0 /boot-fat || exit 0
+	mount -t fat /dev/disk/mmc/0/0 /boot-fat > /dev/null 2>&1 || exit 0
 
 	save() {
 		cp /var/log/syslog /boot-fat/syslog.txt
