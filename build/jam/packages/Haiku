@@ -88,6 +88,7 @@ AddFilesToPackage add-ons kernel generic :
 	bios@x86,x86_64
 	dpc
 	mpu401
+	rpi_firmware@arm64
 	scsi_periph
 	smbios@x86,x86_64
 	<module>tty

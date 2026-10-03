@@ -19,9 +19,11 @@ EEPROM bootloader 2022-01-25, firmware 1.20260915. Branch `rpi4`.
 Also done, outside the stage list:
 
 - **The full air/OS image** (`jam -q @rpi4-airos build airos-rpi-image`, 4 GB):
-  branding, the owner's applications, Summit, firmware packages. Boots to the
-  branded desktop in QEMU's raspi4b (2026-10-03, `evidence/qemu-airos.png`);
-  not yet written to the board's card.
+  branding, the owner's applications, Summit, firmware packages. **Runs on
+  the board** (2026-10-03, `evidence/airos-board.jpg`,
+  `evidence/serial/airos2.log`): branded desktop at 1920x1080, Ethernet up,
+  the applications and packages in place. The applications themselves have
+  not been started there yet.
 - **Restart** through the BCM2835 watchdog works on the board (`shutdown -r`
   over telnet, `evidence/serial/boot8.log` shows the EEPROM banner again).
   Shutdown (stay off) is not exercised yet.
