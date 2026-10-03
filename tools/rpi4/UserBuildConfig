@@ -52,7 +52,7 @@ rule UserBuildConfigRulePreImage
 		local extras = /mnt/HaikuWork/rock5-image-extras ;
 
 		# libraries the applications link against
-		local libs = <rpi4-lib>libEGL_mesa.so.0 <rpi4-lib>libEGL.so.1
+		local libs = <rpi4-lib>libEGL.so.1
 			<rpi4-lib>libGLESv2.so.2 <rpi4-lib>libGLdispatch.so.0
 			<rpi4-lib>libOpenGL.so.0 <rpi4-lib>libGL.so.1 <rpi4-lib>libGLU.so.1
 			<rpi4-lib>libsqlite3.so.0 <rpi4-lib>libtag.so.2
@@ -60,6 +60,22 @@ rule UserBuildConfigRulePreImage
 			<rpi4-lib>liblexilla.so ;
 		SEARCH on $(libs) = [ FDirName $(extras) lib ] ;
 		AddFilesToHaikuImage system non-packaged lib : $(libs) ;
+
+		# OpenGL on the GPU: Mesa with the v3d driver (tools/rpi4/mesa) behind
+		# libglvnd, the kernel driver is in the haiku package. GLTeapot and
+		# GL Info as on the ROCK 5 (Haiku has no arm64 mesa package, so the
+		# regular image definition leaves them out).
+		local mesaStage = /mnt/HaikuWork/rpi4/mesa/stage ;
+		local mesaLib = <rpi4-mesa>libEGL_mesa.so.0 ;
+		SEARCH on $(mesaLib) = $(mesaStage) ;
+		AddFilesToHaikuImage system non-packaged lib : $(mesaLib) ;
+		local vendorFile = <rpi4-mesa>10_mesa.json ;
+		SEARCH on $(vendorFile) = $(mesaStage) ;
+		AddFilesToHaikuImage system non-packaged add-ons opengl egl_vendor.d
+			: $(vendorFile) ;
+		local glDemos = <rpi4-gl>GLTeapot ;
+		SEARCH on $(glDemos) = [ FDirName $(extras) apps ] ;
+		AddFilesToHaikuImage system non-packaged demos : $(glDemos) ;
 
 		# Wi-Fi and Bluetooth firmware, wpa_supplicant, ffmpeg
 		local packages
@@ -69,6 +85,7 @@ rule UserBuildConfigRulePreImage
 			<rpi4-pkg>intel_bluetooth_firmwares-20240318-1-any.hpkg
 			<rpi4-pkg>mediatek_bluetooth_firmwares-20240318-1-any.hpkg
 			<rpi4-pkg>realtek_bluetooth_firmwares-20240318-1-any.hpkg
+			<rpi4-pkg>rock5_glinfo-1.0.0-1-arm64.hpkg
 			<rpi4-pkg>rock5_ffmpeg-6.1.6-2-arm64.hpkg
 			<rpi4-pkg>wpa_supplicant-2.11.haiku.1-1-arm64.hpkg ;
 		SEARCH on $(packages) = [ FDirName $(extras) packages ] ;

@@ -32,3 +32,17 @@ if [ "${1:-}" = configure ] || [ ! -f "$ROOT/build/build.ninja" ]; then
 fi
 [ "${1:-}" = configure ] && exit 0
 ninja -C "$ROOT/build" -j"${HAIKU_JOBS:-12}"
+
+# What the image build takes (tools/rpi4/UserBuildConfig): the stripped
+# library and the EGL vendor file that names it.
+mkdir -p "$ROOT/stage"
+"$WORK/build/arm64/cross-tools-arm64/bin/aarch64-unknown-haiku-strip" \
+    -o "$ROOT/stage/libEGL_mesa.so.0" "$ROOT/build/src/egl/libEGL_mesa.so.0.0.0"
+cat > "$ROOT/stage/10_mesa.json" <<'JSON'
+{
+  "file_format_version": "1.0.0",
+  "ICD": {
+    "library_path": "/boot/system/non-packaged/lib/libEGL_mesa.so.0"
+  }
+}
+JSON
