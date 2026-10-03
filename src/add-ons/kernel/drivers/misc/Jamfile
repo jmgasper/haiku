@@ -24,4 +24,9 @@ if $(TARGET_ARCH) = arm64 {
 	KernelAddon <driver>rpi_property :
 		rpi_property.cpp
 		;
+
+	# the VideoCore firmware's services for user programs
+	KernelAddon <driver>vchiq :
+		vchiq.cpp
+		;
 }

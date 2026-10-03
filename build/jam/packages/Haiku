@@ -89,6 +89,7 @@ AddFilesToPackage add-ons kernel generic :
 	dpc
 	mpu401
 	rpi_firmware@arm64
+	vchiq@arm64
 	scsi_periph
 	smbios@x86,x86_64
 	<module>tty
@@ -184,6 +185,16 @@ if $(TARGET_ARCH) = arm64 {
 	# the Raspberry Pi 4's onboard controller, behind a UART
 	AddDriversToPackage bluetooth h4 :
 		h4bcm
+		;
+}
+if $(TARGET_ARCH) = arm64 {
+	# the Raspberry Pi's firmware services: sound output, and the message
+	# channel itself for the H.264 decoder add-on
+	AddDriversToPackage audio hmulti :
+		bcm2835_audio
+		;
+	AddDriversToPackage misc :
+		<driver>vchiq
 		;
 }
 AddDriversToPackage midi :
