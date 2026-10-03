@@ -309,7 +309,7 @@ against Windows; evaluate actual ACPI and device-tree tables for Haiku.
 
 | Work item | Starting point and dependencies | Acceptance |
 | --- | --- | --- |
-| USB controllers and PHYs | Existing xHCI/EHCI/OHCI code; RK3588 DWC3/platform attachment and PHY/clock/reset glue; phase 2 | Enumerate each routed controller and hub; hotplug on four USB 3 Type-A, two USB 2 Type-A and both front USB 2 ports; test USB-C data separately |
+| USB controllers and PHYs | Existing xHCI/EHCI/OHCI code; RK3588 DWC3/platform attachment and PHY/clock/reset glue; phase 2. 2026-10-03: the rear ports' DWC3 runs as a USB 2 host, the USB-C core is not attached, OHCI is not attached ([USB.md](USB.md)) | Enumerate each routed controller and hub; hotplug on four USB 3 Type-A, two USB 2 Type-A and both front USB 2 ports; test USB-C data separately |
 | Keyboard, mouse and USB storage | Existing HID, SCSI and USB mass-storage drivers; USB controllers | NanoKVM HID works in Haiku; boot filesystem survives EFI exit; long hash-checked reads/writes on a disposable USB disk; recover after disconnect |
 
 ## 4 — PCIe, native networking and fast storage
