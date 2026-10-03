@@ -1,10 +1,17 @@
 # air/OS on the Raspberry Pi 4: lab setup
 
-Revision 2, 2026-10-03: the board boots firmware-direct, as Raspberry Pi OS
-does, with no UEFI or U-Boot. Power is a smart plug switched through Home
-Assistant. Nothing here has been wired or checked yet. Steps marked
-**verify** are tested first once the hardware is connected. This file moves
-into the fork as `docs/rpi4/SETUP.md` once the port branch exists.
+This is the plan the port started from (revision 2, 2026-10-03), kept for its
+reasoning. What was actually built and verified is in STATUS.md and BOOT.md;
+where they differ, they are right. Known differences from the plan:
+
+- The NanoKVM is the ROCK 5's former one (192.168.1.8), and the smart plug is
+  `switch.attic_rack_power`.
+- The recovery OS is Alpine Linux running from RAM (384 MiB image), not
+  Raspberry Pi OS: the NanoKVM had no room for more.
+- `total_mem=3072` is not set; nothing needed it so far.
+- The serial wire has no series resistor that the lab knows of.
+- Tools: `tools/rpi4/` (`power.py`, `build-recovery-image.sh`, `deploy-sd.sh`,
+  `serial-capture.sh`, `qemu-run.sh`, `shell.py`).
 
 The aim is the same remote loop as the ROCK 5 lab. Build on this host, deploy,
 power-cycle the board, then watch serial output and the HDMI picture. Recovery
