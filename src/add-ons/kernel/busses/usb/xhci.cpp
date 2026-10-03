@@ -2533,8 +2533,13 @@ XHCI::ConfigureEndpoint(xhci_endpoint* ep, uint8 slot, uint8 number, uint8 type,
 		// method if bytesPerInterval is 0.
 		if (speed >= USB_SPEED_SUPERSPEED && bytesPerInterval != 0)
 			dwendpoint4 |= ENDPOINT_4_MAXESITPAYLOAD(bytesPerInterval);
-		else if (speed >= USB_SPEED_HIGHSPEED)
-			dwendpoint4 |= ENDPOINT_4_MAXESITPAYLOAD((maxBurst + 1) * maxPacketSize);
+		else {
+			// Low and full speed endpoints too: a controller that takes
+			// the field at its word (the VL805 does) refuses every transfer
+			// of an endpoint that may move nothing per interval.
+			dwendpoint4 |= ENDPOINT_4_MAXESITPAYLOAD((maxBurst + 1)
+				* (maxPacketSize & 0x7ff));
+		}
 	}
 
 	_WriteContext(&device->input_ctx->endpoints[number].dwendpoint0,
@@ -2984,7 +2989,10 @@ XHCI::HandleTransferComplete(xhci_trb* trb)
 	if (completionCode != COMP_SUCCESS && completionCode != COMP_SHORT_PACKET
 			&& completionCode != COMP_STOPPED && completionCode != COMP_STOPPED_LENGTH_INVALID) {
 		TRACE_ALWAYS("transfer error on slot %" B_PRId8 " endpoint %" B_PRId8
-			": %s\n", slot, endpointNumber, xhci_error_string(completionCode));
+			": %s (remainder %" B_PRId32 ", transferred %" B_PRId32
+			", burst payload %" B_PRIuSIZE ", event flags %#" B_PRIx32 ")\n",
+			slot, endpointNumber, xhci_error_string(completionCode), remainder,
+			transferred, (size_t)endpoint->max_burst_payload, flags);
 	}
 
 	phys_addr_t source = B_LENDIAN_TO_HOST_INT64(trb->address);
