@@ -664,7 +664,10 @@ AccelerantHWInterface::_SetFallbackMode(display_mode& newMode) const
 status_t
 AccelerantHWInterface::SetMode(const display_mode& mode)
 {
-	return _SetMode(mode, false);
+	status_t status = _SetMode(mode, false);
+	// A mode set may leave the display engine without the cursor.
+	_UpdateHardwareCursor(true);
+	return status;
 }
 
 
@@ -1252,6 +1255,8 @@ AccelerantHWInterface::SetRenderScale(uint16 percent)
 		return status;
 
 	_NotifyFrameBufferChanged();
+	// the cursor at the new density
+	_UpdateHardwareCursor(true);
 	return B_OK;
 }
 
@@ -1288,6 +1293,8 @@ AccelerantHWInterface::SetSoftwareScale(uint16 percent)
 		return status;
 
 	_NotifyFrameBufferChanged();
+	// the hardware cursor is not enlarged with the frame buffer
+	_UpdateHardwareCursor(true);
 	return B_OK;
 }
 
@@ -1404,7 +1411,10 @@ AccelerantHWInterface::SetDisplayLayout(const display_output_config* configs,
 	if (status != B_OK || !switchMode)
 		return status;
 
-	return _SetMode(mode, true);
+	status = _SetMode(mode, true);
+	// the cursor on the new layout, at its density
+	_UpdateHardwareCursor(true);
+	return status;
 }
 
 
@@ -1542,27 +1552,69 @@ void
 AccelerantHWInterface::SetCursor(ServerCursor* cursor)
 {
 	// cursor should never be NULL, but let us be safe!!
-	if (cursor == NULL || LockExclusiveAccess() == false)
+	if (cursor == NULL)
 		return;
+
+	// HWInterface makes the cursor at the frame buffer's density first, so
+	// that the accelerant gets the one the software cursor would draw.
+	HWInterface::SetCursor(cursor);
+	_UpdateHardwareCursor();
+}
+
+
+void
+AccelerantHWInterface::SetDragBitmap(const ServerBitmap* bitmap,
+	const BPoint& offsetFromCursor)
+{
+	// The drag bitmap is composed into the cursor; the accelerant shows the
+	// two together, or the software cursor does while it is too big.
+	HWInterface::SetDragBitmap(bitmap, offsetFromCursor);
+	_UpdateHardwareCursor();
+}
+
+
+/*!	Hands the cursor, as HWInterface keeps it (at the frame buffer's density,
+	the drag bitmap composed into it), to the accelerant, and switches between
+	the hardware and the software cursor as the accelerant takes it or not.
+
+	The software cursor is drawn into the frame buffer, out of app_server's
+	own copy of the screen. A direct window that draws into the frame buffer
+	itself - a browser presenting its pages from the GPU - paints over it and
+	leaves app_server restoring stale pixels around it; a hardware cursor is
+	not in the frame buffer at all.
+*/
+void
+AccelerantHWInterface::_UpdateHardwareCursor(bool force)
+{
+	ServerCursorReference cursor = CursorAndDragBitmap();
+	if (cursor.Get() == NULL || !LockExclusiveAccess())
+		return;
+
+	// The accelerant makes a surface of every one it gets.
+	if (!force && fHardwareCursorEnabled && fHardwareCursor.Get() == cursor.Get()) {
+		UnlockExclusiveAccess();
+		return;
+	}
 
 	bool cursorSet = false;
 
-	if (fAccSetCursorBitmap != NULL) {
-		// Bitmap cursor
-		// TODO are x and y switched for this, too?
+	// A software scale enlarges the frame buffer after the cursor is drawn.
+	if (fAccSetCursorBitmap != NULL && SoftwareScale() == 100
+		&& (cursor->ColorSpace() == B_RGBA32
+			|| cursor->ColorSpace() == B_RGB32)) {
+		// Both are premultiplied with alpha, as the software cursor blends
+		// them.
 		uint16 xHotSpot = (uint16)cursor->GetHotSpot().x;
 		uint16 yHotSpot = (uint16)cursor->GetHotSpot().y;
-
-		uint16 width = (uint16)cursor->Width();
-		uint16 height = (uint16)cursor->Height();
-
-		// Time to talk to the accelerant!
-		cursorSet = fAccSetCursorBitmap(width, height, xHotSpot,
-			yHotSpot, cursor->ColorSpace(), (uint16)cursor->BytesPerRow(),
-			cursor->Bits()) == B_OK;
+		cursorSet = fAccSetCursorBitmap((uint16)cursor->Width(),
+			(uint16)cursor->Height(), xHotSpot, yHotSpot, B_RGBA32,
+			(uint16)cursor->BytesPerRow(), cursor->Bits()) == B_OK;
 	}
 
-	if (!cursorSet && cursor->CursorData() != NULL && fAccSetCursorShape != NULL) {
+	// Only a cursor as it was set has its BeOS data: one at the frame buffer's
+	// density already, without a drag bitmap.
+	if (!cursorSet && cursor->CursorData() != NULL && fAccSetCursorShape != NULL
+		&& SoftwareScale() == 100) {
 		// BeOS BCursor, 16x16 monochrome
 		uint8 size = cursor->CursorData()[0];
 		// CursorData()[1] is color depth (always monochrome)
@@ -1610,24 +1662,32 @@ AccelerantHWInterface::SetCursor(ServerCursor* cursor)
 			fCursorVisible = true;
 			fFloatingOverlaysLock.Unlock();
 		}
-		// and we need to update our position
-		if (fAccMoveCursor != NULL) {
-			fAccMoveCursor((uint16)(fCursorLocation.x * RenderScaleFactor()
-					* SoftwareScale() / 100),
-				(uint16)(fCursorLocation.y * RenderScaleFactor()
-					* SoftwareScale() / 100));
-		}
+	}
+
+	if (cursorSet && fAccMoveCursor != NULL) {
+		// the hardware cursor lives in the front buffer's pixels
+		fAccMoveCursor((uint16)(fCursorLocation.x * RenderScaleFactor()
+				* SoftwareScale() / 100),
+			(uint16)(fCursorLocation.y * RenderScaleFactor()
+				* SoftwareScale() / 100));
 	}
 
 	if (fAccShowCursor != NULL)
-		fAccShowCursor(cursorSet);
+		fAccShowCursor(cursorSet && fCursorVisible);
+
+	bool wasEnabled = fHardwareCursorEnabled;
+	fHardwareCursorEnabled = cursorSet;
+	fHardwareCursor.SetTo(cursorSet ? cursor.Get() : NULL);
+
+	if (wasEnabled && !cursorSet) {
+		// and from HW to SW: the software cursor is drawn again
+		if (fFloatingOverlaysLock.Lock()) {
+			Invalidate(_CursorFrame());
+			fFloatingOverlaysLock.Unlock();
+		}
+	}
 
 	UnlockExclusiveAccess();
-
-	fHardwareCursorEnabled = cursorSet;
-
-	HWInterface::SetCursor(cursor);
-		// HWInterface claims ownership of cursor.
 }
 
 

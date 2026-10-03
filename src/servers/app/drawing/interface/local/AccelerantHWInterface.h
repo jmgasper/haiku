@@ -91,6 +91,8 @@ public:
 	virtual	void				SetCursor(ServerCursor* cursor);
 	virtual	void				SetCursorVisible(bool visible);
 	virtual	void				MoveCursorTo(float x, float y);
+	virtual	void				SetDragBitmap(const ServerBitmap* bitmap,
+									const BPoint& offsetFromCursor);
 
 	// frame buffer access
 	virtual	RenderingBuffer*	FrontBuffer() const;
@@ -126,6 +128,7 @@ private:
 	static	status_t			_DisplayChangeThread(void* data);
 			status_t			_SetMode(const display_mode& mode, bool force);
 			status_t			_UpdateBackBuffer();
+			void				_UpdateHardwareCursor(bool force = false);
 
 private:
 			int					fCardFD;
@@ -152,6 +155,9 @@ private:
 			set_cursor_bitmap		fAccSetCursorBitmap;
 			move_cursor				fAccMoveCursor;
 			show_cursor				fAccShowCursor;
+
+			// what the accelerant shows, while it shows the cursor
+			ServerCursorReference	fHardwareCursor;
 
 			// dpms hooks
 			dpms_capabilities	fAccDPMSCapabilities;
