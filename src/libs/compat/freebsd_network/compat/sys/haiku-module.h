@@ -82,6 +82,7 @@ void __haiku_init_hardware(void);
 status_t _fbsd_init_hardware();
 status_t _fbsd_init_hardware_pci(driver_t* drivers[]);
 status_t _fbsd_init_hardware_uhub(driver_t* drivers[]);
+status_t _fbsd_init_hardware_fixed(driver_t* driver);
 status_t _fbsd_init_drivers();
 void _fbsd_init_bus_dma(const char* driverName);
 status_t _fbsd_uninit_drivers();

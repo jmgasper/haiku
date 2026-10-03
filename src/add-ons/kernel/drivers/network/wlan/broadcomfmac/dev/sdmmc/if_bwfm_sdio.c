@@ -16,6 +16,53 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#ifdef __HAIKU__
+/* Haiku: OpenBSD's driver on the FreeBSD/OpenBSD compatibility layers. */
+#include <sys/param.h>
+#include <sys/systm.h>
+#include <sys/kernel.h>
+#include <sys/malloc.h>
+#include <sys/mbuf.h>
+#include <sys/queue.h>
+#include <sys/socket.h>
+#include <sys/sockio.h>
+#include <sys/endian.h>
+#include <sys/task.h>
+#include <sys/device.h>
+#include <sys/bus.h>
+#include <machine/bus.h>
+
+#include <net/if.h>
+#include <net/if_dl.h>
+#include <net/if_media.h>
+#include <net/if_types.h>
+#include <net/ifq.h>
+
+#include <netinet/in.h>
+#include <netinet/if_ether.h>
+
+#include <net80211/ieee80211_var.h>
+#include <net80211/ieee80211_priv.h>
+#undef DPRINTF
+
+#include <dev/sdmmc/sdmmc_shim.h>
+
+#define NBPFILTER 0
+#define vaddr_t addr_t
+#ifndef MT_CONTROL
+#define MT_CONTROL 14
+#endif
+#define ifq_restart(ifq) do {					\
+	ifq_clr_oactive(ifq);					\
+	if (!IFQ_IS_EMPTY(ifq))					\
+		(*ifp->if_start)(ifp);				\
+} while (0)
+#define delay(us) DELAY(us)
+#define mallocarray(nmemb, size, type, flags) \
+	malloc((size) * (nmemb), (type), (flags))
+#define dma_alloc(size, flags) malloc((size), M_DEVBUF, M_WAITOK)
+#define dma_free(address, size) free((address), M_DEVBUF, (size))
+#else
 #include "bpfilter.h"
 
 #include <sys/param.h>
@@ -45,8 +92,12 @@
 
 #include <net80211/ieee80211_var.h>
 
+#ifndef __HAIKU__
 #include <dev/sdmmc/sdmmcdevs.h>
 #include <dev/sdmmc/sdmmcvar.h>
+#endif
+
+#endif
 
 #include <dev/ic/bwfmvar.h>
 #include <dev/ic/bwfmreg.h>
@@ -71,7 +122,11 @@ static int bwfm_debug = 1;
 #endif
 
 #undef DEVNAME
+#ifdef __HAIKU__
+#define DEVNAME(sc)	gDriverName
+#else
 #define DEVNAME(sc)	((sc)->sc_sc.sc_dev.dv_xname)
+#endif
 
 enum bwfm_sdio_clkstate {
 	CLK_NONE,
@@ -110,12 +165,28 @@ struct bwfm_sdio_softc {
 	int			  sc_tx_count;
 
 	struct task		  sc_task;
+#ifdef __HAIKU__
+	/* the SDIO host has no functions of its own to hand out */
+	struct sdmmc_softc	  sc_sdmmc;
+	struct sdmmc_function	  sc_functions[3];
+	thread_id		  sc_poller;
+	sem_id			  sc_poll_sem;
+	int			  sc_poll;
+#endif
 };
 
+#ifdef __HAIKU__
+void		 bwfm_stop(struct ifnet *);
+static int	 bwfm_sdio_probe(device_t);
+static int	 bwfm_sdio_attach(device_t);
+#else
 int		 bwfm_sdio_match(struct device *, void *, void *);
 void		 bwfm_sdio_attach(struct device *, struct device *, void *);
+#endif
 int		 bwfm_sdio_preinit(struct bwfm_softc *);
+#ifndef __HAIKU__
 int		 bwfm_sdio_detach(struct device *, int);
+#endif
 
 int		 bwfm_sdio_intr(void *);
 int		 bwfm_sdio_oob_intr(void *);
@@ -188,6 +259,7 @@ struct bwfm_buscore_ops bwfm_sdio_buscore_ops = {
 	.bc_activate = bwfm_sdio_buscore_activate,
 };
 
+#ifndef __HAIKU__
 const struct cfattach bwfm_sdio_ca = {
 	sizeof(struct bwfm_sdio_softc),
 	bwfm_sdio_match,
@@ -245,16 +317,85 @@ bwfm_sdio_match(struct device *parent, void *match, void *aux)
 	return 1;
 }
 
+#endif
+
+#ifdef __HAIKU__
+static int
+bwfm_sdio_probe(device_t dev)
+{
+	/* the glue only reports a device when the SDIO host found the chip */
+	return 0;
+}
+
+static status_t
+bwfm_sdio_poller(void *arg)
+{
+	struct bwfm_sdio_softc *sc = arg;
+
+	/*
+	 * The bus task runs here, not on the shared task queue: the callers
+	 * that wait for a command's response sit on that queue's one thread.
+	 * The host has no interrupt of its own yet, so the card's interrupt
+	 * line is looked at a hundred times a second, a thousand while there
+	 * is traffic; whoever has something to send wakes the thread.
+	 */
+	bigtime_t lastWork = 0;
+	while (sc->sc_poll) {
+		/* look more often while frames are coming in */
+		bigtime_t wait = system_time() - lastWork < 200000 ? 1000 : 10000;
+		status_t status = acquire_sem_etc(sc->sc_poll_sem, 1,
+		    B_RELATIVE_TIMEOUT, wait);
+		if (!sc->sc_poll)
+			break;
+		if (rpi_sdio_card_interrupt()) {
+			lastWork = system_time();
+			status = B_OK;
+		}
+		if (status == B_OK) {
+			mtx_lock(&Giant);
+			bwfm_sdio_task(sc);
+			mtx_unlock(&Giant);
+		}
+	}
+	return 0;
+}
+
+static void
+bwfm_sdio_kick(struct bwfm_sdio_softc *sc)
+{
+	int32 count;
+
+	/* one pending wake-up is enough */
+	if (get_sem_count(sc->sc_poll_sem, &count) == B_OK && count <= 0)
+		release_sem_etc(sc->sc_poll_sem, 1, B_DO_NOT_RESCHEDULE);
+}
+
+static int
+bwfm_sdio_attach(device_t dev)
+#else
 void
 bwfm_sdio_attach(struct device *parent, struct device *self, void *aux)
+#endif
 {
+#ifdef __HAIKU__
+	struct bwfm_sdio_softc *sc = device_get_softc(dev);
+	struct sdmmc_function *sf;
+	int i;
+#else
 	struct bwfm_sdio_softc *sc = (struct bwfm_sdio_softc *)self;
 	struct sdmmc_attach_args *saa = aux;
 	struct sdmmc_function *sf = saa->sf;
+#endif
 	struct bwfm_core *core;
 	uint32_t reg;
 
+#ifdef __HAIKU__
+	sc->sc_sc.sc_dev = dev;
+	if (rpi_sdio_init() != B_OK)
+		return ENXIO;
+#else
 	printf("\n");
+#endif
 
 #if defined(__HAVE_FDT)
 	if (sf->cookie)
@@ -267,6 +408,19 @@ bwfm_sdio_attach(struct device *parent, struct device *self, void *aux)
 	sc->sc_bounce_buf = dma_alloc(sc->sc_bounce_size, PR_WAITOK);
 	sc->sc_tx_seq = 0xff;
 
+#ifdef __HAIKU__
+	rw_init(&sc->sc_sdmmc.sc_lock, "bwfm sdio");
+	sc->sc_sdmmc.sc_function_count = 2;
+	sc->sc_lock = &sc->sc_sdmmc.sc_lock;
+	sc->sc_sf = mallocarray(3, sizeof(struct sdmmc_function *), M_DEVBUF,
+	    M_WAITOK);
+	for (i = 0; i < 3; i++) {
+		sc->sc_functions[i].number = i;
+		sc->sc_functions[i].sc = &sc->sc_sdmmc;
+		sc->sc_sf[i] = &sc->sc_functions[i];
+	}
+	sf = sc->sc_sf[1];
+#else
 	rw_assert_wrlock(&sf->sc->sc_lock);
 	sc->sc_lock = &sf->sc->sc_lock;
 
@@ -278,6 +432,7 @@ bwfm_sdio_attach(struct device *parent, struct device *self, void *aux)
 		sc->sc_sf[sf->number] = sf;
 	}
 	sf = saa->sf;
+#endif
 
 	sdmmc_io_set_blocklen(sc->sc_sf[1], 64);
 	sdmmc_io_set_blocklen(sc->sc_sf[2], 512);
@@ -337,11 +492,21 @@ bwfm_sdio_attach(struct device *parent, struct device *self, void *aux)
 	sc->sc_sc.sc_bus_ops = &bwfm_sdio_bus_ops;
 	sc->sc_sc.sc_proto_ops = &bwfm_proto_bcdc_ops;
 	bwfm_attach(&sc->sc_sc);
+#ifdef __HAIKU__
+	/* the firmware files are there by now: no need to wait for a root */
+	bwfm_attachhook(&sc->sc_sc);
+	return 0;
+#else
 	config_mountroot(self, bwfm_attachhook);
 	return;
+#endif
 
 err:
 	free(sc->sc_sf, M_DEVBUF, 0);
+#ifdef __HAIKU__
+	rpi_sdio_uninit();
+	return ENXIO;
+#endif
 }
 
 int
@@ -477,6 +642,22 @@ bwfm_sdio_preinit(struct bwfm_softc *bwfm)
 	}
 	if (sc->sc_ih == NULL)
 #endif
+#ifdef __HAIKU__
+	{
+		sc->sc_poll = 1;
+		sc->sc_poll_sem = create_sem(0, "bwfm sdio");
+		sc->sc_poller = spawn_kernel_thread(bwfm_sdio_poller,
+		    "bwfm sdio poller", B_NORMAL_PRIORITY, sc);
+		if (sc->sc_poller < 0) {
+			bwfm_sdio_clkctl(sc, CLK_NONE, 0);
+			goto err;
+		}
+		sc->sc_ih = sc;
+		/* the card signals function 1 and 2 events on its line */
+		bwfm_sdio_write_1(sc, 0x04, 0x07);
+		resume_thread(sc->sc_poller);
+	}
+#else
 	sc->sc_ih = sdmmc_intr_establish(bwfm->sc_dev.dv_parent,
 	    bwfm_sdio_intr, sc, DEVNAME(sc));
 	if (sc->sc_ih == NULL) {
@@ -485,6 +666,7 @@ bwfm_sdio_preinit(struct bwfm_softc *bwfm)
 		goto err;
 	}
 	sdmmc_intr_enable(sc->sc_sf[1]);
+#endif
 	rw_exit(sc->sc_lock);
 
 	sc->sc_initialized = 1;
@@ -751,6 +933,7 @@ bwfm_sdio_task(void *v)
 #endif
 }
 
+#ifndef __HAIKU__
 int
 bwfm_sdio_detach(struct device *self, int flags)
 {
@@ -763,6 +946,52 @@ bwfm_sdio_detach(struct device *self, int flags)
 
 	return 0;
 }
+#else
+/*
+ * Haiku unloads the driver when its file is replaced or the system shuts
+ * down: nothing of the driver may run after that, and the chip goes off.
+ */
+static int
+bwfm_sdio_haiku_detach(device_t dev)
+{
+	struct bwfm_sdio_softc *sc = device_get_softc(dev);
+	struct ifnet *ifp = &sc->sc_sc.sc_ic.ic_if;
+	status_t result;
+
+	if (sc->sc_sc.sc_initialized && (ifp->if_flags & IFF_RUNNING) != 0)
+		bwfm_stop(ifp);
+
+	if (sc->sc_poll) {
+		sc->sc_poll = 0;
+		release_sem(sc->sc_poll_sem);
+		wait_for_thread(sc->sc_poller, &result);
+		delete_sem(sc->sc_poll_sem);
+	}
+
+	rw_enter_write(sc->sc_lock);
+	ml_purge(&sc->sc_tx_queue);
+	rw_exit(sc->sc_lock);
+
+	rpi_sdio_uninit();
+	return 0;
+}
+
+static device_method_t bwfm_sdio_methods[] = {
+	DEVMETHOD(device_probe,		bwfm_sdio_probe),
+	DEVMETHOD(device_attach,	bwfm_sdio_attach),
+	DEVMETHOD(device_detach,	bwfm_sdio_haiku_detach),
+
+	DEVMETHOD_END
+};
+
+static driver_t bwfm_sdio_driver = {
+	"bwfm",
+	bwfm_sdio_methods,
+	sizeof(struct bwfm_sdio_softc)
+};
+
+DRIVER_MODULE(bwfm, sdio, bwfm_sdio_driver, NULL, NULL);
+#endif
 
 void
 bwfm_sdio_backplane(struct bwfm_sdio_softc *sc, uint32_t bar0)
@@ -1441,7 +1670,7 @@ bwfm_sdio_txdata(struct bwfm_softc *bwfm, struct mbuf *m)
 
 	sc->sc_tx_count++;
 	ml_enqueue(&sc->sc_tx_queue, m);
-	task_add(systq, &sc->sc_task);
+	bwfm_sdio_kick(sc);
 	return 0;
 }
 
@@ -1469,7 +1698,7 @@ bwfm_sdio_txctl(struct bwfm_softc *bwfm, void *arg)
 
 	TAILQ_INSERT_TAIL(&sc->sc_sc.sc_bcdc_rxctlq, ctl, next);
 	ml_enqueue(&sc->sc_tx_queue, m);
-	task_add(systq, &sc->sc_task);
+	bwfm_sdio_kick(sc);
 	return 0;
 
 fail:

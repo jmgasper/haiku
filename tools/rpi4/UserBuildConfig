@@ -77,6 +77,15 @@ rule UserBuildConfigRulePreImage
 		SEARCH on $(glDemos) = [ FDirName $(extras) apps ] ;
 		AddFilesToHaikuImage system non-packaged demos : $(glDemos) ;
 
+		# The onboard Wi-Fi chip's firmware (CYW43455), from
+		# tools/rpi4/fetch-wifi-firmware.sh
+		local wifiFirmware = <rpi4-wifi>brcmfmac43455-sdio.bin
+			<rpi4-wifi>brcmfmac43455-sdio.clm_blob
+			<rpi4-wifi>brcmfmac43455-sdio.txt ;
+		SEARCH on $(wifiFirmware) = /mnt/HaikuWork/rpi4/wifi/firmware ;
+		AddFilesToHaikuImage system non-packaged data firmware broadcomfmac
+			: $(wifiFirmware) ;
+
 		# Wi-Fi and Bluetooth firmware, wpa_supplicant, ffmpeg
 		local packages
 			= <rpi4-pkg>intel_wifi_firmwares-2025_02_11-1-any.hpkg

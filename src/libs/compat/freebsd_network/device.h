@@ -32,6 +32,9 @@ struct root_device_softc {
 		BUS_INVALID = 0,
 		BUS_pci,
 		BUS_uhub,
+		BUS_fixed,
+			// a device the driver finds itself (on an SoC), nothing to
+			// enumerate
 	} bus;
 
 	struct pci_info	pci_info;

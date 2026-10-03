@@ -159,7 +159,11 @@ struct bwfm_proto_bcdc_ctl {
 };
 
 struct bwfm_softc {
+#ifdef __HAIKU__
+	device_t		 sc_dev;
+#else
 	struct device		 sc_dev;
+#endif
 	struct ieee80211com	 sc_ic;
 	struct ifmedia		 sc_media;
 	struct bwfm_bus_ops	*sc_bus_ops;
@@ -202,7 +206,11 @@ struct bwfm_softc {
 };
 
 void bwfm_attach(struct bwfm_softc *);
+#ifdef __HAIKU__
+void bwfm_attachhook(struct bwfm_softc *);
+#else
 void bwfm_attachhook(struct device *);
+#endif
 int bwfm_preinit(struct bwfm_softc *);
 void bwfm_cleanup(struct bwfm_softc *);
 int bwfm_detach(struct bwfm_softc *, int);

@@ -16,6 +16,45 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#ifdef __HAIKU__
+/* Haiku: OpenBSD's driver on the FreeBSD/OpenBSD compatibility layers. */
+#include <sys/param.h>
+#include <sys/systm.h>
+#include <sys/kernel.h>
+#include <sys/malloc.h>
+#include <sys/mbuf.h>
+#include <sys/queue.h>
+#include <sys/socket.h>
+#include <sys/sockio.h>
+#include <sys/endian.h>
+#include <sys/task.h>
+#include <sys/device.h>
+#include <machine/bus.h>
+
+#include <net/if.h>
+#include <net/if_dl.h>
+#include <net/if_media.h>
+#include <net/if_types.h>
+#include <net/ifq.h>
+
+#include <netinet/in.h>
+#include <netinet/if_ether.h>
+
+#include <net80211/ieee80211_var.h>
+#include <net80211/ieee80211_priv.h>
+#undef DPRINTF
+
+#define NBPFILTER 0
+#define IPL_SOFTNET IPL_NET
+#define delay(us) DELAY(us)
+#define htolem32(p, v) (*(uint32_t *)(p) = htole32(v))
+#define ifq_empty(ifq) IFQ_IS_EMPTY(ifq)
+/* the compatibility layer's task queue is shared; task_del() is enough */
+#define taskq_barrier(tq) do { } while (0)
+#define taskq_destroy(tq) do { } while (0)
+#define mallocarray(nmemb, size, type, flags) \
+	malloc((size) * (nmemb), (type), (flags))
+#else
 #include "bpfilter.h"
 
 #include <sys/param.h>
@@ -44,6 +83,7 @@
 #include <netinet/if_ether.h>
 
 #include <net80211/ieee80211_var.h>
+#endif
 
 #include <dev/ic/bwfmvar.h>
 #include <dev/ic/bwfmreg.h>
@@ -58,7 +98,11 @@ static int bwfm_debug = 1;
 #define DPRINTFN(n, x)	do { ; } while (0)
 #endif
 
+#ifdef __HAIKU__
+#define DEVNAME(sc)	gDriverName
+#else
 #define DEVNAME(sc)	((sc)->sc_dev.dv_xname)
+#endif
 
 void	 bwfm_start(struct ifnet *);
 void	 bwfm_init(struct ifnet *);
@@ -176,9 +220,26 @@ struct bwfm_proto_ops bwfm_proto_bcdc_ops = {
 	.proto_rxctl = bwfm_proto_bcdc_rxctl,
 };
 
+#ifndef __HAIKU__
 struct cfdriver bwfm_cd = {
 	NULL, "bwfm", DV_IFNET
 };
+#endif
+
+#ifdef __HAIKU__
+static int
+bwfm_bgscan(struct ieee80211com *ic)
+{
+	struct bwfm_softc *sc = ic->ic_if.if_softc;
+
+	if (!sc->sc_initialized)
+		return ENXIO;
+
+	/* the firmware scans next to the association by itself */
+	bwfm_scan(sc);
+	return 0;
+}
+#endif
 
 void
 bwfm_attach(struct bwfm_softc *sc)
@@ -210,6 +271,9 @@ bwfm_attach(struct bwfm_softc *sc)
 	/* IBSS channel undefined for now. */
 	ic->ic_ibss_chan = &ic->ic_channels[0];
 
+#ifdef __HAIKU__
+	if_alloc_inplace(ifp, IFT_ETHER);
+#endif
 	ifp->if_softc = sc;
 	ifp->if_flags = IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST;
 	ifp->if_ioctl = bwfm_ioctl;
@@ -225,14 +289,23 @@ bwfm_attach(struct bwfm_softc *sc)
 	ic->ic_send_mgmt = bwfm_send_mgmt;
 	ic->ic_set_key = bwfm_set_key;
 	ic->ic_delete_key = bwfm_delete_key;
+#ifdef __HAIKU__
+	/* a scan asked for while associated (the network list) */
+	ic->ic_bgscan_start = bwfm_bgscan;
+#endif
 
 	ieee80211_media_init(ifp, bwfm_media_change, ieee80211_media_status);
 }
 
 void
+#ifdef __HAIKU__
+bwfm_attachhook(struct bwfm_softc *sc)
+{
+#else
 bwfm_attachhook(struct device *self)
 {
 	struct bwfm_softc *sc = (struct bwfm_softc *)self;
+#endif
 
 	if (sc->sc_bus_ops->bs_preinit != NULL &&
 	    sc->sc_bus_ops->bs_preinit(sc))
@@ -336,8 +409,12 @@ bwfm_preinit(struct bwfm_softc *sc)
 	ieee80211_channel_init(ifp);
 
 	/* Configure MAC address. */
+#ifdef __HAIKU__
+	IEEE80211_ADDR_COPY(IF_LLADDR(ifp), ic->ic_myaddr);
+#else
 	if (if_setlladdr(ifp, ic->ic_myaddr))
 		printf("%s: could not set MAC address\n", DEVNAME(sc));
+#endif
 
 	ieee80211_media_init(ifp, bwfm_media_change, ieee80211_media_status);
 	return 0;
@@ -366,6 +443,7 @@ bwfm_detach(struct bwfm_softc *sc, int flags)
 	return 0;
 }
 
+#ifndef __HAIKU__
 int
 bwfm_activate(struct bwfm_softc *sc, int act)
 {
@@ -387,6 +465,7 @@ bwfm_activate(struct bwfm_softc *sc, int act)
 
 	return 0;
 }
+#endif
 
 void
 bwfm_start(struct ifnet *ifp)
@@ -454,7 +533,7 @@ bwfm_init(struct ifnet *ifp)
 	} else {
 		/* Update MAC in case the upper layers changed it. */
 		IEEE80211_ADDR_COPY(ic->ic_myaddr,
-		    ((struct arpcom *)ifp)->ac_enaddr);
+		    IF_LLADDR(ifp));
 		if (bwfm_fwvar_var_set_data(sc, "cur_etheraddr",
 		    ic->ic_myaddr, sizeof(ic->ic_myaddr))) {
 			printf("%s: could not write MAC address\n",
@@ -603,6 +682,23 @@ bwfm_stop(struct ifnet *ifp)
 		sc->sc_bus_ops->bs_stop(sc);
 }
 
+#ifdef __HAIKU__
+/*
+ * Haiku's network stack keeps the multicast list; the chip takes all
+ * multicast frames and the stack filters.
+ */
+void
+bwfm_iff(struct bwfm_softc *sc)
+{
+	struct ifnet *ifp = &sc->sc_ic.ic_if;
+	uint32_t count = 0;
+
+	bwfm_fwvar_var_set_data(sc, "mcast_list", &count, sizeof(count));
+	bwfm_fwvar_var_set_int(sc, "allmulti", 1);
+	bwfm_fwvar_cmd_set_int(sc, BWFM_C_SET_PROMISC,
+	    !!(ifp->if_flags & IFF_PROMISC));
+}
+#else
 void
 bwfm_iff(struct bwfm_softc *sc)
 {
@@ -639,6 +735,7 @@ bwfm_iff(struct bwfm_softc *sc)
 
 	free(mcast, M_TEMP, mcastlen);
 }
+#endif
 
 void
 bwfm_watchdog(struct ifnet *ifp)
@@ -830,6 +927,9 @@ bwfm_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 		break;
 	case SIOCADDMULTI:
 	case SIOCDELMULTI:
+#ifdef __HAIKU__
+		error = 0;
+#else
 		ifr = (struct ifreq *)data;
 		error = (cmd == SIOCADDMULTI) ?
 		    ether_addmulti(ifr, &ic->ic_ac) :
@@ -838,6 +938,7 @@ bwfm_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 			bwfm_iff(sc);
 			error = 0;
 		}
+#endif
 		break;
 	case SIOCGIFMEDIA:
 	case SIOCG80211NODE:
@@ -2617,7 +2718,9 @@ bwfm_rx_event_cb(struct bwfm_softc *sc, struct mbuf *m)
 		if (ic->ic_state == IEEE80211_S_INIT &&
 		    ntohl(e->msg.status) == BWFM_E_STATUS_ABORT)
 			break;
-		if (ic->ic_state != IEEE80211_S_SCAN) {
+		if (ic->ic_state != IEEE80211_S_SCAN &&
+		    !(ic->ic_state == IEEE80211_S_RUN &&
+		    (ic->ic_flags & IEEE80211_F_BGSCAN))) {
 			DPRINTF(("%s: scan result (%u) while not in SCAN\n",
 			    DEVNAME(sc), ntohl(e->msg.status)));
 			break;
@@ -2634,7 +2737,7 @@ bwfm_rx_event_cb(struct bwfm_softc *sc, struct mbuf *m)
 		}
 		len -= sizeof(*e);
 		if (len < sizeof(*res)) {
-			DPRINTF(("%s: results too small\n", DEVNAME(sc)));
+			DPRINTF(("%s: results too small: %d left after %d\n", DEVNAME(sc), (int)len, (int)sizeof(*e)));
 			m_freem(m);
 			return;
 		}
@@ -2642,14 +2745,14 @@ bwfm_rx_event_cb(struct bwfm_softc *sc, struct mbuf *m)
 		res = malloc(len, M_TEMP, M_WAITOK);
 		memcpy(res, (void *)&e[1], len);
 		if (len < letoh32(res->buflen)) {
-			DPRINTF(("%s: results too small\n", DEVNAME(sc)));
+			DPRINTF(("%s: results too small: %d < buflen %d, version %d count %d\n", DEVNAME(sc), (int)len, (int)letoh32(res->buflen), (int)letoh32(res->version), (int)letoh16(res->bss_count)));
 			free(res, M_TEMP, reslen);
 			m_freem(m);
 			return;
 		}
 		len -= sizeof(*res);
 		if (len < letoh16(res->bss_count) * sizeof(struct bwfm_bss_info)) {
-			DPRINTF(("%s: results too small\n", DEVNAME(sc)));
+			DPRINTF(("%s: results too small: %d < %d bss of %d\n", DEVNAME(sc), (int)len, (int)letoh16(res->bss_count), (int)sizeof(struct bwfm_bss_info)));
 			free(res, M_TEMP, reslen);
 			m_freem(m);
 			return;

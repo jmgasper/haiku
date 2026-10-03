@@ -62,6 +62,11 @@ init_root_device(device_t *_root, int bus_type)
 		NULL,
 		sizeof(struct root_device_softc),
 	};
+	static driver_t sRootDriverFixed = {
+		"fixed",
+		NULL,
+		sizeof(struct root_device_softc),
+	};
 
 	device_t root = device_add_child(NULL, NULL, 0);
 	if (root == NULL)
@@ -79,6 +84,8 @@ init_root_device(device_t *_root, int bus_type)
 		root->driver = &sRootDriverPCI;
 	else if (bus_type == BUS_uhub)
 		root->driver = &sRootDriverUSB;
+	else if (bus_type == BUS_fixed)
+		root->driver = &sRootDriverFixed;
 	else
 		panic("unknown bus type");
 	((struct root_device_softc*)root->softc)->bus = bus_type;
@@ -145,6 +152,30 @@ report_probed_device(int bus, void* compat_device, driver_t* driver,
 
 	if ((p + 1) < MAX_DEVICES)
 		sProbedDevices[p + 1].bus = BUS_INVALID;
+}
+
+
+static void
+prepare_fixed_attach(void* compatDevice, device_t device)
+{
+}
+
+
+static void
+free_fixed_device(void* compatDevice)
+{
+}
+
+
+/*!	For a driver whose device sits at a known place of an SoC: the driver
+	decides whether the device is there, then reports its one instance.
+*/
+status_t
+_fbsd_init_hardware_fixed(driver_t* driver)
+{
+	report_probed_device(BUS_fixed, NULL, driver, prepare_fixed_attach,
+		free_fixed_device);
+	return B_OK;
 }
 
 

@@ -36,10 +36,9 @@ def main():
     port = listener.getsockname()[1]
 
     def serve():
+        # The board may come in from another of its addresses (it has
+        # Ethernet and Wi-Fi on one network); the checksum is what counts.
         connection, peer = listener.accept()
-        if peer[0] != host:
-            connection.close()
-            return
         connection.sendall(data)
         connection.close()
 

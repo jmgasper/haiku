@@ -770,7 +770,7 @@ struct bwfm_event_msg {
 	uint32_t auth_type;
 	uint32_t datalen;
 	struct ether_addr addr;
-	char ifname[IFNAMSIZ];
+	char ifname[16];	/* OpenBSD's IFNAMSIZ; the firmware's layout */
 	uint8_t ifidx;
 	uint8_t bsscfgidx;
 } __packed;

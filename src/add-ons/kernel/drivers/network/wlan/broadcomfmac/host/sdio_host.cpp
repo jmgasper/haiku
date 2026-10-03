@@ -26,7 +26,7 @@
 #include <rpi_firmware.h>
 
 
-#define TRACE_SDIO
+//#define TRACE_SDIO
 #ifdef TRACE_SDIO
 #	define TRACE(x...) dprintf("broadcomfmac: sdio: " x)
 #else
