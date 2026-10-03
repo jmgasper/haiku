@@ -372,6 +372,7 @@ XHCI::XHCI(pci_info *info, 	pci_device_module_info* pci, pci_device* device, Sta
 		fUseMSI(false),
 		fInterruptInstalled(false),
 		fBrokenPortDisable(platform != NULL && platform->broken_port_disable),
+		fUSB2Only(platform != NULL && platform->usb2_only),
 		fErstArea(-1),
 		fDcbaArea(-1),
 		fDcbaPhysical(0),
@@ -721,6 +722,14 @@ XHCI::_DeviceMemoryBarrier()
 {
 	if (fDMAAllocator != NULL)
 		memory_full_barrier();
+}
+
+
+bool
+XHCI::_IsDisabledSuperSpeedPort(uint8 index) const
+{
+	return fUSB2Only && index < fPortCount
+		&& fPortSpeeds[index] >= USB_SPEED_SUPERSPEED;
 }
 
 
@@ -2584,6 +2593,9 @@ XHCI::GetPortStatus(uint8 index, usb_port_status* status)
 		return B_OK;
 	}
 
+	if (_IsDisabledSuperSpeedPort(index))
+		return B_OK;
+
 	uint32 portStatus = ReadOpReg(XHCI_PORTSC(index));
 	TRACE("port %" B_PRId8 " status=0x%08" B_PRIx32 "\n", index, portStatus);
 
@@ -2643,6 +2655,8 @@ XHCI::SetPortFeature(uint8 index, uint16 feature)
 	TRACE("set port feature index %u feature %u\n", index, feature);
 	if (index >= fPortCount)
 		return B_BAD_INDEX;
+	if (_IsDisabledSuperSpeedPort(index))
+		return B_OK;
 
 	uint32 portRegister = XHCI_PORTSC(index);
 	uint32 portStatus = ReadOpReg(portRegister) & ~PS_CLEAR;
@@ -2679,6 +2693,14 @@ XHCI::ClearPortFeature(uint8 index, uint16 feature)
 	TRACE("clear port feature index %u feature %u\n", index, feature);
 	if (index >= fPortCount)
 		return B_BAD_INDEX;
+	if (_IsDisabledSuperSpeedPort(index)) {
+		// Only acknowledge changes, so that they do not come back.
+		uint32 portStatus = ReadOpReg(XHCI_PORTSC(index));
+		WriteOpReg(XHCI_PORTSC(index), (portStatus & ~PS_CLEAR)
+			| (portStatus & (PS_CSC | PS_PEC | PS_WRC | PS_OCC | PS_PRC
+				| PS_PLC | PS_CEC)));
+		return B_OK;
+	}
 
 	uint32 portRegister = XHCI_PORTSC(index);
 	uint32 portStatus = ReadOpReg(portRegister) & ~PS_CLEAR;

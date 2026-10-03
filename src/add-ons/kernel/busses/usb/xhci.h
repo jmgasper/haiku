@@ -38,6 +38,10 @@ struct xhci_platform_info {
 	bool broken_port_disable;
 		// DWC_usb3 up to 3.00a cannot disable a port (Linux
 		// "quirk-broken-port-ped").
+	bool usb2_only;
+		// The USB 3 root ports are not used (the attachment disconnects
+		// them from their PHY where it can): devices, and hubs' USB 2
+		// halves, connect through the USB 2 ports.
 };
 
 
@@ -210,6 +214,7 @@ private:
 									const char* name);
 	inline	void				_DeviceMemoryBarrier();
 	inline	bool				_DirectPhysical(Transfer* transfer) const;
+			bool				_IsDisabledSuperSpeedPort(uint8 index) const;
 
 			// Commands
 			status_t			Noop();
@@ -271,6 +276,7 @@ private:
 			bool				fUseMSI;
 			bool				fInterruptInstalled;
 			bool				fBrokenPortDisable;
+			bool				fUSB2Only;
 
 			area_id				fErstArea;
 			xhci_erst_element *	fErst;

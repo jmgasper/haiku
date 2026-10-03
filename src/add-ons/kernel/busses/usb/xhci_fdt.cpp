@@ -15,6 +15,7 @@
 #include <stdio.h>
 
 #include <KernelExport.h>
+#include <driver_settings.h>
 
 #include "usb_fdt.h"
 #include "xhci.h"
@@ -36,6 +37,11 @@ extern usb_for_controller_interface* gUSB;
 // Rockchip RK3588 clock gates (CRU_CLKGATE_CON42; a set bit stops the clock)
 #define RK3588_CRU_BASE				0xfd7c0000
 #define RK3588_CRU_CLKGATE_CON42	0x8a8
+// USB GRF: a DWC3 core's USB 3 port behind the USBDP PHY (Linux
+// phy-rockchip-usbdp.c, rk_udphy_u3_port_disable()); a write sets the bits
+// whose mask is in the upper half
+#define RK3588_USB_GRF_BASE			0xfd5ac000
+#define RK3588_U3_PORT_DISABLED		0x0188
 
 struct xhci_fdt_info {
 	device_node* node;
@@ -89,6 +95,36 @@ rk3588_dwc3_clocks_running(phys_addr_t base, const char* name)
 		return false;
 	}
 	return true;
+}
+
+
+/*!	Disconnects the USB 3 port of an RK3588 DWC3 core from its USBDP PHY, the
+	way Linux does when the PHY carries only DisplayPort. The controller then
+	sees no SuperSpeed port at all, and hubs and devices run at high speed.
+*/
+static void
+rk3588_dwc3_disable_u3_port(phys_addr_t base, const char* name)
+{
+	uint32 offset;
+	if (base == 0xfc000000)
+		offset = 0x1c;
+	else if (base == 0xfc400000)
+		offset = 0x34;
+	else
+		return;
+
+	void* address;
+	area_id area = map_physical_memory("RK3588 USB GRF (xhci)",
+		RK3588_USB_GRF_BASE, B_PAGE_SIZE, B_ANY_KERNEL_ADDRESS,
+		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, &address);
+	if (area < 0)
+		return;
+	volatile uint32* control = (volatile uint32*)((uint8*)address + offset);
+	uint32 previous = *control & 0xffff;
+	*control = 0xffff0000 | RK3588_U3_PORT_DISABLED;
+	dprintf("xhci: %s: USB 3 port disabled in the USB GRF (0x%04" B_PRIx32
+		" -> 0x%04" B_PRIx32 ")\n", name, previous, *control & 0xffff);
+	delete_area(area);
 }
 
 
@@ -150,6 +186,12 @@ supports_fdt(device_node* parent)
 	// An OTG core is used as a host; a peripheral-only one is not ours.
 	if (usb_fdt_has_string(fdt, device, "dr_mode", "peripheral"))
 		return 0;
+	// A core behind a USB-C connector takes its role, and its port its
+	// power, from a Type-C controller that nothing here drives yet. On the
+	// ROCK 5 ITX running that core (usb@fc000000) as a host froze the
+	// system early in the boot.
+	if (fdt->get_prop(device, "usb-role-switch", NULL) != NULL)
+		return 0;
 	return 0.8f;
 }
 
@@ -190,6 +232,15 @@ init_fdt(device_node* node, void** cookie)
 	platform.dma_coherent = resources.dma_coherent;
 
 	if (usb_fdt_has_string(fdt, device, "compatible", "snps,dwc3")) {
+		// With the GL3523 on the ROCK 5 ITX's USB 3 link the system soon
+		// stopped taking input and starting programs, so these cores' USB 3
+		// ports stay off unless the "xhci" driver settings ask for them with
+		// "dwc3_superspeed true". USB 3 devices then run at high speed.
+		void* settings = load_driver_settings("xhci");
+		platform.usb2_only = !get_driver_boolean_parameter(settings,
+			"dwc3_superspeed", false, true);
+		unload_driver_settings(settings);
+
 		if (usb_fdt_has_string(fdt, device, "compatible", "rockchip,rk3588-dwc3")
 			&& !rk3588_dwc3_clocks_running(platform.register_base, name)) {
 			status = B_NOT_SUPPORTED;
@@ -197,6 +248,11 @@ init_fdt(device_node* node, void** cookie)
 		if (status == B_OK) {
 			status = dwc3_prepare_host(platform.register_base,
 				platform.register_size, name, &platform.broken_port_disable);
+		}
+		if (status == B_OK && platform.usb2_only
+			&& usb_fdt_has_string(fdt, device, "compatible",
+				"rockchip,rk3588-dwc3")) {
+			rk3588_dwc3_disable_u3_port(platform.register_base, name);
 		}
 	}
 	gDeviceManager->put_node(parent);
@@ -210,10 +266,11 @@ init_fdt(device_node* node, void** cookie)
 	info->platform = platform;
 	*cookie = info;
 	dprintf("xhci: FDT %s, registers %#" B_PRIxPHYSADDR ", IRQ %" B_PRIu32
-		", DMA %s%s; retaining firmware PHY/clock configuration\n", name,
+		", DMA %s%s%s; retaining firmware PHY/clock configuration\n", name,
 		platform.register_base, platform.interrupt,
 		platform.dma_coherent ? "coherent" : "noncoherent",
-		platform.broken_port_disable ? ", no port disable" : "");
+		platform.broken_port_disable ? ", no port disable" : "",
+		platform.usb2_only ? ", USB 2 only" : "");
 	return B_OK;
 }
 
