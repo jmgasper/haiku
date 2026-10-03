@@ -1,0 +1,6 @@
+SubDir HAIKU_TOP tools rpi4 ;
+
+UsePrivateHeaders graphics ;
+
+# lab programs for the Raspberry Pi 4 port
+SimpleTest rpi4_v3d_probe : v3d_probe.cpp ;

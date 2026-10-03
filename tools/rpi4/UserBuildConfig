@@ -39,8 +39,14 @@ if [ Glob /mnt/HaikuWork/rpi4/state : lab-image ] {
 	RPI4_LAB_IMAGE = 1 ;
 }
 
+DeferredSubInclude HAIKU_TOP tools rpi4 ;
+
 rule UserBuildConfigRulePreImage
 {
+	if $(RPI4_LAB_IMAGE) {
+		AddFilesToHaikuImage home config non-packaged bin : rpi4_v3d_probe ;
+	}
+
 	if $(RPI4_AIROS_IMAGE) {
 		local extras = /mnt/HaikuWork/rock5-image-extras ;
 
