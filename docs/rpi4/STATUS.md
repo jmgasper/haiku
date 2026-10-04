@@ -65,8 +65,9 @@ Also done, outside the stage list:
   Apache-2.0): pigg's board, BCM and compact layouts, inputs with pulls,
   outputs with toggle and hold-to-invert, LEDs and waveforms, pigg's
   `.pigg` files. The driver's self test passes on the board; AirPins was
-  driven through the KVM against the driver's state. See `GPIO.md`
-  (`evidence/airpins/`).
+  driven through the KVM against the driver's state; a card flashed from
+  the image with both (sha256 7f900be7…, readback matching) starts AirPins
+  from the Deskbar and drives a pin. See `GPIO.md` (`evidence/airpins/`).
 - **The full air/OS image** (`jam -q @rpi4-airos build airos-rpi-image`, 4 GB):
   branding, the owner's applications, Summit, firmware packages. **Runs on
   the board** (2026-10-03, `evidence/airos-board.jpg`,

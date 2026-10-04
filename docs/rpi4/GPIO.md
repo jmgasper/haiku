@@ -86,6 +86,12 @@ the Raspberry Pi image), staged by `tools/rpi4/stage-packages.sh` into the
 - cost with five pins configured: about 0.4 % of a core for AirPins and
   1.2 % for app_server drawing the waveforms 10 times a second.
 
+The image built with both (sha256 7f900be7…) was flashed on 2026-10-04
+(readback matching): AirPins is in the Deskbar's Applications with its
+icon, starts with the board's GPIO (`evidence/airpins/fresh-card-*.jpg`),
+and set GPIO 17 to an output and switched it (the driver read low, then
+high).
+
 Captures through the NanoKVM lose the colour of one-pixel horizontal lines on
 every other row (the capture's chroma subsampling): the waveforms are drawn
 two pixels thick, which also reads better.
