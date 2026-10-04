@@ -41,6 +41,9 @@ if [ "$MODE" = boot ]; then
     sleep 5
     "$TOOLS/power.py" off >/dev/null
     "$TOOLS/build-recovery-image.sh" detach >/dev/null
+    # Switched on again at once, the board twice stayed dead (no serial
+    # output, no boot) until it had been off for some seconds.
+    sleep 8
     "$TOOLS/power.py" on >/dev/null
     echo "booting the card"
 fi

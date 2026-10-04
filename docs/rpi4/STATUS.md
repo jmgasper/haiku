@@ -18,7 +18,11 @@ streams, the H.264 one), airTime's playing rates and seeks (`MEDIA.md`),
 sound through the Media Kit at 48000 frames a second, Wi-Fi joining with a
 1 ms ping and an idle bus thread, all the applications and Summit's WebGL
 page starting (`evidence/apps-after-scheduler.jpg`). Bluetooth, the second
-display's layout and GLTeapot were not gone through again on it.
+display's layout and GLTeapot were not gone through again on it. The image
+file was then built once more with two more lab tools in it and flashed
+again (the card's readback matches the file); on that card the decoders and
+airTime's rates were checked again, Wi-Fi, sound and the applications were
+not.
 
 **What is open**, most important first: nobody has listened to the sound
 output (the driver runs and HDMI0 carries audio, see `MEDIA.md`); the
