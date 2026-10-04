@@ -6,7 +6,7 @@ listed as verified is untested.
 `tools/check-workstation.sh` re-checks the machine against all of this in one
 pass, with nothing set in the environment of the programs it runs, because
 several of these have looked fine while being quietly broken. It last came back
-23 working, 0 not (2026-10-02, with the monitors mirrored).
+24 working, 0 not (2026-10-04, running air/OS hrev60097+573).
 
 What still needs someone at the machine: a look at the scaled picture on the
 two 4K monitors, a monitor pulled out and plugged back in (the syslog says
@@ -30,6 +30,52 @@ each USB port, the serial console, and a Bluetooth device to pair with.
 | Sleep | S3 suspend and resume | sleeps and wakes; the display comes back, but the NVMe and the network card usually do not. Paused until a serial console arrives, which is also what the one untested path in the vertical sync work needs |
 
 ## Log
+
+- 2026-10-04: the workstation runs **air/OS**. `x399-workstation` took in
+  `rock5-itx` (the branding, the whole-disk Installer, the USB, Bluetooth and
+  video decoding work of the ROCK 5), and the seven system packages built from
+  it - haiku, haiku_loader, haiku_datatranslators, haiku_devel, webpositive,
+  smbfs and userland_fs, hrev60097+573 - replaced the installed ones under
+  their old file names, with the EFI loader on the NVMe's EFI partition.
+  `uname` says hrev60097+573; the Deskbar, the About window and the desktop
+  picture are air/OS (seen over VNC; the boot screen cannot be seen from here,
+  the same image shows the air/OS one in QEMU).
+  * The installed Haiku system was not reinstalled: the whole-disk Installer
+    erases the disk. The packages from before are kept as the boot menu's
+    previous system state `state_2026-10-04_13:31:29` (safe mode options,
+    "Select system state") and in `/boot/home/x399-backup/airos-20261004`
+    with the old loader, which is also on the EFI partition as
+    `BOOTX64.EFI.pre-airos`. What is in the non-packaged folders (nvidia_rm
+    and its accelerant, the user's hda and mt7922 drivers, the NVDEC plug-in,
+    Zink) was kept; the kernel changes since the last full install
+    (hrev60097+178) only add to the interfaces they use.
+  * `BOOTX64.EFI` had FAT's read-only attribute. Haiku's FAT driver let `cp`
+    truncate it to nothing and then refused the write ("Operation not
+    allowed"): the machine had no boot loader until `chmod u+w` and a second
+    copy. Check the attribute before writing to the EFI partition.
+  * The desktop stayed plain blue: its background named Haiku's logo, which
+    air/OS does not ship, but in two entries (one for workspace 1, one for
+    the rest), and Tracker only recognised a single one. Fixed in Tracker
+    (405a25e059); the air/OS picture now shows on both monitors.
+  * `check-workstation.sh`: 24 working, 0 not, against 20 and 4 before (the
+    four were sound outputs and the layout line of a syslog that had rotated;
+    they came back with the cold boot).
+  * One boot in the first three (the second, of hrev60097+573) never reached
+    the network: everything up to Tracker and sshd started, the DHCP lease
+    came, then the first `ifconfig /dev/net/ipro1000/0` blocked, every later
+    one queued behind it, ssh timed out before authentication and the machine
+    stopped answering ARP, while the kernel's slab areas kept growing. A
+    forced power cycle brought it back, and the six power cycles after that
+    all came up, in 61 to 66 seconds. The merge brought network stack and
+    compatibility layer changes from the ROCK 5 work that had not run on this
+    machine before (deferred device interface removal, a bounded receive
+    queue, the ARM64 DMA rework, mostly behind `FBSD_NONCOHERENT_DMA`); the
+    hang looks like the unexplained slab growth of 2026-09-28, but which, if
+    any, is the cause is open. `x399-bootlog.sh` now also saves `ps -as` (the
+    threads and what they wait on), so a repeat leaves more than this.
+  * Terminal opens links the way other terminals do, and lets programs that
+    sign in through a browser open one: Claude Code's sign-in works from it.
+    See `docs/airos/TERMINAL.md`.
 
 - 2026-10-02: direct windows stay connected at a higher density
   (Summit issue #16). At 200 percent app_server disconnected every direct
