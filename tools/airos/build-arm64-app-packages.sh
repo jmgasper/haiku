@@ -7,8 +7,9 @@
 #
 #   OUTPUT_DIR  where the packages go (default /mnt/HaikuWork/airos/packages-arm64)
 #   APP         any of: airshot clipper burrow kiri lcdmonitor amp turbochook natter
-#               summit_webkit summit
-#               (default: all of them, natter last)
+#               summit_webkit summit airpins
+#               (default: all of them but airpins, natter last; AirPins is the
+#               Raspberry Pi 4 image's GPIO tool and is built only when named)
 #
 # Environment overrides (all optional):
 #   JOBS=8                       parallel compile jobs
@@ -430,6 +431,28 @@ build_clipper() {
 	add_attributes "$BUILDDIR/Clipper.rsrc" apps/Clipper
 	finish_package clipper apps/Clipper add-ons/input_server/filters/Clipper_shortcuts \
 		add-ons/input_server/devices/Clipper_paste
+}
+
+# --- AirPins ----------------------------------------------------------------
+# The Raspberry Pi's GPIO tool (a native version of pigg). It talks to the
+# rpi_gpio driver of the rpi4 image and simulates the pins anywhere else, so
+# it goes into the Raspberry Pi 4 packages (/mnt/HaikuWork/rpi4/packages-arm64).
+build_airpins() {
+	note AirPins
+	snapshot airpins airpins
+	local private=$SYSROOT/boot/system/develop/headers/private
+	make -C "$SRC" -s -j"$JOBS" BUILD=build-arm64 CXX="$CXX_ARM64" \
+		APP_CPPFLAGS="-I$private/interface -I$private/shared" \
+		RC="$TOOLS/rc/rc" XRES="$TOOLS/xres" MIMESET=true all
+	stage_begin
+	install_binary "$BUILDDIR/AirPins" "$BUILDDIR/AirPins.rsrc" apps/AirPins
+	docs airpins README.md LICENSE third_party/pigg/LICENSE \
+		resources/icons/README.md resources/icons/fontawesome/LICENSE.txt \
+		resources/icons/fontawesome/CC-BY-4.0.txt
+	deskbar_link apps/AirPins AirPins
+	retarget_package_info "$SRC/resources/AirPins.PackageInfo" "$STAGE/.PackageInfo"
+	add_attributes "$BUILDDIR/AirPins.rsrc" apps/AirPins
+	finish_package airpins apps/AirPins
 }
 
 # --- Burrow -----------------------------------------------------------------
@@ -866,7 +889,9 @@ main() {
 	setup_host_tools
 	setup_dependency_farm
 	local app
-	for app in airshot clipper burrow kiri lcdmonitor amp turbochook natter summit_webkit summit; do
+	for app in airshot clipper burrow kiri lcdmonitor amp turbochook natter summit_webkit summit \
+			airpins; do
+		[[ $app == airpins && ${#SELECTED[@]} -eq 0 ]] && continue
 		wanted "$app" && "build_$app"
 	done
 	note summary

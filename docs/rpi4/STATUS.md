@@ -58,6 +58,15 @@ in the documents named in the table.
 
 Also done, outside the stage list:
 
+- **GPIO and AirPins** (2026-10-04): the `rpi_gpio` driver gives programs
+  the 40-pin header's GPIO pins (claim as input or output, restored on
+  release or close, interrupt-timestamped level changes), and the image
+  carries **AirPins**, a GPIO tool after pigg (Andrew Mackenzie,
+  Apache-2.0): pigg's board, BCM and compact layouts, inputs with pulls,
+  outputs with toggle and hold-to-invert, LEDs and waveforms, pigg's
+  `.pigg` files. The driver's self test passes on the board; AirPins was
+  driven through the KVM against the driver's state. See `GPIO.md`
+  (`evidence/airpins/`).
 - **The full air/OS image** (`jam -q @rpi4-airos build airos-rpi-image`, 4 GB):
   branding, the owner's applications, Summit, firmware packages. **Runs on
   the board** (2026-10-03, `evidence/airos-board.jpg`,
