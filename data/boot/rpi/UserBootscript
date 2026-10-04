@@ -15,3 +15,8 @@
 		sleep 5
 	done
 ) &
+
+# Join a remembered Wi-Fi network. net_server only does that by itself after
+# a scan someone asked for, and nothing asks for one at start.
+[ -x /boot/system/bin/wifiautojoin ] \
+	&& /boot/system/bin/wifiautojoin > /dev/dprintf 2>&1 &
