@@ -80,6 +80,7 @@ private:
 				// pictures before this time are not wanted
 			bool				fKeyFrame;
 			bool				fInputEnded;
+			bool				fEndSent;
 
 			color_space			fOutputSpace;
 			bool				fHaveFrame;
@@ -96,6 +97,7 @@ RpiMmalDecoder::RpiMmalDecoder()
 	fSkipBefore(0),
 	fKeyFrame(false),
 	fInputEnded(false),
+	fEndSent(false),
 	fOutputSpace(kColorSpaceI420),
 	fHaveFrame(false)
 {
@@ -246,6 +248,7 @@ RpiMmalDecoder::SeekedTo(int64 frame, bigtime_t time)
 	fAccessUnit.clear();
 	fSent = 0;
 	fInputEnded = false;
+	fEndSent = false;
 	fParameterSetsSent = false;
 	return fDecoder.Flush();
 }
@@ -320,8 +323,9 @@ RpiMmalDecoder::_Feed()
 		media_header header;
 		status_t status = GetNextChunk(&chunk, &size, &header);
 		if (status == B_LAST_BUFFER_ERROR) {
+			// the decoder is told when it has caught up, see _NextFrame()
 			fInputEnded = true;
-			return fDecoder.SendEndOfStream();
+			return B_WOULD_BLOCK;
 		}
 		if (status != B_OK)
 			return status;
@@ -392,13 +396,24 @@ status_t
 RpiMmalDecoder::_NextFrame(MmalDecoder::Frame& frame)
 {
 	while (true) {
-		status_t status = fDecoder.NextFrame(frame, 0);
+		// The end of the stream overtakes what the decoder has not got to
+		// yet (a film lost its last pictures): it is sent when nothing has
+		// come out for a while.
+		bool ending = fInputEnded && !fEndSent;
+		status_t status = fDecoder.NextFrame(frame, ending ? 300000 : 0);
 		if (status != B_TIMED_OUT) {
 			if (status != B_OK && status != B_LAST_BUFFER_ERROR) {
 				fprintf(stderr, "rpi_mmal: %s\n", fDecoder.Error());
 				return B_ERROR;
 			}
 			return status;
+		}
+		if (ending) {
+			status = fDecoder.SendEndOfStream();
+			if (status != B_OK && status != B_WOULD_BLOCK)
+				return status;
+			fEndSent = status == B_OK;
+			continue;
 		}
 
 		status = _Feed();
