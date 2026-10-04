@@ -1,0 +1,12 @@
+# Package entries the Raspberry Pi's system does not get to see.
+
+# rock5_ffmpeg (FFmpeg for airTime and the Media Kit) also carries the ROCK 5's
+# hardware decoder. That add-on sorts first, the Media Kit picks it for H.264,
+# its setup fails without the RK3588's decoder, and the next decoder is never
+# tried: Summit's <video>, MediaPlayer and every other BMediaFile user got no
+# H.264 decoder at all. Without it FFmpeg decodes H.264 in software.
+Package rock5_ffmpeg {
+	BlockedEntries {
+		add-ons/media/plugins/00_rockchip_mpp
+	}
+}

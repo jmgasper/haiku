@@ -113,6 +113,13 @@ rule UserBuildConfigRulePreImage
 		SEARCH on $(packages) = [ FDirName $(extras) packages ] ;
 		AddFilesToHaikuImage system packages : $(packages) ;
 
+		# ...without the ROCK 5's hardware decoder in rock5_ffmpeg, which
+		# took H.264 from FFmpeg and then failed (data/boot/rpi/packages).
+		# The lab adds its own blocks to this file: append, do not replace.
+		local packageSettings = <rpi4-settings>packages ;
+		SEARCH on $(packageSettings) = [ FDirName $(HAIKU_TOP) data boot rpi ] ;
+		AddFilesToHaikuImage system settings : $(packageSettings) ;
+
 		# The owner's applications and Summit: the arm64 packages of the
 		# air/OS release, with the ones rebuilt for this board in place of
 		# their namesakes (tools/rpi4/stage-packages.sh collects them).

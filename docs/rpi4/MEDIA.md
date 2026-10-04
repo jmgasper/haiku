@@ -275,7 +275,17 @@ media server ended in a panic.
 - **HEVC untried:** tiles, long-term references, sub-layers, a change of
   picture size in mid-stream.
 - **Other players.** MediaPlayer and the Media Kit's own lookup use neither
-  hardware decoder (see above).
+  hardware decoder (see above). Until 2026-10-04 (night) they got no H.264
+  decoder at all: `rock5_ffmpeg`, which the image installs for FFmpeg, also
+  carries the ROCK 5's `00_rockchip_mpp`. That add-on sorts first, the Media
+  Kit picks it for H.264, its setup fails without the RK3588's decoder, and
+  `MediaExtractor` does not try the next decoder (seen by the Summit session
+  with Summit's `<video>`). The image now hides the add-on with a packagefs
+  block (`data/boot/rpi/packages`), so FFmpeg decodes H.264 in software
+  there. Built into the image (sha256 8f8a158e…, the file checked inside
+  it) but not yet flashed or played on the board. A Media Kit that tries the
+  next decoder when one fails, or an MPP add-on that offers nothing without
+  its hardware, would fix it for every board.
 - **airTime's changes on the other boards.** The scaler for eight-bit
   pictures, drawing straight into the frame buffer and the new rule for late
   pictures are in airTime for every board; they were only run on the Pi.
