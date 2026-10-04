@@ -139,6 +139,14 @@ private:
 			bool				_GetHyperLinkAt(BPoint where,
 									bool pathPrefixOnly, HyperLink& _link,
 									TermPos& _start, TermPos& _end);
+			void				_GetLinkRange(TerminalBuffer* textBuffer,
+									const TermPos& pos, uint32 link,
+									TermPos& _start, TermPos& _end) const;
+			bool				_CellHasLink(TerminalBuffer* textBuffer,
+									const TermPos& pos, uint32 link) const;
+			void				_ExtendURLOverLineBreaks(
+									TerminalBuffer* textBuffer,
+									TermPos& _start, TermPos& _end);
 			bool				_EntryExists(const BString& path,
 									BString& _actualPath) const;
 

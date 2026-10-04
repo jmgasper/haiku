@@ -55,6 +55,60 @@ extern const char* gLineDrawGraphSet[]; /* may be used for G0, G1, G2, G3 */
 #define DEFAULT -1
 #define NPARAM 10		// Max parameters
 
+// The longest operating system command that is acted on. A hyperlink
+// (OSC 8) carries a whole address and a clipboard command (OSC 52) a whole
+// text, so this is far more than a window title needs.
+static const int32 kMaxOperatingSystemControlLength = 1024 * 1024;
+
+
+static bool
+decode_base64(const char* input, BString& output)
+{
+	int32 inputLength = strlen(input);
+	char* buffer = output.LockBuffer(inputLength / 4 * 3 + 3);
+	if (buffer == NULL)
+		return false;
+
+	int32 length = 0;
+	uint32 bits = 0;
+	int32 bitCount = 0;
+	bool valid = true;
+	for (int32 i = 0; i < inputLength; i++) {
+		char c = input[i];
+		uint32 value;
+		if (c >= 'A' && c <= 'Z')
+			value = c - 'A';
+		else if (c >= 'a' && c <= 'z')
+			value = c - 'a' + 26;
+		else if (c >= '0' && c <= '9')
+			value = c - '0' + 52;
+		else if (c == '+')
+			value = 62;
+		else if (c == '/')
+			value = 63;
+		else if (c == '=')
+			break;
+		else {
+			valid = false;
+			break;
+		}
+
+		bits = (bits << 6) | value;
+		bitCount += 6;
+		if (bitCount >= 8) {
+			bitCount -= 8;
+			buffer[length++] = (bits >> bitCount) & 0xff;
+		}
+	}
+
+	if (!valid)
+		length = 0;
+	buffer[length] = '\0';
+		// UnlockBuffer() measures the string when given no length
+	output.UnlockBuffer(length);
+	return valid;
+}
+
 
 //! Get char from pty reader buffer.
 inline uchar
@@ -1135,53 +1189,20 @@ TermParse::EscParse()
 				case CASE_OSC:
 					{
 						/* Operating System Command: ESC ] */
-						uchar params[512];
-						// fill the buffer until BEL, ST or something else.
-						bool isParsed = false;
-						int32 skipCount = 0; // take care about UTF-8 characters
-						for (uint i = 0; !isParsed && i < sizeof(params); i++) {
-							params[i] = _NextParseChar();
-
-							if (skipCount > 0) {
-								skipCount--;
-								continue;
+						BString command;
+						bool interrupted = false;
+						if (_ReadOperatingSystemControl(command, interrupted)
+							&& !command.IsEmpty()) {
+							char* params = command.LockBuffer(0);
+							if (params != NULL) {
+								_ProcessOperatingSystemControls((uchar*)params);
+								command.UnlockBuffer(0);
 							}
-
-							skipCount = UTF8Char::ByteCount(params[i]) - 1;
-							if (skipCount > 0)
-								continue;
-
-							switch (params[i]) {
-								// BEL
-								case 0x07:
-									isParsed = true;
-									break;
-								// 8-bit ST
-								case 0x9c:
-									isParsed = true;
-									break;
-								// 7-bit ST is "ESC \"
-								case '\\':
-								// hm... Was \x1b replaced by 0 during parsing?
-									if (i > 0 && params[i - 1] == 0) {
-										isParsed = true;
-										break;
-									}
-								default:
-									if (!isprint(params[i] & 0x7f))
-										break;
-									continue;
-							}
-							params[i] = '\0';
 						}
 
-						// watchdog for the 'end of buffer' case
-						params[sizeof(params) - 1] = '\0';
-
-						if (isParsed)
-							_ProcessOperatingSystemControls(params);
-
-						parsestate = groundtable;
+						// an escape sequence that cut the command short is
+						// carried out as usual
+						parsestate = interrupted ? gEscTable : groundtable;
 						break;
 					}
 
@@ -1641,6 +1662,73 @@ TermParse::_DecPrivateModeRequest(int value)
 }
 
 
+/*!	Reads an operating system command, after the "ESC ]" that starts it, up
+	to the BEL or the "ESC \" (ST) that ends it. Returns whether it is to be
+	acted on: one longer than kMaxOperatingSystemControlLength is read to
+	its end all the same, so that none of it is taken for text, but dropped.
+	An ESC that does not start an ST abandons the command and sets
+	\a _interrupted, leaving the escape sequence it starts to be parsed; CAN
+	and SUB abandon it too. Other control characters are left out of it.
+*/
+bool
+TermParse::_ReadOperatingSystemControl(BString& command, bool& _interrupted)
+{
+	// collected in chunks, so the string is not resized for every character
+	char chunk[256];
+	int32 chunkLength = 0;
+	bool tooLong = false;
+	int32 skipCount = 0;
+		// the bytes left of the current UTF-8 character
+
+	for (;;) {
+		uchar c = _NextParseChar();
+
+		if (skipCount > 0) {
+			skipCount--;
+		} else if (c >= 0x80) {
+			skipCount = UTF8Char::ByteCount(c) - 1;
+		} else if (c == 0x07) {
+			// BEL
+			break;
+		} else if (c == 0x1b) {
+			if (_NextParseChar() != '\\') {
+				// Not an ST: give the character back. That is always
+				// possible, since the parser buffer is only refilled
+				// before a character is taken from it.
+				fParserBufferOffset--;
+				_interrupted = true;
+				return false;
+			}
+			// ST
+			break;
+		} else if (c == 0x18 || c == 0x1a) {
+			// CAN, SUB
+			return false;
+		} else if (!isprint(c))
+			continue;
+
+		if (chunkLength == (int32)sizeof(chunk)) {
+			if (command.Length() + chunkLength
+					> kMaxOperatingSystemControlLength) {
+				tooLong = true;
+			}
+			if (!tooLong)
+				command.Append(chunk, chunkLength);
+			chunkLength = 0;
+		}
+		chunk[chunkLength++] = c;
+	}
+
+	if (tooLong
+		|| command.Length() + chunkLength > kMaxOperatingSystemControlLength) {
+		return false;
+	}
+
+	command.Append(chunk, chunkLength);
+	return true;
+}
+
+
 void
 TermParse::_ProcessOperatingSystemControls(uchar* params)
 {
@@ -1742,8 +1830,10 @@ TermParse::_ProcessOperatingSystemControls(uchar* params)
 				end = strpbrk(start, ";:");
 				if (end == NULL)
 					break;
-				if (end - start > 3 && strncmp(start, "id=", 3) == 0)
-					id = strndup(start + 3, end - start + 3);
+				if (end - start > 3 && strncmp(start, "id=", 3) == 0) {
+					free(id);
+					id = strndup(start + 3, end - start - 3);
+				}
 				if (*end == ';')
 					break;
 			}
@@ -1758,6 +1848,24 @@ TermParse::_ProcessOperatingSystemControls(uchar* params)
 			}
 			free(id);
 			fBuffer->SetAttributes(attributes);
+			break;
+		}
+		// set the clipboard: "52;<selections>;<base64 text>"
+		case 52:
+		{
+			char* data = strchr((char*)params, ';');
+			if (data == NULL)
+				break;
+			data++;
+
+			// "?" asks for the clipboard's contents, which a program
+			// running in the terminal is not told.
+			if (strcmp(data, "?") == 0)
+				break;
+
+			BString text;
+			if (decode_base64(data, text) && !text.IsEmpty())
+				fBuffer->SetClipboard(text);
 			break;
 		}
 		default:

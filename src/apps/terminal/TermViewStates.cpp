@@ -64,6 +64,9 @@ static const uint32 kMessageMenuClosed = 'MClo';
 
 static const char* const kKnownURLProtocols = "http:https:ftp:mailto";
 
+// how many lines a link is followed over, at most
+static const int32 kMaxLinkLines = 64;
+
 
 // #pragma mark - State
 
@@ -843,7 +846,10 @@ TermView::HyperLinkState::_GetHyperLinkAt(BPoint where, bool pathPrefixOnly,
 	Attributes attr;
 	if (visibleTextBuffer->GetChar(pos.y - firstVisible, pos.x, character, attr) == A_CHAR
 		&& attr.Hyperlink() != 0) {
-		return textBuffer->GetHyperLink(attr.Hyperlink(), _link);
+		if (!textBuffer->GetHyperLink(attr.Hyperlink(), _link))
+			return false;
+		_GetLinkRange(textBuffer, pos, attr.Hyperlink(), _start, _end);
+		return true;
 	}
 
 	// try to get a URL first
@@ -851,8 +857,11 @@ TermView::HyperLinkState::_GetHyperLinkAt(BPoint where, bool pathPrefixOnly,
 	if (!textBuffer->FindWord(pos, &fURLCharClassifier, false, _start, _end))
 		return false;
 
+	_ExtendURLOverLineBreaks(textBuffer, _start, _end);
+
 	text.Truncate(0);
 	textBuffer->GetStringFromRegion(text, _start, _end);
+	text.RemoveAll("\n");
 	text.Trim();
 
 	// We're only happy, if it has a protocol part which we know.
@@ -1002,6 +1011,116 @@ TermView::HyperLinkState::_GetHyperLinkAt(BPoint where, bool pathPrefixOnly,
 	}
 
 	return false;
+}
+
+
+/*!	Returns the range of the cells around \a pos that carry the OSC 8
+	hyperlink \a link. A program that wraps the text of a link itself repeats
+	the link on each line, so the range continues over a line filled to the
+	right margin when the next one starts with the same link.
+*/
+void
+TermView::HyperLinkState::_GetLinkRange(TerminalBuffer* textBuffer,
+	const TermPos& pos, uint32 link, TermPos& _start, TermPos& _end) const
+{
+	int32 width = textBuffer->Width();
+	int32 maxCells = width * kMaxLinkLines;
+
+	TermPos start = pos;
+	for (int32 i = 0; i < maxCells; i++) {
+		TermPos previous = start;
+		if (--previous.x < 0) {
+			previous.x = width - 1;
+			previous.y--;
+		}
+		if (!_CellHasLink(textBuffer, previous, link))
+			break;
+		start = previous;
+	}
+
+	TermPos end = pos;
+	for (int32 i = 0; i < maxCells; i++) {
+		TermPos next = end;
+		if (++next.x >= width) {
+			next.x = 0;
+			next.y++;
+		}
+		if (!_CellHasLink(textBuffer, next, link))
+			break;
+		end = next;
+	}
+
+	_start = start;
+	_end.SetTo(end.x + 1, end.y);
+}
+
+
+bool
+TermView::HyperLinkState::_CellHasLink(TerminalBuffer* textBuffer,
+	const TermPos& pos, uint32 link) const
+{
+	if (pos.y < -textBuffer->HistorySize() || pos.y >= textBuffer->Height())
+		return false;
+
+	UTF8Char character;
+	Attributes attributes;
+	switch (textBuffer->GetChar(pos.y, pos.x, character, attributes)) {
+		case A_CHAR:
+			return attributes.Hyperlink() == link;
+		case IN_STRING:
+			// the second half of a full width character
+			return pos.x > 0
+				&& textBuffer->GetChar(pos.y, pos.x - 1, character, attributes)
+					== A_CHAR
+				&& attributes.Hyperlink() == link;
+		default:
+			return false;
+	}
+}
+
+
+/*!	Programs that lay out their screen themselves, Claude Code's sign-in for
+	one, break a long address into lines on their own, each filled to the
+	right margin and ended with a hard line break, where the terminal would
+	have wrapped it softly. So an address continues over a full line that
+	it ends, if the next line starts with address characters, and the same
+	backwards.
+*/
+void
+TermView::HyperLinkState::_ExtendURLOverLineBreaks(TerminalBuffer* textBuffer,
+	TermPos& _start, TermPos& _end)
+{
+	int32 width = textBuffer->Width();
+
+	for (int32 i = 0; i < kMaxLinkLines && _start.x == 0; i++) {
+		int32 row = _start.y - 1;
+		if (row < -textBuffer->HistorySize() || textBuffer->LineLength(row) != width)
+			break;
+
+		TermPos start;
+		TermPos end;
+		if (!textBuffer->FindWord(TermPos(width - 1, row), &fURLCharClassifier,
+				false, start, end)
+			|| end != TermPos(width, row)) {
+			break;
+		}
+		_start = start;
+	}
+
+	for (int32 i = 0; i < kMaxLinkLines && _end.x == width; i++) {
+		int32 row = _end.y + 1;
+		if (row >= textBuffer->Height())
+			break;
+
+		TermPos start;
+		TermPos end;
+		if (!textBuffer->FindWord(TermPos(0, row), &fURLCharClassifier, false,
+				start, end)
+			|| start != TermPos(0, row)) {
+			break;
+		}
+		_end = end;
+	}
 }
 
 

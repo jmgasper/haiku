@@ -526,6 +526,14 @@ Shell::_Spawn(int row, int col, const ShellParameters& parameters)
 		setenv("TTY", ttyName, true);
 		setenv("TTYPE", fShellInfo.EncodingName(), true);
 
+		// Programs that open a web page, such as a sign-in in the browser,
+		// run $BROWSER; "open" hands the address to the preferred
+		// application. And the terminal shows OSC 8 hyperlinks, which
+		// programs using the common "supports-hyperlinks" check only emit
+		// when told. Either is left as it is when already set.
+		setenv("BROWSER", "/bin/open", false);
+		setenv("FORCE_HYPERLINK", "1", false);
+
 		// set the current working directory, if one is given
 		if (parameters.CurrentDirectory().Length() > 0)
 			chdir(parameters.CurrentDirectory().String());

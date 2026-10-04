@@ -93,6 +93,7 @@ static const uint32 MSG_SWITCH_TAB_RIGHT				= 'swtr';
 static const uint32 MSG_ACTIVATE_TERM					= 'msat';
 static const uint32 MSG_SET_CURSOR_STYLE				= 'mscs';
 static const uint32 MSG_GET_TERMINAL_COLOR				= 'getc';
+static const uint32 MSG_SET_TERMINAL_CLIPBOARD			= 'setb';
 
 
 // Preference Read/Write Keys

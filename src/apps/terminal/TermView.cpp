@@ -1968,6 +1968,24 @@ TermView::MessageReceived(BMessage *message)
 			}
 			break;
 		}
+		case MSG_SET_TERMINAL_CLIPBOARD:
+		{
+			// a program asked for text to be copied (OSC 52)
+			const void* text;
+			ssize_t length;
+			if (message->FindData("text", B_MIME_TYPE, &text, &length) != B_OK
+				|| !be_clipboard->Lock()) {
+				break;
+			}
+
+			be_clipboard->Clear();
+			if (BMessage* data = be_clipboard->Data()) {
+				data->AddData("text/plain", B_MIME_TYPE, text, length);
+				be_clipboard->Commit();
+			}
+			be_clipboard->Unlock();
+			break;
+		}
 		case MSG_SET_CURSOR_STYLE:
 		{
 			SwitchCursorBlinking();
