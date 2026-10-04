@@ -146,6 +146,15 @@ rule UserBuildConfigRulePreImage
 		SEARCH on $(bootscript) = [ FDirName $(HAIKU_TOP) data boot rpi ] ;
 		AddFilesToHaikuImage home config settings boot : $(bootscript) ;
 
+		# The arm64 bootstrap ICU looks for its data under its old package
+		# name; without ICU_DATA every ICU format comes out empty (About's
+		# "Processors:" label and running time, the Locale lists). Same file
+		# as the ROCK 5's.
+		local setupEnvironment = <rpi4-settings>UserSetupEnvironment ;
+		SEARCH on $(setupEnvironment)
+			= [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
+		AddFilesToHaikuImage home config settings boot : $(setupEnvironment) ;
+
 		local caCertificates = <airos-data>CARootCertificates.pem ;
 		SEARCH on $(caCertificates) = /mnt/HaikuWork/airos/data-arm64/ssl ;
 		AddFilesToHaikuImage system non-packaged data ssl : $(caCertificates) ;
