@@ -235,6 +235,7 @@ SYSTEM_ADD_ONS_MEDIA_PLUGINS += [ FFilterByBuildFeatures
 	ffmpeg@ffmpeg
 	http_streamer
 	raw_decoder
+	rpi_hevc@arm64
 	rpi_mmal@arm64
 ] ;
 
