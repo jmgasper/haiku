@@ -157,6 +157,7 @@ public:
 											bigtime_t activeTime);
 
 	inline				int32			GetLoad() const;
+	inline				int32			GetRequestedLoad() const;
 	inline				uint32			LoadMeasurementEpoch() const
 											{ return fLoadMeasurementEpoch; }
 
@@ -402,6 +403,18 @@ CoreEntry::GetLoad() const
 
 	ASSERT(fCPUCount > 0);
 	return std::min(fLoad / fCPUCount, kMaxLoad);
+}
+
+
+/*!	What the core's threads ask of each of its processors, which can be
+	more than all of it. */
+inline int32
+CoreEntry::GetRequestedLoad() const
+{
+	SCHEDULER_ENTER_FUNCTION();
+
+	ASSERT(fCPUCount > 0);
+	return fLoad / fCPUCount;
 }
 
 
