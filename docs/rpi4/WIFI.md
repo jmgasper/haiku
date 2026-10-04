@@ -50,9 +50,14 @@ four-way handshake runs in the kernel's OpenBSD net80211.
   the card does: at first only the signal was turned off, the interrupt came
   back the moment it was turned on again, and the thread went round 50000
   times a second (80 % of a core, with the interface down). The status bit
-  is masked while the card is served. The thread also serves the card
-  unasked, every millisecond while there is traffic and twenty times a
-  second otherwise, in case an interrupt is lost.
+  is masked while the card is served. Turning it back on samples the card's
+  line again, so nothing the card raises meanwhile is lost; the thread
+  serves the card on the interrupt and, in case the controller misses one,
+  twenty times a second unasked. (For a while it also served the card every
+  millisecond for 300 ms after any frame. A home network's broadcasts,
+  about a hundred frames a second here, kept that going all the time: 2.6 %
+  of a core joined and idle, 1.5 % with nothing joined. See "What the bus
+  thread costs".)
 - No power saving: the driver asked the chip for it, and the chip slept
   between beacons (a ping took 30 to 300 ms). The interrupt storm had hidden
   that by keeping the bus busy. With the chip awake a ping is 1 to 2 ms,
@@ -63,12 +68,47 @@ four-way handshake runs in the kernel's OpenBSD net80211.
   associated (net80211 refuses a scan request in RUN without one).
 - A detach routine: Haiku unloads the driver when its file is replaced.
 
+## What the bus thread costs
+
+`top -d -n 1 -i 10` on the board ("bwfm sdio poller"; top's %CPU is of all
+four cores, these are of one), 2026-10-04, joined to the same access point:
+
+| State | Every ms after a frame (before) | Interrupt + 20 per second (now) |
+|---|---|---|
+| Joined, idle (~100 broadcast frames/s on the network) | 2.6-2.8 % | 0.8-0.9 % |
+| Interface up, nothing joined | 1.5 % | 0.2 % |
+| Interface down | 0.04 % | 0.05 % |
+| 32 MB received, Wi-Fi only, 8 runs | 3.83-4.11 s, median 3.88 | 3.82-4.13 s, median 3.90 |
+| Ping over Wi-Fi, after 3 s of silence | 0.8-1.0 ms | 0.8-0.9 ms |
+
+A build with counters showed every wake-up coming from the interrupt: of
+about 3000 unasked serves, two found a frame, which is how often a frame
+arrives during a serve by chance. Serving the card again straight away when
+its line was already raised after a serve (instead of through the
+interrupt) caught 6 % of the serves during a transfer and changed nothing
+measurable, so it was left out. What is left when joined is serving the
+network's broadcasts and multicasts: the chip takes all multicast frames
+(`allmulti`, see `bwfm_iff`), and a filter list would save some of that.
+
+## Joining at start
+
+net_server joins a remembered network by itself only after a scan someone
+asked for (the OpenBSD layer reports only those), and nothing asks for one
+at start. The image's `UserBootscript` (`data/boot/rpi/UserBootscript`)
+starts `wifiautojoin`, which scans, picks the strongest remembered network
+and joins it through net_server; checked on two restarts.
+
 ## Traps in the lab
 
 - devfs loads anything that appears in a drivers directory. A staged
   `name.new` next to a running driver becomes a second instance on the same
   chip and panics. `tools/rpi4/install-driver.sh` stages elsewhere, moves the
   file and restarts.
+- devfs also reloads the driver when its file is replaced or removed. With
+  the interface up the network stack still has the device open and later
+  closes it in code that is gone (KDL in `ethernet_down`). Take the
+  interface down first (`ifconfig /dev/net/broadcomfmac/0 down`): then the
+  swap happens live and the new driver comes up.
 - With Ethernet and Wi-Fi on one network the board answers from either
   address.
 
@@ -77,7 +117,8 @@ four-way handshake runs in the kernel's OpenBSD net80211.
 - Commands and data are still polled, and data goes word by word through the
   data register (no DMA): 65 Mbit/s received is what that gives (32 MB to
   /dev/null with `rpi4_fetch`, Ethernet down). Sending was not measured.
-  Idle, the bus thread uses under 1 % of a core.
+- The "Network:" line of `ifconfig` and the network list come from the scan
+  results, which age out a while after joining; a scan brings them back.
 - A packaged driver wins over a copy under non-packaged: to try a new build
   on an installed system, block the packaged one in
   `/boot/system/settings/packages` (`BlockedEntries`).

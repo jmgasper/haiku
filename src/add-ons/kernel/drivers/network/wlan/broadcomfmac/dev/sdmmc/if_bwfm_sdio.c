@@ -171,7 +171,6 @@ struct bwfm_sdio_softc {
 	struct sdmmc_function	  sc_functions[3];
 	thread_id		  sc_poller;
 	sem_id			  sc_poll_sem;
-	uint32			  sc_rx_count;	/* frames read from the card */
 	int			  sc_poll;
 #endif
 };
@@ -332,7 +331,6 @@ static status_t
 bwfm_sdio_poller(void *arg)
 {
 	struct bwfm_sdio_softc *sc = arg;
-	bigtime_t lastWork = 0;
 
 	/*
 	 * The bus task runs here, not on the shared task queue: the callers
@@ -341,28 +339,22 @@ bwfm_sdio_poller(void *arg)
 	while (sc->sc_poll) {
 		/*
 		 * The card's interrupt wakes the thread, and so does whoever has
-		 * something to send. The card is also served unasked, in case an
-		 * interrupt got lost (the controller notes the card's line going
-		 * down; what the card raises while the interrupt is off may not
-		 * come again): every millisecond while there is traffic, twenty
-		 * times a second when there has been none for a while. Serving it
-		 * for nothing is three short commands.
+		 * something to send. Nothing the card raises while the interrupt is
+		 * off gets lost: turning it back on samples the card's line again.
+		 * The card is still served unasked twenty times a second in case
+		 * the controller misses one; on the board those found a frame two
+		 * times in 3000, no more often than frames happen to arrive during
+		 * a serve. (It used to be every millisecond for 300 ms after any
+		 * frame, and a network's broadcasts kept that up for good: 3 % of
+		 * a core with nothing to do.)
 		 */
-		bigtime_t timeout = system_time() - lastWork < 300000
-		    ? 1000 : 50000;
-		uint32 received = sc->sc_rx_count;
-		int sending;
-
-		acquire_sem_etc(sc->sc_poll_sem, 1, B_RELATIVE_TIMEOUT, timeout);
+		acquire_sem_etc(sc->sc_poll_sem, 1, B_RELATIVE_TIMEOUT, 50000);
 		if (!sc->sc_poll)
 			break;
 
-		sending = !ml_empty(&sc->sc_tx_queue);
 		mtx_lock(&Giant);
 		bwfm_sdio_task(sc);
 		mtx_unlock(&Giant);
-		if (sending || sc->sc_rx_count != received)
-			lastWork = system_time();
 
 		/* the handler turned the interrupt off; the card is served now */
 		rpi_sdio_enable_card_interrupt();
@@ -1486,9 +1478,6 @@ bwfm_sdio_rx_frames(struct bwfm_sdio_softc *sc)
 
 		if (hwhdr->frmlen == 0 && hwhdr->cksum == 0)
 			break;
-#ifdef __HAIKU__
-		sc->sc_rx_count++;
-#endif
 
 		if ((hwhdr->frmlen ^ hwhdr->cksum) != 0xffff) {
 			printf("%s: checksum error\n", DEVNAME(sc));
