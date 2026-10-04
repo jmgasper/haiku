@@ -27,6 +27,10 @@ start (sha256 a936cb51…) was flashed on 2026-10-04 (late, readback matching)
 and checked for Wi-Fi only: after Gaspers was saved and the board restarted
 it joined by itself; the bus thread used 0.8 % of a core joined, 0.2 % with
 nothing joined, 0.04 % with the interface down; 32 MB in 3.8-3.9 s.
+The image with the CPU name, the ARM clock in the device tree and the ICU
+data directory (sha256 8d152a39…) was flashed on 2026-10-04 (readback
+matching) and checked for About this system only, plus Wi-Fi rejoining
+Gaspers once its settings file was put back (see the last section).
 
 **What is open**, most important first: nobody has listened to the sound
 output (the driver runs and HDMI0 carries audio, see `MEDIA.md`); the
@@ -150,3 +154,33 @@ Still open:
   `nanokvm.py click --width 3840`, or the browser pointer is off.
 - The Logitech mouse on the other port enumerates and shows no errors; nobody
   has moved it.
+
+## Fixed: About this system said "ARM Unknown (4 cores)"
+
+Two causes. The shared model table (`headers/private/shared/cpu_type.h`)
+only named the RK3588's cores; the Pi 4's MIDR is `0x410fd083`, ARM part
+`0xd08`, the Cortex-A72. The table now holds ARM Ltd.'s parts from the
+Cortex-A35 to the Cortex-X4. And the firmware's device tree gives the cores
+no operating points and no `clock-frequency`, so no speed was shown: the
+loader (`platform/rpi/dtb.cpp`) now writes the mailbox's maximum ARM clock
+into every `/cpus` node, which the kernel reports as each core's maximum.
+The loader prints `ARM clock: up to 1500000000 Hz` on serial.
+
+The same window had no "Processors:" label, no running time and a raw kernel
+date: every ICU format failed. The arm64 bootstrap ICU looks for its data in
+`/packages/icu74_bootstrap-74.1-1/...`, but the package is installed as
+`icu74-74.1_bootstrap-1`. The image now carries the ROCK 5's
+`UserSetupEnvironment`, which sets `ICU_DATA=/boot/system/data/icu/74.1`.
+Processes outside the desktop session (the system servers) still lack it.
+
+On a card flashed from the image (2026-10-04, sha256 8d152a39…), About this
+system opened from the Deskbar shows "4 Processors: ARM Cortex-A72 (4 cores,
+up to 1.50 GHz)", "October 3, 2026 at 5:05:09 PM" and "2 minutes, 25
+seconds"; `sysinfo -cpu` prints `4 ARM Cortex-A72, revision 410fd083 running
+at 1500MHz`. Screenshots and the boot log: `evidence/cpu-name-20261004/`
+(`flashed-about.jpg`).
+
+The KVM pointer note above depends on the boot: when HDMI1 is not part of
+the desktop (1920 wide), a click needs the default `--width 1920`. With both
+outputs on, HDMI0 was the left half on this card, so the Deskbar's menu is
+at x 1850 with `--width 3840`.
