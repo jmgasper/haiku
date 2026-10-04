@@ -11,12 +11,16 @@ full branded air/OS. Write it to an SD card as it is. A card flashed from the
 image of 2026-10-04 was checked on the board: desktop on HDMI0, Ethernet,
 Wi-Fi joins a WPA2 network, Bluetooth scans, GLTeapot and Summit's WebGL
 Aquarium run on the GPU side by side (`evidence/final-image.jpg`), the clock
-is set from the network at start. (The image file was rebuilt once after that
-check, for the clock script alone, and that last file was not flashed.)
+is set from the network at start. The image of 2026-10-04 with sound and
+the H.264 decoder was flashed and checked for those two (`MEDIA.md`); the
+earlier checks were not repeated on it. On that boot the firmware reported
+the monitor on HDMI1 with its EDID (1920x1080) for the first time, and the
+desktop spans both outputs.
 
-**What is open**, most important first: no sound output and no hardware video
-decoding (both need a VCHIQ port, and sound needs someone who can listen);
-USB keyboard and mouse through the lab's KVM fail on most boots; the second
+**What is open**, most important first: nobody has listened to the sound
+output (the driver runs and HDMI0 carries audio, see `MEDIA.md`); the Wi-Fi
+driver's poller thread uses a whole core all the time; no hardware decoding
+for HEVC; the second
 HDMI output has never shown a picture to anyone (the lab's monitor is not
 detected); nothing presents through Vulkan (no loader, no window system
 layer); pairing a Bluetooth device and joining Wi-Fi by clicking in the
@@ -32,7 +36,7 @@ in the documents named in the table.
 | 5 | Multi-display + Screen preferences | **Works through the firmware's compositor; HDMI1's picture not seen.** `rpi_display` driver + accelerant: one frame buffer, one firmware plane per HDMI output, the fork's display layout hooks. Screen preferences and `screenmode` arrange the two outputs, mirror them, and set per-display resolution and scale (the firmware scales); the layout survives a restart. The lab's HDMI1 monitor is not detected by the firmware, so output 2 ran forced at 640x480 and unseen. **Open:** real mode setting, hot plug, DPMS, hardware cursor. See `DISPLAY.md` | 2026-10-03: `evidence/layout-*.jpg`, `evidence/screen-prefs.jpg`, `screenmode -d` over telnet |
 | 6 | Wi-Fi + Wi-Fi tool | **Works: scan, WPA2 join, traffic.** `broadcomfmac`: OpenBSD's `bwfm` on the compatibility layer with an SDIO host of its own for the CYW43455. Joined "Gaspers" (WPA2-PSK/CCMP, 802.11ac), DHCP, ping 1.2 ms, 8 MB in 1.0 s over Wi-Fi alone with Ethernet down (66 Mbit/s, checksum matching); scan while connected; leave and rejoin. The Wi-Fi preferences lists the networks (`evidence/wifi-prefs.jpg`). Driver and firmware are in the `rpi4-airos` profile; a card flashed from scratch on 2026-10-04 scans with both Wi-Fi and Bluetooth. **Open:** join by clicking in the Wi-Fi tool not tried (KVM input was broken then; it works since the xHCI fix below), sending speed unmeasured. See `WIFI.md` | 2026-10-03: `ifconfig` output and pings over telnet, `evidence/wifi-prefs.jpg` |
 | 7 | Bluetooth / BLE + Bluetooth tool | **The controller is up; LE scan, connect and GATT work.** `h4bcm`: an H4 transport on the mini UART for the BCM4345C0, with the patch file loaded at open and the board's address from the device tree. The Bluetooth preferences shows the controller and nearby devices; `bt_le` scans, connects to an LE device and reads its services. Driver and patch file are in the image profile. **Open:** pairing and profiles untested (no device to pair here), 115200 baud. See `BLUETOOTH.md` | 2026-10-04: `evidence/bluetooth-prefs.jpg`, `bt_le` output over telnet |
-| 8 | Media decoding, airTime | **airTime runs; software decoding only, no sound.** The arm64 airTime package plays H.264 1080p30 at 30 fps with libavcodec; HEVC 1080p30 reaches 18.8 fps. **Open:** sound output (HDMI and jack need VCHIQ), hardware decoding (firmware codec through VCHIQ for H.264, the HEVC block). See `MEDIA.md` | 2026-10-04: `evidence/airtime1.jpg`, airTime Stats over telnet |
+| 8 | Media decoding, airTime | **Sound output and hardware H.264 decoding work; nobody has heard the sound.** `vchiq` (the message channel to the VideoCore firmware's services), `bcm2835_audio` (multi audio driver on the firmware's sound service: HDMI 0/1 and the jack, volume and output as mixer controls) and `rpi_mmal` (Media Kit decoder add-on on the firmware's H.264 decoder). The Media Kit plays through the driver at exactly 48000 frames per second; the lab KVM's HDMI receiver reacts when a tone starts and stops on HDMI0. The decoder's pictures match FFmpeg's byte for byte (90 pictures of 1080p, 60 to 70 per second). airTime 1.0.0-13 plays H.264 1080p30 on it with sound in step, at 27 to 29 pictures per second shown (software: 29.8) for less than half the CPU. **Open:** listening to it, the jack and HDMI1; HEVC (1080p stays at 19 fps in software); picture copies. See `MEDIA.md` | 2026-10-04: `rpi4_tone`, `rpi4_vchiq_audio`, `rpi4_mmal_decode ... \| md5sum` and airTime's Stats over telnet, `evidence/airtime-hw1.jpg` |
 | 9 | Summit with GPU acceleration and WebGL | **Works.** A second arm64 build of Summit's WebKit with Skia, GL compositing and WebGL (`summit_webkit` 1.10.0-2) on Mesa's v3d. get.webgl.org reports WebGL and spins its cube; the WebGL Aquarium runs at 21 fps (500 fish, 1024x1024). **Open:** only those two pages were tried; no measurements against the software engine. See `SUMMIT.md` | 2026-10-04: `evidence/summit-gl1.jpg`, `evidence/summit-aquarium.jpg` |
 | 10 | The other applications | **All but Aurora are installed and start.** From `/mnt/HaikuWork/apps`: airShot, Amp (tasamp), Burrow, Kiri, LCDMonitor, Natter, TurboChook, airTime and Summit come as the arm64 packages of the ROCK 5 image; Clipper got an arm64 package (`tools/airos/build-arm64-app-packages.sh ... clipper`). Each was started on the board and stayed running; windows on screen in `evidence/apps1.jpg`. Nothing beyond starting was tested per app. **Open:** Aurora (Electron apps) needs Node.js, which has no arm64 Haiku build | 2026-10-04: launch check over telnet, `evidence/apps1.jpg` |
 

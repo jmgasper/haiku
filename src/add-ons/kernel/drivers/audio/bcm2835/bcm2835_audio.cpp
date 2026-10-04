@@ -455,7 +455,7 @@ get_description(multi_description* userData)
 
 	description.interface_version = B_CURRENT_INTERFACE_VERSION;
 	description.interface_minimum = B_CURRENT_INTERFACE_VERSION;
-	strlcpy(description.friendly_name, "Raspberry Pi HDMI and headphones",
+	strlcpy(description.friendly_name, "Raspberry Pi sound output",
 		sizeof(description.friendly_name));
 	strlcpy(description.vendor_info, "Broadcom VideoCore",
 		sizeof(description.vendor_info));
