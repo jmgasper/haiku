@@ -234,16 +234,22 @@ IsHaikuDefaultBackground(BNode* node)
 		return false;
 	}
 
+	// The Backgrounds preferences keep an entry per set of workspaces, so
+	// every one of them has to name the logo.
+	int32 count = 0;
 	const char* imagePath;
-	if (message.FindString(kBackgroundImageInfoPath, 1, &imagePath) == B_OK
-		|| message.FindString(kBackgroundImageInfoPath, 0, &imagePath)
-			!= B_OK) {
-		return false;
+	while (message.FindString(kBackgroundImageInfoPath, count, &imagePath)
+			== B_OK) {
+		BPath path(imagePath);
+		if (path.InitCheck() != B_OK
+			|| strcmp(path.Leaf(), "HAIKU logo - white on blue - big.png")
+				!= 0) {
+			return false;
+		}
+		count++;
 	}
 
-	BPath path(imagePath);
-	return path.InitCheck() == B_OK
-		&& strcmp(path.Leaf(), "HAIKU logo - white on blue - big.png") == 0;
+	return count > 0;
 }
 
 
