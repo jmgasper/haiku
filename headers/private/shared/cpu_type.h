@@ -314,11 +314,50 @@ get_cpu_model_string(enum cpu_platform platform, enum cpu_vendor cpuVendor,
 
 #if defined(__aarch64__)
 	if (platform == B_CPU_ARM_64 && (cpuModel >> 24) == 0x41) {
+		// MIDR_EL1 part numbers of ARM Ltd. (implementer 0x41)
 		switch ((cpuModel >> 4) & 0xfff) {
+			case 0xd03:
+				return "Cortex-A53";
+			case 0xd04:
+				return "Cortex-A35";
 			case 0xd05:
 				return "Cortex-A55";
+			case 0xd07:
+				return "Cortex-A57";
+			case 0xd08:
+				return "Cortex-A72";
+			case 0xd09:
+				return "Cortex-A73";
+			case 0xd0a:
+				return "Cortex-A75";
 			case 0xd0b:
 				return "Cortex-A76";
+			case 0xd0c:
+				return "Neoverse-N1";
+			case 0xd0d:
+				return "Cortex-A77";
+			case 0xd41:
+				return "Cortex-A78";
+			case 0xd44:
+				return "Cortex-X1";
+			case 0xd46:
+				return "Cortex-A510";
+			case 0xd47:
+				return "Cortex-A710";
+			case 0xd48:
+				return "Cortex-X2";
+			case 0xd49:
+				return "Neoverse-N2";
+			case 0xd4d:
+				return "Cortex-A715";
+			case 0xd4e:
+				return "Cortex-X3";
+			case 0xd80:
+				return "Cortex-A520";
+			case 0xd81:
+				return "Cortex-A720";
+			case 0xd82:
+				return "Cortex-X4";
 		}
 	}
 #endif

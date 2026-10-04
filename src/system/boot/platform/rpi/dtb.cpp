@@ -426,6 +426,20 @@ fdt_set_kernel_args()
 		dprintf("EMMC2 clock: %" B_PRIu32 " Hz\n", rate);
 	}
 
+	// The firmware's tree has no operating points for the cores either; the
+	// kernel reports a core's "clock-frequency" as its maximum speed.
+	int cpus = fdt_path_offset(copy, "/cpus");
+	if (cpus >= 0
+		&& mailbox_get_clock_rate(MAILBOX_CLOCK_ARM, true, rate) == B_OK) {
+		fdt_for_each_subnode(node, copy, cpus) {
+			const char* type = (const char*)fdt_getprop(copy, node,
+				"device_type", NULL);
+			if (type != NULL && strcmp(type, "cpu") == 0)
+				fdt_setprop_u32(copy, node, "clock-frequency", rate);
+		}
+		dprintf("ARM clock: up to %" B_PRIu32 " Hz\n", rate);
+	}
+
 	const uart_info& uart = gKernelArgs.arch_args.uart;
 	dprintf("UART: %s at %#" B_PRIx64 ", irq %" B_PRIu32 "\n",
 		uart.kind[0] != 0 ? uart.kind : "none", uart.regs.start, uart.irq);
