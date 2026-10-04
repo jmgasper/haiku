@@ -11,7 +11,7 @@
 
 /* The widest picture this will convert; a line of each plane is gathered on
  * the stack. */
-#define NVDEC_MAX_WIDTH		4096
+#define NVDEC_MAX_WIDTH		8192
 
 #ifdef __cplusplus
 extern "C" {
@@ -42,10 +42,18 @@ void nvdecFrameToRGB32(const NvdecFrame *frame, uint8_t *out, size_t outPitch,
 void nvdecFrameToYCbCr422(const NvdecFrame *frame, uint8_t *out, size_t outPitch,
 	int fromLine, int toLine);
 
+/* The same lines as P010: a plane of sixteen-bit luma samples with the value
+ * in the top bits, then one of Cb and Cr samples in pairs, half as many
+ * lines, both `outPitch` bytes a line. Ten-bit pictures are copied as they
+ * are; eight-bit ones are widened. */
+void nvdecFrameToP010(const NvdecFrame *frame, uint8_t *out, size_t outPitch,
+	int fromLine, int toLine);
+
 /* Convert a whole picture, using as many threads as the machine has. */
 void nvdecFrameToRGB32Threaded(const NvdecFrame *frame, uint8_t *out, size_t outPitch,
 	NvdecColorRange range);
 void nvdecFrameToYCbCr422Threaded(const NvdecFrame *frame, uint8_t *out, size_t outPitch);
+void nvdecFrameToP010Threaded(const NvdecFrame *frame, uint8_t *out, size_t outPitch);
 
 #ifdef __cplusplus
 }

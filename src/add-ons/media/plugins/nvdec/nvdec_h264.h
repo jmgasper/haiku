@@ -26,7 +26,9 @@ typedef struct {
 	int		pitch;		/* bytes between lines of the planes */
 	const uint8_t	*luma;		/* as the card arranges it; see
 					   nvdecUntile */
-	const uint8_t	*chroma;	/* two bytes a pixel, Cb then Cr */
+	const uint8_t	*chroma;	/* two samples a pixel, Cb then Cr */
+	int		bitDepth;	/* 8, or more in sixteen-bit samples
+					   with the value in the top bits */
 	int		pictureOrder;	/* display order within the stream */
 	int64_t		time;		/* whatever was passed in with it */
 	int		handle;		/* give this back with ReleaseFrame */

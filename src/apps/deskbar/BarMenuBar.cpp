@@ -119,8 +119,11 @@ TBarMenuBar::TBarMenuBar(BRect frame, const char* name, TBarView* barView)
 
 	BBitmap* icon = NULL;
 	size_t dataSize;
+	// The air/OS logo's wordmark is dark; use the light one on a dark menu.
+	const int32 logoID = ui_color(B_MENU_BACKGROUND_COLOR).IsLight()
+		? R_LeafLogoBitmap : R_LeafLogoDarkBitmap;
 	const void* data = AppResSet()->FindResource(B_VECTOR_ICON_TYPE,
-		R_LeafLogoBitmap, &dataSize);
+		logoID, &dataSize);
 	if (data != NULL) {
 		// seems valid, scale bitmap according to be_bold_font size
 		float width = std::max(63.f, ceilf(63 * be_bold_font->Size() / 12.f));

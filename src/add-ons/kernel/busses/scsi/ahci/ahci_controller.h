@@ -8,6 +8,7 @@
 
 #include "ahci_defs.h"
 #include "ahci_port.h"
+#include <bus/PCIInterrupts.h>
 
 
 class AHCIController {
@@ -32,6 +33,7 @@ public:
 private:
 			bool			IsDevicePresent(uint device);
 			status_t		ResetController();
+			status_t		ConfigureInterrupts(const pci_info& info);
 			void			FlushPostedWrites();
 
 	static	int32			Interrupt(void *data);
@@ -45,6 +47,11 @@ private:
 	uint16					fPCIVendorID;
 	uint16					fPCIDeviceID;
 	uint32					fFlags;
+	pci_intx_module_info*	fIntx;
+	uint8					fBus;
+	uint8					fDevice;
+	uint8					fFunction;
+	bool					fPCIEnabled;
 
 	volatile ahci_hba *		fRegs;
 	area_id					fRegsArea;
@@ -52,7 +59,8 @@ private:
 	int						fPortCount;
 	uint32					fPortImplementedMask;
 	uint32					fIRQ;
-	bool					fUseMSI;
+	bool					fMSIConfigured;
+	bool					fInterruptInstalled;
 	AHCIPort *				fPort[32];
 
 // --- Instance check workaround begin
@@ -65,8 +73,10 @@ private:
 inline void
 AHCIController::FlushPostedWrites()
 {
+	memory_full_barrier();
 	volatile uint32 dummy = fRegs->ghc;
 	dummy = dummy;
+	memory_full_barrier();
 }
 
 #endif	// _AHCI_CONTROLLER_H

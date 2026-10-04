@@ -6,8 +6,15 @@ for file in "$HOME"/config/settings/boot/launch/*; do
 done
 
 # The AX210's USB function starts in Intel bootloader mode on every cold boot.
-# This helper waits for h2generic, loads its operational image, then starts HCI.
-/bin/sh /boot/home/config/settings/boot/start-ax210-bluetooth.sh > /dev/dprintf 2>&1 &
+# On the lab image this helper waits for h2generic, loads its operational
+# image, then starts HCI. Full images leave all of that to bluetooth_server,
+# which the launch_daemon runs and which loads the firmware itself; there the
+# helper is not installed, as stopping the server under the launch_daemon
+# only makes it start again in the middle of the download.
+bluetooth_helper=/boot/home/config/settings/boot/start-ax210-bluetooth.sh
+if [ -f "$bluetooth_helper" ] && [ ! -x /boot/system/servers/bluetooth_server ]; then
+	/bin/sh "$bluetooth_helper" > /dev/dprintf 2>&1 &
+fi
 
 # Join a remembered WiFi network after the adapter and net_server are ready.
 # Existing installations may already launch the helper through the user's

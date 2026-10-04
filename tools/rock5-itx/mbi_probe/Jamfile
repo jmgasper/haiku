@@ -1,0 +1,8 @@
+SubDir HAIKU_TOP tools rock5-itx mbi_probe ;
+
+if $(TARGET_ARCH) = arm64 {
+	UsePrivateKernelHeaders ;
+	UseLibraryHeaders [ FDirName libfdt ] ;
+	KernelAddon <driver>rock5_mbi_probe : driver.cpp : kernel_fdt.a ;
+	KernelAddon <driver>rock5_msi_inspect : inspect.cpp : kernel_fdt.a ;
+}

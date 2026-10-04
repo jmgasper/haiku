@@ -38,7 +38,17 @@ void _kernel_free(void *ptr);
 void *_kernel_contigmalloc(const char *file, int line, size_t size, int flags,
 	vm_paddr_t low, vm_paddr_t high, unsigned long alignment,
 	unsigned long boundary);
+void *_kernel_contigmalloc_etc(const char *file, int line, size_t size, int flags,
+	vm_paddr_t low, vm_paddr_t high, unsigned long alignment,
+	unsigned long boundary, bool cacheable);
 void _kernel_contigfree(void *addr, unsigned long size);
+
+#if defined(__aarch64__)
+#define FBSD_NONCOHERENT_DMA 1
+/* Only private non-cacheable allocations qualify for coherent direct DMA. */
+bool _kernel_contig_dma_address(const void *addr, size_t size,
+	vm_paddr_t *physicalAddress);
+#endif
 
 #define kernel_malloc(size, base, flags) \
 	_kernel_malloc(size, flags)
@@ -49,6 +59,10 @@ void _kernel_contigfree(void *addr, unsigned long size);
 #define kernel_contigmalloc(size, type, flags, low, high, alignment, boundary) \
 	_kernel_contigmalloc(__FILE__, __LINE__, size, flags, low, high, \
 		alignment, boundary)
+
+#define kernel_contigmalloc_etc(size, type, flags, low, high, alignment, boundary, cacheable) \
+	_kernel_contigmalloc_etc(__FILE__, __LINE__, size, flags, low, high, \
+		alignment, boundary, cacheable)
 
 #define kernel_contigfree(addr, size, base) \
 	_kernel_contigfree(addr, size)

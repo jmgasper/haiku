@@ -443,6 +443,9 @@ struct rge_softc {
 #define RGE_FLAG_MSI		0x00000001
 
 	uint32_t		rge_intrs;
+#ifdef __HAIKU__
+	int32_t			rge_haiku_intr_count;
+#endif
 	int			rge_timerintr;
 #define RGE_IMTYPE_NONE		0
 #define RGE_IMTYPE_SIM		1

@@ -11,7 +11,6 @@
 #include <sys/select.h>
 
 #include <Entry.h>
-#include <Deskbar.h>
 #include <Directory.h>
 #include <Message.h>
 #include <Path.h>
@@ -31,7 +30,6 @@
 
 #include "BluetoothServer.h"
 #include "Debug.h"
-#include "DeskbarReplicant.h"
 #include "LocalDeviceImpl.h"
 #include "SDPServer.h"
 #include "SDPClient.h"
@@ -64,7 +62,7 @@ DispatchEvent(struct hci_event_header* header, int32 code, size_t size)
 // Where the time goes between the server starting and the radio answering:
 // every step of the way is logged with the time since boot, since the radio
 // has been seen coming up minutes after the rest of the system.
-static void
+void
 LogStartup(const char* format, ...)
 {
 	char message[256];
@@ -99,8 +97,6 @@ bool BluetoothServer::QuitRequested(void)
 		fLocalDevicesList.RemoveItemAt(0)) != NULL)
 		delete lDeviceImpl;
 
-	_RemoveDeskbarIcon();
-
 	fSDPServer->Stop();
 	delete fSDPServer;
 
@@ -133,8 +129,6 @@ void BluetoothServer::ReadyToRun(void)
 		TRACE_BT("General: Bluetooth event listener failed\n");
 	else
 		TRACE_BT("General: Bluetooth event listener Ready\n");
-
-	_InstallDeskbarIcon();
 
 	status_t status = fSDPServer->Start();
 	if (status != B_OK)
@@ -754,41 +748,6 @@ BluetoothServer::ShowWindow(BWindow* pWindow)
 	else
 		pWindow->Activate();
 	pWindow->Unlock();
-}
-
-
-void
-BluetoothServer::_InstallDeskbarIcon()
-{
-	app_info appInfo;
-	be_app->GetAppInfo(&appInfo);
-
-	BDeskbar deskbar;
-
-	if (deskbar.HasItem(kDeskbarItemName)) {
-		_RemoveDeskbarIcon();
-	}
-
-	// The BluetoothStatus applet shows devices and batteries; when it is
-	// installed, it replaces this simpler replicant.
-	entry_ref applet;
-	if (be_roster->FindApp("application/x-vnd.Haiku-BluetoothStatus",
-			&applet) == B_OK)
-		return;
-
-	status_t res = deskbar.AddItem(&appInfo.ref);
-	if (res != B_OK)
-		TRACE_BT("Failed adding deskbar icon: %" B_PRId32 "\n", res);
-}
-
-
-void
-BluetoothServer::_RemoveDeskbarIcon()
-{
-	BDeskbar deskbar;
-	status_t res = deskbar.RemoveItem(kDeskbarItemName);
-	if (res != B_OK)
-		TRACE_BT("Failed removing Deskbar icon: %" B_PRId32 ": \n", res);
 }
 
 

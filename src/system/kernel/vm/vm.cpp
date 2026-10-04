@@ -2556,6 +2556,10 @@ vm_clone_area(team_id team, const char* name, void** address,
 	if (status < B_OK)
 		return status;
 
+	// RAM clones share pages too. Preserve their CPU cache attributes before
+	// installing mappings (or allowing faults), just as for device memory.
+	newArea->SetMemoryType(sourceArea->MemoryType());
+
 	if (mapping != REGION_PRIVATE_MAP) {
 		// If the mapping is REGION_PRIVATE_MAP, vm_map_cache() needed to
 		// create a new cache, and has therefore already acquired a reference
@@ -2568,7 +2572,6 @@ vm_clone_area(team_id team, const char* name, void** address,
 		if (sourceArea->cache_type == CACHE_TYPE_DEVICE) {
 			// we don't have actual pages to map but a physical area
 			uint32 memoryType = sourceArea->MemoryType();
-			newArea->SetMemoryType(sourceArea->MemoryType());
 
 			VMTranslationMap* map
 				= sourceArea->address_space->TranslationMap();
@@ -3087,6 +3090,10 @@ vm_copy_area(team_id team, const char* name, void** _address,
 		free_etc(targetPageProtections, HEAP_DONT_LOCK_KERNEL_SPACE);
 		return status;
 	}
+
+	// fork() also creates aliases of shared RAM. Faults in the child must use
+	// the source area's cache attributes before either team accesses the pages.
+	target->SetMemoryType(source->MemoryType());
 
 	if (targetPageProtections != NULL) {
 		target->page_protections = targetPageProtections;

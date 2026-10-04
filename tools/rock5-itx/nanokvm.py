@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Small NanoKVM 2.4.3 client for the dedicated Haiku hardware lab.
 
-Run with ../.venv/bin/python. Credentials are read interactively or from
+Run with /mnt/HaikuWork/nanokvm/.venv/bin/python. Credentials are read interactively or from
 NANOKVM_PASSWORD; the session cookie is saved privately under /mnt/HaikuWork/state.
 """
 
@@ -81,8 +81,20 @@ def screenshot(path):
     raise TimeoutError("No video frame within 15 seconds")
 
 
+def input_client():
+    message = ('NanoKVM input requires websocket-client; run native sessions with '
+               '/mnt/HaikuWork/nanokvm/.venv/bin/python')
+    try:
+        import websocket
+    except ImportError:
+        raise RuntimeError(message) from None
+    if not callable(getattr(websocket, 'create_connection', None)):
+        raise RuntimeError(message)
+    return websocket
+
+
 def send_reports(reports):
-    import websocket
+    websocket = input_client()
     ws = websocket.create_connection(BASE.replace("http", "ws", 1) + "/api/ws",
                                      cookie=cookie(), origin=BASE, timeout=10)
     try:
@@ -113,6 +125,38 @@ def key(names):
     return {"keys": names}
 
 
+def type_text(text, delay=0.12):
+    """Type printable ASCII through the HID keyboard, one key per report."""
+    plain = {' ': 44, '-': 45, '=': 46, '[': 47, ']': 48, '\\': 49, ';': 51, "'": 52,
+             '`': 53, ',': 54, '.': 55, '/': 56, '\n': 40, '\t': 43}
+    shifted = {'!': 30, '@': 31, '#': 32, '$': 33, '%': 34, '^': 35, '&': 36, '*': 37,
+               '(': 38, ')': 39, '_': 45, '+': 46, '{': 47, '}': 48, '|': 49, ':': 51,
+               '"': 52, '~': 53, '<': 54, '>': 55, '?': 56}
+    reports = []
+    for char in text:
+        modifier, code = 0, None
+        if 'a' <= char <= 'z':
+            code = 4 + ord(char) - ord('a')
+        elif 'A' <= char <= 'Z':
+            modifier, code = 2, 4 + ord(char) - ord('A')
+        elif '1' <= char <= '9':
+            code = 30 + ord(char) - ord('1')
+        elif char == '0':
+            code = 39
+        elif char in plain:
+            code = plain[char]
+        elif char in shifted:
+            modifier, code = 2, shifted[char]
+        else:
+            raise ValueError("Unsupported character %r" % char)
+        reports.append(bytes([1, modifier, 0, code, 0, 0, 0, 0, 0]))
+        reports.append(bytes([1] + [0] * 8))
+    for start in range(0, len(reports), 24):
+        send_reports(reports[start:start + 24])
+        time.sleep(delay)
+    return {"typed": len(text)}
+
+
 def click(x, y, width, height):
     if not (0 <= x < width and 0 <= y < height):
         raise ValueError("Click is outside screen bounds")
@@ -130,6 +174,8 @@ def main():
     commands.add_parser("status")
     p = commands.add_parser("screenshot"); p.add_argument("path")
     p = commands.add_parser("key"); p.add_argument("keys", nargs="+")
+    p = commands.add_parser("type"); p.add_argument("text")
+    p.add_argument("--enter", action="store_true")
     p = commands.add_parser("click")
     p.add_argument("x", type=int); p.add_argument("y", type=int)
     p.add_argument("--width", type=int, default=1920); p.add_argument("--height", type=int, default=1080)
@@ -144,6 +190,7 @@ def main():
                   "/api/vm/device/virtual", "/api/storage/image", "/api/storage/image/mounted"]}
     elif args.command == "screenshot": result = screenshot(args.path)
     elif args.command == "key": result = key(args.keys)
+    elif args.command == "type": result = type_text(args.text + ("\n" if args.enter else ""))
     elif args.command == "click": result = click(args.x, args.y, args.width, args.height)
     elif args.command == "power":
         if not 1 <= args.duration <= 10000: raise ValueError("Duration must be 1..10000 ms")

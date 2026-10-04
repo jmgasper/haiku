@@ -18,6 +18,7 @@ struct bus_dmamap_obsd {
 	bus_dma_tag_t _dmat;
 	bus_dmamap_t _dmamp;
 	int _error;
+	int _maxsegs;
 
 	bus_size_t dm_mapsize;
 	int dm_nsegs;
@@ -32,7 +33,15 @@ bus_dmamap_create_obsd(bus_dma_tag_t tag, bus_size_t maxsize,
 	int nsegments, bus_size_t maxsegsz, bus_size_t boundary,
 	int flags, bus_dmamap_t* dmamp)
 {
-	*dmamp = calloc(sizeof(struct bus_dmamap_obsd) + (sizeof(bus_dma_segment_t) * nsegments), 1);
+	if (dmamp == NULL)
+		return EINVAL;
+	*dmamp = NULL;
+	if (nsegments <= 0 || (size_t)nsegments > (SIZE_MAX
+		- sizeof(struct bus_dmamap_obsd)) / sizeof(bus_dma_segment_t)) {
+		return EINVAL;
+	}
+	*dmamp = (bus_dmamap_t)kernel_malloc(sizeof(struct bus_dmamap_obsd)
+		+ sizeof(bus_dma_segment_t) * nsegments, M_DEVBUF, M_ZERO | M_NOWAIT);
 	if ((*dmamp) == NULL)
 		return ENOMEM;
 
@@ -40,10 +49,20 @@ bus_dmamap_create_obsd(bus_dma_tag_t tag, bus_size_t maxsize,
 		BUS_SPACE_MAXADDR, BUS_SPACE_MAXADDR, NULL, NULL,
 		maxsize, nsegments, maxsegsz, flags, NULL, NULL,
 		&(*dmamp)->_dmat);
-	if (error != 0)
+	if (error != 0) {
+		_kernel_free(*dmamp);
+		*dmamp = NULL;
 		return error;
+	}
 
 	error = bus_dmamap_create((*dmamp)->_dmat, flags, &(*dmamp)->_dmamp);
+	if (error != 0) {
+		bus_dma_tag_destroy((*dmamp)->_dmat);
+		_kernel_free(*dmamp);
+		*dmamp = NULL;
+		return error;
+	}
+	(*dmamp)->_maxsegs = nsegments;
 	return error;
 }
 #define bus_dmamap_create bus_dmamap_create_obsd
@@ -52,7 +71,12 @@ bus_dmamap_create_obsd(bus_dma_tag_t tag, bus_size_t maxsize,
 static void
 bus_dmamap_destroy_obsd(bus_dma_tag_t tag, bus_dmamap_t dmam)
 {
-	bus_dmamap_destroy(dmam->_dmat, dmam->_dmamp);
+	if (dmam == NULL)
+		return;
+	if (bus_dmamap_destroy(dmam->_dmat, dmam->_dmamp) != 0) {
+		panic("bus_dmamap_destroy: mapping still loaded");
+		return;
+	}
 	bus_dma_tag_destroy(dmam->_dmat);
 	_kernel_free(dmam);
 }
@@ -64,18 +88,29 @@ bus_dmamap_load_obsd_callback(void* arg, bus_dma_segment_t* segs, int nseg, int 
 {
 	bus_dmamap_t dmam = (bus_dmamap_t)arg;
 	dmam->_error = error;
-	dmam->dm_nsegs = nseg;
+	dmam->dm_nsegs = 0;
+	if (error != 0)
+		return;
+	if (segs == NULL || nseg <= 0 || nseg > dmam->_maxsegs) {
+		dmam->_error = EINVAL;
+		return;
+	}
 	memcpy(dmam->dm_segs, segs, nseg * sizeof(bus_dma_segment_t));
+	dmam->dm_nsegs = nseg;
 }
 
 static int
 bus_dmamap_load_obsd(bus_dma_tag_t tag, bus_dmamap_t dmam, void *buf, bus_size_t buflen, struct proc *p, int flags)
 {
+	dmam->_error = 0;
+	dmam->dm_mapsize = 0;
+	dmam->dm_nsegs = 0;
 	int error = bus_dmamap_load(dmam->_dmat, dmam->_dmamp, buf, buflen,
 		bus_dmamap_load_obsd_callback, dmam, flags | BUS_DMA_NOWAIT);
 	if (error != 0)
 		return error;
-	dmam->dm_mapsize = buflen;
+	if (dmam->_error == 0)
+		dmam->dm_mapsize = buflen;
 	return dmam->_error;
 }
 #define bus_dmamap_load bus_dmamap_load_obsd
@@ -84,9 +119,12 @@ bus_dmamap_load_obsd(bus_dma_tag_t tag, bus_dmamap_t dmam, void *buf, bus_size_t
 static int
 bus_dmamap_load_mbuf_obsd(bus_dma_tag_t tag, bus_dmamap_t dmam, struct mbuf *chain, int flags)
 {
-	dmam->dm_mapsize = chain->m_pkthdr.len;
-	return bus_dmamap_load_mbuf_sg(dmam->_dmat, dmam->_dmamp, chain,
+	dmam->dm_mapsize = 0;
+	int error = bus_dmamap_load_mbuf_sg(dmam->_dmat, dmam->_dmamp, chain,
 		dmam->dm_segs, &dmam->dm_nsegs, flags);
+	if (error == 0)
+		dmam->dm_mapsize = chain->m_pkthdr.len;
+	return error;
 }
 #define bus_dmamap_load_mbuf bus_dmamap_load_mbuf_obsd
 

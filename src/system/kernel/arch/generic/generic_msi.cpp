@@ -36,3 +36,16 @@ msi_free_vectors(uint32 count, uint32 startVector)
 {
 	sMSIInterface->FreeVectors(count, startVector);
 }
+
+
+status_t
+msi_allocate_vectors_for_device(const msi_requester* requester, uint32 count,
+	uint32* startVector, uint64* address, uint32* data)
+{
+	if (sMSIInterface == NULL)
+		return B_NOT_SUPPORTED;
+	if (startVector == NULL || address == NULL || data == NULL)
+		return B_BAD_VALUE;
+	return sMSIInterface->AllocateVectorsForDevice(requester, count,
+		*startVector, *address, *data);
+}

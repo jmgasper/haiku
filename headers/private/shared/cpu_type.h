@@ -199,7 +199,8 @@ get_cpu_vendor_string(enum cpu_vendor cpuVendor)
 	// Should match vendors in OS.h
 	static const char* vendorStrings[] = {
 		NULL, "AMD", "Cyrix", "IDT", "Intel", "National Semiconductor", "Rise",
-		"Transmeta", "VIA", "IBM", "Motorola", "NEC", "Hygon"
+		"Transmeta", "VIA", "IBM", "Motorola", "NEC", "Hygon", "Sun",
+		"Fujitsu", "ARM"
 	};
 
 	if ((size_t)cpuVendor >= sizeof(vendorStrings) / sizeof(const char*))
@@ -310,6 +311,17 @@ get_cpu_model_string(enum cpu_platform platform, enum cpu_vendor cpuVendor,
 
 	(void)cpuVendor;
 	(void)cpuModel;
+
+#if defined(__aarch64__)
+	if (platform == B_CPU_ARM_64 && (cpuModel >> 24) == 0x41) {
+		switch ((cpuModel >> 4) & 0xfff) {
+			case 0xd05:
+				return "Cortex-A55";
+			case 0xd0b:
+				return "Cortex-A76";
+		}
+	}
+#endif
 
 #if defined(__i386__) || defined(__x86_64__)
 	if (platform != B_CPU_x86 && platform != B_CPU_x86_64)
@@ -542,4 +554,3 @@ get_rounded_cpu_speed(void)
 	}
 	return target + delta;
 }
-

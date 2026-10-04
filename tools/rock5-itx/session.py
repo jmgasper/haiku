@@ -13,6 +13,7 @@ import time
 import lab
 import nanokvm
 import shell
+import usb_reset
 
 
 def emit(value):
@@ -87,6 +88,7 @@ if not 60 <= args.seconds <= 3600:
     parser.error('--seconds must be between 60 and 3600')
 if not os.path.ismount(lab.WORK):
     raise RuntimeError(f'Required filesystem is not mounted: {lab.WORK}')
+nanokvm.input_client()
 os.umask(0o077)
 config = json.loads(lab.CONFIG.read_text())
 nanokvm.BASE = config['nanokvm_url']
@@ -106,6 +108,7 @@ with lab.lock('hardware'):
     nanokvm.api('/api/vm/hardware')
     serial = None
     started = False
+    finish_stopped = False
     try:
         serial = lab.start_serial(config, output / 'serial.log')
         started = True
@@ -118,6 +121,7 @@ with lab.lock('hardware'):
         next_capture = time.monotonic() + 10
         input_buffer = b''
         input_lines = deque()
+        prepared_usb_reset = None
         frame = 0
         def capture():
             global frame
@@ -144,7 +148,8 @@ with lab.lock('hardware'):
                 command = json.loads(input_lines.popleft())
                 result['events'].append({'time': lab.timestamp(), 'command': command})
                 action = command['action']
-                if action == 'finish':
+                if action in ('finish', 'finish_stopped'):
+                    finish_stopped = action == 'finish_stopped'
                     break
                 if action == 'key':
                     nanokvm.key(command['keys'])
@@ -174,9 +179,21 @@ with lab.lock('hardware'):
                 elif action == 'download':
                     transcript = output / ('download-' + lab.timestamp() + '.txt')
                     value = shell.download(config, shell.usb_address(command['target']),
-                        command['name'], command['destination'], transcript)
+                        command['name'], command['destination'], transcript,
+                        command.get('transport', 'staged'), command.get('rate_limit', 256 * 1024))
                     result['events'][-1]['result'] = value
                     emit(value)
+                elif action == 'prepare_usb_reset':
+                    prepared_usb_reset = usb_reset.prepare(config,
+                        result['deployment'], output, command['target'])
+                    result['events'][-1]['result'] = prepared_usb_reset
+                    emit({'usb_reset_prepared': prepared_usb_reset})
+                elif action == 'reset_usb':
+                    preparation = prepared_usb_reset
+                    prepared_usb_reset = None
+                    value = usb_reset.reset(config, preparation, output)
+                    result['events'][-1]['result'] = value
+                    emit({'usb_reset': value})
                 elif action == 'gpio':
                     kind = command['type']
                     duration = command.get('duration', 800)
@@ -212,7 +229,19 @@ with lab.lock('hardware'):
                     result['serial_baud_error'] = str(error)
             try:
                 emit({'recovering': True})
-                result['recovery'] = lab.recover(config)
+                if finish_stopped:
+                    try:
+                        result['recovery'] = lab.recover(config, shutdown_serial=serial)
+                    except BaseException as error:
+                        # Preserve the failed clean transition even if emergency
+                        # recovery restores access to the dedicated target.
+                        result['status'] = 'error'
+                        result['shutdown_recovery_error'] = str(error)
+                        emit({'shutdown_recovery_error': str(error),
+                            'emergency_recovery': True})
+                        result['recovery'] = lab.recover(config)
+                else:
+                    result['recovery'] = lab.recover(config)
             except BaseException as error:
                 result['status'] = 'recovery_failed'
                 result['recovery_error'] = str(error)

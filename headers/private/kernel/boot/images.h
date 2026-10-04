@@ -15,7 +15,9 @@
 #		include <boot/images-tm-development.h>
 #	endif
 #else
-#	include <boot/images-sans-tm.h>
+	// air/OS: the air/OS logo above the stage icons, the boot disk icon
+	// carrying the air/OS mark (tools/airos-branding).
+#	include <boot/images-airos.h>
 #endif
 
 #endif	/* KERNEL_BOOT_ARCH_H */

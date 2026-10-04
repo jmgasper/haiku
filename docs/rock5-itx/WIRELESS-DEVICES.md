@@ -48,6 +48,20 @@ UserBootscript and the preferences' `start-services` hook) now starts
 first only when an Intel or Realtek controller is present. Before, a
 non-AX210 adapter never got a server.
 
+**Full images (2026-10-03): the server loads the firmware.** In a full image
+(air/OS) the launch_daemon runs `bluetooth_server` as a service and starts it
+again the moment it quits, so the helper's "stop the server, run
+`bt_firmware`" raced a fresh server that opened the radio in the middle of
+the download ("fragment 691 rejected"); the AX210 stayed in its bootloader
+and answered every command "Unknown HCI Command" (the preferences showed
+"Unknown|ServerFailed" and "Low Energy scan failed"). Now the server runs
+`bt_firmware` itself for each controller that appeared since its previous
+run, before it opens the device (`src/servers/bluetooth/ControllerFirmware.cpp`);
+the steps are in the LE log. Full images no longer install the helper or the
+`start-services` hook, and the preferences and BluetoothStatus start and stop
+the server through its launch_daemon job. The server's own Deskbar replicant
+is gone; BluetoothStatus is the only Bluetooth tray icon.
+
 **Wi-Fi drivers for arm64.** The regular image definition enabled the WLAN
 drivers only on x86, x86_64 and riscv64. It now enables `iaxwifi200`,
 `idualwifi7260`, `iprowifi4965`, `iprowifi3945`, `atheroswifi`,

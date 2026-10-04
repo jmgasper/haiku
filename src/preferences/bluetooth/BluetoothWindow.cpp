@@ -31,6 +31,7 @@
 #include <bluetooth/LocalDevice.h>
 #include <bluetooth/RemoteDevice.h>
 
+#include <LaunchRoster.h>
 #include <LEBondStore.h>
 #include <LELog.h>
 #include <LEPairingSession.h>
@@ -61,6 +62,9 @@
 
 
 static const uint32 kMsgRemoveConfirmed = 'rmCf';
+
+// The launch_daemon job that runs bluetooth_server
+static const char* kServerJob = "x-vnd.Haiku-bluetooth_server";
 
 static const bigtime_t kTickInterval = 2000000;
 static const bigtime_t kServerStartDelay = 1500000;
@@ -841,8 +845,17 @@ BluetoothWindow::_StartServices()
 	if (be_roster->IsRunning(BLUETOOTH_SIGNATURE))
 		return;
 
-	// A system may need to prepare its controller first (for example load
-	// firmware); an optional user script does that and starts the server.
+	// The launch_daemon runs the server as a service; starting the job also
+	// enables it again after _StopServices().
+	if (BLaunchRoster().Start(kServerJob) == B_OK) {
+		_ShowStatus(B_TRANSLATE("Starting the Bluetooth service"
+			B_UTF8_ELLIPSIS), BString(), false);
+		return;
+	}
+
+	// Without that job, a system may need to prepare its controller first
+	// (for example load firmware); an optional user script does that and
+	// starts the server.
 	BPath hook;
 	status_t error = find_directory(B_USER_SETTINGS_DIRECTORY, &hook);
 	if (error == B_OK)
@@ -876,6 +889,11 @@ BluetoothWindow::_StartServices()
 void
 BluetoothWindow::_StopServices()
 {
+	// The launch_daemon would start a quitting service right away again;
+	// stopping its job keeps the server down until it is started.
+	if (BLaunchRoster().Stop(kServerJob) == B_OK)
+		return;
+
 	if (be_roster->IsRunning(BLUETOOTH_SIGNATURE)) {
 		BMessenger(BLUETOOTH_SIGNATURE).SendMessage(B_QUIT_REQUESTED,
 			(BHandler*)NULL);

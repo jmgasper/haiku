@@ -466,6 +466,22 @@ DesktopSettingsPrivate::Save(uint32 mask)
 		}
 	}
 
+	if (mask & kDisplaySettings) {
+		BPath path(basePath);
+		if (path.Append("displays") == B_OK) {
+			BMessage settings('asdp');
+			settings.AddBool("zoom to display", fZoomToDisplay);
+			settings.AddMessage("layout", &fDisplaysMessage);
+
+			BFile file;
+			status = file.SetTo(path.Path(), B_CREATE_FILE | B_ERASE_FILE
+				| B_READ_WRITE);
+			if (status == B_OK) {
+				status = settings.Flatten(&file, NULL);
+			}
+		}
+	}
+
 	if (mask & kDraggerSettings) {
 		BPath path(basePath);
 		if (path.Append("dragger") == B_OK) {

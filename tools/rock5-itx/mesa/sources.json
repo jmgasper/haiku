@@ -1,0 +1,239 @@
+{
+  "mesa": {
+    "version": "25.3.6",
+    "archive": "mesa-25.3.6.tar.xz",
+    "sha256": "59217efeac3b64e7ced958324b9db7494f1e0741aeb22d780276514cc1b8f206",
+    "source_dir": "mesa-25.3.6",
+    "patches": [
+      "mesa-haiku-native.patch",
+      "mesa-haiku-quad-fill.patch"
+    ]
+  },
+  "libglvnd": {
+    "version": "1.7.0",
+    "archive": "libglvnd-v1.7.0.tar.gz",
+    "sha256": "2b6e15b06aafb4c0b6e2348124808cbd9b291c647299eaaba2e3202f51ff2f3d",
+    "source_dir": "libglvnd-v1.7.0",
+    "patches": [
+      "libglvnd-1.7.0.patchset",
+      "libglvnd-haiku-sysroot.patch",
+      "libglvnd-haiku-mutex.patch",
+      "libglvnd-haiku-bitmap.patch",
+      "libglvnd-haiku-present.patch"
+    ]
+  },
+  "haikuports_revision": "50ed75230b0be025c78f99a47508d1825799677d",
+  "native_abi": {
+    "revision": "1caad9652a7b4c33381c2e1d14bd028d7a7600a9",
+    "files": [
+      {
+        "name": "CsfBuffer.h",
+        "sha256": "485aeaa03901a5b15c114c8f3afb7c2dc02974459ad4c8dac9ae4eec18a7dd96"
+      },
+      {
+        "name": "CsfVm.h",
+        "sha256": "e5331fef6fb17dfc47add5ec8c17bddcdb4196829aed8b54727f2c145ae6d90e"
+      },
+      {
+        "name": "CsfHeap.h",
+        "sha256": "b05e48020a4e657c4d8a4cb04ce5e6ef28faabbb7a83082b26bc777e6c66315f"
+      },
+      {
+        "name": "CsfQueue.h",
+        "sha256": "e70bb799b6c73f5853ccf8df2b90c71788a0b0aa7f10d993989d4058f81443c6"
+      },
+      {
+        "name": "CsfProperties.h",
+        "sha256": "70c8a5a2a46edad05413ed56d96e2bdabb61782a0981747c0e857d026adb0342"
+      },
+      {
+        "name": "CsfSync.h",
+        "sha256": "e5021e83cd2f679a80b2f528706d8d7c2c9bf3efb29a2f0eda8b99b5a53f58a3"
+      },
+      {
+        "name": "CsfFirmware.h",
+        "sha256": "0729fa389616b7815fd91a8ad35a712ea030378d272558ec2ee94021f2cbe6a7"
+      }
+    ]
+  },
+  "sdk_haiku_revision": "7908c0f07a8d3bbed99f6140c642cf30920b3232",
+  "qualified_runtime_revision": null,
+  "sdk_packages": [
+    {
+      "name": "haiku.hpkg",
+      "sha256": "6f4657ff4cd50c8e86657d5ac2a792bbac6e5748ad66fae218347ffa49f416d6",
+      "info": "haiku r1~beta6_hrev60097_207-1"
+    },
+    {
+      "name": "haiku_devel.hpkg",
+      "sha256": "94e25723a08c2e7ffa3eacbeddc991dff8c434726b5776e7eef4413259dd6c09",
+      "info": "haiku_devel r1~beta6_hrev60097_207-1"
+    },
+    {
+      "name": "gcc_syslibs-13.3.0_2026_03_29_bootstrap-1-arm64.hpkg",
+      "sha256": "d8aad73b29b4c1a588923254be62aa09652cdd76bb03d9e1585c778f6a5d77fc",
+      "info": "gcc_syslibs 13.3.0_2026_03_29_bootstrap-1"
+    },
+    {
+      "name": "gcc_syslibs_devel-13.3.0_2026_03_29_bootstrap-1-arm64.hpkg",
+      "sha256": "559cff3b2eaedb67358e88fb2be88043969b172accb1b7acc796c51653ade9ed",
+      "info": "gcc_syslibs_devel 13.3.0_2026_03_29_bootstrap-1"
+    },
+    {
+      "name": "zlib-1.2.13_bootstrap-1-arm64.hpkg",
+      "sha256": "99a575733f1648fb26856356f10538098975e1c2ed2a489d0f682d2d95e46b49",
+      "info": "zlib 1.2.13_bootstrap-1"
+    },
+    {
+      "name": "zlib_devel-1.2.13_bootstrap-1-arm64.hpkg",
+      "sha256": "91ad453a53e07b4cad45aa545ec197eaa06e9a6a79f72c41f1b0797f6b3932bc",
+      "info": "zlib_devel 1.2.13_bootstrap-1"
+    }
+  ],
+  "bundle_files": {
+    "mesa-haiku-native.patch": "19ca86d5aa36039da00ea8a2c0e590fe5d7b31a8f18f046f59d1d31b1ffc6187",
+    "libglvnd-haiku-sysroot.patch": "16c8c1110172bed628a6160bd86b2f4e36cb408a59bdbe59d133f7f812732d13",
+    "mesa-native-source-manifest.json": "764552f134d20d3174d3e1d1fc5305d08ade63128ab1cbf18724f6df1a9fa0d8",
+    "libglvnd-haiku-mutex.patch": "96f0fa776fa8b3c6425e26981e6e4cbca7fc33f31eb8f8e58bad730891de6035",
+    "native_render_validation.py": "709c02edeacce5f66b27f1863d2f26d8bbbe7e1edc932b75ac812562910c1880",
+    "render_validation.py": "460d5ab54cf289fe1e84ed3cbe8d8522f453260b889b9b1e86fee074f3843c5b",
+    "libglvnd-1.7.0.patchset": "a2b593754f479d72395f148fa650c21d79ab75e0d7b62602d3f196f056708da5",
+    "render-probe.cpp": "a574a94b9c1d39567253110d22a46c9307c935a1ce816d5d87196928e8669120",
+    "run": "67d90f5cf1f89ffdc393e6e487f6b5b4eea67b696b98362846b547f27b855fe6",
+    "vendor.json": "817464a10dd3e42ea9aa99bc38c28a98d41391e451c2e9442abbb824d29a2def",
+    "run-window": "106f64d9e8909dca6947467e62d46838713538e09a5d51fd263c9b7c5aa7d152",
+    "window-probe.cpp": "4b03f70cb388051efcba3e6c6bf4d172f0f931abe79f67c111ad9edd1e7c234c",
+    "window_validation.py": "2a645d2a90a82cb320be9c65caaec111956674c8dbf5b6d71f6fa78c32608f82",
+    "glview-probe.cpp": "0ddc61571f1f5470b50b892648c7b9dd630a210b98617cd88ab6a1b198b8f8d0",
+    "native-observer.h": "18a3f0df2b06d3cc778cf8002d86afca2450f3da5509d4a80c757cb49af48502",
+    "glview_validation.py": "ce0841ebe9ed492ff2c548924e71ca8bcbb416d68fc80673454f2f4c772564e0",
+    "run-glview": "30bbfde5c2ba04b5b5a09273badd49314a1adb25a9b2e8dc821361c37ba515f9",
+    "libglvnd-haiku-bitmap.patch": "e9b6c1d5301b952a536d66bdd2f2985b983d3adf45dbb6e2ef373b46ac1b81ff",
+    "pipeline-probe.cpp": "99a0bbf8906153a7de9e5377bff63ba3a072798a9ccc112c1e5954712d4a12f7",
+    "pipeline_validation.py": "5ba96500e9f3bc97283406813b3eab8fe0cddd8022d92c6ccd6dbd4a17410677",
+    "run-pipeline": "770551d0b5501a35f7b3d3b967a69ed147f303e1178f40ce4d7d9f02cfb01001",
+    "lifetime-probe.cpp": "fa30f2ccac9ed85e0e0ccea4894c585289889f15fa0e6e314878a29507390ea0",
+    "lifetime_validation.py": "8f0afb8f0be546ba84d7bac0a7734d9a4d4eddff6df39ec1702c9f8c92bc86cc",
+    "run-lifetime": "9ca9e8357180762c864a023b084855c34ab6b6a4ece1c94bfbbdf0f7defed409",
+    "heap-pressure-probe.cpp": "aedadaceab6cd7394f03b07194653e5a7f0b51751645ed01503c1fc6e94584e5",
+    "heap_pressure_validation.py": "10dcb465bd8b8b153ae7a7dbfc9cbf7c6b5b02b19b409948b1ebbf2ff3f3b067",
+    "run-heap-pressure": "058662b783c92a87a01ab6796d685a06233e88397b87a018775d235dfc3e26ae",
+    "build.py": "8e5356ec726413e0a45d12257f463aca1ec35c8ae14bfac5b8081869d6579dd3",
+    "heap-limit-probe.cpp": "b2d33d95c99c074b5dc757dd293f84a93b49c32daf62bd73bb38e68e349585a2",
+    "heap_limit_validation.py": "48063c97a2ea6fb539b830a548a3f286385bc2f97f219c1c817dd2ba5360e7f3",
+    "run-heap-limit": "2738aa58cc844423eb59affe127bf1fb54705d0830aaa3a6a33552233070de85",
+    "sustained-probe.cpp": "1c41e8e41a2c5311dc5c968d3657243e09a7dd037df8988d33cc06aab4500a78",
+    "sustained_validation.py": "7f7bc8cc592beb5549235ad7248da9a1591aea09b30edb4b76dc0fbc16571115",
+    "run-sustained": "51bed6840b4da8a4ffc8baeb6b1dcc1d154f0184439d3c58143f0a48d0ee1179",
+    "sustained_capture.py": "785921da63847a127da08d9f6ab96d039dad9feb300df155d01b699152800081",
+    "concurrency-probe.cpp": "2f69b46e92d89dc8ea737a1b65b63c541e1b240ecd972031f9c4a7ed23d3c74e",
+    "concurrency_validation.py": "54fc31f044fbd67f60305a1c613fd25e3cac907ac758638f179597eb391941d1",
+    "run-concurrency": "cd539f9590dcccca034db8ef5c32cfb70312337b676c9bca06744d00f33fff20",
+    "graphics_capture.py": "d96a50a7946f7085b4afd60354ec75610b274d7647d6ec99006a55f457281abd",
+    "pending-probe.cpp": "8b4e548ad2a12bff765a9cfc24101e323daa3f437126d74c956fc221bb83a92b",
+    "pending_validation.py": "c98e7be3e639a9e279cdc0f0a50ba7142e7c63a968d01f4b8fb62b14e1547993",
+    "run-pending": "8db43588e07626a073a240823d85a0a22a171d32372c0fad0e3937c88af261a1",
+    "../mali_queue_probe.cpp": "c26a89f4beb569350e04bf668715186cda9256c395c1826245559d3a8e1eb644",
+    "../mali_sync_probe.inc": "7dd07fc4a98b22610a42162f3f34d049e64f5de1ed71bcce3c3d625993b4ce79",
+    "../mali_property_probe.inc": "66b5090a4977d4abf8cb7c122d8342643f94a9d7273177914f00e67d06a7b117",
+    "../mali_heap_probe.inc": "aefdfc4a8a8133db0bf50ac253d9c9535e508bab19531330022994df27e5af29",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfSync.h": "e5021e83cd2f679a80b2f528706d8d7c2c9bf3efb29a2f0eda8b99b5a53f58a3",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfFirmware.h": "0729fa389616b7815fd91a8ad35a712ea030378d272558ec2ee94021f2cbe6a7",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfVm.h": "e5331fef6fb17dfc47add5ec8c17bddcdb4196829aed8b54727f2c145ae6d90e",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfRun.h": "2013faa9e2558b5ce25c8ce29459a4a7b374d635b18578ab9443d3ce5bf77e76",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfRuntime.h": "cada37c8b80312dd8f6b36951f6e6734a12645726f10702e0780e6b9af596964",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfSynchronization.h": "4d837e0675df3b5ceabaf1ad45ea1b0c9bbd6196ed6ad8f8228b9cae81cd9130",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfClient.h": "54fb4e1ec23866f021c5b61d5480c27f0e136dfb4a610fa203af8ebe886c0857",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfPageTable.h": "1ecd2ab24a73ec893e9a526fc01beef2235ef6b6a8390d273848e14c96ca68c9",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfQueue.h": "e70bb799b6c73f5853ccf8df2b90c71788a0b0aa7f10d993989d4058f81443c6",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfProperties.h": "70c8a5a2a46edad05413ed56d96e2bdabb61782a0981747c0e857d026adb0342",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfPropertyCapture.h": "a742597a6e4263798564ef0327ac581d101686709a82ef95778844098e4f52f2",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfResources.h": "bfe9b4b39471f3d3c31c9d103c45b7692a939f715c125554213c32ede9634574",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfHeapGrowth.h": "b45d5ef1a9ee2e2c130686b26784b484fd7b0692b996ba33d57868150982316d",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfPlatform.h": "d5913a435f056687908669c3ea98cc36b87ca7e642d92009e1c4894acc450d2b",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfQueueMemory.h": "5ad70097bafb447281a995299a224170039762199e365e1489d050c95c4672d0",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfShader.h": "0968d6cedd1388c3692a5bcb4f3f9457ffad5cacfcf1a92b6f4824d25aa5a6c3",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfMemory.h": "b8d8c5f398c09a2ebba366ecd942afe5d0193144649d499abea1500568849b81",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfPower.h": "4dde53f5fccb52886a2741ef6e8ff2b55a35e95cafccd7c117327aa043254a30",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfInterface.h": "668420a5784c818f138d841edbe49a6131bee34929725b072ad870cb62ebe0ff",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfReset.h": "3ef92dc15940ccb77b88c52a01b6ba49b4cb44f005f628f4fc23d2823f1d5a25",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfBuffer.h": "485aeaa03901a5b15c114c8f3afb7c2dc02974459ad4c8dac9ae4eec18a7dd96",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfFirmwareHardware.h": "46b121f79f191192a8188e4d53400636060466acd4a7bf405f91c888aca2f330",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfHardware.h": "fffaab8464e38a7097ec31a1a30068f7f47e03aafa355a9f15b0dbb1af6962b0",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfDevice.h": "95d32586f8c55a907c2bb57826c269f5cc2c887c84b6596a409286b4250c78d6",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfQueueEngine.h": "8d8e6184b1f5ecbaafe0f27bebbe073860b437828aec7b7d01c7e228e719c5ed",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfCommands.h": "e5b14221235c286e61c1dc2f07ec4d32e70ef35279671d1b700350dac18ba02f",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfDmaMemory.h": "7372f26cf7047edb0553372a8d3534f023008d049a36da3a16e9e06e45c67f9c",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfHeap.h": "b05e48020a4e657c4d8a4cb04ce5e6ef28faabbb7a83082b26bc777e6c66315f",
+    "../../../src/add-ons/kernel/drivers/graphics/mali_csf/CsfCommandMemory.h": "f4d85be5db3ec46fdf09423db623c0c8e7a5fc9c7ba204dccaef402ee67aac18",
+    "recovery-probe.cpp": "24f80cf95036b312dd4fbffeb62ded7162260f13b229f59d4cfc01d178f55118",
+    "run-recovery": "d7cf790f778f14be5352ff24670c2706668da751b8db9ae2b0e32a709b34566e",
+    "recovery_validation.py": "6931535c3a3e0379316589d59c8d0f0a409d17600ff649dbce8364daea2c464f",
+    "loss-probe.cpp": "df234318f93df23f20c01d6726775024af186c7fc87e8b8e5ee50ededad5315b",
+    "loss_validation.py": "e7e4fc7a52c5d90d69445e0c743081c30e18f8146d4aaa7eff3e49dd98587a6a",
+    "run-loss": "6a33588bab9c92bdd751859e46ec087e474879101fbe1fe67f44e73c375d31e1",
+    "test-reset-status.py": "72974add7ad8f46cffabd1fee4876d58793bd1554e4f8efb45c800fd205c5ec6",
+    "reset-status-test.c": "41a5dbf8c30e530662fcf3fff26e227411c8f9ace820a4bd85721bee38f0e197",
+    "state-tracker-reset-test.c": "9d9d1921c4d365ae39406ddf503f68f3b93c97a69960160acd8085fdc7d75b8d",
+    "test-state-tracker-reset.py": "dd7f599f03f5717ea72ab672d7030f6b9f91051516fafaa01ba467913b41691b",
+    "polygon-probe.cpp": "9c1f93480fd5b197136334d255306b45df95194a51383bd934edb557d7cbaf1b",
+    "polygon_validation.py": "4dfb2fc989e416a705ffaf8a07b4c50baed049210dcded785a58b5c183bcc1e6",
+    "run-polygon": "fb3a3462b8db7d54f5e38d619d5047ffd0e6ab6c6da3992b1f9e7bbf223a430f",
+    "test-polygon-geometry.py": "def32c033a3b17a4488901a6d055b8863a9cc148bf056a1523d6b828e5110eed",
+    "polygon-geometry-test.c": "96bfaefc21e57b9942c372f6c53b7f50b56a4e86bac35d1307e02ea21c27689d",
+    "polygon-context-test-adapter.h": "6fb645d3beb0a8b47251c044528e04fc6b56f031cd8bcfed8ff3174d85e2a74e",
+    "application_logging_validation.py": "7ae538734ebbb0e5bcef6b6a6ccd35bc9f68b11d9687a90528873978b5de2242",
+    "test-application-logging.py": "41328940166113aa3b305de290eda293a270879ef04ccc765db3aa63241c1625",
+    "shader-token-lifetime-test.c": "939397ffd76ce94d9e1ec1615d818f1abdca70e5f7778ad60b08770adc24f8e3",
+    "test-shader-token-lifetime.py": "5ca3265efff1d53c19c0f4580ce4e6ecc81c38ec75e0902e5be5d4a1af1fcd5b",
+    "run-system": "f9d5531ded055b71344538934a52d1a12a9217aa63f086cfc8f37ead2cc8fbfa",
+    "system_validation.py": "049585fc12e916b00f548149bff9fc718d84c67026e0f58209e7621b98bc0444"
+  },
+  "host_helpers": {
+    "vtn_bindgen2": "8f03a1c42332ec1494a89de73d9bdbe7bba91aeeb98c6c0cd2d6623eb276a167",
+    "panfrost_compile": "4a0325883cfc99e2b92df459b3e73b0120421248f6605af99f07ac4ae4571c29",
+    "mesa_clc": "26be73da1df281af12c0130940707ccf6e5e3bc1bd245e9818ef3a32004c2fae"
+  },
+  "mesa_options": {
+    "platforms": [
+      "haiku"
+    ],
+    "expat": "disabled",
+    "gallium-drivers": [
+      "panfrost",
+      "softpipe"
+    ],
+    "gallium-va": "disabled",
+    "vulkan-drivers": [],
+    "shader-cache": "disabled",
+    "gles1": "disabled",
+    "gles2": "enabled",
+    "opengl": true,
+    "gbm": "disabled",
+    "glx": "disabled",
+    "egl": "enabled",
+    "glvnd": "enabled",
+    "llvm": "disabled",
+    "valgrind": "disabled",
+    "build-tests": false,
+    "tools": [],
+    "zstd": "disabled",
+    "zlib": "disabled",
+    "xmlconfig": "disabled",
+    "mesa-clc": "system",
+    "precomp-compiler": "system",
+    "spirv-tools": "disabled"
+  },
+  "pipeline_probe_scope": "Two GLES contexts, six 97x67 complete RGBA cases each: padded texture upload/nearest sampling, depth, stencil, additive blending, scissor, reflected render-to-texture. Both QEMU modes and two native boots qualified; no conformance or sustained-load claim.",
+  "lifetime_probe_scope": "Three separate processes; SIGKILL after checked rendering with resources live, survivor redraw, normal cleanup and fresh-context reuse. Both QEMU modes and two native boots qualified; no pending-job kill, reset or sustained-load claim.",
+  "heap_pressure_probe_scope": "Qualified +224: explicit vertex buffer, four native contexts, 24 actual firmware growths, complete RGBA/guards/queues, cleanup, normal reboot/shutdown and recovery/integrity; sustained/reset paths remain open; +227 separately qualifies refused allocations and incremental rendering.",
+  "heap_limit_probe_scope": "Qualified +227: four fixed one-chunk contexts, 36 actual native allocation refusals, 36 Mesa incremental passes, all 51992 RGBA pixels/1024 guards, 24 completed submissions, cleanup and recovery/integrity. Sustained/reset and system-RAM exhaustion remain open.",
+  "sustained_probe_scope": "Qualified protocol 2 on two +232 native boots: four retained contexts, each >=60 seconds measured render, >=20 seconds and 1024 frames of observed heap stability, lossless actual RGBA/guards and complete queues/cleanup. 91648 frames, 595620352 pixels, 183304 submissions, 147196 incremental passes. RAM capture and existing staged transfers verified; earlier failures preserved. No concurrency, conformance, thermal/DVFS or automatic reset qualification.",
+  "concurrency_probe_scope": "Qualified +234 on two native boots: two processes complete 64 synchronized rounds per boot, all128 actual application draw/fence/readback intervals overlap; 260frames/1689740pixels/33280guards/532completed submissions. Normal process retirement, survivor draw, fresh-process reuse and allocation restoration pass. All seven graphics fixtures use verified RAM capture and existing staged transfers; first NanoKVM outage preserved. No parallel GPU execution, pending-work termination, conformance, thermal/DVFS, reset or native display qualification.",
+  "pending_probe_scope": "Qualified +236 on two native boots: finite integer shader, unfinished GLES fence and actual pending command at client close; survivor and fresh-process rendering, 14 checked frames/90986 pixels/1792 guards, 42 accepted submissions, full allocation restoration. Both QEMU modes, earlier regressions, normal recovery and independent integrity pass. No immediate preemption, GPU fault/reset, conformance or native-display qualification.",
+  "recovery_probe_scope": "Qualified +238 on two native boots: invalid CS instruction, three affected raw jobs and B_IO_ERROR fences per boot, verified bounded reset/AS0-AS1 cleanup/platform restoration, full allocation restoration, fresh native stores and two fresh GLES contexts without Haiku reboot. All 155976 subsequent pixels/3072 guards, both QEMU modes, earlier regressions, normal recovery and independent integrity pass. The +243 loss fixture separately qualifies retained Mesa-context notification. Innocent-context preservation, generic hangs and native display remain open.",
+  "previous_qualified_runtime_revision": "hrev60097+243",
+  "required_runtime_revision": "hrev60097+240",
+  "loss_probe_scope": "Qualified +243 on two native boots: two live shared GLES contexts each receive one unknown-attribution reset notification after the finite raw command fault; ignored read/clear/sync calls report context loss and all 104496 readback bytes remain unchanged. Full display teardown and allocation restoration, fresh GLES pipeline without Haiku reboot, 28 before/fresh frames/181972 pixels/3584 guards, both QEMU modes, earlier regressions, normal recovery and independent integrity pass. +241 reset assertion and +242 cache-fixture failures remain preserved. No innocent-context preservation, arbitrary hang, conformance or native display claim.",
+  "polygon_probe_scope": "Bounded opt-in CPU vertex/geometry processing with native Panfrost rasterization. Default GLTeapot and 32-case/context polygon fixture qualified on +256 Mesa with +254 Haiku. First/last-provoking extension and quad-strip edge correction are pending native validation. Preserve quad/quad-strip/polygon boundaries; direct draws and float32 varyings only. Shader resources/effects, transform feedback, front-face/primitive-ID inputs, integer/64-bit varyings, layered viewports, stippling, independent near/far clip, unscaled bias and zero-depth-scale offset remain excluded."
+}

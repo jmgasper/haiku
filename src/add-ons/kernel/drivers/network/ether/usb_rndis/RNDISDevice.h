@@ -7,6 +7,7 @@
 #define _USB_RNDIS_DEVICE_H_
 
 #include "Driver.h"
+#include <lock.h>
 
 class RNDISDevice {
 public:
@@ -35,9 +36,14 @@ static	void				_WriteCallback(void *cookie, int32 status,
 								void *data, size_t actualLength);
 static	void				_NotifyCallback(void *cookie, int32 status,
 								void *data, size_t actualLength);
+static	int32				_NotifyThread(void *cookie);
+		status_t			_StartNotifications();
+		void				_StopNotifications();
+		void				_ProcessNotifications();
 
 		status_t			_SendCommand(const void*, size_t);
 		status_t			_ReadResponse(void*, size_t);
+		status_t			_WaitForControlResponse();
 
 		status_t			_RNDISInitialize();
 		status_t			_GetOID(uint32 oid, void* buffer, size_t length);
@@ -53,7 +59,9 @@ static	void				_NotifyCallback(void *cookie, int32 status,
 		status_t			fStatus;
 		bool				fOpen;
 		bool				fRemoved;
-		int32				fInsideNotify;
+		mutex				fNotifyLock;
+		int32				fNotifyRunning;
+		thread_id			fNotifyThread;
 		usb_device			fDevice;
 		uint16				fVendorID;
 		uint16				fProductID;
@@ -76,11 +84,14 @@ static	void				_NotifyCallback(void *cookie, int32 status,
 		sem_id				fNotifyWriteSem;
 		sem_id				fLockWriteSem;
 		sem_id				fNotifyControlSem;
+		sem_id				fNotifyCompleteSem;
+		status_t			fNotifyStatus;
+		size_t				fNotifyActualLength;
 
 		uint8*				fNotifyBuffer;
 		size_t				fNotifyBufferLength;
 		uint8				fReadBuffer[0x4000];
-		uint32*				fReadHeader;
+		uint8*				fReadHeader;
 
 		// connection data
 		sem_id				fLinkStateChangeSem;

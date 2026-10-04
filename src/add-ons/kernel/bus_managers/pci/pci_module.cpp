@@ -139,6 +139,37 @@ static struct pci_module_info sOldPCIModule = {
 };
 
 
+static status_t
+pci_intx_std_ops(int32 op, ...)
+{
+	switch (op) {
+		case B_MODULE_INIT:
+		{
+			module_info* pci;
+			return get_module(B_PCI_MODULE_NAME, &pci);
+		}
+		case B_MODULE_UNINIT:
+			return put_module(B_PCI_MODULE_NAME);
+	}
+	return B_BAD_VALUE;
+}
+
+
+static pci_intx_module_info sIntxModule = {
+	.info = { B_PCI_INTX_MODULE_NAME, 0, pci_intx_std_ops },
+	.get_irq = [](uint8 bus, uint8 device, uint8 function, uint32* irq) {
+		PCIDev* dev;
+		CHECK_RET(ResolveBDF(bus, device, function, dev));
+		return gPCI->GetIntxIRQ(dev, irq);
+	},
+	.set_enabled = [](uint8 bus, uint8 device, uint8 function, bool enabled) {
+		PCIDev* dev;
+		CHECK_RET(ResolveBDF(bus, device, function, dev));
+		return gPCI->SetIntxEnabled(dev, enabled);
+	}
+};
+
+
 module_dependency module_dependencies[] = {
 	{B_DEVICE_MANAGER_MODULE_NAME, (module_info **)&gDeviceManager},
 	{}
@@ -155,6 +186,7 @@ driver_module_info gPCILegacyDriverModule = {
 
 module_info *modules[] = {
 	(module_info *)&sOldPCIModule,
+	(module_info *)&sIntxModule,
 	(module_info *)&gPCIRootModule,
 	(module_info *)&gPCIDeviceModule,
 	(module_info *)&gPCILegacyDriverModule,

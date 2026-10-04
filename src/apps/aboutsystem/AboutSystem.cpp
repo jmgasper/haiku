@@ -34,6 +34,7 @@
 #include <FindDirectory.h>
 #include <Font.h>
 #include <fs_attr.h>
+#include <IconUtils.h>
 #include <LayoutBuilder.h>
 #include <MessageRunner.h>
 #include <Messenger.h>
@@ -50,8 +51,6 @@
 #include <StringList.h>
 #include <StringView.h>
 #include <TextView.h>
-#include <TranslationUtils.h>
-#include <TranslatorFormats.h>
 #include <View.h>
 #include <ViewPrivate.h>
 #include <Volume.h>
@@ -109,6 +108,11 @@ static const rgb_color kIdealHaikuOrange = { 255, 69, 0, 255 };
 static const rgb_color kIdealHaikuYellow = { 255, 176, 0, 255 };
 static const rgb_color kIdealBeOSBlue = { 0, 0, 200, 255 };
 static const rgb_color kIdealBeOSRed = { 200, 0, 0, 255 };
+static const rgb_color kIdealAirOSBreeze = { 78, 141, 138, 255 };
+
+static const char* kAirOSWebsite = "https://github.com/jmgasper/haiku";
+	// the air/OS logo resources are 64 units wide and this tall
+static const float kAirOSLogoHeight = 21.0f;
 static const rgb_color kBlack = { 0, 0, 0, 255 };
 static const rgb_color kWhite = { 255, 255, 255, 255 };
 
@@ -193,6 +197,9 @@ public:
 	virtual	BSize			MaxSize();
 
 	virtual void			Draw(BRect updateRect);
+
+private:
+			float			_Inset() const;
 
 private:
 			BBitmap*		fLogo;
@@ -356,6 +363,7 @@ private:
 			rgb_color		fHaikuYellowColor;
 			rgb_color		fBeOSRedColor;
 			rgb_color		fBeOSBlueColor;
+			rgb_color		fAirOSColor;
 };
 
 
@@ -429,19 +437,30 @@ AboutWindow::QuitRequested()
 
 LogoView::LogoView()
 	:
-	BView("logo", B_WILL_DRAW)
+	BView("logo", B_WILL_DRAW),
+	fLogo(NULL)
 {
-	SetDrawingMode(B_OP_OVER);
+	SetDrawingMode(B_OP_ALPHA);
 
-#ifdef HAIKU_DISTRO_COMPATIBILITY_OFFICIAL
-	rgb_color bgColor = ui_color(B_DOCUMENT_BACKGROUND_COLOR);
-	if (bgColor.IsLight())
-		fLogo = BTranslationUtils::GetBitmap(B_PNG_FORMAT, "logo.png");
-	else
-		fLogo = BTranslationUtils::GetBitmap(B_PNG_FORMAT, "logo_dark.png");
-#else
-	fLogo = BTranslationUtils::GetBitmap(B_PNG_FORMAT, "walter_logo.png");
-#endif
+	// The air/OS logo is vector data: it needs no PNG translator (arm64
+	// has none) and follows the font size.
+	const char* name = ui_color(B_DOCUMENT_BACKGROUND_COLOR).IsLight()
+		? "airos_logo" : "airos_logo_dark";
+	size_t size;
+	const void* data = BApplication::AppResources()->LoadResource(
+		B_VECTOR_ICON_TYPE, name, &size);
+	if (data != NULL) {
+		float width = roundf(be_plain_font->Size() * 15);
+		float height = ceilf(width * kAirOSLogoHeight / 64);
+		fLogo = new(std::nothrow) BBitmap(BRect(0, 0, width - 1, height - 1),
+			B_RGBA32);
+		if (fLogo != NULL && (fLogo->InitCheck() != B_OK
+				|| BIconUtils::GetVectorIcon((const uint8*)data, size, fLogo)
+					!= B_OK)) {
+			delete fLogo;
+			fLogo = NULL;
+		}
+	}
 
 	// Set view color to panel background color when fLogo is NULL
 	// to prevent a white pixel from being drawn.
@@ -462,7 +481,8 @@ LogoView::MinSize()
 	if (fLogo == NULL)
 		return BSize(0, 0);
 
-	return BSize(fLogo->Bounds().Width(), fLogo->Bounds().Height());
+	return BSize(fLogo->Bounds().Width() + _Inset() * 2,
+		fLogo->Bounds().Height() + _Inset() * 2);
 }
 
 
@@ -472,7 +492,7 @@ LogoView::MaxSize()
 	if (fLogo == NULL)
 		return BSize(0, 0);
 
-	return BSize(B_SIZE_UNLIMITED, fLogo->Bounds().Height());
+	return BSize(B_SIZE_UNLIMITED, fLogo->Bounds().Height() + _Inset() * 2);
 }
 
 
@@ -486,7 +506,16 @@ LogoView::Draw(BRect updateRect)
 	SetLowColor(ui_color(B_DOCUMENT_BACKGROUND_COLOR));
 	FillRect(bounds, B_SOLID_LOW);
 
-	DrawBitmap(fLogo, BPoint((bounds.Width() - fLogo->Bounds().Width()) / 2, 0));
+	SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
+	DrawBitmap(fLogo, BPoint(
+		roundf((bounds.Width() - fLogo->Bounds().Width()) / 2), _Inset()));
+}
+
+
+float
+LogoView::_Inset() const
+{
+	return roundf(be_control_look->DefaultLabelSpacing() * 2);
 }
 
 
@@ -1072,6 +1101,59 @@ SysInfoView::_GetCPUInfo()
 		}
 	}
 
+	if (platform == B_CPU_ARM_64) {
+		BString cpuType("ARM ");
+		bool first = true;
+		for (uint32 i = 0; i < topologyNodeCount; i++) {
+			if (topology[i].type != B_TOPOLOGY_CORE)
+				continue;
+
+			uint32 model = topology[i].data.core.model;
+			uint64 frequency = topology[i].data.core.default_frequency;
+			bool seen = false;
+			for (uint32 j = 0; j < i; j++) {
+				if (topology[j].type == B_TOPOLOGY_CORE
+					&& topology[j].data.core.model == model
+					&& topology[j].data.core.default_frequency == frequency) {
+					seen = true;
+					break;
+				}
+			}
+			if (seen)
+				continue;
+
+			uint32 count = 0;
+			for (uint32 j = i; j < topologyNodeCount; j++) {
+				if (topology[j].type == B_TOPOLOGY_CORE
+					&& topology[j].data.core.model == model
+					&& topology[j].data.core.default_frequency == frequency)
+					count++;
+			}
+
+			if (!first)
+				cpuType << ", ";
+			first = false;
+			const char* modelName = get_cpu_model_string(platform, cpuVendor,
+				model);
+			cpuType << (modelName != NULL ? modelName : B_TRANSLATE("Unknown"))
+				<< " (" << count << " cores";
+			if (frequency != 0) {
+				BString speed;
+				if (frequency >= 1000000000) {
+					speed.SetToFormat(B_TRANSLATE("%.2f GHz"),
+						(double)frequency / 1000000000.0);
+				} else {
+					speed.SetToFormat(B_TRANSLATE("%.0f MHz"),
+						(double)frequency / 1000000.0);
+				}
+				cpuType << ", " << B_TRANSLATE("up to") << " " << speed;
+			}
+			cpuType << ")";
+		}
+		delete[] topology;
+		return cpuType;
+	}
+
 	delete[] topology;
 
 	BString cpuType;
@@ -1199,6 +1281,7 @@ AboutView::AboutView()
 	fHaikuYellowColor = mix_color(fTextColor, kIdealHaikuYellow, 191);
 	fBeOSRedColor = mix_color(fTextColor, kIdealBeOSRed, 191);
 	fBeOSBlueColor = mix_color(fTextColor, kIdealBeOSBlue, 191);
+	fAirOSColor = mix_color(fTextColor, kIdealAirOSBreeze, 191);
 
 	SetLayout(new BGroupLayout(B_HORIZONTAL, 0));
 	BLayoutBuilder::Group<>((BGroupLayout*)GetLayout())
@@ -1301,6 +1384,7 @@ AboutView::MessageReceived(BMessage* message)
 				rgb_color newYellowColor = mix_color(newTextColor, kIdealHaikuYellow, 191);
 				rgb_color newRedColor = mix_color(newTextColor, kIdealBeOSRed, 191);
 				rgb_color newBlueColor = mix_color(newTextColor, kIdealBeOSBlue, 191);
+				rgb_color newAirOSColor = mix_color(newTextColor, kIdealAirOSBreeze, 191);
 
 				text_run_array* runArray = fCreditsView->RunArray(0, INT32_MAX);
 				for (int32 i = 0; i < runArray->count; i++) {
@@ -1318,6 +1402,8 @@ AboutView::MessageReceived(BMessage* message)
 						runArray->runs[i].color = newRedColor;
 					else if (runArray->runs[i].color == kIdealBeOSBlue)
 						runArray->runs[i].color = newBlueColor;
+					else if (runArray->runs[i].color == fAirOSColor)
+						runArray->runs[i].color = newAirOSColor;
 				}
 				fCreditsView->SetRunArray(0, INT32_MAX, runArray);
 				fCreditsView->FreeRunArray(runArray);
@@ -1329,6 +1415,7 @@ AboutView::MessageReceived(BMessage* message)
 				fHaikuYellowColor = newYellowColor;
 				fBeOSRedColor = newRedColor;
 				fBeOSBlueColor = newBlueColor;
+				fAirOSColor = newAirOSColor;
 			}
 			break;
 
@@ -1546,10 +1633,36 @@ AboutView::_CreateCreditsView()
 		fCreditsView, B_WILL_DRAW | B_FRAME_EVENTS, false, true,
 		B_PLAIN_BORDER);
 
-	// Haiku copyright
+	// air/OS, and the Haiku it is forked from
 	BFont font(be_bold_font);
 	font.SetSize(font.Size() + 4);
 
+	fCreditsView->SetFontAndColor(&font, B_FONT_ALL, &fAirOSColor);
+	fCreditsView->Insert("air/OS\n");
+
+	fCreditsView->SetFontAndColor(be_plain_font, B_FONT_ALL, &fTextColor);
+	fCreditsView->Insert(B_TRANSLATE("air/OS is a fork of Haiku designed "
+		"with ARM computers and additional hardware in mind: ARM64 boards "
+		"such as the Radxa ROCK 5 ITX, GPU drivers, a Wi-Fi preferences "
+		"panel and Bluetooth Low Energy.\n\n"));
+
+	fCreditsView->SetFontAndColor(be_plain_font, B_FONT_ALL, &fLinkColor);
+	fCreditsView->InsertHyperText(B_TRANSLATE("Visit air/OS on GitHub"),
+		new URLAction(kAirOSWebsite));
+	fCreditsView->Insert("\n\n");
+
+	BFont subheadFont(be_bold_font);
+	subheadFont.SetFace(B_BOLD_FACE | B_ITALIC_FACE);
+	fCreditsView->SetFontAndColor(&subheadFont, B_FONT_ALL, &fAirOSColor);
+	fCreditsView->Insert(B_TRANSLATE("Forked from Haiku:\n"));
+
+	fCreditsView->SetFontAndColor(be_plain_font, B_FONT_ALL, &fTextColor);
+	fCreditsView->Insert(B_TRANSLATE("air/OS is built on Haiku, the "
+		"open-source operating system inspired by the BeOS, and keeps its "
+		"code, credits and licenses. Haiku's own details follow; air/OS is "
+		"not made or endorsed by Haiku, Inc.\n\n"));
+
+	// Haiku copyright
 	fCreditsView->SetFontAndColor(&font, B_FONT_ALL, &fHaikuGreenColor);
 	fCreditsView->Insert("Haiku\n");
 

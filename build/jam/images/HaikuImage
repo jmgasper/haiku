@@ -30,8 +30,10 @@ if $(HAIKU_BUILD_TYPE) = test {
 }
 
 # nvm is part of the standard deploy: the Node Version Manager, with Haiku
-# binaries from its mirror and source builds with its Haiku patches.
-if $(HAIKU_BUILD_TYPE) = regular {
+# binaries from its mirror and source builds with its Haiku patches. Those
+# exist for x86_64 only, and nvm needs curl, tar and xz, which arm64 has no
+# packages for.
+if $(HAIKU_BUILD_TYPE) = regular && $(TARGET_ARCH) = x86_64 {
 	AddPackageFilesToHaikuImage system packages : nvm.hpkg : nameFromMetaInfo ;
 }
 

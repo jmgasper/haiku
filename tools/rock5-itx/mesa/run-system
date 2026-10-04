@@ -1,0 +1,47 @@
+#!/bin/sh
+# System launch: no library path, no vendor file, no polygon switch, no device
+# or firmware selection. Everything comes from the installed defaults; the
+# probe's --system mode records whether the GPU device was present.
+set -eu
+[ "$#" -eq 1 ]
+case "$1" in --native|--software) ;; *) exit 2 ;; esac
+unset LIBRARY_PATH __EGL_VENDOR_LIBRARY_FILENAMES __EGL_VENDOR_LIBRARY_DIRS
+unset HAIKU_PAN_SW_POLYGON HAIKU_PAN_SW_POLYGON_TRACE NIR_DEBUG
+unset HAIKU_CSF_DEVICE HAIKU_CSF_FIRMWARE HAIKU_CSF_TRACE LIBGL_ALWAYS_SOFTWARE GALLIUM_DRIVER
+rock5_application_ram=/boot/home/rock5-sustained-ram
+# The outer graphics-capture script creates output.log on its mounted RAM disk.
+[ -f "$rock5_application_ram/output.log" ]
+/boot/home/mesa-trial/rock5_haiku_application_probe --self-test
+for rock5_application_cycle in 0 1; do
+    rock5_application_frames=$rock5_application_ram/application-$rock5_application_cycle
+    [ ! -e "$rock5_application_frames" ]
+    mkdir "$rock5_application_frames"
+    printf 'ROCK5_APPLICATION_RUN_BEGIN cycle=%s mode=--system\n' "$rock5_application_cycle"
+    set +e
+    # Controller stdout and renderer stderr must not race for a regular-file
+    # offset. The probe waits for its application child before returning.
+    /boot/home/mesa-trial/rock5_haiku_application_probe --system /boot/home/mesa-trial/GLTeapot "$rock5_application_frames" \
+        > "$rock5_application_frames/controller.log" 2> "$rock5_application_frames/renderer.log"
+    rock5_application_status=$?
+    set -e
+    for rock5_application_stream in controller renderer; do
+        rock5_application_log=$rock5_application_frames/$rock5_application_stream.log
+        rock5_application_log_bytes=$(wc -c < "$rock5_application_log")
+        rock5_application_log_sha=$(sha256sum "$rock5_application_log")
+        rock5_application_log_sha=${rock5_application_log_sha%% *}
+        printf 'ROCK5_APPLICATION_LOG_BEGIN stream=%s bytes=%d sha256=%s\n' "$rock5_application_stream" "$rock5_application_log_bytes" "$rock5_application_log_sha"
+        cat "$rock5_application_log"
+        printf 'ROCK5_APPLICATION_LOG_END stream=%s\n' "$rock5_application_stream"
+    done
+    set +e
+    # Serialize available images even if the controller failed partway through.
+    /boot/home/mesa-trial/rock5_application_frames "$rock5_application_frames"
+    rock5_application_capture_status=$?
+    set -e
+    printf 'ROCK5_APPLICATION_RUN_EXIT cycle=%s application=%s frames=%s\n' "$rock5_application_cycle" "$rock5_application_status" "$rock5_application_capture_status"
+    [ "$rock5_application_status" -eq 0 ] && [ "$rock5_application_capture_status" -eq 0 ]
+    rm "$rock5_application_frames"/phase[0-3]-sample[01].ppm
+    rm "$rock5_application_frames/controller.log" "$rock5_application_frames/renderer.log"
+    rmdir "$rock5_application_frames"
+done
+echo ROCK5_APPLICATION_PASS processes=2 frames=16

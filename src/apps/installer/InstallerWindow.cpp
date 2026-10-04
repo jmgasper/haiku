@@ -9,6 +9,7 @@
 #include "InstallerWindow.h"
 
 #include <stdio.h>
+#include <string.h>
 #include <strings.h>
 
 #include <Alert.h>
@@ -22,12 +23,14 @@
 #include <Directory.h>
 #include <FindDirectory.h>
 #include <LayoutBuilder.h>
+#include <IconUtils.h>
 #include <LayoutUtils.h>
 #include <Locale.h>
 #include <MenuBar.h>
 #include <MenuField.h>
 #include <Path.h>
 #include <PopUpMenu.h>
+#include <Resources.h>
 #include <Roster.h>
 #include <Screen.h>
 #include <ScrollView.h>
@@ -36,8 +39,6 @@
 #include <StatusBar.h>
 #include <String.h>
 #include <TextView.h>
-#include <TranslationUtils.h>
-#include <TranslatorFormats.h>
 
 #include "tracker_private.h"
 
@@ -129,8 +130,10 @@ LogoView::GetPreferredSize(float* _width, float* _height)
 	float width = 0.0;
 	float height = 0.0;
 	if (fLogo) {
-		width = fLogo->Bounds().Width();
-		height = fLogo->Bounds().Height();
+		// room around the logo, which has no margin of its own
+		float inset = roundf(be_control_look->DefaultLabelSpacing() * 2);
+		width = fLogo->Bounds().Width() + inset * 2;
+		height = fLogo->Bounds().Height() + inset * 2;
 	}
 	if (_width)
 		*_width = width;
@@ -142,18 +145,30 @@ LogoView::GetPreferredSize(float* _width, float* _height)
 void
 LogoView::_Init()
 {
-	SetDrawingMode(B_OP_OVER);
+	SetDrawingMode(B_OP_ALPHA);
+	SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
 
-#ifdef HAIKU_DISTRO_COMPATIBILITY_OFFICIAL
-	rgb_color bgColor = ui_color(B_DOCUMENT_BACKGROUND_COLOR);
+	// The air/OS logo is vector data: it needs no PNG translator (arm64
+	// has none) and follows the font size. It is 64 units wide, 21 tall.
+	fLogo = NULL;
+	const char* name = ui_color(B_DOCUMENT_BACKGROUND_COLOR).IsLight()
+		? "airos_logo" : "airos_logo_dark";
+	size_t size;
+	const void* data = BApplication::AppResources()->LoadResource(
+		B_VECTOR_ICON_TYPE, name, &size);
+	if (data == NULL)
+		return;
 
-	if (bgColor.IsLight())
-		fLogo = BTranslationUtils::GetBitmap(B_PNG_FORMAT, "logo.png");
-	else
-		fLogo = BTranslationUtils::GetBitmap(B_PNG_FORMAT, "logo_dark.png");
-#else
-	fLogo = BTranslationUtils::GetBitmap(B_PNG_FORMAT, "walter_logo.png");
-#endif
+	float width = roundf(be_plain_font->Size() * 17);
+	float height = ceilf(width * 21 / 64);
+	fLogo = new(std::nothrow) BBitmap(BRect(0, 0, width - 1, height - 1),
+		B_RGBA32);
+	if (fLogo != NULL && (fLogo->InitCheck() != B_OK
+			|| BIconUtils::GetVectorIcon((const uint8*)data, size, fLogo)
+				!= B_OK)) {
+		delete fLogo;
+		fLogo = NULL;
+	}
 }
 
 
@@ -178,6 +193,7 @@ InstallerWindow::InstallerWindow()
 	fDriveSetupLaunched(false),
 	fBootManagerLaunched(false),
 	fInstallStatus(kReadyForInstall),
+	fWholeDiskInstall(false),
 	fWorkerThread(new WorkerThread(this)),
 	fCopyEngineCancelSemaphore(-1)
 {
@@ -356,6 +372,11 @@ InstallerWindow::MessageReceived(BMessage *msg)
 					B_TRANSLATE("An error was encountered and the "
 					"installation was not completed:\n\n"
 					"Error:  %s"), strerror(error));
+				const char* context;
+				if (msg->FindString("context", &context) == B_OK) {
+					strlcat(errorMessage, "\n\n", sizeof(errorMessage));
+					strlcat(errorMessage, context, sizeof(errorMessage));
+				}
 				BAlert* alert = new BAlert("error", errorMessage, B_TRANSLATE("OK"));
 				alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);
 				alert->Go();
@@ -378,11 +399,20 @@ InstallerWindow::MessageReceived(BMessage *msg)
 				{
 					// get source and target
 					PartitionMenuItem* targetItem
-						= (PartitionMenuItem*)fDestMenu->FindMarked();
+						= dynamic_cast<PartitionMenuItem*>(
+							fDestMenu->FindMarked());
 					PartitionMenuItem* srcItem
-						= (PartitionMenuItem*)fSrcMenu->FindMarked();
+						= dynamic_cast<PartitionMenuItem*>(
+							fSrcMenu->FindMarked());
 					if (srcItem == NULL || targetItem == NULL)
 						break;
+
+					// erasing a disk needs the user's explicit agreement
+					if (targetItem->IsWholeDisk()
+						&& !_ConfirmEraseDisk(targetItem)) {
+						break;
+					}
+					fWholeDiskInstall = targetItem->IsWholeDisk();
 
 					_SetCopyEngineCancelSemaphore(create_sem(1,
 						"copy engine cancel"));
@@ -395,7 +425,7 @@ InstallerWindow::MessageReceived(BMessage *msg)
 					fWorkerThread->SetSpaceRequired(size);
 					fInstallStatus = kInstalling;
 					fWorkerThread->StartInstall(srcItem->ID(),
-						targetItem->ID());
+						targetItem->ID(), fWholeDiskInstall);
 					fBeginButton->SetLabel(B_TRANSLATE("Stop"));
 					_DisableInterface(true);
 
@@ -504,10 +534,29 @@ InstallerWindow::MessageReceived(BMessage *msg)
 			_SetCopyEngineCancelSemaphore(-1);
 
 			PartitionMenuItem* dstItem
-				= (PartitionMenuItem*)fDestMenu->FindMarked();
+				= dynamic_cast<PartitionMenuItem*>(fDestMenu->FindMarked());
 
 			BString status;
-			if (be_roster->IsRunning(kDeskbarSignature)) {
+			if (fWholeDiskInstall) {
+				BString text;
+				if (be_roster->IsRunning(kDeskbarSignature)) {
+					fBeginButton->SetLabel(B_TRANSLATE("Quit"));
+					text = B_TRANSLATE("Installation completed. air/OS is "
+						"installed on '%disk%', which is set up to start with "
+						"UEFI. Press 'Quit' to leave the %appname%.");
+				} else {
+					fBeginButton->SetLabel(B_TRANSLATE("Restart"));
+					text = B_TRANSLATE("Installation completed. air/OS is "
+						"installed on '%disk%', which is set up to start with "
+						"UEFI. Remove the installation medium, then press "
+						"'Restart' to start air/OS.");
+				}
+				text.ReplaceFirst("%appname%",
+					B_TRANSLATE_SYSTEM_NAME("Installer"));
+				text.ReplaceFirst("%disk%", dstItem ? dstItem->Name()
+					: B_TRANSLATE_COMMENT("???", "Unknown disk name"));
+				status = text;
+			} else if (be_roster->IsRunning(kDeskbarSignature)) {
 				fBeginButton->SetLabel(B_TRANSLATE("Quit"));
 
 				BString text(B_TRANSLATE("Installation "
@@ -791,25 +840,49 @@ InstallerWindow::_UpdateControls()
 	}
 	fSrcMenuField->MenuItem()->SetLabel(label.String());
 
+	// The disk the source is on cannot be erased.
+	partition_id sourceDiskID = -1;
+	if (srcItem != NULL) {
+		BDiskDeviceRoster roster;
+		BDiskDevice device;
+		BPartition* partition;
+		if (roster.GetPartitionWithID(srcItem->ID(), &device, &partition)
+				== B_OK
+			|| roster.GetDeviceWithID(srcItem->ID(), &device) == B_OK) {
+			sourceDiskID = device.ID();
+		}
+	}
+
 	// Disable any unsuitable target items, check if at least one partition
-	// is suitable.
+	// or disk is suitable.
 	bool foundOneSuitableTarget = false;
+	bool foundSuitableDisk = false;
 	for (int32 i = fDestMenu->CountItems() - 1; i >= 0; i--) {
 		PartitionMenuItem* dstItem
-			= (PartitionMenuItem*)fDestMenu->ItemAt(i);
-		if (srcItem != NULL && dstItem->ID() == srcItem->ID()) {
+			= dynamic_cast<PartitionMenuItem*>(fDestMenu->ItemAt(i));
+		if (dstItem == NULL) {
+			// a heading or a separator
+			continue;
+		}
+		bool holdsSource = srcItem != NULL && (dstItem->IsWholeDisk()
+			? dstItem->ID() == sourceDiskID : dstItem->ID() == srcItem->ID());
+		if (holdsSource) {
 			// Prevent the user from having picked the same partition as source
-			// and destination.
+			// and destination, or the disk the source is on.
 			dstItem->SetEnabled(false);
 			dstItem->SetMarked(false);
 		} else
 			dstItem->SetEnabled(dstItem->IsValidTarget());
 
-		if (dstItem->IsEnabled())
+		if (dstItem->IsEnabled()) {
 			foundOneSuitableTarget = true;
+			if (dstItem->IsWholeDisk())
+				foundSuitableDisk = true;
+		}
 	}
 
-	PartitionMenuItem* dstItem = (PartitionMenuItem*)fDestMenu->FindMarked();
+	PartitionMenuItem* dstItem
+		= dynamic_cast<PartitionMenuItem*>(fDestMenu->FindMarked());
 	if (dstItem) {
 		label = dstItem->MenuLabel();
 	} else {
@@ -821,9 +894,20 @@ InstallerWindow::_UpdateControls()
 	fDestMenuField->MenuItem()->SetLabel(label.String());
 
 	BString statusText;
-	if (srcItem != NULL && dstItem != NULL) {
+	if (srcItem != NULL && dstItem != NULL && dstItem->IsWholeDisk()) {
+		statusText = B_TRANSLATE("Press the 'Begin' button to erase "
+			"'%disk%' and install from '%source%' onto it. Everything on "
+			"this disk will be lost.");
+		statusText.ReplaceFirst("%disk%", dstItem->Name());
+		statusText.ReplaceFirst("%source%", srcItem->Name());
+	} else if (srcItem != NULL && dstItem != NULL) {
 		statusText.SetToFormat(B_TRANSLATE("Press the 'Begin' button to install "
 			"from '%1s' onto '%2s'."), srcItem->Name(), dstItem->Name());
+	} else if (srcItem != NULL && foundSuitableDisk) {
+		statusText = B_TRANSLATE("Choose where to install from the 'Onto:' "
+			"menu. A whole disk is erased and set up to start with UEFI; to "
+			"keep what is on a disk, choose one of its partitions instead. "
+			"Then click 'Begin'.");
 	} else if (srcItem != NULL) {
 		BString partitionRequiredHaiku = B_TRANSLATE(
 			"Haiku has to be installed on a partition that uses "
@@ -865,14 +949,14 @@ InstallerWindow::_UpdateControls()
 	fBeginButton->SetEnabled(srcItem && dstItem);
 
 	// adjust "Write Boot Sector" and "Set up boot menu" buttons
-	if (dstItem != NULL) {
+	if (dstItem != NULL && !dstItem->IsWholeDisk()) {
 		char buffer[256];
 		snprintf(buffer, sizeof(buffer), B_TRANSLATE("Write boot sector to '%s'"),
 			dstItem->Name());
 		label = buffer;
 	} else
 		label = B_TRANSLATE("Write boot sector");
-	fMakeBootableItem->SetEnabled(dstItem != NULL);
+	fMakeBootableItem->SetEnabled(dstItem != NULL && !dstItem->IsWholeDisk());
 	fMakeBootableItem->SetLabel(label.String());
 // TODO: Once bootman support writing to specific disks, enable this, since
 // we would pass it the disk which contains the target partition.
@@ -923,6 +1007,27 @@ InstallerWindow::_PublishPackages()
 
 	fPackagesView->AddPackages(packages, new BMessage(PACKAGE_CHECKBOX));
 	PostMessage(PACKAGE_CHECKBOX);
+}
+
+
+bool
+InstallerWindow::_ConfirmEraseDisk(PartitionMenuItem* item)
+{
+	BString text(B_TRANSLATE("All data on '%disk%' will be erased!\n\n"
+		"The %appname% deletes everything on this disk, sets it up to start "
+		"with UEFI, and installs air/OS onto it. This cannot be undone.\n\n"
+		"%details%\n\n"
+		"Do you want to erase this disk?"));
+	text.ReplaceFirst("%disk%", item->Name());
+	text.ReplaceFirst("%appname%", B_TRANSLATE_SYSTEM_NAME("Installer"));
+	text.ReplaceFirst("%details%", item->Label());
+
+	// Cancel is the default: the Enter key must not erase a disk.
+	BAlert* alert = new BAlert(B_TRANSLATE("Erase disk"), text.String(),
+		B_TRANSLATE("Erase disk and install"), B_TRANSLATE("Cancel"), NULL,
+		B_WIDTH_AS_USUAL, B_OFFSET_SPACING, B_STOP_ALERT);
+	alert->SetShortcut(1, B_ESCAPE);
+	return alert->Go() == 0;
 }
 
 

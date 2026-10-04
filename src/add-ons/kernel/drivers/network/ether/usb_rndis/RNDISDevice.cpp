@@ -4,13 +4,16 @@
 	Distributed under the terms of the MIT license.
 */
 
+#include <ByteOrder.h>
 #include <ether_driver.h>
+#include <ethernet.h>
 #include <net/if_media.h>
 #include <sys/sockio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "RNDISDevice.h"
+#include "RNDISPacket.h"
 #include "Driver.h"
 
 #include <drivers/usb/USB_misc.h>
@@ -69,7 +72,8 @@ RNDISDevice::RNDISDevice(usb_device device)
 	:	fStatus(B_ERROR),
 		fOpen(false),
 		fRemoved(false),
-		fInsideNotify(0),
+		fNotifyRunning(0),
+		fNotifyThread(-1),
 		fDevice(device),
 		fDataInterfaceIndex(0),
 		fMaxSegmentSize(0),
@@ -80,6 +84,9 @@ RNDISDevice::RNDISDevice(usb_device device)
 		fNotifyWriteSem(-1),
 		fLockWriteSem(-1),
 		fNotifyControlSem(-1),
+		fNotifyCompleteSem(-1),
+		fNotifyStatus(B_OK),
+		fNotifyActualLength(0),
 		fNotifyBuffer(NULL),
 		fNotifyBufferLength(0),
 		fReadHeader(NULL),
@@ -87,6 +94,8 @@ RNDISDevice::RNDISDevice(usb_device device)
 		fMediaConnectState(MEDIA_STATE_UNKNOWN),
 		fDownstreamSpeed(0)
 {
+	mutex_init(&fNotifyLock, DRIVER_NAME "_notify");
+
 	const usb_device_descriptor *deviceDescriptor
 		= gUSBModule->get_device_descriptor(device);
 
@@ -122,6 +131,12 @@ RNDISDevice::RNDISDevice(usb_device device)
 		return;
 	}
 
+	fNotifyCompleteSem = create_sem(0, DRIVER_NAME "_notify_complete");
+	if (fNotifyCompleteSem < B_OK) {
+		TRACE_ALWAYS("failed to create notification completion sem\n");
+		return;
+	}
+
 	if (_SetupDevice() != B_OK) {
 		TRACE_ALWAYS("failed to setup device\n");
 		return;
@@ -133,6 +148,9 @@ RNDISDevice::RNDISDevice(usb_device device)
 
 RNDISDevice::~RNDISDevice()
 {
+	_StopNotifications();
+	mutex_destroy(&fNotifyLock);
+
 	if (fNotifyReadSem >= B_OK)
 		delete_sem(fNotifyReadSem);
 	if (fNotifyWriteSem >= B_OK)
@@ -141,9 +159,9 @@ RNDISDevice::~RNDISDevice()
 		delete_sem(fLockWriteSem);
 	if (fNotifyControlSem >= B_OK)
 		delete_sem(fNotifyControlSem);
+	if (fNotifyCompleteSem >= B_OK)
+		delete_sem(fNotifyCompleteSem);
 
-	if (!fRemoved)
-		gUSBModule->cancel_queued_transfers(fNotifyEndpoint);
 	free(fNotifyBuffer);
 }
 
@@ -182,38 +200,48 @@ RNDISDevice::Open()
 		return B_ERROR;
 	}
 
-	if (gUSBModule->queue_interrupt(fNotifyEndpoint, fNotifyBuffer,
-		fNotifyBufferLength, _NotifyCallback, this) != B_OK) {
-		TRACE_ALWAYS("failed to setup notification interrupt\n");
-		return B_ERROR;
+	fReadHeader = NULL;
+
+	// A failed open may leave a notification count from a previous command.
+	while (acquire_sem_etc(fNotifyControlSem, 1, B_RELATIVE_TIMEOUT, 0) == B_OK) {
 	}
 
-	status_t status = _RNDISInitialize();
-	if (status != B_OK) {
-		TRACE_ALWAYS("failed to initialize RNDIS device\n");
+	status_t status = _StartNotifications();
+	if (status != B_OK)
 		return status;
+
+	status = _RNDISInitialize();
+	if (status != B_OK) {
+		TRACE_ALWAYS("failed to initialize RNDIS device: %s\n", strerror(status));
+		goto failed;
 	}
 
 	status = _ReadMACAddress(fDevice, fMACAddress);
 	if (status != B_OK) {
 		TRACE_ALWAYS("failed to read mac address\n");
-		return status;
+		goto failed;
 	}
 
-	// TODO these are non-fatal but make sure we have sane defaults for them
 	status = _ReadMaxSegmentSize(fDevice);
 	if (status != B_OK) {
-		TRACE_ALWAYS("failed to read fragment size\n");
+		TRACE_ALWAYS("failed to read a usable frame size\n");
+		goto failed;
 	}
 
 	status = _ReadMediaState(fDevice);
 	if (status != B_OK) {
+		// A timed-out or interrupted request may still have a pending reply.
+		// Do not mistake that reply for the next command's response.
+		if (status == B_TIMED_OUT || status == B_INTERRUPTED)
+			goto failed;
 		fMediaConnectState = MEDIA_STATE_CONNECTED;
 		TRACE_ALWAYS("failed to read media state\n");
 	}
 
 	status = _ReadLinkSpeed(fDevice);
 	if (status != B_OK) {
+		if (status == B_TIMED_OUT || status == B_INTERRUPTED)
+			goto failed;
 		fDownstreamSpeed = 1000 * 100; // 10Mbps
 		TRACE_ALWAYS("failed to read link speed\n");
 	}
@@ -223,8 +251,13 @@ RNDISDevice::Open()
 	TRACE("Initialization result: %s\n", strerror(status));
 
 	// the device should now be ready
-	if (status == B_OK)
-		fOpen = true;
+	if (status != B_OK)
+		goto failed;
+	fOpen = true;
+	return B_OK;
+
+failed:
+	_StopNotifications();
 	return status;
 }
 
@@ -233,17 +266,15 @@ status_t
 RNDISDevice::Close()
 {
 	if (fRemoved) {
-		fOpen = false;
 		return B_OK;
 	}
 
 	// TODO tell the device to disconnect?
 
-	gUSBModule->cancel_queued_transfers(fNotifyEndpoint);
+	_StopNotifications();
 	gUSBModule->cancel_queued_transfers(fReadEndpoint);
 	gUSBModule->cancel_queued_transfers(fWriteEndpoint);
 
-	fOpen = false;
 	return B_OK;
 }
 
@@ -251,6 +282,9 @@ RNDISDevice::Close()
 status_t
 RNDISDevice::Free()
 {
+	// Removal must retain the USB cookie until the final handle is freed,
+	// including the interval after Close() has stopped its transfers.
+	fOpen = false;
 	return B_OK;
 }
 
@@ -258,9 +292,10 @@ RNDISDevice::Free()
 status_t
 RNDISDevice::Read(uint8 *buffer, size_t *numBytes)
 {
+	const size_t capacity = *numBytes;
+	*numBytes = 0;
 	if (fRemoved) {
 		TRACE("Reading, but device is removed\n");
-		*numBytes = 0;
 		return B_DEVICE_NOT_FOUND;
 	}
 
@@ -275,7 +310,6 @@ RNDISDevice::Read(uint8 *buffer, size_t *numBytes)
 		if (result != B_OK) {
 			TRACE_ALWAYS("failed to schedule read transfer: %s\n", strerror(result));
 			fReadHeader = NULL;
-			*numBytes = 0;
 			return result;
 		}
 
@@ -283,7 +317,6 @@ RNDISDevice::Read(uint8 *buffer, size_t *numBytes)
 		if (result < B_OK) {
 			TRACE_ALWAYS("error while waiting for frame: %s\n", strerror(result));
 			fReadHeader = NULL;
-			*numBytes = 0;
 			return result;
 		}
 
@@ -291,75 +324,45 @@ RNDISDevice::Read(uint8 *buffer, size_t *numBytes)
 			TRACE_ALWAYS("request was cancelled: %s\n", strerror(result));
 			// The transfer was canceled, so no data was actually received.
 			fReadHeader = NULL;
-			*numBytes = 0;
 			return fStatusRead;
 		}
 
-		if ((fStatusRead != B_OK) && !fRemoved) {
-			// In other error cases (triggered by the device), we need to clear the "halt" feature
-			// so that the next transfers will work.
-			TRACE_ALWAYS("device read status error: %s\n", strerror(fStatusRead));
+		if (fStatusRead != B_OK) {
+			const status_t status = fStatusRead;
+			TRACE_ALWAYS("device read status error: %s\n", strerror(status));
 
-			gUSBModule->cancel_queued_transfers(fReadEndpoint);
-
-			result = gUSBModule->clear_feature(fReadEndpoint, USB_FEATURE_ENDPOINT_HALT);
-			if (result != B_OK) {
-				TRACE_ALWAYS("failed to clear halt state on read\n");
+			// A transaction error does not imply an endpoint STALL. Reset
+			// the halt/data toggle only when the endpoint actually stalled.
+			if (status == B_DEV_STALLED && !fRemoved) {
+				gUSBModule->cancel_queued_transfers(fReadEndpoint);
+				result = gUSBModule->clear_feature(fReadEndpoint, USB_FEATURE_ENDPOINT_HALT);
+				if (result != B_OK)
+					TRACE_ALWAYS("failed to clear halt state on read\n");
 			}
 			fReadHeader = NULL;
-			*numBytes = 0;
-			return fStatusRead;
+			return status;
 		}
-		fReadHeader = (uint32*)fReadBuffer;
+		if (fActualLengthRead > sizeof(fReadBuffer))
+			return B_BAD_DATA;
+		fReadHeader = fReadBuffer;
 	} else {
 		TRACE("Returning buffered packet\n");
 	}
 
-	if (fReadHeader[0] != REMOTE_NDIS_PACKET_MSG) {
-		TRACE_ALWAYS("Received unexpected packet type %08" B_PRIx32 " on data link\n",
-			fReadHeader[0]);
-		*numBytes = 0;
+	const size_t remaining = fActualLengthRead - (fReadHeader - fReadBuffer);
+	size_t messageLength;
+	if (!rndis_extract_packet(fReadHeader, remaining, buffer, capacity,
+			messageLength, *numBytes)) {
+		TRACE_ALWAYS("Invalid RNDIS packet or insufficient receive capacity\n");
 		fReadHeader = NULL;
-		return B_BAD_VALUE;
+		return B_BAD_DATA;
 	}
-
-	if (fReadHeader[1] + ((uint8*)fReadHeader - fReadBuffer) > fActualLengthRead) {
-		TRACE_ALWAYS("Received frame at %ld length %08" B_PRIx32 " out of bounds of receive buffer"
-			"%08" B_PRIx32 "\n", (uint8*) fReadHeader - fReadBuffer, fReadHeader[1],
-			fActualLengthRead);
-	}
-
-	if (fReadHeader[2] + fReadHeader[3] > fReadHeader[1]) {
-		TRACE_ALWAYS("Received frame data goes past end of frame: %" B_PRIu32 " + %" B_PRIu32
-			" > %" B_PRIu32, fReadHeader[2], fReadHeader[3], fReadHeader[1]);
-	}
-
-	if (fReadHeader[4] != 0 || fReadHeader[5] != 0 || fReadHeader[6] != 0) {
-		TRACE_ALWAYS("Received frame has out of band data: off %08" B_PRIx32 " len %08" B_PRIx32
-			" count %08" B_PRIx32 "\n", fReadHeader[4], fReadHeader[5], fReadHeader[6]);
-	}
-
-	if (fReadHeader[7] != 0 || fReadHeader[8] != 0) {
-		TRACE_ALWAYS("Received frame has per-packet info: off %08" B_PRIx32 " len %08" B_PRIx32
-			"\n", fReadHeader[7], fReadHeader[8]);
-	}
-
-	if (fReadHeader[9] != 0) {
-		TRACE_ALWAYS("Received frame has non-0 reserved field %08" B_PRIx32 "\n", fReadHeader[9]);
-	}
-
-	*numBytes = fReadHeader[3];
-	int offset = fReadHeader[2] + 2 * sizeof(uint32);
-	memcpy(buffer, (uint8*)fReadHeader + offset, fReadHeader[3]);
-
-	TRACE("Received data packet len %08" B_PRIx32 " data [off %08" B_PRIx32 " len %08" B_PRIx32 "]\n",
-		fReadHeader[1], fReadHeader[2], fReadHeader[3]);
 
 	// Advance to next packet
-	fReadHeader = (uint32*)((uint8*)fReadHeader + fReadHeader[1]);
+	fReadHeader += messageLength;
 
 	// Are we past the end of the buffer? If so, prepare to receive another one on the next read
-	if ((uint32)((uint8*)fReadHeader - fReadBuffer) >= fActualLengthRead)
+	if (messageLength == remaining)
 		fReadHeader = NULL;
 
 	return B_OK;
@@ -389,67 +392,65 @@ private:
 status_t
 RNDISDevice::Write(const uint8 *buffer, size_t *numBytes)
 {
-	if (fRemoved) {
-		*numBytes = 0;
+	const size_t length = *numBytes;
+	*numBytes = 0;
+	if (fRemoved)
 		return B_DEVICE_NOT_FOUND;
-	}
 
 	iovec vec[2];
 
 	uint32 header[11] = { 0 };
 	header[0] = REMOTE_NDIS_PACKET_MSG;
-	header[1] = *numBytes + sizeof(header);
+	header[1] = length + sizeof(header);
 	header[2] = 0x24;
-	header[3] = *numBytes;
+	header[3] = length;
 
 	vec[0].iov_base = &header;
 	vec[0].iov_len = sizeof(header);
 
 	vec[1].iov_base = (void*)buffer;
-	vec[1].iov_len = *numBytes;
+	vec[1].iov_len = length;
 
 	SemLocker mutex(fLockWriteSem);
 	status_t result = mutex.fStatus;
-	if (result < B_OK) {
-		*numBytes = 0;
+	if (result < B_OK)
 		return result;
-	}
 
 	result = gUSBModule->queue_bulk_v(fWriteEndpoint, vec, 2, _WriteCallback, this);
-	if (result != B_OK) {
-		*numBytes = 0;
+	if (result != B_OK)
 		return result;
-	}
 
 	do {
 		result = acquire_sem_etc(fNotifyWriteSem, 1, B_CAN_INTERRUPT, 0);
 	} while (result == B_INTERRUPTED);
 
-	if (result < B_OK) {
-		*numBytes = 0;
+	if (result < B_OK)
 		return result;
-	}
 
 	if (fStatusWrite == B_CANCELED) {
 		// The transfer was canceled, so no data was actually sent.
-		*numBytes = 0;
 		return fStatusWrite;
 	}
 
-	if ((fStatusWrite != B_OK) && !fRemoved) {
-		TRACE_ALWAYS("device write status error 0x%08" B_PRIx32 "\n", fStatusWrite);
+	if (fStatusWrite != B_OK) {
+		const status_t status = fStatusWrite;
+		TRACE_ALWAYS("device write status error 0x%08" B_PRIx32 "\n", status);
 
-		gUSBModule->cancel_queued_transfers(fWriteEndpoint);
-
-		result = gUSBModule->clear_feature(fWriteEndpoint, USB_FEATURE_ENDPOINT_HALT);
-		if (result != B_OK) {
-			TRACE_ALWAYS("failed to clear halt state on write\n");
-			*numBytes = 0;
-			return result;
+		if (status == B_DEV_STALLED && !fRemoved) {
+			gUSBModule->cancel_queued_transfers(fWriteEndpoint);
+			result = gUSBModule->clear_feature(fWriteEndpoint, USB_FEATURE_ENDPOINT_HALT);
+			if (result != B_OK)
+				TRACE_ALWAYS("failed to clear halt state on write\n");
 		}
+		// Clearing a halt prepares the next transfer; this one still failed.
+		return status;
 	}
 
-	*numBytes = fActualLengthWrite;
+	if (fActualLengthWrite != sizeof(header) + length)
+		return B_IO_ERROR;
+
+	// The caller supplied an Ethernet frame, without the USB/RNDIS header.
+	*numBytes = length;
 
 	return B_OK;
 }
@@ -513,16 +514,7 @@ RNDISDevice::Removed()
 	fMediaConnectState = MEDIA_STATE_DISCONNECTED;
 	fDownstreamSpeed = 0;
 
-	// the notify hook is different from the read and write hooks as it does
-	// itself schedule traffic (while the other hooks only release a semaphore
-	// to notify another thread which in turn safly checks for the removed
-	// case) - so we must ensure that we are not inside the notify hook anymore
-	// before returning, as we would otherwise violate the promise not to use
-	// any of the pipes after returning from the removed hook
-	while (atomic_add(&fInsideNotify, 0) != 0)
-		snooze(100);
-
-	gUSBModule->cancel_queued_transfers(fNotifyEndpoint);
+	_StopNotifications();
 	gUSBModule->cancel_queued_transfers(fReadEndpoint);
 	gUSBModule->cancel_queued_transfers(fWriteEndpoint);
 
@@ -550,6 +542,19 @@ RNDISDevice::_ReadResponse(void* data, size_t length)
 
 
 status_t
+RNDISDevice::_WaitForControlResponse()
+{
+	// A missing interrupt must not leave the network server stuck in open()
+	// while the driver lock also prevents device removal from completing.
+	status_t status = acquire_sem_etc(fNotifyControlSem, 1,
+		B_CAN_INTERRUPT | B_RELATIVE_TIMEOUT, 5000000);
+	if (status != B_OK)
+		TRACE_ALWAYS("control response wait failed: %s\n", strerror(status));
+	return status;
+}
+
+
+status_t
 RNDISDevice::_RNDISInitialize()
 {
 	uint32 request[] = {
@@ -562,8 +567,12 @@ RNDISDevice::_RNDISInitialize()
 
 	status_t result = _SendCommand(request, sizeof(request));
 	TRACE("Send init command results in %s\n", strerror(result));
+	if (result != B_OK)
+		return result;
 
-	acquire_sem(fNotifyControlSem);
+	result = _WaitForControlResponse();
+	if (result != B_OK)
+		return result;
 
 	TRACE("Received notification after init command\n");
 
@@ -755,7 +764,9 @@ RNDISDevice::_GetOID(uint32 oid, void* buffer, size_t length)
 	if (result != B_OK)
 		return result;
 
-	acquire_sem(fNotifyControlSem);
+	result = _WaitForControlResponse();
+	if (result != B_OK)
+		return result;
 
 	uint8 response[length + 24] = {0};
 	result = _ReadResponse(response, length + 24);
@@ -791,12 +802,21 @@ RNDISDevice::_ReadMACAddress(usb_device device, uint8 *buffer)
 status_t
 RNDISDevice::_ReadMaxSegmentSize(usb_device device)
 {
-	status_t result = _GetOID(OID_GEN_MAXIMUM_FRAME_SIZE, &fMaxSegmentSize,
-		sizeof(fMaxSegmentSize));
+	uint32 maxPayloadSize;
+	status_t result = _GetOID(OID_GEN_MAXIMUM_FRAME_SIZE, &maxPayloadSize,
+		sizeof(maxPayloadSize));
 	if (result != B_OK)
 		return result;
 
-	TRACE_ALWAYS("max frame size: %" B_PRId32 "\n", fMaxSegmentSize);
+	// This OID excludes the Ethernet header, whereas ETHER_GETFRAMESIZE
+	// includes it. A complete message must fit into our USB receive buffer.
+	maxPayloadSize = B_LENDIAN_TO_HOST_INT32(maxPayloadSize);
+	if (maxPayloadSize == 0 || maxPayloadSize > sizeof(fReadBuffer)
+			- kRNDISPacketHeaderSize - ETHER_HEADER_LENGTH) {
+		return B_BAD_DATA;
+	}
+	fMaxSegmentSize = maxPayloadSize + ETHER_HEADER_LENGTH;
+	TRACE_ALWAYS("max Ethernet frame size: %" B_PRIu32 "\n", fMaxSegmentSize);
 	return B_OK;
 }
 
@@ -849,7 +869,9 @@ RNDISDevice::_EnableBroadcast(usb_device device)
 		return result;
 	}
 
-	acquire_sem(fNotifyControlSem);
+	result = _WaitForControlResponse();
+	if (result != B_OK)
+		return result;
 
 	uint32 response[4];
 	result = _ReadResponse(response, 4 * sizeof(uint32));
@@ -908,33 +930,107 @@ RNDISDevice::_NotifyCallback(void *cookie, int32 status, void *_data,
 	size_t actualLength)
 {
 	RNDISDevice *device = (RNDISDevice *)cookie;
-	atomic_add(&device->fInsideNotify, 1);
-	if (status == B_CANCELED || device->fRemoved) {
-		atomic_add(&device->fInsideNotify, -1);
-		return;
+	device->fNotifyStatus = status;
+	device->fNotifyActualLength = actualLength;
+	release_sem_etc(device->fNotifyCompleteSem, 1, B_DO_NOT_RESCHEDULE);
+}
+
+
+status_t
+RNDISDevice::_StartNotifications()
+{
+	while (acquire_sem_etc(fNotifyCompleteSem, 1, B_RELATIVE_TIMEOUT, 0) == B_OK) {
 	}
 
+	fNotifyThread = spawn_kernel_thread(_NotifyThread, DRIVER_NAME "_notify",
+		B_NORMAL_PRIORITY, this);
+	if (fNotifyThread < B_OK)
+		return fNotifyThread;
+
+	atomic_set(&fNotifyRunning, 1);
+	status_t status = resume_thread(fNotifyThread);
 	if (status != B_OK) {
-		TRACE_ALWAYS("device notify status error 0x%08" B_PRIx32 "\n", status);
-
-		if (gUSBModule->clear_feature(device->fNotifyEndpoint,
-			USB_FEATURE_ENDPOINT_HALT) != B_OK)
-			TRACE_ALWAYS("failed to clear halt state in notify hook\n");
-	} else if (actualLength != 8) {
-		TRACE_ALWAYS("Received notification with unexpected number of bytes %" B_PRIuSIZE "\n",
-			actualLength);
-	} else {
-#ifdef TRACE_RNDIS
-		uint32* data = (uint32*)_data;
-		uint32 notification = data[0];
-		uint32 reserved = data[1];
-		TRACE("Received notification %" B_PRIx32 " %" B_PRIx32 "\n", notification, reserved);
-#endif
-		release_sem_etc(device->fNotifyControlSem, 1, B_DO_NOT_RESCHEDULE);
+		atomic_set(&fNotifyRunning, 0);
+		kill_thread(fNotifyThread);
+		fNotifyThread = -1;
 	}
+	return status;
+}
 
-	// schedule next notification buffer
-	gUSBModule->queue_interrupt(device->fNotifyEndpoint, device->fNotifyBuffer,
-		device->fNotifyBufferLength, _NotifyCallback, device);
-	atomic_add(&device->fInsideNotify, -1);
+
+void
+RNDISDevice::_StopNotifications()
+{
+	if (fNotifyThread < B_OK)
+		return;
+
+	// Serialize cancel with queueing so the worker cannot submit another
+	// notification after its last pending request has been canceled.
+	mutex_lock(&fNotifyLock);
+	atomic_set(&fNotifyRunning, 0);
+	gUSBModule->cancel_queued_transfers(fNotifyEndpoint);
+	mutex_unlock(&fNotifyLock);
+
+	status_t result;
+	wait_for_thread(fNotifyThread, &result);
+	fNotifyThread = -1;
+}
+
+
+int32
+RNDISDevice::_NotifyThread(void *cookie)
+{
+	((RNDISDevice*)cookie)->_ProcessNotifications();
+	return B_OK;
+}
+
+
+void
+RNDISDevice::_ProcessNotifications()
+{
+	while (atomic_get(&fNotifyRunning) != 0) {
+		mutex_lock(&fNotifyLock);
+		if (atomic_get(&fNotifyRunning) == 0) {
+			mutex_unlock(&fNotifyLock);
+			break;
+		}
+		status_t status = gUSBModule->queue_interrupt(fNotifyEndpoint,
+			fNotifyBuffer, fNotifyBufferLength, _NotifyCallback, this);
+		mutex_unlock(&fNotifyLock);
+		if (status != B_OK) {
+			TRACE_ALWAYS("failed to queue notification interrupt: %s\n",
+				strerror(status));
+			break;
+		}
+
+		do {
+			status = acquire_sem(fNotifyCompleteSem);
+		} while (status == B_INTERRUPTED);
+		if (status != B_OK || atomic_get(&fNotifyRunning) == 0
+			|| fNotifyStatus == B_CANCELED) {
+			break;
+		}
+
+		if (fNotifyStatus != B_OK) {
+			TRACE_ALWAYS("device notify status error 0x%08" B_PRIx32 "\n",
+				fNotifyStatus);
+			// clear_feature waits for USB completion; it must never run in
+			// the USB completion callback. Only STALL resets the data toggle.
+			if (fNotifyStatus == B_DEV_STALLED) {
+				status = gUSBModule->clear_feature(fNotifyEndpoint,
+					USB_FEATURE_ENDPOINT_HALT);
+				if (status != B_OK) {
+					TRACE_ALWAYS("failed to clear notification halt: %s\n",
+						strerror(status));
+				}
+			}
+			// Bound retries while a failed device awaits removal.
+			snooze(100000);
+		} else if (fNotifyActualLength != 8) {
+			TRACE_ALWAYS("Received notification with unexpected number of bytes %"
+				B_PRIuSIZE "\n", fNotifyActualLength);
+		} else {
+			release_sem(fNotifyControlSem);
+		}
+	}
 }

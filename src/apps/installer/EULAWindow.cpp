@@ -32,39 +32,18 @@ EULAWindow::EULAWindow()
 {
 	BString infoText;
 	infoText << B_TRANSLATE(
-		"Welcome to the Haiku Installer!\n\n");
+		"Welcome to the air/OS Installer!\n\n");
 	infoText << B_TRANSLATE(
-		"IMPORTANT INFORMATION BEFORE INSTALLING HAIKU\n\n");
+		"air/OS is beta software. Back up your data before you install "
+		"it.\n\n");
 	infoText << B_TRANSLATE(
-		"This is beta-quality software! It means there is a risk of "
-		"losing important data. Make frequent backups! You have been "
-		"warned.\n\n\n");
+		"The easiest way is to give air/OS a whole disk: the Installer "
+		"erases it, sets it up to start with UEFI and installs air/OS. "
+		"Everything else on that disk is lost.\n\n");
 	infoText << B_TRANSLATE(
-		"1)   If you are installing Haiku onto real hardware (not inside an "
-		"emulator), you may want to prepare a hard disk partition from "
-		"another OS (you could, for example, use a GParted Live-CD, which "
-		"can also resize existing partitions to make room).\n"
-		"You can also set up partitions by launching DriveSetup from "
-		"Installer, but you won't be able to resize existing partitions with "
-		"it. While DriveSetup has been quite thoroughly tested over the "
-		"years, it's recommended to have up-to-date backups of the other "
-		"partitions on your system. Just in case" B_UTF8_ELLIPSIS);
-	infoText << "\n\n\n";
-	infoText << B_TRANSLATE(
-		"2)   The Installer will make the Haiku partition itself bootable, "
-		"but takes no steps to integrate Haiku into an existing boot menu. "
-		"If you have GRUB already installed, you can add Haiku to it.\n"
-		"For details, please consult the guide on booting Haiku on our "
-		"website at https://www.haiku-os.org/guides/booting.\n"
-		"Or you can set up a boot menu from Installer's \"Tools\" menu, see "
-		"the Haiku User Guide's topic on the application \"BootManager\"."
-		"\n\n\n");
-	infoText << B_TRANSLATE(
-		"3)   When you successfully boot into Haiku for the first time, make "
-		"sure to read our \"User Guide\" and take the \"Quick Tour\". There "
-		"are links on the Desktop and in WebPositive's bookmarks.\n\n");
-	infoText << B_TRANSLATE(
-		"Have fun and thanks for trying out Haiku!");
+		"To keep what is already on a disk, first set up a partition for "
+		"air/OS with \"Set up partitions" B_UTF8_ELLIPSIS "\" and install "
+		"onto that. You then have to set up booting from it yourself.");
 
 	BTextView* textView = new BTextView("eula", be_plain_font, NULL, B_WILL_DRAW);
 	textView->SetInsets(10, 10, 10, 10);
@@ -98,7 +77,7 @@ EULAWindow::EULAWindow()
 	font_height fontHeight;
 	be_plain_font->GetHeight(&fontHeight);
 	const float lineHeight = fontHeight.ascent + fontHeight.descent;
-	GetLayout()->SetExplicitSize(BSize(be_plain_font->StringWidth("M") * 60, lineHeight * 30));
+	GetLayout()->SetExplicitSize(BSize(be_plain_font->StringWidth("M") * 40, lineHeight * 18));
 	CenterOnScreen();
 	Show();
 }

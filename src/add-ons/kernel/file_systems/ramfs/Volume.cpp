@@ -221,6 +221,11 @@ Volume::Mount(uint32 flags)
 status_t
 Volume::Unmount()
 {
+	// Release the reference acquired when the root vnode was published. The
+	// VFS keeps this vnode alive until the filesystem's unmount hook runs.
+	if (fMounted)
+		PutVNode(fRootDirectory);
+
 	fMounted = false;
 	// delete the root directory
 	if (fRootDirectory) {

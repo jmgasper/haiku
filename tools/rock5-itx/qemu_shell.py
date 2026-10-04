@@ -15,6 +15,9 @@ import sys
 import time
 
 import lab
+import qemu_ahci
+import qemu_mmc
+import qemu_nvme
 import shell
 import shell_image
 
@@ -52,23 +55,105 @@ else:
             'sha256': hashlib.sha256(fixture).hexdigest()}
 
 
-def check_transfers(client, output, credentials, fixture):
+def check_transfers(client, output, credentials, fixture, address='10.0.2.100'):
     helper = '/boot/home/config/non-packaged/bin/rock5_file_transfer'
     token = fixture['token']
     path = '/boot/home/rock5-roundtrip.bin'
-    commands = (f'umask 077\n{helper} receive 10.0.2.100 9000 {token} {path}\n'
+    peer_returned = os.path.join(os.path.dirname(fixture['peer']), 'transfer-returned.bin')
+    if os.path.exists(peer_returned):
+        os.unlink(peer_returned)
+    # Installed images can retain fixtures from an earlier qualification run.
+    # Reset only these test files in this run's disposable QEMU overlay.
+    commands = (f'umask 077\nrm -f {path} /boot/home/rock5-partial.bin\n'
+                f'{helper} receive {address} 9000 {token} {path}\n'
                 f'actual=$(sha256sum {path})\n'
                 f'[ "${{actual%% *}}" = {fixture["sha256"]} ]\n'
-                f'{helper} send 10.0.2.100 9001 {token} {path}\n'
-                f'if {helper} receive 10.0.2.100 9002 {token} /boot/home/rock5-partial.bin; '
+                f'{helper} send {address} 9001 {token} {path}\n'
+                f'if {helper} receive {address} 9002 {token} /boot/home/rock5-partial.bin; '
                 'then exit 1; else rock5_partial=$?; [ "$rock5_partial" -eq 1 ]; fi\n'
                 'echo ROCK5_TRANSFER_CHECKS_PASS\n')
     shell.execute(client, commands, output / 'transfer.txt', credentials, timeout=180)
     returned = output / 'transfer-returned.bin'
-    if not returned.exists() or lab.digest(returned) != fixture['sha256']:
+    if not os.path.exists(peer_returned) or lab.digest(peer_returned) != fixture['sha256']:
         raise RuntimeError('Guest round-trip checksum differs from the fixture')
+    if os.path.abspath(peer_returned) != os.path.abspath(returned):
+        shutil.copyfile(peer_returned, returned)
     return {'bytes': fixture['bytes'], 'sha256': fixture['sha256'],
             'roundtrip': 'pass', 'truncated_transfer_rejected': True}
+
+
+def check_memcpy(client, output, credentials, manifest, phase):
+    expected = manifest['arm64_memcpy_test']
+    helper = '/boot/home/config/non-packaged/bin/rock5_memcpy_probe'
+    commands = (f'rock5_copy_hash=$(sha256sum {helper})\n'
+                f'[ "${{rock5_copy_hash%% *}}" = {expected["probe_sha256"]} ]\n'
+                'rock5_root_hash=$(sha256sum /boot/system/lib/libroot.so)\n'
+                f'[ "${{rock5_root_hash%% *}}" = {expected["libroot_sha256"]} ]\n'
+                f'{helper}\n')
+    transcript = output / ('memcpy-' + phase + '.txt')
+    shell.execute(client, commands, transcript, credentials, timeout=150)
+    if 'ROCK5_MEMCPY_PASS cases=51301 alignments=16 guarded_pages=yes' not in transcript.read_text():
+        raise RuntimeError('Missing actual memcpy alignment/page-boundary checks')
+    return {'status': 'pass', 'cases': 51301, 'transcript': str(transcript), **expected}
+
+
+def prepare_stream_peer(output):
+    binary = output / 'network-probe-peer'
+    source = lab.SOURCE / 'tools/rock5-itx/network_probe.cpp'
+    subprocess.run(['g++', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror',
+                    str(source), '-o', str(binary)], check=True, timeout=30)
+    return {'binary': str(binary), 'source_sha256': lab.digest(source),
+            'binary_sha256': lab.digest(binary), 'token': secrets.token_hex(32),
+            'bytes': 8 * 1024 * 1024 + 7, 'seed': 35880001}
+
+
+def check_network_stream(client, output, credentials, fixture, probe_hash):
+    helper = '/boot/home/config/non-packaged/bin/rock5_network_probe'
+    commands = (f'rock5_probe_hash=$(sha256sum {helper})\n'
+                f'[ "${{rock5_probe_hash%% *}}" = {probe_hash} ]\n')
+    for index, direction in enumerate(('receive', 'send')):
+        commands += (f'{helper} {direction} 10.240.7.100 {9010 + index} '
+                     f'{fixture["token"]} {fixture["bytes"]} {fixture["seed"] + index} '
+                     f'10.240.7.15 > /boot/home/rock5-stream-{index}.log 2>&1 &\n'
+                     f'rock5_stream_pid_{index}=$!\n')
+    commands += ('rock5_stream_status=0\n'
+                 'wait "$rock5_stream_pid_0" || rock5_stream_status=1\n'
+                 'wait "$rock5_stream_pid_1" || rock5_stream_status=1\n'
+                 'cat /boot/home/rock5-stream-0.log /boot/home/rock5-stream-1.log\n'
+                 '[ "$rock5_stream_status" -eq 0 ]\n'
+                 'echo ROCK5_NETWORK_STREAM_CHECKS_PASS\n')
+    transcript = output / 'network-stream.txt'
+    shell.execute(client, commands, transcript, credentials, timeout=180)
+    content = transcript.read_text()
+    for direction in ('receive', 'send'):
+        if f'ROCK5_NETWORK_PASS direction={direction} bytes={fixture["bytes"]} ' not in content:
+            raise RuntimeError('Missing checked network stream: ' + direction)
+    return {'status': 'pass', 'bytes_each_direction': fixture['bytes'],
+            'probe_sha256': probe_hash, 'transcript': str(transcript)}
+
+
+def check_pci_network(client, output, credentials, fixture, driver_hash, phase,
+                      stream_fixture=None, probe_hash=None):
+    evidence = output / 'pci-network' / phase
+    evidence.mkdir()
+    commands = (
+        'ifconfig /dev/net/ipro1000/0\n'
+        'rock5_nic_hash=$(sha256sum /boot/system/non-packaged/add-ons/kernel/drivers/bin/ipro1000)\n'
+        f'[ "${{rock5_nic_hash%% *}}" = {driver_hash} ]\n'
+        'echo ROCK5_PCI_NETWORK_DRIVER_HASH_PASS\n')
+    shell.execute(client, commands, evidence / 'interface.txt', credentials)
+    text = (evidence / 'interface.txt').read_text()
+    for expected in ('inet addr: 10.240.7.15', '52:54:00:35:88:01',
+                     'ROCK5_PCI_NETWORK_DRIVER_HASH_PASS'):
+        if expected not in text:
+            raise RuntimeError('Missing PCI network evidence: ' + expected)
+    transfer = check_transfers(client, evidence, credentials, fixture, '10.240.7.100')
+    result = {'status': 'pass', 'evidence': str(evidence), 'driver_sha256': driver_hash,
+              'interface': '/dev/net/ipro1000/0', 'file_transfer': transfer}
+    if stream_fixture is not None:
+        result['network_stream'] = check_network_stream(
+            client, evidence, credentials, stream_fixture, probe_hash)
+    return result
 
 
 def diagnose(output):
@@ -96,7 +181,7 @@ def diagnose(output):
                 {'type': 'btn', 'data': {'button': 'left', 'down': False}}]})
             time.sleep(3)
             codes = {' ': 'spc', '/': 'slash', '-': 'minus', '\n': 'ret'}
-            for command in ('ifconfig', 'netstat', 'ps', 'tail -60 /var/log/syslog',
+            for command in ('ifconfig', 'netstat -n', 'ps', 'tail -60 /var/log/syslog',
                             'cat /boot/system/settings/network/services'):
                 for character in command + ' > /dev/dprintf\n':
                     key(['shift', 'dot'] if character == '>' else [codes.get(character, character)])
@@ -104,15 +189,69 @@ def diagnose(output):
             lab.qmp_command(stream, 'screendump', {'filename': str(output / 'failure.ppm')})
 
 
+def check_pci_config(client, output, credentials, after_reboot=False):
+    name = 'pci-config-after-reboot.txt' if after_reboot else 'pci-config.txt'
+    transcript = output / name
+    shell.execute(client,
+                  '/boot/home/config/non-packaged/bin/rock5_pci_config_probe qemu\n',
+                  transcript, credentials, timeout=30)
+    if 'ROCK5_PCI_CONFIG_PASS profile=qemu functions=2' not in transcript.read_text():
+        raise RuntimeError('Missing read-only PCI configuration evidence')
+    return {'status': 'pass', 'functions': 2, 'transcript': str(transcript)}
+
+
 def run(manifest_path, el1=False, memory=False, power=False, normal=False, platform=False,
-        transfer=False, services=False):
+        transfer=False, services=False, cache=False, nvme=False, pci_config=False,
+        pci_network=False, network_stream=False, memcpy=False, ahci=False, mmc=False,
+        mmc_filesystem=False):
+    if mmc_filesystem and not mmc:
+        raise ValueError('MMC filesystem requires the MMC fixture')
+    if mmc and (not (power and normal) or pci_config):
+        raise ValueError('MMC requires normal reboot/shutdown and excludes fixed PCI inventory')
+    if ahci and (not (power and normal) or pci_config):
+        raise ValueError('AHCI requires normal reboot/shutdown and excludes fixed PCI inventory')
+    if nvme and not (power and normal):
+        raise ValueError('NVMe validation requires normal reboot and power-off')
+    if pci_config and not nvme:
+        raise ValueError('PCI configuration probe requires the extra NVMe fixture')
+    if pci_network and pci_config:
+        raise ValueError('The fixed PCI configuration probe excludes the extra NIC')
+    if network_stream and not pci_network:
+        raise ValueError('Network streams require the PCI network fixture')
     manifest, image = lab.read_manifest(manifest_path)
     if not manifest.get('private_image'):
         raise ValueError('An authenticated private shell image is required')
+    driver_hash = manifest.get('network_dma_test', {}).get('ipro1000_sha256', '')
+    if pci_network and not re.fullmatch(r'[0-9a-f]{64}', driver_hash):
+        raise ValueError('PCI network trial requires a pinned ipro1000 hash in the manifest')
+    probe_hash = manifest.get('network_stream_probe_sha256', '')
+    if network_stream and not re.fullmatch(r'[0-9a-f]{64}', probe_hash):
+        raise ValueError('Network streams require a pinned native probe hash')
+    if memcpy and not all(re.fullmatch(r'[0-9a-f]{64}',
+            manifest.get('arm64_memcpy_test', {}).get(key, ''))
+            for key in ('probe_sha256', 'libroot_sha256')):
+        raise ValueError('Memcpy checks require pinned helper and libroot hashes')
+    if ahci and not all(re.fullmatch(r'[0-9a-f]{64}', manifest.get('ahci_test', {}).get(key, ''))
+                        for key in ('driver_sha256', 'probe_sha256')):
+        raise ValueError('AHCI requires a pinned driver and geometry/flush helper')
+    if mmc:
+        if not all(re.fullmatch(r'[0-9a-f]{64}', manifest.get('mmc_test', {}).get(key, ''))
+                   for key in qemu_mmc.COMPONENTS):
+            raise ValueError('MMC requires pinned bus, host, disk driver and helper hashes')
+        if mmc_filesystem and not re.fullmatch(r'[0-9a-f]{64}', manifest['mmc_test'].get('fat_sha256', '')):
+            raise ValueError('MMC filesystem requires a pinned FAT driver hash')
+        mmc_binary, mmc_toolchain = qemu_mmc.emulator()
+    stream_fixture = None
     credentials = shell_image.read_credentials()
     output = lab.WORK / 'artifacts/qemu-shell' / lab.timestamp()
     output.mkdir(parents=True)
     print(json.dumps({'started': str(output)}), flush=True)
+    if nvme:
+        nvme_fixture = qemu_nvme.prepare(output)
+    if ahci:
+        ahci_fixture = qemu_ahci.prepare(output)
+    if mmc:
+        mmc_fixture = qemu_mmc.prepare(output, mmc_filesystem)
     firmware = output / 'QEMU_EFI.fd'
     shutil.copyfile('/usr/share/qemu-efi-aarch64/QEMU_EFI.fd', firmware)
     subprocess.run(['qemu-img', 'create', '-q', '-f', 'qcow2', '-F', 'raw', '-b',
@@ -140,10 +279,43 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
                '-netdev', network,
                '-device', 'usb-net,bus=hid.0,netdev=nic',
                '-object', f'filter-dump,id=trace,netdev=nic,file={output / "network.pcap"}']
+    if nvme:
+        command += ['-drive', f'file={nvme_fixture["disk"]},if=none,id=nvme0,format=raw',
+                    '-device', f'nvme,drive=nvme0,serial={nvme_fixture["serial"]}']
+    if pci_network:
+        pci_output = output / 'pci-network'
+        pci_output.mkdir()
+        pci_fixture = prepare_transfer_peer(pci_output)
+        pci_net = 'user,id=dma,net=10.240.7.0/24,dhcpstart=10.240.7.15,restrict=on'
+        for offset, direction in enumerate(('receive', 'send', 'truncated')):
+            peer_command = shlex.join([sys.executable, pci_fixture['peer'], direction])
+            pci_net += f',guestfwd=tcp:10.240.7.100:{9000 + offset}-cmd:{peer_command}'
+        if network_stream:
+            stream_fixture = prepare_stream_peer(pci_output)
+            for offset, direction in enumerate(('peer-send', 'peer-receive')):
+                peer_command = shlex.join([stream_fixture['binary'], direction,
+                    stream_fixture['token'], str(stream_fixture['bytes']),
+                    str(stream_fixture['seed'] + offset)])
+                pci_net += f',guestfwd=tcp:10.240.7.100:{9010 + offset}-cmd:{peer_command}'
+        command += ['-netdev', pci_net,
+                    '-device', 'e1000,netdev=dma,mac=52:54:00:35:88:01',
+                    '-object', f'filter-dump,id=dma-trace,netdev=dma,file={pci_output / "network.pcap"}']
     result = {'artifact': manifest, 'command': command, 'evidence': str(output),
               'status': 'incomplete', 'expect': 'authenticated remote commands',
               'firmware_sha256': lab.digest(firmware),
               'power_mode': 'normal' if normal else 'quick'}
+    if nvme:
+        result['nvme'] = {'fixture': nvme_fixture}
+    if ahci:
+        command += qemu_ahci.command(ahci_fixture)
+        result['ahci'] = {'fixture': ahci_fixture}
+    if mmc:
+        command[0] = str(mmc_binary)
+        command += qemu_mmc.command(mmc_fixture)
+        result['mmc'] = {'fixture': mmc_fixture, 'emulator': mmc_toolchain}
+    if stream_fixture is not None:
+        result['network_stream_peer'] = {
+            key: value for key, value in stream_fixture.items() if key != 'token'}
     serial = output / 'serial.log'
 
     def wait_for_boot(previous=0):
@@ -161,13 +333,14 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
             time.sleep(1)
         raise TimeoutError('No new USB shell configuration marker')
 
-    def login(value=credentials):
+    def login(value=credentials, wait_for_shell=True):
         # The configuration marker precedes network_server's asynchronous reload.
         # Record retries rather than losing the entire boot on an early connect.
         deadline = time.monotonic() + 45
         while True:
             try:
-                return shell.login('127.0.0.1', port, value, timeout=10)
+                return shell.login('127.0.0.1', port, value, timeout=10,
+                                   wait_for_shell=wait_for_shell)
             except (OSError, EOFError, TimeoutError) as error:
                 result.setdefault('login_retries', []).append(str(error))
                 if time.monotonic() >= deadline:
@@ -179,7 +352,7 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
         try:
             wait_for_boot()
             incorrect = dict(credentials, password='deliberately-invalid-password')
-            with login(incorrect) as client:
+            with login(incorrect, wait_for_shell=False) as client:
                 if b'Login failed.' not in client.read_until(b'Login failed.', 15):
                     raise RuntimeError('Incorrect password was not rejected')
                 result['incorrect_password_rejected'] = True
@@ -194,6 +367,8 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
                         'then exit 1; else rock5_inject=$?; [ "$rock5_inject" -eq 1 ]; fi\n')
                 if platform:
                     commands += '/boot/home/config/non-packaged/bin/rock5_platform_probe 1\n'
+                if cache:
+                    commands += '/boot/home/config/non-packaged/bin/rock5_cache_probe 32\n'
                 if services:
                     helper = '/boot/home/config/non-packaged/bin/rock5_services_probe'
                     commands += (f'{helper}\nif {helper} --legacy-range; then exit 1; '
@@ -215,12 +390,35 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
                     if 'ROCK5_PLATFORM_PASS' not in text:
                         raise RuntimeError('Platform checks did not pass')
                     result['platform_probe'] = 'Pinned clocks, 32 fork/exec checks, eight recovered faults'
+                if cache:
+                    expected = 'ROCK5_CACHE_PASS checked=8192 mismatches=0 '
+                    if expected not in text:
+                        raise RuntimeError('Instruction replacement checks did not pass')
+                    result['cache_probe'] = {'cpus': 4, 'rounds': 32, 'checks': 8192,
+                                             'mismatches': 0}
                 if transfer:
                     result['file_transfer'] = check_transfers(client, output, credentials, fixture)
+                if memcpy:
+                    result['memcpy_first_boot'] = check_memcpy(
+                        client, output, credentials, manifest, 'first-boot')
+                if pci_network:
+                    result['pci_network'] = check_pci_network(client, output, credentials,
+                        pci_fixture, driver_hash, 'first-boot', stream_fixture, probe_hash)
                 if services:
                     if 'ROCK5_SERVICES_PASS' not in text or 'ROCK5_SERVICES_FAIL' not in text:
                         raise RuntimeError('Missing service descriptor regression evidence')
                     result['services_probe'] = 'Reverse descriptors pass; legacy range fails'
+                if nvme:
+                    if pci_config:
+                        result['pci_config'] = check_pci_config(client, output, credentials)
+                    result['nvme'].update(qemu_nvme.check_initial(
+                        client, output, credentials, nvme_fixture))
+                if ahci:
+                    result['ahci']['first_boot'] = qemu_ahci.check(
+                        client, output, credentials, ahci_fixture, manifest)
+                if mmc:
+                    result['mmc']['first_boot'] = qemu_mmc.check(
+                        client, output, credentials, mmc_fixture, manifest)
                 if power:
                     previous = serial.read_bytes().count(b'ROCK5_SHELL_CONFIGURED 10.0.2.15')
                     result['software_reboot_requested_at'] = lab.timestamp()
@@ -239,6 +437,25 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
                     time.sleep(2)
                     shell.execute(client, 'uname -a\nsystem_time\n', output / 'after-reboot.txt',
                                   credentials)
+                    if memcpy:
+                        result['memcpy_after_reboot'] = check_memcpy(
+                            client, output, credentials, manifest, 'after-reboot')
+                    if pci_network:
+                        result['pci_network_after_reboot'] = check_pci_network(
+                            client, output, credentials, pci_fixture, driver_hash, 'after-reboot',
+                            stream_fixture, probe_hash)
+                    if nvme:
+                        if pci_config:
+                            result['pci_config_after_reboot'] = check_pci_config(
+                                client, output, credentials, after_reboot=True)
+                        result['nvme'].update(qemu_nvme.check_after_reboot(
+                            client, output, credentials, nvme_fixture))
+                    if ahci:
+                        result['ahci']['after_reboot'] = qemu_ahci.check(
+                            client, output, credentials, ahci_fixture, manifest, True)
+                    if mmc:
+                        result['mmc']['after_reboot'] = qemu_mmc.check(
+                            client, output, credentials, mmc_fixture, manifest, True)
                     result.update(software_reboot='pass', psci_conduit=conduit.decode())
                     client.write(b'sync; shutdown ' + (b'' if normal else b'-q') + b'\r\n')
                     time.sleep(1)
@@ -246,6 +463,12 @@ def run(manifest_path, el1=False, memory=False, power=False, normal=False, platf
                 if process.returncode != 0 or b'PSCI: requesting system off' not in serial.read_bytes():
                     raise RuntimeError('Missing successful firmware power-off evidence')
                 result['software_power_off'] = 'pass'
+                if nvme:
+                    result['nvme'].update(qemu_nvme.verify_host(nvme_fixture))
+                if ahci:
+                    result['ahci']['host_readback'] = qemu_ahci.verify_host(ahci_fixture)
+                if mmc:
+                    result['mmc']['host_readback'] = qemu_mmc.verify_host(mmc_fixture)
             result['status'] = 'pass'
         except Exception as error:
             result.update(status='error', error=str(error))
@@ -272,19 +495,46 @@ def main():
     parser.add_argument('--el1', action='store_true', help='Use EL1/HVC instead of EL2/SMC')
     parser.add_argument('--memory', action='store_true')
     parser.add_argument('--platform', action='store_true')
+    parser.add_argument('--cache', action='store_true', help='Check ARM64 instruction replacement on each CPU')
+    parser.add_argument('--memcpy', action='store_true',
+                        help='Check actual memcpy across alignments and protected page edges')
     parser.add_argument('--transfer', action='store_true', help='Check binary round trip and truncated input')
     parser.add_argument('--services', action='store_true', help='Check reverse pipe descriptors')
+    parser.add_argument('--nvme', action='store_true',
+                        help='Check disposable NVMe I/O across normal reboot and shutdown')
+    parser.add_argument('--ahci', action='store_true',
+                        help='Check two disposable AHCI disks, cache flush and reboot readback')
+    parser.add_argument('--mmc', action='store_true',
+                        help='Check disposable SD/eMMC cards using pinned local QEMU 10.2.0')
+    parser.add_argument('--mmc-filesystem', action='store_true',
+                        help='Also check FAT file writes, fresh mounts and persistence (requires --mmc)')
+    parser.add_argument('--pci-config', action='store_true',
+                        help='Read known host/NVMe configuration pages (requires --nvme)')
+    parser.add_argument('--pci-network', action='store_true',
+                        help='Test BSD DMA with a separate emulated Intel NIC; retain USB control')
+    parser.add_argument('--network-stream', action='store_true',
+                        help='Check simultaneous memory streams over the PCI NIC')
     parser.add_argument('--power', action='store_true', help='Reboot, log in again, then power off')
     parser.add_argument('--normal', action='store_true', help='Use desktop shutdown (requires --power)')
     parser.add_argument('--result', help='Also save the full result at this local path')
     args = parser.parse_args()
     if args.normal and not args.power:
         parser.error('--normal requires --power')
+    if args.nvme and not (args.power and args.normal):
+        parser.error('--nvme requires --power --normal')
+    if args.pci_config and not args.nvme:
+        parser.error('--pci-config requires --nvme')
+    if args.pci_config and args.pci_network:
+        parser.error('--pci-config has a fixed inventory and excludes --pci-network')
+    if args.network_stream and not args.pci_network:
+        parser.error('--network-stream requires --pci-network')
     if not os.path.ismount(lab.WORK):
         raise RuntimeError(f'Required filesystem is not mounted: {lab.WORK}')
     os.umask(0o077)
     result = run(args.manifest, args.el1, args.memory, args.power, args.normal, args.platform,
-                 args.transfer, args.services)
+                 args.transfer, args.services, args.cache, args.nvme, args.pci_config,
+                 args.pci_network, args.network_stream, args.memcpy, args.ahci, args.mmc,
+                 args.mmc_filesystem)
     if args.result:
         lab.save(args.result, result)
     print(json.dumps({key: result.get(key) for key in

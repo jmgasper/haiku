@@ -7,7 +7,7 @@ Application AboutSystem :
 	HyperTextActions.cpp
 	HyperTextView.cpp
 	Utilities.cpp
-	: [ TargetLibstdc++ ] be translation localestub
+	: [ TargetLibstdc++ ] be localestub
 	: AboutSystem.rdef
 ;
 

@@ -430,6 +430,36 @@ ndp_uninit()
 }
 
 
+static status_t
+ndp_send_data(net_buffer* buffer)
+{
+	if (sIPv6Protocol == NULL)
+		return B_ERROR;
+
+	// Neighbor discovery belongs to the link owning its local source address.
+	// A global multicast route cannot select that link when multiple interfaces
+	// resolve the same solicited-node group. Hold the address through the send,
+	// including retries, without changing the shared protocol's socket options.
+	net_interface_address* address
+		= sDatalinkModule->get_interface_address(buffer->source);
+	if (address == NULL)
+		return EADDRNOTAVAIL;
+
+	status_t status = ENETDOWN;
+	if ((address->interface->flags & IFF_UP) != 0) {
+		net_route route;
+		memset(&route, 0, sizeof(route));
+		route.interface_address = address;
+		// In particular, do not use the source's RTF_LOCAL host route: these
+		// packets must pass through the interface's Ethernet datalink chain.
+		status = sIPv6Module->send_routed_data(sIPv6Protocol, &route, buffer);
+	}
+
+	sDatalinkModule->put_interface_address(address);
+	return status;
+}
+
+
 //	#pragma mark -
 
 
@@ -497,8 +527,37 @@ ndp_update_entry(const in6_addr& protocolAddress, sockaddr_dl* hardwareAddress,
 
 
 static void
+ndp_replace_local_source(ipv6_datalink_protocol* protocol,
+	const in6_addr& removed, const sockaddr* replacement)
+{
+	if (memcmp(&protocol->local_address, &removed, sizeof(in6_addr)) != 0)
+		return;
+
+	// change_address runs before the interface's address list is updated.
+	// Prefer the supplied replacement, and exclude the removed address when
+	// choosing another source after a deletion.
+	if (replacement != NULL && replacement->sa_family == AF_INET6) {
+		protocol->local_address = ((const sockaddr_in6*)replacement)->sin6_addr;
+		return;
+	}
+
+	memset(&protocol->local_address, 0, sizeof(in6_addr));
+	net_interface_address* address = NULL;
+	while (sDatalinkModule->get_next_interface_address(protocol->interface,
+			&address)) {
+		if (address->local == NULL || address->local->sa_family != AF_INET6)
+			continue;
+
+		const in6_addr& candidate = ((sockaddr_in6*)address->local)->sin6_addr;
+		if (memcmp(&candidate, &removed, sizeof(in6_addr)) != 0)
+			protocol->local_address = candidate;
+	}
+}
+
+
+static void
 ndp_remove_local_entry(ipv6_datalink_protocol* protocol, const sockaddr* local,
-	bool updateLocalAddress)
+	bool updateLocalAddress, const sockaddr* replacement = NULL)
 {
 	in6_addr inetAddress;
 
@@ -533,20 +592,8 @@ ndp_remove_local_entry(ipv6_datalink_protocol* protocol, const sockaddr* local,
 		entry->flags |= NDP_FLAG_REMOVED;
 	}
 
-	if (updateLocalAddress && protocol->local_address == inetAddress) {
-		// find new local sender address
-		memset(&protocol->local_address, 0, sizeof(in6_addr));
-
-		net_interface_address* address = NULL;
-		while (sDatalinkModule->get_next_interface_address(protocol->interface,
-				&address)) {
-			if (address->local == NULL || address->local->sa_family != AF_INET6)
-				continue;
-
-			memcpy(&protocol->local_address,
-				&((sockaddr_in6*)address->local)->sin6_addr, sizeof(in6_addr));
-		}
-	}
+	if (updateLocalAddress)
+		ndp_replace_local_source(protocol, inetAddress, replacement);
 
 	locker.Unlock();
 	delete entry;
@@ -726,11 +773,11 @@ ndp_receive_solicitation(net_buffer* buffer, bool* reuseBuffer)
 	if (sIPv6Protocol == NULL)
 		return B_ERROR;
 
-	*reuseBuffer = true;
-
 	// send the ICMPv6 packet out
 	TRACE(("Sending Neighbor Advertisement\n"));
-	return sIPv6Module->send_data(sIPv6Protocol, buffer);
+	status_t status = ndp_send_data(buffer);
+	*reuseBuffer = status == B_OK;
+	return status;
 }
 
 
@@ -882,7 +929,7 @@ ndp_timer(struct net_timer* timer, void* data)
 				break;
 
 			// we're trying to resolve the address, so keep sending requests
-			status_t status = sIPv6Module->send_data(sIPv6Protocol, request);
+			status_t status = ndp_send_data(request);
 			if (status < B_OK)
 				gBufferModule->free(request);
 
@@ -951,13 +998,6 @@ ndp_start_resolve(ipv6_datalink_protocol* protocol, const in6_addr& address,
 		return B_NO_MEMORY;
 	}
 
-	// this does not work, because multicast for now is only looped back!
-#if FIXME
-	// hack: set to use the correct interface by setting socket option
-	sIPv6Module->setsockopt(sIPv6Protocol, IPPROTO_IPV6, IPV6_MULTICAST_IF,
-		&source->sin6_addr, sizeof(in6_addr));
-#endif
-
 	net_buffer* clone = gBufferModule->clone(buffer, true);
 	if (clone == NULL) {
 		entry->ScheduleRemoval();
@@ -966,8 +1006,9 @@ ndp_start_resolve(ipv6_datalink_protocol* protocol, const in6_addr& address,
 
 	// send the ICMPv6 packet out
 	TRACE(("Sending Neighbor Solicitation\n"));
-	status = sIPv6Module->send_data(sIPv6Protocol, clone);
+	status = ndp_send_data(clone);
 	if (status < B_OK) {
+		gBufferModule->free(clone);
 		entry->ScheduleRemoval();
 		return status;
 	}
@@ -1113,38 +1154,10 @@ ipv6_datalink_change_address(net_datalink_protocol* _protocol,
 					status_t status = ndp_set_local_entry(protocol, newAddress);
 					if (status != B_OK)
 						return status;
-
-					// add IPv6 multicast route (ff00::/8)
-					sockaddr_in6 socketAddress;
-					memset(&socketAddress, 0, sizeof(sockaddr_in6));
-					socketAddress.sin6_family = AF_INET6;
-					socketAddress.sin6_len = sizeof(sockaddr_in6);
-					socketAddress.sin6_addr.s6_addr[0] = 0xff;
-
-					net_route route;
-					memset(&route, 0, sizeof(net_route));
-					route.destination = (sockaddr*)&socketAddress;
-					route.mask = (sockaddr*)&socketAddress;
-					route.flags = 0;
-					sDatalinkModule->add_route(address->domain, &route);
 				}
 
 				if (oldAddress != NULL && oldAddress->sa_family == AF_INET6) {
-					ndp_remove_local_entry(protocol, oldAddress, true);
-
-					// remove IPv6 multicast route (ff00::/8)
-					sockaddr_in6 socketAddress;
-					memset(&socketAddress, 0, sizeof(sockaddr_in6));
-					socketAddress.sin6_family = AF_INET6;
-					socketAddress.sin6_len = sizeof(sockaddr_in6);
-					socketAddress.sin6_addr.s6_addr[0] = 0xff;
-
-					net_route route;
-					memset(&route, 0, sizeof(net_route));
-					route.destination = (sockaddr*)&socketAddress;
-					route.mask = (sockaddr*)&socketAddress;
-					route.flags = 0;
-					sDatalinkModule->remove_route(address->domain, &route);
+					ndp_remove_local_entry(protocol, oldAddress, true, newAddress);
 				}
 			}
 			break;

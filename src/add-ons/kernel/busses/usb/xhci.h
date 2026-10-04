@@ -24,7 +24,25 @@ struct pci_device;
 struct xhci_td;
 struct xhci_device;
 struct xhci_endpoint;
+class PhysicalMemoryAllocator;
 class XHCIRootHub;
+
+
+// A controller that is not on PCI, such as the DesignWare USB3 core of an
+// ARM SoC described by a flattened device tree.
+struct xhci_platform_info {
+	phys_addr_t register_base;
+	size_t register_size;
+	uint32 interrupt;
+	bool dma_coherent;
+	bool broken_port_disable;
+		// DWC_usb3 up to 3.00a cannot disable a port (Linux
+		// "quirk-broken-port-ped").
+	bool usb2_only;
+		// The USB 3 root ports are not used (the attachment disconnects
+		// them from their PHY where it can): devices, and hubs' USB 2
+		// halves, connect through the USB 2 ports.
+};
 
 
 /* The endpoint ring needs space for 2 TRBs per transfer
@@ -92,7 +110,8 @@ public:
 	static	status_t			AddTo(Stack *stack);
 
 								XHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stack *stack,
-									device_node* node);
+									device_node* node,
+									const xhci_platform_info* platform = NULL);
 								~XHCI();
 
 	virtual	const char *		TypeName() const { return "xhci"; }
@@ -184,6 +203,19 @@ private:
 			// Doorbell
 			void				Ring(uint8 slot, uint8 endpoint);
 
+			// DMA memory: uncached on controllers that do not snoop the CPU
+			// caches, from the USB stack otherwise
+			status_t			AllocateChunk(void** logicalAddress,
+									phys_addr_t* physicalAddress, size_t size);
+			status_t			FreeChunk(void* logicalAddress,
+									phys_addr_t physicalAddress, size_t size);
+			area_id				AllocateArea(void** logicalAddress,
+									phys_addr_t* physicalAddress, size_t size,
+									const char* name);
+	inline	void				_DeviceMemoryBarrier();
+	inline	bool				_DirectPhysical(Transfer* transfer) const;
+			bool				_IsDisabledSuperSpeedPort(uint8 index) const;
+
 			// Commands
 			status_t			Noop();
 			status_t			EnableSlot(uint8 *slot);
@@ -239,8 +271,12 @@ private:
 			pci_device*			fDevice;
 
 			Stack *				fStack;
+			PhysicalMemoryAllocator* fDMAAllocator;
 			uint32				fIRQ;
 			bool				fUseMSI;
+			bool				fInterruptInstalled;
+			bool				fBrokenPortDisable;
+			bool				fUSB2Only;
 
 			area_id				fErstArea;
 			xhci_erst_element *	fErst;

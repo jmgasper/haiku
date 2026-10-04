@@ -13,6 +13,265 @@ commit, image hash, firmware settings, raw logs and physical fixtures used.
 Dependencies are phase numbers; work within a phase can be split further when
 the underlying buses permit it. No calendar estimates imply guaranteed support.
 
+Current owner scope: phase 7 GPU support only. Network stack changes and other
+hardware development are deferred. [GPU.md](GPU.md) records qualified
+native power/reset/IRQ, firmware, client buffers, GPU VMs and persistent queues.
+The system-default OpenGL candidate ([MESA-SYSTEM.md](MESA-SYSTEM.md), Mesa
+at `3139063445` on the qualified +256 image) runs GLTeapot on Mali with no
+launch environment on two native boots: the Mesa backend takes the Mali
+device and its firmware from installed defaults, the CPU polygon path is on
+by default, and the GLVND/Mesa libraries and EGL vendor file are installed
+system-wide. Every earlier Mesa fixture passes on the same boots and the
+emulator gates show the software fallback without a device. It is
+qualified (2026-09-19, `…automated-mali-system-opengl/20260919T124336Z-d49da9`)
+with the independent Linux eMMC readbacks now run from the owner's SD-card
+Debian, the lab's new recovery OS.
+
+The +320 USB image runs [2D and 3D together on both connectors](DISPLAY.md):
+one 3840x1080 app_server desktop across HDMI1 and the DisplayPort-bridged
+port, a hardware cursor window on each port, and the qualified system-default
+Mesa on the Mali-G610. On two native boots GLTeapot, started with no
+environment, renders through the installed system OpenGL at 59 FPS on the
+desktop, and the NanoKVM captures it on HDMI1's half.
+
+The +315 USB image completes the [dual-display desktop](DISPLAY.md): one
+3840x1080 app_server desktop across both HDMI ports, with a hardware cursor
+window on each port. A pointer on the seam shows half on each screen. On
+both native boots the NanoKVM on the DisplayPort-bridged port captures the
+right half with the probe's cursor on it. The owner confirmed the left half
+on a monitor attached to HDMI1.
+
+The +313 USB image gives app_server [one desktop spanning both HDMI
+ports](DISPLAY.md): a 3840x1080 frame buffer whose left half HDMI1 scans
+(its port raised to 1080p by the driver's mode set) and whose right half
+the DisplayPort-bridged port scans. On both native boots the NanoKVM on the
+second port captures the desktop's right half, with the Deskbar and half of
+the centred pointer. HDMI1's half is checked by register read-back because
+no display is attached to it. The hardware cursor across both ports and
+mode changes on the spanning desktop come next.
+
+The +310 USB image runs [app_server on the second connector](DISPLAY.md)
+at 1920x1080: with the dp-desktop profile the driver trains DP1, scans its
+own frame buffer with a window on video port 1, moves the kernel console
+there and drives app_server's retrace from that port at 60 Hz. On both
+native boots the NanoKVM captures the full Haiku desktop from the
+DisplayPort-bridged HDMI port. The hardware cursor, mode changes and one
+desktop spanning both ports come next.
+
+The +308 USB image shows [Haiku's desktop on the second connector](DISPLAY.md):
+after training DP1 and starting video port 1, a second VOP2 window
+(ESMART0) on that port scans the desktop's frame buffer. On both native
+boots the NanoKVM captures Tracker, the Deskbar and the pointer on the
+DisplayPort-bridged HDMI port. The desktop is still the firmware's 640x480
+buffer, shown over the port's 1080p background. app_server driving that
+port at its own mode, and one wide desktop spanning both ports, come next.
+
+The +306 USB image puts the [first picture on the second connector](DISPLAY.md):
+Haiku brings DisplayPort TX1 and USBDP PHY1 up itself, reads the sink's
+DPCD and EDID over AUX through the RA620 bridge, and trains the link at
+5.4 Gb/s over two lanes on the first attempt. It then drives video port 1
+at 1920x1080@60 into DP1. On both native boots the NanoKVM captures the
+port's magenta background from that connector, and HDMI1's port is left
+untouched. A frame buffer window on that port and a second app_server
+screen come next.
+
+The +300 USB image adds a read-only [observation of the second connector's
+DisplayPort path](DISPLAY.md) to the qualified desktop-cursor cycle: on
+two native boots the DisplayPort TX1 block is powered, clocked and idle
+with its PHY interface parked, the USBDP PHY1 is in low power, and the
+hot-plug pin is a plain input reading low with nothing on the connector;
+every word agreed between samples and boots. Bringing that path up (PHY,
+link training through the RA620 bridge, a second video port) needs a
+monitor or an HDMI dummy plug on the second connector, which is not
+attached.
+
+The +297 USB image qualifies [app_server's pointer on the hardware cursor](DISPLAY.md)
+on two native boots: on the desktop cursor profile the accelerant exports
+the cursor hooks, app_server hands its 22x22 pointer to the driver's second
+VOP2 window at start and stops drawing it into the frame buffer, the window
+reads back at the desktop's centre, survives the 720p/1080p mode changes
+and DPMS, and the NanoKVM captures show Haiku's hand pointer there; the
+probe's own placements, clipping, hide and restore of app_server's bitmap
+pass on the same boots. The HDMI1 "2D" set (EDID, own frame buffer,
+retrace, mode changes, DPMS, hardware cursor) is complete; drawing itself
+is not accelerated, and the second (DisplayPort-bridged) HDMI port and a
+spanning desktop remain open.
+
+The +294 USB image qualifies a [hardware cursor on HDMI1](DISPLAY.md) on
+two native boots: on the probe-only cursor profile the driver programs a
+second VOP2 window (ESMART3, blended by the port's alpha mixer) with a
+64x64 straight-alpha bitmap over the desktop window, clips it at every
+edge, hides it and restores app_server's state, with every window register
+read back and the NanoKVM captures showing the white, black, transparent
+and half-transparent quadrants where expected and the desktop untouched.
+The cause of an earlier dark frame is recorded: the firmware runs the
+desktop window with the AXI read ids Linux assigns to ESMART3, so the cursor
+window takes ids derived from the desktop window's. app_server still draws
+its software pointer on this image; handing its pointer to the window (the
+desktop cursor profile) is the next stage, and the second
+(DisplayPort-bridged) HDMI port remains open.
+
+The +285 USB image qualifies [DPMS power control on HDMI1](DISPLAY.md) on
+two native boots: through the accelerant's DPMS hooks the driver stops the
+video port and powers the HDPTX PHY down, so the sink loses its signal, the
+frame-start interrupts stop and the NanoKVM has no frame to capture, and
+brings the current mode back with the full mode set in under a millisecond,
+with retrace at 60 Hz again and the desktop restored. The 720p/1080p mode
+changes and the earlier read-only, EDID, scanout-swap, accelerant and
+retrace checks pass on the same boots, and app_server's start-up DPMS-on
+request is answered as a no-op. A cursor window and the second
+(DisplayPort-bridged) HDMI port remain open.
+
+The +282 USB image qualifies [native mode changes on HDMI1](DISPLAY.md) on
+two native boots: with the opt-in mode-set profile the driver switches the
+port app_server draws to from the firmware's 1920x1080@60 to 1280x720@60 and
+back, reprogramming the HDPTX PHY PLL and lanes, the VOP2 port timing and
+window, and the AVI infoframe, while the accelerant reports each mode and
+its retrace keeps running at 60 Hz. The NanoKVM shows the 720p signal as the
+desktop's top-left crop and the normal desktop after the return; normal
+reboot, verified shutdown and recovery pass, and the earlier read-only,
+EDID, scanout-swap, accelerant and retrace checks pass on the same boots.
+A cursor window and the second (DisplayPort-bridged) HDMI port remained
+open.
+
+The +277 USB image qualifies the [board accelerant with vertical
+retrace](DISPLAY.md) on two native boots: app_server runs on
+`rk3588_display.accelerant`, draws the desktop into a driver-owned contiguous
+frame buffer that the live HDMI1 window scans at the firmware's 1920x1080
+mode, reports the sink's EDID, and its retrace semaphore is released by the
+VOP2 frame-start interrupt at 60.0 Hz. Normal reboot, verified shutdown and
+recovery pass; the earlier read-only, EDID and scanout-swap checks pass on
+the same boots. A cursor window, power control, a real mode change and the
+second (DisplayPort-bridged) HDMI port remain open.
+
+The +269 USB image qualifies the first [VOP2 write path](DISPLAY.md): with
+the opt-in scanout profile the driver points the live HDMI1 window at its own
+contiguous colour-bar buffer, commits the port and waits for the
+configuration-done bit, and restores the firmware framebuffer, on two native
+boots. The NanoKVM capture shows the bars during the 30 s hold and the normal
+desktop afterwards, the observation is unchanged across the swap, and normal
+reboot, verified shutdown and recovery pass. The first candidate (+267)
+verified the address before the port's next frame start and is retained.
+
+The +264 USB image qualifies the [EDID read](DISPLAY.md) over the HDMI TX1
+I2C master on two native boots: with the opt-in profile the driver reads the
+NanoKVM's 256-byte EDID (VCS `0x1145`, EDID 1.3 with one CEA-861 extension,
+preferred 1920x1080 at 148.5 MHz) one byte per transfer in about 52 ms per
+block, and the read-only observation before and after the read is identical.
+Both QEMU modes, the Mali regressions, normal reboot, verified shutdown and
+automatic recovery pass; the desktop was viewed on both boots. Native mode
+setting and the second (DisplayPort-bridged) HDMI port remain open.
+
+The +263 USB image qualifies the first [native display observation](DISPLAY.md)
+on two native boots: the read-only `rk3588_display` driver admits the VOP2,
+HDMI TX1, HDPTX PHY1 and control-block description and reads the firmware
+display state without a register write. The firmware drives the HDMI1 port
+from VOP2 video port 2 at 1920x1080 (2200x1125 total) through ESMART2 at
+`0xed280000`; the HDMI1 hot-plug level, PHY lock and TMDS link are recorded.
+Both QEMU modes, the earlier Mali regressions, normal reboot, verified shutdown
+and automatic recovery pass. A first +259 run panicked reading a write-only
+HDMI register and is retained.
+
+The +256 Mesa fix on the retained +254 Haiku kernel qualifies the bounded
+[GLTeapot and polygon tests](MESA-APPLICATION.md) on two native boots: all 128
+polygon frames, four normal application launches, 32 reviewed application
+frames and 8,732 completed GPU submissions pass. Retiring cached CPU shader
+tokens fixes the earlier missing edges/points and quad culling. A deterministic
+address-reuse regression passes under ASan/UBSan and on both native boots.
+Earlier GPU tests, both QEMU modes, normal recovery and independent integrity
+checks pass. Broader API coverage, default renderer integration and native
+display control remain open; the CPU geometry path is still opt-in.
+The +210 image runs Mesa/Panfrost on that native interface. Across two boots,
+all 32,768 rendered pixels match Linux and all 32 Mesa submissions complete.
+Allocation baselines, previous GPU regressions, both QEMU modes, recovery and
+independent storage/image checks pass. [MESA.md](MESA.md) records the tested
+scope, build recipe and retained first failure. The +215 image also qualifies
+[EGL window rendering](MESA-WINDOW.md): all 84,480 bitmap pixels and 84,480
+independently captured screen pixels pass across two native boots, including
+resizing and retirement. All 36 window submissions complete; build/QEMU,
+recovery and integrity checks pass. Presentation uses a CPU bitmap copy.
+The +243 USB image qualifies [reset notification for live Mesa contexts](MESA-LOSS.md)
+on two native boots. Both shared contexts receive one loss notification, ignore
+further rendering and close completely; fresh contexts then render without a
+Haiku reboot. All 181,972 before/fresh pixels, 3,584 guards and 104,496 ignored
+readback bytes pass. Both QEMU modes, earlier regressions, normal recovery and
+independent integrity checks pass. The earlier failed trials are preserved.
+General application compatibility, arbitrary hangs and native display control
+remain open.
+
+The +238 USB image qualifies [bounded GPU command-fault recovery](MESA-RECOVERY.md)
+on two native boots. Three affected jobs receive errors per boot; reset,
+address-space cleanup and platform restoration are verified. After all affected
+clients close, fresh native queues and Mesa contexts work without a Haiku
+reboot. All 155,976 subsequent pixels and 3,072 guards pass, together with
+earlier regressions, both QEMU modes, normal recovery and independent integrity
+checks. The separate +243 fixture above qualifies retained Mesa-context
+notification; arbitrary hangs and native display control remain open.
+
+The +236 USB image qualifies [termination during pending graphics work](MESA-PENDING.md)
+on two native boots. Both a fence timeout and the driver's actual close-time
+queue state establish unfinished work. Survivor rendering, fresh-process reuse
+and allocation cleanup pass; all fourteen completed frames, 90,986 pixels and
+1,792 guards match. Earlier graphics regressions, both QEMU modes, normal
+recovery and independent integrity checks pass. Active work can complete while
+close waits; immediate preemption and GPU fault/reset recovery remain open.
+
+The +234 USB image qualifies [concurrent graphics applications](MESA-CONCURRENCY.md)
+on two native boots. All 128 paired draw rounds overlap; all 260 frames,
+1,689,740 pixels, 33,280 guards and 532 submissions pass. Normal process
+retirement, survivor rendering, fresh-process reuse and allocation cleanup
+pass. Both QEMU modes, earlier graphics regressions, normal recovery and
+independent integrity checks pass. Each graphics fixture logs to RAM before
+its checked transfer. Pending-work termination, GPU fault/reset recovery and
+native display control remain open.
+
+The +232 USB image qualifies [sustained GPU rendering](MESA-SUSTAINED.md)
+on two native boots. Four retained contexts each complete at least sixty
+seconds of measured rendering with stable tiler-heap use. All 91,648 frames,
+595,620,352 pixels, 11,730,944 guard bytes and 183,304 submissions pass; fixed
+heaps complete 147,196 incremental passes. Earlier graphics fixtures, both
+QEMU modes, normal reboot/shutdown, recovery and independent integrity checks
+pass. Full logs are captured in RAM and retrieved with checked, paced transfers.
+Pending-work termination, GPU fault/reset recovery and native display control
+remain open.
+
+The +227 USB image qualifies [fixed tiler heaps and incremental rendering](MESA-HEAP-LIMIT.md)
+on two native boots. Mesa completes 36 incremental passes after 36 requests
+for more heap memory are refused. All 51,992 pixels, 1,024 guards, 24 submissions
+and allocation baselines pass. Earlier graphics tests, both QEMU modes, normal
+reboot/shutdown, recovery and independent integrity checks pass. The OpenGL Kit
+fixture now waits for completed window updates before screen capture. GPU
+fault/reset recovery and native display control remain open.
+
+The +224 USB image qualifies [firmware tiler heap growth](MESA-HEAP-PRESSURE.md)
+on two native boots. Four contexts each grow from one chunk to four, then
+seven; all 24 firmware requests receive memory. All 51,992 pixels, 1,024 guards,
+24 submissions and allocation baselines pass. Previous graphics regressions,
+both QEMU modes, normal reboot/shutdown, recovery and independent integrity
+checks pass. GPU fault/reset recovery remains open.
+
+The +221 USB image qualifies [graphics-process cleanup](MESA-LIFETIME.md)
+on two native boots. A process is terminated after completed rendering while
+its resources remain open; the survivor renders correctly and a fresh context
+works afterward. All 51,992 pixels, 1,024 guards and allocation baselines pass.
+Earlier GPU/window fixtures, both QEMU modes, normal reboot/shutdown, recovery
+and independent integrity checks pass. Termination during pending graphics
+work and GPU fault/reset recovery remain open.
+
+The +219 USB image qualifies [six GLES pipeline operations](MESA-PIPELINE.md)
+on two native boots: texture upload/sampling, depth, stencil, blending, scissor
+and render-to-texture. All 155,976 pixels, 3,072 guards and sixty GPU submissions
+pass, with allocations restored after each context. Both QEMU modes, earlier
+GPU/window fixtures, normal reboot/shutdown, recovery and independent storage
+integrity pass. Conformance, termination during pending graphics work and
+GPU fault recovery remain open.
+
+The +217 image adds [normal OpenGL Kit rendering](MESA-GLVIEW.md): two live
+BGLViews, desktop OpenGL 3.1, complete GL/screen pixels, resizing and retirement
+pass across two native boots, with all 104 submissions completed. General
+application compatibility, conformance, automatic GPU fault recovery and
+native display integration remain open.
+
 ## 0 — Build and lab foundation
 
 Create the fork, pinned ARM64 toolchain, incremental image build, QEMU evidence,
@@ -50,23 +309,23 @@ against Windows; evaluate actual ACPI and device-tree tables for Haiku.
 
 | Work item | Starting point and dependencies | Acceptance |
 | --- | --- | --- |
-| USB controllers and PHYs | Existing xHCI/EHCI/OHCI code; RK3588 DWC3/platform attachment and PHY/clock/reset glue; phase 2 | Enumerate each routed controller and hub; hotplug on four USB 3 Type-A, two USB 2 Type-A and both front USB 2 ports; test USB-C data separately |
+| USB controllers and PHYs | Existing xHCI/EHCI/OHCI code; RK3588 DWC3/platform attachment and PHY/clock/reset glue; phase 2. 2026-10-03: the rear ports' DWC3 runs as a USB 2 host, the USB-C core is not attached, OHCI is not attached ([USB.md](USB.md)) | Enumerate each routed controller and hub; hotplug on four USB 3 Type-A, two USB 2 Type-A and both front USB 2 ports; test USB-C data separately |
 | Keyboard, mouse and USB storage | Existing HID, SCSI and USB mass-storage drivers; USB controllers | NanoKVM HID works in Haiku; boot filesystem survives EFI exit; long hash-checked reads/writes on a disposable USB disk; recover after disconnect |
 
 ## 4 — PCIe, native networking and fast storage
 
 | Work item | Starting point and dependencies | Acceptance |
 | --- | --- | --- |
-| PCIe host bridges | `src/add-ons/kernel/bus_managers/pci`; phase 2; RK3588 address windows, link training, INTx and MSI/MSI-X | Correct config space/BARs and DMA for each root port; cold and warm boots; no dependence on firmware boot services |
+| PCIe host bridges | `src/add-ons/kernel/bus_managers/pci`; phase 2; RK3588 address windows, link training, INTx and MSI/MSI-X. The +156 firmware-profile driver handles an active-link training transition before SATA attachment on both USB and installed SSD boots; [scope](PCIE-TRAINING.md) | Correct config space/BARs and DMA for each root port; cold and warm boots; no dependence on firmware boot services |
 | Both RTL8125 Ethernet ports | Existing `drivers/network/ether/rtl8125`; observed `10ec:8125` rev 05; PCIe and DMA | Each port obtains DHCP and works with static IPv4/IPv6; simultaneous sustained traffic, link changes and packet integrity; compare against a 2.5 GbE Linux peer; remote shell/file transfer reliable |
-| ASM1164 and four SATA ports | Existing AHCI stack; observed `1b21:1164`; PCIe and DMA | Test each port with identified scratch disks; filesystem/data hashes, flush durability, error recovery and simultaneous I/O; compare throughput to Linux |
-| M.2 M-key NVMe | Existing NVMe driver; PCIe; confirm lane/mux arrangement with SATA for actual revision | Install a known NVMe fixture; identify namespace, hash-checked I/O, flush/trim, error handling and repeated native boot; no NVMe is installed currently |
+| ASM1164 and four SATA ports | ARM64 AHCI DMA and managed INTx support; `1b21:1164` initializes four direct ports across native reboot, and two-disk I/O passes QEMU; no physical SATA disk attached; [measured scope](SATA.md) | Test each port with identified scratch disks; filesystem/data hashes, flush durability, error recovery and simultaneous I/O; compare throughput to Linux |
+| M.2 M-key NVMe | Existing NVMe driver; PCIe; Samsung 950 Pro 256GB identified in ROOBI with PCIe 3.0 x2 link; owner authorizes erasing this SSD for testing and eventual Haiku installation | Native namespace discovery; hash-checked I/O, flush/trim, error handling and repeated native boot; confirm lane/mux arrangement for this revision and qualify Haiku installation on this drive |
 
 ## 5 — Onboard and removable flash
 
 | Work item | Starting point and dependencies | Acceptance |
 | --- | --- | --- |
-| Onboard eMMC | Existing MMC/SDHCI infrastructure plus RK3588 host/PHY/tuning; phases 2 and 3 | Read-only validation first; native boot and scratch-region I/O only after complete recovery backup; cache flush, power-cycle integrity and supported speed modes |
+| Onboard eMMC | Verified eight-bit legacy SDR passes cached FAT file overwrites, explicit device-cache flushes, normal reboot and orderly shutdown/startup, including CPU buffers forced above 4 GiB. Linux independently verifies file/FS integrity and reference regions, and common SD/eMMC I/O passes QEMU. See [MMC.md](MMC.md) | Bounded four-writer cached I/O passes; qualify power-loss integrity, sustained I/O, error recovery, faster clock modes and Haiku boot; preserve the tested ROOBI recovery route |
 | microSD | RK3588 SD/MMC host, card detect, regulator and pinctrl; phase 2 | Multiple known cards, insertion/removal, hash-checked scratch filesystem, recovery from I/O errors and boot where firmware allows |
 | SPI NOR | RK3588 SPI/SFC attachment; observed 16 MiB loader device; phases 1 and 2 | Read and compare complete contents; expose geometry; separate read-only normal access from deliberate firmware updates; successful restore drill before writes |
 
@@ -93,7 +352,7 @@ against Windows; evaluate actual ACPI and device-tree tables for Haiku.
 
 | Work item | Starting point and dependencies | Acceptance |
 | --- | --- | --- |
-| ES8316 analog and front audio | Observed codec; RK3588 I2S, DMA, clocks, I2C and Haiku multi_audio integration | Headphone and microphone paths plus front header playback/capture; levels, channels, sample rates, latency and sustained duplex operation measured |
+| ES8316 analog and front audio | 48 kHz stereo S16 playback through RK3588 I2S0, I2C7, ES8316 and Haiku multi_audio is qualified in [AUDIO.md](AUDIO.md) | Add microphone and front-header routing, mixer levels, more rates/formats, DMA, latency measurement and sustained duplex operation |
 | HDMI/DisplayPort audio | Display link and I2S/audio infrastructure | Enumerate sinks, stereo playback, hotplug/rate changes and A/V synchronization for both HDMI outputs and supported DP sink |
 | S/PDIF output | RK3588 S/PDIF TX and clock/DMA driver | Valid output to an identified receiver at supported sample rates; channel correctness and underrun recovery |
 
@@ -115,6 +374,13 @@ against Windows; evaluate actual ACPI and device-tree tables for Haiku.
 | Power configurations and accessories | ATX/DC and optional PoE module, front-panel wiring, expansion fixtures | Repeat system tests for each physically installed configuration; PoE power is not an OS networking feature; verify NanoKVM stays independently reachable |
 
 ## 11 — Integration and release qualification
+
+The `+156` SSD update has passed package/configuration verification, two installed
+boot/data/network/eMMC/recovery cycles and independent Linux eMMC readback.
+Its first SSD boot handled the captured SATA training condition with a 1.6 ms
+wait before AHCI attachment. [SSD-INTEGRATION.md](SSD-INTEGRATION.md) records
+the current checkpoint and links to the earlier `+148` incomplete attempt;
+[PCIE-TRAINING.md](PCIE-TRAINING.md) records the diagnosis and bounded fix.
 
 Run cold/warm boots, 24-hour mixed CPU/storage/network/media load, memory checks,
 power-management cycles, device hotplug and filesystem integrity checks. Compare

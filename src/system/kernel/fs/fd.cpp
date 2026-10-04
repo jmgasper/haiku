@@ -15,6 +15,7 @@
 #include <sys/ioctl.h>
 
 #include <OS.h>
+#include <module.h>
 
 #include <AutoDeleter.h>
 #include <AutoDeleterDrivers.h>
@@ -87,6 +88,8 @@ alloc_fd(void)
 	descriptor->open_count = 0;
 	descriptor->open_mode = 0;
 	descriptor->pos = -1;
+	descriptor->ops = NULL;
+	descriptor->module = NULL;
 
 	return descriptor;
 }
@@ -137,9 +140,9 @@ fd_set_close_on_fork(struct io_context* context, int fd, bool closeFD)
 /*!	Searches a free slot in the FD table of the provided I/O context, and
 	inserts the specified descriptor into it.
 */
-int
-new_fd_etc(struct io_context* context, struct file_descriptor* descriptor,
-	int firstIndex)
+static int
+new_fd_internal(struct io_context* context, struct file_descriptor* descriptor,
+	int firstIndex, int flags, int* userFD)
 {
 	int fd = -1;
 	uint32 i;
@@ -157,14 +160,26 @@ new_fd_etc(struct io_context* context, struct file_descriptor* descriptor,
 	}
 	if (fd < 0)
 		return B_NO_MORE_FDS;
+	if (userFD != NULL && user_memcpy(userFD, &fd, sizeof(fd)) != B_OK)
+		return B_BAD_ADDRESS;
 
 	TFD(NewFD(context, fd, descriptor));
 
 	context->fds[fd] = descriptor;
 	context->num_used_fds++;
 	atomic_add(&descriptor->open_count, 1);
+	fd_set_close_on_exec(context, fd, (flags & O_CLOEXEC) != 0);
+	fd_set_close_on_fork(context, fd, (flags & O_CLOFORK) != 0);
 
 	return fd;
+}
+
+
+int
+new_fd_etc(struct io_context* context, struct file_descriptor* descriptor,
+	int firstIndex)
+{
+	return new_fd_internal(context, descriptor, firstIndex, 0, NULL);
 }
 
 
@@ -172,6 +187,39 @@ int
 new_fd(struct io_context* context, struct file_descriptor* descriptor)
 {
 	return new_fd_etc(context, descriptor, 0);
+}
+
+
+int
+new_fd_flags(struct io_context* context, struct file_descriptor* descriptor,
+	int flags)
+{
+	if ((flags & ~(O_CLOEXEC | O_CLOFORK)) != 0)
+		return B_BAD_VALUE;
+	return new_fd_internal(context, descriptor, 0, flags, NULL);
+}
+
+
+int
+new_fd_user(struct io_context* context, struct file_descriptor* descriptor,
+	int flags, int* userFD)
+{
+	if (userFD == NULL || (flags & ~(O_CLOEXEC | O_CLOFORK)) != 0)
+		return B_BAD_VALUE;
+	return new_fd_internal(context, descriptor, 0, flags, userFD);
+}
+
+
+status_t
+fd_hold_module(struct file_descriptor* descriptor, const char* name)
+{
+	if (descriptor->module != NULL || descriptor->open_count != 0 || name == NULL)
+		return B_BAD_VALUE;
+	module_info* module;
+	status_t status = get_module(name, &module);
+	if (status == B_OK)
+		descriptor->module = module;
+	return status;
 }
 
 
@@ -190,11 +238,14 @@ put_fd(struct file_descriptor* descriptor)
 
 	// free the descriptor if we don't need it anymore
 	if (previous == 1) {
+		module_info* module = descriptor->module;
 		// free the underlying object
 		if (descriptor->ops != NULL && descriptor->ops->fd_free != NULL)
 			descriptor->ops->fd_free(descriptor);
 
 		object_cache_free(sFileDescriptorCache, descriptor, 0);
+		if (module != NULL)
+			put_module(module->name);
 	} else if ((descriptor->open_mode & O_DISCONNECTED) != 0
 			&& previous - 1 == descriptor->open_count
 			&& descriptor->ops != NULL) {

@@ -58,11 +58,14 @@ provides {
 
 requires {
 	noto >= 2.7
-#ifdef HAIKU_REGULAR_BUILD
+/* The arm64 repository carries the bootstrap set only: it has neither the CJK
+   font package nor the wifi firmware packages, and a regular build must not
+   require what cannot be resolved for the architecture. */
+#if defined(HAIKU_REGULAR_BUILD) && !defined(HAIKU_PACKAGING_ARCH_arm64)
 	noto_sans_cjk_jp
 #endif
 
-#ifdef HAIKU_REGULAR_BUILD
+#if defined(HAIKU_REGULAR_BUILD) && !defined(HAIKU_PACKAGING_ARCH_arm64)
 	intel_wifi_firmwares
 	ralink_wifi_firmwares
 	realtek_wifi_firmwares
@@ -70,7 +73,8 @@ requires {
 
 	coreutils
 	cmd:sh
-#ifdef HAIKU_REGULAR_BUILD
+/* bzip2, gzip, tar and unzip have no arm64 packages either. */
+#if defined(HAIKU_REGULAR_BUILD) && !defined(HAIKU_PACKAGING_ARCH_arm64)
 	cmd:bunzip2
 	cmd:gunzip
 	cmd:tar

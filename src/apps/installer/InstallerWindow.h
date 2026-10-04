@@ -26,6 +26,7 @@ class BStatusBar;
 class BStringView;
 class BTextView;
 class PackagesView;
+class PartitionMenuItem;
 class WorkerThread;
 
 enum InstallStatus {
@@ -52,6 +53,7 @@ private:
 			void				_UpdateControls();
 			void				_PublishPackages();
 			void				_SetStatusMessage(const char* text);
+			bool				_ConfirmEraseDisk(PartitionMenuItem* item);
 
 			void				_SetCopyEngineCancelSemaphore(sem_id id,
 									bool alreadyLocked = false);
@@ -89,6 +91,7 @@ private:
 			bool				fDriveSetupLaunched;
 			bool				fBootManagerLaunched;
 			InstallStatus		fInstallStatus;
+			bool				fWholeDiskInstall;
 
 			WorkerThread*		fWorkerThread;
 			BString				fLastStatus;

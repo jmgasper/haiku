@@ -7,6 +7,7 @@
 
 
 #include <ATAInfoBlock.h>
+#include <arch/atomic.h>
 
 #include "ahci_defs.h"
 
@@ -14,6 +15,11 @@
 class AHCIController;
 class sata_request;
 
+#if defined(__aarch64__)
+// One command is active per port. Bound its private DMA payload and let the
+// SCSI manager split larger disk requests before they reach the controller.
+static const size_t kAHCIMaxDMATransfer = 128 * 1024;
+#endif
 class AHCIPort {
 public:
 				AHCIPort(AHCIController *controller, int index);
@@ -58,7 +64,7 @@ private:
 	void		DumpD2HFis();
 	void		DumpHBAState();
 
-	void		StartTransfer();
+	status_t	StartTransfer();
 	status_t	WaitForTransfer(int *tfd, bigtime_t timeout);
 	void		FinishTransfer();
 
@@ -73,6 +79,12 @@ private:
 	int						fIndex;
 	volatile ahci_port *	fRegs;
 	area_id					fArea;
+#if defined(__aarch64__)
+	area_id					fDMAArea;
+	void*					fDMABuffer;
+	phys_addr_t				fDMAAddress;
+#endif
+	bool					fDMAFailed;
 	spinlock						fSpinlock;
 	volatile uint32					fCommandsActive;
 	sem_id							fRequestSem;
@@ -100,8 +112,10 @@ private:
 inline void
 AHCIPort::FlushPostedWrites()
 {
+	memory_full_barrier();
 	volatile uint32 dummy = fRegs->cmd;
 	dummy = dummy;
+	memory_full_barrier();
 }
 
 

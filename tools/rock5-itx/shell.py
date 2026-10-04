@@ -4,6 +4,7 @@
 import argparse
 import base64
 import contextlib
+import hashlib
 import ipaddress
 import json
 import os
@@ -26,6 +27,21 @@ import lab
 import shell_image
 
 
+class _PacedSocket:
+    """Avoid bursts while the guest terminal switches line-editing modes."""
+    def __init__(self, connection):
+        self.connection = connection
+
+    def __getattr__(self, name):
+        return getattr(self.connection, name)
+
+    def sendall(self, data):
+        for offset in range(0, len(data), 512):
+            self.connection.sendall(data[offset:offset + 512])
+            if offset + 512 < len(data):
+                time.sleep(.005)
+
+
 def ssh_command(config):
     return ['ssh', '-F', str(lab.local_path(config['ssh_config'])),
             '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=3']
@@ -39,8 +55,10 @@ def usb_address(value):
     return str(address)
 
 
-def login(host, port, credentials, timeout=20):
+def login(host, port, credentials, timeout=20, *, wait_for_shell=True):
     client = telnetlib.Telnet(host, port, timeout)
+    client.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    client.sock = _PacedSocket(client.sock)
     try:
         if not client.read_until(b'login:', timeout).endswith(b'login:'):
             raise TimeoutError('No lab login prompt')
@@ -48,6 +66,10 @@ def login(host, port, credentials, timeout=20):
         if not client.read_until(b'password:', timeout).endswith(b'password:'):
             raise TimeoutError('No lab password prompt')
         client.write((credentials['password'] + '\r\n').encode())
+        # The private lab image uses data/etc/profile's standard prompt.
+        # Authentication can finish before the shell configures its terminal.
+        if wait_for_shell and not client.read_until(b'> ', timeout).endswith(b'> '):
+            raise TimeoutError('No lab shell prompt')
         return client
     except BaseException:
         client.close()
@@ -61,7 +83,20 @@ def execute(client, commands, output, credentials, timeout=60):
     token = secrets.token_hex(8)
     begin = f'ROCK5_BEGIN_{token}'
     end = f'ROCK5_END_{token}'
-    payload = (f"PS1= PS2=\nprintf '\\n{begin}\\n'\n(\nset -e\n{commands}\n)\n"
+    # Readline treats tabs in here-documents as completion requests. Transfer
+    # a checked script instead of parsing the program through line editing.
+    delimiter = f'ROCK5_PROGRAM_{token}'
+    program = f'/tmp/rock5-command-{token}'
+    encoded = base64.encodebytes(commands.encode()).decode()
+    digest = hashlib.sha256(commands.encode()).hexdigest()
+    payload = (f"PS1= PS2=\nprintf '\\n{begin}\\n'\n(\nset -e\n"
+               f"umask 077\nset -C\n: > {program}\nset +C\n"
+               f"trap 'rm -f {program}' EXIT\n"
+               f"base64 -d > {program} <<'{delimiter}'\n{encoded}{delimiter}\n"
+               f"rock5_program_sha=$(sha256sum {program})\n"
+               f"if [ \"${{rock5_program_sha%% *}}\" != {digest} ]; then\n"
+               "echo ROCK5_COMMAND_CHECKSUM_MISMATCH\nexit 1\nfi\n"
+               f". {program}\n)\n"
                f"rock5_result=$?; printf '\\n{end}:%d\\n' \"$rock5_result\"\n")
     received = b''
     result = {'status': 'incomplete', 'transcript': str(output)}
@@ -362,17 +397,126 @@ with socket.socket() as listener:
             process.stdout.close()
 
 
-def download(config, target, name, destination, output):
+@contextlib.contextmanager
+def staged_binary_receiver(config, target, destination, output, rate_limit=256 * 1024):
+    """Finish USB reception on NanoKVM before downloading over its Ethernet link."""
+    target = usb_address(target)
+    if type(rate_limit) is not int or (rate_limit != 0 and not 65536 <= rate_limit <= 16 * 1024 * 1024):
+        raise ValueError('Receive rate must be zero or between 65536 and 16777216 bytes/second')
+    token = secrets.token_hex(32)
+    staging = '/data/haiku-download-' + secrets.token_hex(12) + '.bin'
+    output = lab.local_path(output)
+    record = {'status': 'incomplete', 'remote_staging_file': staging,
+              'remote_file_removed': False, 'rate_limit_bytes_per_second': rate_limit}
+    script = '''import hashlib, json, os, socket, struct, time
+os.umask(0o077)
+rate_limit = %r
+with socket.socket() as listener:
+    if rate_limit:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16384)
+    listener.bind(('10.239.6.1', 0))
+    listener.listen(1)
+    listener.settimeout(90)
+    print(json.dumps({'address': '10.239.6.1', 'port': listener.getsockname()[1]}), flush=True)
+    connection, peer = listener.accept()
+    with connection:
+        connection.settimeout(60)
+        if peer[0] != %r:
+            raise RuntimeError('Unexpected USB peer')
+        def read_exactly(size):
+            data = bytearray()
+            while len(data) < size:
+                chunk = connection.recv(size - len(data))
+                if not chunk:
+                    raise EOFError('Truncated guest transfer')
+                data.extend(chunk)
+            return data
+        if read_exactly(65) != %r:
+            raise RuntimeError('Incorrect transfer token')
+        count, = struct.unpack('!Q', read_exactly(8))
+        if count > 16 * 1024 * 1024:
+            raise ValueError('Oversized guest transfer')
+        remaining = count
+        digest = hashlib.sha256()
+        with open(%r, 'xb') as data:
+            while remaining:
+                chunk = read_exactly(min(4096 if rate_limit else 65536, remaining))
+                data.write(chunk)
+                digest.update(chunk)
+                remaining -= len(chunk)
+                if rate_limit:
+                    time.sleep(len(chunk) / rate_limit)
+            data.flush()
+            os.fsync(data.fileno())
+        print(json.dumps({'bytes': count, 'sha256': digest.hexdigest()}), flush=True)
+''' % (rate_limit, target, token.encode() + b'\n', staging)
+    command = ssh_command(config) + [config['nanokvm_ssh'],
+                                    'python3 -u -c ' + shlex.quote(script)]
+    output.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with output.with_suffix('.staging.log').open('w') as errors:
+            process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.PIPE, stderr=errors)
+            try:
+                if not select.select([process.stdout], [], [], 20)[0]:
+                    raise TimeoutError('Staged receiver did not start')
+                ready = json.loads(process.stdout.readline())
+                if ready.get('address') != '10.239.6.1' or not 1 <= ready.get('port', 0) <= 65535:
+                    raise RuntimeError('Invalid staged receiver endpoint')
+                yield ready, token
+                receipt_data, _ = process.communicate(timeout=30)
+                if process.returncode != 0:
+                    raise RuntimeError('Staged USB receiver failed; see its log')
+                receipt = json.loads(receipt_data)
+                if (type(receipt.get('bytes')) is not int or not 0 <= receipt['bytes'] <= 16 * 1024 * 1024
+                        or not re.fullmatch(r'[0-9a-f]{64}', receipt.get('sha256', ''))):
+                    raise RuntimeError('Invalid staged transfer receipt')
+                record['receipt'] = receipt
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=10)
+                process.stdout.close()
+
+            # The receiver has exited and closed the USB socket before this
+            # second SSH connection starts moving the file onto the workstation.
+            with destination.open('xb') as data:
+                destination.chmod(0o600)
+                subprocess.run(ssh_command(config) + [config['nanokvm_ssh'],
+                               'cat ' + shlex.quote(staging)], stdin=subprocess.DEVNULL,
+                               stdout=data, stderr=errors, timeout=90, check=True)
+            if destination.stat().st_size != receipt['bytes'] or lab.digest(destination) != receipt['sha256']:
+                raise RuntimeError('Staged download differs from the USB receipt')
+            lab.remote_python(config, 'from pathlib import Path\nPath(' + repr(staging) + ').unlink()')
+            record.update(status='pass', remote_file_removed=True)
+    except BaseException as error:
+        record.update(status='error', error=str(error))
+        raise
+    finally:
+        # Failed scratch files are retained for diagnosis, with their exact path
+        # recorded here. Cleanup never guesses or removes another trial's file.
+        lab.save(output.with_suffix('.staging.json'), record)
+
+
+def download(config, target, name, destination, output, transport='staged', rate_limit=256 * 1024):
     destination = lab.local_path(destination)
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', name):
         raise ValueError('Use a simple source filename')
     if destination.exists():
         raise FileExistsError('Download destination already exists')
+    if transport not in ('staged', 'relay'):
+        raise ValueError('Download transport must be staged or relay')
     destination.parent.mkdir(parents=True, exist_ok=True)
     incoming = destination.with_name(destination.name + '.incoming-' + secrets.token_hex(6))
     source = '/boot/home/rock5-lab/' + name
     started = time.monotonic()
-    with binary_receiver(config, target, incoming, output) as (relay, token):
+    receiver = (staged_binary_receiver(config, target, incoming, output, rate_limit)
+                if transport == 'staged' else binary_receiver(config, target, incoming, output))
+    with receiver as (relay, token):
         commands = (
             f'actual=$(sha256sum {shlex.quote(source)})\n'
             '/boot/home/config/non-packaged/bin/rock5_file_transfer '
@@ -387,7 +531,9 @@ def download(config, target, name, destination, output):
         raise RuntimeError('Downloaded bytes differ from the guest checksum')
     incoming.rename(destination)
     result.update(source=source, destination=str(destination), sha256=matches[0],
-                  bytes=destination.stat().st_size, elapsed_seconds=time.monotonic() - started)
+                  bytes=destination.stat().st_size, transport=transport,
+                  rate_limit_bytes_per_second=rate_limit if transport == 'staged' else None,
+                  elapsed_seconds=time.monotonic() - started)
     lab.save(lab.local_path(output).with_suffix('.download.json'), result)
     return result
 
@@ -409,6 +555,9 @@ def main():
     fetch.add_argument('target', type=usb_address)
     fetch.add_argument('name')
     fetch.add_argument('destination')
+    fetch.add_argument('--transport', choices=('staged', 'relay'), default='staged')
+    fetch.add_argument('--rate-limit', type=int, default=256 * 1024,
+                       help='Staged USB receive bytes/second; zero disables pacing')
     for command in (run, copy, fetch):
         command.add_argument('--output', required=True, help='Local transcript under /mnt/HaikuWork')
     args = parser.parse_args()
@@ -424,7 +573,8 @@ def main():
             result = upload(config, args.target, args.source, args.name, args.output,
                             args.executable, args.transport)
         else:
-            result = download(config, args.target, args.name, args.destination, args.output)
+            result = download(config, args.target, args.name, args.destination, args.output,
+                              args.transport, args.rate_limit)
     print(json.dumps(result))
 
 

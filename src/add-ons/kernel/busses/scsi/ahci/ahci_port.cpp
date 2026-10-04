@@ -66,6 +66,12 @@ AHCIPort::AHCIPort(AHCIController* controller, int index)
 	fIndex(index),
 	fRegs(&controller->fRegs->port[index]),
 	fArea(-1),
+#if defined(__aarch64__)
+	fDMAArea(-1),
+	fDMABuffer(NULL),
+	fDMAAddress(0),
+#endif
+	fDMAFailed(false),
 	fCommandsActive(0),
 	fRequestSem(-1),
 	fResponseSem(-1),
@@ -99,6 +105,8 @@ status_t
 AHCIPort::Init1()
 {
 	TRACE("AHCIPort::Init1 port %d\n", fIndex);
+	if (fRequestSem < B_OK || fResponseSem < B_OK)
+		return B_NO_MEMORY;
 
 	size_t size = sizeof(command_list_entry) * COMMAND_LIST_ENTRY_COUNT
 		+ sizeof(fis) + sizeof(command_table)
@@ -110,11 +118,22 @@ AHCIPort::Init1()
 	snprintf(name, sizeof(name), "AHCI port %d", fIndex);
 
 	fArea = alloc_mem((void**)&virtAddr, &physAddr, size,
-		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, name);
+		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, name,
+		(fController->fRegs->cap & CAP_S64A) != 0);
 	if (fArea < B_OK) {
 		TRACE("failed allocating memory for port %d\n", fIndex);
 		return fArea;
 	}
+#if defined(__aarch64__)
+	fDMAArea = alloc_mem(&fDMABuffer, &fDMAAddress, kAHCIMaxDMATransfer,
+		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, "AHCI DMA payload",
+		(fController->fRegs->cap & CAP_S64A) != 0);
+	if (fDMAArea < B_OK) {
+		delete_area(fArea);
+		fArea = -1;
+		return fDMAArea;
+	}
+#endif
 	memset(virtAddr, 0, size);
 
 	fCommandList = (command_list_entry*)virtAddr;
@@ -125,6 +144,7 @@ AHCIPort::Init1()
 	virtAddr += sizeof(command_table);
 	fPRDTable = (prd*)virtAddr;
 	TRACE("PRD table is at %p\n", fPRDTable);
+	memory_full_barrier();
 
 	fRegs->clb  = LO32(physAddr);
 	fRegs->clbu = HI32(physAddr);
@@ -170,7 +190,8 @@ AHCIPort::Init2()
 	TRACE("AHCIPort::Init2 port %d\n", fIndex);
 
 	// enable port
-	Enable();
+	if (!Enable())
+		return B_ERROR;
 
 	// enable interrupts
 	fRegs->ie = PORT_INT_MASK;
@@ -193,6 +214,8 @@ void
 AHCIPort::Uninit()
 {
 	TRACE("AHCIPort::Uninit port %d\n", fIndex);
+	if (fArea < B_OK)
+		return;
 
 	// Spec v1.3.1, §10.3.2 - Shut down port before unsetting FRE
 
@@ -205,8 +228,12 @@ AHCIPort::Uninit()
 
 	// Clear FRE and wait for completion
 	fRegs->cmd &= ~PORT_CMD_FRE;
-	if (wait_until_clear(&fRegs->cmd, PORT_CMD_FR, 500000) < B_OK)
+	FlushPostedWrites();
+	if (wait_until_clear(&fRegs->cmd, PORT_CMD_FR, 500000) < B_OK) {
 		ERROR("%s: port %d error FIS rx still running\n", __func__, fIndex);
+		// The HBA may still own these pages. Retain them on failed shutdown.
+		return;
+	}
 
 	// disable interrupts
 	fRegs->ie = 0;
@@ -219,8 +246,15 @@ AHCIPort::Uninit()
 	fRegs->clbu = 0;
 	fRegs->fb   = 0;
 	fRegs->fbu  = 0;
+	FlushPostedWrites();
 
 	delete_area(fArea);
+	fArea = -1;
+#if defined(__aarch64__)
+	delete_area(fDMAArea);
+	fDMAArea = -1;
+	fDMABuffer = NULL;
+#endif
 }
 
 
@@ -256,6 +290,8 @@ AHCIPort::PortReset()
 
 	if (!Disable()) {
 		ERROR("%s: port %d unable to shutdown!\n", __func__, fIndex);
+		fDMAFailed = true;
+		fDevicePresent = false;
 		return B_ERROR;
 	}
 
@@ -280,7 +316,8 @@ AHCIPort::PortReset()
 		FlushPostedWrites();
 	}
 
-	Enable();
+	if (!Enable())
+		return B_ERROR;
 
 	if (wait_until_set(&fRegs->ssts, SSTS_PORT_DET_PRESENT, 500000) < B_OK) {
 		TRACE("%s: port %d: no device detected\n", __func__, fIndex);
@@ -497,13 +534,20 @@ AHCIPort::FillPrdTable(volatile prd* prdTable, int* prdCount, int prdMax,
 	const physical_entry* sgTable, int sgCount, size_t dataSize)
 {
 	*prdCount = 0;
+	if (dataSize == 0)
+		return B_OK;
+	if (prdTable == NULL || prdMax <= 0 || sgTable == NULL || sgCount <= 0)
+		return B_BAD_VALUE;
 	while (sgCount > 0 && dataSize > 0) {
 		size_t size = min_c(sgTable->size, dataSize);
 		phys_addr_t address = sgTable->address;
 		T_PORT(AHCIPortPrdTable(fController, fIndex, address, size));
 		FLOW("FillPrdTable: sg-entry addr %#" B_PRIxPHYSADDR ", size %lu\n",
 			address, size);
-		if (address & 1) {
+		if (size == 0 || ((address | size) & 1) != 0
+			|| address > ~(phys_addr_t)0 - (size - 1)
+			|| ((fController->fRegs->cap & CAP_S64A) == 0
+				&& address + size - 1 > UINT32_MAX)) {
 			ERROR("AHCIPort::FillPrdTable: data alignment error\n");
 			return B_ERROR;
 		}
@@ -542,10 +586,18 @@ AHCIPort::FillPrdTable(volatile prd* prdTable, int* prdCount, int prdMax,
 }
 
 
-void
+status_t
 AHCIPort::StartTransfer()
 {
-	acquire_sem(fRequestSem);
+	status_t status;
+	do {
+		status = acquire_sem(fRequestSem);
+	} while (status == B_INTERRUPTED);
+	if (status != B_OK)
+		return status;
+	// A completion racing a prior timeout must not satisfy the next command.
+	while (acquire_sem_etc(fResponseSem, 1, B_RELATIVE_TIMEOUT, 0) == B_OK) {}
+	return B_OK;
 }
 
 
@@ -798,6 +850,10 @@ AHCIPort::ScsiInquiry(scsi_ccb* request)
 		if (fTrimSupported) {
 			if (fMaxTrimRangeBlocks == 0)
 				fMaxTrimRangeBlocks = 1;
+#if defined(__aarch64__)
+			fMaxTrimRangeBlocks = min_c(fMaxTrimRangeBlocks,
+				kAHCIMaxDMATransfer / 512);
+#endif
 
 			#ifdef TRACE_AHCI
 			bool deterministic = ataData.supports_deterministic_read_after_trim;
@@ -992,7 +1048,15 @@ AHCIPort::ScsiReadWrite(scsi_ccb* request, uint64 lba, size_t sectorCount,
 	}
 #endif
 
-	ASSERT(request->data_length == sectorCount * 512);
+	if (fSectorSize == 0 || sectorCount == 0
+		|| sectorCount > (fUse48BitCommands ? 65536u : 256u)
+		|| sectorCount > SIZE_MAX / fSectorSize
+		|| request->data_length != sectorCount * fSectorSize
+		|| lba > (fUse48BitCommands ? MAX_SECTOR_LBA_48 : MAX_SECTOR_LBA_28)) {
+		request->subsys_status = SCSI_REQ_INVALID;
+		gSCSI->finished(request, 1);
+		return;
+	}
 	sata_request* sreq = new(std::nothrow) sata_request(request);
 	if (sreq == NULL) {
 		TRACE("out of memory when allocating read/write request\n");
@@ -1183,19 +1247,52 @@ AHCIPort::ExecuteSataRequest(sata_request* request, bool isWrite)
 {
 	FLOW("ExecuteAtaRequest port %d\n", fIndex);
 
-	StartTransfer();
+	status_t status = StartTransfer();
+	if (status != B_OK) {
+		request->Abort();
+		return;
+	}
+	if (fDMAFailed) {
+		FinishTransfer();
+		request->Abort();
+		return;
+	}
 
-	int prdEntrys;
-
-	if (request->CCB() && request->CCB()->data_length) {
-		FillPrdTable(fPRDTable, &prdEntrys, PRD_TABLE_ENTRY_COUNT,
+	int prdEntrys = 0;
+	size_t dataSize = request->Size();
+#if defined(__aarch64__)
+	if (dataSize > kAHCIMaxDMATransfer)
+		status = B_BAD_VALUE;
+	else if (dataSize != 0) {
+		status = request->CopyData(fDMABuffer, dataSize, false, !isWrite);
+		if (status == B_OK) {
+			// PRDs describe an even capacity, including odd ATAPI requests.
+			size_t dmaSize = (dataSize + 1) & ~(size_t)1;
+			if (!isWrite)
+				memset(fDMABuffer, 0, dmaSize);
+			else if (dmaSize > dataSize)
+				((uint8*)fDMABuffer)[dataSize] = 0;
+			physical_entry entry = {fDMAAddress, dmaSize};
+			status = FillPrdTable(fPRDTable, &prdEntrys, PRD_TABLE_ENTRY_COUNT,
+				&entry, 1, dmaSize);
+		}
+	}
+#else
+	if (request->CCB() && dataSize != 0) {
+		status = FillPrdTable(fPRDTable, &prdEntrys, PRD_TABLE_ENTRY_COUNT,
 			request->CCB()->sg_list, request->CCB()->sg_count,
-			request->CCB()->data_length);
-	} else if (request->Data() && request->Size()) {
-		FillPrdTable(fPRDTable, &prdEntrys, PRD_TABLE_ENTRY_COUNT,
-			request->Data(), request->Size());
-	} else
-		prdEntrys = 0;
+			dataSize);
+	} else if (dataSize != 0) {
+		status = FillPrdTable(fPRDTable, &prdEntrys, PRD_TABLE_ENTRY_COUNT,
+			request->Data(), dataSize);
+	}
+#endif
+	if (status != B_OK) {
+		ERROR("port %d: invalid DMA payload (%" B_PRId32 ")\n", fIndex, status);
+		FinishTransfer();
+		request->Abort();
+		return;
+	}
 
 	FLOW("prdEntrys %d\n", prdEntrys);
 
@@ -1209,6 +1306,12 @@ AHCIPort::ExecuteSataRequest(sata_request* request, bool isWrite)
 
 	if (request->IsATAPI()) {
 		// ATAPI PACKET is a 12 or 16 byte SCSI command
+		if (request->CCB() == NULL || request->CCB()->cdb_length == 0
+			|| request->CCB()->cdb_length > 16) {
+			FinishTransfer();
+			request->Abort();
+			return;
+		}
 		memset((char*)fCommandTable->acmd, 0, 32);
 		memcpy((char*)fCommandTable->acmd, request->CCB()->cdb,
 			request->CCB()->cdb_length);
@@ -1223,7 +1326,10 @@ AHCIPort::ExecuteSataRequest(sata_request* request, bool isWrite)
 	if (wait_until_clear(&fRegs->tfd, ATA_STATUS_BUSY | ATA_STATUS_DATA_REQUEST,
 			1000000) < B_OK) {
 		ERROR("ExecuteAtaRequest port %d: device is busy\n", fIndex);
-		PortReset();
+		if (PortReset() != B_OK) {
+			fDMAFailed = true;
+			fDevicePresent = false;
+		}
 		FinishTransfer();
 		request->Abort();
 		return;
@@ -1232,13 +1338,18 @@ AHCIPort::ExecuteSataRequest(sata_request* request, bool isWrite)
 	cpu_status cpu = disable_interrupts();
 	acquire_spinlock(&fSpinlock);
 	fCommandsActive |= 1;
+	memory_full_barrier();
 	fRegs->ci = 1;
 	FlushPostedWrites();
 	release_spinlock(&fSpinlock);
 	restore_interrupts(cpu);
 
-	int tfd;
-	status_t status = WaitForTransfer(&tfd, 20000000);
+	int tfd = 0;
+	status = WaitForTransfer(&tfd, 20000000);
+	memory_full_barrier();
+	size_t bytesTransfered = fCommandList->prdbc;
+	if (status == B_OK && ((fRegs->ci & 1) != 0 || bytesTransfered > dataSize))
+		status = B_BAD_DATA;
 
 	FLOW("Port %d sata request flow:\n", fIndex);
 	FLOW("  tfd %#x\n", tfd);
@@ -1259,18 +1370,33 @@ AHCIPort::ExecuteSataRequest(sata_request* request, bool isWrite)
 	TRACE("tfd  0x%08" B_PRIx32 "\n", fRegs->tfd);
 */
 
-	if (fPortReset || status == B_TIMED_OUT) {
+	if (fPortReset || status != B_OK) {
 		fPortReset = false;
-		PortReset();
+		if (PortReset() != B_OK) {
+			fDMAFailed = true;
+			fDevicePresent = false;
+			if (status == B_OK)
+				status = B_ERROR;
+		}
 	}
 
-	size_t bytesTransfered = fCommandList->prdbc;
-
+#if defined(__aarch64__)
+	if (status == B_OK && !isWrite
+		&& (tfd & (ATA_STATUS_ERROR | ATA_STATUS_DEVICE_FAULT)) == 0) {
+		status = request->CopyData(fDMABuffer, bytesTransfered, true);
+	}
+#endif
+	// Keep the per-port payload owned until readback has finished.
 	FinishTransfer();
 
-	if (status == B_TIMED_OUT) {
-		ERROR("ExecuteAtaRequest port %d: device timeout\n", fIndex);
-		request->Abort();
+	if (status != B_OK) {
+		ERROR("ExecuteAtaRequest port %d: transfer failed (%" B_PRId32 ")\n",
+			fIndex, status);
+		if (status == B_ERROR
+			&& (tfd & (ATA_STATUS_ERROR | ATA_STATUS_DEVICE_FAULT)) != 0) {
+			request->Finish(tfd, 0);
+		} else
+			request->Abort();
 		return;
 	}
 
@@ -1485,6 +1611,10 @@ AHCIPort::ScsiGetRestrictions(bool* isATAPI, bool* noAutoSense,
 	*isATAPI = fIsATAPI;
 	*noAutoSense = fIsATAPI; // emulated auto sense for ATA, but not ATAPI
 	*maxBlocks = fUse48BitCommands ? 65536 : 256;
+#if defined(__aarch64__)
+	*maxBlocks = min_c(*maxBlocks,
+		kAHCIMaxDMATransfer / (fSectorSize != 0 ? fSectorSize : 512));
+#endif
 	TRACE("AHCIPort::ScsiGetRestrictions port %d: isATAPI %d, noAutoSense %d, "
 		"maxBlocks %" B_PRIu32 "\n", fIndex, *isATAPI, *noAutoSense,
 		*maxBlocks);

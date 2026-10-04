@@ -35,6 +35,7 @@
 
 #include <bluetooth/bluetooth.h>
 
+#include <LaunchRoster.h>
 #include <LEBondStore.h>
 #include <LEDeviceStatus.h>
 #include <bluetoothserver_p.h>
@@ -54,8 +55,10 @@ static const char* kSignature = "application/x-vnd.Haiku-BluetoothStatus";
 static const char* kItemName = "BluetoothStatus";
 static const char* kPreferencesSignature
 	= "application/x-vnd.Haiku-BluetoothPrefs";
-	// The server's own, simpler replicant; this applet replaces it.
+	// The replicant bluetooth_server used to install; an older system may
+	// have left it in the Deskbar.
 static const char* kServerItemName = "BluetoothServerReplicant";
+static const char* kServerJob = "x-vnd.Haiku-bluetooth_server";
 
 static const uint32 kMsgRefresh = 'btrf';
 static const uint32 kMsgOpenPreferences = 'btop';
@@ -774,9 +777,14 @@ private:
 
 	void _StartService()
 	{
-		// A system can supply a hook that prepares its controller (for
-		// example loads firmware) and starts the server; run it as its own
-		// process so Deskbar never waits for it.
+		// The launch_daemon runs the server as a service, and starts it
+		// again after the preferences stopped it.
+		if (BLaunchRoster().Start(kServerJob) == B_OK)
+			return;
+
+		// Without that job, a system can supply a hook that prepares its
+		// controller and starts the server; run it as its own process so
+		// Deskbar never waits for it.
 		BPath hook;
 		if (find_directory(B_USER_SETTINGS_DIRECTORY, &hook) == B_OK
 			&& hook.Append("bluetooth/start-services") == B_OK
@@ -837,7 +845,7 @@ public:
 			snooze(1000000);
 		}
 		if (deskbar.IsRunning()) {
-			// This applet supersedes the server's simpler replicant.
+			// This applet supersedes the server's old replicant.
 			if (deskbar.HasItem(kServerItemName))
 				deskbar.RemoveItem(kServerItemName);
 		}

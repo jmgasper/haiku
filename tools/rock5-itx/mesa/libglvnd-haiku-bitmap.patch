@@ -1,0 +1,18 @@
+--- a/src/HGL/GLView.cpp
++++ b/src/HGL/GLView.cpp
+@@ -419,10 +419,12 @@
+ BGLView::Draw(BRect updateRect)
+ {
+     BRegion region(updateRect);
+-    if (fRenderer != NULL && fRenderer->fBitmap.IsSet()) {
++    if (fRenderer != NULL) {
+         PthreadMutexLocker lock(&fRenderer->fLock);
+-        DrawBitmap(fRenderer->fBitmap.Get(), B_ORIGIN);
+-        region.Exclude(fRenderer->fBitmap->Bounds());
++        if (fRenderer->fBitmap.IsSet()) {
++            DrawBitmap(fRenderer->fBitmap.Get(), B_ORIGIN);
++            region.Exclude(fRenderer->fBitmap->Bounds());
++        }
+     }
+     FillRegion(&region, B_SOLID_LOW);
+ 

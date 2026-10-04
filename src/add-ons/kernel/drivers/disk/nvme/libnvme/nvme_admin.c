@@ -118,6 +118,36 @@ int nvme_admin_identify_ctrlr(struct nvme_ctrlr *ctrlr,
 }
 
 /*
+ * Get NVM command-set-specific controller information.
+ */
+int nvme_admin_identify_nvm_ctrlr(struct nvme_ctrlr *ctrlr,
+				struct nvme_nvm_ctrlr_data *cdata)
+{
+	struct nvme_cmd cmd;
+	struct nvme_completion_poll_status status;
+	int ret;
+
+	memset(&cmd, 0, sizeof(cmd));
+	cmd.opc = NVME_OPC_IDENTIFY;
+	cmd.cdw10 = NVME_IDENTIFY_CTRLR_NVM;
+	/* CDW11.CSI is zero for the NVM command set. */
+	status.done = false;
+	ret = nvme_admin_submit_cmd(ctrlr, &cmd, cdata, sizeof(*cdata),
+				   nvme_request_completion_poll_cb, &status);
+	if (ret != 0)
+		return ret;
+	while (!status.done)
+		nvme_qpair_poll(&ctrlr->adminq, 0);
+
+	/* Older controllers may reject this optional Identify selector. */
+	if (status.cpl.status.sct == NVME_SCT_GENERIC &&
+	    (status.cpl.status.sc == NVME_SC_INVALID_OPCODE ||
+	     status.cpl.status.sc == NVME_SC_INVALID_FIELD))
+		return ENOTSUP;
+	return nvme_cpl_is_error(&status.cpl) ? ENXIO : 0;
+}
+
+/*
  * Get a controller feature.
  */
 int nvme_admin_get_feature(struct nvme_ctrlr *ctrlr,

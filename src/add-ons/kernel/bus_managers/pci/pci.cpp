@@ -782,6 +782,20 @@ PCI::InitDomainData(domain_data &data)
 {
 	int32 count;
 	status_t status;
+	const char* intxModule;
+	if (data.root_node != NULL && gDeviceManager->get_attr_string(data.root_node,
+			B_PCI_INTX_CONTROLLER_MODULE, &intxModule, true) == B_OK) {
+		data.intx_status = get_module(intxModule, (module_info**)&data.intx_controller);
+		if (data.intx_status == B_OK && (data.intx_controller->get_irq == NULL
+			|| data.intx_controller->set_enabled == NULL)) {
+			put_module(intxModule);
+			data.intx_controller = NULL;
+			data.intx_status = B_BAD_VALUE;
+		}
+		if (data.intx_status != B_OK)
+			dprintf("PCI: cannot load INTx controller %s: %" B_PRId32 "\n",
+				intxModule, data.intx_status);
+	}
 
 	pci_controller_module_info *ctrl = data.controller;
 	void *ctrlCookie = data.controller_cookie;
@@ -2218,7 +2232,117 @@ PCI::SetPowerstate(uint8 domain, uint8 bus, uint8 _device, uint8 function,
 }
 
 
+//#pragma mark - INTx
+
+status_t
+PCI::GetIntxIRQ(PCIDev* device, uint32* irq)
+{
+	if (irq == NULL)
+		return B_BAD_VALUE;
+	*irq = 0;
+	domain_data& domain = *_GetDomainData(device->domain);
+	if (domain.intx_status != B_OK)
+		return domain.intx_status;
+	uint8 pin = ReadConfig(device, PCI_interrupt_pin, 1);
+	if (pin < 1 || pin > 4)
+		return B_UNSUPPORTED;
+	if (domain.intx_controller != NULL) {
+		return domain.intx_controller->get_irq(domain.controller_cookie,
+			device->bus, device->device, device->function, pin, irq);
+	}
+	uint8 line = ReadConfig(device, PCI_interrupt_line, 1);
+	if (line == 0 || line == 0xff)
+		return B_UNSUPPORTED;
+	*irq = line;
+	return B_OK;
+}
+
+
+status_t
+PCI::SetIntxEnabled(PCIDev* device, bool enabled)
+{
+	domain_data& domain = *_GetDomainData(device->domain);
+	if (domain.intx_status != B_OK)
+		return domain.intx_status;
+	// Preserve the legacy behavior on hosts without an explicit provider.
+	if (domain.intx_controller == NULL)
+		return B_OK;
+	uint8 pin = device->intx_pin;
+	if (pin == 0)
+		pin = ReadConfig(device, PCI_interrupt_pin, 1);
+	uint16 command = ReadConfig(device, PCI_command, 2);
+	if (!enabled) {
+		// Use the saved pin if endpoint configuration has become inaccessible.
+		// The host's mask still has to work before a handler can be removed.
+		if (command != UINT16_MAX)
+			WriteConfig(device, PCI_command, 2, command | PCI_command_int_disable);
+		status_t status = domain.intx_controller->set_enabled(domain.controller_cookie,
+			device->bus, device->device, device->function, pin, false);
+		if (status == B_OK) {
+			device->intx_enabled = false;
+			device->intx_pin = 0;
+		}
+		return status;
+	}
+	uint32 irq;
+	status_t status = GetIntxIRQ(device, &irq);
+	if (status != B_OK)
+		return status;
+	if (command == UINT16_MAX)
+		return B_IO_ERROR;
+	if (device->msi.configured_count != 0 || device->msix.configured_count != 0) {
+		return B_BUSY;
+	}
+	if ((device->msi.msi_capable
+			&& (ReadConfig(device, device->msi.capability_offset + PCI_msi_control, 2)
+				& PCI_msi_control_enable) != 0)
+		|| (device->msix.msix_capable
+			&& (ReadConfig(device, device->msix.capability_offset + PCI_msix_control, 2)
+				& PCI_msix_control_enable) != 0)) {
+		return B_BUSY;
+	}
+	device->intx_pin = pin;
+	status = domain.intx_controller->set_enabled(domain.controller_cookie,
+		device->bus, device->device, device->function, pin, true);
+	if (status != B_OK)
+		return status;
+	status = WriteConfig(device, PCI_command, 2, command & ~PCI_command_int_disable);
+	if (status != B_OK
+		|| (ReadConfig(device, PCI_command, 2) & PCI_command_int_disable) != 0) {
+		WriteConfig(device, PCI_command, 2, command | PCI_command_int_disable);
+		domain.intx_controller->set_enabled(domain.controller_cookie,
+			device->bus, device->device, device->function, pin, false);
+		return status != B_OK ? status : B_IO_ERROR;
+	}
+	device->intx_enabled = true;
+	return B_OK;
+}
+
+
 //#pragma mark - MSI
+
+status_t
+PCI::_AllocateMSIVectors(PCIDev* device, uint32 count, uint32* startVector,
+	uint64* address, uint32* data)
+{
+	msi_requester requester{};
+	device_node* root = _GetDomainData(device->domain)->root_node;
+	if (root == NULL || gDeviceManager->get_attr_uint64(root, B_PCI_MSI_CONTROLLER_ADDRESS,
+			&requester.controller_address, true) != B_OK) {
+		return msi_allocate_vectors_for_device(NULL, count, startVector, address, data);
+	}
+	uint32 base, range;
+	uint32 rid = (uint32(device->bus) << 8) | (uint32(device->device) << 3)
+		| device->function;
+	if (gDeviceManager->get_attr_uint32(root, B_PCI_MSI_REQUESTER_BASE, &base, true) != B_OK
+		|| gDeviceManager->get_attr_uint32(root, B_PCI_MSI_REQUESTER_COUNT, &range, true) != B_OK
+		|| rid >= range || base > UINT32_MAX - rid) {
+		return B_BAD_VALUE;
+	}
+	requester.device_id = base + rid;
+	return msi_allocate_vectors_for_device(&requester, count, startVector, address, data);
+}
+
 
 uint32
 PCI::GetMSICount(PCIDev *device)
@@ -2237,6 +2361,8 @@ PCI::GetMSICount(PCIDev *device)
 status_t
 PCI::ConfigureMSI(PCIDev *device, uint32 count, uint32 *startVector)
 {
+	if (device->intx_enabled)
+		return B_BUSY;
 	if (!msi_supported())
 		return B_UNSUPPORTED;
 
@@ -2255,7 +2381,7 @@ PCI::ConfigureMSI(PCIDev *device, uint32 count, uint32 *startVector)
 	if (info->configured_count != 0)
 		return B_BUSY;
 
-	status_t result = msi_allocate_vectors(count, &info->start_vector,
+	status_t result = _AllocateMSIVectors(device, count, &info->start_vector,
 		&info->address_value, &info->data_value);
 	if (result != B_OK)
 		return result;
@@ -2390,6 +2516,8 @@ PCI::GetMSIXCount(PCIDev *device)
 status_t
 PCI::ConfigureMSIX(PCIDev *device, uint32 count, uint32 *startVector)
 {
+	if (device->intx_enabled)
+		return B_BUSY;
 	if (!msi_supported())
 		return B_UNSUPPORTED;
 
@@ -2447,7 +2575,7 @@ PCI::ConfigureMSIX(PCIDev *device, uint32 count, uint32 *startVector)
 		info->pba_area_id = -1;
 	info->pba_address = address + info->pba_offset;
 
-	status_t result = msi_allocate_vectors(count, &info->start_vector,
+	status_t result = _AllocateMSIVectors(device, count, &info->start_vector,
 		&info->address_value, &info->data_value);
 	if (result != B_OK) {
 		delete_area(info->pba_area_id);

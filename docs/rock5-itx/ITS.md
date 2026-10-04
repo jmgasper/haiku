@@ -1,0 +1,199 @@
+# Initial RK3588 ITS/LPI profile
+
+The first ITS implementation is confined to ITS1, the Samsung 950 Pro at
+firmware segment-zero BDF `01:00.0`, and CPU 0. It is enabled only by
+`home/config/settings/kernel/drivers/gicv3_its` containing:
+
+```
+firmware_profile rock5-itx-edk2-v1.1-dt-its-nvme
+trace true
+```
+
+The setting is absent from ordinary images and enabled explicitly on the
+`hrev60097+88` SSD installation. Do not combine it with the experimental MBI
+provider. It requires the captured EDK2 v1.1 DT
+profile, ITS1 resources, segment-zero identity `msi-map`, eight CPUs and the
+measured GIC-600 capabilities. An unrelated QEMU machine must reject it before
+ITS MMIO. AHCI remains blocked and RTL8125 absent in initial native trials.
+
+The [earlier MBI experiment](MBI-PROBE.md) delivered CPU-generated messages but
+failed real SSD MSI-X delivery. Linux instead programs `0xfe670040`, with event
+IDs 0 through 8. A 64 MiB EFI read generated 513 NVMe interrupts and matched
+the retained hash. Read-only Linux capability capture
+`linux-its-reference/20260912T221705Z-a8f64c` then recorded both ITS instances
+with IIDR `0x0201743b`, TYPER `0x130001ef31`, device-table entry size 8 and
+collection-table entry size 2. ITS1's command queue drained normally. CPU 0's
+Redistributor TYPER was `0x21`. This is a Linux baseline, not native Haiku proof.
+
+Implementation references are Arm IHI 0069G
+[chapters 5 and 8, and register descriptions in chapter 12](https://www.scs.stanford.edu/~zyedidia/docs/arm/gic_v3.pdf),
+Rockchip's [RK3588 TRM Part 1, chapter 11](https://www.scs.stanford.edu/~zyedidia/docs/rockchip/rk3588_part1.pdf),
+and the pinned Linux v6.12
+[RK3588001 handling](https://github.com/torvalds/linux/blob/v6.12/drivers/irqchip/irq-gic-v3-its.c).
+The SoC's table masters address 35 bits and require non-shareable LPI-table
+accesses. Haiku allocates private contiguous pages below 32 GiB, removes the
+allocator's cached lines and retypes the mappings to Normal Non-cacheable,
+following the qualified NVMe DMA approach. Command, device, collection,
+property, pending and interrupt-translation tables remain kernel-owned.
+
+For a separate address-width trial, `force_high_tables true` in the same
+settings file requires all six allocations to start at or above 4 GiB. The
+entire allocation must still fit below 32 GiB. The allocator and returned
+physical ranges both enforce the bounds; failure prevents ITS attachment
+without falling back to low memory. This option is absent from ordinary
+images and the installed SSD. Actual table addresses and hash-checked native
+I/O must be recorded before accepting that trial. The bounded native pass is
+recorded below.
+
+Initialization refuses active LPIs on any Redistributor and requires ITS1 to
+be disabled and quiescent before writing table descriptors. Device and
+collection tables are flat, with 64 KiB pages; the command queue is 64 KiB.
+Register readbacks must match. CPU 0 receives its own pending table; property
+IDbits is 13, covering hardware IDs through 16383. Kernel vector storage now
+covers that range and dispatch decodes the complete 24-bit IAR. IDs 8192 through
+8223 are reserved for this initial profile; LPIs use edge-triggered dispatch.
+Other CPU Redistributors remain without LPI tables.
+
+The PCI core now accepts optional host attributes for the MSI controller and
+a contiguous requester-ID translation. The existing allocation API remains
+available, and existing MSI providers default to their old allocation method.
+Only the Samsung host exports this description initially. Haiku's domain
+numbers reflect enumeration order. Moreover, EDK2 assigns secondary bus 1 to
+multiple roots, while Linux assigns separate bus ranges: blindly adding the
+DT's other segment bases is not evidence of the physical ITS DeviceID.
+SATA/Ethernet routes need their own verified requester-ID contract.
+
+The provider accepts only ITS1 DeviceID `0x100`, leases 1 through 32 vectors to
+that device and maps event IDs starting at zero. MAPD/MAPTI establish the
+translations; property changes use INV followed by SYNC. Submissions are
+serialized with bounded polling and command-reader checks. Invalid/live frees
+are retained; a normal free requires the PCI source disabled and all handlers
+synchronously removed, then CLEAR/DISCARD/SYNC and invalid MAPD. A command or
+descriptor failure quarantines the resources until reboot so hardware cannot
+access freed/reused tables. No allocation occurs under the interrupt spinlock.
+
+Host tests check known command packets, queue wraparound, whole-buffer DMA
+limits and firmware/requester rejection, including the actual captured DTB.
+The full ARM64 build from `3ce6f6c457` passed, along with 73 host checks.
+QEMU `qemu-shell/20260912T223910Z-1aec32` rejected the profile before MMIO on
+both boots and passed the existing PCI/NVMe, USB, filesystem and reboot gates.
+The same immutable image, SHA-256
+`cddbc64c93322eee1174797a12b8a773567c5cdced6c73e983c3e37e44d169f8`,
+then delivered native NVMe MSI-X interrupts on two USB boots in
+`interactive/20260912T224223Z-79bc34`, separated by a normal Haiku reboot.
+Both boots used event 0 at `0xfe670040`, LPI 8192 on CPU 0. Logged counts
+reached 512, including arrivals during each 64 MiB EFI-prefix read. Both reads
+matched the retained Linux hash. Six component hashes, eight PCI functions,
+one RNDIS notification worker and zero BFS allocation counters also passed.
+Neither accepted window contained an interrupt timeout, polling fallback,
+ITS quarantine, unexpected interrupt ID or USB checksum/control timeout.
+
+The later write-test setup failed because its script assumed an unversioned
+`haiku.hpkg` filename. It had created only the new file's two 8 MiB guards;
+the main write workload had not started. That session remains an error, and
+the partially prepared file and failed script are retained. Automatic recovery
+returned ROOBI, the guard disarmed and NanoKVM stayed on the same boot.
+`state/native-its-provider.json` accepts only the completed two-boot read
+milestone and links the later setup failure.
+
+The corrected trial used a new file in
+`its-storage-stress/20260912T230918Z-5c1c54` and native USB session
+`interactive/20260912T230705Z-74d328`. Before creating it, all 11 installed
+packages matched the previous installation's hashes and BFS checked clean.
+Eight workers pinned across the eight CPUs then wrote four rounds over a
+2 GiB region, with `fsync()` and peer readback after each round: 8 GiB written
+and 8 GiB cross-checked. The independent final-region SHA-256
+`1dd5024c69c405b3612e60bcaaffe139546da461cb8777bb889b42cf18bbbd27`
+and both 8 MiB guards matched. A normal Haiku reboot restored authenticated
+access in 94 seconds, and eight-worker verification, the region hash, guards,
+all packages and both filesystem allocation checks passed again.
+
+NVMe interrupts arrived during the write and reboot-read windows, with logged
+counts reaching 65536 and 16384 respectively. There was no interrupt timeout,
+polling fallback, quarantine, unexpected interrupt ID or USB checksum/control
+timeout in the accepted windows. Four preflights verified the six components,
+PCI inventory, USB root and one RNDIS notification worker. Recovery returned
+ROOBI `f5b86238-1904-4170-96ed-8a208f14047c`; the guard disarmed and NanoKVM
+retained its boot ID. `state/native-its-storage-stress.json` records this pass.
+The earlier failed file is preserved and installed components are unchanged.
+
+These initial boots allocated ITS tables below 4 GiB. Allocation/free/reuse,
+multi-vector devices, other ITS instances and CPU affinity remain separate
+qualification work.
+
+The forced high-table build from `b8571b931a` (`hrev60097+88`) passed 73 host
+checks and QEMU regression/rejection gates in `qemu-shell/20260912T232143Z-aad50b`.
+Its image SHA-256 is
+`242d790c27c2b6f8599c71cb962e093bf3f2b9082d926c42032054f3d11007fa`.
+Native session `interactive/20260912T232610Z-fc067f` recorded these six
+Normal Non-cacheable allocations on both boots:
+
+| Table | Physical address | Bytes |
+| --- | --- | --- |
+| Devices | `0x114880000` | 524288 |
+| Collections | `0x114900000` | 65536 |
+| Commands | `0x114910000` | 65536 |
+| LPI properties | `0x114920000` | 65536 |
+| CPU 0 pending | `0x114930000` | 65536 |
+| Interrupt translations | `0x114879000` | 4096 |
+
+All ranges were aligned, distinct, at or above 4 GiB and entirely below 32 GiB.
+The same four-round, eight-worker 2 GiB workload passed in a new file: 8 GiB
+writes, four `fsync()` calls, peer reads, independent region hash, guards and
+11 package hashes. A normal reboot restored authenticated access in 94 seconds;
+eight-worker readback and all hashes/filesystem checks passed again. Logged
+interrupt counts reached 65536 and 16384, with arrivals during both workloads
+and no polling fallback or other errors from the acceptance gate.
+
+Recovery returned ROOBI `b6ea3fc1-1ada-42b2-a4f6-0ffed26a3443`, the guard
+disarmed and NanoKVM retained its boot ID. The complete report is
+`state/native-its-high-storage-stress.json`, with evidence under
+`its-high-storage-stress/20260912T232553Z-7f4aa0`. This was a USB-root
+qualification; the subsequent installed-system update is recorded below.
+
+## Installed SSD update and data persistence
+
+The standard Installer upgrade was first rehearsed against a disposable
+full-capacity QEMU NVMe image in `qemu-shell/20260912T233237Z-1c30ad`.
+Two subsequent NVMe-root boots passed in `qemu-shell/20260912T235232Z-80a7ea`,
+including full-file and package hashes, filesystem checks, USB transfer and
+normal reboot/shutdown. The existing EFI loader from `hrev60097+57` was retained:
+bootloader and kernel-argument sources are unchanged, and its compatibility
+with the new kernel was exercised in those boots.
+
+Native Installer session `interactive/20260912T235929Z-4b5d53` then updated
+all 11 SSD packages to the source image's versions, including the three
+`hrev60097+88` Haiku packages. Before/after checks verified two 2 GiB file
+regions, their four 8 MiB guards, networking overrides, the existing EFI
+loader and zero filesystem allocation counters. The installed settings enable
+the onboard PCI profile and ITS1, without `force_high_tables` or MBI.
+
+The first installed boot, `interactive/20260913T001949Z-8efbf6`, mounted
+`/dev/disk/nvme/0/1`, verified all six components, and delivered NVMe interrupts
+on CPU 0/LPI 8192. Eight-worker checks and independent hashes passed for both
+2 GiB regions and all packages. Free-space TRIM completed for 222279335936 bytes,
+and the immediate readback and filesystem checks passed. A normal Haiku reboot
+returned to the selected ROOBI recovery image; a new one-shot EFI request was
+needed for the next SSD boot. BootOrder was preserved.
+
+That next boot, `interactive/20260913T002814Z-a838e2`, stalled after mounting
+the SSD and package-daemon volume verification, before desktop/RNDIS startup.
+It had initialized ITS1 and received NVMe interrupts; there was no reported
+panic or NVMe timeout. The keyboard debugger request produced no response.
+Its complete evidence is retained in `state/native-its-installed-boot-stall.json`.
+Recovery succeeded, and the cause remains unknown.
+
+A retry in `interactive/20260913T003535Z-5cadd4` reached the installed desktop.
+Both file regions, guards, all packages, six components, one RNDIS notification
+worker and zero filesystem allocation counters passed again. Both accepted
+sessions logged interrupt counts through 32768, with arrivals during their
+first read workloads and no polling fallback or ITS quarantine. The retry
+also rebooted normally to ROOBI. All session guards disarmed and NanoKVM
+retained its boot ID. Final recovery was `0d7bb955-5b56-4139-ad05-624394ab219c`.
+
+`state/native-its-installed-update.json` accepts the update and bounded
+TRIM/data-persistence checks, explicitly linking the intervening startup stall.
+It does not establish repeatable boot reliability. The update session also
+captured a Time preferences crash in timezone enumeration; subsequent read-only
+inspection found that ICU's compiled data path differs from the installed
+bootstrap package path. That desktop defect requires separate reproduction.

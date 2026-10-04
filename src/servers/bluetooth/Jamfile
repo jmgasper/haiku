@@ -7,7 +7,7 @@ AddResources bluetooth_server : bluetooth_server.rdef ;
 Application bluetooth_server
  	:
 	BluetoothServer.cpp
-	DeskbarReplicant.cpp
+	ControllerFirmware.cpp
 	DeviceManager.cpp
 	HCIControllerAccessor.cpp
 	HCITransportAccessor.cpp
@@ -16,12 +16,6 @@ Application bluetooth_server
 	LocalDeviceLE.cpp
 	SDPServer.cpp
 	SDPClient.cpp
-	: be network libbluetooth.so localestub
+	: be network libbluetooth.so
 	[ TargetLibstdc++ ]
-;
-
-DoCatalogs bluetooth_server :
-	x-vnd.Haiku-bluetooth_server
-	:
-	DeskbarReplicant.cpp
 ;

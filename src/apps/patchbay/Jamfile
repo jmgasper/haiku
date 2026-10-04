@@ -1,5 +1,11 @@
 SubDir HAIKU_TOP src apps patchbay ;
 
+# libmidi.so is only built when the fluidlite softsynth package is
+# available (src/kits/midi/Jamfile), and this target links it.
+if ! [ FIsBuildFeatureEnabled fluidlite ] {
+	return ;
+}
+
 Application PatchBay
 	:
 	PatchApp.cpp

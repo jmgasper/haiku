@@ -1,0 +1,15 @@
+#!/bin/sh
+case "$1" in
+    --native|--software) ;;
+    *) exit 2 ;;
+esac
+/boot/home/mesa-trial/rock5_haiku_recovery_probe /boot/home/mali_csffw.bin
+result=$?
+if [ "$1" = --native ]; then
+    [ "$result" -eq 0 ] || exit "$result"
+else
+    [ "$result" -eq 77 ] || exit 1
+    echo ROCK5_RECOVERY_SOFTWARE_SKIP
+fi
+/boot/home/mesa-trial/run-pipeline "$1" || exit $?
+echo ROCK5_RECOVERY_GRAPHICS_PASS
