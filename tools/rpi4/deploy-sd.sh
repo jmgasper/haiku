@@ -16,6 +16,8 @@ if ! "${SSH[@]}" true 2>/dev/null; then
     echo "starting the recovery OS"
     "$TOOLS/power.py" off >/dev/null
     "$TOOLS/build-recovery-image.sh" attach >/dev/null
+    # as below: switched on again at once, the board can stay dead
+    sleep 8
     "$TOOLS/power.py" on >/dev/null
     for _ in $(seq 60); do
         sleep 3
