@@ -18,6 +18,10 @@ enable_uart=1
 uart_2ndstage=1
 dtoverlay=miniuart-bt
 
+# Memory for the firmware's own work: its H.264 decoder needs more than the
+# default 76 MB for 1080p, and stops answering when it runs out.
+gpu_mem=192
+
 disable_overscan=1
 # one frame buffer per HDMI output
 max_framebuffers=2

@@ -122,7 +122,7 @@ rule UserBuildConfigRulePreImage
 
 		# airTime, the movie player (apps/airTime, tools/build-arm64.sh and
 		# tools/package-haiku.sh there)
-		local airTime = <airtime-pkg>airtime-1.0.0-12-arm64.hpkg ;
+		local airTime = <airtime-pkg>airtime-1.0.0-13-arm64.hpkg ;
 		SEARCH on $(airTime) = /mnt/HaikuWork/apps/airTime/artifacts ;
 		AddFilesToHaikuImage system packages : $(airTime) ;
 

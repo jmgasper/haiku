@@ -35,6 +35,7 @@
 
 #include <kernel.h>
 #include <lock.h>
+#include <team.h>
 #include <util/AutoLock.h>
 #include <vm/vm.h>
 
@@ -104,8 +105,11 @@
 #define PAGELIST_WRITE			0
 #define PAGELIST_READ			1
 #define PAGELIST_READ_WITH_FRAGMENTS	2
+// An entry of a page list is the address of a run of pages with the number
+// of pages - 1 in its low bits: a bus address and 12 bits, or on the BCM2711
+// the physical address shifted right by 4 (it has 36 bits) and 8 bits.
 #define PAGELIST_MAX_RUN		4096
-	// pages; the low 12 bits of an entry are the count - 1
+#define PAGELIST_MAX_RUN_36		256
 
 #define DEBUG_MAX				11
 
@@ -198,15 +202,18 @@ struct vchiq_service {
 	void*				cookie;
 	sem_id				stateSem;
 
-	mutex				bulkLock;
-	sem_id				bulkSem[2];
-	int32				bulkActual[2];
-	bool				bulkWaiting[2];
-	bool				bulkBroken;
-	area_id				bulkArea;
-	uint8*				bulkBase;
-	phys_addr_t			bulkAddress;
-	size_t				bulkSize;
+	// one transfer per direction at a time, each with memory of its own
+	struct {
+		mutex			lock;
+		sem_id			sem;
+		int32			actual;
+		bool			waiting;
+		bool			broken;
+		area_id			area;
+		uint8*			base;
+		phys_addr_t		address;
+		size_t			size;
+	} bulk[2];
 };
 
 
@@ -221,6 +228,7 @@ static area_id sSlotArea = -1;
 static uint8* sSlotData;
 static phys_addr_t sSlotAddress;
 static uint8* sFragments;
+static bool s36BitAddresses;
 
 static volatile shared_state* sLocal;
 static volatile shared_state* sRemote;
@@ -453,12 +461,12 @@ release_slot(slot_info* info)
 static void
 finish_bulk(vchiq_service* service, int direction, int32 actual)
 {
-	if (!service->bulkWaiting[direction])
+	if (!service->bulk[direction].waiting)
 		return;
 
-	service->bulkActual[direction] = actual;
-	service->bulkWaiting[direction] = false;
-	release_sem(service->bulkSem[direction]);
+	service->bulk[direction].actual = actual;
+	service->bulk[direction].waiting = false;
+	release_sem(service->bulk[direction].sem);
 }
 
 
@@ -640,6 +648,20 @@ recycle_handler(void* data)
 //	#pragma mark - services
 
 
+static void
+delete_service(vchiq_service* service)
+{
+	for (int i = 0; i < 2; i++) {
+		if (service->bulk[i].area >= 0)
+			delete_area(service->bulk[i].area);
+		delete_sem(service->bulk[i].sem);
+		mutex_destroy(&service->bulk[i].lock);
+	}
+	delete_sem(service->stateSem);
+	free(service);
+}
+
+
 static status_t
 vchiq_init_check()
 {
@@ -666,16 +688,14 @@ vchiq_open_service(uint32 fourcc, int16 version, int16 minVersion,
 	service->hook = hook;
 	service->cookie = cookie;
 	service->state = SERVICE_OPENING;
-	service->bulkArea = -1;
-	mutex_init(&service->bulkLock, "vchiq bulk");
 	service->stateSem = create_sem(0, "vchiq service state");
-	service->bulkSem[0] = create_sem(0, "vchiq bulk transmit");
-	service->bulkSem[1] = create_sem(0, "vchiq bulk receive");
-
-	status_t status = B_OK;
-	if (service->stateSem < 0 || service->bulkSem[0] < 0
-		|| service->bulkSem[1] < 0) {
-		status = B_NO_MORE_SEMS;
+	status_t status = service->stateSem < 0 ? B_NO_MORE_SEMS : B_OK;
+	for (int i = 0; i < 2; i++) {
+		service->bulk[i].area = -1;
+		mutex_init(&service->bulk[i].lock, "vchiq bulk");
+		service->bulk[i].sem = create_sem(0, "vchiq bulk");
+		if (service->bulk[i].sem < 0)
+			status = B_NO_MORE_SEMS;
 	}
 
 	bool registered = false;
@@ -697,7 +717,9 @@ vchiq_open_service(uint32 fourcc, int16 version, int16 minVersion,
 	}
 
 	if (status == B_OK) {
-		open_payload payload = { fourcc, 0, version, minVersion };
+		// the firmware tells its clients apart by this
+		open_payload payload = { fourcc, team_get_current_team_id(), version,
+			minVersion };
 		status = send_message(MAKE_MSG(MSG_OPEN, service->localPort, 0),
 			&payload, sizeof(payload), false);
 	}
@@ -715,11 +737,7 @@ vchiq_open_service(uint32 fourcc, int16 version, int16 minVersion,
 			MutexLocker locker(sServiceLock);
 			sServices[service->localPort] = NULL;
 		}
-		delete_sem(service->stateSem);
-		delete_sem(service->bulkSem[0]);
-		delete_sem(service->bulkSem[1]);
-		mutex_destroy(&service->bulkLock);
-		free(service);
+		delete_service(service);
 		return status;
 	}
 
@@ -757,17 +775,13 @@ vchiq_close_service(vchiq_service* service)
 	finish_bulk(service, BULK_RECEIVE, -1);
 	locker.Unlock();
 
-	// a transfer still under way has the lock
-	mutex_lock(&service->bulkLock);
-	mutex_unlock(&service->bulkLock);
+	// a transfer still under way has its lock
+	for (int i = 0; i < 2; i++) {
+		mutex_lock(&service->bulk[i].lock);
+		mutex_unlock(&service->bulk[i].lock);
+	}
 
-	if (service->bulkArea >= 0)
-		delete_area(service->bulkArea);
-	delete_sem(service->stateSem);
-	delete_sem(service->bulkSem[0]);
-	delete_sem(service->bulkSem[1]);
-	mutex_destroy(&service->bulkLock);
-	free(service);
+	delete_service(service);
 }
 
 
@@ -794,14 +808,16 @@ vchiq_queue_message(vchiq_service* service, const void* data, size_t size,
 
 
 /*!	The memory the firmware copies from or to: a page for the page list,
-	then the data. It has to lie in the first gigabyte.
+	then the data. The page list has to lie in the first gigabyte.
 */
 static status_t
-ensure_bulk_buffer(vchiq_service* service, size_t size)
+ensure_bulk_buffer(vchiq_service* service, int direction, size_t size)
 {
 	size = B_PAGE_SIZE + ROUNDUP(size, B_PAGE_SIZE);
-	if (service->bulkArea >= 0 && service->bulkSize >= size)
+	if (service->bulk[direction].area >= 0
+		&& service->bulk[direction].size >= size) {
 		return B_OK;
+	}
 
 	virtual_address_restrictions virtualRestrictions = {};
 	physical_address_restrictions physicalRestrictions = {};
@@ -820,12 +836,12 @@ ensure_bulk_buffer(vchiq_service* service, size_t size)
 		return status;
 	}
 
-	if (service->bulkArea >= 0)
-		delete_area(service->bulkArea);
-	service->bulkArea = area;
-	service->bulkBase = (uint8*)address;
-	service->bulkAddress = entry.address;
-	service->bulkSize = size;
+	if (service->bulk[direction].area >= 0)
+		delete_area(service->bulk[direction].area);
+	service->bulk[direction].area = area;
+	service->bulk[direction].base = (uint8*)address;
+	service->bulk[direction].address = entry.address;
+	service->bulk[direction].size = size;
 	return B_OK;
 }
 
@@ -837,19 +853,22 @@ bulk_transfer(vchiq_service* service, void* data, size_t size, bool userData,
 	if (size == 0 || size > VCHIQ_MAX_BULK_SIZE)
 		return B_BAD_VALUE;
 
-	MutexLocker locker(service->bulkLock);
+	MutexLocker locker(service->bulk[direction].lock);
 
 	if (service->state != SERVICE_OPEN)
 		return B_DEV_NOT_READY;
-	if (service->bulkBroken)
+	if (service->bulk[direction].broken)
 		return B_IO_ERROR;
 
-	status_t status = ensure_bulk_buffer(service, size);
+	status_t status = ensure_bulk_buffer(service, direction, size);
 	if (status != B_OK)
 		return status;
 
-	pagelist* list = (pagelist*)service->bulkBase;
-	uint8* buffer = service->bulkBase + B_PAGE_SIZE;
+	uint8* base = service->bulk[direction].base;
+	phys_addr_t address = service->bulk[direction].address;
+	pagelist* list = (pagelist*)base;
+	uint8* buffer = base + B_PAGE_SIZE;
+	// one fragment per service will do: only receiving uses it
 	uint8* fragment = sFragments + service->localPort * FRAGMENT_SIZE;
 
 	if (direction == BULK_TRANSMIT) {
@@ -873,52 +892,58 @@ bulk_transfer(vchiq_service* service, void* data, size_t size, bool userData,
 	}
 
 	uint32 pages = ROUNDUP(size, B_PAGE_SIZE) / B_PAGE_SIZE;
-	uint32 busAddress = (uint32)(service->bulkAddress + B_PAGE_SIZE)
-		| VC_BUS_OFFSET;
+	phys_addr_t pageAddress = address + B_PAGE_SIZE;
 	uint32 runs = 0;
 	while (pages > 0) {
-		uint32 run = min_c(pages, (uint32)PAGELIST_MAX_RUN);
-		list->addrs[runs++] = busAddress | (run - 1);
-		busAddress += run * B_PAGE_SIZE;
+		uint32 run;
+		if (s36BitAddresses) {
+			run = min_c(pages, (uint32)PAGELIST_MAX_RUN_36);
+			list->addrs[runs++] = (uint32)(pageAddress >> 4) | (run - 1);
+		} else {
+			run = min_c(pages, (uint32)PAGELIST_MAX_RUN);
+			list->addrs[runs++] = (uint32)pageAddress | VC_BUS_OFFSET
+				| (run - 1);
+		}
+		pageAddress += (phys_addr_t)run * B_PAGE_SIZE;
 		pages -= run;
 	}
+	uint16 type = list->type;
 
-	flush_cache(service->bulkBase, B_PAGE_SIZE + size);
+	flush_cache(base, B_PAGE_SIZE + size);
 
 	{
 		MutexLocker serviceLocker(sServiceLock);
 		if (service->state != SERVICE_OPEN)
 			return B_DEV_NOT_READY;
-		service->bulkWaiting[direction] = true;
+		service->bulk[direction].waiting = true;
 	}
 
-	uint32 payload[2]
-		= { (uint32)service->bulkAddress | VC_BUS_OFFSET, (uint32)size };
+	uint32 payload[2] = { (uint32)address | VC_BUS_OFFSET, (uint32)size };
 	status = send_message(MAKE_MSG(direction == BULK_TRANSMIT
 			? MSG_BULK_TX : MSG_BULK_RX, service->localPort,
 		service->remotePort), payload, sizeof(payload), false);
 	if (status == B_OK) {
-		status = acquire_sem_etc(service->bulkSem[direction], 1,
+		status = acquire_sem_etc(service->bulk[direction].sem, 1,
 			B_RELATIVE_TIMEOUT, BULK_TIMEOUT);
 	}
 	if (status != B_OK) {
 		// The firmware may still use the memory, and its answer would be
 		// taken for the next transfer's.
 		MutexLocker serviceLocker(sServiceLock);
-		if (service->bulkWaiting[direction]) {
-			service->bulkWaiting[direction] = false;
-			service->bulkBroken = true;
+		if (service->bulk[direction].waiting) {
+			service->bulk[direction].waiting = false;
+			service->bulk[direction].broken = true;
 			ERROR("bulk transfer of %" B_PRIuSIZE " bytes on service %"
 				B_PRIu32 ": %s\n", size, service->localPort,
 				strerror(status));
 			return status;
 		}
 		// it came in after all
-		acquire_sem_etc(service->bulkSem[direction], 1, B_RELATIVE_TIMEOUT,
+		acquire_sem_etc(service->bulk[direction].sem, 1, B_RELATIVE_TIMEOUT,
 			0);
 	}
 
-	int32 actual = service->bulkActual[direction];
+	int32 actual = service->bulk[direction].actual;
 	if (actual < 0)
 		return B_CANCELED;
 	if ((size_t)actual > size)
@@ -928,7 +953,7 @@ bulk_transfer(vchiq_service* service, void* data, size_t size, bool userData,
 		flush_cache(buffer, size);
 
 		uint32 tail = actual & (CACHE_LINE_SIZE - 1);
-		if (list->type >= PAGELIST_READ_WITH_FRAGMENTS && tail != 0) {
+		if (type >= PAGELIST_READ_WITH_FRAGMENTS && tail != 0) {
 			memcpy(buffer + (actual & ~(CACHE_LINE_SIZE - 1)),
 				fragment + CACHE_LINE_SIZE, tail);
 		}
@@ -991,6 +1016,8 @@ find_device(phys_addr_t* _registers, uint32* _interrupt)
 		};
 		if (sDeviceManager->find_child_node(root, attributes, &node) != B_OK)
 			node = NULL;
+		else
+			s36BitAddresses = i == 0;
 	}
 	sDeviceManager->put_node(root);
 	if (node == NULL)

@@ -1,6 +1,7 @@
 SubDir HAIKU_TOP tools rpi4 ;
 
 UsePrivateHeaders drivers graphics ;
+SubDirHdrs [ FDirName $(HAIKU_TOP) src add-ons media plugins rpi_mmal ] ;
 
 # lab programs for the Raspberry Pi 4 port
 SimpleTest rpi4_v3d_probe : v3d_probe.cpp ;
@@ -8,3 +9,7 @@ SimpleTest rpi4_fetch : fetch.cpp : network ;
 SimpleTest rpi4_fw : fw.cpp ;
 SimpleTest rpi4_vchiq_audio : vchiq_audio.cpp ;
 SimpleTest rpi4_tone : tone.cpp : be media [ TargetLibsupc++ ] ;
+
+# the firmware's H.264 decoder, the class of the media add-on
+SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) src add-ons media plugins rpi_mmal ] ;
+SimpleTest rpi4_mmal_decode : mmal_decode.cpp MmalDecoder.cpp : be [ TargetLibsupc++ ] ;
