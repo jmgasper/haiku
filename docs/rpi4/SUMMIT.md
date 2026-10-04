@@ -41,6 +41,34 @@ At run time the web process opens the system's EGL, which on this board is
 Mesa's v3d driver (see `GPU.md`): WebGL goes through ANGLE to GLES on the
 GPU, and the page is composited with GL.
 
+## A newer engine (2026-10-04, night)
+
+The Summit session (its own `docs/performance.md`, top section, has the
+details) built a newer engine with the same GL configuration and put it on
+the board without a restart (`pkgman install` of local files):
+`summit_webkit` 1.10.0-3 (engine from Summit 9c9c2f7) and
+`summit` 0.1.0~git20261004-1. The old packages are kept on the board in
+`~/summit-package-backup-20261004`. The third-party libraries bundled with
+the engine are rebuilt with GNU hash tables (Summit's
+`tools/pi/build-deps-gnu-hash.sh`); `summit-gl/WebKitBuild` was rebuilt in
+place from the newer source.
+
+What that session measured on the Pi (warm start unless said):
+
+| | Before | After |
+|---|---|---|
+| First frame of a page | 5.85 s | 1.4 s |
+| Speedometer 3.1 | 1.02 | 1.36 |
+| Scrolling | 7 fps with the plain newer engine (a direct-present bug, fixed) | ~30 fps |
+| Cold first start after installing, to the browser's code | 11.2 s | 8.7 s, mostly the SD card at 25 MHz |
+| H.264 `<video>` | nothing (see `MEDIA.md`, "Other players") | plays: Summit falls back to libavcodec when the chosen decoder fails; software, ~2.6 cores |
+
+Both packages are staged for the next image in
+`/mnt/HaikuWork/rpi4/packages-arm64`; 1.10.0-2 was moved to
+`/mnt/HaikuWork/rpi4/packages-arm64-replaced`. Run
+`tools/rpi4/stage-packages.sh` before building the image: the image file
+built for the Media Kit fix (sha256 8f8a158e…) still has 1.10.0-2.
+
 ## Building it again
 
     tools/rpi4/summit/build-gl-deps.sh
@@ -57,8 +85,10 @@ GPU, and the page is composited with GL.
 
 ## Open
 
-- Only two pages were looked at. No comparison of scrolling or page load
-  against the software engine, no long run.
+- Only two pages were looked at before the newer engine; see that section
+  for the Summit session's measurements since.
+- The SD card runs at 25 MHz (default speed): a faster card mode would
+  shorten Summit's cold start most.
 - The web process logs "page stall" lines while a page loads; whether they
   matter was not looked into.
 - HTTPS needs the clock: the board has no RTC and sets the time from the
