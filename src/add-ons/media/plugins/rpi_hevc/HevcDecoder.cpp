@@ -668,6 +668,7 @@ HevcDecoder::HevcDecoder()
 	fCommandCount(0),
 	fBitstreamUsed(0),
 	fPicturePts(0),
+	fSkipBefore(INT64_MIN),
 	fAwaitRandomAccess(true),
 	fFirstPicture(true),
 	fNoRaslOutput(false),
@@ -994,6 +995,14 @@ HevcDecoder::_AddSlice(const uint8* nal, size_t size, int64 pts)
 		if ((header.nalType == NAL_RASL_N || header.nalType == NAL_RASL_R)
 			&& fNoRaslOutput) {
 			return B_OK;
+		}
+		// A picture nobody wants to see and nothing refers to: one of the
+		// highest sub-layer that says so in its type.
+		if (pts < fSkipBefore && header.nalType < NAL_BLA_W_LP
+			&& (header.nalType & 1) == 0) {
+			const SPS& sps = fSpsList[fPpsList[header.ppsId].spsId];
+			if (header.temporalId >= sps.maxSubLayersMinus1)
+				return B_OK;
 		}
 		fPicturePts = pts;
 		fBitstreamUsed = 0;

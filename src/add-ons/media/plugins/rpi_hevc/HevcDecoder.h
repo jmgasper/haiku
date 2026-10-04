@@ -61,6 +61,10 @@ public:
 				random access point. */
 			void				Reset();
 
+			/*!	Pictures with a time before this one are not wanted: those
+				that nothing refers to are not decoded. */
+			void				SetSkipBefore(int64 pts) { fSkipBefore = pts; }
+
 			bool				NextPicture(Picture& picture);
 			void				ReleasePicture(const Picture& picture);
 
@@ -184,6 +188,7 @@ private:
 			std::vector<Slice>	fSlices;
 			uint32				fBitstreamUsed;
 			int64				fPicturePts;
+			int64				fSkipBefore;
 
 			// decoding state
 			bool				fAwaitRandomAccess;

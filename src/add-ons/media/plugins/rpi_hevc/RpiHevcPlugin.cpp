@@ -351,6 +351,9 @@ RpiHevcDecoder::Decode(void* buffer, int64* frameCount, media_header* header,
 	if (buffer == NULL || frameCount == NULL || header == NULL)
 		return B_BAD_VALUE;
 
+	fDecoder.SetSkipBefore(info != NULL && info->time_to_decode < 0
+		? -info->time_to_decode : INT64_MIN);
+
 	if (!fHavePicture) {
 		status_t status = _NextPicture(fPicture);
 		if (status != B_OK)
