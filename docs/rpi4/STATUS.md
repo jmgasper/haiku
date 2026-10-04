@@ -22,7 +22,11 @@ display's layout and GLTeapot were not gone through again on it. The image
 file was then built once more with two more lab tools in it and flashed
 again (the card's readback matches the file); on that card the decoders and
 airTime's rates were checked again, Wi-Fi, sound and the applications were
-not.
+not. The image with the Wi-Fi bus thread on its interrupt and the join at
+start (sha256 a936cb51…) was flashed on 2026-10-04 (late, readback matching)
+and checked for Wi-Fi only: after Gaspers was saved and the board restarted
+it joined by itself; the bus thread used 0.8 % of a core joined, 0.2 % with
+nothing joined, 0.04 % with the interface down; 32 MB in 3.8-3.9 s.
 
 **What is open**, most important first: nobody has listened to the sound
 output (the driver runs and HDMI0 carries audio, see `MEDIA.md`); the
