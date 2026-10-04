@@ -45,7 +45,20 @@ four-way handshake runs in the kernel's OpenBSD net80211.
   out. The SDIO bus task now runs on a thread of the driver's.
 - The SDIO host raises the card interrupt (the controller's interrupt line,
   shared with the SD card slot's controller) and wakes that thread; the
-  interrupt stays off until the thread has served the card.
+  interrupt stays off until the thread has served the card. The controller
+  holds on to the interrupt's status bit until the bit is masked, whatever
+  the card does: at first only the signal was turned off, the interrupt came
+  back the moment it was turned on again, and the thread went round 50000
+  times a second (80 % of a core, with the interface down). The status bit
+  is masked while the card is served. The thread also serves the card
+  unasked, every millisecond while there is traffic and twenty times a
+  second otherwise, in case an interrupt is lost.
+- No power saving: the driver asked the chip for it, and the chip slept
+  between beacons (a ping took 30 to 300 ms). The interrupt storm had hidden
+  that by keeping the bus busy. With the chip awake a ping is 1 to 2 ms,
+  also after seconds of silence, which also shows that the interrupt works.
+- Unloading the driver with the interface up took a mutex it did not hold
+  (panic, seen when devfs reloaded the driver).
 - A background scan hook, so that the network list can be refreshed while
   associated (net80211 refuses a scan request in RUN without one).
 - A detach routine: Haiku unloads the driver when its file is replaced.
@@ -62,8 +75,9 @@ four-way handshake runs in the kernel's OpenBSD net80211.
 ## Open
 
 - Commands and data are still polled, and data goes word by word through the
-  data register (no DMA): 66 Mbit/s received is what that gives. Sending was
-  not measured.
+  data register (no DMA): 65 Mbit/s received is what that gives (32 MB to
+  /dev/null with `rpi4_fetch`, Ethernet down). Sending was not measured.
+  Idle, the bus thread uses under 1 % of a core.
 - A packaged driver wins over a copy under non-packaged: to try a new build
   on an installed system, block the packaged one in
   `/boot/system/settings/packages` (`BlockedEntries`).

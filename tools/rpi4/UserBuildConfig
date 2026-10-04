@@ -45,7 +45,8 @@ rule UserBuildConfigRulePreImage
 {
 	if $(RPI4_LAB_IMAGE) {
 		AddFilesToHaikuImage home config non-packaged bin
-			: rpi4_v3d_probe rpi4_fetch rpi4_tone rpi4_vchiq_audio
+			: rpi4_v3d_probe rpi4_fetch rpi4_tone rpi4_vchiq_audio rpi4_hevc_decode rpi4_memprobe
+				rpi4_cores
 				rpi4_mmal_decode ;
 	}
 
@@ -123,7 +124,7 @@ rule UserBuildConfigRulePreImage
 
 		# airTime, the movie player (apps/airTime, tools/build-arm64.sh and
 		# tools/package-haiku.sh there)
-		local airTime = <airtime-pkg>airtime-1.0.0-13-arm64.hpkg ;
+		local airTime = <airtime-pkg>airtime-1.0.0-14-arm64.hpkg ;
 		SEARCH on $(airTime) = /mnt/HaikuWork/apps/airTime/artifacts ;
 		AddFilesToHaikuImage system packages : $(airTime) ;
 
