@@ -2,6 +2,7 @@ SubDir HAIKU_TOP tools rpi4 ;
 
 UsePrivateHeaders drivers graphics ;
 SubDirHdrs [ FDirName $(HAIKU_TOP) src add-ons media plugins rpi_mmal ] ;
+SubDirHdrs [ FDirName $(HAIKU_TOP) src add-ons media plugins rpi_hevc ] ;
 
 # lab programs for the Raspberry Pi 4 port
 SimpleTest rpi4_v3d_probe : v3d_probe.cpp ;
@@ -13,3 +14,8 @@ SimpleTest rpi4_tone : tone.cpp : be media [ TargetLibsupc++ ] ;
 # the firmware's H.264 decoder, the class of the media add-on
 SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) src add-ons media plugins rpi_mmal ] ;
 SimpleTest rpi4_mmal_decode : mmal_decode.cpp MmalDecoder.cpp : be [ TargetLibsupc++ ] ;
+
+# the SoC's HEVC decoder block, the classes of the media add-on
+SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) src add-ons media plugins rpi_hevc ] ;
+SimpleTest rpi4_hevc_decode : hevc_decode.cpp HevcDecoder.cpp HevcParser.cpp
+	SandConvert.cpp : be [ TargetLibsupc++ ] [ TargetLibstdc++ ] ;
