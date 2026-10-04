@@ -47,7 +47,7 @@ rule UserBuildConfigRulePreImage
 		AddFilesToHaikuImage home config non-packaged bin
 			: rpi4_v3d_probe rpi4_fetch rpi4_tone rpi4_vchiq_audio rpi4_hevc_decode rpi4_memprobe
 				rpi4_cores
-				rpi4_mmal_decode ;
+				rpi4_mmal_decode rpi4_gpio ;
 	}
 
 	if $(RPI4_AIROS_IMAGE) {

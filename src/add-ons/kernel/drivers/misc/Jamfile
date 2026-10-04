@@ -34,4 +34,9 @@ if $(TARGET_ARCH) = arm64 {
 	KernelAddon <driver>rpi_hevc :
 		rpi_hevc.cpp
 		;
+
+	# the BCM2711's GPIO pins (the 40-pin header) for programs (AirPins)
+	KernelAddon <driver>rpi_gpio :
+		rpi_gpio.cpp
+		;
 }

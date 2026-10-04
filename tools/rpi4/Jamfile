@@ -12,6 +12,7 @@ SimpleTest rpi4_vchiq_audio : vchiq_audio.cpp ;
 SimpleTest rpi4_tone : tone.cpp : be media [ TargetLibsupc++ ] ;
 SimpleTest rpi4_memprobe : memprobe.cpp ;
 SimpleTest rpi4_cores : cores.cpp : [ TargetLibsupc++ ] [ TargetLibstdc++ ] ;
+SimpleTest rpi4_gpio : gpio.cpp ;
 
 # the firmware's H.264 decoder, the class of the media add-on
 SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) src add-ons media plugins rpi_mmal ] ;
