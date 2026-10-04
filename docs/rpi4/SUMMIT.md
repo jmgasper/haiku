@@ -69,6 +69,39 @@ Both packages are staged for the next image in
 `tools/rpi4/stage-packages.sh` before building the image: the image file
 built for the Media Kit fix (sha256 8f8a158e…) still has 1.10.0-2.
 
+## Hardware video, quicker quits (2026-10-05)
+
+The Summit session installed `summit_webkit` 1.10.0-9 (engine from Summit
+e13519f) and `summit` 0.1.0~git20261005-1 (`pkgman install` of local files)
+and staged both in `/mnt/HaikuWork/rpi4/packages-arm64` (1.10.0-7 and
+0.1.0~git20261004-1 moved to `packages-arm64-replaced`). Run
+`tools/rpi4/stage-packages.sh` before the next image. Its details are in
+Summit's `docs/performance.md`, top section.
+
+| | Before | After |
+|---|---|---|
+| H.264 `<video>`, MSE 720p30 | libavcodec, ~60% of pictures, 1.4 cores | `rpi_mmal`, all pictures, 0.65-0.95 cores |
+| H.264, MSE 1080p30 | libavcodec, 73% of pictures, 2.6 cores | `rpi_mmal`, 97-99%, 1.35 cores |
+| Quit with YouTube loading, until the window goes | 14-21 s | 1.2-1.4 s |
+
+Summit now loads `rpi_mmal` by name (as airTime does) for eight-bit 4:2:0
+progressive H.264 up to 1920x1088, and draws its I420 pictures on the GPU.
+The board was restarted twice that day: once from a kernel panic, once to
+clear the firmware's decoder service. What Summit found that belongs to the
+OS is in its `docs/kunanyios-platform-issues.md` ("Raspberry Pi 4"):
+
+- a panic in `VMAnonymousCache::Commit()` reached from `madvise(MADV_FREE)`
+  (`_user_memory_advice` -> `Discard()`) with the system nearly out of
+  memory;
+- VCHIQ's bounce buffers (about 3 MB, physically contiguous, below 1 GB)
+  that cannot be allocated after a while of use, after which the
+  firmware's mmal service answers nothing until the next boot;
+- helper teams left suspended for good when their parent dies inside
+  `load_image()`;
+- RAM disks that hang after a force-killed program ran from them;
+- SD card writes (25 MHz) that hold up other processes' writes and team
+  teardown for seconds.
+
 ## Building it again
 
     tools/rpi4/summit/build-gl-deps.sh
