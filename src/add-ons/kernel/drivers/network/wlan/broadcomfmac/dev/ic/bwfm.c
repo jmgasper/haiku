@@ -620,6 +620,15 @@ bwfm_init(struct ifnet *ifp)
 	 * otherwise use fast power saving.
 	 */
 	pm = BWFM_PM_FAST_PS;
+#ifdef __HAIKU__
+	/*
+	 * The boards this runs on are fed from the mains. Asleep between
+	 * beacons, the chip answered a ping after 30 to 300 ms and received
+	 * 9 Mbit/s; awake it is 2 ms and several times that. (The Raspberry
+	 * Pi's own system turns the power saving off as well.)
+	 */
+	pm = BWFM_PM_CAM;
+#endif
 #ifndef IEEE80211_STA_ONLY
 	if (ic->ic_opmode == IEEE80211_M_HOSTAP)
 		pm = BWFM_PM_CAM;

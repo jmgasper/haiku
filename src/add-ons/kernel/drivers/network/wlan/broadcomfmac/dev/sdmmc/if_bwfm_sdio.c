@@ -171,6 +171,7 @@ struct bwfm_sdio_softc {
 	struct sdmmc_function	  sc_functions[3];
 	thread_id		  sc_poller;
 	sem_id			  sc_poll_sem;
+	uint32			  sc_rx_count;	/* frames read from the card */
 	int			  sc_poll;
 #endif
 };
@@ -331,24 +332,38 @@ static status_t
 bwfm_sdio_poller(void *arg)
 {
 	struct bwfm_sdio_softc *sc = arg;
+	bigtime_t lastWork = 0;
 
 	/*
 	 * The bus task runs here, not on the shared task queue: the callers
 	 * that wait for a command's response sit on that queue's one thread.
-	 * The card's interrupt and whoever has something to send wake the
-	 * thread; the line is also looked at ten times a second in case an
-	 * interrupt got lost.
 	 */
 	while (sc->sc_poll) {
-		status_t status = acquire_sem_etc(sc->sc_poll_sem, 1,
-		    B_RELATIVE_TIMEOUT, 100000);
+		/*
+		 * The card's interrupt wakes the thread, and so does whoever has
+		 * something to send. The card is also served unasked, in case an
+		 * interrupt got lost (the controller notes the card's line going
+		 * down; what the card raises while the interrupt is off may not
+		 * come again): every millisecond while there is traffic, twenty
+		 * times a second when there has been none for a while. Serving it
+		 * for nothing is three short commands.
+		 */
+		bigtime_t timeout = system_time() - lastWork < 300000
+		    ? 1000 : 50000;
+		uint32 received = sc->sc_rx_count;
+		int sending;
+
+		acquire_sem_etc(sc->sc_poll_sem, 1, B_RELATIVE_TIMEOUT, timeout);
 		if (!sc->sc_poll)
 			break;
-		if (status == B_OK || rpi_sdio_card_interrupt()) {
-			mtx_lock(&Giant);
-			bwfm_sdio_task(sc);
-			mtx_unlock(&Giant);
-		}
+
+		sending = !ml_empty(&sc->sc_tx_queue);
+		mtx_lock(&Giant);
+		bwfm_sdio_task(sc);
+		mtx_unlock(&Giant);
+		if (sending || sc->sc_rx_count != received)
+			lastWork = system_time();
+
 		/* the handler turned the interrupt off; the card is served now */
 		rpi_sdio_enable_card_interrupt();
 	}
@@ -1471,6 +1486,9 @@ bwfm_sdio_rx_frames(struct bwfm_sdio_softc *sc)
 
 		if (hwhdr->frmlen == 0 && hwhdr->cksum == 0)
 			break;
+#ifdef __HAIKU__
+		sc->sc_rx_count++;
+#endif
 
 		if ((hwhdr->frmlen ^ hwhdr->cksum) != 0xffff) {
 			printf("%s: checksum error\n", DEVNAME(sc));
