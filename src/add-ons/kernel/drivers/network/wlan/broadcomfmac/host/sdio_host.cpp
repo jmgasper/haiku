@@ -643,8 +643,14 @@ card_interrupt(void* data)
 	}
 
 	// The line stays raised until the function is served: off until then.
+	// The controller holds on to the status bit until the bit is masked,
+	// whatever the card does; left alone it interrupts again at once, for
+	// ever.
 	acquire_spinlock(&sInterruptLock);
 	*(volatile uint32*)(sRegisters + REG_INTERRUPT_ENABLE) = 0;
+	memory_full_barrier();
+	spin(1);
+	*(volatile uint32*)(sRegisters + REG_INTERRUPT_MASK) = ~(uint32)INT_CARD;
 	memory_full_barrier();
 	release_spinlock(&sInterruptLock);
 
@@ -681,6 +687,9 @@ rpi_sdio_enable_card_interrupt(void)
 
 	cpu_status state = disable_interrupts();
 	acquire_spinlock(&sInterruptLock);
+	*(volatile uint32*)(sRegisters + REG_INTERRUPT_MASK) = 0xffffffff;
+	memory_full_barrier();
+	spin(1);
 	*(volatile uint32*)(sRegisters + REG_INTERRUPT_ENABLE) = INT_CARD;
 	memory_full_barrier();
 	release_spinlock(&sInterruptLock);

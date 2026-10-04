@@ -966,8 +966,12 @@ bwfm_sdio_haiku_detach(device_t dev)
 	struct ifnet *ifp = &sc->sc_sc.sc_ic.ic_if;
 	status_t result;
 
-	if (sc->sc_sc.sc_initialized && (ifp->if_flags & IFF_RUNNING) != 0)
+	if (sc->sc_sc.sc_initialized && (ifp->if_flags & IFF_RUNNING) != 0) {
+		/* the waits in there give Giant up, as everywhere in the stack */
+		mtx_lock(&Giant);
 		bwfm_stop(ifp);
+		mtx_unlock(&Giant);
+	}
 
 	if (sc->sc_poll) {
 		rpi_sdio_set_interrupt_handler(NULL, NULL);
