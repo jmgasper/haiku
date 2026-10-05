@@ -3197,6 +3197,38 @@ team_remove_team(Team* team, pid_t& _signalGroup)
 }
 
 
+/*!	Kills the children of \a team that load_image() has left suspended and
+	that nobody has resumed yet: with their parent gone, nobody ever would.
+	The caller must not hold any locks.
+*/
+static void
+team_kill_never_resumed_children(Team* team)
+{
+	while (true) {
+		team_id childID = -1;
+
+		TeamLocker teamLocker(team);
+		for (Team* child = team->children.First(); child != NULL;
+				child = team->children.GetNext(child)) {
+			if ((atomic_and(&child->flags, ~TEAM_FLAG_LOADED_SUSPENDED)
+					& TEAM_FLAG_LOADED_SUSPENDED) != 0) {
+				childID = child->id;
+				break;
+			}
+		}
+		teamLocker.Unlock();
+
+		if (childID < 0)
+			return;
+
+		dprintf("team %" B_PRId32 " dies before resuming team %" B_PRId32
+			", which it loaded: killing that one, too\n", team->id, childID);
+		Signal signal(SIGKILL, SI_USER, B_OK, team->id);
+		send_signal_to_team_id(childID, signal, 0);
+	}
+}
+
+
 /*!	Kills all threads but the main thread of the team and shuts down user
 	debugging for it.
 	To be called on exit of the team's main thread. No locks must be held.
@@ -3263,6 +3295,10 @@ team_shutdown_team(Team* team)
 	timeLocker.Unlock();
 
 	team_kill_other_threads_locked(teamLocker);
+
+	// No thread of ours is left that could resume a team it has loaded.
+	teamLocker.Unlock();
+	team_kill_never_resumed_children(team);
 
 	return debuggerPort;
 }

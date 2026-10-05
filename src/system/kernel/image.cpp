@@ -397,6 +397,12 @@ notify_loading_app(status_t result, bool suspend)
 
 		thread_prepare_suspend();
 
+		// From here on until we are resumed, the death of our parent would
+		// leave us suspended for good: have it take us along.
+		// (cf. team_shutdown_team())
+		if (suspend)
+			atomic_or(&team->flags, TEAM_FLAG_LOADED_SUSPENDED);
+
 		// wake up the waiting thread
 		team->loading_info->result = result;
 		team->loading_info->condition.NotifyAll();
@@ -406,8 +412,10 @@ notify_loading_app(status_t result, bool suspend)
 		teamLocker.Unlock();
 
 		// suspend ourselves, if desired
-		if (suspend)
+		if (suspend) {
 			thread_suspend(true);
+			atomic_and(&team->flags, ~TEAM_FLAG_LOADED_SUSPENDED);
+		}
 	}
 }
 

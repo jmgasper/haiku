@@ -49,6 +49,9 @@ enum team_state {
 	// team has executed exec*()
 #define	TEAM_FLAG_DUMP_CORE	0x02
 	// a core dump is in progress
+#define	TEAM_FLAG_LOADED_SUSPENDED	0x04
+	// loaded by load_image(): the main thread waits to be resumed by the
+	// parent for the first time
 
 typedef enum job_control_state {
 	JOB_CONTROL_STATE_NONE,
