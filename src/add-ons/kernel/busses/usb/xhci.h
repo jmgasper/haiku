@@ -89,6 +89,7 @@ struct xhci_endpoint {
 	uint8			status;
 
 	uint16			max_burst_payload;
+	uint16			max_packet_size;
 
 	DoublyLinkedList<xhci_td> td_list;
 	uint8			used;

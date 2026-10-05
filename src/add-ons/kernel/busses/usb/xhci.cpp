@@ -1208,7 +1208,9 @@ XHCI::SubmitNormalRequest(Transfer *transfer)
 		size_t totalLength = 0;
 		for (uint32 i = 0; i < isochronousData->packet_count; i++) {
 			size_t packetLength = isochronousData->packet_descriptors[i].request_length;
-			if (packetLength == 0 || packetLength > pipe->MaxPacketSize())
+			// A packet may be as large as one service interval's payload:
+			// for high-bandwidth endpoints that is several transactions.
+			if (packetLength == 0 || packetLength > endpoint->max_burst_payload)
 				return B_BAD_VALUE;
 
 			totalLength += packetLength;
@@ -1248,7 +1250,7 @@ XHCI::SubmitNormalRequest(Transfer *transfer)
 		return B_NO_MEMORY;
 
 	// Normal Stage
-	const size_t maxPacketSize = pipe->MaxPacketSize();
+	const size_t maxPacketSize = endpoint->max_packet_size;
 	size_t remaining = transfer->FragmentLength();
 	for (int32 i = 0; i < trbCount; i++) {
 		phys_addr_t address;
@@ -1310,8 +1312,26 @@ XHCI::SubmitNormalRequest(Transfer *transfer)
 			}
 		}
 
-		// TODO: We do not currently take Mult into account at all!
-		// How are we supposed to do that here?
+		// Tell the controller how many packets each TD is made of: the
+		// number of bursts in it, and the number of packets in the last
+		// burst. Without this a high-bandwidth endpoint is only asked for
+		// one packet per microframe. (XHCI 1.2 § 4.11.2.3 p218.)
+		// TODO: We do not take Mult (SuperSpeed) into account.
+		const uint32 packetsPerBurst
+			= endpoint->max_burst_payload / endpoint->max_packet_size;
+		for (uint32 i = 0; i < isochronousData->packet_count; i++) {
+			const uint32 length
+				= isochronousData->packet_descriptors[i].request_length;
+			uint32 packets = (length + endpoint->max_packet_size - 1)
+				/ endpoint->max_packet_size;
+			if (packets == 0)
+				packets = 1;
+			const uint32 bursts
+				= (packets + packetsPerBurst - 1) / packetsPerBurst;
+			const uint32 residue = packets % packetsPerBurst;
+			td->trbs[i].flags |= TRB_3_TBC(bursts - 1)
+				| TRB_3_TLBPC(residue == 0 ? packetsPerBurst - 1 : residue - 1);
+		}
 
 		// Determine the (starting) frame number: if ISO_ASAP is set,
 		// we are queueing this "right away", and so want to reset
@@ -2586,6 +2606,13 @@ XHCI::ConfigureEndpoint(xhci_endpoint* ep, uint8 slot, uint8 number, uint8 type,
 		maxBurst = 0;
 	}
 	dwendpoint1 |= ENDPOINT_1_MAXBURST(maxBurst);
+
+	// Bits 11 and 12 of a USB 2 endpoint's wMaxPacketSize are the number of
+	// additional transactions per microframe (taken as the burst size
+	// above), not part of the packet size.
+	if (speed < USB_SPEED_SUPERSPEED)
+		maxPacketSize &= 0x7ff;
+	ep->max_packet_size = maxPacketSize;
 
 	// Assign maximum packet size, set the ring address, and set the
 	// "Dequeue Cycle State" bit. (XHCI 1.2 § 6.2.3 Table 6-10 p453.)
