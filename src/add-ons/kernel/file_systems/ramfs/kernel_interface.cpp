@@ -971,6 +971,19 @@ ramfs_open(fs_volume* _volume, fs_vnode* _node, int openMode, void** _cookie)
 		NodeStatChangeNotifier statNotifier(node);
 	}
 
+	// The VFS lets go of a vnode nobody uses (when memory is short, for
+	// one) and makes a new one when the file is looked up again. That one
+	// knows nothing of the file's cache yet; mapping the file would then
+	// have the VFS create a second cache and fill it through ramfs_read().
+	if (error == B_OK && node->IsFile()) {
+		VolumeWriteLocker writeLocker(volume);
+		if (File* file = dynamic_cast<File*>(node)) {
+			struct vnode* vnode;
+			if (vfs_lookup_vnode(_volume->id, node->GetID(), &vnode) == B_OK)
+				vfs_set_vnode_cache(vnode, file->GetCache(vnode));
+		}
+	}
+
 	// set result / cleanup on failure
 	if (error == B_OK)
 		*_cookie = cookie;
