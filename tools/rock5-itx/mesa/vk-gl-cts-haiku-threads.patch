@@ -1,0 +1,24 @@
+VK-GL-CTS on Haiku: deThread without Linux's syscall(), so the CTS builds
+and runs its threaded tests on the ROCK 5 (Mali CSF Vulkan bring-up,
+2026-09-16). Apply in a VK-GL-CTS checkout with patch -p1.
+
+--- a/framework/delibs/dethread/unix/deThreadUnix.c
++++ b/framework/delibs/dethread/unix/deThreadUnix.c
+@@ -36,7 +36,7 @@
+ #include <unistd.h>
+ #include <pthread.h>
+ #include <sched.h>
+-#if (DE_OS == DE_OS_UNIX) || (DE_OS == DE_OS_ANDROID)
++#if ((DE_OS == DE_OS_UNIX) || (DE_OS == DE_OS_ANDROID)) && !defined(__HAIKU__)
+ #include <sys/syscall.h>
+ #endif
+ 
+@@ -161,7 +161,7 @@
+     sched_yield();
+ }
+ 
+-#if (DE_OS == DE_OS_UNIX) || (DE_OS == DE_OS_ANDROID)
++#if ((DE_OS == DE_OS_UNIX) || (DE_OS == DE_OS_ANDROID)) && !defined(__HAIKU__)
+ 
+ uint32_t deGetNumAvailableLogicalCores(void)
+ {

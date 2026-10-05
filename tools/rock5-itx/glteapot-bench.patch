@@ -1,0 +1,206 @@
+GLTeapot with frame-time instrumentation, as used to measure the ROCK 5's
+Panfrost GL stack: TEAPOT_BENCH=1 prints frame times, TEAPOT_NO_SWAP and
+TEAPOT_NO_DRAW leave out the swap or the drawing. Apply with git apply; not
+for the shipped GLTeapot.
+
+--- a/src/apps/glteapot/ObjectView.cpp
++++ b/src/apps/glteapot/ObjectView.cpp
+@@ -25,6 +25,20 @@
+ #include <FindDirectory.h>
+ 
+ #include "FPS.h"
++
++// --- rock5 bench instrumentation (scratch build, not the repo GLTeapot) ---
++#include <stdlib.h>
++static bool benchEnabled() { static int v = -1; if (v < 0) v = getenv("TEAPOT_BENCH") != NULL; return v != 0; }
++static bool benchNoSwap() { static int v = -1; if (v < 0) v = getenv("TEAPOT_NO_SWAP") != NULL; return v != 0; }
++static bool benchNoDraw() { static int v = -1; if (v < 0) v = getenv("TEAPOT_NO_DRAW") != NULL; return v != 0; }
++static bool benchFinish() { static int v = -1; if (v < 0) v = getenv("TEAPOT_FINISH") != NULL; return v != 0; }
++static int64 benchFrameLimit() { static int64 v = -1; if (v < 0) { const char* e = getenv("TEAPOT_FRAMES"); v = e ? atoll(e) : 0; } return v; }
++struct BenchStats {
++	int64 frames = 0, windowFrames = 0;
++	bigtime_t start = 0, windowStart = 0;
++	bigtime_t clearUs = 0, drawUs = 0, swapUs = 0, worstFrame = 0;
++};
++static BenchStats sBench;
+ #include "GLObject.h"
+ #include "ResScroll.h"
+ 
+@@ -139,7 +153,7 @@
+ 	fHistEntries(0),
+ 	fOldestEntry(0),
+ 	fFps(true),
+-	fLimitFps(true),
++	fLimitFps(getenv("TEAPOT_LIMIT_FPS") == NULL || atoi(getenv("TEAPOT_LIMIT_FPS")) != 0),
+ 	fLastGouraud(true),
+ 	fGouraud(true),
+ 	fLastZbuf(true),
+@@ -208,10 +222,13 @@
+ //	rgb_color black = {0, 0, 0, 255};
+ 	BRect bounds = Bounds();
+ 
++	fprintf(stderr, "BENCH_ATW_ENTER bench=%d\n", (int)benchEnabled()); fflush(stderr);
+ 	BGLView::AttachedToWindow();
++	fprintf(stderr, "BENCH_ATW_BGLVIEW_OK\n"); fflush(stderr);
+ 	Window()->SetPulseRate(100000);
+ 
+ 	LockGL();
++	fprintf(stderr, "BENCH_ATW_LOCKGL_OK\n"); fflush(stderr);
+ 
+ 	glEnable(GL_DITHER);
+ 	glEnable(GL_CULL_FACE);
+@@ -256,9 +273,11 @@
+ 	glLoadIdentity();
+ 
+ 	UnlockGL();
++	fprintf(stderr, "BENCH_ATW_GLSETUP_OK\n"); fflush(stderr);
+ 
+ 	fDrawThread = spawn_thread(simonThread, "Simon", B_NORMAL_PRIORITY, this);
+ 	resume_thread(fDrawThread);
++	fprintf(stderr, "BENCH_ATW_THREAD_%d\n", (int)fDrawThread); fflush(stderr);
+ 	fForceRedraw = true;
+ 	setEvent(drawEvent);
+ }
+@@ -767,22 +786,40 @@
+ void
+ ObjectView::DrawFrame(bool noPause)
+ {
++	bigtime_t benchT0 = 0, benchT1 = 0, benchT2 = 0, benchT3 = 0;
++	if (benchEnabled()) {
++		benchT0 = system_time();
++		if (sBench.start == 0) {
++			sBench.start = sBench.windowStart = benchT0;
++			printf("ROCK5_GL_BENCH_START\n");
++			fflush(stdout);
++		}
++	}
+ 	LockGL();
+ 	glClear(GL_COLOR_BUFFER_BIT | (fZbuf ? GL_DEPTH_BUFFER_BIT : 0));
++	if (benchEnabled())
++		benchT1 = system_time();
+ 
+ 	fObjListLock.Lock();
+-	for (int i = 0; i < fObjects.CountItems(); i++) {
+-	  GLObject *object = reinterpret_cast<GLObject*>(fObjects.ItemAt(i));
+-		if (object->Solidity() == 0)
+-			object->Draw(false, NULL);
+-	}
+-	EnforceState();
+-	for (int i = 0; i < fObjects.CountItems(); i++) {
+-		GLObject *object = reinterpret_cast<GLObject*>(fObjects.ItemAt(i));
+-		if (object->Solidity() != 0)
+-			object->Draw(false, NULL);
++	if (!benchNoDraw()) {
++		for (int i = 0; i < fObjects.CountItems(); i++) {
++		  GLObject *object = reinterpret_cast<GLObject*>(fObjects.ItemAt(i));
++			if (object->Solidity() == 0)
++				object->Draw(false, NULL);
++		}
++		EnforceState();
++		for (int i = 0; i < fObjects.CountItems(); i++) {
++			GLObject *object = reinterpret_cast<GLObject*>(fObjects.ItemAt(i));
++			if (object->Solidity() != 0)
++				object->Draw(false, NULL);
++		}
+ 	}
+ 	fObjListLock.Unlock();
++	if (benchEnabled()) {
++		if (benchFinish())
++			glFinish();
++		benchT2 = system_time();
++	}
+ 
+ 	glDisable(GL_BLEND);
+ 	glDepthMask(GL_TRUE);
+@@ -837,6 +874,40 @@
+ 		fHistEntries = 0;
+ 		fOldestEntry = 0;
+ 	}
+-	SwapBuffers();
++	if (!benchNoSwap())
++		SwapBuffers();
+ 	UnlockGL();
++	if (benchEnabled()) {
++		benchT3 = system_time();
++		sBench.frames++;
++		sBench.windowFrames++;
++		sBench.clearUs += benchT1 - benchT0;
++		sBench.drawUs += benchT2 - benchT1;
++		sBench.swapUs += benchT3 - benchT2;
++		bigtime_t frame = benchT3 - benchT0;
++		if (frame > sBench.worstFrame)
++			sBench.worstFrame = frame;
++		if (sBench.frames == 1 || sBench.windowFrames >= 200 || benchT3 - sBench.windowStart >= 250000) {
++			double seconds = (benchT3 - sBench.windowStart) / 1000000.0;
++			printf("ROCK5_GL_BENCH frames=%lld fps=%.1f clear_us=%.1f draw_us=%.1f "
++				"swap_us=%.1f worst_ms=%.2f total=%lld\n",
++				(long long)sBench.windowFrames, sBench.windowFrames / seconds,
++				(double)sBench.clearUs / sBench.windowFrames,
++				(double)sBench.drawUs / sBench.windowFrames,
++				(double)sBench.swapUs / sBench.windowFrames,
++				sBench.worstFrame / 1000.0, (long long)sBench.frames);
++			fflush(stdout);
++			sBench.windowStart = benchT3;
++			sBench.windowFrames = 0;
++			sBench.clearUs = sBench.drawUs = sBench.swapUs = 0;
++			sBench.worstFrame = 0;
++		}
++		if (benchFrameLimit() > 0 && sBench.frames >= benchFrameLimit()) {
++			double seconds = (benchT3 - sBench.start) / 1000000.0;
++			printf("ROCK5_GL_BENCH_DONE frames=%lld seconds=%.3f fps=%.2f\n",
++				(long long)sBench.frames, seconds, sBench.frames / seconds);
++			fflush(stdout);
++			be_app->PostMessage(B_QUIT_REQUESTED);
++		}
++	}
+ }
+--- a/src/apps/glteapot/TeapotApp.cpp
++++ b/src/apps/glteapot/TeapotApp.cpp
+@@ -4,16 +4,30 @@
+ */
+ 
+ 
++#include <stdio.h>
++#include <stdlib.h>
++
+ #include "TeapotApp.h"
+ 
+ #include <Catalog.h>
+ 
+ 
++static void mark(const char* what) { fprintf(stderr, "BENCH_MARK %s\n", what); fflush(stderr); }
++
+ int
+ main(int argc, char** argv)
+ {
++	fprintf(stderr, "BENCH_ENV TEAPOT_BENCH=%s FRAMES=%s LIMIT=%s\n",
++		getenv("TEAPOT_BENCH") ? getenv("TEAPOT_BENCH") : "(null)",
++		getenv("TEAPOT_FRAMES") ? getenv("TEAPOT_FRAMES") : "(null)",
++		getenv("TEAPOT_LIMIT_FPS") ? getenv("TEAPOT_LIMIT_FPS") : "(null)");
++	fflush(stderr);
++	mark("main");
+ 	TeapotApp* app = new TeapotApp("application/x-vnd.Haiku-GLTeapot");
++	mark("app-constructed");
++	mark("run");
+ 	app->Run();
++	mark("run-returned");
+ 	delete app;	
+ 	return 0;
+ }
+@@ -23,9 +37,15 @@
+ 	:
+ 	BApplication(sign)
+ {
+-	fTeapotWindow = new TeapotWindow(BRect(5, 25, 300, 315),
++	int benchW = 295, benchH = 290;
++	if (const char* size = getenv("TEAPOT_SIZE"))
++		sscanf(size, "%dx%d", &benchW, &benchH);
++	mark("before-window");
++	fTeapotWindow = new TeapotWindow(BRect(5, 25, 5 + benchW, 25 + benchH),
+ 		B_TRANSLATE_SYSTEM_NAME("GLTeapot"), B_TITLED_WINDOW, 0);
++	mark("window-constructed");
+ 	fTeapotWindow->Show();
++	mark("window-shown");
+ }
+ 
+ 
