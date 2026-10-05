@@ -63,6 +63,8 @@ private:
 	void _DecPrivateModeReset(int value);
 	void _DecPrivateModeRequest(int value);
 	int* _GuessGroundTable(int encoding);
+	bool _ReadOperatingSystemControl(BString& command,
+		bool& _interrupted);
 	void _ProcessOperatingSystemControls(uchar* params);
 	void _WriteReply(BString &reply);
 

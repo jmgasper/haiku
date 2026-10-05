@@ -2304,12 +2304,11 @@ void NvAccelerant::SetCursorBitmap(uint16 width, uint16 height, uint16 hotX, uin
 	} else if (width > 64 || height > 64) {
 		cursorWidth = 128;
 		cursorHeight = 128;
-	} else if (width > 32 || height > 32) {
+	} else {
+		// Not 32 x 32: the display engine reads a cursor's rows packed,
+		// 128 bytes apart at that size, and NvKmsBitmap starts them every 256.
 		cursorWidth = 64;
 		cursorHeight = 64;
-	} else {
-		cursorWidth = 32;
-		cursorHeight = 32;
 	}
 
 	std::lock_guard<std::recursive_mutex> lock(fLock);
@@ -2627,7 +2626,8 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 			return (void*)fn;
 		}
 
-#if 0
+		// app_server's software cursor is drawn into the frame buffer, where
+		// a direct window drawing into it paints over it.
 		case B_MOVE_CURSOR: {
 			move_cursor fn = [](uint16 x, uint16 y) {
 				try {
@@ -2674,7 +2674,6 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 			};
 			return (void*)fn;
 		}
-#endif
 
 		default:
 			return nullptr;

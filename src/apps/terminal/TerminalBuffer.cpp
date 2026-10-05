@@ -199,6 +199,17 @@ TerminalBuffer::GetColor(uint8 index)
 
 
 void
+TerminalBuffer::SetClipboard(const BString& text)
+{
+	if (fListenerValid) {
+		BMessage message(MSG_SET_TERMINAL_CLIPBOARD);
+		message.AddData("text", B_MIME_TYPE, text.String(), text.Length());
+		fListener.SendMessage(&message);
+	}
+}
+
+
+void
 TerminalBuffer::SetCursorStyle(int32 style)
 {
 	fCursorStyle = style;

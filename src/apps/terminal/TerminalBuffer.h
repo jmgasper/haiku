@@ -42,6 +42,7 @@ public:
 			void				ResetColors(uint8* indexes,
 									int32 count = 1, bool dynamic = false);
 			void				GetColor(uint8 index);
+			void				SetClipboard(const BString& text);
 			void				SetCursorStyle(int32 style);
 			int32				CursorStyle() const { return fCursorStyle; };
 			void				SetPaletteColor(uint8 index, rgb_color color);
