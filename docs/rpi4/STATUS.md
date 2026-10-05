@@ -64,6 +64,19 @@ test did that to the board). Each RAM disk round leaves about 4 MB more in
 use. Pages go to the swap file one per request. `continue` after the
 `+++` break does not bring the system back.
 
+**The image file after the flash** (sha256 b574d412…, 2026-10-05 15:17) differs
+from the flashed card only in Summit: `summit_webkit` 1.10.0-10 and `summit`
+git20261005-2 (camera, microphone, screen sharing, WebRTC, MediaRecorder, Web
+Audio), which the Summit session installed on the board with pkgman and
+staged. That file itself has not been flashed. Two things that session
+reports for the OS, both unexamined here: `media_server` keeps a dead team's
+consumer connected, so a crashed capture program leaves the camera or
+microphone "in use" until the media services restart; and `app_server`'s
+`ReadBitmap` at scale 2 copies and averages the whole buffer under the
+drawing lock (250 ms for 3840x1080 on the X399), which screen sharing pays
+for every frame. The `/Documents` network share of earlier cards was a
+definition under `/boot/home` and went with the flash.
+
 **Lab tools added:** `+++` on the serial console enters the kernel debugger
 (`tools/rpi4/kdl-break.sh`; arm64 kernels with serial debug output), and
 `tools/rpi4/kdl.sh <seconds> <command>...` runs commands there; `bt <thread>`
