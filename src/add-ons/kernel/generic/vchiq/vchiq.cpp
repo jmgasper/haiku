@@ -209,10 +209,15 @@ struct vchiq_service {
 		int32			actual;
 		bool			waiting;
 		bool			broken;
+		// the page list, there from the start
+		area_id			listArea;
+		pagelist*		list;
+		phys_addr_t		listAddress;
+		// the data, as large as the largest transfer so far
 		area_id			area;
-		uint8*			base;
-		phys_addr_t		address;
+		uint8*			buffer;
 		size_t			size;
+		phys_addr_t*	pages;
 	} bulk[2];
 };
 
@@ -648,12 +653,18 @@ recycle_handler(void* data)
 //	#pragma mark - services
 
 
+static status_t allocate_page_list(vchiq_service* service, int direction);
+
+
 static void
 delete_service(vchiq_service* service)
 {
 	for (int i = 0; i < 2; i++) {
 		if (service->bulk[i].area >= 0)
 			delete_area(service->bulk[i].area);
+		if (service->bulk[i].listArea >= 0)
+			delete_area(service->bulk[i].listArea);
+		free(service->bulk[i].pages);
 		delete_sem(service->bulk[i].sem);
 		mutex_destroy(&service->bulk[i].lock);
 	}
@@ -692,11 +703,14 @@ vchiq_open_service(uint32 fourcc, int16 version, int16 minVersion,
 	status_t status = service->stateSem < 0 ? B_NO_MORE_SEMS : B_OK;
 	for (int i = 0; i < 2; i++) {
 		service->bulk[i].area = -1;
+		service->bulk[i].listArea = -1;
 		mutex_init(&service->bulk[i].lock, "vchiq bulk");
 		service->bulk[i].sem = create_sem(0, "vchiq bulk");
 		if (service->bulk[i].sem < 0)
 			status = B_NO_MORE_SEMS;
 	}
+	for (int i = 0; i < 2 && status == B_OK; i++)
+		status = allocate_page_list(service, i);
 
 	bool registered = false;
 	if (status == B_OK) {
@@ -807,23 +821,23 @@ vchiq_queue_message(vchiq_service* service, const void* data, size_t size,
 //	#pragma mark - bulk transfers
 
 
-/*!	The memory the firmware copies from or to: a page for the page list,
-	then the data. The page list has to lie in the first gigabyte.
+/*!	The page list of a service's transfers in one direction. The firmware
+	is given its address in 32 bits, so it has to lie in the first gigabyte,
+	in one piece. It is allocated with the service and large enough for the
+	largest transfer: memory like that can be scarce later on, and a transfer
+	that fails for the lack of it leaves the firmware waiting.
 */
 static status_t
-ensure_bulk_buffer(vchiq_service* service, int direction, size_t size)
+allocate_page_list(vchiq_service* service, int direction)
 {
-	size = B_PAGE_SIZE + ROUNDUP(size, B_PAGE_SIZE);
-	if (service->bulk[direction].area >= 0
-		&& service->bulk[direction].size >= size) {
-		return B_OK;
-	}
+	size_t size = ROUNDUP(sizeof(pagelist)
+		+ VCHIQ_MAX_BULK_SIZE / B_PAGE_SIZE * sizeof(uint32), B_PAGE_SIZE);
 
 	virtual_address_restrictions virtualRestrictions = {};
 	physical_address_restrictions physicalRestrictions = {};
 	physicalRestrictions.high_address = 1ull << 30;
 	void* address;
-	area_id area = create_area_etc(B_SYSTEM_TEAM, "vchiq bulk", size,
+	area_id area = create_area_etc(B_SYSTEM_TEAM, "vchiq page list", size,
 		B_CONTIGUOUS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, 0, 0,
 		&virtualRestrictions, &physicalRestrictions, &address);
 	if (area < 0)
@@ -836,12 +850,68 @@ ensure_bulk_buffer(vchiq_service* service, int direction, size_t size)
 		return status;
 	}
 
+	service->bulk[direction].listArea = area;
+	service->bulk[direction].list = (pagelist*)address;
+	service->bulk[direction].listAddress = entry.address;
+	return B_OK;
+}
+
+
+/*!	The memory the firmware copies from or to. Where page lists hold 36-bit
+	addresses (BCM2711) any pages will do; the older form only reaches the
+	first gigabyte. The buffer only ever grows and stays with the service.
+*/
+static status_t
+ensure_bulk_buffer(vchiq_service* service, int direction, size_t size)
+{
+	size = ROUNDUP(size, B_PAGE_SIZE);
+	if (service->bulk[direction].area >= 0
+		&& service->bulk[direction].size >= size) {
+		return B_OK;
+	}
+
+	size_t pageCount = size / B_PAGE_SIZE;
+	phys_addr_t* pages = (phys_addr_t*)malloc(pageCount * sizeof(phys_addr_t));
+	if (pages == NULL)
+		return B_NO_MEMORY;
+
+	virtual_address_restrictions virtualRestrictions = {};
+	physical_address_restrictions physicalRestrictions = {};
+	if (!s36BitAddresses)
+		physicalRestrictions.high_address = 1ull << 30;
+	void* address;
+	area_id area = create_area_etc(B_SYSTEM_TEAM, "vchiq bulk", size,
+		s36BitAddresses ? B_FULL_LOCK : B_CONTIGUOUS,
+		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, 0, 0,
+		&virtualRestrictions, &physicalRestrictions, &address);
+	if (area < 0) {
+		free(pages);
+		return area;
+	}
+
+	for (size_t i = 0; i < pageCount; i++) {
+		physical_entry entry;
+		status_t status = get_memory_map((uint8*)address + i * B_PAGE_SIZE,
+			B_PAGE_SIZE, &entry, 1);
+		if (status != B_OK) {
+			delete_area(area);
+			free(pages);
+			return status;
+		}
+		pages[i] = entry.address;
+	}
+
+	dprintf("vchiq: service %" B_PRIu32 ": %" B_PRIuSIZE " bytes to %s "
+		"through, first page at %#" B_PRIxPHYSADDR "\n", service->localPort,
+		size, direction == BULK_TRANSMIT ? "send" : "receive", pages[0]);
+
 	if (service->bulk[direction].area >= 0)
 		delete_area(service->bulk[direction].area);
+	free(service->bulk[direction].pages);
 	service->bulk[direction].area = area;
-	service->bulk[direction].base = (uint8*)address;
-	service->bulk[direction].address = entry.address;
+	service->bulk[direction].buffer = (uint8*)address;
 	service->bulk[direction].size = size;
+	service->bulk[direction].pages = pages;
 	return B_OK;
 }
 
@@ -864,10 +934,10 @@ bulk_transfer(vchiq_service* service, void* data, size_t size, bool userData,
 	if (status != B_OK)
 		return status;
 
-	uint8* base = service->bulk[direction].base;
-	phys_addr_t address = service->bulk[direction].address;
-	pagelist* list = (pagelist*)base;
-	uint8* buffer = base + B_PAGE_SIZE;
+	pagelist* list = service->bulk[direction].list;
+	phys_addr_t address = service->bulk[direction].listAddress;
+	uint8* buffer = service->bulk[direction].buffer;
+	const phys_addr_t* pageAddresses = service->bulk[direction].pages;
 	// one fragment per service will do: only receiving uses it
 	uint8* fragment = sFragments + service->localPort * FRAGMENT_SIZE;
 
@@ -891,25 +961,30 @@ bulk_transfer(vchiq_service* service, void* data, size_t size, bool userData,
 		list->type = PAGELIST_READ_WITH_FRAGMENTS + service->localPort;
 	}
 
+	// one entry for each run of pages that follow each other in memory
 	uint32 pages = ROUNDUP(size, B_PAGE_SIZE) / B_PAGE_SIZE;
-	phys_addr_t pageAddress = address + B_PAGE_SIZE;
+	uint32 maxRun = s36BitAddresses ? PAGELIST_MAX_RUN_36 : PAGELIST_MAX_RUN;
 	uint32 runs = 0;
-	while (pages > 0) {
-		uint32 run;
-		if (s36BitAddresses) {
-			run = min_c(pages, (uint32)PAGELIST_MAX_RUN_36);
+	for (uint32 i = 0; i < pages;) {
+		phys_addr_t pageAddress = pageAddresses[i];
+		uint32 run = 1;
+		while (i + run < pages && run < maxRun && pageAddresses[i + run]
+				== pageAddress + (phys_addr_t)run * B_PAGE_SIZE) {
+			run++;
+		}
+
+		if (s36BitAddresses)
 			list->addrs[runs++] = (uint32)(pageAddress >> 4) | (run - 1);
-		} else {
-			run = min_c(pages, (uint32)PAGELIST_MAX_RUN);
+		else {
 			list->addrs[runs++] = (uint32)pageAddress | VC_BUS_OFFSET
 				| (run - 1);
 		}
-		pageAddress += (phys_addr_t)run * B_PAGE_SIZE;
-		pages -= run;
+		i += run;
 	}
 	uint16 type = list->type;
 
-	flush_cache(base, B_PAGE_SIZE + size);
+	flush_cache(list, sizeof(pagelist) + runs * sizeof(uint32));
+	flush_cache(buffer, size);
 
 	{
 		MutexLocker serviceLocker(sServiceLock);
