@@ -17,7 +17,11 @@
 // enabling it makes the pci bus_manager binary about 1MB
 // some other platforms have issues with floppy image size...
 // TODO: Move this define to BuildSetup?
-#define USE_PCI_HEADER 1
+// air/OS: off. The pci.ids name tables (about 2.4 MB raw) only named devices in
+// the boot syslog, and they took the x86_64 boot floppy archive over its
+// 2.88 MB limit, breaking the anyboot image; without them the bus manager is
+// ~540 KB smaller. listdev and Devices keep their own copy of the names.
+#define USE_PCI_HEADER 0
 #endif
 
 #if USE_PCI_HEADER
