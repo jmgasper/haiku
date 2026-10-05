@@ -161,6 +161,12 @@ ieee80211_node2req(struct ieee80211com *ic, const struct ieee80211_node *ni,
 	nr->nr_vht_ss = ni->ni_vht_ss;
 	if (ni->ni_flags & IEEE80211_NODE_VHT)
 		nr->nr_flags |= IEEE80211_NODEREQ_VHT;
+	if (ni->ni_flags & IEEE80211_NODE_HECAP) {
+		nr->nr_flags |= IEEE80211_NODEREQ_HECAP;
+		nr->nr_hecaps_ie_len = ni->ni_hecaps_ie_len;
+		memcpy(nr->nr_hecaps_ie, ni->ni_hecaps_ie,
+		    nr->nr_hecaps_ie_len);
+	}
 }
 
 void
@@ -964,8 +970,6 @@ ieee80211_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 			na->na_nodes++;
 			ni = RBT_NEXT(ieee80211_tree, ni);
 		}
-		if (suser(curproc) == 0)
-			ieee80211_begin_bgscan(ifp);
 		break;
 	case SIOCG80211FLAGS:
 		flags = ic->ic_userflags;

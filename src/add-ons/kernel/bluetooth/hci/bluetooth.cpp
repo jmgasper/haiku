@@ -116,7 +116,7 @@ Assemble(bluetooth_device* bluetoothDevice, bt_packet_t type, void* data,
 
 						if (count >= bluetoothDevice->fExpectedPacketSize[type]) {
 							// the whole packet is here so it can be already posted.
-							ERROR("%s: EVENT posted in HCI!!!\n", __func__);
+							TRACE("%s: EVENT posted in HCI\n", __func__);
 							btCoreData->PostEvent(bluetoothDevice, data,
 								bluetoothDevice->fExpectedPacketSize[type]);
 
@@ -336,6 +336,13 @@ PostACL(hci_id hciId, net_buffer* buffer)
 	TRACE("%s: index 0x%" B_PRIx32 " try to send bt packet of %" B_PRIu32
 		" bytes (flags 0x%" B_PRIx32 "):\n", __func__, device->index,
 		buffer->size, buffer->flags);
+
+	// Automatically flushable packets are not allowed on an LE-U link (Core
+	// Vol 4 Part E 5.4.2); controllers may drop them. Start LE PDUs with the
+	// non-flushable boundary flag instead.
+	HciConnection* connection = btCoreData->ConnectionByHandle(handle, hciId);
+	if (connection != NULL && connection->isLE)
+		flag = HCI_ACL_PACKET_START_NON_FLUSHABLE;
 
 	// TODO: ATOMIC! any other thread should stop here
 	do {

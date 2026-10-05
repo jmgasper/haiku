@@ -1,0 +1,35 @@
+From 4759fa12a854834f15714ab645b908ba6bad02b9 Mon Sep 17 00:00:00 2001
+From: x399 <x399@lab>
+Date: Fri, 18 Sep 2026 16:59:52 +1000
+Subject: [PATCH 05/14] zink: reuse a present import slot when the window
+ system moves on
+
+A window that is resized hands out new buffers, and once every slot was
+taken the frame fell back to the copy through the CPU; the oldest slot is
+taken instead, which the work using it has long finished with.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ src/gallium/drivers/zink/zink_screen.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/zink/zink_screen.c b/src/gallium/drivers/zink/zink_screen.c
+index 029b66b..2920ed6 100644
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -1365,8 +1365,13 @@ present_into_host_memory(struct zink_screen *screen, struct zink_context *ctx,
+       if (screen->present_imports[i].map == NULL && slot == ARRAY_SIZE(screen->present_imports))
+          slot = i;
+    }
+-   if (slot == ARRAY_SIZE(screen->present_imports))
+-      return false;
++   if (slot == ARRAY_SIZE(screen->present_imports)) {
++      /* All slots are taken by buffers we no longer see - a window that was
++       * resized, for instance. The work that used them has long finished, so
++       * the oldest can go.
++       */
++      slot = 0;
++   }
+ 
+    if (screen->present_imports[slot].map != map ||
+        screen->present_imports[slot].size < size) {

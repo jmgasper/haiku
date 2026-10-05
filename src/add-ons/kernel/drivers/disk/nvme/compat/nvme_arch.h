@@ -24,7 +24,13 @@
 #endif
 
 
+#if defined(__aarch64__)
+#define nvme_wmb() memory_full_barrier()
+#define nvme_rmb() memory_full_barrier()
+#else
 #define nvme_wmb() memory_write_barrier()
+#define nvme_rmb() memory_read_barrier()
+#endif
 
 
 typedef uint8 __u8;
@@ -42,6 +48,10 @@ nvme_mmio_read_4(const volatile __u32 *addr)
 static inline void
 nvme_mmio_write_4(volatile __u32 *addr, __u32 val)
 {
+#if defined(__aarch64__)
+	// Include device-owned RAM outside the CPU inner-shareable domain.
+	memory_full_barrier();
+#endif
 	*addr = val;
 }
 
@@ -72,6 +82,9 @@ nvme_mmio_read_8(volatile __u64 *addr)
 static inline void
 nvme_mmio_write_8(volatile __u64 *addr, __u64 val)
 {
+#if defined(__aarch64__)
+	memory_full_barrier();
+#endif
 
 #ifdef NVME_MMIO_64BIT
 	*addr = val;

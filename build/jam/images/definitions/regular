@@ -43,7 +43,7 @@ SYSTEM_APPS += [ FFilterByBuildFeatures
 	Mail
 	MediaConverter
 	MediaPlayer
-	MidiPlayer
+	MidiPlayer@fluidlite
 	People
 	PoorMan
 	PowerStatus
@@ -54,7 +54,7 @@ SYSTEM_APPS += [ FFilterByBuildFeatures
 	SoundRecorder
 ] ;
 
-DESKBAR_APPLICATIONS +=
+DESKBAR_APPLICATIONS += [ FFilterByBuildFeatures
 	ActivityMonitor
 	CodyCam
 	HaikuDepot
@@ -63,13 +63,13 @@ DESKBAR_APPLICATIONS +=
 	Mail
 	MediaConverter
 	MediaPlayer
-	MidiPlayer
+	MidiPlayer@fluidlite
 	People
 	PoorMan
 	SerialConnect
 	SoftwareUpdater
 	SoundRecorder
-;
+] ;
 
 DESKBAR_DESKTOP_APPLETS +=
 	AutoRaise
@@ -81,7 +81,7 @@ SYSTEM_PREFERENCES += [ FFilterByBuildFeatures
 	Bluetooth
 	DataTranslations
 	E-mail
-	Media
+	Media@fluidlite
 	Printers
 	Repositories
 	ScreenSaver
@@ -94,11 +94,10 @@ SYSTEM_DEMOS += [ FFilterByBuildFeatures
 	Cortex@expat
 	FontDemo
 	GLTeapot@mesa
-	$(HAIKU_INCLUDE_TRADEMARKS)Haiku3d@mesa
 	Mandelbrot
 	OverlayImage
 	Pairs
-	PatchBay
+	PatchBay@fluidlite
 	Playground
 	Pulse
 	Sudoku
@@ -126,7 +125,7 @@ rule HaikuImageGetSystemLibs
 			libgnu.so
 			libmail.so
 			libmedia.so
-			libmidi.so
+			libmidi.so@fluidlite
 			libmidi2.so
 			libnetwork.so
 			libnvmm.so@x86_64
@@ -236,6 +235,8 @@ SYSTEM_ADD_ONS_MEDIA_PLUGINS += [ FFilterByBuildFeatures
 	ffmpeg@ffmpeg
 	http_streamer
 	raw_decoder
+	rpi_hevc@arm64
+	rpi_mmal@arm64
 ] ;
 
 SYSTEM_ADD_ONS_PRINT += [ FFilterByBuildFeatures
@@ -266,7 +267,6 @@ SYSTEM_ADD_ONS_SCREENSAVERS += [ FFilterByBuildFeatures
 	Gravity@mesa
 	Icons
 	IFS
-	Leaves
 	Message
 	Nebula
 	Shelf
@@ -314,23 +314,39 @@ SYSTEM_ADD_ONS_DRIVERS_MIDI +=
 ;
 
 SYSTEM_ADD_ONS_DRIVERS_NET += [ FFilterByBuildFeatures
-	# WLAN drivers
-	x86,x86_64,riscv64 @{
-		aironetwifi
+	# WLAN drivers. The M.2/mini PCIe and USB ones also serve arm64 boards;
+	# they build there and load on the ROCK 5 ITX (iaxwifi200 is in use).
+	x86,x86_64,riscv64,arm64 @{
 		atheroswifi
-		broadcom43xx
 		iaxwifi200
 		idualwifi7260
-		iprowifi2100
-		iprowifi2200
 		iprowifi3945
 		iprowifi4965
-		marvell88w8363
-		marvell88w8335
 		ralinkwifi
 		realtekwifi
 		realtekwifi8187
 		zydwifi1211
+	}@ # x86,x86_64,riscv64,arm64
+	# MediaTek MT7921/MT7922 (Wi-Fi 6, M.2 and PCIe), so far tried only on
+	# x86_64. Its firmware is not in HaikuPorts; see
+	# docs/x399-workstation/UserBuildConfig.standard.
+	x86_64 @{
+		mt7922wifi
+	}@ # x86_64
+	# Broadcom/Cypress FullMAC on SDIO: the Raspberry Pi 4's CYW43455. It
+	# only attaches on that board; its firmware comes with the board's image
+	# (tools/rpi4/UserBuildConfig).
+	arm64 @{
+		broadcomfmac
+	}@ # arm64
+	# Legacy PCI and CardBus cards
+	x86,x86_64,riscv64 @{
+		aironetwifi
+		broadcom43xx
+		iprowifi2100
+		iprowifi2200
+		marvell88w8363
+		marvell88w8335
 	}@ # x86,x86_64,riscv64
 ] ;
 

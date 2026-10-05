@@ -1272,6 +1272,7 @@ remove_interface(Interface* interface)
 	sInterfaces.Remove(interface);
 	locker.Unlock();
 
+	retire_device_interface(interface->DeviceInterface());
 	notify_interface_removed(interface);
 
 	interface->ReleaseReference();
@@ -1287,7 +1288,7 @@ interface_removed_device_interface(net_device_interface* deviceInterface)
 	RecursiveLocker locker(sLock);
 
 	Interface* interface = find_interface(deviceInterface->device->name);
-	if (interface != NULL)
+	if (interface != NULL && interface->DeviceInterface() == deviceInterface)
 		remove_interface(interface);
 }
 
@@ -1700,4 +1701,3 @@ uninit_interfaces()
 	mutex_destroy(&sHashLock);
 	return B_OK;
 }
-

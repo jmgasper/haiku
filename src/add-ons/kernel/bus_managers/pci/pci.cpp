@@ -8,6 +8,8 @@
 
 #include <debug.h>
 #include <string.h>
+
+#include <algorithm>
 #include <KernelExport.h>
 #include <util/kernel_cpp.h>
 #include <util/AutoLock.h>
@@ -612,6 +614,7 @@ PCI::InitBus(PCIBus *bus)
 	}
 
 	_DiscoverBus(bus);
+	_DiscoverAdditionalRootBuses(bus);
 	_ConfigureBridges(bus);
 	ClearDeviceStatus(bus, false);
 	_RefreshDeviceInfo(bus);
@@ -779,6 +782,20 @@ PCI::InitDomainData(domain_data &data)
 {
 	int32 count;
 	status_t status;
+	const char* intxModule;
+	if (data.root_node != NULL && gDeviceManager->get_attr_string(data.root_node,
+			B_PCI_INTX_CONTROLLER_MODULE, &intxModule, true) == B_OK) {
+		data.intx_status = get_module(intxModule, (module_info**)&data.intx_controller);
+		if (data.intx_status == B_OK && (data.intx_controller->get_irq == NULL
+			|| data.intx_controller->set_enabled == NULL)) {
+			put_module(intxModule);
+			data.intx_controller = NULL;
+			data.intx_status = B_BAD_VALUE;
+		}
+		if (data.intx_status != B_OK)
+			dprintf("PCI: cannot load INTx controller %s: %" B_PRId32 "\n",
+				intxModule, data.intx_status);
+	}
 
 	pci_controller_module_info *ctrl = data.controller;
 	void *ctrlCookie = data.controller_cookie;
@@ -1357,6 +1374,66 @@ PCI::_DiscoverBus(PCIBus *bus)
 	}
 
 	recursed--;
+}
+
+
+bool
+PCI::_IsBusKnown(PCIBus *bus, uint8 busNumber)
+{
+	if (bus->bus == busNumber)
+		return true;
+
+	for (PCIDev *dev = bus->child; dev != NULL; dev = dev->next) {
+		if (dev->bus == busNumber)
+			return true;
+		if (dev->child != NULL && _IsBusKnown(dev->child, busNumber))
+			return true;
+	}
+
+	return false;
+}
+
+
+void
+PCI::_DiscoverAdditionalRootBuses(PCIBus *bus)
+{
+	domain_data *data = _GetDomainData(bus->domain);
+	if (data == NULL || data->controller->get_root_bus == NULL)
+		return;
+
+	for (uint32 index = 0;; index++) {
+		uint8 rootBus;
+		if (data->controller->get_root_bus(data->controller_cookie, index,
+				&rootBus) != B_OK) {
+			break;
+		}
+		if (_IsBusKnown(bus, rootBus))
+			continue;
+
+		dprintf("PCI: discovering additional root bus %u in domain %u\n",
+			rootBus, bus->domain);
+
+		// Devices of additional host bridges are attached to the domain's
+		// root bus, which also holds the resource windows of all bridges,
+		// but keep their own bus number for configuration access.
+		PCIBus rootBusInfo = {
+			.parent = NULL,
+			.child = NULL,
+			.domain = bus->domain,
+			.bus = rootBus,
+			.io_window = PCIResourceWindow(),
+			.memory_window = PCIResourceWindow(),
+		};
+		_FixupDevices(bus->domain, rootBus);
+		_DiscoverBus(&rootBusInfo);
+
+		PCIDev **tail = &bus->child;
+		while (*tail != NULL)
+			tail = &(*tail)->next;
+		*tail = rootBusInfo.child;
+		for (PCIDev *dev = rootBusInfo.child; dev != NULL; dev = dev->next)
+			dev->parent = bus;
+	}
 }
 
 
@@ -2155,7 +2232,117 @@ PCI::SetPowerstate(uint8 domain, uint8 bus, uint8 _device, uint8 function,
 }
 
 
+//#pragma mark - INTx
+
+status_t
+PCI::GetIntxIRQ(PCIDev* device, uint32* irq)
+{
+	if (irq == NULL)
+		return B_BAD_VALUE;
+	*irq = 0;
+	domain_data& domain = *_GetDomainData(device->domain);
+	if (domain.intx_status != B_OK)
+		return domain.intx_status;
+	uint8 pin = ReadConfig(device, PCI_interrupt_pin, 1);
+	if (pin < 1 || pin > 4)
+		return B_UNSUPPORTED;
+	if (domain.intx_controller != NULL) {
+		return domain.intx_controller->get_irq(domain.controller_cookie,
+			device->bus, device->device, device->function, pin, irq);
+	}
+	uint8 line = ReadConfig(device, PCI_interrupt_line, 1);
+	if (line == 0 || line == 0xff)
+		return B_UNSUPPORTED;
+	*irq = line;
+	return B_OK;
+}
+
+
+status_t
+PCI::SetIntxEnabled(PCIDev* device, bool enabled)
+{
+	domain_data& domain = *_GetDomainData(device->domain);
+	if (domain.intx_status != B_OK)
+		return domain.intx_status;
+	// Preserve the legacy behavior on hosts without an explicit provider.
+	if (domain.intx_controller == NULL)
+		return B_OK;
+	uint8 pin = device->intx_pin;
+	if (pin == 0)
+		pin = ReadConfig(device, PCI_interrupt_pin, 1);
+	uint16 command = ReadConfig(device, PCI_command, 2);
+	if (!enabled) {
+		// Use the saved pin if endpoint configuration has become inaccessible.
+		// The host's mask still has to work before a handler can be removed.
+		if (command != UINT16_MAX)
+			WriteConfig(device, PCI_command, 2, command | PCI_command_int_disable);
+		status_t status = domain.intx_controller->set_enabled(domain.controller_cookie,
+			device->bus, device->device, device->function, pin, false);
+		if (status == B_OK) {
+			device->intx_enabled = false;
+			device->intx_pin = 0;
+		}
+		return status;
+	}
+	uint32 irq;
+	status_t status = GetIntxIRQ(device, &irq);
+	if (status != B_OK)
+		return status;
+	if (command == UINT16_MAX)
+		return B_IO_ERROR;
+	if (device->msi.configured_count != 0 || device->msix.configured_count != 0) {
+		return B_BUSY;
+	}
+	if ((device->msi.msi_capable
+			&& (ReadConfig(device, device->msi.capability_offset + PCI_msi_control, 2)
+				& PCI_msi_control_enable) != 0)
+		|| (device->msix.msix_capable
+			&& (ReadConfig(device, device->msix.capability_offset + PCI_msix_control, 2)
+				& PCI_msix_control_enable) != 0)) {
+		return B_BUSY;
+	}
+	device->intx_pin = pin;
+	status = domain.intx_controller->set_enabled(domain.controller_cookie,
+		device->bus, device->device, device->function, pin, true);
+	if (status != B_OK)
+		return status;
+	status = WriteConfig(device, PCI_command, 2, command & ~PCI_command_int_disable);
+	if (status != B_OK
+		|| (ReadConfig(device, PCI_command, 2) & PCI_command_int_disable) != 0) {
+		WriteConfig(device, PCI_command, 2, command | PCI_command_int_disable);
+		domain.intx_controller->set_enabled(domain.controller_cookie,
+			device->bus, device->device, device->function, pin, false);
+		return status != B_OK ? status : B_IO_ERROR;
+	}
+	device->intx_enabled = true;
+	return B_OK;
+}
+
+
 //#pragma mark - MSI
+
+status_t
+PCI::_AllocateMSIVectors(PCIDev* device, uint32 count, uint32* startVector,
+	uint64* address, uint32* data)
+{
+	msi_requester requester{};
+	device_node* root = _GetDomainData(device->domain)->root_node;
+	if (root == NULL || gDeviceManager->get_attr_uint64(root, B_PCI_MSI_CONTROLLER_ADDRESS,
+			&requester.controller_address, true) != B_OK) {
+		return msi_allocate_vectors_for_device(NULL, count, startVector, address, data);
+	}
+	uint32 base, range;
+	uint32 rid = (uint32(device->bus) << 8) | (uint32(device->device) << 3)
+		| device->function;
+	if (gDeviceManager->get_attr_uint32(root, B_PCI_MSI_REQUESTER_BASE, &base, true) != B_OK
+		|| gDeviceManager->get_attr_uint32(root, B_PCI_MSI_REQUESTER_COUNT, &range, true) != B_OK
+		|| rid >= range || base > UINT32_MAX - rid) {
+		return B_BAD_VALUE;
+	}
+	requester.device_id = base + rid;
+	return msi_allocate_vectors_for_device(&requester, count, startVector, address, data);
+}
+
 
 uint32
 PCI::GetMSICount(PCIDev *device)
@@ -2174,6 +2361,8 @@ PCI::GetMSICount(PCIDev *device)
 status_t
 PCI::ConfigureMSI(PCIDev *device, uint32 count, uint32 *startVector)
 {
+	if (device->intx_enabled)
+		return B_BUSY;
 	if (!msi_supported())
 		return B_UNSUPPORTED;
 
@@ -2192,7 +2381,7 @@ PCI::ConfigureMSI(PCIDev *device, uint32 count, uint32 *startVector)
 	if (info->configured_count != 0)
 		return B_BUSY;
 
-	status_t result = msi_allocate_vectors(count, &info->start_vector,
+	status_t result = _AllocateMSIVectors(device, count, &info->start_vector,
 		&info->address_value, &info->data_value);
 	if (result != B_OK)
 		return result;
@@ -2327,6 +2516,8 @@ PCI::GetMSIXCount(PCIDev *device)
 status_t
 PCI::ConfigureMSIX(PCIDev *device, uint32 count, uint32 *startVector)
 {
+	if (device->intx_enabled)
+		return B_BUSY;
 	if (!msi_supported())
 		return B_UNSUPPORTED;
 
@@ -2384,7 +2575,7 @@ PCI::ConfigureMSIX(PCIDev *device, uint32 count, uint32 *startVector)
 		info->pba_area_id = -1;
 	info->pba_address = address + info->pba_offset;
 
-	status_t result = msi_allocate_vectors(count, &info->start_vector,
+	status_t result = _AllocateMSIVectors(device, count, &info->start_vector,
 		&info->address_value, &info->data_value);
 	if (result != B_OK) {
 		delete_area(info->pba_area_id);
@@ -2751,4 +2942,253 @@ PCIResourceWindow::_MergeResourcesAt(int lower, int upper)
 		resourceLower.size += resourceUpper.size;
 		fResources.Erase(upper);
 	}
+}
+
+
+//	#pragma mark - suspend and resume
+
+
+static inline uint8
+saved_config8(PCIDev *device, uint16 offset)
+{
+	return device->saved_config[offset / 4] >> ((offset % 4) * 8);
+}
+
+
+static inline uint16
+saved_config16(PCIDev *device, uint16 offset)
+{
+	return saved_config8(device, offset)
+		| ((uint16)saved_config8(device, offset + 1) << 8);
+}
+
+
+static inline uint32
+saved_config32(PCIDev *device, uint16 offset)
+{
+	return saved_config16(device, offset)
+		| ((uint32)saved_config16(device, offset + 2) << 16);
+}
+
+
+/*!	Finds a capability in the saved configuration space. */
+static uint8
+saved_capability(PCIDev *device, uint8 capabilityID)
+{
+	if ((saved_config16(device, PCI_status) & PCI_status_capabilities) == 0)
+		return 0;
+
+	uint8 headerType = saved_config8(device, PCI_header_type)
+		& PCI_header_type_mask;
+	uint8 offset = saved_config8(device, headerType == PCI_header_type_cardbus
+		? PCI_capabilities_ptr_2 : PCI_capabilities_ptr) & ~3;
+
+	for (int i = 0; offset != 0 && i < 48; i++) {
+		if (saved_config8(device, offset) == capabilityID)
+			return offset;
+		offset = saved_config8(device, offset + 1) & ~3;
+	}
+	return 0;
+}
+
+
+void
+PCI::SaveConfiguration()
+{
+	for (uint8 i = 0; i < fDomainCount; i++) {
+		if (fDomainData[i].bus != NULL)
+			_SaveConfiguration(fDomainData[i].bus);
+	}
+}
+
+
+void
+PCI::RestoreConfiguration()
+{
+	for (uint8 i = 0; i < fDomainCount; i++) {
+		if (fDomainData[i].bus != NULL)
+			_RestoreConfiguration(fDomainData[i].bus);
+	}
+
+	// Give the devices time to become ready again before their drivers
+	// start talking to them.
+	snooze(100000);
+}
+
+
+void
+PCI::_SaveConfiguration(PCIBus *bus)
+{
+	for (PCIDev *device = bus->child; device != NULL; device = device->next) {
+		for (uint16 i = 0; i < B_COUNT_OF(device->saved_config); i++)
+			device->saved_config[i] = ReadConfig(device, i * 4, 4);
+		device->config_saved = (device->saved_config[0] & 0xffff) != 0xffff;
+
+		msix_info *msix = &device->msix;
+		if (msix->configured_count > 0 && msix->table_address != 0) {
+			uint32 count = std::min(msix->configured_count, (uint32)32) * 4;
+			volatile uint32 *table = (uint32 *)msix->table_address;
+			for (uint32 i = 0; i < count; i++)
+				device->saved_msix_table[i] = table[i];
+		}
+
+		// Stop the device from asserting PME while the system sleeps: Haiku
+		// does not support waking from devices, and a device that keeps
+		// signalling wake-ups (a network card that was left in wake on LAN
+		// mode, for instance) wakes the machine again right away.
+		uint8 capability = saved_capability(device, PCI_cap_id_pm);
+		if (capability != 0) {
+			uint16 control = ReadConfig(device, capability + PCI_pm_status, 2);
+			if ((control & PCI_pm_status_pme_enable) != 0) {
+				WriteConfig(device, capability + PCI_pm_status, 2,
+					control & ~PCI_pm_status_pme_enable);
+			}
+		}
+
+		if (device->child != NULL)
+			_SaveConfiguration(device->child);
+	}
+}
+
+
+void
+PCI::_RestoreConfiguration(PCIBus *bus)
+{
+	for (PCIDev *device = bus->child; device != NULL; device = device->next) {
+		if (device->config_saved)
+			_RestoreDeviceConfiguration(device);
+
+		if (device->child != NULL)
+			_RestoreConfiguration(device->child);
+	}
+}
+
+
+void
+PCI::_RestoreDeviceConfiguration(PCIDev *device)
+{
+	// wait until the device responds again
+	for (int i = 0; i < 100; i++) {
+		if ((ReadConfig(device, PCI_vendor_id, 2) & 0xffff) != 0xffff)
+			break;
+		snooze(10000);
+	}
+
+	uint8 capability = saved_capability(device, PCI_cap_id_pm);
+	if (capability != 0) {
+		uint16 state = ReadConfig(device, capability + PCI_pm_status, 2);
+		if ((state & PCI_pm_mask) != PCI_pm_state_d0) {
+			WriteConfig(device, capability + PCI_pm_status, 2,
+				state & ~PCI_pm_mask);
+			snooze(10000);
+		}
+	}
+
+	uint16 command = saved_config16(device, PCI_command);
+	WriteConfig(device, PCI_command, 2, 0);
+
+	switch (saved_config8(device, PCI_header_type) & PCI_header_type_mask) {
+		case PCI_header_type_generic:
+			for (uint16 offset = PCI_base_registers; offset < PCI_cardbus_cis;
+					offset += 4) {
+				WriteConfig(device, offset, 4, saved_config32(device, offset));
+			}
+			WriteConfig(device, PCI_rom_base, 4,
+				saved_config32(device, PCI_rom_base));
+			break;
+
+		case PCI_header_type_PCI_to_PCI_bridge:
+			WriteConfig(device, PCI_primary_bus, 4,
+				saved_config32(device, PCI_primary_bus));
+			WriteConfig(device, PCI_io_base, 2,
+				saved_config16(device, PCI_io_base));
+			for (uint16 offset = PCI_memory_base; offset <= PCI_io_limit_upper16;
+					offset += 4) {
+				WriteConfig(device, offset, 4, saved_config32(device, offset));
+			}
+			WriteConfig(device, PCI_bridge_control, 2,
+				saved_config16(device, PCI_bridge_control));
+			break;
+	}
+
+	WriteConfig(device, PCI_line_size, 1,
+		saved_config8(device, PCI_line_size));
+	WriteConfig(device, PCI_latency, 1, saved_config8(device, PCI_latency));
+	WriteConfig(device, PCI_interrupt_line, 1,
+		saved_config8(device, PCI_interrupt_line));
+
+	capability = saved_capability(device, PCI_cap_id_pcie);
+	if (capability != 0) {
+		uint16 flags = saved_config16(device, capability + 2);
+		uint8 type = (flags >> 4) & 0xf;
+		WriteConfig(device, capability + 0x08, 2,
+			saved_config16(device, capability + 0x08));
+		WriteConfig(device, capability + 0x10, 2,
+			saved_config16(device, capability + 0x10) & ~(1 << 5));
+			// without the retrain link bit
+		if ((flags & (1 << 8)) != 0) {
+			WriteConfig(device, capability + 0x18, 2,
+				saved_config16(device, capability + 0x18));
+		}
+		if (type == 4 /* root port */) {
+			WriteConfig(device, capability + 0x1c, 2,
+				saved_config16(device, capability + 0x1c));
+		}
+		if ((flags & 0xf) >= 2) {
+			WriteConfig(device, capability + 0x28, 2,
+				saved_config16(device, capability + 0x28));
+			WriteConfig(device, capability + 0x30, 2,
+				saved_config16(device, capability + 0x30));
+		}
+	}
+
+	// On AMD systems MSI messages are only forwarded when the HyperTransport
+	// MSI mapping is enabled, and that is lost while sleeping.
+	ht_mapping_info *htMapping = &device->ht_mapping;
+	if (htMapping->ht_mapping_capable) {
+		WriteConfig(device, htMapping->capability_offset + PCI_ht_command, 2,
+			htMapping->control_value);
+	}
+
+	capability = saved_capability(device, PCI_cap_id_msi);
+	if (capability != 0) {
+		uint16 control = saved_config16(device, capability + PCI_msi_control);
+		uint8 offset = capability + PCI_msi_address;
+		WriteConfig(device, offset, 4, saved_config32(device, offset));
+		offset += 4;
+		if ((control & PCI_msi_control_64bit) != 0) {
+			WriteConfig(device, offset, 4, saved_config32(device, offset));
+			offset += 4;
+		}
+		WriteConfig(device, offset, 2, saved_config16(device, offset));
+		offset += 4;
+		if ((control & PCI_msi_control_vector) != 0)
+			WriteConfig(device, offset, 4, saved_config32(device, offset));
+		WriteConfig(device, capability + PCI_msi_control, 2, control);
+	}
+
+	uint8 msixCapability = saved_capability(device, PCI_cap_id_msix);
+	uint16 msixControl = 0;
+	if (msixCapability != 0) {
+		msixControl = saved_config16(device, msixCapability + PCI_msix_control);
+		WriteConfig(device, msixCapability + PCI_msix_control, 2,
+			msixControl | PCI_msix_control_function_mask);
+	}
+
+	WriteConfig(device, PCI_command, 2, command);
+
+	msix_info *msix = &device->msix;
+	if (msixCapability != 0) {
+		if (msix->configured_count > 0 && msix->table_address != 0
+			&& (command & PCI_command_memory) != 0) {
+			uint32 count = std::min(msix->configured_count, (uint32)32) * 4;
+			volatile uint32 *table = (uint32 *)msix->table_address;
+			for (uint32 i = 0; i < count; i++)
+				table[i] = device->saved_msix_table[i];
+		}
+		WriteConfig(device, msixCapability + PCI_msix_control, 2, msixControl);
+	}
+
+	// clear any errors reported while resuming
+	WriteConfig(device, PCI_status, 2, 0xffff);
 }

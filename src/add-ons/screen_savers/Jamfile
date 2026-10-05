@@ -7,7 +7,6 @@ SubInclude HAIKU_TOP src add-ons screen_savers glife ;
 SubInclude HAIKU_TOP src add-ons screen_savers gravity ;
 SubInclude HAIKU_TOP src add-ons screen_savers icons ;
 SubInclude HAIKU_TOP src add-ons screen_savers ifs ;
-SubInclude HAIKU_TOP src add-ons screen_savers leaves ;
 SubInclude HAIKU_TOP src add-ons screen_savers message ;
 SubInclude HAIKU_TOP src add-ons screen_savers nebula ;
 SubInclude HAIKU_TOP src add-ons screen_savers shelf ;

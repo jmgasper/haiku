@@ -261,7 +261,9 @@ rule KernelArchitectureSetup architecture
 
 		case arm64 :
 			HAIKU_KERNEL_PLATFORM ?= efi ;
-			HAIKU_BOOT_TARGETS += efi ;
+			# rpi: started directly by the Raspberry Pi firmware. The kernel
+			# is the same one; it does not use any EFI services on arm64.
+			HAIKU_BOOT_TARGETS += efi rpi ;
 
 			# SOC's like allwinner need an offset to skip the hardcoded initial loader
 			HAIKU_BOOT_SDIMAGE_BEGIN = 4096 ; # in KiB
@@ -550,6 +552,12 @@ rule KernelArchitectureSetup architecture
 			case riscv :
 				HAIKU_BOOT_$(bootTarget:U)_CCFLAGS += -mcmodel=medany -fno-omit-frame-pointer -fno-plt -fno-pic -fno-semantic-interposition ;
 				HAIKU_BOOT_$(bootTarget:U)_C++FLAGS += -mcmodel=medany -fno-omit-frame-pointer -fno-plt -fno-pic -fno-semantic-interposition ;
+			case rpi :
+				# linked at a fixed address
+				HAIKU_BOOT_$(bootTarget:U)_CCFLAGS += -fno-pic -fno-stack-protector
+					-Wno-error=unused-variable -Wno-error=main ;
+				HAIKU_BOOT_$(bootTarget:U)_C++FLAGS += -fno-pic -fno-stack-protector
+					-Wno-error=unused-variable -Wno-error=main ;
 			case openfirmware :
 				HAIKU_BOOT_$(bootTarget:U)_CCFLAGS += -fno-pic -fno-semantic-interposition -Wno-error=main -Wstack-usage=1023 ;
 				HAIKU_BOOT_$(bootTarget:U)_C++FLAGS += -fno-pic -fno-semantic-interposition -Wno-error=main -Wstack-usage=1023 ;

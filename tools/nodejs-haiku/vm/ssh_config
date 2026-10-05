@@ -1,0 +1,13 @@
+Host hvm
+    HostName 127.0.0.1
+    Port 2223
+    User user
+    IdentityFile /mnt/HaikuWork/x399/ssh/workstation_ed25519
+    IdentitiesOnly yes
+    UserKnownHostsFile /dev/null
+    StrictHostKeyChecking no
+    LogLevel ERROR
+    BatchMode yes
+    ConnectTimeout 10
+    ServerAliveInterval 30
+    ServerAliveCountMax 6

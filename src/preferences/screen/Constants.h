@@ -43,6 +43,16 @@ static const uint32 MAKE_INITIAL_MSG = 'mkin';
 static const uint32 kMsgWorkspaceLayoutChanged = 'wslc';
 static const uint32 kMsgWorkspaceColumnsChanged = 'wscc';
 static const uint32 kMsgWorkspaceRowsChanged = 'wsrc';
+static const uint32 kMsgDisplaySelected = 'dsel';
+static const uint32 kMsgDisplayMoved = 'dmov';
+static const uint32 kMsgDisplayEnabled = 'dena';
+static const uint32 kMsgDisplayPrimary = 'dpri';
+static const uint32 kMsgScaleChanged = 'pscl';
+static const uint32 kMsgIdentifyDisplays = 'iden';
+static const uint32 kMsgIdentifyDone = 'idcl';
+static const uint32 kMsgZoomToDisplay = 'zoom';
+static const uint32 kMsgMirrorDisplays = 'mirr';
+static const uint32 kMsgReloadLayout = 'rlay';
 
 // Constants
 extern const char* kBackgroundsSignature;

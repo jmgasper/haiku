@@ -22,6 +22,7 @@
 #include <util/AutoLock.h>
 
 #include "xhci.h"
+#include "PhysicalMemoryAllocator.h"
 
 
 #define CALLED(x...)	TRACE_MODULE("CALLED %s\n", __PRETTY_FUNCTION__)
@@ -30,7 +31,9 @@
 #define USB_MODULE_NAME	"xhci"
 
 device_manager_info* gDeviceManager;
-static usb_for_controller_interface* gUSB;
+usb_for_controller_interface* gUSB;
+extern driver_module_info gXHCIFDTDriver;
+extern usb_bus_interface gXHCIFDTBus;
 
 
 #define XHCI_PCI_DEVICE_MODULE_NAME "busses/usb/xhci/pci/driver_v1"
@@ -95,6 +98,20 @@ uninit_bus(void* bus_cookie)
 	CALLED();
 	XHCI* xhci = (XHCI*)bus_cookie;
 	delete xhci;
+}
+
+
+static status_t
+suspend_bus(void* bus_cookie, int32 state)
+{
+	return ((XHCI*)bus_cookie)->Suspend();
+}
+
+
+static status_t
+resume_bus(void* bus_cookie)
+{
+	return ((XHCI*)bus_cookie)->Resume();
 }
 
 
@@ -310,6 +327,8 @@ static usb_bus_interface gXHCIPCIDeviceModule = {
 		NULL,  // register child devices
 		NULL,  // rescan
 		NULL,  // device removed
+		suspend_bus,
+		resume_bus,
 	},
 };
 
@@ -333,12 +352,14 @@ static driver_module_info sXHCIDevice = {
 module_info* modules[] = {
 	(module_info* )&sXHCIDevice,
 	(module_info* )&gXHCIPCIDeviceModule,
+	(module_info* )&gXHCIFDTDriver,
+	(module_info* )&gXHCIFDTBus,
 	NULL
 };
 
 
 XHCI::XHCI(pci_info *info, 	pci_device_module_info* pci, pci_device* device, Stack *stack,
-	device_node* node)
+	device_node* node, const xhci_platform_info* platform)
 	:	BusManager(stack, node),
 		fRegisterArea(-1),
 		fRegisters(NULL),
@@ -346,10 +367,19 @@ XHCI::XHCI(pci_info *info, 	pci_device_module_info* pci, pci_device* device, Sta
 		fPci(pci),
 		fDevice(device),
 		fStack(stack),
-		fIRQ(0),
+		fDMAAllocator(NULL),
+		fIRQ(platform != NULL ? platform->interrupt : 0),
 		fUseMSI(false),
+		fInterruptInstalled(false),
+		fBrokenPortDisable(platform != NULL && platform->broken_port_disable),
+		fUSB2Only(platform != NULL && platform->usb2_only),
+		fTRBOverfetch(false),
 		fErstArea(-1),
 		fDcbaArea(-1),
+		fDcbaPhysical(0),
+		fErstPhysical(0),
+		fCmdRingPhysical(0),
+		fPortsDisconnected(false),
 		fCmdCompSem(-1),
 		fStopThreads(false),
 		fRootHub(NULL),
@@ -369,6 +399,7 @@ XHCI::XHCI(pci_info *info, 	pci_device_module_info* pci, pci_device* device, Sta
 	B_INITIALIZE_SPINLOCK(&fSpinlock);
 	mutex_init(&fFinishedLock, "XHCI finished transfers");
 	mutex_init(&fEventLock, "XHCI event handler");
+	mutex_init(&fChunkLock, "XHCI descriptor chunks");
 
 	if (BusManager::InitCheck() < B_OK) {
 		TRACE_ERROR("bus manager failed to init\n");
@@ -378,21 +409,55 @@ XHCI::XHCI(pci_info *info, 	pci_device_module_info* pci, pci_device* device, Sta
 	TRACE("constructing new XHCI host controller driver\n");
 	fInitOK = false;
 
-	// enable busmaster and memory mapped access
-	uint16 command = fPci->read_pci_config(fDevice, PCI_command, 2);
-	command &= ~(PCI_command_io | PCI_command_int_disable);
-	command |= PCI_command_master | PCI_command_memory;
+	phys_addr_t physicalAddress;
+	size_t mapSize;
+	if (fPCIInfo != NULL) {
+		// enable busmaster and memory mapped access
+		uint16 command = fPci->read_pci_config(fDevice, PCI_command, 2);
+		command &= ~(PCI_command_io | PCI_command_int_disable);
+		command |= PCI_command_master | PCI_command_memory;
 
-	fPci->write_pci_config(fDevice, PCI_command, 2, command);
+		fPci->write_pci_config(fDevice, PCI_command, 2, command);
 
-	// map the registers (low + high for 64-bit when requested)
-	phys_addr_t physicalAddress = fPCIInfo->u.h0.base_registers[0];
-	if ((fPCIInfo->u.h0.base_register_flags[0] & PCI_address_type)
-			== PCI_address_type_64) {
-		physicalAddress |= (uint64)fPCIInfo->u.h0.base_registers[1] << 32;
-	}
+		// map the registers (low + high for 64-bit when requested)
+		physicalAddress = fPCIInfo->u.h0.base_registers[0];
+		if ((fPCIInfo->u.h0.base_register_flags[0] & PCI_address_type)
+				== PCI_address_type_64) {
+			physicalAddress |= (uint64)fPCIInfo->u.h0.base_registers[1] << 32;
+		}
 
-	size_t mapSize = fPCIInfo->u.h0.base_register_sizes[0];
+		mapSize = fPCIInfo->u.h0.base_register_sizes[0];
+
+		// The VL805 reads TRBs ahead and can use them stale.
+		fTRBOverfetch = fPCIInfo->vendor_id == 0x1106
+			&& fPCIInfo->device_id == 0x3483;
+
+#ifdef __aarch64__
+		// PCI host bridges of ARM SoCs do not snoop the CPU caches as a
+		// rule (the Raspberry Pi 4's does not), and nothing says which do:
+		// keep everything the controller reads or writes in uncached memory.
+		fDMAAllocator = new(std::nothrow) PhysicalMemoryAllocator(
+			"XHCI noncoherent DMA", 8, B_PAGE_SIZE * 32, 64, true);
+		if (fDMAAllocator == NULL || fDMAAllocator->InitCheck() != B_OK) {
+			TRACE_ERROR("could not allocate noncoherent DMA pool\n");
+			return;
+		}
+#endif
+	} else if (platform != NULL) {
+		physicalAddress = platform->register_base;
+		mapSize = platform->register_size;
+		if (!platform->dma_coherent) {
+			// The controller does not snoop the CPU caches: every structure
+			// it reads or writes comes from uncached memory.
+			fDMAAllocator = new(std::nothrow) PhysicalMemoryAllocator(
+				"XHCI noncoherent DMA", 8, B_PAGE_SIZE * 32, 64, true);
+			if (fDMAAllocator == NULL || fDMAAllocator->InitCheck() != B_OK) {
+				TRACE_ERROR("could not allocate noncoherent DMA pool\n");
+				return;
+			}
+		}
+	} else
+		return;
 
 	TRACE("map registers %08" B_PRIxPHYSADDR ", size: %" B_PRIuSIZE "\n",
 		physicalAddress, mapSize);
@@ -485,7 +550,7 @@ XHCI::XHCI(pci_info *info, 	pci_device_module_info* pci, pci_device* device, Sta
 	}
 
 	// We need to explicitly take ownership of EHCI ports on earlier Intel chipsets.
-	if (fPCIInfo->vendor_id == PCI_VENDOR_INTEL) {
+	if (fPCIInfo != NULL && fPCIInfo->vendor_id == PCI_VENDOR_INTEL) {
 		switch (fPCIInfo->device_id) {
 			case PCI_DEVICE_INTEL_PANTHER_POINT_XHCI:
 			case PCI_DEVICE_INTEL_LYNX_POINT_XHCI:
@@ -527,41 +592,53 @@ XHCI::XHCI(pci_info *info, 	pci_device_module_info* pci, pci_device* device, Sta
 		B_URGENT_PRIORITY - 1, (void *)this);
 	resume_thread(fFinishThread);
 
-	// Find the right interrupt vector, using MSIs if available.
-	fIRQ = fPCIInfo->u.h0.interrupt_line;
-	if (fIRQ == 0xFF)
-		fIRQ = 0;
+	if (fPCIInfo != NULL) {
+		// Find the right interrupt vector, using MSIs if available.
+		fIRQ = fPCIInfo->u.h0.interrupt_line;
+		if (fIRQ == 0xFF)
+			fIRQ = 0;
 
 #if 0
-	if (fPci->get_msix_count(fDevice) >= 1) {
-		uint8 msiVector = 0;
-		if (fPci->configure_msix(fDevice, 1, &msiVector) == B_OK
-			&& fPci->enable_msix(fDevice) == B_OK) {
-			TRACE_ALWAYS("using MSI-X\n");
-			fIRQ = msiVector;
-			fUseMSI = true;
-		}
-	} else
+		if (fPci->get_msix_count(fDevice) >= 1) {
+			uint8 msiVector = 0;
+			if (fPci->configure_msix(fDevice, 1, &msiVector) == B_OK
+				&& fPci->enable_msix(fDevice) == B_OK) {
+				TRACE_ALWAYS("using MSI-X\n");
+				fIRQ = msiVector;
+				fUseMSI = true;
+			}
+		} else
 #endif
-	if (fPci->get_msi_count(fDevice) >= 1) {
-		uint32 msiVector = 0;
-		if (fPci->configure_msi(fDevice, 1, &msiVector) == B_OK
-			&& fPci->enable_msi(fDevice) == B_OK) {
-			TRACE_ALWAYS("using message signaled interrupts\n");
-			fIRQ = msiVector;
-			fUseMSI = true;
+		if (fPci->get_msi_count(fDevice) >= 1) {
+			uint32 msiVector = 0;
+			if (fPci->configure_msi(fDevice, 1, &msiVector) == B_OK
+				&& fPci->enable_msi(fDevice) == B_OK) {
+				TRACE_ALWAYS("using message signaled interrupts\n");
+				fIRQ = msiVector;
+				fUseMSI = true;
+			}
 		}
-	}
 
-	if (fIRQ == 0) {
-		TRACE_MODULE_ERROR("device PCI:%d:%d:%d was assigned an invalid IRQ\n",
-			fPCIInfo->bus, fPCIInfo->device, fPCIInfo->function);
+		if (fIRQ == 0) {
+			TRACE_MODULE_ERROR("device PCI:%d:%d:%d was assigned an invalid IRQ\n",
+				fPCIInfo->bus, fPCIInfo->device, fPCIInfo->function);
+			return;
+		}
+	} else if (fIRQ == 0) {
+		TRACE_MODULE_ERROR("controller has no valid IRQ\n");
 		return;
 	}
 
 	// Install the interrupt handler
 	TRACE("installing interrupt handler\n");
-	install_io_interrupt_handler(fIRQ, InterruptHandler, (void *)this, 0);
+	status_t status = install_io_interrupt_handler(fIRQ, InterruptHandler,
+		(void *)this, 0);
+	if (status != B_OK) {
+		TRACE_ERROR("could not install IRQ %" B_PRIu32 ": %s\n", fIRQ,
+			strerror(status));
+		return;
+	}
+	fInterruptInstalled = true;
 
 	memset(fPortSpeeds, 0, sizeof(fPortSpeeds));
 	memset((void*)fDevices, 0, sizeof(fDevices));
@@ -575,7 +652,8 @@ XHCI::~XHCI()
 {
 	TRACE("tear down XHCI host controller driver\n");
 
-	WriteOpReg(XHCI_CMD, 0);
+	if (fRegisters != NULL)
+		WriteOpReg(XHCI_CMD, 0);
 
 	int32 result = 0;
 	fStopThreads = true;
@@ -587,14 +665,17 @@ XHCI::~XHCI()
 
 	mutex_destroy(&fFinishedLock);
 	mutex_destroy(&fEventLock);
+	mutex_destroy(&fChunkLock);
 
-	remove_io_interrupt_handler(fIRQ, InterruptHandler, (void *)this);
+	if (fInterruptInstalled)
+		remove_io_interrupt_handler(fIRQ, InterruptHandler, (void *)this);
 
 	delete_area(fRegisterArea);
 	delete_area(fErstArea);
 	for (uint32 i = 0; i < fScratchpadCount; i++)
 		delete_area(fScratchpadArea[i]);
 	delete_area(fDcbaArea);
+	delete fDMAAllocator;
 
 	if (fUseMSI) {
 		fPci->disable_msi(fDevice);
@@ -617,6 +698,68 @@ XHCI::_SwitchIntelPorts()
 	fPci->write_pci_config(fDevice, XHCI_INTEL_XUSB2PR, 4, ports);
 	ports = fPci->read_pci_config(fDevice, XHCI_INTEL_XUSB2PR, 4);
 	TRACE("USB 2.0 ports now under XHCI: 0x%" B_PRIx32 "\n", ports);
+}
+
+
+status_t
+XHCI::AllocateChunk(void** logicalAddress, phys_addr_t* physicalAddress,
+	size_t size)
+{
+	if (fDMAAllocator != NULL)
+		return fDMAAllocator->Allocate(size, logicalAddress, physicalAddress);
+	return fStack->AllocateChunk(logicalAddress, physicalAddress, size);
+}
+
+
+status_t
+XHCI::FreeChunk(void* logicalAddress, phys_addr_t physicalAddress, size_t size)
+{
+	if (fDMAAllocator != NULL)
+		return fDMAAllocator->Deallocate(size, logicalAddress, physicalAddress);
+	return fStack->FreeChunk(logicalAddress, physicalAddress, size);
+}
+
+
+area_id
+XHCI::AllocateArea(void** logicalAddress, phys_addr_t* physicalAddress,
+	size_t size, const char* name)
+{
+	if (fDMAAllocator != NULL) {
+		return PhysicalMemoryAllocator::AllocateArea(name, size, logicalAddress,
+			physicalAddress, true);
+	}
+	return fStack->AllocateArea(logicalAddress, physicalAddress, size, name);
+}
+
+
+/*!	Orders writes to DMA memory before what follows (a cycle bit or a
+	doorbell), and reads of it after what came before. Uncached memory needs
+	a full barrier for the controller to observe the order.
+*/
+inline void
+XHCI::_DeviceMemoryBarrier()
+{
+	if (fDMAAllocator != NULL)
+		memory_full_barrier();
+}
+
+
+bool
+XHCI::_IsDisabledSuperSpeedPort(uint8 index) const
+{
+	return fUSB2Only && index < fPortCount
+		&& fPortSpeeds[index] >= USB_SPEED_SUPERSPEED;
+}
+
+
+/*!	Whether the controller reads and writes a physical transfer's buffers
+	itself. Without cache coherency they would need cache maintenance, so
+	their data goes through the descriptors' uncached buffers instead.
+*/
+inline bool
+XHCI::_DirectPhysical(Transfer* transfer) const
+{
+	return transfer->IsPhysical() && fDMAAllocator == NULL;
 }
 
 
@@ -701,7 +844,7 @@ XHCI::Start()
 
 	// allocate Device Context Base Address array
 	phys_addr_t dmaAddress;
-	fDcbaArea = fStack->AllocateArea((void **)&fDcba, &dmaAddress,
+	fDcbaArea = AllocateArea((void **)&fDcba, &dmaAddress,
 		sizeof(*fDcba), "DCBA Area");
 	if (fDcbaArea < B_OK) {
 		TRACE_ERROR("unable to create the DCBA area\n");
@@ -718,7 +861,7 @@ XHCI::Start()
 	// fill up the scratchpad array with scratchpad pages
 	for (uint32 i = 0; i < fScratchpadCount; i++) {
 		phys_addr_t scratchDmaAddress;
-		fScratchpadArea[i] = fStack->AllocateArea((void **)&fScratchpad[i],
+		fScratchpadArea[i] = AllocateArea((void **)&fScratchpad[i],
 			&scratchDmaAddress, B_PAGE_SIZE, "Scratchpad Area");
 		if (fScratchpadArea[i] < B_OK) {
 			TRACE_ERROR("unable to create the scratchpad area\n");
@@ -727,13 +870,15 @@ XHCI::Start()
 		fDcba->scratchpad[i] = scratchDmaAddress;
 	}
 
+	fDcbaPhysical = dmaAddress;
+
 	TRACE("setting DCBAAP %" B_PRIxPHYSADDR "\n", dmaAddress);
 	WriteOpReg(XHCI_DCBAAP_LO, (uint32)dmaAddress);
 	WriteOpReg(XHCI_DCBAAP_HI, (uint32)(dmaAddress >> 32));
 
 	// allocate Event Ring Segment Table
 	uint8 *addr;
-	fErstArea = fStack->AllocateArea((void **)&addr, &dmaAddress,
+	fErstArea = AllocateArea((void **)&addr, &dmaAddress,
 		(XHCI_MAX_COMMANDS + XHCI_MAX_EVENTS) * sizeof(xhci_trb)
 		+ sizeof(xhci_erst_element),
 		"USB XHCI ERST CMD_RING and EVENT_RING Area");
@@ -744,6 +889,7 @@ XHCI::Start()
 		return B_ERROR;
 	}
 	fErst = (xhci_erst_element *)addr;
+	fErstPhysical = dmaAddress;
 	memset(fErst, 0, (XHCI_MAX_COMMANDS + XHCI_MAX_EVENTS) * sizeof(xhci_trb)
 		+ sizeof(xhci_erst_element));
 
@@ -783,6 +929,8 @@ XHCI::Start()
 			TRACE_ERROR("Command Ring still running after stop/cancel\n");
 		}
 	}
+	fCmdRingPhysical = dmaAddress;
+
 	TRACE("setting CRCR addr = 0x%" B_PRIxPHYSADDR "\n", dmaAddress);
 	WriteOpReg(XHCI_CRCR_LO, (uint32)dmaAddress | CRCR_RCS);
 	WriteOpReg(XHCI_CRCR_HI, (uint32)(dmaAddress >> 32));
@@ -790,18 +938,7 @@ XHCI::Start()
 	fCmdRing[XHCI_MAX_COMMANDS - 1].address = dmaAddress;
 
 	TRACE("setting interrupt rate\n");
-
-	// Setting IMOD below 0x3F8 on Intel Lynx Point can cause IRQ lockups
-	if (fPCIInfo->vendor_id == PCI_VENDOR_INTEL
-		&& (fPCIInfo->device_id == PCI_DEVICE_INTEL_PANTHER_POINT_XHCI
-			|| fPCIInfo->device_id == PCI_DEVICE_INTEL_LYNX_POINT_XHCI
-			|| fPCIInfo->device_id == PCI_DEVICE_INTEL_LYNX_POINT_LP_XHCI
-			|| fPCIInfo->device_id == PCI_DEVICE_INTEL_BAYTRAIL_XHCI
-			|| fPCIInfo->device_id == PCI_DEVICE_INTEL_WILDCAT_POINT_XHCI)) {
-		WriteRunReg32(XHCI_IMOD(0), 0x000003f8); // 4000 irq/s
-	} else {
-		WriteRunReg32(XHCI_IMOD(0), 0x000001f4); // 8000 irq/s
-	}
+	_SetInterruptModeration();
 
 	TRACE("enabling interrupt\n");
 	WriteRunReg32(XHCI_IMAN(0), ReadRunReg32(XHCI_IMAN(0)) | IMAN_INTR_ENA);
@@ -836,6 +973,91 @@ XHCI::Start()
 #endif
 
 	return BusManager::Start();
+}
+
+
+void
+XHCI::_SetInterruptModeration()
+{
+	// Setting IMOD below 0x3F8 on Intel Lynx Point can cause IRQ lockups
+	if (fPCIInfo != NULL && fPCIInfo->vendor_id == PCI_VENDOR_INTEL
+		&& (fPCIInfo->device_id == PCI_DEVICE_INTEL_PANTHER_POINT_XHCI
+			|| fPCIInfo->device_id == PCI_DEVICE_INTEL_LYNX_POINT_XHCI
+			|| fPCIInfo->device_id == PCI_DEVICE_INTEL_LYNX_POINT_LP_XHCI
+			|| fPCIInfo->device_id == PCI_DEVICE_INTEL_BAYTRAIL_XHCI
+			|| fPCIInfo->device_id == PCI_DEVICE_INTEL_WILDCAT_POINT_XHCI)) {
+		WriteRunReg32(XHCI_IMOD(0), 0x000003f8); // 4000 irq/s
+	} else {
+		WriteRunReg32(XHCI_IMOD(0), 0x000001f4); // 8000 irq/s
+	}
+}
+
+
+/*!	The controller loses its state while the system sleeps. Instead of saving
+	and restoring it, all devices are detached before suspending, and
+	enumerated again once the controller was reinitialized on resume.
+*/
+status_t
+XHCI::Suspend()
+{
+	TRACE_ALWAYS("suspending\n");
+
+	fPortsDisconnected = true;
+	fStack->Explore();
+
+	return ControllerHalt();
+}
+
+
+status_t
+XHCI::Resume()
+{
+	TRACE_ALWAYS("resuming\n");
+
+	ControllerHalt();
+	if (ControllerReset() != B_OK)
+		return B_ERROR;
+
+	WriteOpReg(XHCI_CONFIG, fSlotCount);
+	WriteOpReg(XHCI_STS, ReadOpReg(XHCI_STS));
+	WriteOpReg(XHCI_DNCTRL, 0);
+
+	for (uint32 i = 1; i < B_COUNT_OF(fDcba->baseAddress); i++)
+		fDcba->baseAddress[i] = 0;
+	WriteOpReg(XHCI_DCBAAP_LO, (uint32)fDcbaPhysical);
+	WriteOpReg(XHCI_DCBAAP_HI, (uint32)(fDcbaPhysical >> 32));
+
+	{
+		MutexLocker eventLocker(fEventLock);
+		memset(fEventRing, 0, XHCI_MAX_EVENTS * sizeof(xhci_trb));
+		fEventIdx = 0;
+		fEventCcs = 1;
+	}
+
+	memset(fCmdRing, 0, XHCI_MAX_COMMANDS * sizeof(xhci_trb));
+	fCmdRing[XHCI_MAX_COMMANDS - 1].address = fCmdRingPhysical;
+	fCmdIdx = 0;
+	fCmdCcs = 1;
+
+	WriteRunReg32(XHCI_ERSTSZ(0), XHCI_ERSTS_SET(1));
+	WriteRunReg32(XHCI_ERDP_LO(0), (uint32)fErst->rs_addr);
+	WriteRunReg32(XHCI_ERDP_HI(0), (uint32)(fErst->rs_addr >> 32));
+	WriteRunReg32(XHCI_ERSTBA_LO(0), (uint32)fErstPhysical);
+	WriteRunReg32(XHCI_ERSTBA_HI(0), (uint32)(fErstPhysical >> 32));
+
+	WriteOpReg(XHCI_CRCR_LO, (uint32)fCmdRingPhysical | CRCR_RCS);
+	WriteOpReg(XHCI_CRCR_HI, (uint32)(fCmdRingPhysical >> 32));
+
+	_SetInterruptModeration();
+	WriteRunReg32(XHCI_IMAN(0), ReadRunReg32(XHCI_IMAN(0)) | IMAN_INTR_ENA);
+
+	WriteOpReg(XHCI_CMD, CMD_RUN | CMD_INTE | CMD_HSEE);
+	if (WaitOpBits(XHCI_STS, STS_HCH, 0) != B_OK)
+		TRACE_ERROR("HCH start up timeout after resume\n");
+
+	// let the hub explore connected devices again
+	fPortsDisconnected = false;
+	return B_OK;
 }
 
 
@@ -882,7 +1104,7 @@ XHCI::SubmitControlRequest(Transfer *transfer)
 	if (status != B_OK)
 		return status;
 
-	xhci_td *descriptor = CreateDescriptor(3, 1, requestData->Length);
+	xhci_td *descriptor = CreateDescriptor(3, 1, requestData->Length, endpoint);
 	if (descriptor == NULL)
 		return B_NO_MEMORY;
 	descriptor->transfer = transfer;
@@ -986,7 +1208,9 @@ XHCI::SubmitNormalRequest(Transfer *transfer)
 		size_t totalLength = 0;
 		for (uint32 i = 0; i < isochronousData->packet_count; i++) {
 			size_t packetLength = isochronousData->packet_descriptors[i].request_length;
-			if (packetLength == 0 || packetLength > pipe->MaxPacketSize())
+			// A packet may be as large as one service interval's payload:
+			// for high-bandwidth endpoints that is several transactions.
+			if (packetLength == 0 || packetLength > endpoint->max_burst_payload)
 				return B_BAD_VALUE;
 
 			totalLength += packetLength;
@@ -1005,7 +1229,8 @@ XHCI::SubmitNormalRequest(Transfer *transfer)
 
 	generic_io_vec* transferVec = transfer->Vector();
 	generic_size_t transferVecOffset = 0;
-	if (transfer->IsPhysical()) {
+	const bool directPhysical = _DirectPhysical(transfer);
+	if (directPhysical) {
 		trbSize = 0;
 		trbCount = 0;
 
@@ -1020,17 +1245,17 @@ XHCI::SubmitNormalRequest(Transfer *transfer)
 		}
 	}
 
-	xhci_td* td = CreateDescriptor(trbCount, trbCount, trbSize);
+	xhci_td* td = CreateDescriptor(trbCount, trbCount, trbSize, endpoint);
 	if (td == NULL)
 		return B_NO_MEMORY;
 
 	// Normal Stage
-	const size_t maxPacketSize = pipe->MaxPacketSize();
+	const size_t maxPacketSize = endpoint->max_packet_size;
 	size_t remaining = transfer->FragmentLength();
 	for (int32 i = 0; i < trbCount; i++) {
 		phys_addr_t address;
 		generic_size_t trbLength;
-		if (!transfer->IsPhysical()) {
+		if (!directPhysical) {
 			address = td->buffer_addrs[i];
 			if (isochronousData != NULL)
 				trbLength = isochronousData->packet_descriptors[i].request_length;
@@ -1087,8 +1312,26 @@ XHCI::SubmitNormalRequest(Transfer *transfer)
 			}
 		}
 
-		// TODO: We do not currently take Mult into account at all!
-		// How are we supposed to do that here?
+		// Tell the controller how many packets each TD is made of: the
+		// number of bursts in it, and the number of packets in the last
+		// burst. Without this a high-bandwidth endpoint is only asked for
+		// one packet per microframe. (XHCI 1.2 § 4.11.2.3 p218.)
+		// TODO: We do not take Mult (SuperSpeed) into account.
+		const uint32 packetsPerBurst
+			= endpoint->max_burst_payload / endpoint->max_packet_size;
+		for (uint32 i = 0; i < isochronousData->packet_count; i++) {
+			const uint32 length
+				= isochronousData->packet_descriptors[i].request_length;
+			uint32 packets = (length + endpoint->max_packet_size - 1)
+				/ endpoint->max_packet_size;
+			if (packets == 0)
+				packets = 1;
+			const uint32 bursts
+				= (packets + packetsPerBurst - 1) / packetsPerBurst;
+			const uint32 residue = packets % packetsPerBurst;
+			td->trbs[i].flags |= TRB_3_TBC(bursts - 1)
+				| TRB_3_TLBPC(residue == 0 ? packetsPerBurst - 1 : residue - 1);
+		}
 
 		// Determine the (starting) frame number: if ISO_ASAP is set,
 		// we are queueing this "right away", and so want to reset
@@ -1122,7 +1365,7 @@ XHCI::SubmitNormalRequest(Transfer *transfer)
 	// ENT bit. (XHCI 1.2 § 4.12.3 p250.)
 	td->trbs[td->trb_used - 1].flags |= TRB_3_ENT_BIT;
 
-	if (!directionIn && !transfer->IsPhysical()) {
+	if (!directionIn && !directPhysical) {
 		TRACE("copying out iov count %ld\n", transfer->VectorCount());
 		status_t status = transfer->PrepareKernelAccess();
 		if (status != B_OK) {
@@ -1305,7 +1548,7 @@ XHCI::CheckDebugTransfer(Transfer *transfer)
 		status_t status = (td->trb_completion_code == COMP_SUCCESS
 			|| td->trb_completion_code == COMP_SHORT_PACKET) ? B_OK : B_ERROR;
 
-		if (status == B_OK && directionIn && !transfer->IsPhysical()) {
+		if (status == B_OK && directionIn && !_DirectPhysical(transfer)) {
 			ReadDescriptor(td, transfer->Vector(), transfer->VectorCount(),
 				transfer->IsPhysical());
 		}
@@ -1352,7 +1595,8 @@ XHCI::NotifyPipeChange(Pipe *pipe, usb_change change)
 
 
 xhci_td *
-XHCI::CreateDescriptor(uint32 trbCount, uint32 bufferCount, size_t bufferSize)
+XHCI::CreateDescriptor(uint32 trbCount, uint32 bufferCount, size_t bufferSize,
+	xhci_endpoint* endpoint)
 {
 	const bool inKDL = debug_debugger_running();
 
@@ -1363,7 +1607,7 @@ XHCI::CreateDescriptor(uint32 trbCount, uint32 bufferCount, size_t bufferSize)
 		// Just use the physical memory allocator while in KDL; it's less
 		// secure than using the regular heap, but it's easier to deal with.
 		phys_addr_t dummy;
-		fStack->AllocateChunk((void **)&result, &dummy, sizeof(xhci_td));
+		AllocateChunk((void **)&result, &dummy, sizeof(xhci_td));
 	}
 
 	if (result == NULL) {
@@ -1374,11 +1618,47 @@ XHCI::CreateDescriptor(uint32 trbCount, uint32 bufferCount, size_t bufferSize)
 	// We always allocate 1 more TRB than requested, so that
 	// _LinkDescriptorForPipe() has room to insert a link TRB.
 	trbCount++;
-	if (fStack->AllocateChunk((void **)&result->trbs, &result->trb_addr,
-			(trbCount * sizeof(xhci_trb))) < B_OK) {
+	result->trbs = NULL;
+	result->trb_allocated = trbCount;
+	result->chunk_slot = -1;
+	result->chunk_endpoint = -1;
+	if (fTRBOverfetch) {
+		// Whatever the controller reads past the Link TRB has to be this
+		// descriptor's own, and the memory has to stay with the endpoint.
+		result->trb_allocated = (trbCount + XHCI_TRB_GUARD_COUNT + 7) & ~7;
+		if (!inKDL && endpoint != NULL && endpoint->device != NULL) {
+			result->chunk_slot = endpoint->device->slot;
+			result->chunk_endpoint = endpoint->id;
+
+			MutexLocker locker(fChunkLock);
+			xhci_td_chunk* chunks = endpoint->device->td_chunks[endpoint->id];
+			xhci_td_chunk* best = NULL;
+			for (int32 i = 0; i < XHCI_MAX_TRANSFERS; i++) {
+				if (chunks[i].trbs == NULL
+					|| chunks[i].count < result->trb_allocated) {
+					continue;
+				}
+				if (best == NULL || chunks[i].count < best->count)
+					best = &chunks[i];
+			}
+			if (best != NULL) {
+				result->trbs = best->trbs;
+				result->trb_addr = best->trb_addr;
+				result->trb_allocated = best->count;
+				best->trbs = NULL;
+			}
+		}
+	}
+	if (result->trbs == NULL
+		&& AllocateChunk((void **)&result->trbs, &result->trb_addr,
+			(result->trb_allocated * sizeof(xhci_trb))) < B_OK) {
 		TRACE_ERROR("failed to allocate TRBs\n");
 		FreeDescriptor(result);
 		return NULL;
+	}
+	if (fTRBOverfetch) {
+		memset(result->trbs, 0, result->trb_allocated * sizeof(xhci_trb));
+		_DeviceMemoryBarrier();
 	}
 	result->trb_count = trbCount;
 	result->trb_used = 0;
@@ -1394,7 +1674,7 @@ XHCI::CreateDescriptor(uint32 trbCount, uint32 bufferCount, size_t bufferSize)
 				(sizeof(void*) + sizeof(phys_addr_t)));
 		} else {
 			phys_addr_t dummy;
-			fStack->AllocateChunk((void **)&result->buffers, &dummy,
+			AllocateChunk((void **)&result->buffers, &dummy,
 				bufferCount * (sizeof(void*) + sizeof(phys_addr_t)));
 		}
 		if (result->buffers == NULL) {
@@ -1411,7 +1691,7 @@ XHCI::CreateDescriptor(uint32 trbCount, uint32 bufferCount, size_t bufferSize)
 		// allocator can handle), we allocate only one buffer and segment it.
 		size_t totalSize = bufferSize * bufferCount;
 		if (totalSize < (32 * B_PAGE_SIZE)) {
-			if (fStack->AllocateChunk(&result->buffers[0],
+			if (AllocateChunk(&result->buffers[0],
 					&result->buffer_addrs[0], totalSize) < B_OK) {
 				TRACE_ERROR("unable to allocate space for large buffer (size %ld)\n",
 					totalSize);
@@ -1427,7 +1707,7 @@ XHCI::CreateDescriptor(uint32 trbCount, uint32 bufferCount, size_t bufferSize)
 		} else {
 			// Otherwise, we allocate each buffer individually.
 			for (uint32 i = 0; i < bufferCount; i++) {
-				if (fStack->AllocateChunk(&result->buffers[i],
+				if (AllocateChunk(&result->buffers[i],
 						&result->buffer_addrs[i], bufferSize) < B_OK) {
 					TRACE_ERROR("unable to allocate space for a buffer (size "
 						"%" B_PRIuSIZE ", count %" B_PRIu32 ")\n",
@@ -1463,20 +1743,47 @@ XHCI::FreeDescriptor(xhci_td *descriptor)
 	const bool inKDL = debug_debugger_running();
 
 	if (descriptor->trbs != NULL) {
-		fStack->FreeChunk(descriptor->trbs, descriptor->trb_addr,
-			(descriptor->trb_count * sizeof(xhci_trb)));
+		xhci_td_chunk chunk = { descriptor->trbs, descriptor->trb_addr,
+			descriptor->trb_allocated };
+
+		if (descriptor->chunk_slot >= 0 && !inKDL) {
+			// Keep the memory for the endpoint's next descriptors. When
+			// all places are taken, the smallest chunk goes.
+			MutexLocker locker(fChunkLock);
+			xhci_td_chunk* chunks = fDevices[descriptor->chunk_slot]
+				.td_chunks[descriptor->chunk_endpoint];
+			xhci_td_chunk* place = NULL;
+			for (int32 i = 0; i < XHCI_MAX_TRANSFERS; i++) {
+				if (chunks[i].trbs == NULL) {
+					place = &chunks[i];
+					break;
+				}
+				if (place == NULL || chunks[i].count < place->count)
+					place = &chunks[i];
+			}
+			if (place->trbs == NULL || place->count < chunk.count) {
+				xhci_td_chunk evicted = *place;
+				*place = chunk;
+				chunk = evicted;
+			}
+		}
+
+		if (chunk.trbs != NULL) {
+			FreeChunk(chunk.trbs, chunk.trb_addr,
+				chunk.count * sizeof(xhci_trb));
+		}
 	}
 	if (descriptor->buffers != NULL) {
 		size_t totalSize = descriptor->buffer_size * descriptor->buffer_count;
 		if (totalSize < (32 * B_PAGE_SIZE)) {
 			// This was allocated as one contiguous buffer.
-			fStack->FreeChunk(descriptor->buffers[0], descriptor->buffer_addrs[0],
+			FreeChunk(descriptor->buffers[0], descriptor->buffer_addrs[0],
 				totalSize);
 		} else {
 			for (uint32 i = 0; i < descriptor->buffer_count; i++) {
 				if (descriptor->buffers[i] == NULL)
 					continue;
-				fStack->FreeChunk(descriptor->buffers[i], descriptor->buffer_addrs[i],
+				FreeChunk(descriptor->buffers[i], descriptor->buffer_addrs[i],
 					descriptor->buffer_size);
 			}
 		}
@@ -1484,7 +1791,7 @@ XHCI::FreeDescriptor(xhci_td *descriptor)
 		if (!inKDL) {
 			free(descriptor->buffers);
 		} else {
-			fStack->FreeChunk(descriptor->buffers, 0,
+			FreeChunk(descriptor->buffers, 0,
 				descriptor->buffer_count * (sizeof(void*) + sizeof(phys_addr_t)));
 		}
 	}
@@ -1492,7 +1799,7 @@ XHCI::FreeDescriptor(xhci_td *descriptor)
 	if (!inKDL)
 		free(descriptor);
 	else
-		fStack->FreeChunk(descriptor, 0, sizeof(xhci_td));
+		FreeChunk(descriptor, 0, sizeof(xhci_td));
 }
 
 
@@ -1586,7 +1893,7 @@ XHCI::AllocateDevice(Hub *parent, int8 hubAddress, uint8 hubPort,
 	struct xhci_device *device = &fDevices[slot];
 	device->slot = slot;
 
-	device->input_ctx_area = fStack->AllocateArea((void **)&device->input_ctx,
+	device->input_ctx_area = AllocateArea((void **)&device->input_ctx,
 		&device->input_ctx_addr, sizeof(*device->input_ctx) << fContextSizeShift,
 		"XHCI input context");
 	if (device->input_ctx_area < B_OK) {
@@ -1699,7 +2006,7 @@ XHCI::AllocateDevice(Hub *parent, int8 hubAddress, uint8 hubPort,
 		_ReadContext(&device->input_ctx->slot.dwslot2),
 		_ReadContext(&device->input_ctx->slot.dwslot3));
 
-	device->device_ctx_area = fStack->AllocateArea((void **)&device->device_ctx,
+	device->device_ctx_area = AllocateArea((void **)&device->device_ctx,
 		&device->device_ctx_addr, sizeof(*device->device_ctx) << fContextSizeShift,
 		"XHCI device context");
 	if (device->device_ctx_area < B_OK) {
@@ -1709,9 +2016,9 @@ XHCI::AllocateDevice(Hub *parent, int8 hubAddress, uint8 hubPort,
 	}
 	memset(device->device_ctx, 0, sizeof(*device->device_ctx) << fContextSizeShift);
 
-	device->trb_area = fStack->AllocateArea((void **)&device->trbs,
+	device->trb_area = AllocateArea((void **)&device->trbs,
 		&device->trb_addr, sizeof(xhci_trb) * (XHCI_MAX_ENDPOINTS - 1)
-			* XHCI_ENDPOINT_RING_SIZE, "XHCI endpoint trbs");
+			* XHCI_ENDPOINT_RING_STRIDE, "XHCI endpoint trbs");
 	if (device->trb_area < B_OK) {
 		TRACE_ERROR("unable to create a device trbs area\n");
 		CleanupDevice(device);
@@ -1830,10 +2137,12 @@ XHCI::AllocateDevice(Hub *parent, int8 hubAddress, uint8 hubPort,
 		TRACE("getting the hub descriptor\n");
 		size_t actualLength = 0;
 		usb_hub_descriptor hubDescriptor;
+		const uint8 descriptorType = speed >= USB_SPEED_SUPERSPEED
+			? USB_DESCRIPTOR_SUPERSPEED_HUB : USB_DESCRIPTOR_HUB;
 		status = pipe.SendRequest(
 			USB_REQTYPE_DEVICE_IN | USB_REQTYPE_CLASS,			// type
 			USB_REQUEST_GET_DESCRIPTOR,							// request
-			USB_DESCRIPTOR_HUB << 8,							// value
+			descriptorType << 8,								// value
 			0,													// index
 			sizeof(usb_hub_descriptor),							// length
 			(void *)&hubDescriptor,								// buffer
@@ -1910,6 +2219,8 @@ XHCI::CleanupDevice(xhci_device *device)
 		fDcba->baseAddress[device->slot] = 0;
 	}
 
+	_FreeDescriptorChunks(device);
+
 	if (device->trb_addr != 0)
 		delete_area(device->trb_area);
 	if (device->input_ctx_addr != 0)
@@ -1918,6 +2229,23 @@ XHCI::CleanupDevice(xhci_device *device)
 		delete_area(device->device_ctx_area);
 
 	memset((void*)device, 0, sizeof(xhci_device));
+}
+
+
+void
+XHCI::_FreeDescriptorChunks(xhci_device* device)
+{
+	MutexLocker locker(fChunkLock);
+	for (int32 i = 0; i < XHCI_MAX_ENDPOINTS - 1; i++) {
+		for (int32 j = 0; j < XHCI_MAX_TRANSFERS; j++) {
+			xhci_td_chunk& chunk = device->td_chunks[i][j];
+			if (chunk.trbs == NULL)
+				continue;
+			FreeChunk(chunk.trbs, chunk.trb_addr,
+				chunk.count * sizeof(xhci_trb));
+			chunk.trbs = NULL;
+		}
+	}
 }
 
 
@@ -1979,9 +2307,9 @@ XHCI::_InsertEndpointForPipe(Pipe *pipe)
 		endpoint->used = 0;
 		endpoint->next = 0;
 
-		endpoint->trbs = device->trbs + id * XHCI_ENDPOINT_RING_SIZE;
+		endpoint->trbs = device->trbs + id * XHCI_ENDPOINT_RING_STRIDE;
 		endpoint->trb_addr = device->trb_addr
-			+ id * XHCI_ENDPOINT_RING_SIZE * sizeof(xhci_trb);
+			+ id * XHCI_ENDPOINT_RING_STRIDE * sizeof(xhci_trb);
 		memset(endpoint->trbs, 0,
 			sizeof(xhci_trb) * XHCI_ENDPOINT_RING_SIZE);
 
@@ -2161,6 +2489,7 @@ XHCI::_LinkDescriptorForPipe(xhci_td *descriptor, xhci_endpoint *endpoint)
 	endpoint->trbs[next].flags = 0;
 
 	memory_write_barrier();
+	_DeviceMemoryBarrier();
 
 	// Everything is ready, so write the cycle bit.
 	endpoint->trbs[link].flags |= B_HOST_TO_LENDIAN_INT32(TRB_3_CYCLE_BIT);
@@ -2278,6 +2607,13 @@ XHCI::ConfigureEndpoint(xhci_endpoint* ep, uint8 slot, uint8 number, uint8 type,
 	}
 	dwendpoint1 |= ENDPOINT_1_MAXBURST(maxBurst);
 
+	// Bits 11 and 12 of a USB 2 endpoint's wMaxPacketSize are the number of
+	// additional transactions per microframe (taken as the burst size
+	// above), not part of the packet size.
+	if (speed < USB_SPEED_SUPERSPEED)
+		maxPacketSize &= 0x7ff;
+	ep->max_packet_size = maxPacketSize;
+
 	// Assign maximum packet size, set the ring address, and set the
 	// "Dequeue Cycle State" bit. (XHCI 1.2 § 6.2.3 Table 6-10 p453.)
 	dwendpoint1 |= ENDPOINT_1_MAXPACKETSIZE(maxPacketSize);
@@ -2314,8 +2650,13 @@ XHCI::ConfigureEndpoint(xhci_endpoint* ep, uint8 slot, uint8 number, uint8 type,
 		// method if bytesPerInterval is 0.
 		if (speed >= USB_SPEED_SUPERSPEED && bytesPerInterval != 0)
 			dwendpoint4 |= ENDPOINT_4_MAXESITPAYLOAD(bytesPerInterval);
-		else if (speed >= USB_SPEED_HIGHSPEED)
-			dwendpoint4 |= ENDPOINT_4_MAXESITPAYLOAD((maxBurst + 1) * maxPacketSize);
+		else {
+			// Low and full speed endpoints too: a controller that takes
+			// the field at its word (the VL805 does) refuses every transfer
+			// of an endpoint that may move nothing per interval.
+			dwendpoint4 |= ENDPOINT_4_MAXESITPAYLOAD((maxBurst + 1)
+				* (maxPacketSize & 0x7ff));
+		}
 	}
 
 	_WriteContext(&device->input_ctx->endpoints[number].dwendpoint0,
@@ -2380,6 +2721,15 @@ XHCI::GetPortStatus(uint8 index, usb_port_status* status)
 		return B_BAD_INDEX;
 
 	status->status = status->change = 0;
+	if (fPortsDisconnected) {
+		// report all devices as removed while suspending
+		status->change = PORT_STATUS_CONNECTION;
+		return B_OK;
+	}
+
+	if (_IsDisabledSuperSpeedPort(index))
+		return B_OK;
+
 	uint32 portStatus = ReadOpReg(XHCI_PORTSC(index));
 	TRACE("port %" B_PRId8 " status=0x%08" B_PRIx32 "\n", index, portStatus);
 
@@ -2439,6 +2789,8 @@ XHCI::SetPortFeature(uint8 index, uint16 feature)
 	TRACE("set port feature index %u feature %u\n", index, feature);
 	if (index >= fPortCount)
 		return B_BAD_INDEX;
+	if (_IsDisabledSuperSpeedPort(index))
+		return B_OK;
 
 	uint32 portRegister = XHCI_PORTSC(index);
 	uint32 portStatus = ReadOpReg(portRegister) & ~PS_CLEAR;
@@ -2475,6 +2827,14 @@ XHCI::ClearPortFeature(uint8 index, uint16 feature)
 	TRACE("clear port feature index %u feature %u\n", index, feature);
 	if (index >= fPortCount)
 		return B_BAD_INDEX;
+	if (_IsDisabledSuperSpeedPort(index)) {
+		// Only acknowledge changes, so that they do not come back.
+		uint32 portStatus = ReadOpReg(XHCI_PORTSC(index));
+		WriteOpReg(XHCI_PORTSC(index), (portStatus & ~PS_CLEAR)
+			| (portStatus & (PS_CSC | PS_PEC | PS_WRC | PS_OCC | PS_PRC
+				| PS_PLC | PS_CEC)));
+		return B_OK;
+	}
 
 	uint32 portRegister = XHCI_PORTSC(index);
 	uint32 portStatus = ReadOpReg(portRegister) & ~PS_CLEAR;
@@ -2492,6 +2852,11 @@ XHCI::ClearPortFeature(uint8 index, uint16 feature)
 		}
 		break;
 	case PORT_ENABLE:
+		if (fBrokenPortDisable) {
+			// The port would stay unusable until a reset.
+			TRACE("not disabling port %u on this controller\n", index);
+			return B_OK;
+		}
 		WriteOpReg(portRegister, portStatus | PS_PED);
 		break;
 	case PORT_POWER:
@@ -2613,6 +2978,7 @@ XHCI::Ring(uint8 slot, uint8 endpoint)
 	if (slot > fSlotCount || endpoint >= XHCI_MAX_ENDPOINTS)
 		panic("Ring() invalid slot or endpoint\n");
 
+	_DeviceMemoryBarrier();
 	WriteDoorReg32(XHCI_DOORBELL(slot), XHCI_DOORBELL_TARGET(endpoint)
 		| XHCI_DOORBELL_STREAMID(0));
 	ReadDoorReg32(XHCI_DOORBELL(slot));
@@ -2642,6 +3008,9 @@ XHCI::QueueCommand(xhci_trb* trb)
 	else
 		temp &= ~TRB_3_CYCLE_BIT;
 	temp &= ~TRB_3_TC_BIT;
+	// The cycle bit hands the TRB to the controller; the rest must be
+	// visible to it first.
+	_DeviceMemoryBarrier();
 	fCmdRing[i].flags = B_HOST_TO_LENDIAN_INT32(temp);
 
 	fCmdAddr = fErst->rs_addr + (XHCI_MAX_EVENTS + i) * sizeof(xhci_trb);
@@ -2652,6 +3021,7 @@ XHCI::QueueCommand(xhci_trb* trb)
 		temp = TRB_3_TYPE(TRB_TYPE_LINK) | TRB_3_TC_BIT;
 		if (j)
 			temp |= TRB_3_CYCLE_BIT;
+		_DeviceMemoryBarrier();
 		fCmdRing[i].flags = B_HOST_TO_LENDIAN_INT32(temp);
 
 		i = 0;
@@ -2736,7 +3106,12 @@ XHCI::HandleTransferComplete(xhci_trb* trb)
 	if (completionCode != COMP_SUCCESS && completionCode != COMP_SHORT_PACKET
 			&& completionCode != COMP_STOPPED && completionCode != COMP_STOPPED_LENGTH_INVALID) {
 		TRACE_ALWAYS("transfer error on slot %" B_PRId8 " endpoint %" B_PRId8
-			": %s\n", slot, endpointNumber, xhci_error_string(completionCode));
+			": %s (remainder %" B_PRId32 ", transferred %" B_PRId32
+			", burst payload %" B_PRIuSIZE ", event flags %#" B_PRIx32
+			", TRB %#" B_PRIx64 ")\n",
+			slot, endpointNumber, xhci_error_string(completionCode), remainder,
+			transferred, (size_t)endpoint->max_burst_payload, flags,
+			B_LENDIAN_TO_HOST_INT64(trb->address));
 	}
 
 	phys_addr_t source = B_LENDIAN_TO_HOST_INT64(trb->address);
@@ -3119,7 +3494,8 @@ XHCI::ProcessEvents()
 	uint8 t = 2;
 
 	while (1) {
-		uint32 temp = B_LENDIAN_TO_HOST_INT32(fEventRing[i].flags);
+		uint32 temp = B_LENDIAN_TO_HOST_INT32(
+			*(volatile uint32*)&fEventRing[i].flags);
 		uint8 event = TRB_3_TYPE_GET(temp);
 		TRACE("event[%u] = %u (0x%016" B_PRIx64 " 0x%08" B_PRIx32 " 0x%08"
 			B_PRIx32 ")\n", i, event, fEventRing[i].address,
@@ -3127,6 +3503,8 @@ XHCI::ProcessEvents()
 		uint8 k = (temp & TRB_3_CYCLE_BIT) ? 1 : 0;
 		if (j != k)
 			break;
+		// Read the rest of the event only after its cycle bit.
+		_DeviceMemoryBarrier();
 
 		switch (event) {
 		case TRB_TYPE_COMMAND_COMPLETION:
@@ -3212,7 +3590,7 @@ XHCI::FinishTransfers()
 					actualLength);
 			}
 
-			if (directionIn && actualLength > 0 && !transfer->IsPhysical()) {
+			if (directionIn && actualLength > 0 && !_DirectPhysical(transfer)) {
 				TRACE("copying in iov count %ld\n", transfer->VectorCount());
 				status_t status = transfer->PrepareKernelAccess();
 				if (status == B_OK) {

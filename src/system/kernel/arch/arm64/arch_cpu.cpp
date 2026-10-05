@@ -6,13 +6,59 @@
 
 #include <KernelExport.h>
 
+extern "C" {
+#include <libfdt.h>
+}
+
+
 #include <arch/cpu.h>
+#include <arch/arm64/cache_line_size.h>
 #include <boot/kernel_args.h>
 #include <commpage.h>
 #include <elf.h>
+#include <vm/vm.h>
 
 
 extern "C" void _exception_vectors(void);
+
+
+static const uint32 kPsciVersion = 0x84000000;
+static const uint32 kPsciSystemOff = 0x84000008;
+static const uint32 kPsciSystemReset = 0x84000009;
+
+static uint32 sPsciConduit = ARM64_PSCI_NONE;
+
+
+static volatile uint32* sBcm2835Watchdog;
+
+
+static int32
+psci_call(uint32 function)
+{
+	register uint64 x0 asm("x0") = function;
+	register uint64 x1 asm("x1") = 0;
+	register uint64 x2 asm("x2") = 0;
+	register uint64 x3 asm("x3") = 0;
+
+	// These PSCI functions use the SMC32/HVC32 convention. Conservatively
+	// clobber the caller-saved registers for older SMCCC implementations.
+	if (sPsciConduit == ARM64_PSCI_SMC) {
+		asm volatile("smc #0"
+			: "+r" (x0), "+r" (x1), "+r" (x2), "+r" (x3)
+			:
+			: "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11",
+			  "x12", "x13", "x14", "x15", "x16", "x17", "cc", "memory");
+	} else if (sPsciConduit == ARM64_PSCI_HVC) {
+		asm volatile("hvc #0"
+			: "+r" (x0), "+r" (x1), "+r" (x2), "+r" (x3)
+			:
+			: "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11",
+			  "x12", "x13", "x14", "x15", "x16", "x17", "cc", "memory");
+	} else
+		return -1;
+
+	return (int32)x0;
+}
 
 
 status_t
@@ -40,6 +86,7 @@ arch_cpu_init_percpu(kernel_args *args, int curr_cpu)
 	WRITE_SPECIALREG(TCR_EL1, tcr);
 
 	gCPU[curr_cpu].arch.mpidr = READ_SPECIALREG(MPIDR_EL1);
+	gCPU[curr_cpu].arch.midr = READ_SPECIALREG(MIDR_EL1);
 
 	return 0;
 }
@@ -48,6 +95,20 @@ arch_cpu_init_percpu(kernel_args *args, int curr_cpu)
 status_t
 arch_cpu_init(kernel_args *args)
 {
+	sPsciConduit = args->arch_args.psci_conduit;
+	if (sPsciConduit == ARM64_PSCI_SMC || sPsciConduit == ARM64_PSCI_HVC) {
+		int32 version = psci_call(kPsciVersion);
+		if (version >= 2) {
+			dprintf("PSCI: version %" B_PRId32 ".%" B_PRId32 " via %s\n",
+				version >> 16, version & 0xffff,
+				sPsciConduit == ARM64_PSCI_SMC ? "SMC" : "HVC");
+		} else {
+			dprintf("PSCI: unsupported version response %" B_PRId32 "\n", version);
+			sPsciConduit = ARM64_PSCI_NONE;
+		}
+	} else
+		sPsciConduit = ARM64_PSCI_NONE;
+
 	for (uint32 i = 0; i < args->num_cpus; i++) {
 		cpu_ent* cpu = &gCPU[i];
 
@@ -59,9 +120,95 @@ arch_cpu_init(kernel_args *args)
 }
 
 
+static uint32
+fdt_cells(const void* fdt, int node, const char* name)
+{
+	const fdt32_t* cells = (const fdt32_t*)fdt_getprop(fdt, node, name, NULL);
+	return cells != NULL ? fdt32_to_cpu(*cells) : 0;
+}
+
+
+/*!	Boards without PSCI need another way to restart. The Raspberry Pi 4's
+	firmware provides none, but its power management block has a watchdog
+	that resets the SoC (Linux: bcm2835_wdt.c).
+*/
+static void
+init_bcm2835_watchdog(kernel_args* args)
+{
+	const void* fdt = args->arch_args.fdt;
+	if (fdt == NULL || fdt_check_header(fdt) != 0)
+		return;
+
+	int node = fdt_node_offset_by_compatible(fdt, -1, "brcm,bcm2835-pm-wdt");
+	if (node < 0)
+		return;
+
+	int bus = fdt_parent_offset(fdt, node);
+	int length;
+	const fdt32_t* reg = (const fdt32_t*)fdt_getprop(fdt, node, "reg", &length);
+	const fdt32_t* ranges = bus >= 0
+		? (const fdt32_t*)fdt_getprop(fdt, bus, "ranges", &length) : NULL;
+	if (reg == NULL || ranges == NULL || fdt_cells(fdt, bus, "#address-cells") != 1
+		|| fdt_cells(fdt, bus, "#size-cells") != 1
+		|| fdt_cells(fdt, fdt_parent_offset(fdt, bus), "#address-cells") != 2) {
+		return;
+	}
+
+	// <child address, parent address (two cells), size>
+	uint64 address = fdt32_to_cpu(reg[0]);
+	for (int i = 0; i + 4 <= length / 4; i += 4) {
+		uint64 child = fdt32_to_cpu(ranges[i]);
+		uint64 parent = (uint64)fdt32_to_cpu(ranges[i + 1]) << 32
+			| fdt32_to_cpu(ranges[i + 2]);
+		uint64 size = fdt32_to_cpu(ranges[i + 3]);
+		if (address >= child && address - child < size) {
+			address = address - child + parent;
+			break;
+		}
+	}
+
+	void* mapped;
+	area_id area = map_physical_memory("bcm2835 watchdog",
+		address & ~(phys_addr_t)(B_PAGE_SIZE - 1), B_PAGE_SIZE,
+		B_ANY_KERNEL_ADDRESS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
+		&mapped);
+	if (area < 0)
+		return;
+
+	sBcm2835Watchdog = (volatile uint32*)((addr_t)mapped
+		+ (address & (B_PAGE_SIZE - 1)));
+	dprintf("restart and shutdown through the BCM2835 watchdog at %#" B_PRIx64
+		"\n", address);
+}
+
+
+static void
+bcm2835_watchdog_shutdown(bool reboot)
+{
+	const uint32 kPassword = 0x5a000000;
+	const uint32 kResetControl = 0x1c / 4;
+	const uint32 kResetStatus = 0x20 / 4;
+	const uint32 kWatchdog = 0x24 / 4;
+
+	if (!reboot) {
+		// Boot partition 63 tells the firmware to stay off after the reset.
+		sBcm2835Watchdog[kResetStatus]
+			= kPassword | sBcm2835Watchdog[kResetStatus] | 0x555;
+	}
+
+	// a full reset when the watchdog runs out, which is in ten ticks
+	sBcm2835Watchdog[kWatchdog] = kPassword | 10;
+	sBcm2835Watchdog[kResetControl]
+		= kPassword | (sBcm2835Watchdog[kResetControl] & ~0x30u) | 0x20;
+}
+
+
 status_t
 arch_cpu_init_post_vm(kernel_args *args)
 {
+	if (sPsciConduit == ARM64_PSCI_NONE)
+		init_bcm2835_watchdog(args);
+
 	return B_OK;
 }
 
@@ -76,7 +223,25 @@ arch_cpu_init_post_modules(kernel_args *args)
 status_t
 arch_cpu_shutdown(bool reboot)
 {
-	// never reached
+	if (sPsciConduit == ARM64_PSCI_NONE) {
+		if (sBcm2835Watchdog == NULL)
+			return B_NOT_SUPPORTED;
+
+		dprintf("watchdog: system %s\n", reboot ? "reset" : "off");
+		disable_interrupts();
+		bcm2835_watchdog_shutdown(reboot);
+		while (true)
+			asm volatile("wfi");
+	}
+
+	dprintf("PSCI: requesting system %s\n", reboot ? "reset" : "off");
+	cpu_status state = disable_interrupts();
+	int32 result = psci_call(reboot ? kPsciSystemReset : kPsciSystemOff);
+	restore_interrupts(state);
+
+	// A successful SYSTEM_RESET or SYSTEM_OFF never returns.
+	dprintf("PSCI: system %s returned %" B_PRId32 "\n",
+		reboot ? "reset" : "off", result);
 	return B_ERROR;
 }
 
@@ -87,8 +252,7 @@ arch_cpu_sync_icache(void *address, size_t len)
 	uint64_t ctr_el0 = 0;
 	asm volatile ("mrs\t%0, ctr_el0":"=r" (ctr_el0));
 
-	uint64_t icache_line_size = 4 << (ctr_el0 << 0xF);
-	uint64_t dcache_line_size = 4 << ((ctr_el0 >> 16) & 0xF);
+	const uint64_t dcache_line_size = arm64_data_cache_line_size(ctr_el0);
 	uint64_t addr = (uint64_t)address;
 	uint64_t end = addr + len;
 
@@ -97,14 +261,15 @@ arch_cpu_sync_icache(void *address, size_t len)
 		asm volatile ("dc cvau, %0" : : "r"(address_dcache) : "memory");
 	}
 
-	asm("dsb ish");
+	asm volatile("dsb ish" : : : "memory");
 
-	for (uint64_t address_icache = ROUNDDOWN(addr, icache_line_size);
-         address_icache < end; address_icache += icache_line_size) {
-		asm volatile ("ic ivau, %0" : : "r"(address_icache) : "memory");
-	}
-	asm("dsb ish");
-	asm("isb");
+	// Executable mappings are synchronized through the physical map, whose
+	// virtual address can have a different I-cache index from the execution
+	// address. Invalidate every alias in the inner-shareable domain. Another
+	// CPU can have an aliasing VIPT I-cache even when this CPU uses PIPT.
+	asm volatile("ic ialluis" : : : "memory");
+	asm volatile("dsb ish" : : : "memory");
+	asm volatile("isb" : : : "memory");
 }
 
 

@@ -7,6 +7,10 @@
  */
 
 
+#include <sys/sockio.h>
+
+#include <syscalls.h>
+
 #include "device.h"
 
 #include <stdio.h>
@@ -573,6 +577,65 @@ __haiku_probe_drivers(device_t device, driver_t *drivers[])
 	device->methods.device_probe = NULL;
 
 	return selected;
+}
+
+
+//	#pragma mark - power management
+
+
+/*!	Suspends or resumes the devices attached below all root devices. */
+void
+suspend_resume_devices(bool resume)
+{
+	device_t root = NULL;
+	while ((root = list_get_next_item(&sRootDevices, root)) != NULL) {
+		device_t child = NULL;
+		while ((child = list_get_next_item(&root->children, child)) != NULL) {
+			int error = 0;
+
+			if (!resume)
+				continue;
+
+			dprintf("%s: resuming %s\n", gDriverName,
+				device_get_nameunit(child));
+
+			// The device suspend method is not called: it arms wake on
+			// LAN, which wakes the machine again right away, and the
+			// device loses power anyway. Resuming reinitializes it
+			// completely.
+			if (resume && child->methods.device_resume != NULL)
+				error = child->methods.device_resume(child);
+
+			dprintf("%s: resumed %s: %d\n", gDriverName,
+				device_get_nameunit(child), error);
+		}
+	}
+
+	if (!resume)
+		return;
+
+	// Restart the interfaces the same way they are started when opened:
+	// resuming alone does not always get the hardware going again.
+	for (int32 i = 0; i < gDeviceCount; i++) {
+		struct ifnet *ifp = gDevices[i];
+		if (ifp == NULL || ifp->if_ioctl == NULL
+			|| (ifp->flags & DEVICE_CLOSED) != 0) {
+			continue;
+		}
+
+		struct ifreq request;
+		ifp->if_flags &= ~IFF_UP;
+		ifp->if_ioctl(ifp, SIOCSIFFLAGS, NULL);
+
+		memset(&request, 0, sizeof(request));
+		request.ifr_media = IFM_MAKEWORD(IFM_ETHER, IFM_AUTO, 0, 0);
+		ifp->if_ioctl(ifp, SIOCSIFMEDIA, (caddr_t)&request);
+
+		ifp->if_flags |= IFF_UP;
+		ifp->if_ioctl(ifp, SIOCSIFFLAGS, NULL);
+
+		dprintf("%s: restarted %s\n", gDriverName, ifp->device_name);
+	}
 }
 
 

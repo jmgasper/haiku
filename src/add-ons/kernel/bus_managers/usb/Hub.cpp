@@ -42,8 +42,12 @@ Hub::Hub(Object *parent, int8 hubAddress, uint8 hubPort,
 	}
 
 	TRACE("getting hub descriptor...\n");
+	// Root hubs are emulated by their controller driver with the USB 2
+	// descriptor whatever their speed.
+	const bool superSpeed = speed >= USB_SPEED_SUPERSPEED && !isRootHub;
 	size_t actualLength;
-	status_t status = GetDescriptor(USB_DESCRIPTOR_HUB, 0, 0,
+	status_t status = GetDescriptor(superSpeed
+			? USB_DESCRIPTOR_SUPERSPEED_HUB : USB_DESCRIPTOR_HUB, 0, 0,
 		(void *)&fHubDescriptor, sizeof(usb_hub_descriptor), &actualLength);
 
 	// we need at least 8 bytes
@@ -65,6 +69,25 @@ Hub::Hub(Object *parent, int8 hubAddress, uint8 hubPort,
 		TRACE_ALWAYS("hub supports more ports than we do (%d vs. %d)\n",
 			fHubDescriptor.num_ports, USB_MAX_PORT_COUNT);
 		fHubDescriptor.num_ports = USB_MAX_PORT_COUNT;
+	}
+
+	if (superSpeed) {
+		// A hub on a root hub port is at depth 0, each hub above adds one.
+		uint16 depth = 0;
+		Object* rootObject = GetBusManager()->RootObject();
+		for (Object* object = Parent(); object != NULL
+				&& object->Parent() != rootObject; object = object->Parent()) {
+			if ((object->Type() & USB_OBJECT_HUB) != 0)
+				depth++;
+		}
+		status = DefaultPipe()->SendRequest(
+			USB_REQTYPE_CLASS | USB_REQTYPE_DEVICE_OUT,
+			USB_REQUEST_SET_HUB_DEPTH, depth, 0, 0, NULL, 0, NULL);
+		if (status < B_OK) {
+			TRACE_ERROR("setting the hub depth %u failed: %s\n", depth,
+				strerror(status));
+			return;
+		}
 	}
 
 	usb_interface_list *list = Configuration()->interface;

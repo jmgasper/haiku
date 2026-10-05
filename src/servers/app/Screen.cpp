@@ -224,13 +224,22 @@ Screen::SetFrame(const BRect& rect)
 }
 
 
+/*!	The screen as windows and the cursor see it: the frame buffer, or, when
+	the frame buffer is scaled in software, the smaller size that is drawn
+	and then enlarged.
+*/
 BRect
 Screen::Frame() const
 {
-	display_mode mode;
-	fHWInterface->GetMode(&mode);
-
-	return BRect(0, 0, mode.virtual_width - 1, mode.virtual_height - 1);
+	int32 width = fHWInterface->LogicalWidth();
+	int32 height = fHWInterface->LogicalHeight();
+	if (width <= 0 || height <= 0) {
+		display_mode mode;
+		fHWInterface->GetMode(&mode);
+		width = mode.virtual_width;
+		height = mode.virtual_height;
+	}
+	return BRect(0, 0, width - 1, height - 1);
 }
 
 

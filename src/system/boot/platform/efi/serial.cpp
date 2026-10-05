@@ -26,6 +26,7 @@ static const uint32 kSerialBaudRate = 115200;
 static efi_serial_io_protocol *sEFISerialIO = NULL;
 static bool sSerialEnabled = false;
 static bool sEFIAvailable = true;
+static bool sKeepFirmwareSerialAttributes = false;
 
 
 DebugUART* gUART = NULL;
@@ -98,7 +99,8 @@ extern "C" void
 serial_enable(void)
 {
 	sSerialEnabled = true;
-	if ((gUART != NULL) && !gUARTSkipInit)
+	if (gUART != NULL && !gUARTSkipInit && !sKeepFirmwareSerialAttributes
+		&& gUART->Clock() > 0)
 		gUART->InitPort(kSerialBaudRate);
 }
 
@@ -119,7 +121,12 @@ serial_init(void)
 			status = sEFISerialIO->SetAttributes(sEFISerialIO, kSerialBaudRate, 0, 0, NoParity, 8,
 				OneStopBit);
 
-			if (status != EFI_SUCCESS)
+			// Some firmware can write to the port but cannot change its
+			// attributes. Retain that output and its existing UART setup.
+			// EDK2 can report unsupported attributes as INVALID_PARAMETER.
+			if (status == EFI_UNSUPPORTED || status == EFI_INVALID_PARAMETER)
+				sKeepFirmwareSerialAttributes = true;
+			else if (status != EFI_SUCCESS)
 				sEFISerialIO = NULL;
 
 			// serial_io was successful.

@@ -7,6 +7,8 @@ SYSTEM_BIN = [ FFilterByBuildFeatures
 	autologin
 	beep
 	bfsinfo
+	bt_firmware
+	bt_le
 	catattr
 	checkfs
 	checkitout
@@ -121,6 +123,7 @@ SYSTEM_BIN = [ FFilterByBuildFeatures
 	vmstat
 	waitfor
 	watch
+	wifiautojoin
 	writembr@x86,x86_64
 	xres
 ] ;
@@ -137,7 +140,9 @@ SYSTEM_APPS = [ FFilterByBuildFeatures
 	DriveSetup
 	Expander
 	Installer
+	BluetoothStatus
 	NetworkStatus
+	WiFiStatus
 	ProcessController
 	ShowImage
 	StyledEdit
@@ -160,7 +165,9 @@ DESKBAR_APPLICATIONS =
 ;
 
 DESKBAR_DESKTOP_APPLETS =
+	BluetoothStatus
 	NetworkStatus
+	WiFiStatus
 	ProcessController
 	Workspaces
 ;
@@ -174,6 +181,7 @@ SYSTEM_PREFERENCES = [ FFilterByBuildFeatures
 	Keymap
 	Locale
 	Network
+	WiFi
 	Notifications
 	Screen
 	Shortcuts

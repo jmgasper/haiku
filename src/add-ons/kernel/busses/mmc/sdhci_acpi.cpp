@@ -35,7 +35,7 @@
 
 
 #define SDHCI_DEVICE_MODULE_NAME "busses/mmc/sdhci/driver_v1"
-#define SDHCI_ACPI_MMC_BUS_MODULE_NAME "busses/mmc/sdhci/acpi/device/v1"
+#define SDHCI_ACPI_MMC_BUS_MODULE_NAME "busses/mmc/sdhci/acpi/device/v2"
 
 static acpi_status
 sdhci_acpi_scan_parse_callback(ACPI_RESOURCE *res, void *context)
@@ -79,7 +79,7 @@ init_bus_acpi(device_node* node, void** bus_cookie)
 	// Ignore invalid bars
 	TRACE("Register SD bus\n");
 
-	struct sdhci_crs crs;
+	struct sdhci_crs crs = {};
 	if(acpi->walk_resources(device, (ACPI_STRING)"_CRS",
 			sdhci_acpi_scan_parse_callback, &crs) != B_OK) {
 		ERROR("Couldn't scan ACPI register set\n");
@@ -109,7 +109,7 @@ init_bus_acpi(device_node* node, void** bus_cookie)
 	// they each register an handler. Not a problem, we will just test the
 	// interrupt registers for all busses one after the other and find no
 	// interrupts on the idle busses.
-	uint8_t irq = crs.irq;
+	uint32_t irq = crs.irq;
 	TRACE("irq interrupt line: %d\n", irq);
 
 	SdhciBus* bus = new(std::nothrow) SdhciBus(_regs, irq, true);
@@ -241,4 +241,5 @@ mmc_bus_interface gSDHCIACPIDeviceModule = {
 	.set_bus_width = set_bus_width,
 	.terminate_bus = terminate_bus,
 	.set_card_type = set_card_type,
+	.read_extended_csd = read_extended_csd,
 };

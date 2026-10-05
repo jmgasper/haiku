@@ -32,6 +32,7 @@ class DeviceManager : public BLooper {
 		status_t AddDirectory(node_ref* nref);
 		status_t RemoveDirectory(node_ref* nref);
 		status_t AddDevice(entry_ref* nref);
+		static status_t _PrepareDevice(void* message);
 		
 		BLocker fLock;
 };

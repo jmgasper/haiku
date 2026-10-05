@@ -1,0 +1,84 @@
+# How air/OS boots on the Raspberry Pi 4
+
+No UEFI and no U-Boot: the VideoCore firmware starts the air/OS loader the way
+it starts a Linux kernel.
+
+```
+EEPROM bootloader
+  -> start4.elf, fixup4.dat          from the FAT partition
+       reads config.txt, loads:
+         bcm2711-rpi-4-b.dtb + overlays/disable-bt.dtbo
+         airos-loader.img            kernel=..., kernel_address=0x80000
+         airos-boot.tgz              initramfs ... followkernel
+         cmdline.txt                 -> /chosen/bootargs
+  -> armstub (in start4.elf)         GIC, timer; cores 1-3 wait on a spin table
+  -> airos-loader.img (haiku_loader.rpi), core 0, EL2, MMU off, x0 = device tree
+  -> kernel_arm64 from the boot archive
+  -> the BFS partition on the SD card
+```
+
+## The loader (`src/system/boot/platform/rpi`)
+
+| File | What it does |
+| --- | --- |
+| `entry.S` | Moves the image to its link address if needed, drops from EL2 to EL1, stack, BSS. Entry for cores 1-3 |
+| `mmu.cpp` | Identity map with the caches on as the very first thing (with the MMU off all memory is device memory, and unaligned accesses fault). Physical allocator on the kernel_args ranges. The kernel's page tables |
+| `dtb.cpp` | Memory, reservations, the boot archive (`linux,initrd-start/end`), `bootargs`, UART, GIC, CPUs. Hands the kernel a copy of the tree with the firmware's clock rates added |
+| `mailbox.cpp` | Firmware property interface: frame buffer, clock rates |
+| `video.cpp`, `console.cpp` | Frame buffer of the size of the display on HDMI0; text console on it, mirrored to the UART; keys from the UART |
+| `cpu.cpp` | Raises the ARM clock from the firmware's 600 MHz to the maximum; `system_time()` from the generic timer |
+| `devices.cpp` | The only "disk" is the boot archive in memory |
+| `smp.cpp` | Starts cores 1-3 through the spin table |
+| `start.cpp` | Order of all this; `cmdline.txt` options; kernel handoff |
+
+The kernel is the same arm64 kernel as on EFI machines and is built against
+the EFI platform's kernel_args.
+
+The image file contains its BSS and stack: the firmware may place the boot
+archive right behind the file.
+
+## The boot archive
+
+`jam airos-rpi-boot-archive` (rules in `build/jam/images/RpiBootImage`) packs
+`system/kernel_arm64` and the boot modules: fdt, mmc, pci, scsi, usb bus
+managers; bcm2711_emmc2, ecam, xhci; mmc_disk, usb_disk, scsi_disk; bfs,
+packagefs; the partitioning systems. They are the same builds that go into
+`haiku.hpkg`: rebuild the archive whenever the system package changes.
+
+The loader registers the boot as "from an image", so the kernel takes the
+first BFS partition with a system on it.
+
+## `cmdline.txt`
+
+The firmware prepends arguments meant for Linux. The loader looks for whole
+words:
+
+| Word | Effect |
+| --- | --- |
+| `airos.debug` | Loader debug output on the screen, no splash; the kernel gets `debug_screen true` |
+| `airos.menu` | Boot menu (also: a space on the serial console at start) |
+
+## The card image
+
+`jam -q @minimum-rpi4 build airos-rpi-image`:
+
+| Partition | Type | Contents |
+| --- | --- | --- |
+| 1, 256 MiB at 4 MiB | `0x0c` FAT | firmware files from `HAIKU_RPI_FIRMWARE_DIR`, `config.txt`, `cmdline.txt` (both from `data/boot/rpi`), loader, boot archive |
+| 2 | `0xeb` BFS | the system |
+
+Firmware files come from `tools/rpi4/fetch-firmware.sh` (pinned tag, sha256
+recorded next to them); they are not in the tree.
+
+## Things that were not obvious
+
+- With the MMU off, GCC's unaligned accesses (packed kernel_args, inline
+  memcpy) fault. Nothing but the MMU setup may run before the MMU is on.
+- The other cores read memory uncached until their MMU is on: the loader
+  flushes its image and their stacks from the cache before releasing them.
+- The SD controller needs 32-bit register accesses with pauses between
+  writes; the generic sdhci driver cannot be used.
+- The Pi's `/soc` bus is not an identity mapping (0x7e000000 -> 0xfe000000),
+  and `emmc2bus`/`scb` have their own `ranges` and `dma-ranges`.
+- The PL011 driver's constructor leaves the baud divisor at 1; whoever uses it
+  has to call `InitPort()`.

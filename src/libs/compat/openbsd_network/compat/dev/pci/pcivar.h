@@ -117,7 +117,10 @@ pci_intr_establish_openbsd(device_t dev, pci_intr_handle_t ih, int level,
 		flags |= INTR_MPSAFE;
 
 	void* ihp = NULL;
-	bus_setup_intr(dev, irq, flags, NULL, (driver_intr_t*)func, arg, &ihp);
+	if (bus_setup_intr(dev, irq, flags, NULL, (driver_intr_t*)func, arg, &ihp) != 0) {
+		bus_release_resource(dev, SYS_RES_IRQ, ih.rid, irq);
+		return NULL;
+	}
 	return ihp;
 }
 

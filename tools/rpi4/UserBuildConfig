@@ -1,0 +1,183 @@
+# air/OS for the Raspberry Pi 4 (arm64). Include this file from the build
+# directory's UserBuildConfig. The SD card image is a target of its own:
+#
+#	jam -q @minimum-rpi4 build airos-rpi-image
+#
+# minimum-rpi4 is the small bring-up image (a profile name starting with
+# "minimum-" selects the minimum image definition); the full air/OS profile
+# follows once the board boots.
+
+HAIKU_RPI_FIRMWARE_DIR ?= /mnt/HaikuWork/rpi4/firmware/1.20260915 ;
+
+if $(HAIKU_BUILD_PROFILE) = minimum-rpi4 {
+	HAIKU_IMAGE_SIZE = 600 ;
+	HAIKU_RPI_IMAGE_NAME = airos-rpi4-minimum.img ;
+}
+HAIKU_IMAGE_LABEL = airOS ;
+
+DefineBuildProfile minimum-rpi4 : image : "haiku-rpi4-minimum.image" ;
+
+# The full air/OS system: the regular image definition (every application,
+# preference and demo) plus the owner's applications, Summit, and the
+# libraries and firmware that Haiku has no arm64 packages for. They come
+# from the same places as the ROCK 5's air/OS build
+# (tools/airos/build-arm64-app-packages.sh, /mnt/HaikuWork/rock5-image-extras).
+#
+#	jam -q @rpi4-airos build airos-rpi-image
+RPI4_AIROS_IMAGE = ;
+if $(HAIKU_BUILD_PROFILE) = rpi4-airos {
+	RPI4_AIROS_IMAGE = 1 ;
+	HAIKU_IMAGE_SIZE = 3584 ;
+	HAIKU_RPI_IMAGE_NAME = airos-rpi4.img ;
+}
+DefineBuildProfile rpi4-airos : image : "haiku-rpi4-airos.image" ;
+
+# The lab overlay: files that only make sense on the lab's board. It is
+# switched on by the presence of /mnt/HaikuWork/rpi4/state/lab-image.
+RPI4_LAB_IMAGE = ;
+if [ Glob /mnt/HaikuWork/rpi4/state : lab-image ] {
+	RPI4_LAB_IMAGE = 1 ;
+}
+
+DeferredSubInclude HAIKU_TOP tools rpi4 ;
+
+rule UserBuildConfigRulePreImage
+{
+	if $(RPI4_LAB_IMAGE) {
+		AddFilesToHaikuImage home config non-packaged bin
+			: rpi4_v3d_probe rpi4_fetch rpi4_tone rpi4_vchiq_audio rpi4_hevc_decode rpi4_memprobe
+				rpi4_cores
+				rpi4_mmal_decode rpi4_gpio rpi4_swap_commit rpi4_kdl rpi4_orphan ;
+	}
+
+	if $(RPI4_AIROS_IMAGE) {
+		local extras = /mnt/HaikuWork/rock5-image-extras ;
+
+		# libraries the applications link against
+		local libs = <rpi4-lib>libEGL.so.1
+			<rpi4-lib>libGLESv2.so.2 <rpi4-lib>libGLdispatch.so.0
+			<rpi4-lib>libOpenGL.so.0 <rpi4-lib>libGL.so.1 <rpi4-lib>libGLU.so.1
+			<rpi4-lib>libsqlite3.so.0 <rpi4-lib>libtag.so.2
+			<rpi4-lib>libpcre2-8.so.0 <rpi4-lib>libscintilla.so
+			<rpi4-lib>liblexilla.so ;
+		SEARCH on $(libs) = [ FDirName $(extras) lib ] ;
+		AddFilesToHaikuImage system non-packaged lib : $(libs) ;
+
+		# OpenGL on the GPU: Mesa with the v3d driver (tools/rpi4/mesa) behind
+		# libglvnd, the kernel driver is in the haiku package. GLTeapot and
+		# GL Info as on the ROCK 5 (Haiku has no arm64 mesa package, so the
+		# regular image definition leaves them out).
+		local mesaStage = /mnt/HaikuWork/rpi4/mesa/stage ;
+		local mesaLib = <rpi4-mesa>libEGL_mesa.so.0 ;
+		SEARCH on $(mesaLib) = $(mesaStage) ;
+		AddFilesToHaikuImage system non-packaged lib : $(mesaLib) ;
+		# Vulkan: Mesa's v3dv. No loader; programs link the driver.
+		local vulkanLib = <rpi4-mesa>libvulkan_broadcom.so ;
+		SEARCH on $(vulkanLib) = $(mesaStage) ;
+		AddFilesToHaikuImage system non-packaged lib : $(vulkanLib) ;
+		local vendorFile = <rpi4-mesa>10_mesa.json ;
+		SEARCH on $(vendorFile) = $(mesaStage) ;
+		AddFilesToHaikuImage system non-packaged add-ons opengl egl_vendor.d
+			: $(vendorFile) ;
+		local glDemos = <rpi4-gl>GLTeapot ;
+		SEARCH on $(glDemos) = [ FDirName $(extras) apps ] ;
+		AddFilesToHaikuImage system non-packaged demos : $(glDemos) ;
+
+		# The onboard Wi-Fi chip's firmware (CYW43455), from
+		# tools/rpi4/fetch-wifi-firmware.sh
+		local wifiFirmware = <rpi4-wifi>brcmfmac43455-sdio.bin
+			<rpi4-wifi>brcmfmac43455-sdio.clm_blob
+			<rpi4-wifi>brcmfmac43455-sdio.txt ;
+		SEARCH on $(wifiFirmware) = /mnt/HaikuWork/rpi4/wifi/firmware ;
+		AddFilesToHaikuImage system non-packaged data firmware broadcomfmac
+			: $(wifiFirmware) ;
+
+		# The onboard Bluetooth controller's patch (BCM4345C0), from the
+		# same script
+		local bluetoothPatch = <rpi4-bt>BCM4345C0.hcd ;
+		SEARCH on $(bluetoothPatch) = /mnt/HaikuWork/rpi4/bluetooth ;
+		AddFilesToHaikuImage system non-packaged data firmware h4bcm
+			: $(bluetoothPatch) ;
+
+		# Wi-Fi and Bluetooth firmware, wpa_supplicant, ffmpeg
+		local packages
+			= <rpi4-pkg>intel_wifi_firmwares-2025_02_11-1-any.hpkg
+			<rpi4-pkg>ralink_wifi_firmwares-2023_08_04-1-any.hpkg
+			<rpi4-pkg>realtek_wifi_firmwares-2019_01_02-1-any.hpkg
+			<rpi4-pkg>intel_bluetooth_firmwares-20240318-1-any.hpkg
+			<rpi4-pkg>mediatek_bluetooth_firmwares-20240318-1-any.hpkg
+			<rpi4-pkg>realtek_bluetooth_firmwares-20240318-1-any.hpkg
+			<rpi4-pkg>rock5_glinfo-1.0.0-1-arm64.hpkg
+			<rpi4-pkg>rock5_ffmpeg-6.1.6-2-arm64.hpkg
+			<rpi4-pkg>wpa_supplicant-2.11.haiku.1-1-arm64.hpkg ;
+		SEARCH on $(packages) = [ FDirName $(extras) packages ] ;
+		AddFilesToHaikuImage system packages : $(packages) ;
+
+		# ...without the ROCK 5's hardware decoder in rock5_ffmpeg, which
+		# took H.264 from FFmpeg and then failed (data/boot/rpi/packages).
+		# The lab adds its own blocks to this file: append, do not replace.
+		local packageSettings = <rpi4-settings>packages ;
+		SEARCH on $(packageSettings) = [ FDirName $(HAIKU_TOP) data boot rpi ] ;
+		AddFilesToHaikuImage system settings : $(packageSettings) ;
+
+		# The owner's applications and Summit: the arm64 packages of the
+		# air/OS release, with the ones rebuilt for this board in place of
+		# their namesakes (tools/rpi4/stage-packages.sh collects them).
+		local imagePackageDir = /mnt/HaikuWork/rpi4/image-packages ;
+		local imagePackages = [ Glob $(imagePackageDir) : *.hpkg ] ;
+		imagePackages = <rpi4-app-pkg>$(imagePackages:BS) ;
+		SEARCH on $(imagePackages) = $(imagePackageDir) ;
+		AddFilesToHaikuImage system packages : $(imagePackages) ;
+
+		# airTime, the movie player (apps/airTime, tools/build-arm64.sh and
+		# tools/package-haiku.sh there)
+		local airTime = <airtime-pkg>airtime-1.0.0-14-arm64.hpkg ;
+		SEARCH on $(airTime) = /mnt/HaikuWork/apps/airTime/artifacts ;
+		AddFilesToHaikuImage system packages : $(airTime) ;
+
+		local airosLibDir = /mnt/HaikuWork/airos/lib-arm64 ;
+		local airosLibs = [ Glob $(airosLibDir) : *.so* ] ;
+		airosLibs = <airos-lib>$(airosLibs:BS) ;
+		SEARCH on $(airosLibs) = $(airosLibDir) ;
+		AddFilesToHaikuImage system non-packaged lib : $(airosLibs) ;
+
+		# This is an installed system, not an installer medium: go to the
+		# desktop instead of asking "install or try". Language and keymap
+		# are in the Locale and Keymap preferences.
+		local localeSettings = "<rpi4-settings>Locale settings" ;
+		SEARCH on $(localeSettings) = [ FDirName $(HAIKU_TOP) data boot rpi ] ;
+		AddFilesToHaikuImage home config settings : $(localeSettings) ;
+
+		# no clock on the board: the time comes from the network at start
+		local bootscript = <rpi4-settings>UserBootscript ;
+		SEARCH on $(bootscript) = [ FDirName $(HAIKU_TOP) data boot rpi ] ;
+		AddFilesToHaikuImage home config settings boot : $(bootscript) ;
+
+		# The arm64 bootstrap ICU looks for its data under its old package
+		# name; without ICU_DATA every ICU format comes out empty (About's
+		# "Processors:" label and running time, the Locale lists). Same file
+		# as the ROCK 5's.
+		local setupEnvironment = <rpi4-settings>UserSetupEnvironment ;
+		SEARCH on $(setupEnvironment)
+			= [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
+		AddFilesToHaikuImage home config settings boot : $(setupEnvironment) ;
+
+		local caCertificates = <airos-data>CARootCertificates.pem ;
+		SEARCH on $(caCertificates) = /mnt/HaikuWork/airos/data-arm64/ssl ;
+		AddFilesToHaikuImage system non-packaged data ssl : $(caCertificates) ;
+	}
+
+	if $(RPI4_LAB_IMAGE) {
+		# A telnet login for the lab, with an account whose password hash
+		# lives outside the tree (state/lab-overlay, made once per lab).
+		local overlay = /mnt/HaikuWork/rpi4/state/lab-overlay ;
+		if [ Glob $(overlay) : shadow ] {
+			local shadow = <rpi4-lab>shadow ;
+			SEARCH on $(shadow) = $(overlay) ;
+			AddFilesToHaikuImage system settings etc : $(shadow) ;
+			local services = <rpi4-lab>services ;
+			SEARCH on $(services) = $(overlay) ;
+			AddFilesToHaikuImage system settings network : $(services) ;
+		}
+	}
+}

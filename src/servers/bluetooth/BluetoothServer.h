@@ -26,6 +26,10 @@
 
 #define BT "bluetooth_server: "
 
+// Logs a step of bringing up the radios, with the time since boot.
+void LogStartup(const char* format, ...)
+	__attribute__((format(printf, 1, 2)));
+
 typedef enum {
 	BLACKBOARD_GENERAL = 0,
 	BLACKBOARD_DEVICEMANAGER,
@@ -53,6 +57,7 @@ public:
 	virtual bool QuitRequested(void);
 	virtual void ArgvReceived(int32 argc, char **argv);
 	virtual void ReadyToRun(void);
+	virtual void Pulse(void);
 
 
 	virtual void AppActivated(bool act);
@@ -79,8 +84,6 @@ private:
 
 	void 				ShowWindow(BWindow* pWindow);
 
-	void				_InstallDeskbarIcon();
-	void				_RemoveDeskbarIcon();
 
 	LocalDevicesList   	fLocalDevicesList;
 	WatchersList		fWatchersList;

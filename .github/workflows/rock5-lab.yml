@@ -1,0 +1,21 @@
+name: ROCK 5 lab tools
+on:
+  push:
+    branches: [rock5-itx]
+    paths: ['tools/rock5-itx/**', '.github/workflows/rock5-lab.yml']
+  pull_request:
+    paths: ['tools/rock5-itx/**', '.github/workflows/rock5-lab.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  control-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check lab control logic without hardware
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          bash -n tools/rock5-itx/*.sh
+          python3 -m unittest discover -s tools/rock5-itx -p 'test_*.py' -v

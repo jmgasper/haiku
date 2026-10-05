@@ -1,0 +1,1005 @@
+From d0b3ccad38ee116f1efb11f52537639f39b81f78 Mon Sep 17 00:00:00 2001
+From: x399 <x399@lab>
+Date: Fri, 18 Sep 2026 15:01:18 +1000
+Subject: [PATCH 01/14] haiku: add a Zink renderer add-on
+
+---
+ src/gallium/meson.build                       |   3 +
+ .../targets/haiku-zink/GalliumContext.cpp     | 437 ++++++++++++++++++
+ .../targets/haiku-zink/GalliumContext.h       |  59 +++
+ .../targets/haiku-zink/ZinkRenderer.cpp       | 317 +++++++++++++
+ src/gallium/targets/haiku-zink/ZinkRenderer.h |  54 +++
+ .../targets/haiku-zink/ZinkRenderer.rdef      |  39 ++
+ src/gallium/targets/haiku-zink/meson.build    |  28 ++
+ 7 files changed, 937 insertions(+)
+ create mode 100644 src/gallium/targets/haiku-zink/GalliumContext.cpp
+ create mode 100644 src/gallium/targets/haiku-zink/GalliumContext.h
+ create mode 100644 src/gallium/targets/haiku-zink/ZinkRenderer.cpp
+ create mode 100644 src/gallium/targets/haiku-zink/ZinkRenderer.h
+ create mode 100644 src/gallium/targets/haiku-zink/ZinkRenderer.rdef
+ create mode 100644 src/gallium/targets/haiku-zink/meson.build
+
+diff --git a/src/gallium/meson.build b/src/gallium/meson.build
+index a678dc0..58e38b2 100644
+--- a/src/gallium/meson.build
++++ b/src/gallium/meson.build
+@@ -218,6 +218,9 @@ endif
+ if with_platform_haiku
+   subdir('frontends/hgl')
+   subdir('targets/haiku-softpipe')
++  if with_gallium_zink
++    subdir('targets/haiku-zink')
++  endif
+ endif
+ if with_gallium_st_nine
+   subdir('frontends/nine')
+diff --git a/src/gallium/targets/haiku-zink/GalliumContext.cpp b/src/gallium/targets/haiku-zink/GalliumContext.cpp
+new file mode 100644
+index 0000000..34bdc14
+--- /dev/null
++++ b/src/gallium/targets/haiku-zink/GalliumContext.cpp
+@@ -0,0 +1,437 @@
++/*
++ * Copyright 2012, Haiku, Inc. All Rights Reserved.
++ * Distributed under the terms of the MIT License.
++ *
++ * Authors:
++ *		Artur Wyszynski, harakash@gmail.com
++ *		Alexander von Gluck IV, kallisti5@unixzen.com
++ */
++
++
++#include "GalliumContext.h"
++
++#include <stdlib.h>
++
++#include "zink/zink_public.h"
++
++#include <stdio.h>
++#include <algorithm>
++
++#include "GLView.h"
++
++#include "bitmap_wrapper.h"
++
++#include "glapi/glapi.h"
++#include "pipe/p_format.h"
++//#include "state_tracker/st_cb_fbo.h"
++//#include "state_tracker/st_cb_flush.h"
++#include "state_tracker/st_context.h"
++#include "state_tracker/st_gl_api.h"
++#include "frontend/sw_winsys.h"
++#include "sw/hgl/hgl_sw_winsys.h"
++#include "util/u_atomic.h"
++#include "util/u_memory.h"
++#include "util/u_framebuffer.h"
++
++#include "target-helpers/inline_sw_helper.h"
++#include "target-helpers/inline_debug_helper.h"
++
++
++#ifdef DEBUG
++#	define TRACE(x...) printf("GalliumContext: " x)
++#	define CALLED() TRACE("CALLED: %s\n", __PRETTY_FUNCTION__)
++#else
++#	define TRACE(x...)
++#	define CALLED()
++#endif
++#define ERROR(x...) printf("GalliumContext: " x)
++
++int32 GalliumContext::fDisplayRefCount = 0;
++hgl_display* GalliumContext::fDisplay = NULL;
++
++GalliumContext::GalliumContext(ulong options)
++	:
++	fOptions(options),
++	fCurrentContext(0)
++{
++	CALLED();
++
++	// Make all contexts a known value
++	for (context_id i = 0; i < CONTEXT_MAX; i++)
++		fContext[i] = NULL;
++
++	CreateDisplay();
++
++	(void) mtx_init(&fMutex, mtx_plain);
++}
++
++
++GalliumContext::~GalliumContext()
++{
++	CALLED();
++
++	// Destroy our contexts
++	Lock();
++	for (context_id i = 0; i < CONTEXT_MAX; i++)
++		DestroyContext(i);
++	Unlock();
++
++	DestroyDisplay();
++
++	mtx_destroy(&fMutex);
++}
++
++
++status_t
++GalliumContext::CreateDisplay()
++{
++	CALLED();
++
++	if (atomic_add(&fDisplayRefCount, 1) > 0)
++		return B_OK;
++
++	// Allocate winsys and attach callback hooks
++	struct sw_winsys* winsys = hgl_create_sw_winsys();
++
++	if (!winsys) {
++		ERROR("%s: Couldn't allocate sw_winsys!\n", __func__);
++		return B_ERROR;
++	}
++
++	// Render on the GPU through Vulkan, and fall back to the software
++	// rasterizer if no Vulkan device can be used.
++	struct pipe_screen* screen = NULL;
++	if (getenv("HGL_NO_ZINK") == NULL)
++		screen = zink_create_screen(winsys);
++	if (screen == NULL) {
++		ERROR("%s: no Vulkan device, falling back to software\n", __func__);
++		screen = sw_screen_create(winsys);
++	}
++
++	if (screen == NULL) {
++		ERROR("%s: Couldn't create screen!\n", __FUNCTION__);
++		winsys->destroy(winsys);
++		return B_ERROR;
++	}
++
++	debug_screen_wrap(screen);
++
++	const char* driverName = screen->get_name(screen);
++	ERROR("%s: Using %s driver.\n", __func__, driverName);
++
++	fDisplay = hgl_create_display(screen);
++
++	if (fDisplay == NULL) {
++		ERROR("%s: Couldn't create display!\n", __FUNCTION__);
++		screen->destroy(screen); // will also destroy winsys
++		return B_ERROR;
++	}
++
++	return B_OK;
++}
++
++
++void
++GalliumContext::DestroyDisplay()
++{
++	if (atomic_add(&fDisplayRefCount, -1) > 1)
++		return;
++
++	if (fDisplay != NULL) {
++		struct pipe_screen* screen = fDisplay->manager->screen;
++		hgl_destroy_display(fDisplay); fDisplay = NULL;
++		screen->destroy(screen); // destroy will deallocate object
++	}
++}
++
++
++context_id
++GalliumContext::CreateContext(HGLWinsysContext *wsContext)
++{
++	CALLED();
++
++	struct hgl_context* context = CALLOC_STRUCT(hgl_context);
++
++	if (!context) {
++		ERROR("%s: Couldn't create pipe context!\n", __FUNCTION__);
++		return 0;
++	}
++
++	// Set up the initial things our context needs
++	context->display = fDisplay;
++
++	// Create state tracker visual
++	context->stVisual = hgl_create_st_visual(fOptions);
++
++	// Create state tracker framebuffers
++	context->buffer = hgl_create_st_framebuffer(context, wsContext);
++
++	if (!context->buffer) {
++		ERROR("%s: Problem allocating framebuffer!\n", __func__);
++		FREE(context->stVisual);
++		return -1;
++	}
++
++	// Build state tracker attributes
++	struct st_context_attribs attribs;
++	memset(&attribs, 0, sizeof(attribs));
++	attribs.options.force_glsl_extensions_warn = false;
++	attribs.profile = ST_PROFILE_DEFAULT;
++	attribs.visual = *context->stVisual;
++	attribs.major = 1;
++	attribs.minor = 0;
++	//attribs.flags |= ST_CONTEXT_FLAG_DEBUG;
++
++	struct st_context_iface* shared = NULL;
++
++	if (fOptions & BGL_SHARE_CONTEXT) {
++		shared = fDisplay->api->get_current(fDisplay->api);
++		TRACE("shared context: %p\n", shared);
++	}
++
++	// Create context using state tracker api call
++	enum st_context_error result;
++	context->st = fDisplay->api->create_context(fDisplay->api, fDisplay->manager,
++		&attribs, &result, shared);
++
++	if (!context->st) {
++		ERROR("%s: Couldn't create mesa state tracker context!\n",
++			__func__);
++		switch (result) {
++			case ST_CONTEXT_SUCCESS:
++				ERROR("%s: State tracker error: SUCCESS?\n", __func__);
++				break;
++			case ST_CONTEXT_ERROR_NO_MEMORY:
++				ERROR("%s: State tracker error: NO_MEMORY\n", __func__);
++				break;
++			case ST_CONTEXT_ERROR_BAD_API:
++				ERROR("%s: State tracker error: BAD_API\n", __func__);
++				break;
++			case ST_CONTEXT_ERROR_BAD_VERSION:
++				ERROR("%s: State tracker error: BAD_VERSION\n", __func__);
++				break;
++			case ST_CONTEXT_ERROR_BAD_FLAG:
++				ERROR("%s: State tracker error: BAD_FLAG\n", __func__);
++				break;
++			case ST_CONTEXT_ERROR_UNKNOWN_ATTRIBUTE:
++				ERROR("%s: State tracker error: BAD_ATTRIBUTE\n", __func__);
++				break;
++			case ST_CONTEXT_ERROR_UNKNOWN_FLAG:
++				ERROR("%s: State tracker error: UNKNOWN_FLAG\n", __func__);
++				break;
++		}
++
++		hgl_destroy_st_visual(context->stVisual);
++		FREE(context);
++		return -1;
++	}
++
++	assert(!context->st->st_manager_private);
++	context->st->st_manager_private = (void*)context;
++
++	struct st_context *stContext = (struct st_context*)context->st;
++
++	// Init Gallium3D Post Processing
++	// TODO: no pp filters are enabled yet through postProcessEnable
++	context->postProcess = pp_init(stContext->pipe, context->postProcessEnable,
++		stContext->cso_context, &stContext->iface);
++
++	context_id contextNext = -1;
++	Lock();
++	for (context_id i = 0; i < CONTEXT_MAX; i++) {
++		if (fContext[i] == NULL) {
++			fContext[i] = context;
++			contextNext = i;
++			break;
++		}
++	}
++	Unlock();
++
++	if (contextNext < 0) {
++		ERROR("%s: The next context is invalid... something went wrong!\n",
++			__func__);
++		//st_destroy_context(context->st);
++		FREE(context->stVisual);
++		FREE(context);
++		return -1;
++	}
++
++	TRACE("%s: context #%" B_PRIu64 " is the next available context\n",
++		__func__, contextNext);
++
++	return contextNext;
++}
++
++
++void
++GalliumContext::DestroyContext(context_id contextID)
++{
++	// fMutex should be locked *before* calling DestoryContext
++
++	// See if context is used
++	if (!fContext[contextID])
++		return;
++
++	if (fContext[contextID]->st) {
++		fContext[contextID]->st->flush(fContext[contextID]->st, 0, NULL, NULL, NULL);
++		fContext[contextID]->st->destroy(fContext[contextID]->st);
++	}
++
++	if (fContext[contextID]->postProcess)
++		pp_free(fContext[contextID]->postProcess);
++
++	// Delete state tracker framebuffer objects
++	if (fContext[contextID]->buffer)
++		hgl_destroy_st_framebuffer(fContext[contextID]->buffer);
++
++	if (fContext[contextID]->stVisual)
++		hgl_destroy_st_visual(fContext[contextID]->stVisual);
++
++	FREE(fContext[contextID]);
++}
++
++
++status_t
++GalliumContext::SetCurrentContext(bool set, context_id contextID)
++{
++	CALLED();
++
++	if (contextID < 0 || contextID > CONTEXT_MAX) {
++		ERROR("%s: Invalid context ID range!\n", __func__);
++		return B_ERROR;
++	}
++
++	Lock();
++	context_id oldContextID = fCurrentContext;
++	struct hgl_context* context = fContext[contextID];
++
++	if (!context) {
++		ERROR("%s: Invalid context provided (#%" B_PRIu64 ")!\n",
++			__func__, contextID);
++		Unlock();
++		return B_ERROR;
++	}
++
++	if (!set) {
++		fDisplay->api->make_current(fDisplay->api, NULL, NULL, NULL);
++		Unlock();
++		return B_OK;
++	}
++
++	// Everything seems valid, lets set the new context.
++	fCurrentContext = contextID;
++
++	if (oldContextID > 0 && oldContextID != contextID) {
++		fContext[oldContextID]->st->flush(fContext[oldContextID]->st,
++			ST_FLUSH_FRONT, NULL, NULL, NULL);
++	}
++
++	// We need to lock and unlock framebuffers before accessing them
++	fDisplay->api->make_current(fDisplay->api, context->st, context->buffer->stfbi,
++		context->buffer->stfbi);
++	Unlock();
++
++	return B_OK;
++}
++
++
++status_t
++GalliumContext::SwapBuffers(context_id contextID)
++{
++	CALLED();
++
++	Lock();
++	struct hgl_context* context = fContext[contextID];
++
++	if (!context) {
++		ERROR("%s: context not found\n", __func__);
++		Unlock();
++		return B_ERROR;
++	}
++
++	// will flush front buffer if no double buffering is used
++	context->st->flush(context->st, ST_FLUSH_FRONT, NULL, NULL, NULL);
++
++	struct hgl_buffer* buffer = context->buffer;
++
++	// flush back buffer and swap buffers if double buffering is used
++	if (buffer->textures[ST_ATTACHMENT_BACK_LEFT] != NULL) {
++		buffer->screen->flush_frontbuffer(buffer->screen, NULL, buffer->textures[ST_ATTACHMENT_BACK_LEFT],
++			0, 0, buffer->winsysContext, NULL);
++		std::swap(buffer->textures[ST_ATTACHMENT_FRONT_LEFT], buffer->textures[ST_ATTACHMENT_BACK_LEFT]);
++		p_atomic_inc(&buffer->stfbi->stamp);
++	}
++
++	Unlock();
++	return B_OK;
++}
++
++
++void
++GalliumContext::Draw(context_id contextID, BRect updateRect)
++{
++	struct hgl_context *context = fContext[contextID];
++
++	if (!context) {
++		ERROR("%s: context not found\n", __func__);
++		return;
++	}
++
++	struct hgl_buffer* buffer = context->buffer;
++
++	if (buffer->textures[ST_ATTACHMENT_FRONT_LEFT] == NULL)
++		return;
++
++	buffer->screen->flush_frontbuffer(buffer->screen, NULL, buffer->textures[ST_ATTACHMENT_FRONT_LEFT],
++		0, 0, buffer->winsysContext, NULL);
++}
++
++
++bool
++GalliumContext::Validate(uint32 width, uint32 height)
++{
++	CALLED();
++
++	if (!fContext[fCurrentContext])
++		return false;
++
++	if (fContext[fCurrentContext]->width != width + 1
++		|| fContext[fCurrentContext]->height != height + 1) {
++		Invalidate(width, height);
++		return false;
++	}
++	return true;
++}
++
++
++void
++GalliumContext::Invalidate(uint32 width, uint32 height)
++{
++	CALLED();
++
++	assert(fContext[fCurrentContext]);
++
++	// Update st_context dimensions 
++	fContext[fCurrentContext]->width = width + 1;
++	fContext[fCurrentContext]->height = height + 1;
++
++	// Is this the best way to invalidate?
++	p_atomic_inc(&fContext[fCurrentContext]->buffer->stfbi->stamp);
++}
++
++
++void
++GalliumContext::Lock()
++{
++	CALLED();
++	mtx_lock(&fMutex);
++}
++
++
++void
++GalliumContext::Unlock()
++{
++	CALLED();
++	mtx_unlock(&fMutex);
++}
++/* vim: set tabstop=4: */
+diff --git a/src/gallium/targets/haiku-zink/GalliumContext.h b/src/gallium/targets/haiku-zink/GalliumContext.h
+new file mode 100644
+index 0000000..1947b96
+--- /dev/null
++++ b/src/gallium/targets/haiku-zink/GalliumContext.h
+@@ -0,0 +1,59 @@
++/*
++ * Copyright 2009, Haiku, Inc. All Rights Reserved.
++ * Distributed under the terms of the MIT License.
++ *
++ * Authors:
++ *		Alexander von Gluck IV, kallisti5@unixzen.com
++ */
++#ifndef GALLIUMCONTEXT_H
++#define GALLIUMCONTEXT_H
++
++
++#include <stddef.h>
++#include <kernel/image.h>
++
++#include "pipe/p_compiler.h"
++#include "pipe/p_screen.h"
++#include "postprocess/filters.h"
++#include "hgl_context.h"
++#include "sw/hgl/hgl_sw_winsys.h"
++
++
++class BBitmap;
++
++class GalliumContext {
++public:
++							GalliumContext(ulong options);
++							~GalliumContext();
++
++		void				Lock();
++		void				Unlock();
++
++		context_id			CreateContext(HGLWinsysContext *wsContext);
++		void				DestroyContext(context_id contextID);
++		context_id			GetCurrentContext() { return fCurrentContext; };
++		status_t			SetCurrentContext(bool set, context_id contextID);
++
++		status_t			SwapBuffers(context_id contextID);
++		void				Draw(context_id contextID, BRect updateRect);
++
++		bool				Validate(uint32 width, uint32 height);
++		void				Invalidate(uint32 width, uint32 height);
++
++private:
++		status_t			CreateDisplay();
++		void				DestroyDisplay();
++		void				Flush();
++
++		ulong				fOptions;
++		static int32		fDisplayRefCount;
++		static hgl_display*	fDisplay;
++
++		// Context Management
++		struct hgl_context*	fContext[CONTEXT_MAX];
++		context_id			fCurrentContext;
++		mtx_t				fMutex;
++};
++
++
++#endif /* GALLIUMCONTEXT_H */
+diff --git a/src/gallium/targets/haiku-zink/ZinkRenderer.cpp b/src/gallium/targets/haiku-zink/ZinkRenderer.cpp
+new file mode 100644
+index 0000000..5f0758b
+--- /dev/null
++++ b/src/gallium/targets/haiku-zink/ZinkRenderer.cpp
+@@ -0,0 +1,317 @@
++/*
++ * Copyright 2006-2012, Haiku, Inc. All rights reserved.
++ * Distributed under the terms of the MIT License.
++ *
++ * Authors:
++ *		Jérôme Duval, korli@users.berlios.de
++ *		Philippe Houdoin, philippe.houdoin@free.fr
++ *		Artur Wyszynski, harakash@gmail.com
++ *		Alexander von Gluck IV, kallisti5@unixzen.com
++ */
++
++
++#include "ZinkRenderer.h"
++
++#include <Autolock.h>
++#include <interface/DirectWindowPrivate.h>
++#include <interface/ColorConversion.h>
++#include <GraphicsDefs.h>
++#include <Screen.h>
++#include <stdio.h>
++#include <sys/time.h>
++#include <new>
++
++
++#ifdef DEBUG
++#	define TRACE(x...) printf("ZinkRenderer: " x)
++#	define CALLED() TRACE("CALLED: %s\n", __PRETTY_FUNCTION__)
++#else
++#	define TRACE(x...)
++#	define CALLED()
++#endif
++#define ERROR(x...)	printf("ZinkRenderer: " x)
++
++
++extern const char* color_space_name(color_space space);
++
++
++extern "C" _EXPORT BGLRenderer*
++instantiate_gl_renderer(BGLView *view, ulong opts)
++{
++	return new ZinkRenderer(view, opts);
++}
++
++struct RasBuffer
++{
++	int32 width, height, stride;
++	int32 orgX, orgY;
++	void *colors;
++	color_space pixel_format;
++	int32 pixel_size;	
++
++	RasBuffer(int32 width, int32 height, int32 stride, int32 orgX, int32 orgY, void *colors):
++		width(width), height(height), stride(stride), orgX(orgX), orgY(orgY), colors(colors)
++	{}
++
++	RasBuffer(BBitmap *bmp)
++	{
++		width  = bmp->Bounds().IntegerWidth()  + 1;
++		height = bmp->Bounds().IntegerHeight() + 1;
++		stride = bmp->BytesPerRow();
++		orgX   = 0;
++		orgY   = 0;
++		pixel_format = bmp->ColorSpace();
++		pixel_size = stride / width;
++		colors = bmp->Bits();
++	}
++
++	RasBuffer(direct_buffer_info *info)
++	{
++		width  = 0x7fffffff;
++		height = 0x7fffffff;
++		stride = info->bytes_per_row;
++		orgX   = 0;
++		orgY   = 0;
++		pixel_format = info->pixel_format;
++		pixel_size = info->bits_per_pixel / 8;
++		colors = info->bits;
++	}
++
++	void ClipSize(int32 x, int32 y, int32 w, int32 h)
++	{
++		if (x < 0) {w += x; x = 0;}
++		if (y < 0) {h += y; y = 0;}
++		if (x + w > width) {w = width  - x;}
++		if (y + h > height) {h = height - y;}
++		if ((w > 0) && (h > 0)) {
++			colors += (y * stride) + (x * pixel_size);
++			width  = w;
++			height = h;
++		} else {
++			width = 0; height = 0; colors = NULL;
++		}
++		if (x + orgX > 0) {orgX += x;} else {orgX = 0;}
++		if (y + orgY > 0) {orgY += y;} else {orgY = 0;}
++	}
++
++	void ClipRect(int32 l, int32 t, int32 r, int32 b)
++	{
++		ClipSize(l, t, r - l, b - t);
++	}
++
++	void Shift(int32 dx, int32 dy)
++	{
++		orgX += dx;
++		orgY += dy;
++	}
++
++	void Blit(RasBuffer src)
++	{
++		RasBuffer dst = *this;
++		int32 x, y;
++		x = src.orgX - orgX;
++		y = src.orgY - orgY;
++		dst.ClipSize(x, y, src.width, src.height);
++		src.ClipSize(-x, -y, width, height);
++		for (; dst.height > 0; dst.height--) {
++			if (src.pixel_format == dst.pixel_format) {
++				memcpy(dst.colors, src.colors, src.width * src.pixel_size);
++			} else {
++				BPrivate::ConvertBits(src.colors, dst.colors, src.stride, dst.stride,
++					src.stride, dst.stride, src.pixel_format, dst.pixel_format, src.width, 1);
++			}
++			dst.colors += dst.stride;
++			src.colors += src.stride;
++		}
++	}
++};
++
++ZinkRenderer::ZinkRenderer(BGLView *view, ulong options)
++	:
++	BGLRenderer(view, options),
++	fDirectModeEnabled(false),
++	fInfo(NULL),
++	fInfoLocker("info locker"),
++	fOptions(options),
++	fColorSpace(B_NO_COLOR_SPACE)
++{
++	CALLED();
++
++	// Initialize the "Haiku Software GL Pipe"
++	time_t beg;
++	time_t end;
++	beg = time(NULL);
++	fContextObj = new GalliumContext(options);
++	end = time(NULL);
++	TRACE("Haiku Software GL Pipe initialization time: %f.\n",
++		difftime(end, beg));
++
++	BRect b = view->Bounds();
++	fColorSpace = BScreen(view->Window()).ColorSpace();
++	TRACE("%s: Colorspace:\t%s\n", __func__, color_space_name(fColorSpace));
++
++	fWidth = (GLint)b.IntegerWidth();
++	fHeight = (GLint)b.IntegerHeight();
++
++	// Initialize the first "Haiku Software GL Pipe" context
++	beg = time(NULL);
++	fContextID = fContextObj->CreateContext(this);
++	end = time(NULL);
++
++	if (fContextID < 0)
++		ERROR("%s: There was an error creating the context!\n", __func__);
++	else {
++		TRACE("%s: Haiku Software GL Pipe context creation time: %f.\n",
++			__func__, difftime(end, beg));
++	}
++
++	if (!fContextObj->GetCurrentContext())
++		LockGL();
++}
++
++
++ZinkRenderer::~ZinkRenderer()
++{
++	CALLED();
++
++	if (fContextObj)
++		delete fContextObj;
++}
++
++
++void
++ZinkRenderer::LockGL()
++{
++//	CALLED();
++	BGLRenderer::LockGL();
++
++	color_space cs = BScreen(GLView()->Window()).ColorSpace();
++
++	{
++		BAutolock lock(fInfoLocker);
++		if (fDirectModeEnabled && fInfo != NULL) {
++			fWidth = fInfo->window_bounds.right - fInfo->window_bounds.left;
++			fHeight = fInfo->window_bounds.bottom - fInfo->window_bounds.top;
++		}
++
++		fContextObj->Validate(fWidth, fHeight);
++		fColorSpace = cs;
++	}
++
++	// do not hold fInfoLocker here to avoid deadlock
++	fContextObj->SetCurrentContext(true, fContextID);
++}
++
++
++void
++ZinkRenderer::UnlockGL()
++{
++//	CALLED();
++	if ((fOptions & BGL_DOUBLE) == 0) {
++		SwapBuffers();
++	}
++	fContextObj->SetCurrentContext(false, fContextID);
++	BGLRenderer::UnlockGL();
++}
++
++
++void
++ZinkRenderer::Display(BBitmap *bitmap, BRect *updateRect)
++{
++//	CALLED();
++
++	if (!fDirectModeEnabled) {
++		// TODO: avoid timeout
++		if (GLView()->LockLooperWithTimeout(1000) == B_OK) {
++			GLView()->DrawBitmap(bitmap, B_ORIGIN);
++			GLView()->UnlockLooper();
++		}
++	} else {
++		BAutolock lock(fInfoLocker);
++		if (fInfo != NULL) {
++			RasBuffer srcBuf(bitmap);
++			RasBuffer dstBuf(fInfo);
++			for (uint32 i = 0; i < fInfo->clip_list_count; i++) {
++				clipping_rect *clip = &fInfo->clip_list[i];
++				RasBuffer dstClip = dstBuf;
++				dstClip.ClipRect(clip->left, clip->top, clip->right + 1, clip->bottom + 1);
++				dstClip.Shift(-fInfo->window_bounds.left, -fInfo->window_bounds.top);
++				dstClip.Blit(srcBuf);
++			}
++		}
++	}
++}
++
++
++void
++ZinkRenderer::SwapBuffers(bool vsync)
++{
++	BScreen screen(GLView()->Window());
++	fContextObj->SwapBuffers(fContextID);
++	fContextObj->Validate(fWidth, fHeight);
++	if (vsync)
++		screen.WaitForRetrace();
++}
++
++void
++ZinkRenderer::Draw(BRect updateRect)
++{
++//	CALLED();
++	fContextObj->Draw(fContextID, updateRect);
++}
++
++
++status_t
++ZinkRenderer::CopyPixelsOut(BPoint location, BBitmap *bitmap)
++{
++	CALLED();
++
++	// TODO: implement
++	return B_ERROR;
++}
++
++
++status_t
++ZinkRenderer::CopyPixelsIn(BBitmap *bitmap, BPoint location)
++{
++	CALLED();
++
++	// TODO: implement
++	return B_ERROR;
++}
++
++
++void
++ZinkRenderer::EnableDirectMode(bool enabled)
++{
++	fDirectModeEnabled = enabled;
++}
++
++
++void
++ZinkRenderer::DirectConnected(direct_buffer_info *info)
++{
++//	CALLED();
++	BAutolock lock(fInfoLocker);
++	if (info) {
++		if (!fInfo) {
++			fInfo = (direct_buffer_info *)calloc(1,
++				DIRECT_BUFFER_INFO_AREA_SIZE);
++		}
++		memcpy(fInfo, info, DIRECT_BUFFER_INFO_AREA_SIZE);
++	} else if (fInfo) {
++		free(fInfo);
++		fInfo = NULL;
++	}
++}
++
++
++void
++ZinkRenderer::FrameResized(float width, float height)
++{
++	TRACE("%s: %f x %f\n", __func__, width, height);
++
++	BAutolock lock(fInfoLocker);
++	fWidth = (GLuint)width;
++	fHeight = (GLuint)height;
++}
+diff --git a/src/gallium/targets/haiku-zink/ZinkRenderer.h b/src/gallium/targets/haiku-zink/ZinkRenderer.h
+new file mode 100644
+index 0000000..b30050c
+--- /dev/null
++++ b/src/gallium/targets/haiku-zink/ZinkRenderer.h
+@@ -0,0 +1,54 @@
++/*
++ * Copyright 2006-2012, Haiku, Inc. All rights reserved.
++ * Distributed under the terms of the MIT License.
++ *
++ * Authors:
++ *		Jérôme Duval, korli@users.berlios.de
++ * 		Philippe Houdoin, philippe.houdoin@free.fr
++ * 		Artur Wyszynski, harakash@gmail.com
++ *		Alexander von Gluck IV, kallisti5@unixzen.com
++ */
++#ifndef ZINKRENDERER_H
++#define ZINKRENDERER_H
++
++
++#include <kernel/image.h>
++
++#include "GLRenderer.h"
++#include "GalliumContext.h"
++
++
++class ZinkRenderer : public BGLRenderer, public HGLWinsysContext {
++public:
++								ZinkRenderer(BGLView *view,
++									ulong bgl_options);
++	virtual						~ZinkRenderer();
++
++			void				LockGL();
++			void				UnlockGL();
++
++			void				Display(BBitmap* bitmap, BRect* updateRect);
++
++			void				SwapBuffers(bool vsync = false);
++			void				Draw(BRect updateRect);
++			status_t			CopyPixelsOut(BPoint source, BBitmap *dest);
++			status_t			CopyPixelsIn(BBitmap *source, BPoint dest);
++			void				FrameResized(float width, float height);
++
++			void				EnableDirectMode(bool enabled);
++			void				DirectConnected(direct_buffer_info *info);
++
++private:
++			GalliumContext*		fContextObj;
++			context_id			fContextID;
++
++			bool				fDirectModeEnabled;
++			direct_buffer_info*	fInfo;
++			BLocker				fInfoLocker;
++			ulong				fOptions;
++			GLuint				fWidth;
++			GLuint				fHeight;
++			color_space			fColorSpace;
++};
++
++#endif	// ZINKRENDERER_H
+diff --git a/src/gallium/targets/haiku-zink/ZinkRenderer.rdef b/src/gallium/targets/haiku-zink/ZinkRenderer.rdef
+new file mode 100644
+index 0000000..6979b8e
+--- /dev/null
++++ b/src/gallium/targets/haiku-zink/ZinkRenderer.rdef
+@@ -0,0 +1,39 @@
++/*
++ * Copyright 2012, Haiku, Inc. All rights reserved.
++ * Distributed under the terms of the MIT License.
++ */
++
++resource app_signature "application/x-vnd.Haiku-zink";
++
++resource app_version {
++    major  = 9,
++    middle = 0,
++    minor  = 0,
++    variety = 0,
++    internal = 0,
++    short_info = "Zink Renderer",
++    long_info = "Haiku Gallium Zink (OpenGL on Vulkan) Renderer"
++};
++
++resource vector_icon {
++	$"6E6369660A0200140294A9FF18020014028DFFFF97058C0500020006023B10B7"
++	$"37F036BA1A993D466848C719BEBE2000919292FFD5D5D5020016023900000000"
++	$"000000003EE0004AE00048E0005EF884C702000203392E8D383001BAD97F3C12"
++	$"8B4786BD48B8AD0D97BBFFFF7B4168DBE9FF4168DB97020002023A0C1238D099"
++	$"BE44203F4BD14B38844678240DF56A7D9FE1EA064CC704016B0500090A044024"
++	$"2438404C5C380A044028243C40505C3C0A042438243B5C3C5C380608BFBE4D59"
++	$"4D59515957575659585560406044603C5E3A5C3CCB4FBFBA5E3ECA9DC11F564B"
++	$"584A544C504C0606AF0F2F3D2F3D393D4034BF593542324130432F42364432C0"
++	$"3FBC5A2F48354A2F480608AE9A22303EB5BD3AB42542B755422E412F3C29322D"
++	$"32223C0204263726372538263F253E263F304430443143303C313D303C02043D"
++	$"423D423C433D4A3C493D4A495049504A4F49474A484947060DAEAAAE014E445A"
++	$"3456365E325E3D5D3F5A3A5542544E4D573A4E364439463342324A2242310A0A"
++	$"0002020102403CA00C88888C8CC1401673C40D6544F2950A01010002403CA000"
++	$"0000000000401673C40D65446CF80A08020304023EC16A0000000000003EC16A"
++	$"45DD1844C6550A030105123EC16A0000000000003EC16A45DD1844C655011784"
++	$"22040A040105023EC16A0000000000003EC16A45DD1844C6550A030108123EC1"
++	$"6A0000000000003EC16A45DD1844C65501178422040A0503080706023EC16A00"
++	$"00000000003EC16A45DD1844C6550A030206071A3EC16A0000000000003EC16A"
++	$"45DD1844C65510FF0215810004178222040A060106023EC16A0000000000003E"
++	$"C16A45DD1844C6550A070107023EC16A0000000000003EC16A45DD1844C655"
++};
+diff --git a/src/gallium/targets/haiku-zink/meson.build b/src/gallium/targets/haiku-zink/meson.build
+new file mode 100644
+index 0000000..cef32d7
+--- /dev/null
++++ b/src/gallium/targets/haiku-zink/meson.build
+@@ -0,0 +1,28 @@
++# Copyright © 2017 Dylan Baker
++# SPDX-License-Identifier: MIT
++#
++# The Zink renderer add-on: the same Haiku GL renderer as the software one,
++# but rendering through Vulkan.
++
++libzinkpipe = shared_library(
++  'zinkpipe',
++  files('ZinkRenderer.cpp', 'GalliumContext.cpp'),
++  include_directories : [
++    inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux,
++    inc_util, inc_haikugl, inc_gallium_drivers, inc_gallium_winsys,
++    include_directories('../../frontends/hgl'),
++    include_directories('/boot/system/develop/headers/private')
++  ],
++  gnu_symbol_visibility : 'hidden',
++  link_args : [ld_args_bsymbolic, ld_args_gc_sections],
++  link_with : [
++    libglapi, libswhgl, libsthgl, libcompiler,
++    libmesa, libglsl, libgallium, libgl
++  ],
++  dependencies : [
++    driver_zink, driver_swrast, cpp.find_library('be'),
++    cpp.find_library('translation'), cpp.find_library('network'),
++    dep_unwind, idep_mesautil, idep_nir,
++  ],
++  install : true,
++)

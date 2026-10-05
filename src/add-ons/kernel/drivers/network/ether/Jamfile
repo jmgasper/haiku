@@ -38,3 +38,7 @@ HaikuSubInclude vt612x ;
 
 # OpenBSD drivers
 HaikuSubInclude rtl8125 ;
+
+if $(TARGET_ARCH) = arm64 {
+	HaikuSubInclude bcm_genet ;
+}

@@ -376,6 +376,11 @@ BackgroundImage::ScreenChanged(BRect, color_space)
 		fView->SetViewBitmap(fShowingBitmap->fBitmap, bitmapBounds,
 			destinationBitmapBounds, B_FOLLOW_NONE, 0);
 		fView->Invalidate();
+	} else if (fShowingBitmap->fMode == kScaledToFit) {
+		// The picture was fitted to the old screen and only follows the
+		// view's size from there; a screen of another shape (a monitor
+		// added, or mirroring another) would stretch it.
+		Show(fShowingBitmap, fView);
 	}
 }
 

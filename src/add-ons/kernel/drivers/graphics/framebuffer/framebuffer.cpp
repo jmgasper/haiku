@@ -59,11 +59,18 @@ remap_frame_buffer(framebuffer_info& info, addr_t physicalBase, uint32 width,
 	addr_t base = physicalBase;
 	size_t size = bytesPerRow * height;
 
+	// The kernel's frame buffer console writes through this mapping too.
 	area_id area = map_physical_memory("framebuffer buffer", base,
-		size, B_ANY_KERNEL_ADDRESS, B_READ_AREA | B_WRITE_AREA,
+		size, B_ANY_KERNEL_ADDRESS, B_READ_AREA | B_WRITE_AREA
+			| B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
 		(void**)&frameBuffer);
 	if (area < 0)
 		return area;
+
+	// Turn on write combining for the area. This remaps it, so it has to
+	// happen before the console is pointed at it: a console write on
+	// another CPU in the meantime would fault (seen on arm64).
+	vm_set_area_memory_type(area, base, B_WRITE_COMBINING_MEMORY);
 
 	frame_buffer_update(frameBuffer, width, height, depth,
 		bytesPerRow);
@@ -73,9 +80,6 @@ remap_frame_buffer(framebuffer_info& info, addr_t physicalBase, uint32 width,
 
 	info.frame_buffer = frameBuffer;
 	info.frame_buffer_area = area;
-
-	// Turn on write combining for the area
-	vm_set_area_memory_type(area, base, B_WRITE_COMBINING_MEMORY);
 
 	// Update shared frame buffer information
 	sharedInfo.bytes_per_row = bytesPerRow;

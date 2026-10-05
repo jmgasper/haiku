@@ -33,6 +33,7 @@
 #include "DelayedMessage.h"
 #include "DesktopListener.h"
 #include "DesktopSettings.h"
+#include "DisplayLayout.h"
 #include "EventDispatcher.h"
 #include "MessageLooper.h"
 #include "MultiLocker.h"
@@ -130,6 +131,13 @@ public:
 			void				RevertScreenModes(uint32 workspaces);
 
 			status_t			SetBrightness(int32 id, float brightness);
+
+	// the monitors making up the screen
+			status_t			GetDisplayLayout(BMessage& layout);
+			status_t			SetDisplayLayout(const BMessage& request);
+			BRect				DisplayFrameFor(BRect frame, bool forZoom);
+			const DisplayLayout& Displays() const { return fDisplays; }
+									// the screen lock must be held
 
 			MultiLocker&		ScreenLocker() { return fScreenLock; }
 
@@ -323,6 +331,16 @@ private:
 			void				_ResumeDirectFrameBufferAccess();
 
 			void				_ScreenChanged(Screen* screen);
+			status_t			_ConfigureDisplayLayout(
+									::HWInterface* interface, bool switchMode);
+			void				_UpdateDisplays();
+			void				_StoreDisplayLayout();
+			void				_RememberScreenMode(Screen* screen);
+			void				_KeepWindowsOnDisplays();
+			void				_UpdateCursorDensity();
+			void				_MoveWindowsWithDisplays(
+									const DisplayLayout& before,
+									const DisplayLayout& after);
 			void				_SetCurrentWorkspaceConfiguration();
 			void				_SetWorkspace(int32 index,
 									bool moveFocusWindow = false);
@@ -334,6 +352,8 @@ private:
 			uid_t				fUserID;
 			char*				fTargetScreen;
 			::VirtualScreen		fVirtualScreen;
+			DisplayLayout		fDisplays;
+			int32				fCursorRenderScale;
 			ObjectDeleter<DesktopSettingsPrivate>
 								fSettings;
 			port_id				fMessagePort;

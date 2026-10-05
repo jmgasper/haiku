@@ -1,0 +1,32 @@
+# air/OS on the Raspberry Pi 4: the firmware starts the air/OS loader directly,
+# the way it starts a Linux kernel. See docs/rpi4/BOOT.md.
+
+arm_64bit=1
+enable_gic=1
+
+# The loader has no Linux image header, so say where it is linked.
+kernel=airos-loader.img
+kernel_address=0x80000
+
+# The kernel and the modules that mount the boot volume, loaded right behind
+# the loader. The loader finds it through /chosen in the device tree.
+initramfs airos-boot.tgz followkernel
+
+# Serial console on GPIO 14/15 (PL011, 115200 8N1). Bluetooth gets the mini
+# UART (GPIO 30 to 33).
+enable_uart=1
+uart_2ndstage=1
+dtoverlay=miniuart-bt
+
+# Memory for the firmware's own work: its H.264 decoder needs more than the
+# default 76 MB for 1080p, and stops answering when it runs out.
+gpu_mem=192
+
+disable_overscan=1
+# one frame buffer per HDMI output
+max_framebuffers=2
+disable_splash=1
+
+# cmdline.txt takes the loader's options, each a word of its own:
+#   airos.debug   the loader's and the kernel's debug output on the screen
+#   airos.menu    the boot menu (keys from the serial console)

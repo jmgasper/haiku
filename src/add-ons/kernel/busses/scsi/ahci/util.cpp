@@ -5,9 +5,13 @@
 #include "util.h"
 
 #include <KernelExport.h>
+#include <arch/atomic.h>
 #include <OS.h>
 #include <vm/vm.h>
 #include <string.h>
+#if defined(__aarch64__)
+#include <arch/arm64/cache_line_size.h>
+#endif
 
 
 #define TRACE(a...) dprintf("ahci: " a)
@@ -23,7 +27,7 @@ round_to_pagesize(uint32 size)
 
 area_id
 alloc_mem(void **virt, phys_addr_t *phy, size_t size, uint32 protection,
-	const char *name)
+	const char *name, bool supports64Bit)
 {
 	physical_entry pe;
 	void * virtadr;
@@ -32,19 +36,44 @@ alloc_mem(void **virt, phys_addr_t *phy, size_t size, uint32 protection,
 
 	TRACE("allocating %ld bytes for %s\n", size, name);
 
-	size = round_to_pagesize(size);
-	areaid = create_area(name, &virtadr, B_ANY_KERNEL_ADDRESS, size,
-		B_CONTIGUOUS, protection);
+	if (size == 0 || size > SIZE_MAX - (B_PAGE_SIZE - 1))
+		return B_BAD_VALUE;
+	size = (size + B_PAGE_SIZE - 1) & ~(size_t)(B_PAGE_SIZE - 1);
+	virtual_address_restrictions virtualRestrictions = {};
+	physical_address_restrictions physicalRestrictions = {};
+	if (!supports64Bit)
+		physicalRestrictions.high_address = UINT64_C(0x100000000);
+	areaid = create_area_etc(B_SYSTEM_TEAM, name, size, B_CONTIGUOUS,
+		protection, 0, 0, &virtualRestrictions, &physicalRestrictions, &virtadr);
 	if (areaid < B_OK) {
 		ERROR("couldn't allocate area %s\n", name);
 		return B_ERROR;
 	}
 	rv = get_memory_map(virtadr, size, &pe, 1);
-	if (rv < B_OK) {
+	if (rv < B_OK || pe.size < size
+		|| pe.address > ~(phys_addr_t)0 - (size - 1)
+		|| (!supports64Bit && pe.address + size - 1 > UINT32_MAX)) {
 		delete_area(areaid);
 		ERROR("couldn't get mapping for %s\n", name);
 		return B_ERROR;
 	}
+#if defined(__aarch64__)
+	// Allocation zeroing used a cached mapping. Evict it before converting the
+	// private DMA area to Normal Non-cacheable RAM. Device memory cannot serve
+	// payloads because ordinary copies may make unaligned accesses.
+	uint64 ctr;
+	asm volatile("mrs %0, ctr_el0" : "=r"(ctr));
+	size_t lineSize = arm64_data_cache_line_size(ctr);
+	for (addr_t p = (addr_t)virtadr; p < (addr_t)virtadr + size; p += lineSize)
+		asm volatile("dc civac, %0" :: "r"(p) : "memory");
+	memory_full_barrier();
+	rv = vm_set_area_memory_type(areaid, pe.address, B_WRITE_COMBINING_MEMORY);
+	if (rv != B_OK) {
+		delete_area(areaid);
+		return rv;
+	}
+	memory_full_barrier();
+#endif
 	if (virt)
 		*virt = virtadr;
 	if (phy)
@@ -71,7 +100,7 @@ map_mem(void **virt, phys_addr_t phy, size_t size, uint32 protection,
 	phyadr = phy - offset;
 	size = round_to_pagesize(size + offset);
 	area = map_physical_memory(name, phyadr, size,
-		B_ANY_KERNEL_BLOCK_ADDRESS, protection, &mapadr);
+		B_ANY_KERNEL_BLOCK_ADDRESS | B_UNCACHED_MEMORY, protection, &mapadr);
 	if (area < B_OK) {
 		ERROR("mapping '%s' failed, error 0x%" B_PRIx32 " (%s)\n", name,
 			area, strerror(area));

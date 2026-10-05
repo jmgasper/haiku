@@ -13,10 +13,15 @@
 #include "DesktopSettings.h"
 #include "DesktopSettingsPrivate.h"
 
+#include <errno.h>
+#include <stdio.h>
+#include <unistd.h>
+
 #include <Directory.h>
 #include <File.h>
 #include <FindDirectory.h>
 #include <Path.h>
+#include <String.h>
 
 #include <DefaultColors.h>
 #include <InterfaceDefs.h>
@@ -29,6 +34,36 @@
 #include "GlobalSubpixelSettings.h"
 #include "ServerConfig.h"
 #include "SystemPalette.h"
+
+
+/*!	Replaces the settings file at \a path with \a settings in a way that
+	survives the power going out: the new contents are written next to the
+	file and flushed to disk before they take its place, so that the file is
+	always either the old one or the new one. Writing over the file directly
+	can leave it empty or garbled when the machine is reset before the file
+	cache is written back, and the settings then fall back to their defaults
+	- the monitor arrangement among them.
+*/
+static status_t
+write_settings(const BPath& path, const BMessage& settings)
+{
+	BString temporary(path.Path());
+	temporary << ".new";
+
+	BFile file;
+	status_t status = file.SetTo(temporary.String(),
+		B_CREATE_FILE | B_ERASE_FILE | B_WRITE_ONLY);
+	if (status == B_OK)
+		status = settings.Flatten(&file, NULL);
+	if (status == B_OK)
+		status = file.Sync();
+	file.Unset();
+	if (status == B_OK && rename(temporary.String(), path.Path()) != 0)
+		status = errno;
+	if (status != B_OK)
+		unlink(temporary.String());
+	return status;
+}
 
 
 DesktopSettingsPrivate::DesktopSettingsPrivate(server_read_only_memory* shared)
@@ -57,6 +92,7 @@ DesktopSettingsPrivate::_SetDefaults()
 	fFocusFollowsMouseMode = B_NORMAL_FOCUS_FOLLOWS_MOUSE;
 	fAcceptFirstClick = true;
 	fShowAllDraggers = true;
+	fZoomToDisplay = true;
 
 	// init scrollbar info
 	fScrollBarInfo.proportional = true;
@@ -335,6 +371,23 @@ DesktopSettingsPrivate::_Load()
 		}
 	}
 
+	// read display settings: the monitor layout, and how windows zoom
+
+	path = basePath;
+	path.Append("displays");
+
+	status = file.SetTo(path.Path(), B_READ_ONLY);
+	if (status == B_OK) {
+		BMessage settings;
+		status = settings.Unflatten(&file);
+		if (status == B_OK) {
+			if (settings.FindBool("zoom to display", &fZoomToDisplay) != B_OK)
+				fZoomToDisplay = true;
+			if (settings.FindMessage("layout", &fDisplaysMessage) != B_OK)
+				fDisplaysMessage.MakeEmpty();
+		}
+	}
+
 	return B_OK;
 }
 
@@ -362,12 +415,7 @@ DesktopSettingsPrivate::Save(uint32 mask)
 				settings.AddMessage("workspace", &fWorkspaceMessages[i]);
 			}
 
-			BFile file;
-			status = file.SetTo(path.Path(), B_CREATE_FILE | B_ERASE_FILE
-				| B_READ_WRITE);
-			if (status == B_OK) {
-				status = settings.Flatten(&file, NULL);
-			}
+			status = write_settings(path, settings);
 		}
 	}
 
@@ -390,12 +438,7 @@ DesktopSettingsPrivate::Save(uint32 mask)
 
 			settings.AddInt32("hinting", gDefaultHintingMode);
 
-			BFile file;
-			status = file.SetTo(path.Path(), B_CREATE_FILE | B_ERASE_FILE
-				| B_READ_WRITE);
-			if (status == B_OK) {
-				status = settings.Flatten(&file, NULL);
-			}
+			status = write_settings(path, settings);
 		}
 	}
 
@@ -407,6 +450,28 @@ DesktopSettingsPrivate::Save(uint32 mask)
 			settings.AddInt32("focus follows mouse mode",
 				(int32)fFocusFollowsMouseMode);
 			settings.AddBool("accept first click", fAcceptFirstClick);
+
+			status = write_settings(path, settings);
+		}
+	}
+
+	if (mask & kDisplaySettings) {
+		BPath path(basePath);
+		if (path.Append("displays") == B_OK) {
+			BMessage settings('asdp');
+			settings.AddBool("zoom to display", fZoomToDisplay);
+			settings.AddMessage("layout", &fDisplaysMessage);
+
+			status = write_settings(path, settings);
+		}
+	}
+
+	if (mask & kDisplaySettings) {
+		BPath path(basePath);
+		if (path.Append("displays") == B_OK) {
+			BMessage settings('asdp');
+			settings.AddBool("zoom to display", fZoomToDisplay);
+			settings.AddMessage("layout", &fDisplaysMessage);
 
 			BFile file;
 			status = file.SetTo(path.Path(), B_CREATE_FILE | B_ERASE_FILE
@@ -423,12 +488,7 @@ DesktopSettingsPrivate::Save(uint32 mask)
 			BMessage settings('asdg');
 			settings.AddBool("show", fShowAllDraggers);
 
-			BFile file;
-			status = file.SetTo(path.Path(), B_CREATE_FILE | B_ERASE_FILE
-				| B_READ_WRITE);
-			if (status == B_OK) {
-				status = settings.Flatten(&file, NULL);
-			}
+			status = write_settings(path, settings);
 		}
 	}
 
@@ -464,12 +524,7 @@ DesktopSettingsPrivate::Save(uint32 mask)
 				settings.AddInt32(colorName, (const int32&)fShared.colors[i]);
 			}
 
-			BFile file;
-			status = file.SetTo(path.Path(), B_CREATE_FILE | B_ERASE_FILE
-				| B_READ_WRITE);
-			if (status == B_OK) {
-				status = settings.Flatten(&file, NULL);
-			}
+			status = write_settings(path, settings);
 		}
 	}
 
@@ -611,6 +666,36 @@ bool
 DesktopSettingsPrivate::ShowAllDraggers() const
 {
 	return fShowAllDraggers;
+}
+
+
+void
+DesktopSettingsPrivate::SetZoomToDisplay(bool zoomToDisplay)
+{
+	fZoomToDisplay = zoomToDisplay;
+	Save(kDisplaySettings);
+}
+
+
+bool
+DesktopSettingsPrivate::ZoomToDisplay() const
+{
+	return fZoomToDisplay;
+}
+
+
+void
+DesktopSettingsPrivate::SetDisplaysMessage(const BMessage& message)
+{
+	fDisplaysMessage = message;
+	Save(kDisplaySettings);
+}
+
+
+const BMessage*
+DesktopSettingsPrivate::DisplaysMessage() const
+{
+	return &fDisplaysMessage;
 }
 
 
@@ -906,6 +991,20 @@ DesktopSettings::ShowAllDraggers() const
 }
 
 
+bool
+DesktopSettings::ZoomToDisplay() const
+{
+	return fSettings->ZoomToDisplay();
+}
+
+
+const BMessage*
+DesktopSettings::DisplaysMessage() const
+{
+	return fSettings->DisplaysMessage();
+}
+
+
 int32
 DesktopSettings::WorkspacesCount() const
 {
@@ -1060,6 +1159,20 @@ void
 LockedDesktopSettings::SetShowAllDraggers(bool show)
 {
 	fSettings->SetShowAllDraggers(show);
+}
+
+
+void
+LockedDesktopSettings::SetZoomToDisplay(bool zoomToDisplay)
+{
+	fSettings->SetZoomToDisplay(zoomToDisplay);
+}
+
+
+void
+LockedDesktopSettings::SetDisplaysMessage(const BMessage& message)
+{
+	fSettings->SetDisplaysMessage(message);
 }
 
 

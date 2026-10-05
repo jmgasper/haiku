@@ -67,6 +67,8 @@ private:
 private:
 			efi_simple_network_protocol* fNetwork;
 			mac_addr_t	fMACAddress;
+			bool		fStarted;
+			bool		fInitialized;
 };
 
 
@@ -105,17 +107,21 @@ EFIEthernetInterface::EFIEthernetInterface()
 	:
 	EthernetInterface(),
 	fNetwork(NULL),
-	fMACAddress(kNoMACAddress)
+	fMACAddress(kNoMACAddress),
+	fStarted(false),
+	fInitialized(false)
 {
 }
 
 
 EFIEthernetInterface::~EFIEthernetInterface()
 {
-	if (fNetwork) {
+	// Locating the protocol does not give us ownership of its state. In
+	// particular, a disk boot may reject network boot before Start is called.
+	if (fInitialized)
 		fNetwork->Shutdown(fNetwork);
+	if (fStarted)
 		fNetwork->Stop(fNetwork);
-	}
 }
 
 
@@ -164,49 +170,51 @@ EFIEthernetInterface::Init()
 	status = kSystemTable->BootServices->HandleProtocol(
 		kImage, &sLoadedImageProtocolGUID, (void**)&loadedImageProtocol);
 
-	if (status == EFI_SUCCESS) {
-		char buffer[256];
-		utf16le_to_utf8((uint16*)loadedImageProtocol->LoadOptions,
-			loadedImageProtocol->LoadOptionsSize / 2, buffer, sizeof(buffer));
-		TRACE("Load options: %s\n", buffer);
-
-		char* base = buffer;
-		char* ptr = base;
-		while (*ptr != '\0') {
-			if (*ptr == '=') {
-				TRACE("Key at %ld: %s\n", ptr - base, base);
-				// Found a key-value separator, see if it's a known option
-				if (ptr - base != 2)
-					continue;
-
-				if (strncmp(base, "ip", 2) == 0) {
-					TRACE("Found ip configuration in command line\n");
-					break;
-				}
-			}
-
-			// At any space, reset the base pointer to the start of the next
-			// key
-			if (*ptr == ' ') {
-				base = ptr + 1;
-			}
-			ptr++;
-		}
-
-		if (*ptr != '=') {
-			TRACE("No keys found in load options\n");
-			return B_ERROR;
-		}
-
-		// Point after the = sign
-		ptr++;
-
-		// Try to parse next part of the string as an IP address
-		// TODO also recognize autoconfig parameters (such as 'ip=dhcp')
-		TRACE("Found IP address from load options: %s\n", ptr);
-		ip_addr_t address = ip_parse_address(ptr);
-		SetIPAddress(address);
+	if (status != EFI_SUCCESS || loadedImageProtocol->LoadOptions == NULL
+		|| loadedImageProtocol->LoadOptionsSize < sizeof(uint16)) {
+		return B_ENTRY_NOT_FOUND;
 	}
+
+	char buffer[256];
+	ssize_t length = utf16le_to_utf8((uint16*)loadedImageProtocol->LoadOptions,
+		loadedImageProtocol->LoadOptionsSize / 2, buffer, sizeof(buffer));
+	if (length < 0)
+		return B_BAD_VALUE;
+	TRACE("Load options: %s\n", buffer);
+
+	char* base = buffer;
+	char* ptr = base;
+	while (*ptr != '\0') {
+		if (*ptr == '=') {
+			TRACE("Key at %ld: %s\n", ptr - base, base);
+			// Found a key-value separator, see if it's a known option
+			if (ptr - base == 2 && strncmp(base, "ip", 2) == 0) {
+				TRACE("Found ip configuration in command line\n");
+				break;
+			}
+		}
+
+		// At any space, reset the base pointer to the start of the next
+		// key
+		if (*ptr == ' ') {
+			base = ptr + 1;
+		}
+		ptr++;
+	}
+
+	if (*ptr != '=') {
+		TRACE("No keys found in load options\n");
+		return B_ERROR;
+	}
+
+	// Point after the = sign
+	ptr++;
+
+	// Try to parse next part of the string as an IP address
+	// TODO also recognize autoconfig parameters (such as 'ip=dhcp')
+	TRACE("Found IP address from load options: %s\n", ptr);
+	ip_addr_t address = ip_parse_address(ptr);
+	SetIPAddress(address);
 
 #if 0
 	// TODO u-boot does not provide the IP address or the TFTP server URL in
@@ -302,6 +310,7 @@ EFIEthernetInterface::Init()
 		TRACE_ALWAYS("error starting network\n");
 		return B_ERROR;
 	}
+	fStarted = true;
 
 	status = fNetwork->Initialize(fNetwork, 0, 0);
 
@@ -309,6 +318,7 @@ EFIEthernetInterface::Init()
 		TRACE_ALWAYS("error initializing network\n");
 		return B_ERROR;
 	}
+	fInitialized = true;
 
 	if (FindMACAddress() != B_OK) {
 		TRACE_ALWAYS("failed to get MAC address\n");

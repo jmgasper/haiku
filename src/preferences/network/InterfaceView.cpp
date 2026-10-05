@@ -12,10 +12,12 @@
 #include "InterfaceView.h"
 
 #include <set>
+#include <string.h>
 
 #include <net/if_media.h>
 
 #include <AutoDeleter.h>
+#include <Alert.h>
 #include <Button.h>
 #include <Catalog.h>
 #include <ControlLook.h>
@@ -27,6 +29,7 @@
 
 #include "MediaTypes.h"
 #include "WirelessNetworkMenuItem.h"
+#include "../../shared/net/WirelessNetworkList.h"
 
 
 static const uint32 kMsgInterfaceToggle = 'onof';
@@ -138,16 +141,16 @@ InterfaceView::MessageReceived(BMessage* message)
 		case kMsgJoinNetwork:
 		{
 			const char* name;
-			BNetworkAddress address;
-			if (message->FindString("name", &name) == B_OK
-				&& message->FindFlat("address", &address) == B_OK) {
+			if (message->FindString("name", &name) == B_OK) {
 				BNetworkDevice device(fInterface.Name());
-				status_t status = device.JoinNetwork(address);
+				status_t status = device.JoinNetwork(name);
 				if (status != B_OK) {
-					// This does not really matter, as it's stored this way,
-					// anyway.
+					BString text
+						= B_TRANSLATE("Could not join wireless network:\n");
+					text << strerror(status);
+					(new BAlert(name, text.String(),
+						B_TRANSLATE("OK")))->Go(NULL);
 				}
-				// TODO: store value
 			}
 			break;
 		}
@@ -240,145 +243,51 @@ InterfaceView::_Update(bool updateWirelessNetworks)
 		fNetworkMenuField->Hide();
 
 	if (isWireless && updateWirelessNetworks) {
-		// Rebuild network menu
 		BMenu* menu = fNetworkMenuField->Menu();
-		int32 count = menu->CountItems();
+		while (menu->CountItems() > 0)
+			delete menu->RemoveItem((int32)0);
 
-		// remove non-network items from menu and save them for later
-		BMenuItem* chooseItem = NULL;
-		BSeparatorItem* separatorItem = NULL;
-		if (count > 0 && strcmp(menu->ItemAt(0)->Label(),
-				B_TRANSLATE("Choose automatically")) == 0) {
-			// remove Choose automatically item
-			chooseItem = menu->RemoveItem((int32)0);
-			// remove separator item too
-			separatorItem = (BSeparatorItem*)menu->RemoveItem((int32)0);
-			count -= 2;
-		}
-
-		BMenuItem* noNetworksFoundItem = NULL;
-		if (menu->CountItems() > 0 && strcmp(menu->ItemAt(0)->Label(),
-				B_TRANSLATE("<no wireless networks found>")) == 0) {
-			// remove <no wireless networks found> item
-			noNetworksFoundItem = menu->RemoveItem((int32)0);
-			count--;
-		}
-
-		std::set<BNetworkAddress> associated;
-		BNetworkAddress address;
-		uint32 cookie = 0;
-		while (device.GetNextAssociatedNetwork(cookie, address) == B_OK)
-			associated.insert(address);
-
+		// Group access points by network name, like the WiFi preferences
 		wireless_network* networks = NULL;
-		uint32 networksCount = 0;
-		device.GetNetworks(networks, networksCount);
-
-		if ((fPulseCount % 15) == 0 && networksCount == 0) {
-			// We don't seem to know of any networks, and it's been long
-			// enough since the last scan, so trigger one to try and
-			// find some networks.
+		uint32 count = 0;
+		device.GetNetworks(networks, count);
+		if (count <= 1 && (fPulseCount % 15) == 0
+			&& (fInterface.Flags() & IFF_UP) != 0) {
+			// Some drivers only keep the associated access point after
+			// joining. Scanning a disabled interface would turn it back on.
 			device.Scan(false, false);
-
-			// We don't want to block for the full length of the scan, but
-			// 50ms is often more than enough to find at least one network,
-			// and the increase in perceived QoS to the user of not seeing
-			// "no wireless networks" if we can avoid it is great enough
-			// to merit such a wait. It's only just over ~4 vertical
-			// retraces, anyway.
-			snooze(50 * 1000);
-
-			device.GetNetworks(networks, networksCount);
+			delete[] networks;
+			networks = NULL;
+			device.GetNetworks(networks, count);
 		}
-
 		ArrayDeleter<wireless_network> networksDeleter(networks);
+		BString associatedName = AssociatedWirelessNetworkName(device,
+			networks, count);
+		std::vector<WirelessNetworkGroup> visible = GroupWirelessNetworks(
+			networks, count, associatedName.String());
 
-		// go through menu items and remove networks that have dropped out
-		for (int32 index = 0; index < count; index++) {
-			WirelessNetworkMenuItem* networkItem =
-				dynamic_cast<WirelessNetworkMenuItem*>(
-					menu->ItemAt(index));
-			if (networkItem == NULL)
-				break;
+		if (visible.empty()) {
+			BMenuItem* item = new BMenuItem(
+				B_TRANSLATE("<no wireless networks found>"), NULL);
+			item->SetEnabled(false);
+			menu->AddItem(item);
+		} else {
+			menu->AddItem(new BMenuItem(
+				B_TRANSLATE("Choose automatically"), NULL));
+			menu->AddSeparatorItem();
+			for (size_t i = 0; i < visible.size(); i++) {
+				wireless_network network = visible[i].network;
+				// The menu item draws the signal as a percentage
+				network.signal_strength = WirelessSignalPercent(network);
 
-			bool networkFound = false;
-			for (uint32 i = 0; i < networksCount; i++) {
-				if (networkItem->Network() == networks[i]) {
-					networkFound = true;
-					break;
-				}
-			}
-
-			if (!networkFound) {
-				menu->RemoveItem(networkItem);
-				count--;
-			}
-		}
-
-		// go through networks and add new ones to menu
-		for (uint32 i = 0; i < networksCount; i++) {
-			const wireless_network& network = networks[i];
-
-			bool networkFound = false;
-			for (int32 index = 0; index < count; index++) {
-				WirelessNetworkMenuItem* networkItem =
-					dynamic_cast<WirelessNetworkMenuItem*>(
-						menu->ItemAt(index));
-				if (networkItem == NULL)
-					break;
-
-				if (networkItem->Network() == network) {
-					// found it
-					networkFound = true;
-					if (associated.find(network.address) != associated.end())
-						networkItem->SetMarked(true);
-					break;
-				}
-			}
-
-			if (!networkFound) {
 				BMessage* message = new BMessage(kMsgJoinNetwork);
 				message->AddString("device", fInterface.Name());
 				message->AddString("name", network.name);
-				message->AddFlat("address", &network.address);
-				BMenuItem* item = new WirelessNetworkMenuItem(network,
-					message);
-				menu->AddItem(item);
-				if (associated.find(network.address) != associated.end())
-					item->SetMarked(true);
-			}
-
-			count++;
-		}
-
-		if (count == 0) {
-			// no networks found
-			if (noNetworksFoundItem != NULL)
-				menu->AddItem(noNetworksFoundItem);
-			else {
-				BMenuItem* item = new BMenuItem(
-					B_TRANSLATE("<no wireless networks found>"), NULL);
-				item->SetEnabled(false);
+				BMenuItem* item = new WirelessNetworkMenuItem(network, message);
+				item->SetMarked(visible[i].connected);
 				menu->AddItem(item);
 			}
-		} else {
-			// sort items by signal strength
-			menu->SortItems(WirelessNetworkMenuItem::CompareSignalStrength);
-
-			// add Choose automatically item to start
-			if (chooseItem != NULL) {
-				menu->AddItem(chooseItem, 0);
-				menu->AddItem(separatorItem, 1);
-			} else {
-				BMenuItem* item = new BMenuItem(
-					B_TRANSLATE("Choose automatically"), NULL);
-				if (menu->FindMarked() == NULL)
-					item->SetMarked(true);
-				menu->AddItem(item, 0);
-				menu->AddItem(new BSeparatorItem(), 1);
-			}
 		}
-
 		menu->SetTargetForItems(this);
 	}
 

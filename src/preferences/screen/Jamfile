@@ -8,7 +8,9 @@ UsePrivateHeaders interface preferences ;
 
 Application Screen :
 	AlertWindow.cpp
-	MonitorView.cpp
+	DisplayArrangementView.cpp
+	DisplayLayoutState.cpp
+	IdentifyWindow.cpp
 	multimon.cpp
 	RefreshSlider.cpp
 	RefreshWindow.cpp
@@ -30,6 +32,7 @@ DoCatalogs Screen :
 	x-vnd.Haiku-Screen
 	:
 	AlertWindow.cpp
+	DisplayArrangementView.cpp
 	RefreshSlider.cpp
 	RefreshWindow.cpp
 	ScreenApplication.cpp

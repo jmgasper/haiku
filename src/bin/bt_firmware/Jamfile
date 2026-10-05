@@ -1,0 +1,13 @@
+SubDir HAIKU_TOP src bin bt_firmware ;
+
+UseHeaders [ FDirName $(HAIKU_TOP) src add-ons kernel drivers bus usb ] : true ;
+
+# host_test.cpp checks the firmware logic on the build host; see its header.
+Application bt_firmware :
+	bt_firmware.cpp
+	Controller.cpp
+	IntelBluetoothFirmware.cpp
+	IntelSetup.cpp
+	RealtekBluetoothFirmware.cpp
+	RealtekSetup.cpp
+	: [ TargetLibstdc++ ] ;

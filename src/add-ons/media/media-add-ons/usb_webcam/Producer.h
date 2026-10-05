@@ -113,6 +113,8 @@ private:
 		void				HandleSeek(bigtime_t performance_time);
 
 		void				_UpdateStats();
+		float				_FieldRate();
+		void				_ConsumerGone();
 
 static	int32				fInstances;
 

@@ -133,6 +133,11 @@ public:
 };
 
 
+// The frame of the monitor the Deskbar lives on: the main display when
+// there are several, which is also where new windows tend to open.
+BRect DeskbarScreenFrame(BWindow* window = NULL);
+
+
 class TBarApp : public BServer {
 public:
 									TBarApp();

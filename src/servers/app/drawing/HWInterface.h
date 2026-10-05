@@ -93,6 +93,46 @@ public:
 	virtual	status_t			GetPreferredMode(display_mode* mode);
 	virtual status_t			GetMonitorInfo(monitor_info* info);
 
+	// display outputs: the monitors behind this interface and where each
+	// one sits in the frame buffer. An interface without layout support
+	// has one output covering the whole frame buffer.
+	virtual	bool				HasDisplayLayout() const { return false; }
+
+	// Two sizes: the logical one windows and the cursor are measured in,
+	// and the buffers', which is the logical one times the render scale
+	// (in percent; 200 for a HiDPI screen, 150 for one at 150 percent).
+	// Drawing happens at that density straight into the back buffer, which
+	// has the front buffer's size. The software scale is a leftover for
+	// hardware that cannot scale and draws smaller than its frame buffer:
+	// then the back buffer is the logical size times the render scale and
+	// the copy to the front enlarges it.
+			uint16				SoftwareScale() const
+									{ return fSoftwareScale; }
+	virtual	status_t			SetSoftwareScale(uint16 percent);
+			uint16				RenderScale() const
+									{ return fRenderScale; }
+			float				RenderScaleFactor() const
+									{ return fRenderScale / 100.0f; }
+	virtual	status_t			SetRenderScale(uint16 percent);
+			void				SetLogicalSize(int32 width, int32 height);
+									// what the layout says; 0 derives it
+									// from the front buffer
+			int32				LogicalWidth() const;
+			int32				LogicalHeight() const;
+			int32				BackBufferWidth() const;
+			int32				BackBufferHeight() const;
+	virtual	status_t			GetDisplayOutputs(display_output** _outputs,
+									uint32* _count);
+									// the array is malloc()ed
+	virtual	status_t			GetDisplayOutputModes(uint32 id,
+									display_mode** _modes, uint32* _count);
+	virtual	status_t			SetDisplayLayout(
+									const display_output_config* configs,
+									uint32 count, bool switchMode = true);
+									// arranges the outputs and, with
+									// switchMode, switches to the resulting
+									// mode; without, the next mode set does
+
 	virtual sem_id				RetraceSemaphore() = 0;
 	virtual status_t			WaitForRetrace(
 									bigtime_t timeout = B_INFINITE_TIMEOUT) = 0;
@@ -178,10 +218,16 @@ protected:
 	virtual	void				_DrawCursor(IntRect area) const;
 
 	// does the actual transfer and handles color space conversion
+			void				_CopyToFrontScaled(uint8* src, uint32 srcBPR,
+									int32 x, int32 y, int32 right,
+									int32 bottom) const;
+			void				_CopyRowToFront(const uint8* row, int32 x,
+									int32 y, int32 count) const;
 			void				_CopyToFront(uint8* src, uint32 srcBPR, int32 x,
 									int32 y, int32 right, int32 bottom) const;
 
 			IntRect				_CursorFrame() const;
+			ServerCursor*		_CursorAtRenderScale(ServerCursor* cursor);
 			void				_RestoreCursorArea() const;
 			void				_AdoptDragBitmap();
 
@@ -228,13 +274,21 @@ protected:
 	mutable	BLocker				fFloatingOverlaysLock;
 
 			ServerCursorReference
+								fSourceCursor;
+									// as set, at whatever density
+			ServerCursorReference
 								fCursor;
+									// at the buffer's density
 			BReference<ServerBitmap>
 								fDragBitmap;
 			BPoint				fDragBitmapOffset;
 			ServerCursorReference
 								fCursorAndDragBitmap;
 			bool				fCursorVisible;
+			uint16				fSoftwareScale;
+			uint16				fRenderScale;
+			int32				fLogicalWidth;
+			int32				fLogicalHeight;
 			bool				fCursorObscured;
 			bool				fHardwareCursorEnabled;
 			BPoint				fCursorLocation;

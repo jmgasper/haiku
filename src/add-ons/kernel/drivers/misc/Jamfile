@@ -18,3 +18,25 @@ KernelAddon <driver>kdl :
 KernelAddon <driver>test :
 	test.c
 	;
+
+if $(TARGET_ARCH) = arm64 {
+	# lab device for the Raspberry Pi's firmware; in no image
+	KernelAddon <driver>rpi_property :
+		rpi_property.cpp
+		;
+
+	# the VideoCore firmware's services for user programs
+	KernelAddon <driver>vchiq :
+		vchiq.cpp
+		;
+
+	# the BCM2711's HEVC decoder block for the rpi_hevc media add-on
+	KernelAddon <driver>rpi_hevc :
+		rpi_hevc.cpp
+		;
+
+	# the BCM2711's GPIO pins (the 40-pin header) for programs (AirPins)
+	KernelAddon <driver>rpi_gpio :
+		rpi_gpio.cpp
+		;
+}

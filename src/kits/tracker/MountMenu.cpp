@@ -49,6 +49,8 @@ All rights reserved.
 
 #include <fs_info.h>
 
+#include <MountServer.h>
+
 #include "Commands.h"
 #include "IconMenuItem.h"
 #include "Tracker.h"
@@ -217,6 +219,38 @@ MountMenu::AddDynamicItem(add_state)
 			BMenuItem* item = new IconMenuItem(volumeName, message, icon);
 			item->SetMarked(true);
 			AddItem(item);
+		}
+	}
+
+	// The shares that are not mounted are what the mount server knows, and
+	// what it is to mount them. It is not waited for long: it may be busy
+	// waiting for a server itself, and this is a menu about to open.
+	BMessage request(kGetNetworkShares);
+	BMessage reply;
+	if (BMessenger(kMountServerSignature).SendMessage(&request, &reply,
+			500000, 500000) == B_OK) {
+		BMessage share;
+		for (int32 i = 0; reply.FindMessage("share", i, &share) == B_OK;
+				i++) {
+			if (share.GetBool("mounted", false))
+				continue;
+
+			BBitmap* icon = new BBitmap(BRect(BPoint(0, 0),
+				be_control_look->ComposeIconSize(B_MINI_ICON)), B_RGBA32);
+			if (GetTrackerResources()->GetIconResource(R_ShareIcon,
+					B_MINI_ICON, icon) != B_OK) {
+				delete icon;
+				icon = NULL;
+			}
+
+			BMessage* message = new BMessage(kMountNetworkShare);
+			message->AddInt32("id", share.GetInt32("id", -1));
+
+			const char* name = share.GetString("name", "");
+			if (icon != NULL)
+				AddItem(new IconMenuItem(name, message, icon));
+			else
+				AddItem(new BMenuItem(name, message));
 		}
 	}
 #endif	// SHOW_NETWORK_VOLUMES

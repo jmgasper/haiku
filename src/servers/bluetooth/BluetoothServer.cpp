@@ -4,13 +4,13 @@
  * All rights reserved. Distributed under the terms of the MIT License.
  */
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/select.h>
 
 #include <Entry.h>
-#include <Deskbar.h>
 #include <Directory.h>
 #include <Message.h>
 #include <Path.h>
@@ -26,9 +26,10 @@
 #include <bluetooth/L2CAP/btL2CAP.h>
 #include <bluetooth/bluetooth.h>
 
+#include <LELog.h>
+
 #include "BluetoothServer.h"
 #include "Debug.h"
-#include "DeskbarReplicant.h"
 #include "LocalDeviceImpl.h"
 #include "SDPServer.h"
 #include "SDPClient.h"
@@ -58,10 +59,27 @@ DispatchEvent(struct hci_event_header* header, int32 code, size_t size)
 }
 
 
+// Where the time goes between the server starting and the radio answering:
+// every step of the way is logged with the time since boot, since the radio
+// has been seen coming up minutes after the rest of the system.
+void
+LogStartup(const char* format, ...)
+{
+	char message[256];
+	va_list args;
+	va_start(args, format);
+	vsnprintf(message, sizeof(message), format, args);
+	va_end(args);
+	Bluetooth::LELog(Bluetooth::LE_LOG_INFO, "server", "%s (%" B_PRId64
+		" ms after boot)", message, system_time() / 1000);
+}
+
+
 BluetoothServer::BluetoothServer()
 	:
 	BApplication(BLUETOOTH_SIGNATURE)
 {
+	LogStartup("application started");
 	fDeviceManager = new DeviceManager();
 	fLocalDevicesList.MakeEmpty();
 	fWatchersList.MakeEmpty();
@@ -78,8 +96,6 @@ bool BluetoothServer::QuitRequested(void)
 	while ((lDeviceImpl = (LocalDeviceImpl*)
 		fLocalDevicesList.RemoveItemAt(0)) != NULL)
 		delete lDeviceImpl;
-
-	_RemoveDeskbarIcon();
 
 	fSDPServer->Stop();
 	delete fSDPServer;
@@ -102,21 +118,35 @@ void BluetoothServer::ArgvReceived(int32 argc, char **argv)
 
 void BluetoothServer::ReadyToRun(void)
 {
+	LogStartup("looking for radios");
 	fDeviceManager->StartMonitoringDevice("bluetooth/h2");
 	fDeviceManager->StartMonitoringDevice("bluetooth/h3");
 	fDeviceManager->StartMonitoringDevice("bluetooth/h4");
 	fDeviceManager->StartMonitoringDevice("bluetooth/h5");
+	LogStartup("watching for radios");
 
 	if (fEventListener2->Launch() != B_OK)
 		TRACE_BT("General: Bluetooth event listener failed\n");
 	else
 		TRACE_BT("General: Bluetooth event listener Ready\n");
 
-	_InstallDeskbarIcon();
-
 	status_t status = fSDPServer->Start();
 	if (status != B_OK)
 		TRACE_BT("BluetoothServer: Failed launching the SDP server thread\n");
+
+	// Drives the HCI command queue and LE watchdogs.
+	SetPulseRate(500000);
+}
+
+
+void BluetoothServer::Pulse(void)
+{
+	for (int32 index = 0; index < fLocalDevicesList.CountItems(); index++) {
+		LocalDeviceImpl* device
+			= (LocalDeviceImpl*)fLocalDevicesList.ItemAt(index);
+		if (device != NULL)
+			device->Pulse();
+	}
 }
 
 
@@ -141,8 +171,15 @@ void BluetoothServer::MessageReceived(BMessage* message)
 
 			BPath path(str.String());
 
+			LogStartup("opening %s", str.String());
 			LocalDeviceImpl* lDeviceImpl
 				= LocalDeviceImpl::CreateTransportAccessor(&path);
+			if (lDeviceImpl == NULL) {
+				LogStartup("%s could not be opened", str.String());
+				break;
+			}
+			LogStartup("%s open as hci %" B_PRId32, str.String(),
+				lDeviceImpl->GetID());
 
 			if (lDeviceImpl->GetID() >= 0) {
 				fLocalDevicesList.AddItem(lDeviceImpl);
@@ -155,7 +192,8 @@ void BluetoothServer::MessageReceived(BMessage* message)
 
 			status = B_WOULD_BLOCK;
 			/* TODO: This should be by user request only! */
-			lDeviceImpl->Launch();
+			if (lDeviceImpl->Launch() == B_OK)
+				lDeviceImpl->StartPairingSetup();
 		}
 		break;
 
@@ -180,6 +218,104 @@ void BluetoothServer::MessageReceived(BMessage* message)
 		case BT_MSG_HANDLE_SIMPLE_REQUEST:
 			status = HandleSimpleRequest(message, &reply);
 			break;
+
+		case BT_MSG_LE_SCAN_START:
+		{
+			LocalDeviceImpl* device = LocateDelegateFromMessage(message);
+			BMessenger listener;
+			status = device != NULL
+				&& message->FindMessenger("listener", &listener) == B_OK
+				? device->StartLEScan(listener) : B_BAD_VALUE;
+			break;
+		}
+
+		case BT_MSG_LE_SCAN_STOP:
+		{
+			// With a "listener", only that client's scan interest ends;
+			// without one every listener is stopped (legacy behavior).
+			LocalDeviceImpl* device = LocateDelegateFromMessage(message);
+			BMessenger listener;
+			bool hasListener
+				= message->FindMessenger("listener", &listener) == B_OK;
+			status = device != NULL
+				? device->StopLEScan(hasListener ? &listener : NULL)
+				: B_BAD_VALUE;
+			break;
+		}
+
+		case BT_MSG_LE_CONNECT:
+		{
+			LocalDeviceImpl* device = LocateDelegateFromMessage(message);
+			BMessenger listener;
+			const void* address = NULL;
+			ssize_t addressSize = 0;
+			uint8 addressType;
+			status = device != NULL
+				&& message->FindMessenger("listener", &listener) == B_OK
+				&& message->FindData("address", B_RAW_TYPE, &address,
+					&addressSize) == B_OK
+				&& addressSize == 6
+				&& message->FindUInt8("address_type", &addressType) == B_OK
+				? device->StartLEConnection(listener, (const uint8*)address,
+					addressType) : B_BAD_VALUE;
+			break;
+		}
+
+		case BT_MSG_LE_CONNECT_CANCEL:
+		{
+			LocalDeviceImpl* device = LocateDelegateFromMessage(message);
+			BMessenger listener;
+			bool hasListener
+				= message->FindMessenger("listener", &listener) == B_OK;
+			status = device != NULL ? device->CancelLEConnection(
+				hasListener ? &listener : NULL) : B_BAD_VALUE;
+			break;
+		}
+
+		case BT_MSG_LE_DISCONNECT:
+		{
+			// "force" lets the preferences end a link another client owns,
+			// for example after forgetting a connected mouse.
+			LocalDeviceImpl* device = LocateDelegateFromMessage(message);
+			BMessenger listener;
+			bool hasListener
+				= message->FindMessenger("listener", &listener) == B_OK
+					&& !message->GetBool("force", false);
+			status = device != NULL ? device->DisconnectLEConnection(
+				hasListener ? &listener : NULL) : B_BAD_VALUE;
+			break;
+		}
+
+		case BT_MSG_LE_START_ENCRYPTION:
+		{
+			LocalDeviceImpl* device = LocateDelegateFromMessage(message);
+			const void* key = NULL;
+			ssize_t keySize = 0;
+			if (device == NULL) {
+				status = B_BAD_VALUE;
+				break;
+			}
+			if (message->FindData("short_term_key", B_RAW_TYPE,
+					&key, &keySize) == B_OK) {
+				status = keySize == 16
+					? device->StartLEEncryption((const uint8*)key, NULL, 0)
+					: B_BAD_VALUE;
+				break;
+			}
+			const void* randomNumber = NULL;
+			ssize_t randomSize = 0;
+			uint16 encryptedDiversifier;
+			status = message->FindData("long_term_key", B_RAW_TYPE,
+					&key, &keySize) == B_OK && keySize == 16
+				&& message->FindData("random_number", B_RAW_TYPE,
+					&randomNumber, &randomSize) == B_OK && randomSize == 8
+				&& message->FindUInt16("encrypted_diversifier",
+					&encryptedDiversifier) == B_OK
+				? device->StartLEEncryption((const uint8*)key,
+					(const uint8*)randomNumber, encryptedDiversifier)
+				: B_BAD_VALUE;
+			break;
+		}
 
 		case BT_MSG_GET_PROPERTY:
 			status = HandleGetProperty(message, &reply);
@@ -206,6 +342,21 @@ void BluetoothServer::MessageReceived(BMessage* message)
 				break;
 
 			lDeviceImpl->CreateConnection(message);
+			break;
+		}
+		case BT_MSG_PAIR_CONFIRM_RESULT:
+		{
+			LocalDeviceImpl* device = LocateDelegateFromMessage(message);
+			const bdaddr_t* address;
+			ssize_t length;
+			int32 which = 0;
+			if (device != NULL
+				&& message->FindData("bdaddr", B_ANY_TYPE,
+					(const void**)&address, &length) == B_OK
+				&& length == sizeof(bdaddr_t)) {
+				message->FindInt32("which", &which);
+				device->ConfirmPairing(*address, which == 1);
+			}
 			break;
 		}
 
@@ -296,10 +447,13 @@ void BluetoothServer::MessageReceived(BMessage* message)
 
 			const bdaddr_t* bdaddr;
 			ssize_t addr_size;
-			message->FindData("bdaddr", B_ANY_TYPE, (const void**)&bdaddr, &addr_size);
-
-			ServerRemoteDevice* rd = lDeviceImpl->RemoteDeviceByAddr(*bdaddr);
-			reply.AddUInt8("conn state", static_cast<uint8>(rd->conn_state));
+			ServerRemoteDevice* rd = NULL;
+			if (message->FindData("bdaddr", B_ANY_TYPE,
+					(const void**)&bdaddr, &addr_size) == B_OK
+				&& addr_size == sizeof(bdaddr_t))
+				rd = lDeviceImpl->RemoteDeviceByAddr(*bdaddr);
+			reply.AddUInt8("conn state", static_cast<uint8>(rd != NULL
+				? rd->conn_state : RemoteDevice::DISCONNECTED));
 
 			message->SendReply(&reply);
 		}
@@ -597,34 +751,6 @@ BluetoothServer::ShowWindow(BWindow* pWindow)
 }
 
 
-void
-BluetoothServer::_InstallDeskbarIcon()
-{
-	app_info appInfo;
-	be_app->GetAppInfo(&appInfo);
-
-	BDeskbar deskbar;
-
-	if (deskbar.HasItem(kDeskbarItemName)) {
-		_RemoveDeskbarIcon();
-	}
-
-	status_t res = deskbar.AddItem(&appInfo.ref);
-	if (res != B_OK)
-		TRACE_BT("Failed adding deskbar icon: %" B_PRId32 "\n", res);
-}
-
-
-void
-BluetoothServer::_RemoveDeskbarIcon()
-{
-	BDeskbar deskbar;
-	status_t res = deskbar.RemoveItem(kDeskbarItemName);
-	if (res != B_OK)
-		TRACE_BT("Failed removing Deskbar icon: %" B_PRId32 ": \n", res);
-}
-
-
 #if 0
 #pragma mark -
 #endif
@@ -632,6 +758,7 @@ BluetoothServer::_RemoveDeskbarIcon()
 int
 main(int /*argc*/, char** /*argv*/)
 {
+	LogStartup("starting");
 	BluetoothServer* bluetoothServer = new BluetoothServer;
 
 	bluetoothServer->Run();
@@ -639,4 +766,3 @@ main(int /*argc*/, char** /*argv*/)
 
 	return 0;
 }
-

@@ -1,47 +1,73 @@
 /*
  * Copyright 2009, Oliver Ruiz Dorantes, <oliver.ruiz.dorantes_at_gmail.com>
+ * Copyright 2026, Haiku, Inc.
  * All rights reserved. Distributed under the terms of the MIT License.
  */
 #ifndef DEVICELISTITEM_H_
 #define DEVICELISTITEM_H_
 
+
 #include <ListItem.h>
+#include <ListView.h>
 #include <String.h>
-#include <bluetoothserver_p.h>
 
-#include "bluetooth/RemoteDevice.h"
-
-namespace Bluetooth {
+#include "DeviceModel.h"
 
 
-class DeviceListItem : public BListItem
-{
-	public:
-		DeviceListItem(RemoteDevice*	bDevice);
+// A two-line row: icon, device name, a secondary line, and on the right
+// either a status text or signal-strength bars.
+class DeviceItem : public BListItem {
+public:
+								DeviceItem(device_key key);
 
-		~DeviceListItem();
+			device_key			Key() const { return fKey; }
 
-		void 			DrawItem(BView*, BRect, bool = false);
-		void 			Update(BView* owner, const BFont* font);
+			// Returns true when anything visible changed.
+			bool				SetContent(device_kind kind,
+									const BString& name,
+									const BString& detail,
+									const BString& status,
+									int32 signalBars);
 
-		static int 		Compare(const void* firstArg, const void* secondArg);
-		void 			SetDevice(RemoteDevice* bDevice);
-		RemoteDevice* 	Device() const;
+	virtual	void				DrawItem(BView* owner, BRect frame,
+									bool complete = false);
+	virtual	void				Update(BView* owner, const BFont* font);
 
-		void 			SetConnectionState(RemoteDevice::ConnectionState connectionState);
-		RemoteDevice::ConnectionState 	GetConnectionState();
+private:
+			void				_DrawSignalBars(BView* owner, BRect frame,
+									rgb_color textColor,
+									rgb_color background);
 
-	private:
-		RemoteDevice*	fDevice;
-		bdaddr_t		fAddress;
-		DeviceClass		fClass;
-		BString			fName;
-		int32			fRSSI;
-
-		RemoteDevice::ConnectionState		fConnectionState;
+			device_key			fKey;
+			device_kind			fKind;
+			BString				fName;
+			BString				fDetail;
+			BString				fStatus;
+			int32				fSignalBars;
 };
 
-}
+
+// A list that shows a hint text while it is empty.
+class DeviceListView : public BListView {
+public:
+								DeviceListView(const char* name);
+
+			using BListView::AddItem;
+			using BListView::RemoveItem;
+
+	virtual	bool				AddItem(BListItem* item);
+	virtual	bool				RemoveItem(BListItem* item);
+	virtual	void				MakeEmpty();
+
+			void				SetEmptyText(const char* text);
+			DeviceItem*			SelectedDevice() const;
+
+	virtual	void				Draw(BRect updateRect);
+	virtual	void				FrameResized(float width, float height);
+
+private:
+			BString				fEmptyText;
+};
 
 
-#endif
+#endif	// DEVICELISTITEM_H_

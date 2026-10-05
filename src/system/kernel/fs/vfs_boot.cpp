@@ -11,9 +11,12 @@
 #include "vfs_boot.h"
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <strings.h>
 
 #include <fs_info.h>
+#include <fs_volume.h>
 #include <OS.h>
 
 #include <boot/kernel_args.h>
@@ -143,6 +146,34 @@ compute_check_sum(KDiskDevice* device, off_t offset)
 	}
 
 	return sum;
+}
+
+
+/*!	Whether \a partition is the file system of a hybrid ISO image, an
+	installation medium made by anyboot: the device it is on starts with an
+	ISO 9660 volume descriptor. Such a medium is always used live, mounted
+	read-only beneath a write overlay, also when it is not a CD: a USB disk
+	does not report that it is write protected (see usb_disk), and a medium
+	that is writable is not changed either.
+*/
+static bool
+is_hybrid_iso_partition(KPartition* partition)
+{
+	KDiskDevice* device = partition->Device();
+	if (device == NULL || partition == device || device->FD() < 0
+		|| partition->Offset() < 64 * 1024) {
+		return false;
+	}
+
+	// the primary volume descriptor is in the 2 KiB block at 32 KiB
+	uint8* block = (uint8*)malloc(2048);
+	if (block == NULL)
+		return false;
+	ssize_t bytesRead = read_pos(device->FD(), 32 * 1024, block, 2048);
+	bool hybrid = bytesRead == 2048 && block[0] == 1
+		&& memcmp(block + 1, "CD001", 5) == 0;
+	free(block);
+	return hybrid;
 }
 
 
@@ -466,6 +497,11 @@ vfs_bootstrap_file_systems(void)
 }
 
 
+// How long to keep rescanning for the boot device before giving up, and how
+// long to wait between passes.
+static const bigtime_t kBootDeviceTimeout = 10000000;
+static const bigtime_t kBootDeviceRetryInterval = 250000;
+
 void
 vfs_mount_boot_file_system(kernel_args* args)
 {
@@ -473,12 +509,26 @@ vfs_mount_boot_file_system(kernel_args* args)
 	bootVolume.SetTo(args->boot_volume, args->boot_volume_size);
 
 	PartitionStack partitions;
-	status_t status = get_boot_partitions(bootVolume, partitions);
-	if (status < B_OK) {
-		panic("get_boot_partitions failed!");
-	}
-	if (partitions.IsEmpty()) {
-		panic("did not find any boot partitions! @! syslog | tail 15");
+	status_t status = B_OK;
+
+	// Some buses publish their disks from a worker thread rather than from
+	// register_child_devices(), so the boot device can appear after the first
+	// scan: the MMC bus manager initialises the card and registers its node
+	// on MMCBus::_WorkerThread. Rescan until the boot device shows up rather
+	// than giving up on the first pass; a device that is already there is
+	// still found immediately.
+	const bigtime_t deadline = system_time() + kBootDeviceTimeout;
+	while (true) {
+		status = get_boot_partitions(bootVolume, partitions);
+		if (status < B_OK)
+			panic("get_boot_partitions failed!");
+		if (!partitions.IsEmpty())
+			break;
+		if (system_time() >= deadline) {
+			panic("did not find any boot partitions! @! syslog | tail 15");
+			break;
+		}
+		snooze(kBootDeviceRetryInterval);
 	}
 
 	dev_t bootDevice = -1;
@@ -491,6 +541,7 @@ vfs_mount_boot_file_system(kernel_args* args)
 
 		const char* fsName = NULL;
 		bool readOnly = false;
+		uint32 mountFlags = 0;
 		if (strcmp(bootPartition->ContentType(), kPartitionTypeISO9660) == 0) {
 			fsName = "iso9660:write_overlay:attribute_overlay";
 			readOnly = true;
@@ -498,11 +549,20 @@ vfs_mount_boot_file_system(kernel_args* args)
 			&& strcmp(bootPartition->ContentType(), kPartitionTypeBFS) == 0) {
 			fsName = "bfs:write_overlay";
 			readOnly = true;
+		} else if (strcmp(bootPartition->ContentType(), kPartitionTypeBFS) == 0
+			&& is_hybrid_iso_partition(bootPartition)) {
+			// BFS itself read-only, the overlay above it writable
+			fsName = "bfs:write_overlay";
+			readOnly = true;
+			mountFlags = B_MOUNT_READ_ONLY;
+			dprintf("Boot partition is on a hybrid ISO image, using it "
+				"read-only.\n");
 		}
 
 		TRACE(("trying to mount boot partition: %s\n", path.Path()));
 
-		bootDevice = _kern_mount("/boot", path.Path(), fsName, 0, NULL, 0);
+		bootDevice = _kern_mount("/boot", path.Path(), fsName, mountFlags,
+			NULL, 0);
 		if (bootDevice >= 0) {
 			dprintf("Mounted boot partition: %s\n", path.Path());
 			gReadOnlyBootDevice = readOnly;

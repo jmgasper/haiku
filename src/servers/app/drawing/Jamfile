@@ -27,6 +27,7 @@ StaticLibrary libasdrawing.a :
 	MallocBuffer.cpp
 	PatternHandler.cpp
 	Overlay.cpp
+	ScaledReadback.cpp
 
 	BitmapHWInterface.cpp
 	BBitmapBuffer.cpp

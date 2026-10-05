@@ -60,7 +60,9 @@ public:
 
 	void Notify(uint32 eventCode, struct image* image)
 	{
-		char eventBuffer[128];
+		// The pointer field brings this message to 132 bytes on 64-bit systems.
+		// An undersized external buffer silently omits imageStruct for listeners.
+		char eventBuffer[160];
 		KMessage event;
 		event.SetTo(eventBuffer, sizeof(eventBuffer), IMAGE_MONITOR);
 		event.AddInt32("event", eventCode);
@@ -395,6 +397,12 @@ notify_loading_app(status_t result, bool suspend)
 
 		thread_prepare_suspend();
 
+		// From here on until we are resumed, the death of our parent would
+		// leave us suspended for good: have it take us along.
+		// (cf. team_shutdown_team())
+		if (suspend)
+			atomic_or(&team->flags, TEAM_FLAG_LOADED_SUSPENDED);
+
 		// wake up the waiting thread
 		team->loading_info->result = result;
 		team->loading_info->condition.NotifyAll();
@@ -404,8 +412,10 @@ notify_loading_app(status_t result, bool suspend)
 		teamLocker.Unlock();
 
 		// suspend ourselves, if desired
-		if (suspend)
+		if (suspend) {
 			thread_suspend(true);
+			atomic_and(&team->flags, ~TEAM_FLAG_LOADED_SUSPENDED);
+		}
 	}
 }
 

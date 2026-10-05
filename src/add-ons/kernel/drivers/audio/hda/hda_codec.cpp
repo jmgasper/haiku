@@ -1308,6 +1308,95 @@ hda_codec_delete_audio_group(hda_audio_group* audioGroup)
 }
 
 
+// What a display says about its own audio, so that "no sound" can be told
+// apart from "this screen has no speakers".
+//
+// A monitor on HDMI or DisplayPort hands the codec an EDID-Like Data block
+// describing what it will accept. The pin says whether anything is plugged in
+// and whether that block has arrived; the block itself names the display and
+// says how many speakers it claims and how many audio descriptors follow.
+static void
+hda_codec_report_digital_sinks(hda_audio_group* audioGroup)
+{
+	for (uint32 i = 0; i < audioGroup->widget_count; i++) {
+		hda_widget& widget = audioGroup->widgets[i];
+
+		if (widget.type != WT_PIN_COMPLEX
+			|| !PIN_CAP_IS_OUTPUT(widget.d.pin.capabilities)
+			|| CONF_DEFAULT_DEVICE(widget.d.pin.config)
+				!= PIN_DEV_DIGITAL_OTHER_OUT)
+			continue;
+
+		corb_t verb = MAKE_VERB(audioGroup->codec->addr, widget.node_id,
+			VID_GET_PINSENSE, 0);
+		uint32 sense;
+		if (hda_send_verbs(audioGroup->codec, &verb, &sense, 1) != B_OK)
+			continue;
+
+		const bool present = (sense & PIN_SENSE_PRESENCE_DETECT) != 0;
+		const bool eldValid = (sense & PIN_SENSE_ELD_VALID) != 0;
+		if (!present) {
+			TRACE("display pin %" B_PRIu32 ": nothing plugged in\n",
+				widget.node_id);
+			continue;
+		}
+		if (!eldValid) {
+			dprintf("hda: display pin %" B_PRIu32 ": a display, but it has "
+				"sent no audio description\n", widget.node_id);
+			continue;
+		}
+
+		// The block is read a byte at a time; the length is in the third one,
+		// counted in groups of four on top of a four byte header.
+		uint8 eld[128];
+		uint32 length = sizeof(eld);
+		for (uint32 j = 0; j < length && j < sizeof(eld); j++) {
+			verb = MAKE_VERB(audioGroup->codec->addr, widget.node_id,
+				VID_GET_EDID_LIKE_DATA, j);
+			uint32 response;
+			if (hda_send_verbs(audioGroup->codec, &verb, &response, 1) != B_OK)
+				break;
+			eld[j] = response & 0xff;
+			if (j == 2)
+				length = MIN(4 + eld[2] * 4, (int)sizeof(eld));
+		}
+
+		if (length < 20) {
+			dprintf("hda: display pin %" B_PRIu32 ": audio description too "
+				"short (%" B_PRIu32 " bytes)\n", widget.node_id, length);
+			continue;
+		}
+
+		const uint8 nameLength = eld[4] & 0x1f;
+		const uint8 descriptorCount = eld[5] >> 4;
+		const uint8 connection = (eld[5] >> 2) & 0x03;
+		const uint8 speakers = eld[7];
+
+		// The name comes straight from the display's EDID, where it ends at a
+		// newline and is padded with spaces; neither belongs in a log line.
+		char name[17];
+		uint32 copied = MIN(nameLength, (int)sizeof(name) - 1);
+		if (20 + copied > length)
+			copied = length > 20 ? length - 20 : 0;
+		memcpy(name, &eld[20], copied);
+		name[copied] = '\0';
+		for (uint32 j = 0; j < copied; j++) {
+			if (name[j] == '\n' || name[j] == '\r') {
+				name[j] = '\0';
+				break;
+			}
+		}
+		for (int32 j = (int32)strlen(name) - 1; j >= 0 && name[j] == ' '; j--)
+			name[j] = '\0';
+
+		dprintf("hda: display pin %" B_PRIu32 ": \"%s\" over %s, speakers "
+			"%#x, %u audio format%s\n", widget.node_id, name,
+			connection == 1 ? "DisplayPort" : "HDMI", speakers,
+			descriptorCount, descriptorCount == 1 ? "" : "s");
+	}
+}
+
+
 static status_t
 hda_codec_new_audio_group(hda_codec* codec, uint32 audioGroupNodeID)
 {
@@ -1348,6 +1437,7 @@ hda_codec_new_audio_group(hda_codec* codec, uint32 audioGroupNodeID)
 		|| audioGroup->record_stream != NULL) {
 		codec->audio_groups[codec->num_audio_groups++] = audioGroup;
 		hda_audio_group_check_sense(audioGroup, false);
+		hda_codec_report_digital_sinks(audioGroup);
 		return B_OK;
 	}
 
@@ -1359,6 +1449,27 @@ err:
 
 
 //	#pragma mark -
+
+
+// Whether this widget can carry a stream: the right kind, on the right path,
+// stereo, and able to say what it can play. Digital converters are the ones
+// that feed HDMI and DisplayPort, and are only wanted when there is nothing
+// analog.
+static bool
+hda_widget_is_usable_converter(const hda_widget& widget, hda_widget_type type,
+	uint32 flags, bool digital)
+{
+	if (widget.type != type || (widget.flags & flags) == 0
+		|| widget.d.io.formats == 0)
+		return false;
+
+	if ((widget.capabilities.audio & AUDIO_CAP_STEREO) == 0)
+		return false;
+
+	const bool isDigital
+		= (widget.capabilities.audio & AUDIO_CAP_DIGITAL) != 0;
+	return isDigital == digital;
+}
 
 
 status_t
@@ -1444,10 +1555,7 @@ hda_audio_group_get_widgets(hda_audio_group* audioGroup, hda_stream* stream)
 			}
 		}
 
-		if (widget.type != type || (widget.flags & flags) == 0
-			|| (widget.capabilities.audio
-				& (AUDIO_CAP_STEREO | AUDIO_CAP_DIGITAL)) != AUDIO_CAP_STEREO
-			|| widget.d.io.formats == 0)
+		if (!hda_widget_is_usable_converter(widget, type, flags, false))
 			continue;
 
 		if (count == 0) {
@@ -1460,6 +1568,50 @@ hda_audio_group_get_widgets(hda_audio_group* audioGroup, hda_stream* stream)
 
 		stream->io_widgets[count++] = widget.node_id;
 	}
+
+	TRACE("converters for %s: %" B_PRIu32 " analog\n",
+		stream->type == STREAM_PLAYBACK ? "playback" : "record", count);
+
+	// Nothing analog to play through. A codec on a graphics card has only
+	// digital converters - its outputs are the HDMI and DisplayPort
+	// connectors - so try those before giving up. Analog is looked for first,
+	// so a codec with both, which is most of them, keeps using it.
+	if (count == 0) {
+		for (uint32 i = 0; i < audioGroup->widget_count
+				&& count < MAX_IO_WIDGETS; i++) {
+			hda_widget& widget = audioGroup->widgets[i];
+
+			if (!hda_widget_is_usable_converter(widget, type, flags, true))
+				continue;
+
+			if (count == 0) {
+				stream->sample_format = widget.d.io.formats;
+				stream->sample_rate = widget.d.io.rates;
+			} else {
+				stream->sample_format &= widget.d.io.formats;
+				stream->sample_rate &= widget.d.io.rates;
+			}
+
+			// A digital converter passes nothing until it is switched on.
+			uint32 response;
+			corb_t verb = MAKE_VERB(audioGroup->codec->addr, widget.node_id,
+				VID_GET_DIGITAL_CONVERTER_CONTROL, 0);
+			if (hda_send_verbs(audioGroup->codec, &verb, &response, 1)
+					== B_OK) {
+				verb = MAKE_VERB(audioGroup->codec->addr, widget.node_id,
+					VID_SET_DIGITAL_CONVERTER_CONTROL1,
+					(response & 0xff) | DIGITAL_CONVERTER_ENABLE);
+				hda_send_verbs(audioGroup->codec, &verb, NULL, 1);
+				TRACE("ENABLE digital converter widget %" B_PRIu32 "\n",
+					widget.node_id);
+			}
+
+			stream->io_widgets[count++] = widget.node_id;
+		}
+	}
+
+	TRACE("converters for %s: %" B_PRIu32 " in total\n",
+		stream->type == STREAM_PLAYBACK ? "playback" : "record", count);
 
 	if (count == 0)
 		return B_ENTRY_NOT_FOUND;

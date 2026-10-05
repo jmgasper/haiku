@@ -61,7 +61,8 @@ event_complete(void* cookie, status_t status, void* data, size_t actual_len)
 	if (bdev == NULL)
 		return;
 
-	if (status == B_CANCELED || status == B_DEV_CRC_ERROR)
+	if (status == B_CANCELED || status == B_DEV_CRC_ERROR
+		|| (bdev->state & RUNNING) == 0)
 		return; // or not running anymore...
 
 	if (status != B_OK || actual_len == 0)
@@ -100,7 +101,8 @@ acl_rx_complete(void* cookie, status_t status, void* data, size_t actual_len)
 	if (bdev == NULL)
 		return;
 
-	if (status == B_CANCELED || status == B_DEV_CRC_ERROR)
+	if (status == B_CANCELED || status == B_DEV_CRC_ERROR
+		|| (bdev->state & RUNNING) == 0)
 		return; // or not running anymore...
 
 	if (status != B_OK || actual_len == 0)
@@ -132,6 +134,8 @@ void
 sco_rx_complete(void* cookie, status_t status, void* data, size_t actual_len)
 {
 	sco_rx_transfer_t* ctx = (sco_rx_transfer_t*)cookie;
+	if (status == B_CANCELED)
+		return;
 
 	if (ctx == NULL)
 		return;
@@ -139,7 +143,7 @@ sco_rx_complete(void* cookie, status_t status, void* data, size_t actual_len)
 	bt_usb_dev* bdev = ctx->bdev;
 	status_t error;
 
-	if (status == B_CANCELED)
+	if ((bdev->state & RUNNING) == 0)
 		return;
 
 	size_t packetSize = bdev->max_packet_size_iso_in;

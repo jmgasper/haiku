@@ -1,0 +1,48 @@
+--- a/src/HGL/GLView.cpp
++++ b/src/HGL/GLView.cpp
+@@ -110,6 +110,9 @@
+     } fBmpHook;
+     pthread_mutex_t fLock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+     ObjectDeleter<BBitmap> fBitmap;
++    // One outstanding invalidate is enough: the view always draws whatever
++    // bitmap is current when it runs.
++    bool fInvalidatePending = false;
+ 
+     ~Renderer();
+     status_t Init();
+@@ -211,10 +214,21 @@
+ 
+ BBitmap *BGLView::Renderer::BitmapHook::SetBitmap(BBitmap *bmp)
+ {
+-    PthreadMutexLocker lock(&Base()->fLock);
+-    BBitmap* oldBmp = Base()->fBitmap.Detach();
+-    Base()->fBitmap.SetTo(bmp);
+-    BMessenger(Base()->view).SendMessage(B_INVALIDATE);
++    BBitmap* oldBmp;
++    bool notify;
++    {
++        PthreadMutexLocker lock(&Base()->fLock);
++        oldBmp = Base()->fBitmap.Detach();
++        Base()->fBitmap.SetTo(bmp);
++        notify = !Base()->fInvalidatePending;
++        Base()->fInvalidatePending = true;
++    }
++    // Post outside fLock. BGLView::Draw takes the same lock on the window
++    // thread, so a swapping thread that blocks here on a full window port
++    // while holding it stops that thread from draining the port at all.
++    // Coalescing also keeps an unthrottled renderer from flooding the port.
++    if (notify)
++        BMessenger(Base()->view).SendMessage(B_INVALIDATE);
+     return oldBmp;
+ }
+ 
+@@ -421,6 +435,9 @@
+     BRegion region(updateRect);
+     if (fRenderer != NULL) {
+         PthreadMutexLocker lock(&fRenderer->fLock);
++        // Cleared before drawing, so a swap that lands during the draw asks
++        // for another one instead of being dropped.
++        fRenderer->fInvalidatePending = false;
+         if (fRenderer->fBitmap.IsSet()) {
+             DrawBitmap(fRenderer->fBitmap.Get(), B_ORIGIN);
+             region.Exclude(fRenderer->fBitmap->Bounds());

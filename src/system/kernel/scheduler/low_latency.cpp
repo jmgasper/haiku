@@ -43,31 +43,51 @@ has_cache_expired(const ThreadData* threadData)
 }
 
 
+/*!	A core with nothing to do and nothing on its way. A core stays in its
+	package's list of idle ones until it gets to run the thread it was given,
+	so the list alone sent two threads woken together to the same core, where
+	the second waited for the first while other cores sat idle.
+*/
 static CoreEntry*
-choose_core(const ThreadData* threadData)
+find_idle_core(const ThreadData* threadData)
 {
-	SCHEDULER_ENTER_FUNCTION();
-
 	// wake new package
 	PackageEntry* package = gIdlePackageList.Last();
 	if (package == NULL) {
 		// wake new core
 		package = PackageEntry::GetMostIdlePackage();
 	}
+	if (package == NULL)
+		return NULL;
 
-	int32 index = 0;
 	CPUSet mask = threadData->GetCPUMask();
 	const bool useMask = !mask.IsEmpty();
 
-	CoreEntry* core = NULL;
-	if (package != NULL) {
-		do {
-			core = package->GetIdleCore(index++);
-		} while (useMask && core != NULL && !core->CPUMask().Matches(mask));
+	for (int32 index = 0; index < smp_get_num_cpus(); index++) {
+		CoreEntry* core = package->GetIdleCore(index);
+		if (core == NULL)
+			break;
+		if (useMask && !core->CPUMask().Matches(mask))
+			continue;
+		if (core->ThreadCount() == 0)
+			return core;
 	}
+	return NULL;
+}
+
+
+static CoreEntry*
+choose_core(const ThreadData* threadData)
+{
+	SCHEDULER_ENTER_FUNCTION();
+
+	CPUSet mask = threadData->GetCPUMask();
+	const bool useMask = !mask.IsEmpty();
+
+	CoreEntry* core = find_idle_core(threadData);
 	if (core == NULL) {
 		ReadSpinLocker coreLocker(gCoreHeapsLock);
-		index = 0;
+		int32 index = 0;
 		// no idle cores, use least occupied core
 		do {
 			core = gCoreLoadHeap.PeekMinimum(index++);
@@ -93,6 +113,14 @@ rebalance(const ThreadData* threadData)
 	CoreEntry* core = threadData->Core();
 	ASSERT(core != NULL);
 
+	// The thread's core has something to run already and another has not:
+	// there the thread runs now.
+	if (core->ThreadCount() > 0) {
+		CoreEntry* idle = find_idle_core(threadData);
+		if (idle != NULL)
+			return idle;
+	}
+
 	// Get the least loaded core.
 	ReadSpinLocker coreLocker(gCoreHeapsLock);
 	CPUSet mask = threadData->GetCPUMask();
@@ -116,8 +144,12 @@ rebalance(const ThreadData* threadData)
 	ASSERT(other != NULL);
 
 	// Check if the least loaded core is significantly less loaded than
-	// the current one.
-	int32 coreLoad = core->GetLoad();
+	// the current one. For the current one that is what its threads ask
+	// for: GetLoad() stops at "all of it", and a core with two threads that
+	// each want a processor to themselves looked no fuller than a core with
+	// one. The second thread then never left (moving it "would not bring
+	// the two loads closer"), while another core sat idle.
+	int32 coreLoad = core->GetRequestedLoad();
 	int32 otherLoad = other->GetLoad();
 	if (other == core || otherLoad + kLoadDifference >= coreLoad)
 		return core;

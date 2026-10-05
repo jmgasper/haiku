@@ -158,8 +158,11 @@ Services::Services(const BMessage& services)
 	FD_ZERO(&fSet);
 	FD_SET(fReadPipe, &fSet);
 
-	fMinSocket = fWritePipe + 1;
-	fMaxSocket = fWritePipe + 1;
+	// pipe() does not promise that its read descriptor is the smaller one.
+	// The listener must include the read end in select(), even before any
+	// service sockets have been added.
+	fMinSocket = fReadPipe + 1;
+	fMaxSocket = fReadPipe + 1;
 
 	_Update(services);
 

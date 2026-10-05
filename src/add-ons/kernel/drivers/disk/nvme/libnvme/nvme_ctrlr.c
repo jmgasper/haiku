@@ -420,6 +420,55 @@ static void nvme_ctrlr_set_state(struct nvme_ctrlr *ctrlr,
 }
 
 /*
+ * Read non-MDTS limits before namespace construction, while the admin queue
+ * is exclusively owned by initialization. Failed discovery disables DSM
+ * without preventing ordinary namespace I/O.
+ */
+static void nvme_ctrlr_identify_dsm_limits(struct nvme_ctrlr *ctrlr)
+{
+	struct nvme_nvm_ctrlr_data *data;
+	uint32_t version = nvme_reg_mmio_read_4(ctrlr, vs.raw);
+	int ret;
+
+	ctrlr->dsm_supported = ctrlr->cdata.oncs.dsm;
+	ctrlr->dsm_max_ranges = NVME_DATASET_MANAGEMENT_MAX_RANGES;
+	ctrlr->dsm_max_range_blocks = UINT32_MAX;
+	ctrlr->dsm_max_command_blocks = UINT64_MAX;
+
+	/* Before 1.2 the CNS field is too narrow to encode selector 06h. */
+	if (version < NVME_VERSION(1, 2, 0))
+		goto report;
+
+	data = nvme_zmalloc(sizeof(*data), 64);
+	if (!data) {
+		ctrlr->dsm_supported = false;
+		nvme_notice("Cannot allocate DSM Identify data; TRIM disabled\n");
+		return;
+	}
+	ret = nvme_admin_identify_nvm_ctrlr(ctrlr, data);
+	if (ret == 0) {
+		if (data->dmrl)
+			ctrlr->dsm_max_ranges = data->dmrl;
+		if (data->dmrsl)
+			ctrlr->dsm_max_range_blocks = data->dmrsl;
+		if (data->dmsl)
+			ctrlr->dsm_max_command_blocks = data->dmsl;
+		/* Nonzero limits also describe the mandatory DSM support variant. */
+		if (data->dmrl && data->dmrsl && data->dmsl)
+			ctrlr->dsm_supported = true;
+	} else if (ret != ENOTSUP || version >= NVME_VERSION(2, 0, 0)) {
+		ctrlr->dsm_supported = false;
+		nvme_notice("NVM Identify failed (%d); TRIM disabled\n", ret);
+	}
+	nvme_free(data);
+report:
+	nvme_notice("DSM supported %u, max ranges %u, range blocks %" PRIu32
+		    ", command blocks %" PRIu64 "\n", ctrlr->dsm_supported,
+		    ctrlr->dsm_max_ranges, ctrlr->dsm_max_range_blocks,
+		    ctrlr->dsm_max_command_blocks);
+}
+
+/*
  * Get a controller data.
  */
 static int nvme_ctrlr_identify(struct nvme_ctrlr *ctrlr)
@@ -431,6 +480,8 @@ static int nvme_ctrlr_identify(struct nvme_ctrlr *ctrlr)
 		nvme_notice("Identify controller failed\n");
 		return ret;
 	}
+
+	nvme_ctrlr_identify_dsm_limits(ctrlr);
 
 	/*
 	 * Use MDTS to ensure our default max_xfer_size doesn't
@@ -1032,6 +1083,43 @@ out:
 }
 
 /*
+ * Notify the controller that power will be removed.
+ */
+int nvme_ctrlr_suspend(struct nvme_ctrlr *ctrlr)
+{
+	pthread_mutex_lock(&ctrlr->lock);
+	nvme_ctrlr_shutdown(ctrlr);
+	pthread_mutex_unlock(&ctrlr->lock);
+
+	return 0;
+}
+
+/*
+ * Reinitialize the controller and its active queue pairs after power was
+ * restored.
+ */
+int nvme_ctrlr_resume(struct nvme_ctrlr *ctrlr)
+{
+	int ret;
+
+	pthread_mutex_lock(&ctrlr->lock);
+
+	/*
+	 * The controller lost power, so commands that were pending while
+	 * suspending may have failed it. Reset would do nothing then, leaving
+	 * the controller dead, so start over.
+	 */
+	ctrlr->resetting = false;
+	ctrlr->failed = false;
+
+	ret = nvme_ctrlr_reset(ctrlr);
+
+	pthread_mutex_unlock(&ctrlr->lock);
+
+	return ret;
+}
+
+/*
  * Set a controller options.
  */
 static void nvme_ctrlr_set_opts(struct nvme_ctrlr *ctrlr,
@@ -1110,6 +1198,9 @@ nvme_ctrlr_attach(struct pci_device *pci_dev,
 
 	/* Set default transfer size */
 	ctrlr->max_xfer_size = NVME_MAX_XFER_SIZE;
+#if defined(NVME_HAIKU_NONCOHERENT_DMA)
+	ctrlr->max_xfer_size = nvme_min(ctrlr->max_xfer_size, NVME_DMA_MAX_TRANSFER);
+#endif
 
 	/* Create the admin queue pair */
 	ret = nvme_qpair_construct(ctrlr, &ctrlr->adminq, 0,
@@ -1454,7 +1545,7 @@ struct nvme_qpair *nvme_ioqp_get(struct nvme_ctrlr *ctrlr,
 	/* Construct the qpair */
 	ret = nvme_qpair_construct(ctrlr, qpair, qprio, qd, trackers);
 	if (ret != 0) {
-		nvme_qpair_destroy(qpair);
+		// The constructor releases partially allocated resources on failure.
 		qpair = NULL;
 		goto out;
 	}

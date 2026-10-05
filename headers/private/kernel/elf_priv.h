@@ -64,6 +64,9 @@ struct elf_image_info {
 	elf_versym*		symbol_versions;
 	struct elf_version_info* versions;
 	uint32			num_versions;
+
+	bool			fixed_address;
+		// mapped at its link address inside the fixed add-on range
 };
 
 

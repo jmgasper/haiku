@@ -141,7 +141,9 @@ actions BuildEfiSDImage1
 
 	# populate
 	echo "mkdir -p myfs/EFI/BOOT" | ${FATFS} $(1)
-	echo "cp :$(2[4-4]) myfs/EFI/BOOT/$(EFINAME)" | ${FATFS} $(1)
+	# FAT cannot store Haiku attributes. Copying BEOS:TYPE first can abort the
+	# copy and leave an empty EFI loader on incremental builds.
+	echo "cp --ignore-attributes :$(2[4-4]) myfs/EFI/BOOT/$(EFINAME)" | ${FATFS} $(1)
 
 	# copy misc files
 	for i in $(2[5-]) ; do
@@ -179,6 +181,8 @@ for platform in [ MultiBootSubDirSetup ] {
 		} else if $(TARGET_BOOT_PLATFORM) = u-boot {
 			BuildSDImage $(HAIKU_MMC_NAME) :
 				$(HAIKU_IMAGE) haiku_loader.$(TARGET_BOOT_PLATFORM) haiku-floppyboot.tgz.$(TARGET_BOOT_PLATFORM) boot.scr ;
+		} else if $(TARGET_BOOT_PLATFORM) = rpi {
+			# has an image of its own, see RpiBootImage
 		} else {
 			BuildSDImage $(HAIKU_MMC_NAME) :
 				$(HAIKU_IMAGE) haiku_loader.$(TARGET_BOOT_PLATFORM) boot.scr ;

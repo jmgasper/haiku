@@ -29,5 +29,20 @@ if $(HAIKU_BUILD_TYPE) = test {
 	AddPackageFilesToHaikuImage system packages : haiku_unittests.hpkg ;
 }
 
+# nvm is part of the standard deploy: the Node Version Manager, with Haiku
+# binaries from its mirror and source builds with its Haiku patches. Those
+# exist for x86_64 only, and nvm needs curl, tar and xz, which arm64 has no
+# packages for.
+if $(HAIKU_BUILD_TYPE) = regular && $(TARGET_ARCH) = x86_64 {
+	AddPackageFilesToHaikuImage system packages : nvm.hpkg : nameFromMetaInfo ;
+}
+
+# So are network shares: Tracker's preferences set them up, smbfs mounts
+# them, and userland_fs is what smbfs runs in.
+if $(HAIKU_BUILD_TYPE) = regular {
+	AddPackageFilesToHaikuImage system packages : userland_fs.hpkg smbfs.hpkg
+		: nameFromMetaInfo ;
+}
+
 # import what is shared by all images
 include [ FDirName $(HAIKU_BUILD_RULES_DIR) images definitions common-tail ] ;

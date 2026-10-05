@@ -8,6 +8,7 @@
 #define __PCI_H__
 
 #include <bus/PCI.h>
+#include <bus/PCIInterrupts.h>
 
 #include <VectorMap.h>
 
@@ -61,14 +62,23 @@ struct PCIDev {
 	msi_info			msi;
 	msix_info			msix;
 	ht_mapping_info		ht_mapping;
+	bool				intx_enabled = false;
+	uint8				intx_pin = 0;
 
 	pci_resource_range	bar[6];
+
+	// state saved while suspended
+	bool				config_saved;
+	uint32				saved_config[64];
+	uint32				saved_msix_table[32 * 4];
 };
 
 
 struct domain_data {
 	~domain_data()
 	{
+		if (intx_controller != NULL)
+			put_module(intx_controller->info.name);
 #if !(defined(__i386__) || defined(__x86_64__))
 		if (io_port_area >= 0)
 			delete_area(io_port_area);
@@ -84,6 +94,8 @@ struct domain_data {
 	// All the rest is set in PCI::InitDomainData
 	int					max_bus_devices;
 	Vector<pci_resource_range> ranges;
+	pci_intx_controller_module_info* intx_controller = NULL;
+	status_t			intx_status = B_OK;
 
 #if !(defined(__i386__) || defined(__x86_64__))
 	area_id				io_port_area = -1;
@@ -156,9 +168,15 @@ public:
 
 			void			RefreshDeviceInfo();
 
+			void			SaveConfiguration();
+			void			RestoreConfiguration();
+
 			status_t		UpdateInterruptLine(uint8 domain, uint8 bus,
 								uint8 device, uint8 function,
 								uint8 newInterruptLineValue);
+
+			status_t		GetIntxIRQ(PCIDev* device, uint32* irq);
+			status_t		SetIntxEnabled(PCIDev* device, bool enabled);
 
 			uint32			GetMSICount(PCIDev *device);
 			status_t		ConfigureMSI(PCIDev *device, uint32 count, uint32 *startVector);
@@ -176,6 +194,8 @@ private:
 			void			_FixupDevices(uint8 domain, uint8 bus);
 
 			void			_DiscoverBus(PCIBus *bus);
+			void			_DiscoverAdditionalRootBuses(PCIBus *bus);
+			bool			_IsBusKnown(PCIBus *bus, uint8 busNumber);
 			void			_DiscoverDevice(PCIBus *bus, uint8 dev,
 								uint8 function);
 
@@ -193,6 +213,9 @@ private:
 			void			_ReserveBARs(PCIBus *bus);
 			void			_AssignBARs(PCIBus *bus);
 			void			_RefreshDeviceInfo(PCIBus *bus);
+			void			_SaveConfiguration(PCIBus *bus);
+			void			_RestoreConfiguration(PCIBus *bus);
+			void			_RestoreDeviceConfiguration(PCIDev *device);
 
 			uint64			_BarSize(uint64 bits);
 			size_t			_GetBarInfo(PCIDev *dev, uint8 offset,
@@ -218,6 +241,8 @@ private:
 								uint8 bus, uint8 device, uint8 function);
 
 			void			_HtMSIMap(PCIDev *device, uint64 address);
+			status_t		_AllocateMSIVectors(PCIDev* device, uint32 count,
+								uint32* startVector, uint64* address, uint32* data);
 			void			_ReadMSIInfo(PCIDev *device);
 			void			_ReadMSIXInfo(PCIDev *device);
 			void			_ReadHtMappingInfo(PCIDev *device);

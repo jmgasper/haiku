@@ -10,7 +10,8 @@
 #include <kernel/arch/arm64/arm_registers.h>
 
 
-#define NUM_IO_VECTORS			1024
+// GICv3 physical LPIs start at INTID 8192. Retain hardware IDs in dispatch.
+#define NUM_IO_VECTORS			16384
 
 static inline void
 arch_int_enable_interrupts_inline(void)

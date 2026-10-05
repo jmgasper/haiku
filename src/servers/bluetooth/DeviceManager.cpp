@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "ControllerFirmware.h"
 #include "DeviceManager.h"
 #include "LocalDeviceImpl.h"
 
@@ -141,21 +142,44 @@ DeviceManager::RemoveDirectory(node_ref* nref)
 }
 
 
+/*!	Asks the server to open a new device once its controller is ready. That
+	can mean a firmware download of several seconds, so it happens on a thread
+	of its own.
+*/
 status_t
 DeviceManager::AddDevice(entry_ref* ref)
 {
 	BPath path(ref);
-	BString* str = new BString(path.Path());
+	if (path.InitCheck() != B_OK)
+		return path.InitCheck();
 
-	BMessage* msg =	new	BMessage(BT_MSG_ADD_DEVICE);
-	msg->AddInt32("opcode",	B_ENTRY_CREATED);
-	msg->AddInt32("device",	ref->device);
-	msg->AddInt64("directory", ref->directory);
+	BMessage* message = new(std::nothrow) BMessage(BT_MSG_ADD_DEVICE);
+	if (message == NULL)
+		return B_NO_MEMORY;
+	message->AddInt32("opcode", B_ENTRY_CREATED);
+	message->AddInt32("device", ref->device);
+	message->AddInt64("directory", ref->directory);
+	message->AddString("name", path.Path());
 
-	msg->AddString("name", *str	);
-
+	thread_id thread = spawn_thread(&_PrepareDevice, "bluetooth device setup",
+		B_NORMAL_PRIORITY, message);
+	if (thread < 0) {
+		delete message;
+		return thread;
+	}
 	TRACE_BT("DeviceManager: Device %s registered\n", path.Path());
-	return be_app_messenger.SendMessage(msg);
+	return resume_thread(thread);
+}
+
+
+/*static*/ status_t
+DeviceManager::_PrepareDevice(void* data)
+{
+	BMessage* message = (BMessage*)data;
+	ControllerFirmware::PrepareNewControllers();
+	status_t status = be_app_messenger.SendMessage(message);
+	delete message;
+	return status;
 }
 
 

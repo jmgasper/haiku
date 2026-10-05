@@ -14,6 +14,7 @@
 
 #include <KernelExport.h>
 #include <drivers/PCI.h>
+#include <bus/PCIInterrupts.h>
 
 #include <util/list.h>
 
@@ -31,11 +32,15 @@ struct root_device_softc {
 		BUS_INVALID = 0,
 		BUS_pci,
 		BUS_uhub,
+		BUS_fixed,
+			// a device the driver finds itself (on an SoC), nothing to
+			// enumerate
 	} bus;
 
 	struct pci_info	pci_info;
 	bool			is_msi;
 	bool			is_msix;
+	uint32			msi_start_vector;
 
 	struct freebsd_usb_device* usb_dev;
 };
@@ -52,6 +57,7 @@ enum {
 
 extern struct net_buffer_module_info *gBufferModule;
 extern pci_module_info *gPci;
+extern pci_intx_module_info* gPciIntx;
 
 
 static inline void
@@ -63,6 +69,8 @@ __unimplemented(const char *method)
 }
 
 #define UNIMPLEMENTED() __unimplemented(__FUNCTION__)
+
+void suspend_resume_devices(bool resume);
 
 status_t init_mbufs(void);
 void uninit_mbufs(void);

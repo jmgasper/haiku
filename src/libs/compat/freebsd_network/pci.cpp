@@ -23,6 +23,7 @@ extern "C" {
 
 
 pci_module_info *gPci;
+pci_intx_module_info* gPciIntx;
 
 
 status_t
@@ -34,6 +35,16 @@ init_pci()
 	status_t status = get_module(B_PCI_MODULE_NAME, (module_info **)&gPci);
 	if (status != B_OK)
 		return status;
+	// ARM64 drivers must not fall back to a truncated interrupt-line byte if
+	// loading the wide interface fails. Older platforms retain their fallback.
+	status = get_module(B_PCI_INTX_MODULE_NAME, (module_info**)&gPciIntx);
+#if defined(__aarch64__)
+	if (status != B_OK) {
+		put_module(B_PCI_MODULE_NAME);
+		gPci = NULL;
+		return status;
+	}
+#endif
 
 	return B_OK;
 }
@@ -42,8 +53,14 @@ init_pci()
 void
 uninit_pci()
 {
-	if (gPci != NULL)
+	if (gPciIntx != NULL) {
+		put_module(B_PCI_INTX_MODULE_NAME);
+		gPciIntx = NULL;
+	}
+	if (gPci != NULL) {
 		put_module(B_PCI_MODULE_NAME);
+		gPci = NULL;
+	}
 }
 
 
@@ -271,8 +288,10 @@ pci_alloc_msi(device_t dev, int *count)
 		return ENODEV;
 	}
 
-	((struct root_device_softc *)dev->root->softc)->is_msi = true;
-	info->u.h0.interrupt_line = startVector;
+	struct root_device_softc* root
+		= (struct root_device_softc*)dev->root->softc;
+	root->is_msi = true;
+	root->msi_start_vector = startVector;
 	return EOK;
 }
 
@@ -282,8 +301,11 @@ pci_release_msi(device_t dev)
 {
 	pci_info* info = get_device_pci_info(dev);
 	gPci->unconfigure_msi(info->bus, info->device, info->function);
-	((struct root_device_softc *)dev->root->softc)->is_msi = false;
-	((struct root_device_softc *)dev->root->softc)->is_msix = false;
+	struct root_device_softc* root
+		= (struct root_device_softc*)dev->root->softc;
+	root->is_msi = false;
+	root->is_msix = false;
+	root->msi_start_vector = 0;
 	return EOK;
 }
 
@@ -324,8 +346,10 @@ pci_alloc_msix(device_t dev, int *count)
 		return ENODEV;
 	}
 
-	((struct root_device_softc *)dev->root->softc)->is_msix = true;
-	info->u.h0.interrupt_line = startVector;
+	struct root_device_softc* root
+		= (struct root_device_softc*)dev->root->softc;
+	root->is_msix = true;
+	root->msi_start_vector = startVector;
 	return EOK;
 }
 

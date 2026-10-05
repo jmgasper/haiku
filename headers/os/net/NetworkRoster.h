@@ -35,6 +35,9 @@ public:
 									wireless_network& network) const;
 			status_t			AddPersistentNetwork(
 									const wireless_network& network);
+			status_t			AddPersistentNetwork(
+									const wireless_network& network,
+									const char* password);
 			status_t			RemovePersistentNetwork(const char* name);
 
 			status_t			StartWatching(const BMessenger& target,

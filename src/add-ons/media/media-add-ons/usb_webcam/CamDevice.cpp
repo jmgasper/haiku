@@ -36,6 +36,8 @@ struct { const char *name; SensorInstFunc instfunc; } kSensorTable[] = {
 CamDevice::CamDevice(CamDeviceAddon &_addon, BUSBDevice* _device)
 	: fInitStatus(B_NO_INIT),
 	  fSensor(NULL),
+	  fDeframer(NULL),
+	  fDataInput(NULL),
 	  fBulkIn(NULL),
 	  fIsoIn(NULL),
 	  fLastParameterChanges(0),
@@ -44,7 +46,9 @@ CamDevice::CamDevice(CamDeviceAddon &_addon, BUSBDevice* _device)
 	  fSupportedDeviceIndex(-1),
 	  fChipIsBigEndian(false),
 	  fTransferEnabled(false),
-	  fLocker("WebcamDeviceLock")
+	  fPumpThread(-1),
+	  fLocker("WebcamDeviceLock"),
+	  fDumpFD(-1)
 {
 	// fill in the generic flavor
 	_addon.WebCamAddOn()->FillDefaultFlavorInfo(&fFlavorInfo);
@@ -72,7 +76,8 @@ CamDevice::CamDevice(CamDeviceAddon &_addon, BUSBDevice* _device)
 
 CamDevice::~CamDevice()
 {
-	close(fDumpFD);
+	if (fDumpFD >= 0)
+		close(fDumpFD);
 	free(fBuffer);
 	if (fDeframer)
 		delete fDeframer;
@@ -214,6 +219,14 @@ CamDevice::AcceptVideoFrame(uint32 &width, uint32 &height)
 		return err;
 	SetVideoFrame(BRect(0, 0, width - 1, height - 1));
 	return B_OK;
+}
+
+
+float
+CamDevice::FrameRate()
+{
+	// frames per second; 0 if the device has no say in it
+	return 0;
 }
 
 

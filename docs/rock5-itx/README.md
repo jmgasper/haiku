@@ -1,0 +1,856 @@
+# Haiku on ROCK 5 ITX
+
+This is jmgasper's experimental ARM64 board fork. The lab can build, deploy,
+boot, test and recover the dedicated board remotely. Native ROCK boot and
+driver support are tracked separately in [STATUS.md](STATUS.md) and the
+[hardware roadmap](ROADMAP.md). This is not a fully supported Haiku image yet.
+The [GitHub work items](TRACKING.md) split the roadmap into issues and milestones.
+
+The owner has expanded the scope to a full Rock 5 ITX system, beginning with
+the [regular ARM64 image](FULL-BUILD.md) and an NVMe installation. GPU,
+networking, media, audio and AX210 work are requested in sequence. The
+[board analog audio](AUDIO.md) driver now publishes the ES8316 path through
+multi_audio and completes native 48 kHz stereo playback with zero underruns.
+
+The system-default OpenGL candidate ([MESA-SYSTEM.md](MESA-SYSTEM.md), Mesa
+at `3139063445` on the qualified +256 image) runs GLTeapot on Mali with no
+launch environment on two native boots: the Mesa backend takes the Mali
+device and its firmware from installed defaults, the CPU polygon path is on
+by default, and the GLVND/Mesa libraries and EGL vendor file are installed
+system-wide. Every earlier Mesa fixture passes on the same boots and the
+emulator gates show the software fallback without a device. It is
+qualified (2026-09-19, `…automated-mali-system-opengl/20260919T124336Z-d49da9`)
+with the independent Linux eMMC readbacks now run from the owner's SD-card
+Debian, the lab's new recovery OS.
+
+The +320 USB image runs [2D and 3D together on both connectors](DISPLAY.md):
+one 3840x1080 app_server desktop across HDMI1 and the DisplayPort-bridged
+port, a hardware cursor window on each port, and the qualified system-default
+Mesa on the Mali-G610. On two native boots GLTeapot, started with no
+environment, renders through the installed system OpenGL at 59 FPS on the
+desktop, and the NanoKVM captures it on HDMI1's half.
+
+The +315 USB image completes the [dual-display desktop](DISPLAY.md): one
+3840x1080 app_server desktop across both HDMI ports, with a hardware cursor
+window on each port. A pointer on the seam shows half on each screen. On
+both native boots the NanoKVM on the DisplayPort-bridged port captures the
+right half with the probe's cursor on it. The owner confirmed the left half
+on a monitor attached to HDMI1.
+
+The +313 USB image gives app_server [one desktop spanning both HDMI
+ports](DISPLAY.md): a 3840x1080 frame buffer whose left half HDMI1 scans
+(its port raised to 1080p by the driver's mode set) and whose right half
+the DisplayPort-bridged port scans. On both native boots the NanoKVM on the
+second port captures the desktop's right half, with the Deskbar and half of
+the centred pointer. HDMI1's half is checked by register read-back because
+no display is attached to it. The hardware cursor across both ports and
+mode changes on the spanning desktop come next.
+
+The +310 USB image runs [app_server on the second connector](DISPLAY.md)
+at 1920x1080: with the dp-desktop profile the driver trains DP1, scans its
+own frame buffer with a window on video port 1, moves the kernel console
+there and drives app_server's retrace from that port at 60 Hz. On both
+native boots the NanoKVM captures the full Haiku desktop from the
+DisplayPort-bridged HDMI port. The hardware cursor, mode changes and one
+desktop spanning both ports come next.
+
+The +308 USB image shows [Haiku's desktop on the second connector](DISPLAY.md):
+after training DP1 and starting video port 1, a second VOP2 window
+(ESMART0) on that port scans the desktop's frame buffer. On both native
+boots the NanoKVM captures Tracker, the Deskbar and the pointer on the
+DisplayPort-bridged HDMI port. The desktop is still the firmware's 640x480
+buffer, shown over the port's 1080p background. app_server driving that
+port at its own mode, and one wide desktop spanning both ports, come next.
+
+The +306 USB image puts the [first picture on the second connector](DISPLAY.md):
+Haiku brings DisplayPort TX1 and USBDP PHY1 up itself, reads the sink's
+DPCD and EDID over AUX through the RA620 bridge, and trains the link at
+5.4 Gb/s over two lanes on the first attempt. It then drives video port 1
+at 1920x1080@60 into DP1. On both native boots the NanoKVM captures the
+port's magenta background from that connector, and HDMI1's port is left
+untouched. A frame buffer window on that port and a second app_server
+screen come next.
+
+The +300 USB image adds a read-only [observation of the second connector's
+DisplayPort path](DISPLAY.md) to the qualified desktop-cursor cycle: on
+two native boots the DisplayPort TX1 block is powered, clocked and idle
+with its PHY interface parked, the USBDP PHY1 is in low power, and the
+hot-plug pin is a plain input reading low with nothing on the connector;
+every word agreed between samples and boots. Bringing that path up (PHY,
+link training through the RA620 bridge, a second video port) needs a
+monitor or an HDMI dummy plug on the second connector, which is not
+attached.
+
+The +297 USB image qualifies [app_server's pointer on the hardware cursor](DISPLAY.md)
+on two native boots: on the desktop cursor profile the accelerant exports
+the cursor hooks, app_server hands its 22x22 pointer to the driver's second
+VOP2 window at start and stops drawing it into the frame buffer, the window
+reads back at the desktop's centre, survives the 720p/1080p mode changes
+and DPMS, and the NanoKVM captures show Haiku's hand pointer there; the
+probe's own placements, clipping, hide and restore of app_server's bitmap
+pass on the same boots. The HDMI1 "2D" set (EDID, own frame buffer,
+retrace, mode changes, DPMS, hardware cursor) is complete; drawing itself
+is not accelerated, and the second (DisplayPort-bridged) HDMI port and a
+spanning desktop remain open.
+
+The +294 USB image qualifies a [hardware cursor on HDMI1](DISPLAY.md) on
+two native boots: on the probe-only cursor profile the driver programs a
+second VOP2 window (ESMART3, blended by the port's alpha mixer) with a
+64x64 straight-alpha bitmap over the desktop window, clips it at every
+edge, hides it and restores app_server's state, with every window register
+read back and the NanoKVM captures showing the white, black, transparent
+and half-transparent quadrants where expected and the desktop untouched.
+The cause of an earlier dark frame is recorded: the firmware runs the
+desktop window with the AXI read ids Linux assigns to ESMART3, so the cursor
+window takes ids derived from the desktop window's. app_server still draws
+its software pointer on this image; handing its pointer to the window (the
+desktop cursor profile) is the next stage, and the second
+(DisplayPort-bridged) HDMI port remains open.
+
+The +285 USB image qualifies [DPMS power control on HDMI1](DISPLAY.md) on
+two native boots: through the accelerant's DPMS hooks the driver stops the
+video port and powers the HDPTX PHY down, so the sink loses its signal, the
+frame-start interrupts stop and the NanoKVM has no frame to capture, and
+brings the current mode back with the full mode set in under a millisecond,
+with retrace at 60 Hz again and the desktop restored. The 720p/1080p mode
+changes and the earlier read-only, EDID, scanout-swap, accelerant and
+retrace checks pass on the same boots, and app_server's start-up DPMS-on
+request is answered as a no-op. A cursor window and the second
+(DisplayPort-bridged) HDMI port remain open.
+
+The +282 USB image qualifies [native mode changes on HDMI1](DISPLAY.md) on
+two native boots: with the opt-in mode-set profile the driver switches the
+port app_server draws to from the firmware's 1920x1080@60 to 1280x720@60 and
+back, reprogramming the HDPTX PHY PLL and lanes, the VOP2 port timing and
+window, and the AVI infoframe, while the accelerant reports each mode and
+its retrace keeps running at 60 Hz. The NanoKVM shows the 720p signal as the
+desktop's top-left crop and the normal desktop after the return; normal
+reboot, verified shutdown and recovery pass, and the earlier read-only,
+EDID, scanout-swap, accelerant and retrace checks pass on the same boots.
+A cursor window and the second (DisplayPort-bridged) HDMI port remained
+open.
+
+The +277 USB image qualifies the [board accelerant with vertical
+retrace](DISPLAY.md) on two native boots: app_server runs on
+`rk3588_display.accelerant`, draws the desktop into a driver-owned contiguous
+frame buffer that the live HDMI1 window scans at the firmware's 1920x1080
+mode, reports the sink's EDID, and its retrace semaphore is released by the
+VOP2 frame-start interrupt at 60.0 Hz. Normal reboot, verified shutdown and
+recovery pass; the earlier read-only, EDID and scanout-swap checks pass on
+the same boots. A cursor window, power control, a real mode change and the
+second (DisplayPort-bridged) HDMI port remain open.
+
+The +269 USB image qualifies the first [VOP2 write path](DISPLAY.md): with
+the opt-in scanout profile the driver points the live HDMI1 window at its own
+contiguous colour-bar buffer, commits the port and waits for the
+configuration-done bit, and restores the firmware framebuffer, on two native
+boots. The NanoKVM capture shows the bars during the 30 s hold and the normal
+desktop afterwards, the observation is unchanged across the swap, and normal
+reboot, verified shutdown and recovery pass. The first candidate (+267)
+verified the address before the port's next frame start and is retained.
+
+The +264 USB image qualifies the [EDID read](DISPLAY.md) over the HDMI TX1
+I2C master on two native boots: with the opt-in profile the driver reads the
+NanoKVM's 256-byte EDID (VCS `0x1145`, EDID 1.3 with one CEA-861 extension,
+preferred 1920x1080 at 148.5 MHz) one byte per transfer in about 52 ms per
+block, and the read-only observation before and after the read is identical.
+Both QEMU modes, the Mali regressions, normal reboot, verified shutdown and
+automatic recovery pass; the desktop was viewed on both boots. Native mode
+setting and the second (DisplayPort-bridged) HDMI port remain open.
+
+The +263 USB image qualifies the first [native display observation](DISPLAY.md)
+on two native boots: the read-only `rk3588_display` driver admits the VOP2,
+HDMI TX1, HDPTX PHY1 and control-block description and reads the firmware
+display state without a register write. The firmware drives the HDMI1 port
+from VOP2 video port 2 at 1920x1080 (2200x1125 total) through ESMART2 at
+`0xed280000`; the HDMI1 hot-plug level, PHY lock and TMDS link are recorded.
+Both QEMU modes, the earlier Mali regressions, normal reboot, verified shutdown
+and automatic recovery pass. A first +259 run panicked reading a write-only
+HDMI register and is retained.
+
+The +256 Mesa fix, on the retained +254 Haiku kernel, qualifies the bounded
+[GLTeapot and polygon tests](MESA-APPLICATION.md) on two native boots. All 128
+polygon frames pass, including complete immediate-mode boundaries, points and
+quad culling. Four normal GLTeapot launches produce 32 reviewed frames and
+8,732 completed GPU submissions with the correct quad wireframe. The earlier
+GPU suite, both QEMU modes, normal recovery and independent integrity checks
+pass. The private renderer still uses opt-in CPU geometry with Mali rasterization;
+broader application compatibility, system integration and native display control
+remain open.
+
+The fix clears the CPU interpreter's cached binding before freeing shader
+tokens. A deterministic address-reuse test fails four checks before the fix,
+then passes all ten under ASan/UBSan and on each native boot. The +255 diagnostic
+established that new shader inputs were running against old instructions.
+Earlier failed candidates and their original evidence remain preserved.
+
+The +243 USB image qualifies [reset notification for live Mesa contexts](MESA-LOSS.md)
+on two native boots. Both shared contexts receive one loss notification, ignore
+further rendering and close completely; fresh contexts then render without a
+Haiku reboot. All 181,972 before/fresh pixels, 3,584 guards and 104,496 ignored
+readback bytes pass. Both QEMU modes, earlier regressions, normal recovery and
+independent integrity checks pass. The earlier failed trials are preserved.
+General application compatibility, arbitrary hangs and native display control
+remain open.
+
+The +238 USB image qualifies [bounded GPU command-fault recovery](MESA-RECOVERY.md)
+on two native boots. Three affected jobs receive errors per boot; reset,
+address-space cleanup and platform restoration are verified. After all affected
+clients close, fresh native queues and Mesa contexts work without a Haiku
+reboot. All 155,976 subsequent pixels and 3,072 guards pass, together with
+earlier regressions, both QEMU modes, normal recovery and independent integrity
+checks. The separate +243 fixture above qualifies retained Mesa-context
+notification; arbitrary hangs and native display control remain open.
+
+The +236 USB image qualifies [termination during pending graphics work](MESA-PENDING.md)
+on two native boots. Both a fence timeout and the driver's actual close-time
+queue state establish unfinished work. Survivor rendering, fresh-process reuse
+and allocation cleanup pass; all fourteen completed frames, 90,986 pixels and
+1,792 guards match. Earlier graphics regressions, both QEMU modes, normal
+recovery and independent integrity checks pass. Active work can complete while
+close waits; immediate preemption and GPU fault/reset recovery remain open.
+
+The +234 USB image qualifies [concurrent graphics applications](MESA-CONCURRENCY.md)
+on two native boots. All 128 paired draw rounds overlap; all 260 frames,
+1,689,740 pixels, 33,280 guards and 532 submissions pass. Normal process
+retirement, survivor rendering, fresh-process reuse and allocation cleanup
+pass. Both QEMU modes, earlier graphics regressions, normal recovery and
+independent integrity checks pass. Each graphics fixture logs to RAM before
+its checked transfer. Pending-work termination, GPU fault/reset recovery and
+native display control remain open.
+
+The +232 USB image qualifies [sustained GPU rendering](MESA-SUSTAINED.md)
+on two native boots. Four retained contexts each complete at least sixty
+seconds of measured rendering with stable tiler-heap use. All 91,648 frames,
+595,620,352 pixels, 11,730,944 guard bytes and 183,304 submissions pass; fixed
+heaps complete 147,196 incremental passes. Earlier graphics fixtures, both
+QEMU modes, normal reboot/shutdown, recovery and independent integrity checks
+pass. Full logs are captured in RAM and retrieved with checked, paced transfers.
+Pending-work termination, GPU fault/reset recovery and native display control
+remain open.
+
+The +227 USB image qualifies [fixed tiler heaps and incremental rendering](MESA-HEAP-LIMIT.md)
+on two native boots. Mesa completes 36 incremental passes after 36 requests
+for more heap memory are refused. All 51,992 pixels, 1,024 guards, 24 submissions
+and allocation baselines pass. Earlier graphics tests, both QEMU modes, normal
+reboot/shutdown, recovery and independent integrity checks pass. The OpenGL Kit
+fixture now waits for completed window updates before screen capture. GPU
+fault/reset recovery and native display control remain open.
+
+The +224 USB image qualifies [firmware tiler heap growth](MESA-HEAP-PRESSURE.md)
+on two native boots. Four contexts each grow from one chunk to four, then
+seven; all 24 firmware requests receive memory. All 51,992 pixels, 1,024 guards,
+24 submissions and allocation baselines pass. Previous graphics regressions,
+both QEMU modes, normal reboot/shutdown, recovery and independent integrity
+checks pass. GPU fault/reset recovery remains open.
+
+The +221 USB image qualifies [graphics-process cleanup](MESA-LIFETIME.md)
+on two native boots. A process is terminated after completed rendering while
+its resources remain open; the survivor renders correctly and a fresh context
+works afterward. All 51,992 pixels, 1,024 guards and allocation baselines pass.
+Earlier GPU/window fixtures, both QEMU modes, normal reboot/shutdown, recovery
+and independent integrity checks pass. Termination during pending graphics
+work and GPU fault/reset recovery remain open.
+
+The +219 USB image qualifies [six GLES pipeline operations](MESA-PIPELINE.md)
+on two native boots: texture upload/sampling, depth, stencil, blending, scissor
+and render-to-texture. All 155,976 pixels, 3,072 guards and sixty GPU submissions
+pass, with allocations restored after each context. Both QEMU modes, earlier
+GPU/window fixtures, normal reboot/shutdown, recovery and independent storage
+integrity pass. Conformance, termination during pending graphics work and
+GPU fault recovery remain open.
+
+The +217 USB image qualifies [normal OpenGL Kit rendering](MESA-GLVIEW.md)
+on two native boots: two live BGLView instances, desktop OpenGL 3.1, alternating
+draws, resizing and context retirement. All 32 frames, 168,960 GL pixels,
+168,960 screen pixels and 4,096 guards pass; all 104 submissions complete and
+allocation counts return to baseline. Previous GPU regressions, both QEMU modes,
+normal reboot/shutdown, recovery and independent integrity checks also pass.
+This is a bounded application fixture using private libraries and CPU bitmap
+presentation. General compatibility and GPU fault recovery
+remain open.
+
+The +215 USB image qualifies [native GPU rendering in EGL windows](MESA-WINDOW.md)
+on two boots. All 16 frames, 84,480 bitmap pixels and 84,480 independently
+captured screen pixels pass, including resizing and context retirement. All
+36 window submissions complete, allocation counts return to baseline, and the
+previous offscreen/kernel GPU regressions pass. Both QEMU modes, normal
+reboot/shutdown, recovery and independent storage/image integrity pass. The GPU
+renders the content and the CPU copies it into Haiku's existing display path.
+General OpenGL application compatibility and native display control remain
+open. The failed first native attempt and its rectangle correction are retained.
+
+The +210 USB image qualifies [native Mesa/Panfrost rendering](MESA.md) on two
+Haiku boots: four full RGBA8 images over two contexts per boot, with all 32,768
+pixels matching the Linux reference byte for byte. Mesa completes all 32 GPU
+submissions and allocation counts return to baseline. Pbuffer rendering,
+EGL termination/reinitialization, previous GPU regressions, both QEMU modes,
+normal reboot/shutdown, recovery and independent storage/image integrity pass.
+The complete Mesa/GLVND port and reconstruction recipe are saved in this fork.
+The failed first attempt and its mutex correction remain recorded. Conformance,
+sustained rendering, native display control and GPU fault recovery remain open;
+the desktop still uses the EFI framebuffer.
+
+The +209 image qualifies [cached GPU property queries](GPU.md#cached-gpu-properties)
+on two native boots: 86 checked queries, including 64 while GPU work is pending,
+with identical hardware and firmware values. Invalid requests, foreign/inherited
+handles and failed copyout are rejected without changing queue state or allocation
+counts. All earlier GPU regressions pass: 1,696 accepted submissions, 1,432 checked
+completions and eight application compute shaders. All 147 host checks, the full
+ARM64 build, both QEMU modes, both desktops, normal recovery and independent
+storage/image integrity pass. These interfaces support the later +210 Mesa port.
+
+The +207 image qualifies [native tiler heaps](GPU.md#native-tiler-heaps) on two
+ROCK boots. Each checks 5,159 GPU memory samples across five 2 MiB chunks,
+queued heap data across address reuse, HEAP_SET and normal/killed process cleanup.
+All earlier buffer, VM, queue, compute and synchronization regressions pass:
+1,696 accepted submissions, 1,432 checked completions and eight application
+compute shaders across both boots. Driver and kernel allocation counts return
+to baseline. All 146 host checks, the full ARM64 build, both QEMU modes, both
+desktops, normal recovery and independent storage/image integrity pass. The
+failed +206 command encoding and an initial +207 EL2 USB timeout remain recorded;
+the corrected native trial and unchanged-image EL2 repeat pass. Mesa adaptation
+and rendering are next. The desktop still uses the EFI framebuffer; native
+firmware OOM/growth and automatic GPU reset remain unqualified.
+
+The +195 image
+passes four compute-shader submissions and four CS memory-store regressions
+across two native Haiku boots.
+Haiku manages firmware and application page tables, group/queue setup, fresh
+completion objects and actual interrupts. Every data word and guard matches
+the Linux reference. Group termination, MCU halt/stop, cache flush, both
+address-space removals and platform restoration pass. Both desktops, normal
+reboot/shutdown, automatic recovery and independent recovery-image/eMMC integrity
+pass. The image retains the qualified [ARM64 instruction-cache alias correction](ARM64-ICACHE.md).
+All 139 host checks, the ARM64 build and both QEMU modes pass; QEMU does not
+emulate this GPU. The shader and its complete descriptor/command allocation
+match the separately qualified Linux reference. Hardware rendering and Mesa
+integration are next. The desktop still uses the EFI framebuffer.
+
+A separate Linux Mesa/Panfrost reference now renders four checked images on
+the board across two contexts. Every pixel matches; buffer, VM, group, heap
+and synchronization-object counts balance. Both emulated boot modes, native
+recovery and independent storage/image integrity pass. The next Haiku work is
+the persistent userspace interface needed to run that rendering workload.
+Its first client/CPU-buffer layer now passes on the +198 image: per-open handles,
+shared CPU mappings, fork, mappings surviving handle/descriptor closure and normal
+and killed process cleanup. Both native boots retain the compute regression and
+pass normal recovery and independent storage checks. All 141 host checks, the
+ARM64 build and both QEMU modes pass.
+
+The +200 image extends this with persistent GPU VM objects and atomic mapping
+updates. Both native boots pass partial unmaps, failed-update rollback, buffers
+retained after handle removal and normal/killed process cleanup, with independent
+kernel-area counts. All 142 host checks, the ARM64 build, both QEMU modes, the
+previous compute regressions and recovery/integrity checks pass. These operations
+prepare GPU page tables; the later +202 queue runtime activates them, and +204
+adds shared synchronization. Tiler heaps and Mesa adaptation are still needed
+for Haiku rendering. [GPU.md](GPU.md#persistent-gpu-address-spaces) records the scope.
+
+The Samsung 950 Pro now has a full-capacity Haiku development installation:
+a 512 MiB EFI partition and a 238 GiB BFS volume. Native Installer copying,
+package and EFI hashes, filesystem checks and large-file readback after normal
+reboot and shutdown/startup have passed. Repeated SSD boots reached the desktop;
+a USB control failure interrupted one check session, and a subsequent repeat
+with results captured on UART passed. PCIe support currently requires the
+explicit
+[installed-firmware profile](PCIE-FIRMWARE.md). Earlier bounded raw I/O and
+concurrent writes with DMA buffers above 4 GiB passed explicit drive-cache
+flushes, normal reboot and shutdown/startup, with independent Linux hashes.
+This required correcting the probe: raw-device `fsync()` had not flushed the
+SSD. The old raw test ranges are now inside the BFS volume and must not be
+reused. Further write tests use regular files. A newer USB-booted driver has
+passed BFS free-space TRIM on the SSD, preserving file/package hashes and the
+complete EFI partition through an installed-system boot and recovery. The SSD
+has since been updated to include that driver; installed-system TRIM and
+large-file/package readback across normal reboot also passed. The latest
+ITS1 NVMe MSI-X driver has passed installed-system TRIM and subsequent boot
+readback. The latest qualified SSD baseline is `hrev60097+156`, integrating the qualified board
+drivers and the PCIe training fix. Two installed boots passed component/package
+hashes, both 2 GiB test regions, startup snapshots, filesystem checks,
+concurrent Ethernet traffic, read-only eMMC checks and normal reboot to recovery.
+Linux independently verified the eMMC files, filesystem and reference regions.
+The first new SSD boot encountered SATA Link Training, waited 1.6 ms for it to
+clear, then initialized AHCI and all four ports. The second found the link
+ready. [PCIe training](PCIE-TRAINING.md) and
+[SSD integration](SSD-INTEGRATION.md) record the original failure, retained
+incomplete trials and accepted results.
+The earlier `+88` startup stall, sustained storage, error recovery and the
+remaining board hardware still need qualification.
+
+Both onboard Ethernet ports now pass DHCP, static IPv4 and static IPv6 checks,
+including simultaneous sending and receiving before and after normal reboot.
+The SFP-connected port negotiates at 2.5 Gbit/s; the original connection is
+1 Gbit/s. The latest USB image also passes IPv6 address replacement and neighbor
+discovery in both directions, correct subnet selection with a default IPv6
+route present, and route-query diagnostics. Throughput remains below the recorded Linux
+reference, and automatic IPv6 configuration, sustained load and fault recovery
+remain open. See [ETHERNET.md](ETHERNET.md) for the measured scope and evidence.
+
+The `+165` USB image passes native ARM64 system-profiler checks across two
+boots, including process exit, fault recovery and user symbols for programs
+started during sampling. [PROFILING.md](PROFILING.md) records the corrections
+and tested limits. The latest [Ethernet profiling](NETWORK-PROFILING.md)
+experiment passed twenty checked streams across five trials, including resolved
+user symbols during single-PC and full-stack sampling. The subsequent `+168`
+[cached packet DMA comparison](CACHED-PACKET-DMA.md) passed four native boots
+and 48 checked streams, with higher short-trial median throughput on both ports.
+The option remains disabled by default; sustained performance is unqualified.
+The [recovery-media correction](RECOVERY-MEDIA.md) also passed automatic Linux
+recovery and independent image/eMMC integrity checks. An earlier full-stack
+trial exposed a continuing but very slow TCP stream; its cause remains open.
+
+The `+174` USB image also passes two native boots exercising 280 simultaneous
+process maps across all eight CPUs, deliberate memory-mismatch cleanup and
+subsequent reuse. It reserves address-space identifier zero for the empty user
+page table. Both QEMU modes, 119 host checks, network transfers, normal reboot
+and independent recovery/storage checks pass; [ARM64-ASID.md](ARM64-ASID.md)
+records the evidence and limits. Its SSD update passed installation checks and
+a separate clean recovery witness, but the first installed boot later exposed
+an [ARM64 page-aging failure](ARM64-PAGE-AGING.md). The corrected kernel is
+being validated; the physically updated `+174` SSD is not yet a qualified baseline.
+
+The latest USB image also initializes the ASM1164 SATA controller on its four
+direct ports before and after normal reboot. The ARM64 AHCI driver passes
+two-disk read/write, flush and persistence checks in QEMU. No physical SATA
+disk is attached, so native disk I/O remains untested; see [SATA.md](SATA.md).
+The [SSD integration checkpoint](SSD-INTEGRATION.md) records the `+156` update,
+two accepted SSD boot cycles and independent Linux eMMC integrity checks, with
+a link to the earlier `+148` update and SATA startup failure.
+
+The onboard eMMC passes file writes, explicit flush and persistence after normal
+reboot and orderly shutdown/startup in eight-bit mode, including CPU buffers
+forced above 4 GiB, with independent Linux file, filesystem and reference checks. Native
+cached writes and device-cache flush now also pass normal reboot and orderly
+shutdown/startup. A four-writer, 128 MiB cached file test also passes normal
+reboot and independent Linux readback. Faster clocks, sustained/error recovery, power-loss integrity
+and Haiku boot from eMMC remain pending.
+The ordinary driver profile defaults to read-only access. The reference,
+retained failures and tested scope are in [MMC.md](MMC.md).
+
+This fork uses AI-assisted development at its owner's request. Upstream Haiku
+does not accept AI-assisted contributions. Board work uses `rock5-itx` and its topic
+branches; current GPU work is on `rock5-mali-csf`. `master` is retained as an
+upstream baseline. There is no upstream PR.
+
+## Workspace
+
+All local work goes on the mounted `/mnt/HaikuWork` filesystem. The scripts fail
+if the mount is missing. They use existing system tools but do not install onto
+the main drive or use Docker storage. Default parallelism is eight jobs.
+
+| Directory under `/mnt/HaikuWork` | Contents |
+| --- | --- |
+| `src/haiku` | This fork |
+| `src/buildtools` | Pinned Haiku cross-toolchain sources, including GCC dependencies |
+| `toolchains/bin`, `toolchains/host` | Jam and locally extracted host utilities |
+| `build/arm64` | ARM64 compiler, packages, generated files and incremental build |
+| `artifacts` | Build logs, immutable images, manifests, QEMU and hardware evidence |
+| `cache`, `tmp` | Host package downloads, Python caches and temporary files |
+| `state` | Local lab configuration, API session and operation locks |
+| `nanokvm` | Initial evaluation, SSH identity/config, recovery snapshots and evidence |
+
+Read the [upstream build guide](https://www.haiku-os.org/guides/building/) for host
+requirements. This workstation already has GCC/G++, make, bison, flex, texinfo,
+autoconf/automake, nasm, wget, unzip, xorriso, QEMU ARM64 firmware and the zlib,
+zstd, curl and OpenSSL development libraries. `mtools` was downloaded with
+`apt-get download` into `cache/debs` and extracted using `dpkg-deb -x` into
+`toolchains/host`; no system installation was needed. Buildtools bundles its
+GMP, MPFR, MPC and ISL sources.
+
+## Build
+
+Run these commands in Bash. The lock prevents simultaneous builds sharing the
+same output directory. The source lock is [sources.json](../../tools/rock5-itx/sources.json).
+
+```sh
+cd /mnt/HaikuWork/src/haiku
+source tools/rock5-itx/env.sh
+bash tools/rock5-itx/check.sh
+bash tools/rock5-itx/build.sh
+python3 tools/rock5-itx/lab.py artifact /mnt/HaikuWork/build/arm64/haiku-arm64-mmc.image
+```
+
+The final command prints a manifest and saves a `.json` next to the immutable
+`.img` in `artifacts/images`. Use that JSON path below. It records SHA-256, size,
+source and toolchain revisions, host tools and downloaded package checksums.
+Commit source changes before release builds; dirty development builds are
+identified explicitly. This is revision-pinned reconstruction, not a claim of
+bit-for-bit reproducibility across host distributions or build dates.
+
+Inspect pinned ELF snapshots with read-only tools such as `readelf` or
+`objdump`. Use separate working copies and explicit output paths with
+`objcopy`, which can rewrite its input and discard Haiku's appended resources.
+
+The image uses Haiku's existing `@minimum-mmc` recipe with a 300 MiB BFS volume
+and an EFI partition containing `EFI/BOOT/BOOTAA64.EFI`. It can be presented as
+a USB disk. The target filename ending in `.image` becomes `.img` when packaged
+because NanoKVM 2.4.3 lists `.img` and `.iso` files.
+
+For an upstream update, fetch `upstream`, merge the chosen revision into a
+topic branch based on `rock5-itx`, update `sources.json` when changing the
+toolchain, rebuild, and run both QEMU and hardware gates before updating the
+known-good state. Do not rebuild cross-tools over a compiler used by an active
+build. Preserve failed artifacts when investigating regressions.
+
+## QEMU and hardware trials
+
+For a complete iteration from an active development session, run:
+
+```sh
+bash tools/rock5-itx/iterate.sh
+```
+
+This checks the tools, builds, packages, requires the QEMU first-login serial
+marker without a kernel panic, and then runs a hardware trial with recovery.
+Hardware results remain observations until their milestone evidence is reviewed.
+Individual stages are also available:
+
+```sh
+python3 tools/rock5-itx/lab.py qemu /mnt/HaikuWork/artifacts/images/IMAGE.json --el2 --seconds 90
+python3 tools/rock5-itx/lab.py doctor
+python3 tools/rock5-itx/lab.py cycle /mnt/HaikuWork/artifacts/images/IMAGE.json --seconds 60
+python3 tools/rock5-itx/lab.py recover
+```
+
+Replace `IMAGE.json` with the emitted manifest filename. QEMU uses its own
+copy-on-write overlay, a saved firmware copy, serial log, screenshot and JSON
+result. `--expect REGEX` makes a missing serial marker fail the command; choose
+a marker that proves the milestone under test. Without a marker the result is
+`observed`, requiring review of the evidence. A loader banner is not a desktop
+pass, and emulated PCI/USB is not RK3588 platform validation.
+
+`--el2` enables virtualization and GICv3 in QEMU, exercising the VHE handoff and
+EL2 physical timer used on the ROCK. The complete iteration uses this profile.
+Omit it to check the EL1 path separately. Current hardware boots start all eight
+CPUs, mount the NanoKVM disk through native platform EHCI, and display a basic
+Tracker/Deskbar desktop. NanoKVM keyboard and mouse input, USB RNDIS networking
+and authenticated remote commands also work. Stress acceptance and remaining
+hardware are tracked separately in [STATUS.md](STATUS.md).
+
+`--usb-controller ehci` puts QEMU's boot disk on a PCI EHCI controller to test
+the shared EHCI transfer code. The default remains xHCI. In this profile HID
+devices stay on a separate xHCI controller because QEMU's standalone EHCI has
+no low/full-speed companion. Native FDT attachment and noncoherent DMA still
+require a hardware trial.
+
+`cycle` owns the hardware lock, verifies local and remote image hashes, attaches
+the image in USB disk mode, resets the target, captures HDMI frames, and then
+returns the board to ROOBI even if the trial or capture fails. A failed recovery
+returns a nonzero status and preserves the error. Initial trials start from
+reachable ROOBI. Its SSH boot ID establishes recovery; the NanoKVM power LED
+API currently reports false even when the board is on.
+
+`deploy` performs upload and attachment without rebooting. It uploads through
+a temporary HTTP endpoint bound to the workstation's LAN address, serving
+exactly one artifact, then shuts the server down. An existing image is never
+overwritten. Each deployment gets a new writable copy on the NanoKVM so guest
+writes cannot affect a later trial or the local immutable artifact. The minimum
+image currently fails on write-protected USB media in QEMU, so media cannot
+simply be marked read-only. Use separate scratch disks for driver stress tests.
+If NanoKVM is exporting the entire `/data` partition, first ensure
+it is unmounted on the ROCK and detach it before writing to the image library.
+Do not edit a selected image in place. Retain the recovery image and latest
+known-good image when clearing old uploads for space.
+
+The ROCK's debug UART2 header is now connected to NanoKVM UART1 (`/dev/ttyS1`),
+with TX/RX crossed and a common ground. At 1,500,000 baud, 8N1 without flow
+control, boot output is readable, but longer input is corrupted; see
+[STATUS.md](STATUS.md). Local SSH capture checks and raw evidence live under
+`/mnt/HaikuWork/nanokvm/tools/test_uart.py` and `artifacts/serial/` respectively.
+`cycle` now uses this remote serial path by default, checks that capture is ready
+before deployment, and treats an SSH or UART disconnection as a failed trial.
+Raw bytes, worker diagnostics and capture metadata are saved with each run.
+An actual deploy/reset/recovery trial captured 30,556 bytes without transport errors.
+
+`state/lab.json` was initialized from [lab.example.json](../../tools/rock5-itx/lab.example.json).
+Set `serial_remote_device` to `/dev/ttyS1` for the NanoKVM connection. If the
+ordered USB UART is later connected to this workstation and verified, clear
+`serial_remote_device` and set `serial_device` to its stable
+`/dev/serial/by-id/...` path. Configure only one transport. Both paths capture
+a raw `serial.log` from before deployment through recovery and restore the
+previous terminal settings on normal shutdown. The workstation UART path is
+covered by PTY tests; the physical USB adapter has not yet been tested.
+
+SSH credentials, host keys and API cookies remain local. After an expired API
+session, run `python3 tools/rock5-itx/nanokvm.py login` to renew it; that command
+prompts for the web account password. Existing NanoKVM keyboard/mouse commands
+use `/mnt/HaikuWork/nanokvm/.venv/bin/python` with `websocket-client` installed.
+Interactive sessions validate this dependency before acquiring the hardware lock
+or deploying an image.
+
+GitHub Actions exercises control logic with mocked hardware. Builds and actual
+device access run here on the workstation. There is no unattended public
+self-hosted GitHub runner. Use these commands from an active development
+session; the scripts do not create an independent background coding service.
+
+## Authenticated lab sessions
+
+The lab profile also installs `rock5_memory_probe` under
+`/boot/home/config/non-packaged/bin`. For example, `rock5_memory_probe 8192 8 2`
+checks a locked 8 GiB allocation with eight workers and two passes. It rejects
+allocations larger than 75% of currently free RAM. `--inject-error` as the fourth
+argument deliberately corrupts one word and must produce a failing exit status.
+This is a short integrity diagnostic, not a sustained qualification workload.
+
+`rock5_memcpy_probe` calls the actual libroot copy entry and checks 51,301
+alignment, canary and protected-page cases. The optional QEMU `--memcpy` gate
+runs it before and after reboot; its manifest must pin the helper and libroot
+under `arm64_memcpy_test` (`probe_sha256` and `libroot_sha256`).
+
+`UserBootscript` reports CPU, RAM, USB and network inventory to `/dev/dprintf`.
+An authenticated lab shell requires a separate private image overlay containing
+both `home/config/settings/rock5-lab/enable-shell` and a generated password hash.
+The ordinary build contains neither credential nor opt-in file. The private
+listener binds to the RNDIS USB address, and the workstation reaches it through
+NanoKVM SSH forwarding. Keep the overlay, credentials and its image local.
+
+Create an overlay, validate it, and start a native session with:
+
+```sh
+python3 tools/rock5-itx/shell_image.py BASE_MANIFEST.json --rndis-only
+python3 tools/rock5-itx/qemu_shell.py PRIVATE_MANIFEST.json --memory --platform --cache --services --transfer --power --normal \
+    --result /mnt/HaikuWork/state/shell-qemu.json
+/mnt/HaikuWork/nanokvm/.venv/bin/python tools/rock5-itx/session.py \
+    PRIVATE_MANIFEST.json /mnt/HaikuWork/state/shell-qemu.json --seconds 1800
+```
+
+Use the manifest path printed by each preceding step. `--rndis-only` blocks the
+competing ECM configuration on QEMU's `usb-net` device. The QEMU profile uses four
+CPUs, EHCI boot storage, xHCI input/network devices, and localhost forwarding on
+an isolated virtual network. `--power` tests a software reboot, fresh login and
+power-off; `--normal` exercises desktop shutdown. Omit `--normal` for the quick
+kernel shutdown path. `--el1` checks HVC instead of the default EL2/SMC path.
+The shell client currently uses Python 3.12's standard-library telnet support.
+`--platform` checks pinned CPU clocks, fork/exec and protected-page faults.
+`--cache` replaces executable instructions across cache-line and page boundaries,
+calls Haiku's cache synchronization interface, and checks the result on each
+CPU. The installed `rock5_cache_probe 32` also runs this check on native ARM64;
+emulation does not establish physical cache coherence.
+`--services` forces reverse-ordered pipe descriptors and checks a negative
+control. `--transfer` verifies an 8 MiB binary round trip and rejects truncated
+input.
+
+Add `--nvme --power --normal` to attach a newly created 8 GiB sparse NVMe
+namespace. The check reads distinct 8 MiB patterns at offsets zero and 4 GiB,
+writes the first pattern at 4 GiB, verifies both regions, reboots
+and checks again. Five additional writes inside a seeded 2 MiB region at 6 GiB
+exercise partial sectors and lengths across the 128 KiB command boundary.
+Their complete surrounding region must match after each write and reboot.
+After normal shutdown, the host independently checks all three regions in the
+backing file. The namespace, fixture hashes and transcripts
+stay in the QEMU artifact directory; this command uses no physical drive.
+It tests the generic ARM64 NVMe path, independently of the ROCK's PCIe host.
+Haiku's raw-device `fsync()` is a no-op; this `dd`-based test does not establish
+that an NVMe Flush command was issued.
+
+The separate `rock5_nvme_stress` Jam target is an uploadable concurrent I/O
+diagnostic. Its arguments are `write|verify PATH OFFSET_MiB REGION_MiB WORKERS
+ROUNDS`. Write mode destroys exactly that region of an existing regular file
+or `/dev/disk/nvme/0/raw`. Use only an explicitly disposable, unmounted region
+that does not overlap an installation or another test. One to eight workers
+write distinct offset/round-dependent patterns in 1 MiB requests, flush, and
+verify one another's regions in reverse block order. Verify mode reads only
+the last round's expected pattern, for reboot/readback checks. On Haiku, workers
+are pinned across the available CPUs and check their CPU before each request.
+Regular files use `fsync()`; the raw NVMe namespace uses
+`B_FLUSH_DRIVE_CACHE`, since devfs does not forward `fsync()` to the driver.
+Each round logs its flush method and result, and a flush error fails the test.
+The region must divide evenly among workers. Host checks compare independent expected bytes,
+surrounding guards, read-only verification and deliberate corruption. The
+ten-minute process alarm does not guarantee recovery from a stuck kernel I/O;
+retain the lab's external recovery controls during a native trial.
+
+`--pci-config` additionally runs a read-only physical mapping diagnostic before
+and after reboot. Its `qemu` profile requires the exact extra-NVMe topology
+above. The installed `rock5_pci_config_probe rock5-efi-v1.1` profile instead
+reads only the known RK3588 segment-zero root and Samsung configuration pages
+at addresses used by the installed EDK2 v1.1 firmware. Both profiles request
+uncached, read-only mappings and check device identities before reading the
+remaining configuration words. This diagnostic does not enumerate a PCI bus
+or initialize a driver; it must not be used with a different firmware mapping.
+
+`session.py` owns the hardware lock, captures UART/HDMI, verifies the deployment
+and consumes one JSON command per line. Run it with an interactive stdin. For
+example, using the target address actually reported by that boot:
+
+```json
+{"action":"shell","target":"10.239.6.146","commands":"/mnt/HaikuWork/tmp/check.sh"}
+{"action":"upload","target":"10.239.6.146","source":"/mnt/HaikuWork/build/probe","name":"probe","executable":true}
+{"action":"capture"}
+```
+
+For a normal USB-booted trial, finish by scheduling Haiku's shutdown and then
+sending `{"action":"finish_stopped"}`. The controller checks the current UART
+system-off message, unchanged serial capture for 25 seconds and USB
+disconnection before selecting read-only Linux recovery and powering on.
+A shutdown command file can contain:
+
+```sh
+set -e
+nohup sh -c 'sleep 15; sync; shutdown' > /boot/home/shutdown.log 2>&1 </dev/null &
+echo SHUTDOWN_SCHEDULED
+```
+
+Run that file through the session's `shell` action and wait for its successful
+result before sending `finish_stopped`. See [RECOVERY-MEDIA.md](RECOVERY-MEDIA.md)
+for the failure caused by replacing a live USB root and the evidence requirements.
+
+Command files run with `set -e`; exit status, partial output and connection errors
+are saved under the session's artifact directory. Uploads are limited to 16 MiB
+per file, use a temporary destination, and require matching SHA-256 before
+installation under `/boot/home/rock5-lab`. A packaged native transfer program
+streams binary data through NanoKVM SSH and its private USB network; the
+NanoKVM needs no additional file copy. The bootstrap Bash lacks `/dev/tcp`
+support. The slower terminal/base64 upload is available with
+`"transport":"terminal"`. Executing a program is a separate shell
+command. Plain `finish`, EOF or the session deadline invokes emergency recovery
+to ROOBI, which can interrupt the running guest's filesystem. Image
+deployment still uses the full USB image; individual test programs can now be
+built, transferred and run without rebooting.
+
+When no session owns the hardware lock, the same operations are available as
+`shell.py run TARGET COMMAND_FILE --output TRANSCRIPT` and
+`shell.py upload TARGET SOURCE --name NAME --output TRANSCRIPT [--executable]`.
+For a checked download, use `shell.py download TARGET NAME DESTINATION
+--output TRANSCRIPT`, or the session command
+`{"action":"download","target":"10.239.6.146","name":"probe","destination":"/mnt/HaikuWork/artifacts/probe-returned"}`.
+The destination must be new, and downloaded bytes must match the guest checksum.
+Downloads now finish receiving the file into a unique NanoKVM `/data` scratch
+file before copying it to the workstation over SSH. The two stages check the
+byte count and SHA-256; the final file must also match the guest's checksum.
+Successful copies remove the scratch file. Failures retain any scratch file and
+record its exact path in the transcript's `.staging.json` evidence. Downloads
+have the same 16 MiB limit as uploads. Staged reception now defaults to
+256 KiB/second with a small TCP receive window; `--rate-limit 0` (or
+`"rate_limit":0`) disables this experimental pacing. Unpaced staging also
+reproduced a native outage after reboot, so staging alone is not a reliable fix.
+The diagnostic `--transport relay` option
+(or `"transport":"relay"` in a session) retains the simultaneous USB/SSH path,
+which repeatedly made this NanoKVM unreachable during native Haiku downloads.
+All file arguments must be beneath `/mnt/HaikuWork`. During an active session,
+use its JSON commands so target operations remain serialized.
+
+For controller-outage testing on this NanoKVM, `guarded_session.py` accepts the
+same arguments and JSON commands as `session.py`. It arms the verified hardware
+watchdog only for that session and disarms it on normal exit. The web password
+is read from `NANOKVM_PASSWORD` or a prompt and kept in process memory for API
+reauthentication after a controller reset. Lost SSH heartbeats leave the timer
+armed; recovery waits for a new controller boot ID and API readiness, starts a
+fresh UART capture, then restores ROOBI. Failed trials remain failures even when
+recovery succeeds. No persistent controller startup service is installed.
+The watchdog recovered earlier outages, but a later relay failure left the
+controller unreachable beyond the recovery deadline. A physical controller
+power cycle remains necessary when that recovery route fails.
+
+An installed-SSD session can explicitly prepare and perform one NanoKVM USB
+reset without rebooting Haiku:
+
+```json
+{"action":"prepare_usb_reset","target":"10.239.6.102"}
+{"action":"reset_usb"}
+```
+
+Preparation requires the session's NVMe deployment receipt, matching UART boot
+evidence, a live Haiku shell, no mounted USB filesystem, and matching selected
+and persistent recovery images on NanoKVM. A subsequent boot, controller or
+image change invalidates it. The reset consumes the preparation and saves its
+own receipt; API completion alone is not a reconnection pass. In the first
+native trial, HID returned but networking required
+`ifconfig /dev/net/usb_rndis/0 auto-config` entered through the KVM Terminal.
+Authenticated commands and an 8 MiB round trip then passed. This remains an
+explicit diagnostic operation; failed guest commands are not automatically
+retried.
+
+## Updating the installed SSD
+
+Boot a qualified ordinary lab image and use Installer to replace the system on
+the existing BFS volume. The high-DMA diagnostic image carries a driver setting
+that is not intended for the ordinary installation. Verify the installed
+packages and retained test files, run `sync`, and check the filesystem before
+updating the EFI partition.
+
+The existing FAT loader can carry a read-only attribute. In a QEMU rehearsal,
+copying directly over it failed after truncating it. The
+[EFI update helper](../../tools/rock5-itx/install-efi-loader.sh) instead checks
+the expected old and new SHA-256 values, verifies a previous-loader backup,
+copies to a new staging file, and renames that verified file into place. Run it
+inside Haiku against an already identified and mounted EFI partition:
+
+```sh
+/bin/sh /boot/home/rock5-lab/install-efi-loader.sh \
+    /HaikuEFI/EFI/BOOT OLD_SHA256 NEW_SHA256
+```
+
+The new loader comes from the running image's
+`/boot/system/data/platform_loaders/haiku_loader.efi`. The helper retains
+`BOOTAA64.EFI.rock5-previous`; a mismatched backup or leftover staging file
+requires inspection. An already-current loader is a successful no-op. Finish
+with `sync` and clean unmounts, then verify cold readback and an installed-system
+boot. This procedure has not been qualified against sudden power loss.
+
+## EFI firmware and recovery
+
+Board-specific [EDK2 v1.1](https://github.com/edk2-porting/edk2-rk3588/releases/tag/v1.1)
+is installed in SPI. The native EFI diagnostic completed with a 1920x1080 GOP
+framebuffer, a memory map including RAM above 4 GiB, and both device-tree and
+ACPI tables. Those firmware interfaces provide the starting point for Haiku;
+kernel drivers remain separate work after `ExitBootServices`.
+The current Haiku profile exposes only the mainline device tree
+(`ConfigTableMode=2`, `FdtCompatMode=2`), avoiding duplicate CPU enumeration
+through both firmware interfaces. The original diagnostic captured both tables.
+
+ROOBI now boots through a small EFI launcher using its original Linux kernel,
+initrd and vendor DTB, with `acpi=off`. The selected recovery image is recorded
+in the local lab configuration. Recovery has returned over SSH through this
+EFI path. Use a 180-second recovery timeout for this configuration.
+
+NanoKVM requires its documented `/boot/BIOS` flag and a controller restart for
+EDK2 keyboard input. F4 entry into USB MaskROM has passed. Exiting MaskROM on
+this unit required the verified RAM downloader followed by `rkdeveloptool rd 0`;
+the normal reset and power-button sequence did not clear that state. See
+[RECOVERY.md](RECOVERY.md) before firmware recovery.
+
+Build the EFI diagnostic and recovery launcher with:
+
+```sh
+bash tools/rock5-itx/build-efi-tools.sh
+python3 tools/rock5-itx/efi_media.py efi-probe \
+    /mnt/HaikuWork/build/efi-tools/efi-probe.efi
+```
+
+`efi_media.py` creates a fresh 96 MiB FAT USB image and a deployment manifest,
+then verifies every payload by reading it back from FAT. Add sibling files with
+`--file DESTINATION=SOURCE`. The diagnostic saves `haiku-*` files on its volume
+and optionally starts `recovery.efi`. For ROOBI, use `roobi-efi.efi` as the entry
+and supply `roobi-kernel.efi`, `roobi-initrd.img`, `roobi.dtb`, and
+`roobi-options.txt`; preserve the exact kernel/root UUID/options in the local
+recovery manifest. The native table dumps and observed firmware settings are
+recorded in [STATUS.md](STATUS.md).
+
+Haiku normally requests 115,200 baud, but this EDK2 release cannot change its
+serial attributes. The fork now retains the working firmware interface and UART
+configuration when that request is rejected. Current ROCK trials therefore use
+1,500,000 baud for both `serial_trial_baud` and `serial_baud`. The optional trial
+override remains available for firmware that accepts a different rate. Capture
+acknowledges each transition and records its byte offset, restores terminal
+settings when it ends, and still recovers the target after failed baud control.
+
+The owner identified this board as PCB v1.12. A full 7,818,182,656-byte eMMC
+user-area backup, both 4 MiB eMMC boot areas and the 16 MiB SPI image now live
+under `artifacts/recovery/`. A separately preserved restoration copy passes
+offline filesystem checks. USB loader and MaskROM reads match the saved boot
+region and SPI hashes. A full USB write/read-back/ROOBI-boot restoration drill has passed; see
+[RECOVERY.md](RECOVERY.md) and `state/rock5-backup.json` for the procedure
+and evidence.
+Reliable serial command entry remains phase 1 work.
+Netboot remains optional; NanoKVM already removes physical USB image swapping.
+
+The EFI diagnostic also records firmware PCI locations, 256-byte configuration
+snapshots and root-bridge resource descriptors using the standard
+[UEFI PCI interfaces](https://uefi.org/specs/UEFI/2.10/14_Protocols_PCI_Bus_Support.html).
+It reads these interfaces without writing PCI configuration or SoC registers.
+Saved `pci-device-*.bin`, `pci-root-*.bin` and `haiku-efi-probe.txt` files belong
+to the diagnostic USB volume. Recover the ROCK, detach that volume and verify
+its copied image before reading the files. Some firmware PCI protocol handles
+return vendor ID `ffff`; they are not evidence of physical PCI functions.

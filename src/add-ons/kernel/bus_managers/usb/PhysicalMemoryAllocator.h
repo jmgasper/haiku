@@ -19,10 +19,16 @@ public:
 									PhysicalMemoryAllocator(const char *name,
 										size_t minSize,
 										size_t maxSize,
-										uint32 minCountPerBlock);
+										uint32 minCountPerBlock,
+										bool uncached = false);
 									~PhysicalMemoryAllocator();
 
 		status_t					InitCheck() { return fStatus; }
+
+static	area_id					AllocateArea(const char* name, size_t size,
+										void** logicalAddress,
+										phys_addr_t* physicalAddress,
+										bool uncached);
 
 		status_t					Allocate(size_t size,
 										void **logicalAddress,

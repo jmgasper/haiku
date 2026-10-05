@@ -766,22 +766,13 @@ read_irq_routing_table_recursive(acpi_module_info* acpi, pci_module_info* pci,
 
 
 static status_t
-read_irq_routing_table(acpi_module_info* acpi, IRQRoutingTable& table,
+read_irq_routing_table(acpi_module_info* acpi, pci_module_info* pci,
+	const char* rootPciName, IRQRoutingTable& table,
+	IRQRoutingTable& unmatchedTable,
 	interrupt_available_check_function checkFunction)
 {
-	char rootPciName[255];
 	acpi_handle rootPciHandle;
-	rootPciName[0] = 0;
-
-	// Query the PCIe root bridge, falling back to the PCI root bridge
-	status_t status = acpi->get_device(kACPIPciExpressRootName, 0, rootPciName, 255);
-	if (status != B_OK) {
-		status = acpi->get_device(kACPIPciRootName, 0, rootPciName, 255);
-		if (status != B_OK)
-			return status;
-	}
-
-	status = acpi->get_handle(NULL, rootPciName, &rootPciHandle);
+	status_t status = acpi->get_handle(NULL, rootPciName, &rootPciHandle);
 	if (status != B_OK)
 		return status;
 
@@ -799,6 +790,39 @@ read_irq_routing_table(acpi_module_info* acpi, IRQRoutingTable& table,
 		rootPciAddress.segment = (uint8)value;
 #endif
 
+	status = read_irq_routing_table_recursive(acpi, pci, ACPI_ROOT_OBJECT,
+		rootPciHandle, rootBus, table, unmatchedTable, true, checkFunction);
+	if (status != B_OK)
+		return status;
+
+	// Now go through all the PCI devices and verify that they have a routing
+	// table entry. For the devices without a match, we calculate their pins
+	// on the bridges and try to match these in the parent routing table. We
+	// do this recursively going up the tree until we find a match or arrive
+	// at the top.
+	Vector<pci_address> parents;
+	return ensure_all_functions_matched(pci, rootBus, table, unmatchedTable,
+		parents);
+}
+
+
+static status_t
+read_irq_routing_table(acpi_module_info* acpi, IRQRoutingTable& table,
+	interrupt_available_check_function checkFunction)
+{
+	char rootPciName[255];
+	rootPciName[0] = 0;
+
+	// Query the PCIe root bridges, falling back to the PCI root bridges
+	const char* rootHID = kACPIPciExpressRootName;
+	status_t status = acpi->get_device(rootHID, 0, rootPciName, 255);
+	if (status != B_OK) {
+		rootHID = kACPIPciRootName;
+		status = acpi->get_device(rootHID, 0, rootPciName, 255);
+		if (status != B_OK)
+			return status;
+	}
+
 	pci_module_info* pci;
 	status = get_module(B_PCI_MODULE_NAME, (module_info**)&pci);
 	if (status != B_OK) {
@@ -808,30 +832,30 @@ read_irq_routing_table(acpi_module_info* acpi, IRQRoutingTable& table,
 		return status;
 	}
 
+	// Systems with several host bridges in one segment (for example
+	// multi-die processors) have one routing table per root bridge.
 	IRQRoutingTable unmatchedTable;
-	status = read_irq_routing_table_recursive(acpi, pci, ACPI_ROOT_OBJECT,
-		rootPciHandle, rootBus, table, unmatchedTable, true, checkFunction);
-	if (status != B_OK) {
-		put_module(B_PCI_MODULE_NAME);
-		return status;
+	for (uint32 index = 0; acpi->get_device(rootHID, index, rootPciName, 255)
+			== B_OK; index++) {
+		status = read_irq_routing_table(acpi, pci, rootPciName, table,
+			unmatchedTable, checkFunction);
+		if (status != B_OK) {
+			if (index == 0)
+				break;
+			dprintf("failed to read IRQ routing of root bridge %s\n",
+				rootPciName);
+			status = B_OK;
+		}
 	}
-
-	if (table.Count() == 0) {
-		put_module(B_PCI_MODULE_NAME);
-		return B_ERROR;
-	}
-
-	// Now go through all the PCI devices and verify that they have a routing
-	// table entry. For the devices without a match, we calculate their pins
-	// on the bridges and try to match these in the parent routing table. We
-	// do this recursively going up the tree until we find a match or arrive
-	// at the top.
-	Vector<pci_address> parents;
-	status = ensure_all_functions_matched(pci, rootBus, table, unmatchedTable,
-		parents);
 
 	put_module(B_PCI_MODULE_NAME);
-	return status;
+	if (status != B_OK)
+		return status;
+
+	if (table.Count() == 0)
+		return B_ERROR;
+
+	return B_OK;
 }
 
 

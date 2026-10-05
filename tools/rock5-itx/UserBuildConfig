@@ -1,0 +1,220 @@
+# ARM64 EFI development image. Native ROCK acceptance is recorded in STATUS.md.
+# Keep serial debugging enabled through the normal kernel defaults.
+# The lab image stays 300 MiB. The eMMC install profile is a regular build --
+# every in-tree application, preference and demo -- sized for the board's
+# 7.28 GiB eMMC. A profile name outside bootstrap-/minimum-/test- selects the
+# regular image definition, and one outside nightly-/release- adds none of the
+# HaikuPorts system packages that arm64 has no repository for.
+#
+# The air/OS release (airos-anyboot) is the same full image as a hybrid ISO
+# with an EFI system partition, to boot from a USB stick, a CD or the
+# NanoKVM's virtual drive and install from. It leaves out the lab's remote
+# shell and probes.
+if $(HAIKU_BUILD_PROFILE) = rock5full-mmc {
+    HAIKU_IMAGE_SIZE = 6144 ;
+    HAIKU_MMC_NAME = haiku-rock5full-mmc.image ;
+} else if $(HAIKU_BUILD_PROFILE) = airos-anyboot {
+    HAIKU_IMAGE_SIZE ?= 2560 ;
+    HAIKU_IMAGE_LABEL = airOS ;
+} else {
+    HAIKU_IMAGE_SIZE = 300 ;
+    HAIKU_MMC_NAME = haiku-arm64-mmc.image ;
+}
+
+DefineBuildProfile rock5full-mmc : haiku-mmc-image : "haiku-rock5full.mmc" ;
+DefineBuildProfile airos-anyboot : anyboot-image : "airos-arm64.iso" ;
+
+# The full image: every application, the fork's GL stack, firmware and the
+# owner's applications. The lab image is the minimum one.
+ROCK5_FULL_IMAGE = ;
+ROCK5_LAB_IMAGE = 1 ;
+if $(HAIKU_BUILD_PROFILE) in rock5full-mmc airos-anyboot {
+	ROCK5_FULL_IMAGE = 1 ;
+}
+if $(HAIKU_BUILD_PROFILE) = airos-anyboot {
+	ROCK5_LAB_IMAGE = ;
+}
+
+DeferredSubInclude HAIKU_TOP tools rock5-itx ;
+
+rule UserBuildConfigRulePreImage
+{
+	# The lab's telnet shell over the NanoKVM's USB network, so that an
+	# installed image can be driven from the workstation (2026-09-26). The
+	# private overlay (a shadow line for baron and the opt-in file, see
+	# shell_image.py) lives outside the tree; without it nothing is added.
+	local labOverlay = /mnt/HaikuWork/rock5-image-extras/lab ;
+	if $(ROCK5_LAB_IMAGE) && [ Glob $(labOverlay) : shadow ]
+			&& [ Glob $(labOverlay) : enable-shell ] {
+		local labShadow = <rock5-lab-files>shadow ;
+		SEARCH on $(labShadow) = $(labOverlay) ;
+		AddFilesToHaikuImage system settings etc : $(labShadow) ;
+		local labEnable = <rock5-lab-files>enable-shell ;
+		SEARCH on $(labEnable) = $(labOverlay) ;
+		AddFilesToHaikuImage home config settings rock5-lab : $(labEnable) ;
+	}
+	local bootscripts = <rock5-lab>UserBootscript
+		<rock5-lab>UserSetupEnvironment ;
+	if ! $(ROCK5_FULL_IMAGE) {
+		# The minimum image has no system bluetooth_server: a helper loads
+		# the controller firmware and starts a non-packaged server. A full
+		# image's server is a launch_daemon service that loads the firmware
+		# itself (src/servers/bluetooth/ControllerFirmware.cpp).
+		bootscripts += <rock5-lab>start-ax210-bluetooth.sh ;
+		# Run by the Bluetooth preferences "Start service" button.
+		local bluetoothHook = <rock5-lab>start-services ;
+		SEARCH on $(bluetoothHook) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
+		AddFilesToHaikuImage home config settings bluetooth : $(bluetoothHook) ;
+	}
+	SEARCH on $(bootscripts) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
+	AddFilesToHaikuImage home config settings boot : $(bootscripts) ;
+	local pcieSettings = <rock5-lab>rk3588_pcie ;
+	SEARCH on $(pcieSettings) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
+	AddFilesToHaikuImage home config settings kernel drivers : $(pcieSettings) ;
+	local itsSettings = <rock5-lab>gicv3_its ;
+	SEARCH on $(itsSettings) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
+	AddFilesToHaikuImage home config settings kernel drivers : $(itsSettings) ;
+	if $(ROCK5_LAB_IMAGE) {
+		AddFilesToHaikuImage home config non-packaged bin
+			: rock5_memory_probe rock5_platform_probe rock5_cache_probe
+				rock5_file_transfer rock5_services_probe rock5_pci_config_probe
+				rock5_network_probe rock5_memcpy_probe rock5_profile_probe
+				rock5_asid_probe rock5_mali_firmware_probe
+				rock5_mali_resource_probe rock5_mali_client_probe
+				rock5_mali_vm_probe rock5_mali_queue_probe rock5_display_probe ;
+		AddFilesToHaikuImage home config non-packaged bin
+			: rock5_ahci_probe rock5_mmc_probe ;
+	}
+	# Intel is the QEMU DMA fixture. Native RTL8125 trials additionally require
+	# the explicit onboard firmware profile and legacy_interrupts setting.
+	# The regular image definition packages iaxwifi200 and the other Wi-Fi
+	# drivers for arm64; the minimum-based lab image only gets the AX210's.
+	if $(ROCK5_FULL_IMAGE) {
+		AddDriversToHaikuImage net : ipro1000 rtl8125 ;
+	} else {
+		AddDriversToHaikuImage net : ipro1000 rtl8125 iaxwifi200 ;
+	}
+	AddNewDriversToHaikuImage graphics : mali_csf rk3588_display ;
+	AddNewDriversToHaikuImage video : rk3588_vpu ;
+	AddNewDriversToHaikuImage audio hmulti : rk3588_audio ;
+	local vpuSettings = <rock5-lab>rk3588_vpu ;
+	SEARCH on $(vpuSettings) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
+	AddFilesToHaikuImage home config settings kernel drivers : $(vpuSettings) ;
+	AddFilesToHaikuImage system non-packaged add-ons accelerants : rk3588_display.accelerant ;
+
+	# The eMMC install additionally carries the fork's own OpenGL stack (Haiku
+	# has no arm64 mesa package, so GLTeapot is filtered out of the regular
+	# image definition), the Mali firmware and the owner's applications.
+	# air/OS dropped the Haiku3d demo.
+	if $(ROCK5_FULL_IMAGE) {
+		local extras = /mnt/HaikuWork/rock5-image-extras ;
+		local glLibs = <rock5-gl>libEGL_mesa.so.0 <rock5-gl>libEGL.so.1
+			<rock5-gl>libGLESv2.so.2 <rock5-gl>libGLdispatch.so.0
+			<rock5-gl>libOpenGL.so.0 <rock5-gl>libGL.so.1 <rock5-gl>libGLU.so.1
+			<rock5-gl>libsqlite3.so.0 <rock5-gl>libtag.so.2
+			<rock5-gl>libpcre2-8.so.0 <rock5-gl>libscintilla.so <rock5-gl>liblexilla.so ;
+		# air/OS has a libcurl with TLS (lib-arm64 below); this one has none.
+		if $(HAIKU_BUILD_PROFILE) != airos-anyboot {
+			glLibs += <rock5-gl>libcurl.so.4 ;
+		}
+		SEARCH on $(glLibs) = [ FDirName $(extras) lib ] ;
+		AddFilesToHaikuImage system non-packaged lib : $(glLibs) ;
+
+		local vendorFile = <rock5-gl>10_mesa_panfrost.json ;
+		SEARCH on $(vendorFile) = [ FDirName $(extras) vendor ] ;
+		AddFilesToHaikuImage system non-packaged add-ons opengl egl_vendor.d
+			: $(vendorFile) ;
+
+		local maliFirmware = <rock5-gl>mali_csffw.bin ;
+		SEARCH on $(maliFirmware) = [ FDirName $(extras) firmware ] ;
+		AddFilesToHaikuImage system non-packaged data firmware mali arch10.8
+			: $(maliFirmware) ;
+
+		# Wi-Fi and Bluetooth firmware for every supported card, as
+		# architecture-neutral packages under /boot/system/data/firmware:
+		# HaikuPorts' Intel, Ralink/MediaTek and Realtek Wi-Fi sets, and
+		# linux-firmware's Intel and Realtek (bt_firmware) and MediaTek
+		# (h2generic) Bluetooth images from build-bluetooth-firmware-packages.sh.
+		local firmwarePackages
+			= <rock5-pkg>intel_wifi_firmwares-2025_02_11-1-any.hpkg
+			<rock5-pkg>ralink_wifi_firmwares-2023_08_04-1-any.hpkg
+			<rock5-pkg>realtek_wifi_firmwares-2019_01_02-1-any.hpkg
+			<rock5-pkg>intel_bluetooth_firmwares-20240318-1-any.hpkg
+			<rock5-pkg>mediatek_bluetooth_firmwares-20240318-1-any.hpkg
+			<rock5-pkg>realtek_bluetooth_firmwares-20240318-1-any.hpkg ;
+		SEARCH on $(firmwarePackages) = [ FDirName $(extras) packages ] ;
+		AddFilesToHaikuImage system packages : $(firmwarePackages) ;
+		AddFilesToHaikuImage system non-packaged bin
+			: bt_le rock5_ax210_bt_loader rock5_ax210_bt_probe
+				rock5_ax210_bt_le_probe rock5_ax210_bt_connect_probe
+				rock5_ax210_wifi_he_probe ;
+
+		# packagefs owns /boot/system, so anything not in a package has to live
+		# under non-packaged to be visible at all. Deskbar lists both.
+		local glDemos = <rock5-gl>GLTeapot ;
+		SEARCH on $(glDemos) = [ FDirName $(extras) apps ] ;
+		AddFilesToHaikuImage system non-packaged demos : $(glDemos) ;
+
+		# The owner's applications are installed as real packages, built by
+		# tools/rock5-itx/build-app-packages.sh. packagefs then puts them in
+		# /boot/system/apps with their icons, their data files and the
+		# data/deskbar/menu/Applications symlink that lists them in Deskbar --
+		# none of which a loose binary under non-packaged can have.
+		local ownerPackages = <rock5-pkg>rock5_glinfo-1.0.0-1-arm64.hpkg
+			<rock5-pkg>rock5_ffmpeg-6.1.6-2-arm64.hpkg
+			<rock5-pkg>wpa_supplicant-2.11.haiku.1-1-arm64.hpkg ;
+		if $(HAIKU_BUILD_PROFILE) != airos-anyboot {
+			ownerPackages += <rock5-pkg>amp-0.2.0~alpha-1-arm64.hpkg
+				<rock5-pkg>kiri-0.0.1~alpha-1-arm64.hpkg
+				<rock5-pkg>turbochook-0.1.2~alpha-1-arm64.hpkg ;
+		}
+		SEARCH on $(ownerPackages) = [ FDirName $(extras) packages ] ;
+		AddFilesToHaikuImage system packages : $(ownerPackages) ;
+
+		# air/OS ships current builds of every one of the owner's
+		# applications, Summit (the default web browser) and its engine, from
+		# tools/airos/build-arm64-app-packages.sh and build-summit-arm64.sh,
+		# and the libraries they need that Haiku has no arm64 package for.
+		if $(HAIKU_BUILD_PROFILE) = airos-anyboot {
+			local airosPackageDir = /mnt/HaikuWork/airos/packages-arm64 ;
+			local airosPackages = [ Glob $(airosPackageDir) : *.hpkg ] ;
+			airosPackages = <airos-pkg>$(airosPackages:BS) ;
+			SEARCH on $(airosPackages) = $(airosPackageDir) ;
+			AddFilesToHaikuImage system packages : $(airosPackages) ;
+
+			local airosLibDir = /mnt/HaikuWork/airos/lib-arm64 ;
+			local airosLibs = [ Glob $(airosLibDir) : *.so* ] ;
+			airosLibs = <airos-lib>$(airosLibs:BS) ;
+			SEARCH on $(airosLibs) = $(airosLibDir) ;
+			AddFilesToHaikuImage system non-packaged lib : $(airosLibs) ;
+
+			# That libcurl (and Summit's) reads the CA certificates from here.
+			local caCertificates = <airos-data>CARootCertificates.pem ;
+			SEARCH on $(caCertificates) = /mnt/HaikuWork/airos/data-arm64/ssl ;
+			AddFilesToHaikuImage system non-packaged data ssl : $(caCertificates) ;
+		}
+
+		# Booting from the eMMC needs sdhci admitted before any volume is
+		# mounted: the loader reads this directory off the boot volume itself
+		# and passes the settings to the kernel, so the driver can attach in
+		# time to be the boot device.
+		local mmcSettings = <rock5-gl>sdhci ;
+		SEARCH on $(mmcSettings) = [ FDirName $(extras) settings ] ;
+		AddFilesToHaikuImage home config settings kernel drivers : $(mmcSettings) ;
+
+		# Without a profile the display driver publishes its device but refuses
+		# app_server's B_GET_ACCELERANT_SIGNATURE, so app_server falls back to
+		# /dev/graphics/framebuffer and Screen reports "Framebuffer". This runs
+		# the accelerant, mode set and hardware cursor on HDMI1.
+		local displaySettings = <rock5-gl>rk3588_display ;
+		SEARCH on $(displaySettings) = [ FDirName $(extras) settings ] ;
+		AddFilesToHaikuImage home config settings kernel drivers : $(displaySettings) ;
+
+		# mali_csf is gated the same way, and without it Mesa falls back to the
+		# software rasteriser: GLTeapot runs at 29 FPS instead of the vsync-capped
+		# 60, and the driver logs "identity profile disabled".
+		local gpuSettings = <rock5-gl>mali_csf ;
+		SEARCH on $(gpuSettings) = [ FDirName $(extras) settings ] ;
+		AddFilesToHaikuImage home config settings kernel drivers : $(gpuSettings) ;
+	}
+}

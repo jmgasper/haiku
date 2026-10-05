@@ -1626,6 +1626,7 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, struct mbuf *m,
 	const u_int8_t *frm, *efrm;
 	const u_int8_t *tstamp, *ssid, *rates, *xrates, *edcaie, *wmmie, *tim;
 	const u_int8_t *rsnie, *wpaie, *htcaps, *htop, *vhtcaps, *vhtop;
+	const u_int8_t *hecaps, *heop;
 	u_int16_t capinfo, bintval;
 	u_int8_t chan, bchan, erp;
 	int is_new;
@@ -1666,7 +1667,7 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, struct mbuf *m,
 	capinfo = LE_READ_2(frm); frm += 2;
 
 	ssid = rates = xrates = edcaie = wmmie = rsnie = wpaie = tim = NULL;
-	htcaps = htop = vhtcaps = vhtop = NULL;
+	htcaps = htop = vhtcaps = vhtop = hecaps = heop = NULL;
 	if (rxi->rxi_chan)
 		bchan = rxi->rxi_chan;
 	else
@@ -1724,6 +1725,16 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, struct mbuf *m,
 			break;
 		case IEEE80211_ELEMID_VHTOP:
 			vhtop = frm;
+			break;
+		case IEEE80211_ELEMID_EXTENSION:
+			if (frm[1] < 1) {
+				ic->ic_stats.is_rx_elem_toosmall++;
+				break;
+			}
+			if (frm[2] == IEEE80211_ELEMID_EXT_HECAPS)
+				hecaps = frm;
+			else if (frm[2] == IEEE80211_ELEMID_EXT_HEOP)
+				heop = frm;
 			break;
 		case IEEE80211_ELEMID_TIM:
 			if (frm[1] < 4) {
@@ -1822,6 +1833,17 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, struct mbuf *m,
 		if (vhtop && !ieee80211_setup_vhtop(ni, vhtop + 2, vhtop[1], 1))
 			vhtop = NULL; /* invalid VHTOP */
 	}
+	ieee80211_clear_hecaps(ni);
+	if (hecaps != NULL) {
+		ieee80211_setup_hecaps(ni, hecaps + 3, hecaps[1] - 1);
+		if ((ni->ni_flags & IEEE80211_NODE_HECAP) != 0
+		    && hecaps[1] + 2 <= sizeof(ni->ni_hecaps_ie)) {
+			ni->ni_hecaps_ie_len = hecaps[1] + 2;
+			memcpy(ni->ni_hecaps_ie, hecaps, ni->ni_hecaps_ie_len);
+		}
+	}
+	if (heop != NULL)
+		ieee80211_setup_heop(ni, heop + 3, heop[1] - 1, 1);
 
 	if (tim) {
 		ni->ni_dtimcount = tim[2];
@@ -2563,7 +2585,7 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, struct mbuf *m,
 	const struct ieee80211_frame *wh;
 	const u_int8_t *frm, *efrm;
 	const u_int8_t *rates, *xrates, *edcaie, *wmmie, *htcaps, *htop;
-	const u_int8_t *vhtcaps, *vhtop;
+	const u_int8_t *vhtcaps, *vhtop, *hecaps, *heop;
 	u_int16_t capinfo, status, associd;
 	u_int8_t rate;
 
@@ -2598,7 +2620,7 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, struct mbuf *m,
 	associd = LE_READ_2(frm); frm += 2;
 
 	rates = xrates = edcaie = wmmie = htcaps = htop = NULL;
-	vhtcaps = vhtop = NULL;
+	vhtcaps = vhtop = hecaps = heop = NULL;
 	while (frm + 2 <= efrm) {
 		if (frm + 2 + frm[1] > efrm) {
 			ic->ic_stats.is_rx_elem_toosmall++;
@@ -2625,6 +2647,16 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, struct mbuf *m,
 			break;
 		case IEEE80211_ELEMID_VHTOP:
 			vhtop = frm;
+			break;
+		case IEEE80211_ELEMID_EXTENSION:
+			if (frm[1] < 1) {
+				ic->ic_stats.is_rx_elem_toosmall++;
+				break;
+			}
+			if (frm[2] == IEEE80211_ELEMID_EXT_HECAPS)
+				hecaps = frm;
+			else if (frm[2] == IEEE80211_ELEMID_EXT_HEOP)
+				heop = frm;
 			break;
 		case IEEE80211_ELEMID_VENDOR:
 			if (frm[1] < 4) {
@@ -2679,9 +2711,16 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, struct mbuf *m,
 			vhtop = NULL; /* invalid VHTOP */
 	}
 	ieee80211_vht_negotiate(ic, ni);
+	if (hecaps)
+		ieee80211_setup_hecaps(ni, hecaps + 3, hecaps[1] - 1);
+	if (heop)
+		ieee80211_setup_heop(ni, heop + 3, heop[1] - 1, 0);
+	ieee80211_he_negotiate(ic, ni);
 
-	/* Hop into 11n/11ac modes after associating to a HT/VHT AP. */
-	if (ni->ni_flags & IEEE80211_NODE_VHT)
+	/* Select the negotiated PHY after the association response. */
+	if (ni->ni_flags & IEEE80211_NODE_HE)
+		ieee80211_setmode(ic, IEEE80211_MODE_11AX);
+	else if (ni->ni_flags & IEEE80211_NODE_VHT)
 		ieee80211_setmode(ic, IEEE80211_MODE_11AC);
 	else if (ni->ni_flags & IEEE80211_NODE_HT)
 		ieee80211_setmode(ic, IEEE80211_MODE_11N);

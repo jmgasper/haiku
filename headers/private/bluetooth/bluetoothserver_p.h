@@ -19,6 +19,32 @@
 #define BT_MSG_GET_PROPERTY             'btgP'
 #define BT_MSG_GET_REMOTE_DEVICES       'btgD'
 #define BT_MSG_NEW_REMOTE_DEVICE        'btnD'
+#define BT_MSG_PAIR_CONFIRM_RESULT       'btPC'
+
+// LE discovery. Advertising messages carry a raw address and advertisement.
+#define BT_MSG_LE_SCAN_START            'leSS'
+#define BT_MSG_LE_SCAN_STOP             'leST'
+#define BT_MSG_LE_SCAN_STARTED          'leSA'
+#define BT_MSG_LE_SCAN_STOPPED          'leSP'
+#define BT_MSG_LE_SCAN_ERROR            'leSE'
+#define BT_MSG_LE_ADVERTISEMENT         'leAD'
+
+// LE ACL link lifecycle. These messages do not imply pairing or a HID profile.
+// Scan stop, connect cancel and disconnect take the client's "listener" so
+// one client cannot end another's scan or link; BT_MSG_LE_DISCONNECT also
+// accepts bool "force" to end the current link whoever owns it.
+#define BT_MSG_LE_CONNECT               'leCN'
+#define BT_MSG_LE_CONNECT_CANCEL        'leCC'
+#define BT_MSG_LE_DISCONNECT            'leDC'
+#define BT_MSG_LE_CONNECTING            'leCG'
+#define BT_MSG_LE_CONNECTED             'leCD'
+#define BT_MSG_LE_CONNECT_FAILED        'leCF'
+#define BT_MSG_LE_DISCONNECTED          'leDD'
+// Request: either short_term_key (16 bytes), or long_term_key (16 bytes),
+// random_number (8 bytes) and encrypted_diversifier (uint16).
+#define BT_MSG_LE_START_ENCRYPTION      'leEN'
+#define BT_MSG_LE_ENCRYPTED             'leED'
+#define BT_MSG_LE_ENCRYPTION_FAILED     'leEF'
 
 // Discovery
 #define BT_MSG_INQUIRY_STARTED          'IqSt'

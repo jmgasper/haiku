@@ -1,0 +1,5 @@
+SubDir HAIKU_TOP tools rock5-itx locale_probe ;
+UseBuildFeatureHeaders icu ;
+Includes [ FGristFiles probe.cpp ] : [ BuildFeatureAttribute icu : headers ] ;
+SimpleTest rock5_icu_data_probe : probe.cpp
+	: [ BuildFeatureAttribute icu : libraries ] [ TargetLibstdc++ ] ;

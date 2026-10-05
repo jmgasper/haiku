@@ -27,8 +27,15 @@ WirelessNetworkMenuItem::WirelessNetworkMenuItem(wireless_network network,
 	// Append authentication mode to label
 	BString label = B_TRANSLATE("%name% (%authenticationMode%)");
 	label.Replace("%name%", network.name, 1);
-	label.Replace("%authenticationMode%",
-		AuthenticationName(network.authentication_mode), 1);
+	if (network.authentication_mode == B_NETWORK_AUTHENTICATION_NONE
+		&& (network.flags & B_NETWORK_IS_ENCRYPTED) != 0) {
+		// Encrypted, but the scan result lacks the security details
+		label.Replace("%authenticationMode%",
+			B_TRANSLATE_CONTEXT("encrypted", "Encrypted network"), 1);
+	} else {
+		label.Replace("%authenticationMode%",
+			AuthenticationName(network.authentication_mode), 1);
+	}
 
 	SetLabel(label.String());
 }

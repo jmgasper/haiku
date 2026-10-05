@@ -21,7 +21,7 @@ static const char* kSettingsFileName = "Screen_data";
 
 ScreenSettings::ScreenSettings()
 {
-	fWindowFrame.Set(0, 0, 450, 250);
+	fWindowFrame.Set(0, 0, 640, 400);
 	BPoint offset;
 
 	BPath path;
@@ -29,8 +29,19 @@ ScreenSettings::ScreenSettings()
 		path.Append(kSettingsFileName);
 
 		BFile file(path.Path(), B_READ_ONLY);
-		if (file.InitCheck() == B_OK)
+		off_t size;
+		if (file.InitCheck() == B_OK && file.GetSize(&size) == B_OK) {
+			BRect frame;
+			if (size >= (off_t)sizeof(BRect)
+				&& file.Read(&frame, sizeof(BRect)) == sizeof(BRect)
+				&& frame.IsValid()) {
+				// the complete frame, as written by newer versions
+				fWindowFrame = frame;
+				return;
+			}
+			file.Seek(0, SEEK_SET);
 			file.Read(&offset, sizeof(BPoint));
+		}
 	}
 
 	fWindowFrame.OffsetBy(offset);
@@ -45,11 +56,9 @@ ScreenSettings::~ScreenSettings()
 
 	path.Append(kSettingsFileName);
 
-	BPoint offset = fWindowFrame.LeftTop();
-
-	BFile file(path.Path(), B_WRITE_ONLY | B_CREATE_FILE);
+	BFile file(path.Path(), B_WRITE_ONLY | B_CREATE_FILE | B_ERASE_FILE);
 	if (file.InitCheck() == B_OK)
-		file.Write(&offset, sizeof(BPoint));
+		file.Write(&fWindowFrame, sizeof(BRect));
 }
 
 

@@ -239,6 +239,7 @@ void		 _nsdbtdump(const ns_dbt *);
 int		 _nsdbtput(const ns_dbt *);
 void		 _nsyyerror(const char *);
 int		 _nsyylex(void);
+void		 _nsyyfatal(const char *) __attribute__((__noreturn__));
 #endif /* _NS_PRIVATE */
 
 __END_DECLS

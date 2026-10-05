@@ -1,0 +1,4 @@
+#!/bin/sh
+export LIBRARY_PATH=/boot/home/mesa-trial/lib:/boot/system/lib:/boot/system/non-packaged/lib:/boot/home/config/lib:/boot/home/config/non-packaged/lib
+export __EGL_VENDOR_LIBRARY_FILENAMES=/boot/home/mesa-trial/vendor.json
+exec /boot/home/mesa-trial/rock5_haiku_concurrency_probe "$@"

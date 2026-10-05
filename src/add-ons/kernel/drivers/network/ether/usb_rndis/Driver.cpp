@@ -128,6 +128,13 @@ init_driver()
 			.dev_protocol = B_USB_RNDIS_ETHERNET_PROTOCOL,
 			0, 0 /* no specific vendor or device */
 		},
+		/* Legacy CDC ACM encoding used by Linux USB gadgets, including NanoKVM. */
+		{
+			.dev_class = USB_COMMUNICATION_DEVICE_CLASS,
+			.dev_subclass = USB_CDC_COMMUNICATION_INTERFACE_ACM_SUBCLASS,
+			.dev_protocol = 0xff,
+			0, 0 /* no specific vendor or device */
+		},
 		/* Other somewhat less standard devices: */
 		{
 			.dev_class = USB_COMMUNICATION_DEVICE_CLASS,
@@ -222,7 +229,10 @@ usb_rndis_close(void *cookie)
 {
 	TRACE("close(%p)\n", cookie);
 	RNDISDevice *device = (RNDISDevice *)cookie;
-	return device->Close();
+	mutex_lock(&gDriverLock);
+	status_t status = device->Close();
+	mutex_unlock(&gDriverLock);
+	return status;
 }
 
 
@@ -233,13 +243,15 @@ usb_rndis_free(void *cookie)
 	RNDISDevice *device = (RNDISDevice *)cookie;
 	mutex_lock(&gDriverLock);
 	status_t status = device->Free();
-	for (int32 i = 0; i < MAX_DEVICES; i++) {
-		if (gRNDISDevices[i] == device) {
-			// the device is removed already but as it was open the
-			// removed hook has not deleted the object
-			gRNDISDevices[i] = NULL;
-			delete device;
-			break;
+	// The USB cookie must remain valid when a connected interface is closed.
+	if (device->IsRemoved()) {
+		for (int32 i = 0; i < MAX_DEVICES; i++) {
+			if (gRNDISDevices[i] == device) {
+				// The removed hook retained the object while it was open.
+				gRNDISDevices[i] = NULL;
+				delete device;
+				break;
+			}
 		}
 	}
 
@@ -260,7 +272,10 @@ publish_devices()
 	int32 deviceCount = 0;
 	mutex_lock(&gDriverLock);
 	for (int32 i = 0; i < MAX_DEVICES; i++) {
-		if (gRNDISDevices[i] == NULL)
+		// Unpublish a removed device even while its last handle is closing.
+		// net_server needs the removal/creation notifications to recreate its
+		// interface when this slot is reused on reconnect.
+		if (gRNDISDevices[i] == NULL || gRNDISDevices[i]->IsRemoved())
 			continue;
 
 		gDeviceNames[deviceCount] = (char *)malloc(strlen(sDeviceBaseName) + 4);

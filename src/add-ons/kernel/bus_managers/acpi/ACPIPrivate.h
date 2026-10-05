@@ -249,6 +249,7 @@ status_t walk_resources(acpi_handle busDeviceHandle, char* method,
 
 status_t prepare_sleep_state(uint8 state, void (*wakeFunc)(void), size_t size);
 status_t enter_sleep_state(uint8 state);
+status_t leave_sleep_state(uint8 state, bool prepare);
 
 status_t reboot(void);
 

@@ -10,49 +10,41 @@
 
 #include "BluetoothSettings.h"
 
+#include <Messenger.h>
 #include <View.h>
 
-class BluetoothSettings;
 class ExtendedLocalDeviceView;
 
-class BBox;
-class BMenuField;
-class BPopUpMenu;
-class BSlider;
 class BOptionPopUp;
 class BTextControl;
 
+// Settings of the local adapter. SetLocalDevice() talks to the Bluetooth
+// server synchronously, so it is called from the advanced window's thread.
 class BluetoothSettingsView : public BView {
 public:
-								BluetoothSettingsView(const char* name);
+								BluetoothSettingsView(const char* name,
+									const BMessenger& mainWindow);
 	virtual						~BluetoothSettingsView();
+
+			void				SetLocalDevice(LocalDevice* device);
 
 	virtual	void				AttachedToWindow();
 	virtual	void				MessageReceived(BMessage* message);
 
-
 private:
-			void				_BuildLocalDevicesMenu();
 			bool				_SetDeviceClass(uint8 major, uint8 minor,
 									uint16 service);
-			void				_MarkLocalDevice(LocalDevice* lDevice);
 			int					_GetClassForMenu();
 
-protected:
 			BluetoothSettings	fSettings;
-
-			float				fDivider;
+			BMessenger			fMainWindow;
+			LocalDevice*		fLocalDevice;
 
 			BOptionPopUp*		fPolicyMenu;
 			BOptionPopUp*		fClassMenu;
-			BMenuField*			fLocalDevicesMenuField;
-			BPopUpMenu*			fLocalDevicesMenu;
 			BTextControl*		fFriendlyName;
 
-			ExtendedLocalDeviceView* 	fExtDeviceView;
-
-			BSlider*			fInquiryTimeControl;
-
+			ExtendedLocalDeviceView* fExtDeviceView;
 };
 
 #endif // BLUETOOTH_SETTINGS_VIEW_H

@@ -446,6 +446,11 @@ struct nvme_ns_stat {
 	 */
 	enum nvme_pi_type		pi_type;
 
+	/** Dataset Management processing limits, in logical blocks. */
+	uint16_t			dsm_max_ranges;
+	uint32_t			dsm_max_range_blocks;
+	uint64_t			dsm_max_command_blocks;
+
 };
 
 /**
@@ -555,6 +560,16 @@ extern struct nvme_ctrlr * nvme_ctrlr_open(struct pci_device *pdev,
  * @return 0 on success and a negative error code on failure.
  */
 extern int nvme_ctrlr_close(struct nvme_ctrlr *ctrlr);
+
+/**
+ * @brief Prepare the controller for power removal
+ */
+extern int nvme_ctrlr_suspend(struct nvme_ctrlr *ctrlr);
+
+/**
+ * @brief Reinitialize the controller after power was restored
+ */
+extern int nvme_ctrlr_resume(struct nvme_ctrlr *ctrlr);
 
 /**
  * @brief Get controller capabilities and features

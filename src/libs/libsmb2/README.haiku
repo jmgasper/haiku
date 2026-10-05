@@ -1,0 +1,32 @@
+libsmb2 - SMB2/SMB3 client library
+==================================
+
+Origin:  https://github.com/sahlberg/libsmb2
+Version: 6.2 (tag libsmb2-6.2, d67e213)
+License: GNU LGPL v2.1 or later, see LICENCE-LGPL-2.1.txt
+
+This is upstream's lib/ directory with its private headers next to it; the
+public headers are in headers/libs/libsmb2/smb2. It is what the smbfs file
+system (src/add-ons/kernel/file_systems/smbfs) talks to servers with.
+
+Not taken over from upstream: the Kerberos wrapper (krb5-wrapper.*), which
+needs a Kerberos library Haiku does not have in its build, and the ports to
+other platforms. Authentication is NTLMSSP, which the library does itself.
+
+Changes to upstream's files:
+- portable-endian.h: Haiku has <endian.h>.
+- libsmb2.c, smb2_open_async_with_oplock_or_lease(): files are opened
+  allowing others to delete or rename them meanwhile, as POSIX has it.
+- libsmb2.c, smb2_rename_async(): renaming replaces a file of the new name,
+  as rename() does.
+
+The library returns -errno and takes a negative value for a failure, so it
+is built with B_USE_POSITIVE_POSIX_ERRORS. Code that uses it has to be built
+with it as well, and link libposix_error_mapper.a.
+
+config.h is written by hand in place of the one configure generates.
+
+To update, copy lib/*.c, lib/*.h and the four private headers over these,
+the public headers over those in headers/libs/libsmb2/smb2, apply the changes
+listed above again, and check the list of sources in the Jamfile against
+lib/CMakeLists.txt.

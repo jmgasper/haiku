@@ -37,7 +37,11 @@ All rights reserved.
 // important sniffer rules
 
 
+#include <new>
+#include <string.h>
+
 #include <Alert.h>
+#include <AutoDeleter.h>
 #include <Catalog.h>
 #include <Directory.h>
 #include <InterfaceDefs.h>
@@ -45,7 +49,6 @@ All rights reserved.
 #include <Message.h>
 #include <Node.h>
 #include <Path.h>
-#include <Screen.h>
 #include <VolumeRoster.h>
 
 #include <fs_attr.h>
@@ -54,6 +57,7 @@ All rights reserved.
 #include "pr_server.h"
 
 #include "Attributes.h"
+#include "Background.h"
 #include "AttributeStream.h"
 #include "BackgroundImage.h"
 #include "Bitmaps.h"
@@ -203,6 +207,43 @@ InstallTemporaryBackgroundImages(BNode* node, BMessage* message)
 	} catch (...) {
 		;
 	}
+}
+
+
+static bool
+IsHaikuDefaultBackground(BNode* node)
+{
+	// Haiku's default background is its logo on every workspace. air/OS
+	// does not ship that picture, so a desktop still set to it shows only
+	// the background colour and gets the air/OS default instead.
+	attr_info info;
+	if (node->GetAttrInfo(kBackgroundImageInfo, &info) != B_OK
+		|| info.size <= 0 || info.size > 64 * 1024) {
+		return false;
+	}
+
+	char* buffer = new(std::nothrow) char[info.size];
+	if (buffer == NULL)
+		return false;
+	ArrayDeleter<char> bufferDeleter(buffer);
+
+	BMessage message;
+	if (node->ReadAttr(kBackgroundImageInfo, B_MESSAGE_TYPE, 0, buffer,
+			(size_t)info.size) != info.size
+		|| message.Unflatten(buffer) != B_OK) {
+		return false;
+	}
+
+	const char* imagePath;
+	if (message.FindString(kBackgroundImageInfoPath, 1, &imagePath) == B_OK
+		|| message.FindString(kBackgroundImageInfoPath, 0, &imagePath)
+			!= B_OK) {
+		return false;
+	}
+
+	BPath path(imagePath);
+	return path.InitCheck() == B_OK
+		&& strcmp(path.Leaf(), "HAIKU logo - white on blue - big.png") == 0;
 }
 
 
@@ -742,7 +783,7 @@ TTracker::InstallDefaultTemplates()
 void
 TTracker::InstallTemporaryBackgroundImages()
 {
-	// make the large Haiku Logo the default background
+	// make the air/OS desktop picture the default background
 
 	BPath path;
 	status_t status = find_directory(B_SYSTEM_DATA_DIRECTORY, &path);
@@ -760,23 +801,26 @@ TTracker::InstallTemporaryBackgroundImages()
 	}
 	path.Append("artwork");
 
-	BString defaultBackgroundImage("/HAIKU logo - white on blue - big.png");
+	// A TGA, because every platform has that translator (arm64 has no PNG
+	// or JPEG one).
+	BString defaultBackgroundImage("/airos-desktop.tga");
 
 	BDirectory dir;
 	if (FSGetBootDeskDir(&dir) == B_OK) {
-		// install a default background if there is no background defined yet
+		// install a default background if there is no background defined
+		// yet, or if it still is Haiku's default
 		attr_info info;
-		if (dir.GetAttrInfo(kBackgroundImageInfo, &info) != B_OK) {
-			BScreen screen(B_MAIN_SCREEN_ID);
-			BPoint logoPos;
-			logoPos.x
-				= floorf((screen.Frame().Width() - 605) * (sqrtf(5) - 1) / 2);
-			logoPos.y = floorf((screen.Frame().Height() - 190) * 0.9);
+		if (dir.GetAttrInfo(kBackgroundImageInfo, &info) != B_OK
+			|| IsHaikuDefaultBackground(&dir)) {
 			BMessage message;
 			AddTemporaryBackgroundImages(&message,
 				(BString(path.Path()) << defaultBackgroundImage).String(),
-				BackgroundImage::kAtOffset, logoPos, 0xffffffff, false);
+				BackgroundImage::kScaledToFit, B_ORIGIN, 0xffffffff, true);
 			::InstallTemporaryBackgroundImages(&dir, &message);
+
+			// The Desktop window was set up before this ran; tell it, as
+			// the Backgrounds preferences do.
+			PostMessage(B_RESTORE_BACKGROUND_IMAGE);
 		}
 	}
 }

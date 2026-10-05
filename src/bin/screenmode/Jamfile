@@ -3,6 +3,7 @@ SubDir HAIKU_TOP src bin screenmode ;
 UsePrivateHeaders [ FDirName graphics common ] ;
 UsePrivateHeaders [ FDirName graphics radeon ] ;
 	# for multimon.h
+UsePrivateHeaders interface ;
 
 SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) src preferences screen ] ;
 

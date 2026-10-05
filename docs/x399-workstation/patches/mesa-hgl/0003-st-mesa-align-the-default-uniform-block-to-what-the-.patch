@@ -1,0 +1,40 @@
+From f3cec98026fbdf1412c71caf24c69f9368c1eee3 Mon Sep 17 00:00:00 2001
+From: x399 <x399@lab>
+Date: Fri, 18 Sep 2026 16:06:55 +1000
+Subject: [PATCH 03/14] st/mesa: align the default uniform block to what the
+ driver asks for
+
+The default uniform block was uploaded at a hard coded 64 byte alignment.
+Zink hands that offset to Vulkan as a dynamic offset, where it has to be
+a multiple of minUniformBufferOffsetAlignment - 256 on a pre-Turing
+NVIDIA GPU, where NVK binds the constant buffer at that address and the
+graphics engine answers an unaligned one with a class error that kills
+the channel.  Use the alignment the driver reports.
+
+With this the GTX 1070 draws Haiku's GLTeapot at 363 fps against 238 in
+software, and a lit 8k triangle sphere at 800x600 at 170 fps against 42.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ src/mesa/state_tracker/st_atom_constbuf.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/src/mesa/state_tracker/st_atom_constbuf.c b/src/mesa/state_tracker/st_atom_constbuf.c
+index f23dacb..bdefb8d 100644
+--- a/src/mesa/state_tracker/st_atom_constbuf.c
++++ b/src/mesa/state_tracker/st_atom_constbuf.c
+@@ -126,7 +126,13 @@ st_upload_constants(struct st_context *st, struct gl_program *prog, gl_shader_st
+           * but matrix rows are sometimes allocated partially, so add 12
+           * to compensate for the fetch_state defect.
+           */
+-         u_upload_alloc(pipe->const_uploader, 0, paramBytes + 12, 64,
++         /* The offset has to satisfy the driver's constant buffer alignment:
++          * zink hands it to Vulkan as a dynamic offset, and a pre-Turing
++          * NVIDIA GPU needs 256 bytes there, not the 64 assumed here.
++          */
++         const unsigned alignment =
++            MAX2(64, st->ctx->Const.UniformBufferOffsetAlignment);
++         u_upload_alloc(pipe->const_uploader, 0, paramBytes + 12, alignment,
+                         &cb.buffer_offset, &cb.buffer, (void**)&ptr);
+ 
+          int uniform_bytes = params->UniformBytes;

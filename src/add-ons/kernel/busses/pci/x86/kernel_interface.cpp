@@ -54,6 +54,9 @@ pci_controller_module_info gPciControllerDriver = {
 	},
 	.finalize = [](void *cookie) {
 		return static_cast<X86PCIController*>(cookie)->Finalize();
+	},
+	.get_root_bus = [](void *cookie, uint32 index, uint8* bus) {
+		return static_cast<X86PCIController*>(cookie)->GetRootBus(index, *bus);
 	}
 };
 

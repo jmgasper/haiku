@@ -6,6 +6,12 @@
 
 #include <kdevice_manager.h>
 
+#include <syscalls.h>
+
+#include <stdarg.h>
+
+#include <algorithm>
+
 #include <new>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,6 +29,7 @@
 #include <kernel.h>
 #include <kmodule.h>
 #include <util/AutoLock.h>
+#include <util/Vector.h>
 #include <util/DoublyLinkedList.h>
 #include <util/Stack.h>
 
@@ -1726,6 +1733,8 @@ device_node::_GetNextDriverPath(void*& cookie, KPath& _path)
 					if (get_attr_string(this, B_DEVICE_BUS, &bus, false) == B_OK) {
 						if (strcmp(bus, "virtio") == 0 || strcmp(bus, "hyperv") == 0)
 							_AddPath(*stack, "busses/scsi");
+						if (strcmp(bus, "fdt") == 0)
+							_AddPath(*stack, "busses/usb");
 					}
 					_AddPath(*stack, "drivers", sGenericContextPath);
 					_AddPath(*stack, "busses/i2c");
@@ -2446,4 +2455,254 @@ recursive_lock*
 device_manager_get_lock()
 {
 	return &sLock;
+}
+
+
+static bool sSuspendVerbose;
+
+// A short trace of the last suspend and resume. Kept in memory, because a
+// machine that resumed badly often cannot write its log to disk any more.
+static char sSuspendTrace[4096];
+static size_t sSuspendTraceLength;
+static spinlock sSuspendTraceLock = B_SPINLOCK_INITIALIZER;
+
+
+void
+device_manager_suspend_trace(const char* format, ...)
+{
+	char buffer[256];
+	va_list args;
+	va_start(args, format);
+	ssize_t length = vsnprintf(buffer, sizeof(buffer), format, args);
+	va_end(args);
+	if (length <= 0)
+		return;
+
+	InterruptsSpinLocker locker(sSuspendTraceLock);
+	for (ssize_t i = 0; i < length && sSuspendTraceLength
+			< sizeof(sSuspendTrace) - 2; i++) {
+		sSuspendTrace[sSuspendTraceLength++] = buffer[i];
+	}
+	sSuspendTrace[sSuspendTraceLength++] = '\n';
+	sSuspendTrace[sSuspendTraceLength] = '\0';
+}
+
+
+void
+device_manager_clear_suspend_trace()
+{
+	InterruptsSpinLocker locker(sSuspendTraceLock);
+	sSuspendTraceLength = 0;
+	sSuspendTrace[0] = '\0';
+}
+
+
+size_t
+device_manager_get_suspend_trace(char* buffer, size_t size)
+{
+	InterruptsSpinLocker locker(sSuspendTraceLock);
+	size_t length = std::min(size - 1, sSuspendTraceLength);
+	memcpy(buffer, sSuspendTrace, length);
+	buffer[length] = '\0';
+	return length;
+}
+
+
+/*!	In verbose mode every step is logged and followed by a short pause, so
+	that the syslog daemon can write the log before a step that hangs.
+*/
+void
+device_manager_set_suspend_verbose(bool verbose)
+{
+	sSuspendVerbose = verbose;
+}
+
+
+static void
+suspend_step(const char* format, const char* name)
+{
+	if (!sSuspendVerbose)
+		return;
+
+	dprintf(format, name);
+
+	// give the syslog daemon time to write the line and flush it to disk, so
+	// that it survives if the next step hangs
+	snooze(300000);
+	_kern_sync();
+}
+
+
+/*!	Collects the nodes to suspend or resume. A snapshot is needed because the
+	hooks change the tree: resuming a USB controller makes it scan its bus
+	again, which adds and removes nodes while they are visited.
+*/
+static void
+collect_nodes(device_node* node, Vector<device_node*>& nodes, bool childrenFirst)
+{
+	if (!childrenFirst) {
+		node->Acquire();
+		nodes.Add(node);
+	}
+
+	NodeList::ConstIterator iterator = node->Children().GetIterator();
+	while (device_node* child = iterator.Next())
+		collect_nodes(child, nodes, childrenFirst);
+
+	if (childrenFirst) {
+		node->Acquire();
+		nodes.Add(node);
+	}
+}
+
+
+static void
+suspend_nodes(int32 state)
+{
+	Vector<device_node*> nodes;
+	collect_nodes(sRootNode, nodes, true);
+
+	for (int32 i = 0; i < nodes.Count(); i++) {
+		device_node* node = nodes[i];
+		driver_module_info* driver = node->DriverModule();
+		if (node->IsInitialized() && driver != NULL && driver->suspend != NULL) {
+			device_manager_suspend_trace("suspending %s", node->ModuleName());
+			suspend_step("device_manager: suspending %s\n",
+				node->ModuleName());
+
+			status_t status = driver->suspend(node->DriverData(), state);
+			device_manager_suspend_trace("suspended %s: %s",
+				node->ModuleName(), strerror(status));
+			dprintf("device_manager: suspended %s: %s\n", node->ModuleName(),
+				strerror(status));
+		}
+		node->Release();
+	}
+}
+
+
+static void
+resume_nodes()
+{
+	Vector<device_node*> nodes;
+	collect_nodes(sRootNode, nodes, false);
+
+	for (int32 i = 0; i < nodes.Count(); i++) {
+		device_node* node = nodes[i];
+		driver_module_info* driver = node->DriverModule();
+		if (node->IsInitialized() && driver != NULL && driver->resume != NULL) {
+			device_manager_suspend_trace("resuming %s", node->ModuleName());
+			suspend_step("device_manager: resuming %s\n", node->ModuleName());
+
+			status_t status = driver->resume(node->DriverData());
+			device_manager_suspend_trace("resumed %s: %s", node->ModuleName(),
+				strerror(status));
+			dprintf("device_manager: resumed %s: %s\n", node->ModuleName(),
+				strerror(status));
+		}
+		node->Release();
+	}
+}
+
+
+struct power_hook : DoublyLinkedListLinkImpl<power_hook> {
+	device_manager_power_hook	hook;
+	void*						cookie;
+	const char*					name;
+};
+
+typedef DoublyLinkedList<power_hook> PowerHookList;
+
+static PowerHookList sPowerHooks;
+/*!	Registers a hook for drivers not managed by the device manager (like
+	legacy drivers) to be called when the system suspends and resumes.
+	Hooks are called before the device tree is suspended, in reverse order of
+	registration, and after it was resumed, in order of registration.
+*/
+status_t
+device_manager_add_power_hook(device_manager_power_hook hook, void* cookie,
+	const char* name)
+{
+	power_hook* entry = new(std::nothrow) power_hook;
+	if (entry == NULL)
+		return B_NO_MEMORY;
+
+	entry->hook = hook;
+	entry->cookie = cookie;
+	entry->name = name != NULL ? name : "?";
+
+	RecursiveLocker _(sLock);
+	sPowerHooks.Add(entry);
+	return B_OK;
+}
+
+
+status_t
+device_manager_remove_power_hook(device_manager_power_hook hook, void* cookie)
+{
+	RecursiveLocker _(sLock);
+
+	PowerHookList::Iterator iterator = sPowerHooks.GetIterator();
+	while (power_hook* entry = iterator.Next()) {
+		if (entry->hook == hook && entry->cookie == cookie) {
+			iterator.Remove();
+			delete entry;
+			return B_OK;
+		}
+	}
+
+	return B_ENTRY_NOT_FOUND;
+}
+
+
+/*!	Calls the registered power hooks and the suspend hook of all initialized
+	drivers, children first.
+*/
+status_t
+device_manager_suspend(int32 state, uint32 flags)
+{
+	RecursiveLocker _(sLock);
+
+	PowerHookList::ReverseIterator iterator = sPowerHooks.GetReverseIterator();
+	while (power_hook* entry = iterator.Next()) {
+		if ((flags & DEVICE_MANAGER_SKIP_POWER_HOOKS) != 0)
+			break;
+		suspend_step("device_manager: calling suspend hook %s\n",
+			entry->name);
+		status_t status = entry->hook(entry->cookie, false, state);
+		device_manager_suspend_trace("suspend hook %s: %s", entry->name,
+			strerror(status));
+		dprintf("device_manager: suspend hook %s: %s\n", entry->name,
+			strerror(status));
+	}
+
+	if ((flags & DEVICE_MANAGER_SKIP_DEVICE_TREE) == 0)
+		suspend_nodes(state);
+	return B_OK;
+}
+
+
+/*!	Calls the resume hook of all initialized drivers, parents first, and then
+	the registered power hooks.
+*/
+status_t
+device_manager_resume(uint32 flags)
+{
+	RecursiveLocker _(sLock);
+	if ((flags & DEVICE_MANAGER_SKIP_DEVICE_TREE) == 0)
+		resume_nodes();
+
+	PowerHookList::Iterator iterator = sPowerHooks.GetIterator();
+	while (power_hook* entry = iterator.Next()) {
+		if ((flags & DEVICE_MANAGER_SKIP_POWER_HOOKS) != 0)
+			break;
+		suspend_step("device_manager: calling resume hook %s\n", entry->name);
+		status_t status = entry->hook(entry->cookie, true, 0);
+		device_manager_suspend_trace("resume hook %s: %s", entry->name,
+			strerror(status));
+		dprintf("device_manager: resume hook %s: %s\n", entry->name,
+			strerror(status));
+	}
+
+	return B_OK;
 }

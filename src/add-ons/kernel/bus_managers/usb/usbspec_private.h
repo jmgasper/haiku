@@ -69,6 +69,12 @@ struct usb_hub_descriptor {
 } _PACKED;
 
 #define USB_DESCRIPTOR_HUB 0x29
+// A SuperSpeed hub's descriptor (USB 3.2 table 10-21) shares the first seven
+// bytes of the layout above; it stalls a request for the USB 2 one.
+#define USB_DESCRIPTOR_SUPERSPEED_HUB 0x2a
+// A SuperSpeed hub has to learn its tier for its route string (USB 3.2
+// 10.16.2.9) before its ports can be used.
+#define USB_REQUEST_SET_HUB_DEPTH 12
 
 
 struct usb_endpoint_ss_companion_descriptor {

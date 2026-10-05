@@ -40,7 +40,12 @@ if $(TARGET_ARCH) = ppc {
 				MakeLocateDebug $(efiPartition) : system boot ;
 				BuildEfiSystemPartition $(efiPartition) : $(efiLoader) ;
 
-				BuildCDBootImageEFI $(HAIKU_CD_BOOT_IMAGE) : $(HAIKU_BOOT_FLOPPY)
+				# Only a BIOS can start the floppy emulation image.
+				local bootFloppy ;
+				if bios_ia32 in $(HAIKU_BOOT_TARGETS) {
+					bootFloppy = $(HAIKU_BOOT_FLOPPY) ;
+				}
+				BuildCDBootImageEFI $(HAIKU_CD_BOOT_IMAGE) : $(bootFloppy)
 					: $(efiPartition) : $(extras) ;
 			}
 		}

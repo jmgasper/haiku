@@ -32,7 +32,9 @@ public:
 			scsi_ccb*			CCB();
 			const void*			FIS();
 			void*				Data();
-			int					Size();
+			size_t				Size();
+			status_t			CopyData(void* buffer, size_t size, bool toRequest,
+									bool validateOnly = false);
 			void				Finish(int tfd, size_t bytesTransfered);
 			void				Abort();
 
@@ -85,10 +87,10 @@ sata_request::Data()
 }
 
 
-inline int
+inline size_t
 sata_request::Size()
 {
-	return fDataSize;
+	return fCcb != NULL ? fCcb->data_length : fDataSize;
 }
 
 

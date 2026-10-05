@@ -37,6 +37,13 @@ service x-vnd.Haiku-midi_server {
 	on_demand
 }
 
+service x-vnd.Haiku-bluetooth_server {
+	launch /system/servers/bluetooth_server
+	no_safemode
+	legacy
+	on initial_volumes_mounted
+}
+
 service x-vnd.Haiku-net_server {
 	launch /system/servers/net_server
 	no_safemode

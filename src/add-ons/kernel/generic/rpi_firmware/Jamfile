@@ -1,0 +1,8 @@
+SubDir HAIKU_TOP src add-ons kernel generic rpi_firmware ;
+
+UsePrivateKernelHeaders ;
+UsePrivateHeaders drivers ;
+
+KernelAddon rpi_firmware :
+	rpi_firmware.cpp
+;

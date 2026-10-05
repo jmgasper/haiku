@@ -14,6 +14,7 @@
 
 class BPartition;
 class BPath;
+class NetworkShares;
 
 
 enum mount_mode {
@@ -70,6 +71,8 @@ private:
 
 			BFile				fPrefsFile;
 			BMessage			fSettings;
+
+			NetworkShares*		fNetworkShares;
 };
 
 

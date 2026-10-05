@@ -40,11 +40,14 @@ AddFilesToPackage add-ons kernel busses i2c :
 	pch_i2c@x86,x86_64
 	;
 AddFilesToPackage add-ons kernel busses mmc :
+	bcm2711_emmc2@arm64
 	sdhci
 	;
 AddFilesToPackage add-ons kernel busses pci :
 	<pci>designware@riscv64
+	<pci>bcm2711@arm64
 	<pci>ecam@riscv64,arm,arm64
+	<pci>rk3588_firmware@arm64
 	<pci>x86@x86,x86_64
 	;
 AddFilesToPackage add-ons kernel busses random :
@@ -85,6 +88,8 @@ AddFilesToPackage add-ons kernel generic :
 	bios@x86,x86_64
 	dpc
 	mpu401
+	rpi_firmware@arm64
+	vchiq@arm64
 	scsi_periph
 	smbios@x86,x86_64
 	<module>tty
@@ -134,6 +139,8 @@ AddNewDriversToPackage disk virtual :
 	virtio_block@arm,arm64,riscv64
 	;
 AddNewDriversToPackage graphics :
+	rpi_display@arm64
+	v3d@arm64
 	virtio_gpu
 	;
 AddNewDriversToPackage power
@@ -141,6 +148,7 @@ AddNewDriversToPackage power
 AddNewDriversToPackage sensor
 	: $(SYSTEM_ADD_ONS_DRIVERS_SENSOR) ;
 AddNewDriversToPackage network :
+	bcm_genet@arm64
 	usb_ecm
 	virtio_net
 	;
@@ -173,6 +181,25 @@ AddDriversToPackage audio old :
 	$(SYSTEM_ADD_ONS_DRIVERS_AUDIO_OLD) ;
 AddDriversToPackage bluetooth h2 :
 	$(SYSTEM_ADD_ONS_DRIVERS_BT_H2) ;
+if $(TARGET_ARCH) = arm64 {
+	# the Raspberry Pi 4's onboard controller, behind a UART
+	AddDriversToPackage bluetooth h4 :
+		h4bcm
+		;
+}
+if $(TARGET_ARCH) = arm64 {
+	# the Raspberry Pi's firmware services: sound output, and the message
+	# channel itself for the H.264 decoder add-on; the SoC's HEVC decoder
+	# block for the HEVC one; the GPIO pins of the 40-pin header for AirPins
+	AddDriversToPackage audio hmulti :
+		bcm2835_audio
+		;
+	AddDriversToPackage misc :
+		<driver>vchiq
+		<driver>rpi_hevc
+		<driver>rpi_gpio
+		;
+}
 AddDriversToPackage midi :
 	$(SYSTEM_ADD_ONS_DRIVERS_MIDI) ;
 AddDriversToPackage bus :
@@ -279,6 +306,11 @@ local logoArtwork =
 SEARCH on $(logoArtwork) = [ FDirName $(HAIKU_TOP) data artwork ] ;
 AddFilesToPackage data artwork : $(logoArtwork) ;
 
+# the air/OS desktop picture, Tracker's default background
+local airosArtwork = <airos-artwork>airos-desktop.tga ;
+SEARCH on $(airosArtwork) = [ FDirName $(HAIKU_TOP) data artwork airos ] ;
+AddFilesToPackage data artwork : $(airosArtwork) ;
+
 # Mail spell check dictionaries
 local spellFiles = words geekspeak ;
 spellFiles = $(spellFiles:G=spell) ;
@@ -320,6 +352,7 @@ AddBootModuleSymlinksToPackage
 	ahci
 	ata
 	ata_adapter
+	bcm2711_emmc2@arm64
 	bfs
 	dpc
 	efi_gpt
@@ -338,8 +371,10 @@ AddBootModuleSymlinksToPackage
 	openpic@ppc
 	packagefs
 	pci
+	<pci>bcm2711@arm64
 	<pci>designware@riscv64
 	<pci>ecam@riscv64,arm,arm64
+	<pci>rk3588_firmware@arm64
 	<pci>x86@x86,x86_64
 	fdt@riscv64,arm,arm64
 	scsi
@@ -367,6 +402,10 @@ AddFilesToPackage add-ons accelerants :
 	framebuffer.accelerant
 	virtio_gpu.accelerant
 	$(SYSTEM_ADD_ONS_ACCELERANTS) ;
+if $(TARGET_ARCH) = arm64 {
+	# the Raspberry Pi 4's HDMI outputs
+	AddFilesToPackage add-ons accelerants : rpi_display.accelerant ;
+}
 AddFilesToPackage add-ons locale catalogs :
 	$(SYSTEM_ADD_ONS_LOCALE_CATALOGS) ;
 
@@ -415,6 +454,7 @@ AddSymlinkToPackage add-ons Tracker
 	: /boot/system/apps/DiskUsage : DiskUsage ;
 
 AddFilesToPackage add-ons input_server devices :
+	<input>bluetooth_le_mouse
 	<input>keyboard
 	<input>mouse
 	<input>tablet
