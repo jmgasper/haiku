@@ -122,6 +122,9 @@
 #define INT_WANTED				(INT_COMMAND_COMPLETE | INT_TRANSFER_COMPLETE \
 									| INT_DMA | INT_ERROR | INT_ERROR_MASK)
 
+// CMD6 of SD cards (as an application command the number sets the width)
+#define SD_SWITCH_FUNCTION		6
+
 // what the firmware clocks the controller with, unless the device tree says
 #define DEFAULT_BASE_CLOCK		100000000
 
@@ -171,7 +174,15 @@ private:
 			status_t			_Reset(uint32 what);
 			void				_Recover();
 			status_t			_AllocateBuffer();
-			status_t			_TransferPolled(bool isWrite, size_t size);
+			status_t			_TransferPolled(bool isWrite, size_t size,
+									size_t blockSize = kBlockSize);
+			status_t			_CopyVecs(bool toBuffer,
+									const generic_io_vec* vecs, size_t count,
+									size_t& index, generic_size_t& vecOffset,
+									size_t size);
+			status_t			_ReadData(uint8 command, uint32 argument,
+									size_t size);
+			void				_SwitchToHighSpeed();
 			status_t			_SendCommand(uint8 command, uint32 argument,
 									uint32 flags, uint32* response);
 			status_t			_Wait(uint32 mask, bigtime_t timeout);
@@ -378,12 +389,12 @@ Emmc2Bus::_AllocateBuffer()
 	register, a block at a time, after the command has been sent.
 */
 status_t
-Emmc2Bus::_TransferPolled(bool isWrite, size_t size)
+Emmc2Bus::_TransferPolled(bool isWrite, size_t size, size_t blockSize)
 {
 	uint32* data = (uint32*)fBuffer;
 	uint32 ready = isWrite ? STATE_WRITE_READY : STATE_READ_READY;
 
-	for (size_t block = 0; block < size / kBlockSize; block++) {
+	for (size_t block = 0; block < size / blockSize; block++) {
 		bigtime_t timeout = system_time() + 5000000;
 		while ((_Read(REG_PRESENT_STATE) & ready) == 0) {
 			if ((atomic_get(&fEvents) & (INT_ERROR | INT_ERROR_MASK)) != 0)
@@ -393,7 +404,7 @@ Emmc2Bus::_TransferPolled(bool isWrite, size_t size)
 			snooze(10);
 		}
 
-		for (uint32 i = 0; i < kBlockSize / 4; i++) {
+		for (uint32 i = 0; i < blockSize / 4; i++) {
 			if (isWrite)
 				*(volatile uint32*)(fRegisters + REG_DATA) = *data++;
 			else
@@ -598,6 +609,12 @@ Emmc2Bus::ExecuteCommand(uint8 command, uint32 argument, uint32* response)
 	if (response == NULL && flags != CMD_RESPONSE_NONE)
 		return B_BAD_VALUE;
 
+	// An application command to a card with an address: the disk driver has
+	// selected the card and is about to set its width. That is the moment
+	// for the card's timing, and it comes first, as in other systems.
+	if (command == SD_APP_CMD && argument != 0 && !is_mmc_card(fCardType))
+		_SwitchToHighSpeed();
+
 	return _SendCommand(command, argument, flags, response);
 }
 
@@ -632,76 +649,191 @@ Emmc2Bus::DoIO(uint8 command, IOOperation* operation, bool offsetAsSectors)
 	size_t count = operation->VecCount();
 	uint64 unit = offsetAsSectors ? kBlockSize : 1;
 
-	for (size_t i = 0; i < count && length != 0; i++) {
-		generic_size_t vecOffset = 0;
-		generic_size_t vecLength = std::min(length, vecs[i].length);
-		if (vecLength % kBlockSize != 0)
-			return B_BAD_VALUE;
+	// The pieces of memory are gathered in the buffer, so that the card gets
+	// commands as long as the buffer allows: a command per page costs most
+	// of a card's speed, when writing even more than when reading.
+	size_t vecIndex = 0;
+	generic_size_t vecOffset = 0;
 
-		while (vecOffset < vecLength) {
-			size_t size = std::min(vecLength - vecOffset,
-				(generic_size_t)kDmaBufferSize);
-			if (!multiple)
-				size = kBlockSize;
+	while (length != 0) {
+		size_t size = std::min(length, (generic_size_t)kDmaBufferSize);
+		if (!multiple)
+			size = kBlockSize;
 
-			if (isWrite) {
-				status_t status = vm_memcpy_from_physical(fBuffer,
-					vecs[i].base + vecOffset, size, false);
-				if (status != B_OK)
-					return status;
-				memory_full_barrier();
-			}
-
-			// SDMA, and no interrupt at the buffer boundary: the buffer is
-			// aligned to it and never larger.
-			_Write(REG_CONTROL0, _Read(REG_CONTROL0) & ~CONTROL0_DMA_MASK);
-			_Write(REG_SDMA_ADDRESS,
-				(uint32)(fBufferAddress + fDevice.dmaBusOffset));
-			_Write(REG_BLOCK, kBlockSize | BLOCK_SDMA_BOUNDARY_512K
-				| (uint32)(size / kBlockSize) << 16);
-
-			uint32 flags = CMD_R1 | CMD_DATA;
-			if (fUseDMA)
-				flags |= TM_DMA_ENABLE;
-			if (!isWrite)
-				flags |= TM_READ;
-			if (multiple)
-				flags |= TM_MULTI_BLOCK | TM_BLOCK_COUNT | TM_AUTO_CMD12;
-
-			uint32 response = 0;
-			status_t status = _SendCommand(command, offset / unit, flags,
-				&response);
-			if (status == B_OK && (response & kMmcR1ErrorMask) != 0)
-				status = B_IO_ERROR;
-			if (status == B_OK && !fUseDMA)
-				status = _TransferPolled(isWrite, size);
-			if (status == B_OK)
-				status = _Wait(INT_TRANSFER_COMPLETE, 5000000);
-			if (status != B_OK) {
-				ERROR("%s of %" B_PRIuSIZE " bytes at %" B_PRIu64 " failed: "
-					"%s, response %#" B_PRIx32 ", events %#" B_PRIx32 "\n",
-					isWrite ? "write" : "read", size, offset, strerror(status),
-					response, (uint32)atomic_get(&fEvents));
-				_Recover();
+		if (isWrite) {
+			status_t status = _CopyVecs(true, vecs, count, vecIndex,
+				vecOffset, size);
+			if (status != B_OK)
 				return status;
-			}
-
-			if (!isWrite) {
-				memory_full_barrier();
-				status = vm_memcpy_to_physical(vecs[i].base + vecOffset,
-					fBuffer, size, false);
-				if (status != B_OK)
-					return status;
-			}
-
-			vecOffset += size;
-			offset += size;
+			memory_full_barrier();
 		}
 
-		length -= vecLength;
+		// SDMA, and no interrupt at the buffer boundary: the buffer is
+		// aligned to it and never larger.
+		_Write(REG_CONTROL0, _Read(REG_CONTROL0) & ~CONTROL0_DMA_MASK);
+		_Write(REG_SDMA_ADDRESS,
+			(uint32)(fBufferAddress + fDevice.dmaBusOffset));
+		_Write(REG_BLOCK, kBlockSize | BLOCK_SDMA_BOUNDARY_512K
+			| (uint32)(size / kBlockSize) << 16);
+
+		uint32 flags = CMD_R1 | CMD_DATA;
+		if (fUseDMA)
+			flags |= TM_DMA_ENABLE;
+		if (!isWrite)
+			flags |= TM_READ;
+		if (multiple)
+			flags |= TM_MULTI_BLOCK | TM_BLOCK_COUNT | TM_AUTO_CMD12;
+
+		uint32 response = 0;
+		status_t status = _SendCommand(command, offset / unit, flags,
+			&response);
+		if (status == B_OK && (response & kMmcR1ErrorMask) != 0)
+			status = B_IO_ERROR;
+		if (status == B_OK && !fUseDMA)
+			status = _TransferPolled(isWrite, size);
+		if (status == B_OK)
+			status = _Wait(INT_TRANSFER_COMPLETE, 5000000);
+		if (status != B_OK) {
+			ERROR("%s of %" B_PRIuSIZE " bytes at %" B_PRIu64 " failed: "
+				"%s, response %#" B_PRIx32 ", events %#" B_PRIx32 "\n",
+				isWrite ? "write" : "read", size, offset, strerror(status),
+				response, (uint32)atomic_get(&fEvents));
+			_Recover();
+			return status;
+		}
+
+		if (!isWrite) {
+			memory_full_barrier();
+			status = _CopyVecs(false, vecs, count, vecIndex, vecOffset,
+				size);
+			if (status != B_OK)
+				return status;
+		}
+
+		offset += size;
+		length -= size;
 	}
 
 	return B_OK;
+}
+
+
+/*!	Copies the next \a size bytes of the operation's memory to the buffer
+	or back, and moves \a index and \a vecOffset past them.
+*/
+status_t
+Emmc2Bus::_CopyVecs(bool toBuffer, const generic_io_vec* vecs, size_t count,
+	size_t& index, generic_size_t& vecOffset, size_t size)
+{
+	uint8* buffer = (uint8*)fBuffer;
+
+	while (size != 0) {
+		if (index >= count)
+			return B_BAD_VALUE;
+		if (vecOffset == vecs[index].length) {
+			index++;
+			vecOffset = 0;
+			continue;
+		}
+
+		size_t toCopy = std::min((generic_size_t)size,
+			vecs[index].length - vecOffset);
+		status_t status;
+		if (toBuffer) {
+			status = vm_memcpy_from_physical(buffer,
+				vecs[index].base + vecOffset, toCopy, false);
+		} else {
+			status = vm_memcpy_to_physical(vecs[index].base + vecOffset,
+				buffer, toCopy, false);
+		}
+		if (status != B_OK)
+			return status;
+
+		buffer += toCopy;
+		vecOffset += toCopy;
+		size -= toCopy;
+	}
+
+	return B_OK;
+}
+
+
+/*!	Sends a command that the card answers with \a size bytes of data, a
+	single block, and leaves them in the buffer.
+*/
+status_t
+Emmc2Bus::_ReadData(uint8 command, uint32 argument, size_t size)
+{
+	_Write(REG_CONTROL0, _Read(REG_CONTROL0) & ~CONTROL0_DMA_MASK);
+	_Write(REG_SDMA_ADDRESS, (uint32)(fBufferAddress + fDevice.dmaBusOffset));
+	_Write(REG_BLOCK, (uint32)size | BLOCK_SDMA_BOUNDARY_512K | 1 << 16);
+
+	uint32 flags = CMD_R1 | CMD_DATA | TM_READ;
+	if (fUseDMA)
+		flags |= TM_DMA_ENABLE;
+
+	uint32 response = 0;
+	status_t status = _SendCommand(command, argument, flags, &response);
+	if (status == B_OK && (response & kMmcR1ErrorMask) != 0)
+		status = B_IO_ERROR;
+	if (status == B_OK && !fUseDMA)
+		status = _TransferPolled(false, size, size);
+	if (status == B_OK)
+		status = _Wait(INT_TRANSFER_COMPLETE, 1000000);
+	if (status != B_OK) {
+		_Recover();
+		return status;
+	}
+
+	memory_full_barrier();
+	return B_OK;
+}
+
+
+/*!	Has an SD card that knows the high speed timing use it, and clocks it
+	with 50 MHz then (SD physical layer specification, 4.3.10: CMD6). The
+	card is selected and in the transfer state. A card that does not answer,
+	or does not switch, stays at 25 MHz.
+*/
+void
+Emmc2Bus::_SwitchToHighSpeed()
+{
+	if (fClock > 25000000 || fDevice.baseClock < 50000000)
+		return;
+
+	// Group 1 (access mode) to function 1 (high speed), the other groups as
+	// they are; asked first what would become of it, as other systems do.
+	status_t status = _ReadData(SD_SWITCH_FUNCTION, 0x00fffff1, 64);
+	const uint8* switchStatus = (const uint8*)fBuffer;
+	if (status != B_OK || (switchStatus[13] & 0x02) == 0
+		|| (switchStatus[16] & 0x0f) != 1) {
+		INFO("no high speed timing on this card: 25 MHz\n");
+		return;
+	}
+
+	status = _ReadData(SD_SWITCH_FUNCTION, 0x80fffff1, 64);
+	if (status != B_OK) {
+		INFO("the card does not answer the switch command (%s): 25 MHz\n",
+			strerror(status));
+		return;
+	}
+
+	// The lab's card answers the switch with function 0 and has switched
+	// all the same: what counts is the function it names as its current
+	// one when asked without a change.
+	uint8 answered = switchStatus[16] & 0x0f;
+	snooze(1000);
+	status = _ReadData(SD_SWITCH_FUNCTION, 0x00ffffff, 64);
+	if (status != B_OK || (switchStatus[16] & 0x0f) != 1) {
+		INFO("the card stays at default speed (answered %u, now %u): "
+			"25 MHz\n", answered, switchStatus[16] & 0x0f);
+		return;
+	}
+
+	// the card changes its timing within eight clock cycles
+	snooze(1000);
+	if (SetClock(50000) == B_OK)
+		INFO("high speed: %" B_PRIu32 " Hz\n", fClock);
 }
 
 
@@ -948,11 +1080,14 @@ emmc2_register_child_devices(void* cookie)
 		{kMmcMaxBusWidthAttribute, B_UINT8_TYPE,
 			{.ui8 = (uint8)device->busWidth}},
 		{kMmcEnableCacheAttribute, B_UINT8_TYPE, {.ui8 = 0}},
-		// one run of whole blocks at a time; it is copied through the
-		// driver's own buffer
+		// whole blocks in pieces of memory that are copied through the
+		// driver's own buffer, at most the buffer's size per transfer
 		{B_DMA_ALIGNMENT, B_UINT32_TYPE, {.ui32 = kBlockSize - 1}},
-		{B_DMA_MAX_SEGMENT_COUNT, B_UINT32_TYPE, {.ui32 = 1}},
+		{B_DMA_MAX_SEGMENT_COUNT, B_UINT32_TYPE,
+			{.ui32 = (uint32)(kDmaBufferSize / B_PAGE_SIZE)}},
 		{B_DMA_MAX_SEGMENT_BLOCKS, B_UINT32_TYPE,
+			{.ui32 = (uint32)(kDmaBufferSize / kBlockSize)}},
+		{B_DMA_MAX_TRANSFER_BLOCKS, B_UINT32_TYPE,
 			{.ui32 = (uint32)(kDmaBufferSize / kBlockSize)}},
 		{}
 	};
