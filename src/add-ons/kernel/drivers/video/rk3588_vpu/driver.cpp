@@ -62,6 +62,7 @@ struct Controller {
 	void* av1Registers;
 	uint32_t jobs;
 	bigtime_t jobTime;
+	bigtime_t decodeTime;	// in the decoder, without cache maintenance
 	bigtime_t slowestJob;
 
 	// Picture buffers must be physically contiguous below 4 GiB. Asked for
@@ -80,8 +81,10 @@ struct MppPendingJob {
 	uint64_t readAddress;
 	uint32_t readBytes;
 	bool valid;
-	// The buffers the job reads and writes, for cache maintenance.
+	// The buffers the job reads and writes, and whether the processor
+	// shares them (cache maintenance before and after the job).
 	struct DmaBuffer* buffers[96];
+	bool shared[96];
 	uint32_t bufferCount;
 };
 
@@ -115,14 +118,71 @@ static DmaBuffer* FindTeamBuffer(team_id owner, uint32_t handle);
 
 
 static void
-RememberJobBuffer(MppPendingJob& job, DmaBuffer* buffer)
+RememberJobBuffer(MppPendingJob& job, DmaBuffer* buffer, bool shared)
 {
 	for (uint32_t index = 0; index < job.bufferCount; index++) {
-		if (job.buffers[index] == buffer)
+		if (job.buffers[index] == buffer) {
+			job.shared[index] |= shared;
 			return;
+		}
 	}
-	if (job.bufferCount < sizeof(job.buffers) / sizeof(job.buffers[0]))
+	if (job.bufferCount < sizeof(job.buffers) / sizeof(job.buffers[0])) {
+		job.shared[job.bufferCount] = shared;
 		job.buffers[job.bufferCount++] = buffer;
+	}
+}
+
+
+/*!	Whether the processor shares the buffer an RKVDEC address register
+	(128-197) names in an H.264 or HEVC job: the stream and the tables MPP
+	writes, and the picture it reads back. Reference pictures (including
+	the one errors are concealed from), motion vectors and row caches only
+	ever pass between jobs; MPP writes none of them (a missing reference
+	gets a new buffer, cleaned when it was handed out). Leaving them alone
+	saves most of the maintenance: at 4K, ten bits, a job's references come
+	to some 100 MiB, cleaned and invalidated twice. */
+static bool
+IsSharedRkvdecRegister(uint32_t index)
+{
+	if (index == 131 || index == 132)
+		return false;	// this picture's motion vectors, the error reference
+	if (index >= 133 && index <= 142)
+		return false;	// row caches
+	if (index >= 164 && index <= 179)
+		return false;	// reference pictures
+	if (index >= 181 && index <= 196)
+		return false;	// their motion vectors
+	return true;
+}
+
+
+/*!	The same for a VPU981 (AV1) address register. A reference picture
+	takes five: luma, chroma, motion vectors and two tile tables, for each
+	of seven references; the column buffers and synchronisation areas are
+	the decoder's own. What the post-processor writes (registers 326, 328
+	and 505) is the picture the processor reads; the rest - the stream, the
+	tile and probability tables, film grain, global motion, the picture
+	being decoded - stays maintained, as does anything not named here. */
+static bool
+IsSharedAv1Register(uint32_t index)
+{
+	if ((index >= 67 && index <= 79) || (index >= 101 && index <= 113)
+		|| (index >= 135 && index <= 147)) {
+		return (index & 1) == 0;	// references: luma, chroma, vectors
+	}
+	if ((index >= 192 && index <= 204) || (index >= 226 && index <= 238))
+		return (index & 1) != 0;	// references: tile tables
+	switch (index) {
+		case 85:	// CDEF column buffer
+		case 89:	// super-resolution column buffer
+		case 91:	// loop restoration column buffer
+		case 175:	// motion compensation synchronisation
+		case 177:
+		case 179:	// vertical filter
+			return false;
+		default:
+			return true;
+	}
 }
 
 static bool
@@ -244,7 +304,8 @@ ValidateMppJob(OpenHandle* opened, const MppServiceRequest* userRequests)
 			if (allocation == NULL)
 				return B_ENTRY_NOT_FOUND;
 			job.registers[128 + index] = (uint32_t)allocation->physical;
-			RememberJobBuffer(job, allocation);
+			RememberJobBuffer(job, allocation,
+				IsSharedRkvdecRegister(128 + index));
 			trial.addressHandles++;
 		}
 	} else {
@@ -257,7 +318,7 @@ ValidateMppJob(OpenHandle* opened, const MppServiceRequest* userRequests)
 				return B_ENTRY_NOT_FOUND;
 			av1Handles[index] = handle;
 			job.registers[index] = (uint32_t)allocation->physical;
-			RememberJobBuffer(job, allocation);
+			RememberJobBuffer(job, allocation, IsSharedAv1Register(index));
 			trial.addressHandles++;
 		}
 	}
@@ -320,7 +381,12 @@ ValidateMppJob(OpenHandle* opened, const MppServiceRequest* userRequests)
 static const size_t kMaximumBufferBytes = 32 * 1024 * 1024;
 // MPP keeps up to 35 pictures for an H.264 stream: 146 MiB at 1080p.
 static const size_t kMaximumClientBytes = 768 * 1024 * 1024;
-static const size_t kDefaultPoolMegabytes = 320;
+// A 4K ten-bit film holds 15 to 20 pictures of 14 MiB (HEVC) or 21 MiB (AV1)
+// at once; what does not fit in the pool is write combining memory, which
+// the processor reads at a fraction of the speed (AV1 at 4K then played at
+// 15 pictures a second instead of 24). dma_pool_mb sets less on boards with
+// little memory.
+static const size_t kDefaultPoolMegabytes = 640;
 
 
 // #pragma mark - DMA pool
@@ -352,8 +418,10 @@ SyncBufferForDevice(DmaBuffer* buffer)
 static void
 SyncJobBuffers(const MppPendingJob& job)
 {
-	for (uint32_t index = 0; index < job.bufferCount; index++)
-		SyncBufferForDevice(job.buffers[index]);
+	for (uint32_t index = 0; index < job.bufferCount; index++) {
+		if (job.shared[index])
+			SyncBufferForDevice(job.buffers[index]);
+	}
 }
 
 
@@ -553,6 +621,15 @@ AllocateBuffer(OpenHandle* opened, BufferAllocation& request)
 		goto mapped;
 	}
 
+	if (opened->controller->poolMap != NULL) {
+		static bool sPoolFullLogged = false;
+		if (!sPoolFullLogged) {
+			sPoolFullLogged = true;
+			dprintf("rk3588_vpu: DMA pool full, a buffer of %zu KiB is write"
+				" combining (slow to read); dma_pool_mb sets the pool's size\n",
+				bytes / 1024);
+		}
+	}
 	buffer->kernelArea = create_area_etc(B_SYSTEM_TEAM, "RK3588 VPU DMA buffer",
 		bytes, B_CONTIGUOUS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
 		0, 0, &virtualRestrictions, &physicalRestrictions,
@@ -1273,14 +1350,16 @@ PowerDownDecoder(Controller* controller)
 		controller->vdpuPowered = false;
 	}
 	dprintf("rk3588_vpu: decoder powered down after %" B_PRIu32 " jobs,"
-		" %" B_PRId64 " us a job, slowest %" B_PRId64 " us; restore"
-		" %u/%u/%u\n", controller->jobs,
+		" %" B_PRId64 " us a job (%" B_PRId64 " us decoding), slowest %"
+		B_PRId64 " us; restore %u/%u/%u\n", controller->jobs,
 		controller->jobs > 0 ? controller->jobTime / controller->jobs : 0,
+		controller->jobs > 0 ? controller->decodeTime / controller->jobs : 0,
 		controller->slowestJob, controller->vdpuSession.restoreResult,
 		controller->rkvdec0Session.restoreResult,
 		controller->av1Session.restoreResult);
 	controller->jobs = 0;
 	controller->jobTime = 0;
+	controller->decodeTime = 0;
 	controller->slowestJob = 0;
 }
 
@@ -1586,11 +1665,13 @@ Control(void* cookie, uint32 op, void* buffer, size_t length)
 			}
 			bigtime_t started = system_time();
 			SyncJobBuffers(opened->mppJob);
+			bigtime_t decodeStarted = system_time();
 			status = rkvdec
 				? controller->hardware->RunRkvdec0Job(opened->mppJob,
 					controller->rkvdec0Registers)
 				: controller->hardware->RunAv1Job(opened->mppJob,
 					controller->av1Registers);
+			controller->decodeTime += system_time() - decodeStarted;
 			SyncJobBuffers(opened->mppJob);
 			bigtime_t spent = system_time() - started;
 			opened->mppJob.valid = false;
