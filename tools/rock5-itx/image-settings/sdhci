@@ -1,0 +1,4 @@
+firmware_profile rock5-itx-edk2-v1.1-emmc-legacy
+read_only false
+force_high_cpu_buffers true
+enable_cache true

@@ -1,0 +1,72 @@
+# air/OS release images, built on the self-hosted air/OS build server
+# (jmgasper/airos-ci) from the pushed commit:
+#   x86_64  airos-x86_64.iso   USB stick / CD, EFI and BIOS (X399 and other PCs)
+#   arm64   airos-arm64.iso    USB stick, UEFI (ROCK 5 ITX and other arm64 machines)
+#   rpi4    airos-rpi4.img     Raspberry Pi 4 SD card (Balena Etcher), boots directly
+# Each image is smoke-tested in QEMU and published on the build server
+# (http://airos-build.local/images/<target>/latest/). They are rebuilt nightly
+# too, to pick up new builds of the applications and Summit.
+name: air/OS images
+
+on:
+  push:
+    branches: [master]
+    paths-ignore: ['docs/**', '**/*.md']
+  schedule:
+    - cron: '17 15 * * *'
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: images to build
+        default: x86_64 arm64 rpi4
+
+permissions:
+  contents: read
+
+concurrency:
+  group: airos-images
+  cancel-in-progress: false
+
+jobs:
+  image:
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64, arm64, rpi4]
+    runs-on: [self-hosted, airos-build]
+    timeout-minutes: 240
+    steps:
+      - name: Selected
+        id: selected
+        run: |
+          targets="${{ inputs.targets || 'x86_64 arm64 rpi4' }}"
+          [[ " $targets " == *" ${{ matrix.target }} "* ]] && echo "build=1" >> "$GITHUB_OUTPUT" || true
+
+      - name: Fetch airos-ci
+        if: steps.selected.outputs.build
+        run: |
+          rm -rf "$RUNNER_TEMP/airos-ci"
+          git clone -q --depth 1 https://github.com/jmgasper/airos-ci.git "$RUNNER_TEMP/airos-ci"
+          git -C "$RUNNER_TEMP/airos-ci" log --oneline -1
+
+      - name: Build ${{ matrix.target }}
+        id: build
+        if: steps.selected.outputs.build
+        run: '"$RUNNER_TEMP/airos-ci/images/build-image.sh" "${{ matrix.target }}" "$GITHUB_SHA"'
+
+      - name: Smoke test
+        if: steps.selected.outputs.build
+        run: '"$RUNNER_TEMP/airos-ci/images/smoke-test.sh" "${{ matrix.target }}" "${{ steps.build.outputs.IMAGE_DIR }}"'
+
+      - name: Summary
+        if: always() && steps.build.outputs.IMAGE_DIR
+        run: |
+          dir="${{ steps.build.outputs.IMAGE_DIR }}"
+          url="http://airos-build.local/images/${{ matrix.target }}/$(basename "$dir")/"
+          {
+            echo "## ${{ matrix.target }}"
+            echo "Image: [$url]($url)"
+            echo '```'
+            cat "$dir/smoke.log" 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

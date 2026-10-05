@@ -1,0 +1,149 @@
+# air/OS release images, built by the air/OS build server (jmgasper/airos-ci,
+# images/build-image.sh) from this tree and from inputs CI builds itself (the
+# owner's applications, Summit, the libraries and GL stack from the jmgasper
+# forks, firmware) - never from a workstation's directories.
+#
+#   x86_64     jam -q @nightly-airos-x86_64               -> airos-x86_64.iso
+#              hybrid ISO for a USB stick or a CD, EFI and BIOS (X399 and
+#              other PCs); boots to the desktop and the Installer
+#   arm64 EFI  jam -q @airos-arm64                        -> airos-arm64.iso
+#              hybrid ISO with an EFI system partition (ROCK 5 ITX and other
+#              arm64 machines with UEFI firmware)
+#   Pi 4       jam -q @airos-rpi4 airos-rpi-image         -> airos-rpi4.img
+#              SD card image (FAT boot partition + BFS) that boots directly
+#
+# The build directory's UserBuildConfig sets these and then includes this file:
+#   AIROS_CI_PACKAGES       directory of packages for system/packages: the
+#                           applications, Summit and summit_webkit, the
+#                           airos_* libraries, rock5_ffmpeg, firmware packages,
+#                           and (x86_64) HaikuPorts packages the build system's
+#                           repository list lacks
+#   AIROS_CI_LIBS           libraries for system/non-packaged/lib (GL stack)
+#   AIROS_CI_EGL            EGL vendor files for .../add-ons/opengl/egl_vendor.d
+#   AIROS_CI_DEMOS          demos for system/non-packaged/demos (GLTeapot)
+#   AIROS_CI_FIRMWARE       a tree copied to system/non-packaged/data/firmware
+#   AIROS_CI_IMAGE_SIZE     image size in MiB (optional)
+#   HAIKU_RPI_FIRMWARE_DIR  (Pi) the Raspberry Pi boot firmware files
+#
+# Unlike the lab configurations (tools/rock5-itx, tools/rpi4) this adds no
+# remote shell, password, keys, probes or diagnostics.
+
+HAIKU_IMAGE_LABEL = airOS ;
+HAIKU_IMAGE_HOST_NAME ?= airos ;
+
+DefineBuildProfile nightly-airos-x86_64 : anyboot-image : "airos-x86_64.iso" ;
+DefineBuildProfile airos-arm64 : anyboot-image : "airos-arm64.iso" ;
+DefineBuildProfile airos-rpi4 : image : "haiku-airos-rpi4.image" ;
+
+AIROS_X86_64 = ;
+AIROS_ROCK5 = ;
+AIROS_RPI4 = ;
+switch $(HAIKU_BUILD_PROFILE) {
+	case nightly-airos-x86_64 : {
+		AIROS_X86_64 = 1 ;
+		HAIKU_IMAGE_SIZE = $(AIROS_CI_IMAGE_SIZE:E=3072) ;
+		# What the x86_64 applications require that the HaikuPorts repository
+		# list of the build system has (the rest arrive as package files):
+		# Amp (curl, SQLite), Kiri and Turbo Chook (git, PCRE2), airTime
+		# (FFmpeg 6), Burrow (OpenSSL 3) and Summit's TLS certificates.
+		AddHaikuImageSystemPackages curl sqlite libpcre2 openssl3 ffmpeg6 git
+			ca_root_certificates ;
+	}
+	case airos-arm64 : {
+		AIROS_ROCK5 = 1 ;
+		HAIKU_IMAGE_SIZE = $(AIROS_CI_IMAGE_SIZE:E=3072) ;
+	}
+	case airos-rpi4 : {
+		AIROS_RPI4 = 1 ;
+		HAIKU_IMAGE_SIZE = $(AIROS_CI_IMAGE_SIZE:E=3584) ;
+		HAIKU_RPI_IMAGE_NAME = airos-rpi4.img ;
+	}
+}
+
+# The ROCK 5 ITX's drivers and Bluetooth tools (bt_le, the AX210 loader).
+if $(AIROS_ROCK5) {
+	DeferredSubInclude HAIKU_TOP tools rock5-itx ;
+}
+
+# AirosCIFiles <image directory> : <source directory> : <grist> : <pattern>
+rule AirosCIFiles directoryTokens : sourceDir : grist : pattern
+{
+	if ! $(sourceDir) {
+		return ;
+	}
+	local files = [ Glob $(sourceDir) : $(pattern) ] ;
+	if ! $(files) {
+		return ;
+	}
+	files = <$(grist)>$(files:BS) ;
+	SEARCH on $(files) = $(sourceDir) ;
+	AddFilesToHaikuImage $(directoryTokens) : $(files) ;
+}
+
+rule UserBuildConfigRulePreImage
+{
+	local tree = [ FDirName $(HAIKU_TOP) tools airos ci ] ;
+
+	# Everything CI built for this image.
+	AirosCIFiles system packages : $(AIROS_CI_PACKAGES) : airos-ci-pkg : *.hpkg ;
+	AirosCIFiles system non-packaged lib : $(AIROS_CI_LIBS) : airos-ci-lib : *.so* ;
+	AirosCIFiles system non-packaged add-ons opengl egl_vendor.d : $(AIROS_CI_EGL)
+		: airos-ci-egl : *.json ;
+	AirosCIFiles system non-packaged demos : $(AIROS_CI_DEMOS) : airos-ci-demo : * ;
+	if $(AIROS_CI_FIRMWARE) {
+		CopyDirectoryToHaikuImage system non-packaged data : $(AIROS_CI_FIRMWARE)
+			: firmware ;
+	}
+
+	# Join remembered Wi-Fi networks at start (x86_64 and ROCK 5; the Pi has
+	# its own script that also sets the clock).
+	if $(AIROS_X86_64) || $(AIROS_ROCK5) {
+		local bootscript = <airos-ci>UserBootscript ;
+		SEARCH on $(bootscript) = [ FDirName $(tree) boot ] ;
+		AddFilesToHaikuImage home config settings boot : $(bootscript) ;
+	}
+
+	if $(AIROS_ROCK5) || $(AIROS_RPI4) {
+		# The arm64 ICU bootstrap package's data directory.
+		local environment = <airos-ci>UserSetupEnvironment ;
+		SEARCH on $(environment) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
+		AddFilesToHaikuImage home config settings boot : $(environment) ;
+	}
+
+	if $(AIROS_ROCK5) {
+		local rock5 = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
+		# Driver settings: PCIe, the GIC ITS, the VPU, and the firmware
+		# profiles that admit the eMMC, display and GPU drivers.
+		local settings = <airos-rock5>rk3588_pcie <airos-rock5>gicv3_its
+			<airos-rock5>rk3588_vpu ;
+		SEARCH on $(settings) = $(rock5) ;
+		AddFilesToHaikuImage home config settings kernel drivers : $(settings) ;
+		local profiles = <airos-rock5>sdhci <airos-rock5>rk3588_display
+			<airos-rock5>mali_csf ;
+		SEARCH on $(profiles) = [ FDirName $(rock5) image-settings ] ;
+		AddFilesToHaikuImage home config settings kernel drivers : $(profiles) ;
+
+		AddDriversToHaikuImage net : ipro1000 rtl8125 ;
+		AddNewDriversToHaikuImage graphics : mali_csf rk3588_display ;
+		AddNewDriversToHaikuImage video : rk3588_vpu ;
+		AddNewDriversToHaikuImage audio hmulti : rk3588_audio ;
+		AddFilesToHaikuImage system non-packaged add-ons accelerants
+			: rk3588_display.accelerant ;
+		# The Bluetooth LE command line tool.
+		AddFilesToHaikuImage system non-packaged bin : bt_le ;
+	}
+
+	if $(AIROS_RPI4) {
+		local rpi = [ FDirName $(HAIKU_TOP) data boot rpi ] ;
+		# Package entries the Pi must not see (the ROCK 5's MPP decoder).
+		local packageSettings = <airos-rpi4>packages ;
+		SEARCH on $(packageSettings) = $(rpi) ;
+		AddFilesToHaikuImage system settings : $(packageSettings) ;
+		local localeSettings = "<airos-rpi4>Locale settings" ;
+		SEARCH on $(localeSettings) = $(rpi) ;
+		AddFilesToHaikuImage home config settings : $(localeSettings) ;
+		local bootscript = <airos-rpi4>UserBootscript ;
+		SEARCH on $(bootscript) = $(rpi) ;
+		AddFilesToHaikuImage home config settings boot : $(bootscript) ;
+	}
+}
