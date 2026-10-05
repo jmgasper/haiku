@@ -63,6 +63,7 @@ class CamDevice {
 
 	virtual status_t	SuggestVideoFrame(uint32 &width, uint32 &height);
 	virtual status_t	AcceptVideoFrame(uint32 &width, uint32 &height);
+	virtual float		FrameRate();
 	virtual status_t	SetVideoFrame(BRect rect);
 	virtual BRect		VideoFrame() const { return fVideoFrame; };
 	virtual status_t	SetScale(float scale);

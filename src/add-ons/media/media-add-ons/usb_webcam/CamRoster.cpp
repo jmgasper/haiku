@@ -46,14 +46,19 @@ CamRoster::DeviceAdded(BUSBDevice* _device)
 		if (err < B_OK)
 			continue;
 		CamDevice *cam = ao->Instantiate(*this, _device);
+		if (cam == NULL)
+			continue;
 		PRINT((CH ": found camera %s:%s!" CT, cam->BrandName(), cam->ModelName()));
 		err = cam->InitCheck();
 		if (err >= B_OK) {
+			fLocker.Lock();
 			fCameras.AddItem(cam);
+			fLocker.Unlock();
 			fAddon->CameraAdded(cam);
 			return B_OK;
 		}
 		PRINT((CH " error 0x%08" B_PRIx32 CT, err));
+		delete cam;
 	}
 	return B_ERROR;
 }
@@ -67,11 +72,13 @@ CamRoster::DeviceRemoved(BUSBDevice* _device)
 		CamDevice* cam = (CamDevice *)fCameras.ItemAt(i);
 		if (cam->Matches(_device)) {
 			PRINT((CH ": camera %s:%s removed" CT, cam->BrandName(), cam->ModelName()));
+			fLocker.Lock();
 			fCameras.RemoveItem(i);
-			fAddon->CameraRemoved(cam);
-			// XXX: B_DONT_DO_THAT!
-			//delete cam;
+			fLocker.Unlock();
+			// Stop using the device before it goes away. The camera itself
+			// is not deleted: its node may still refer to it.
 			cam->Unplugged();
+			fAddon->CameraRemoved(cam);
 			return;
 		}
 	}

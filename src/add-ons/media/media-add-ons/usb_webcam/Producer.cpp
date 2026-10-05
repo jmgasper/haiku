@@ -28,10 +28,6 @@
 // don't separate parameters from addon, device and sensor
 #define SINGLE_PARAMETER_GROUP 1
 
-// CodyCam and eXposer prefer 320x240
-#define FORCE_320_240 1
-//#define FORCE_160_120 1
-//#define FORCE_MAX_FRAME 1
 
 #define TOUCH(x) ((void)(x))
 
@@ -45,8 +41,7 @@
 
 #include "Producer.h"
 
-//#define FIELD_RATE 30.f
-//#define FIELD_RATE 29.97f
+// the rate of devices that do not tell theirs
 #define FIELD_RATE 5.f
 
 
@@ -64,9 +59,9 @@ VideoProducer::VideoProducer(
 
 	fInitStatus = B_NO_INIT;
 
-	/* Only allow one instance of the node to exist at any time */
-	if (atomic_add(&fInstances, 1) != 0)
-		return;
+	// (One node per camera: that is what the flavor's possible_count of 1
+	// sees to.)
+	atomic_add(&fInstances, 1);
 
 	fInternalID = internal_id;
 	fAddOn = addon;
@@ -81,6 +76,10 @@ VideoProducer::VideoProducer(
 	fRunning = false;
 	fConnected = false;
 	fEnabled = false;
+	fFrame = 0;
+	fFrameBase = 0;
+	fPerformanceTimeBase = 0;
+	memset(fStats, 0, sizeof(fStats));
 
 	fOutput.destination = media_destination::null;
 
@@ -217,7 +216,7 @@ VideoProducer::NodeRegistered()
 	fOutput.format.u.raw_video = media_raw_video_format::wildcard;
 	fOutput.format.u.raw_video.interlace = 1;
 	fOutput.format.u.raw_video.display.format = B_RGB32;
-	fOutput.format.u.raw_video.field_rate = FIELD_RATE; // XXX: mmu
+		// the size and the rate are left to the consumer: a wildcard
 
 	/* Start the BMediaEventLooper control loop running */
 	Run();
@@ -331,7 +330,7 @@ status_t
 VideoProducer::FormatSuggestionRequested(
 		media_type type, int32 quality, media_format *format)
 {
-	if (type != B_MEDIA_ENCODED_VIDEO)
+	if (type != B_MEDIA_RAW_VIDEO && type != B_MEDIA_UNKNOWN_TYPE)
 		return B_MEDIA_BAD_FORMAT;
 
 	TOUCH(quality);
@@ -346,7 +345,9 @@ VideoProducer::FormatSuggestionRequested(
 		format->u.raw_video.display.line_width = width;
 		format->u.raw_video.display.line_count = height;
 	}
-	format->u.raw_video.field_rate = FIELD_RATE;
+	format->u.raw_video.display.bytes_per_row
+		= 4 * format->u.raw_video.display.line_width;
+	format->u.raw_video.field_rate = _FieldRate();
 	return B_OK;
 }
 
@@ -487,34 +488,17 @@ VideoProducer::PrepareToConnect(const media_source &source,
 		return B_MEDIA_BAD_FORMAT;
 	}
 
-//XXX:FIXME
-#if 0
-//	if (format->u.raw_video.display.line_width == 0)
-		format->u.raw_video.display.line_width = 352;//320;
-		format->u.raw_video.display.line_width = 320;
-//	if (format->u.raw_video.display.line_count == 0)
-		format->u.raw_video.display.line_count = 288;//240;
-		format->u.raw_video.display.line_count = 240;
-#endif
+	// The consumer may ask for a size of its own; the device is asked what
+	// it makes of it (a wildcard becomes its suggestion).
+	if (fCamDevice && (format->u.raw_video.display.line_width == 0
+			|| format->u.raw_video.display.line_count == 0)) {
+		uint32 width, height;
+		if (fCamDevice->SuggestVideoFrame(width, height) == B_OK) {
+			format->u.raw_video.display.line_width = width;
+			format->u.raw_video.display.line_count = height;
+		}
+	}
 
-#ifdef FORCE_320_240
-	{
-		format->u.raw_video.display.line_width = 320;
-		format->u.raw_video.display.line_count = 240;
-	}
-#endif
-#ifdef FORCE_160_120
-	{
-		format->u.raw_video.display.line_width = 160;
-		format->u.raw_video.display.line_count = 120;
-	}
-#endif
-#ifdef FORCE_MAX_FRAME
-	{
-		format->u.raw_video.display.line_width = 0;
-		format->u.raw_video.display.line_count = 0;
-	}
-#endif
 	if (fCamDevice) {
 		err = fCamDevice->AcceptVideoFrame(
 			format->u.raw_video.display.line_width,
@@ -523,8 +507,13 @@ VideoProducer::PrepareToConnect(const media_source &source,
 			return err;
 	}
 
+	format->u.raw_video.display.format = B_RGB32;
+	format->u.raw_video.display.bytes_per_row
+		= 4 * format->u.raw_video.display.line_width;
+	if (format->u.raw_video.interlace == 0)
+		format->u.raw_video.interlace = 1;
 	if (format->u.raw_video.field_rate == 0)
-		format->u.raw_video.field_rate = FIELD_RATE;
+		format->u.raw_video.field_rate = _FieldRate();
 
 	*out_source = fOutput.source;
 	strcpy(out_name, fOutput.name);
@@ -868,13 +857,14 @@ VideoProducer::HandleSeek(bigtime_t performance_time)
 void
 VideoProducer::_UpdateStats()
 {
-	float fps = (fStats[0].frames - fStats[1].frames) * 1000000LL
+	if (fStats[0].stamp == fStats[1].stamp)
+		return;
+	float fps = (fStats[0].actual - fStats[1].actual) * 1000000LL
 				/ (double)(fStats[0].stamp - fStats[1].stamp);
-	float rfps = (fStats[0].actual - fStats[1].actual) * 1000000LL
-				/ (double)(fStats[0].stamp - fStats[1].stamp);
-	fInfoString = "FPS: ";
-	fInfoString << fps << " virt, "
-		<< rfps << " real, missed: " << fStats[0].missed;
+	fInfoString = "";
+	fInfoString.SetToFormat("%" B_PRIu32 " x %" B_PRIu32 ", %.1f frames per "
+		"second, %" B_PRIu32 " missed", fConnectedFormat.display.line_width,
+		fConnectedFormat.display.line_count, fps, fStats[0].missed);
 	memcpy(&fStats[1], &fStats[0], sizeof(fStats[0]));
 	fLastColorChange = system_time();
 	BroadcastNewParameterValue(fLastColorChange, P_INFO,
@@ -882,86 +872,72 @@ VideoProducer::_UpdateStats()
 }
 
 
-/* The following functions form the thread that generates frames. You should
- * replace this with the code that interfaces to your hardware. */
+float
+VideoProducer::_FieldRate()
+{
+	float rate = fCamDevice != NULL ? fCamDevice->FrameRate() : 0;
+	return rate > 0 ? rate : FIELD_RATE;
+}
+
+
+/*!	The thread that passes the frames on. The device sets the pace: every
+	frame it delivers is sent to the consumer as it arrives.
+*/
 int32
 VideoProducer::FrameGenerator()
 {
-	bigtime_t wait_until = system_time();
+	bigtime_t lastStats = system_time();
 
-	while (1) {
-		PRINTF(1, ("FrameGenerator: " \
-			"acquire_sem_etc() until %" B_PRIdBIGTIME "µs " \
-			"(in %" B_PRIdBIGTIME "µs)\n", \
-			wait_until, wait_until - system_time()));
-		status_t err = acquire_sem_etc(fFrameSync, 1, B_ABSOLUTE_TIMEOUT,
-				wait_until);
-
-		/* The only acceptable responses are B_OK and B_TIMED_OUT. Everything
-		 * else means the thread should quit. Deleting the semaphore, as in
-		 * VideoProducer::HandleStop(), will trigger this behavior. */
-		if ((err != B_OK) && (err != B_TIMED_OUT))
+	while (true) {
+		// Deleting the semaphore, as VideoProducer::HandleStop() does, is
+		// what tells us to quit; it is released when something about the
+		// connection changed.
+		status_t err = acquire_sem_etc(fFrameSync, 1, B_RELATIVE_TIMEOUT, 0);
+		if (err != B_OK && err != B_TIMED_OUT && err != B_WOULD_BLOCK)
 			break;
-
-		fFrame++;
-
-		/* Recalculate the time until the thread should wake up to begin
-		 * processing the next frame. Subtract fProcessingLatency so that
-		 * the frame is sent in time. */
-		wait_until = TimeSource()->RealTimeFor(fPerformanceTimeBase, 0) +
-				(bigtime_t)
-						((fFrame - fFrameBase) *
-						(1000000 / fConnectedFormat.field_rate)) -
-				fProcessingLatency;
-		PRINT(("PS: %" B_PRIdBIGTIME "\n", fProcessingLatency));
-
-		/* Drop frame if it's at least a frame late */
-		if (wait_until < system_time())
-			continue;
-
-		PRINTF(1, ("FrameGenerator: wait until %" B_PRIdBIGTIME ", "
-			"%ctimed out, %crunning, %cenabled.\n",
-			wait_until,
-			(err == B_OK)?'!':' ',
-			(fRunning)?' ':'!',
-			(fEnabled)?' ':'!'));
-
-		/* If the semaphore was acquired successfully, it means something
-		 * changed the timing information (see VideoProducer::Connect()) and
-		 * so the thread should go back to sleep until the newly-calculated
-		 * wait_until time. */
-		if (err == B_OK)
-			continue;
 
 		/* Send buffers only if the node is running and the output has been
 		 * enabled */
-		if (!fRunning || !fEnabled)
+		if (!fRunning || !fEnabled || !fConnected) {
+			snooze(20000);
 			continue;
+		}
 
 		BAutolock _(fLock);
+		if (fBufferGroup == NULL) {
+			snooze(20000);
+			continue;
+		}
+
+		const size_t size = 4 * fConnectedFormat.display.line_width
+			* fConnectedFormat.display.line_count;
 
 		/* Fetch a buffer from the buffer group */
-		BBuffer *buffer = fBufferGroup->RequestBuffer(
-						4 * fConnectedFormat.display.line_width *
-						fConnectedFormat.display.line_count, 0LL);
+		BBuffer *buffer = fBufferGroup->RequestBuffer(size, 20000LL);
 		if (!buffer)
 			continue;
+
+		// This is where we fill the video buffer. It waits for the next
+		// frame of the device, but not for long, so that we can be stopped.
+		// (Must be called without the device's lock!)
+		bigtime_t stamp = 0;
+		err = fCamDevice->FillFrameBuffer(buffer, &stamp);
+		if (err < B_OK) {
+			buffer->Recycle();
+			if (err != B_TIMED_OUT) {
+				fStats[0].missed++;
+				snooze(5000);
+			}
+			continue;
+		}
+
+		fFrame++;
 
 		/* Fill out the details about this buffer. */
 		media_header *h = buffer->Header();
 		h->type = B_MEDIA_RAW_VIDEO;
 		h->time_source = TimeSource()->ID();
-		h->size_used = 4 * fConnectedFormat.display.line_width *
-						fConnectedFormat.display.line_count;
-		/* For a buffer originating from a device, you might want to calculate
-		 * this based on the PerformanceTimeFor the time your buffer arrived at
-		 * the hardware (plus any applicable adjustments). */
-		/*
-		h->start_time = fPerformanceTimeBase +
-						(bigtime_t)
-							((fFrame - fFrameBase) *
-							(1000000 / fConnectedFormat.field_rate));
-		*/
+		h->size_used = size;
 		h->file_pos = 0;
 		h->orig_size = 0;
 		h->data_offset = 0;
@@ -972,52 +948,14 @@ VideoProducer::FrameGenerator()
 		h->u.raw_video.first_active_line = 1;
 		h->u.raw_video.line_count = fConnectedFormat.display.line_count;
 
-		// This is where we fill the video buffer.
-
-#if 0
-		uint32 *p = (uint32 *)buffer->Data();
-		/* Fill in a pattern */
-		for (uint32 y=0;y<fConnectedFormat.display.line_count;y++)
-			for (uint32 x=0;x<fConnectedFormat.display.line_width;x++)
-				*(p++) = ((((x+y)^0^x)+fFrame) & 0xff) * (0x01010101 & fColor);
-#endif
-
-		//NO! must be called without lock!
-		//BAutolock lock(fCamDevice->Locker());
-
-		bigtime_t now = system_time();
-		bigtime_t stamp;
-//#ifdef UseFillFrameBuffer
-		err = fCamDevice->FillFrameBuffer(buffer, &stamp);
-		if (err < B_OK) {
-			;//XXX handle error
-			fStats[0].missed++;
-		}
-//#endif
-#ifdef UseGetFrameBitmap
-		BBitmap *bm;
-		err = fCamDevice->GetFrameBitmap(&bm, &stamp);
-		if (err >= B_OK) {
-			;//XXX handle error
-			fStats[0].missed++;
-		}
-#endif
-		fStats[0].frames = fFrame;
-		fStats[0].actual++;;
-		fStats[0].stamp = system_time();
-
-		//PRINTF(1, ("FrameGenerator: stamp %lld vs %lld\n", stamp, h->start_time));
-		//XXX: that's what we should be doing, but CodyCam drops all frames as they are late. (maybe add latency ??)
-		//h->start_time = TimeSource()->PerformanceTimeFor(stamp);
+		// The frame is as old as it took to convert it, but consumers drop
+		// what arrives late: it is stamped with the time it is sent.
 		h->start_time = TimeSource()->PerformanceTimeFor(system_time());
 
+		fStats[0].frames = fFrame;
+		fStats[0].actual++;
+		fStats[0].stamp = system_time();
 
-		// update processing latency
-		// XXX: should I ??
-		fProcessingLatency = system_time() - now;
-		fProcessingLatency /= 10;
-
-		PRINTF(1, ("FrameGenerator: SendBuffer...\n"));
 		/* Send the buffer on down to the consumer */
 		if (SendBuffer(buffer, fOutput.source, fOutput.destination) < B_OK) {
 			PRINTF(-1, ("FrameGenerator: Error sending buffer\n"));
@@ -1026,10 +964,12 @@ VideoProducer::FrameGenerator()
 			buffer->Recycle();
 		}
 
-		_UpdateStats();
+		if (fStats[0].stamp - lastStats >= 1000000) {
+			lastStats = fStats[0].stamp;
+			_UpdateStats();
+		}
 	}
 
-	PRINTF(1, ("FrameGenerator: thread existed.\n"));
 	return B_OK;
 }
 
