@@ -22,6 +22,8 @@
 #   AIROS_CI_EGL            EGL vendor files for .../add-ons/opengl/egl_vendor.d
 #   AIROS_CI_DEMOS          demos for system/non-packaged/demos (GLTeapot)
 #   AIROS_CI_ADDONS         an add-ons tree for system/non-packaged/add-ons
+#   AIROS_CI_FLUIDLITE      (arm64) a prefix with FluidLite for the MIDI kit,
+#                           read by build/jam/BuildFeatures
 #   AIROS_CI_FIRMWARE       a tree copied to system/non-packaged/data/firmware
 #   AIROS_CI_IMAGE_SIZE     image size in MiB (optional)
 #   HAIKU_RPI_FIRMWARE_DIR  (Pi) the Raspberry Pi boot firmware files
