@@ -8,8 +8,14 @@ work upstream or represent it as upstream-approved.
 - Keep all local project files, downloads, temporary files, caches, builds,
   credentials and evidence under the mounted `/mnt/HaikuWork` filesystem.
   Do not change HOME or CODEX_HOME. Use `tools/rock5-itx/env.sh`.
-- Work on `rock5-itx` and topic branches based on it; keep `master` as the
-  upstream baseline. Pin source/toolchain revisions in build manifests.
+- `master` is the integration branch and holds all of the fork's work; it is
+  checked out in `/mnt/HaikuWork/src/haiku`. Device work goes on `rpi4`,
+  `x399-workstation`, `airos-release` or a short topic branch started from
+  `master`. Merge each active branch into `master` at least every day or two
+  (`git merge --no-ff <branch>` there, then push), and delete topic branches
+  once they are merged. Upstream Haiku is the `upstream` remote; merge it into
+  `master` deliberately, not as a side effect. Pin source/toolchain revisions
+  in build manifests.
 - Read `docs/rock5-itx/README.md`, `STATUS.md` and `ROADMAP.md` in that directory
   before hardware work. Update status with actual evidence, not assumptions.
 - The dedicated ROCK and NanoKVM may be deployed to, restarted and configured

@@ -429,9 +429,9 @@ The ordinary driver profile defaults to read-only access. The reference,
 retained failures and tested scope are in [MMC.md](MMC.md).
 
 This fork uses AI-assisted development at its owner's request. Upstream Haiku
-does not accept AI-assisted contributions. Board work uses `rock5-itx` and its topic
-branches; current GPU work is on `rock5-mali-csf`. `master` is retained as an
-upstream baseline. There is no upstream PR.
+does not accept AI-assisted contributions. All of the fork's work is merged into
+`master`, which device branches rejoin every day or two (see `AGENTS.md`). There
+is no upstream PR.
 
 ## Workspace
 
@@ -488,7 +488,7 @@ a USB disk. The target filename ending in `.image` becomes `.img` when packaged
 because NanoKVM 2.4.3 lists `.img` and `.iso` files.
 
 For an upstream update, fetch `upstream`, merge the chosen revision into a
-topic branch based on `rock5-itx`, update `sources.json` when changing the
+topic branch based on `master`, update `sources.json` when changing the
 toolchain, rebuild, and run both QEMU and hardware gates before updating the
 known-good state. Do not rebuild cross-tools over a compiler used by an active
 build. Preserve failed artifacts when investigating regressions.
