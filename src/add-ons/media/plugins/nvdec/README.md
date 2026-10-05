@@ -28,7 +28,9 @@ as they are by asking for the colour space `'P010'` (`NVDEC_COLOR_SPACE_P010`
 in `NVDecPlugin.h`), or as eight-bit YCbCr422 or RGB32 like H.264.
 
 Haiku picks one decoder for a format, by add-on directory, so this add-on takes
-H.264 away from libavcodec wherever it is installed. A stream it refuses will
+H.264 away from libavcodec wherever it is installed and `/dev/nvidiactl`
+exists (on a machine without nvidia_rm or an NVIDIA card it offers nothing, so
+the air/OS x86_64 image can carry it everywhere). A stream it refuses will
 not fall back: it will not play. That is the reason for refusing narrowly and
 loudly rather than trying - and the reason H.265 is not offered to the media
 kit at all: a program that wants it instantiates the decoder itself, sets it
@@ -38,9 +40,11 @@ does.
 ## Building it
 
 It is not built with the rest of the tree, because it needs NVIDIA's resource
-manager headers, which live in the NVK checkout on the workstation and are not
-part of this repository. `docs/x399-workstation/tools/build-nvdec-plugin.sh`
-builds it there and installs it into the user's non-packaged add-ons.
+manager headers, which live in the NVK tree (jmgasper/mesa-nvk, branch
+`airos-nvk-r2`). `build-cross.sh` cross-builds it from a Haiku build
+directory and that tree (the air/OS CI does, for the x86_64 image);
+`docs/x399-workstation/tools/build-nvdec-plugin.sh` builds it on the
+workstation and installs it into the user's non-packaged add-ons.
 
 ## What was measured
 

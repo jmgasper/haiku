@@ -4,7 +4,8 @@
 # usage: build-cross.sh <haiku build dir> <nvidia_rm work dir> <output dir>
 #
 # The work dir is the one used by the kernel driver's build-cross.sh; it
-# provides NVIDIA's open-gpu-kernel-modules headers.
+# provides NVIDIA's open-gpu-kernel-modules headers (or OGKM_SRC does, as for
+# the driver).
 set -euo pipefail
 
 BUILD=$(realpath "$1")
@@ -12,7 +13,7 @@ WORK=$(realpath "$2")
 OUT=$(realpath -m "$3")
 SRC=$(dirname "$(realpath "$0")")
 HAIKU=$(realpath "$SRC/../../../..")
-OGKM=$WORK/open-gpu-kernel-modules
+OGKM=${OGKM_SRC:-$WORK/open-gpu-kernel-modules}
 [ -d "$OGKM/src" ] || { echo "run the nvidia_rm driver build first" >&2; exit 1; }
 
 TOOLS=$BUILD/cross-tools-x86_64/bin/x86_64-unknown-haiku
