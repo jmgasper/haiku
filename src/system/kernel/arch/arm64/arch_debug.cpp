@@ -349,6 +349,21 @@ stack_trace(int argc, char **argv)
 	int32 num = 0, last = 0;
 	struct iframe_stack *frameStack;
 
+	if (argc > threadIndex) {
+		// another thread: its frame pointer is where the context switch
+		// left it (x29 follows x19 to x28 in arch_thread::regs)
+		thread_id id = strtoul(argv[threadIndex], NULL, 0);
+		Thread* other = Thread::GetDebug(id);
+		if (other == NULL) {
+			kprintf("could not find thread %" B_PRId32 "\n", id);
+			return 0;
+		}
+		if (other != thread) {
+			thread = other;
+			fp = other->arch_info.regs[10];
+		}
+	}
+
 	// We don't have a thread pointer early in the boot process
 	if (thread != NULL)
 		frameStack = &thread->arch_info.iframes;

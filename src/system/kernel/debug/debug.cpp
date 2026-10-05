@@ -1799,10 +1799,50 @@ debug_init_post_settings(struct kernel_args* args)
 }
 
 
+#ifdef __aarch64__
+/*!	Looks at the serial port a few times a second and enters the kernel
+	debugger when "+++" has come in: the way in when the system no longer
+	runs the threads a keyboard needs, on boards whose serial console is all
+	there is. Nothing else reads the port while the system runs.
+*/
+static int32
+serial_break_hook(struct timer* timer)
+{
+	static int32 sMatched = 0;
+
+	if (debug_debugger_running())
+		return B_HANDLED_INTERRUPT;
+
+	for (int i = 0; i < 32; i++) {
+		int c = arch_debug_serial_try_getchar();
+		if (c < 0)
+			break;
+
+		sMatched = c == '+' ? sMatched + 1 : 0;
+		if (sMatched == 3) {
+			sMatched = 0;
+			kernel_debugger("+++ on the serial port");
+			break;
+		}
+	}
+
+	return B_HANDLED_INTERRUPT;
+}
+#endif	// __aarch64__
+
+
 void
 debug_init_post_modules(struct kernel_args* args)
 {
 	syslog_init_post_modules();
+
+#ifdef __aarch64__
+	if (sSerialDebugEnabled) {
+		static timer sSerialBreakTimer;
+		add_timer(&sSerialBreakTimer, &serial_break_hook, 200000,
+			B_PERIODIC_TIMER);
+	}
+#endif
 
 	// check for dupped lines every 10/10 second
 	register_kernel_daemon(check_pending_repeats, NULL, 10);
