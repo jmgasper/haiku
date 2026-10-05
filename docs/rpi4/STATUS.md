@@ -71,10 +71,12 @@ Audio), which the Summit session installed on the board with pkgman and
 staged. That file itself has not been flashed. Two things that session
 reports for the OS, both unexamined here: `media_server` keeps a dead team's
 consumer connected, so a crashed capture program leaves the camera or
-microphone "in use" until the media services restart; and `app_server`'s
-`ReadBitmap` at scale 2 copies and averages the whole buffer under the
-drawing lock (250 ms for 3840x1080 on the X399), which screen sharing pays
-for every frame. The `/Documents` network share of earlier cards was a
+microphone "in use" until the media services restart (still so); and
+`app_server`'s `ReadBitmap` at scale 2 copied and averaged the whole buffer
+under the drawing lock (250 ms for 3840x1080 on the X399). The second is
+fixed by that session on the X399 (10 ms, same bytes); its commit is
+cherry-picked here and `app_server` builds for arm64 with it, but it is in
+neither the image file nor on the board yet, and was not run on the Pi. The `/Documents` network share of earlier cards was a
 definition under `/boot/home` and went with the flash.
 
 **Lab tools added:** `+++` on the serial console enters the kernel debugger
