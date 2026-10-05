@@ -3573,6 +3573,16 @@ thread_resume_thread(thread_id id, bool kernel)
 	// Using the kernel internal SIGNAL_CONTINUE_THREAD signal retains
 	// compatibility to BeOS which documents the combination of suspend_thread()
 	// and resume_thread() to interrupt threads waiting on semaphores.
+
+	// A team that load_image() left suspended is started by this: from here
+	// on its parent's death is no longer its own (cf. team_shutdown_team()),
+	// even if the parent exits before the main thread has got to run.
+	Team* team = Team::Get(id);
+	if (team != NULL) {
+		atomic_and(&team->flags, ~TEAM_FLAG_LOADED_SUSPENDED);
+		team->ReleaseReference();
+	}
+
 	return thread_send_signal(id, SIGNAL_CONTINUE_THREAD, SI_USER, B_OK, kernel);
 }
 
