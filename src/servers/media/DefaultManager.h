@@ -45,6 +45,7 @@ public:
 			void				Dump();
 
 			void 				CleanupTeam(team_id team);
+			void				NodeUnregistered(media_node_id node);
 
 private:
 			static int32		rescan_thread(void *arg);

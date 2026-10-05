@@ -234,6 +234,7 @@ NodeManager::UnregisterNode(media_node_id id, team_id team,
 		*_flavorID = node.flavor_id;
 
 	fNodeMap.erase(found);
+	fDefaultManager->NodeUnregistered(id);
 
 	TRACE("NodeManager::UnregisterNode leave: node %" B_PRId32 ", addon_id %"
 		B_PRId32 ", flavor_id %" B_PRId32 " team %" B_PRId32 "\n", id,
@@ -1163,6 +1164,7 @@ NodeManager::CleanupTeam(team_id team)
 				", team %" B_PRId32 "\n", node.node_id, team);
 			// Ensure the slave node is removed from it's timesource
 			_NotifyTimeSource(node);
+			fDefaultManager->NodeUnregistered(node.node_id);
 			fNodeMap.erase(remove);
 			BPrivate::media::notifications::NodesDeleted(&node.node_id, 1);
 			continue;

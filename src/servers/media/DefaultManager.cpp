@@ -448,11 +448,15 @@ DefaultManager::_FindPhysical(volatile media_node_id *id, uint32 default_type,
 	bool isAudio = (type == B_MEDIA_RAW_AUDIO)
 		|| (type == B_MEDIA_ENCODED_AUDIO);
 
+	// (msg must stay NULL if no default of this type was saved: it used to
+	// be left pointing at the last message of the list, the default of
+	// another type, which no node of this type could ever match.)
 	for (int32 i = 0; i < fMsgList.CountItems(); i++) {
-		msg = (BMessage *)fMsgList.ItemAt(i);
+		BMessage *candidate = (BMessage *)fMsgList.ItemAt(i);
 		int32 msgType;
-		if (msg->FindInt32(kDefaultManagerType, &msgType) == B_OK
+		if (candidate->FindInt32(kDefaultManagerType, &msgType) == B_OK
 			&& ((uint32)msgType == default_type)) {
+			msg = candidate;
 			const char *name = NULL;
 			const char *path = NULL;
 			msg->FindInt32(kDefaultManagerAddon, &msgDninfo.addon);
@@ -513,7 +517,9 @@ DefaultManager::_FindPhysical(volatile media_node_id *id, uint32 default_type,
 				ERROR("Couldn't GetDormantNodeFor\n");
 				continue;
 			}
-			if (dninfo.flavor_id != msgDninfo.flavor_id
+			// (The flavor IDs of video devices that are plugged in, cameras,
+			// are given out in the order they turn up: go by their name.)
+			if ((isAudio && dninfo.flavor_id != msgDninfo.flavor_id)
 				|| strcmp(dninfo.name, msgDninfo.name) != 0) {
 				ERROR("Doesn't match flavor or name\n");
 				continue;
@@ -533,6 +539,11 @@ DefaultManager::_FindPhysical(volatile media_node_id *id, uint32 default_type,
 			fPhysicalAudioOutInputID = input_id;
 		return;
 	}
+
+	// The video device that was saved as the default is not there (a camera
+	// that is not plugged in): any other is better than none.
+	if (!isAudio && *id == -1)
+		*id = info[0].node.node;
 }
 
 
@@ -799,4 +810,17 @@ DefaultManager::Dump()
 void
 DefaultManager::CleanupTeam(team_id team)
 {
+}
+
+
+/*!	A default video node that is gone (a camera that was unplugged) must not
+	stay the default: the next rescan then looks for another one.
+*/
+void
+DefaultManager::NodeUnregistered(media_node_id node)
+{
+	if (fPhysicalVideoIn == node)
+		fPhysicalVideoIn = -1;
+	if (fPhysicalVideoOut == node)
+		fPhysicalVideoOut = -1;
 }
