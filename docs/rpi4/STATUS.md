@@ -43,6 +43,41 @@ pairing a Bluetooth device and joining Wi-Fi by clicking in the tools are
 untested; Aurora needs Node.js. Details in the sections below and
 in the documents named in the table.
 
+**Platform fixes of 2026-10-05** (the Raspberry Pi section of Summit's
+`docs/kunanyios-platform-issues.md`). A card flashed from the image with all
+of them (sha256 6d4e1089…, readback matching) was checked for each line
+marked "flashed".
+
+| Problem | Cause | Fix | Checked |
+| --- | --- | --- | --- |
+| Panic in `VMAnonymousCache::Commit()` from `madvise(MADV_FREE)` | With a swap file, `Fault()` took the commitment of pages that were swapped out for room for new pages; they came back in without one | The check counts the pages in the swap file; `Discard()` never lowers the commitment below the pages left | `rpi4_swap_commit 64` prints OK (flashed; five runs in all) |
+| Panic `page->State() != PAGE_STATE_MODIFIED` in `vm_page_free_etc()` (found with that test, on the old kernel: `evidence/platform-fixes/swap-commit-old-kernel.kdl*.log`) | A cache merge freed a source page that waited to be written to the swap file | The merge takes such a page out of the modified queue first | the same test |
+| Everything that writes to the card hangs once swapping has happened (found with that test) | A modified page queue reported its share of the global quota only when it wrote; an emptied queue left an old figure, and file writes waited for the quota for ever with the BFS journal lock held | Every pass of a page writer reports and wakes the waiters | the same test; before the fix the board hung in it twice (`evidence/platform-fixes/swaphang-kdl*.log`) |
+| The firmware's decoder dies after an hour or two | `vchiq` wanted 3 MB of contiguous memory below 1 GB per 1080p picture | Page list allocated with the service; data in any pages (36-bit page lists) | `rpi4_mmal_decode` byte for byte, buffers at 0x6bfe7000 and 0x87b46000 (flashed). Not run for hours |
+| A helper whose parent dies in `load_image()` stays suspended | Nobody resumes it | A dying team kills the teams it loaded and never resumed (`resume_thread()` ends that state) | `rpi4_orphan 5` leaves none (flashed); applications still start |
+| Writes to the SD card hold everything up | The driver sent every page as a command of its own; `mmc_disk` logged every request; 25 MHz | Commands of up to 512 KB; no log line; high speed timing, 50 MHz | Reading the raw card 3.7 → 21.8 MB/s, a 64 MB file with `sync` 32 s (for 32 MB) → 6.3 s (flashed) |
+| RAM disks hang after a force-killed program ran from them | **Not established.** 15 rounds of Summit run from a `ramfs`, killed and removed at once (`tools/rpi4/rd-hang-test.sh`, three of them with memory short) did not hang, before or after the fixes. The quota hang above may have been it | `ramfs` gives a file's cache to a vnode the VFS made anew (it used to get a second cache, filled through `ramfs_read()`) | the rounds above |
+
+Left open by this work: a system whose memory and swap file are both used up
+does not recover (no process is ended to make room; the first version of the
+test did that to the board). Each RAM disk round leaves about 4 MB more in
+use. Pages go to the swap file one per request. `continue` after the
+`+++` break does not bring the system back.
+
+**Lab tools added:** `+++` on the serial console enters the kernel debugger
+(`tools/rpi4/kdl-break.sh`; arm64 kernels with serial debug output), and
+`tools/rpi4/kdl.sh <seconds> <command>...` runs commands there; `bt <thread>`
+now prints that thread on arm64. `rpi4_kdl`, `rpi4_swap_commit`,
+`rpi4_orphan` are in the lab image; `tools/rpi4/install-archive.sh` replaces
+the boot archive on the running board.
+
+**USB webcams** (commits of the X399 session, cherry-picked 2026-10-05: xhci
+high-bandwidth isochronous endpoints, `usb_raw` streams, media servers,
+`usb_webcam`): in the image; on the board the NanoKVM's keyboard, mouse and
+tablet still take 20 of 20 reports and the flash drive reads at 27 MB/s. No
+camera is connected in this lab, so no picture was taken. See
+`docs/x399-workstation/WEBCAM.md`.
+
 | # | Stage | State | Evidence |
 | --- | --- | --- | --- |
 | 1 | SD card / boot | **Works on the board.** The minimum image boots from the SD card to the desktop, 1920x1080 on HDMI0, four cores at 1.5 GHz, serial console through loader and kernel | 2026-10-03: KVM screenshot of the desktop; serial capture `evidence/serial/boot3.log` |
