@@ -30,15 +30,18 @@
  */
 
 
+#include <algorithm>
 #include <map>
 #include <stdio.h>
 #include <vector>
 
 #include <Alert.h>
 #include <Application.h>
+#include <Autolock.h>
 #include <Beep.h>
 #include <Directory.h>
 #include <Entry.h>
+#include <Locker.h>
 #include <MediaAddOn.h>
 #include <MediaRoster.h>
 #include <MessageRunner.h>
@@ -99,7 +102,10 @@ private:
 			void				_InstantiatePhysicalInputsAndOutputs(
 									AddOnInfo& info);
 			void				_InstantiateAutostartFlavors(AddOnInfo& info);
+			void				_UpdatePhysicalInputsAndOutputs(
+									AddOnInfo& info);
 			void				_DestroyInstantiatedFlavors(AddOnInfo& info);
+			void				_DestroyInstantiatedFlavor(media_node& node);
 
 			void				_ScanAddOnFlavors(BMediaAddOn* addOn);
 
@@ -120,6 +126,7 @@ private:
 			port_id				fControlPort;
 			thread_id			fControlThread;
 			bool				fStartup;
+			BLocker				fInstantiateLock;
 			bool				fStartupSound;
 			SystemTimeSource*	fSystemTimeSource;
 };
@@ -299,8 +306,10 @@ MediaAddonServer::ReadyToRun()
 	fStartup = false;
 
 	InfoMap::iterator iterator = fInfoMap.begin();
-	for (; iterator != fInfoMap.end(); iterator++)
-		_InstantiatePhysicalInputsAndOutputs(iterator->second);
+	for (; iterator != fInfoMap.end(); iterator++) {
+		BAutolock _(fInstantiateLock);
+		_UpdatePhysicalInputsAndOutputs(iterator->second);
+	}
 
 	for (iterator = fInfoMap.begin(); iterator != fInfoMap.end(); iterator++)
 		_InstantiateAutostartFlavors(iterator->second);
@@ -401,7 +410,33 @@ MediaAddonServer::_HandleMessage(int32 code, const void* data, size_t size)
 				break;
 			}
 			_ScanAddOnFlavors(addOn);
-			gDormantNodeManager->PutAddOn(command->add_on_id);
+
+			// An add-on for hardware that comes and goes (a USB camera, for
+			// example) tells us this way that a device was plugged in or
+			// removed: create the nodes of its new physical inputs and
+			// outputs and retire those that are gone, as is done for all
+			// add-ons at startup.
+			InfoMap::iterator found = fInfoMap.find(command->add_on_id);
+			if (found != fInfoMap.end() && !fStartup) {
+				BAutolock _(fInstantiateLock);
+				AddOnInfo& info = found->second;
+				bool hadAddOn = info.addon != NULL;
+				if (!hadAddOn)
+					info.addon = addOn;
+
+				_UpdatePhysicalInputsAndOutputs(info);
+
+				if (!hadAddOn && info.active_flavors.empty())
+					info.addon = NULL;
+				if (hadAddOn || info.addon == NULL)
+					gDormantNodeManager->PutAddOn(command->add_on_id);
+					// otherwise the info keeps our reference
+
+				// since something might have changed
+				server_rescan_defaults_command cmd;
+				SendToServer(SERVER_RESCAN_DEFAULTS, &cmd, sizeof(cmd));
+			} else
+				gDormantNodeManager->PutAddOn(command->add_on_id);
 			break;
 		}
 
@@ -584,7 +619,10 @@ MediaAddonServer::_AddOnAdded(const char* path, ino_t fileNode)
 	// After startup is done, we simply do it for each new
 	// loaded add-on, too.
 	if (!fStartup) {
-		_InstantiatePhysicalInputsAndOutputs(info);
+		{
+			BAutolock _(fInstantiateLock);
+			_UpdatePhysicalInputsAndOutputs(info);
+		}
 		_InstantiateAutostartFlavors(info);
 		_PutAddonIfPossible(info);
 
@@ -605,9 +643,17 @@ MediaAddonServer::_DestroyInstantiatedFlavors(AddOnInfo& info)
 		"\n", info.id);
 
 	NodeVector::iterator iterator = info.active_flavors.begin();
-	for (; iterator != info.active_flavors.end(); iterator++) {
-		media_node& node = *iterator;
+	for (; iterator != info.active_flavors.end(); iterator++)
+		_DestroyInstantiatedFlavor(*iterator);
 
+	info.active_flavors.clear();
+}
+
+
+void
+MediaAddonServer::_DestroyInstantiatedFlavor(media_node& node)
+{
+	for (int32 once = 0; once < 1; once++) {
 		printf("node %" B_PRId32 "\n", node.node);
 
 		if ((node.kind & B_TIME_SOURCE) != 0
@@ -687,8 +733,6 @@ MediaAddonServer::_DestroyInstantiatedFlavors(AddOnInfo& info)
 		// wait a bit to let the node clean up
 		snooze(50000);
 	}
-
-	info.active_flavors.clear();
 }
 
 
@@ -736,6 +780,86 @@ MediaAddonServer::_InstantiatePhysicalInputsAndOutputs(AddOnInfo& info)
 				info.active_flavors.push_back(node);
 			}
 		}
+	}
+}
+
+
+/*!	Makes the nodes of the add-on's physical inputs and outputs match its
+	flavors: those that have no node yet get one, and the nodes of flavors
+	that are gone are destroyed.
+*/
+void
+MediaAddonServer::_UpdatePhysicalInputsAndOutputs(AddOnInfo& info)
+{
+	CALLED();
+	if (info.addon == NULL)
+		return;
+
+	if (info.active_flavors.empty()) {
+		_InstantiatePhysicalInputsAndOutputs(info);
+		return;
+	}
+
+	std::vector<int32> wanted;
+	int32 count = info.addon->CountFlavors();
+	for (int32 i = 0; i < count; i++) {
+		const flavor_info* flavorInfo;
+		if (info.addon->GetFlavorAt(i, &flavorInfo) != B_OK)
+			continue;
+		if ((flavorInfo->kinds & (B_PHYSICAL_INPUT | B_PHYSICAL_OUTPUT)) != 0)
+			wanted.push_back(flavorInfo->internal_id);
+	}
+
+	// retire the nodes of flavors that do not exist anymore
+	NodeVector::iterator iterator = info.active_flavors.begin();
+	while (iterator != info.active_flavors.end()) {
+		dormant_node_info dormantNodeInfo;
+		std::vector<int32>::iterator found = wanted.end();
+		if ((iterator->kind & (B_PHYSICAL_INPUT | B_PHYSICAL_OUTPUT)) != 0
+			&& fMediaRoster->GetDormantNodeFor(*iterator, &dormantNodeInfo)
+				== B_OK) {
+			found = std::find(wanted.begin(), wanted.end(),
+				dormantNodeInfo.flavor_id);
+		} else {
+			// not the node of a physical input or output (an autostarted
+			// one, for example): not ours to retire
+			iterator++;
+			continue;
+		}
+
+		if (found != wanted.end()) {
+			wanted.erase(found);
+			iterator++;
+		} else {
+			_DestroyInstantiatedFlavor(*iterator);
+			iterator = info.active_flavors.erase(iterator);
+		}
+	}
+
+	// and create those of the new ones
+	for (int32 i = 0; i < count; i++) {
+		const flavor_info* flavorInfo;
+		if (info.addon->GetFlavorAt(i, &flavorInfo) != B_OK)
+			continue;
+		if (std::find(wanted.begin(), wanted.end(), flavorInfo->internal_id)
+				== wanted.end()) {
+			continue;
+		}
+
+		dormant_node_info dormantNodeInfo;
+		dormantNodeInfo.addon = info.id;
+		dormantNodeInfo.flavor_id = flavorInfo->internal_id;
+		strlcpy(dormantNodeInfo.name, flavorInfo->name, B_MEDIA_NAME_LENGTH);
+
+		media_node node;
+		status_t status = fMediaRoster->InstantiateDormantNode(
+			dormantNodeInfo, &node);
+		if (status != B_OK) {
+			ERROR("MediaAddonServer::_UpdatePhysicalInputsAndOutputs "
+				"Couldn't instantiate node flavor, internal_id %" B_PRId32
+				", name %s\n", flavorInfo->internal_id, flavorInfo->name);
+		} else
+			info.active_flavors.push_back(node);
 	}
 }
 
