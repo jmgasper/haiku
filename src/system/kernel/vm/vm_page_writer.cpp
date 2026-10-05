@@ -564,6 +564,14 @@ ModifiedPageQueue::_PageWriter()
 	page_num_t pagesSinceLastSuccessfulWrite = 0;
 
 	while (fWriterThread >= 0) {
+		// Report what this queue holds now, also when there is nothing to
+		// write: the pages may have gone without us (freed, or moved to
+		// another queue), and what we reported last counts against the
+		// global quota until it is replaced. Those who wait for the quota,
+		// on whichever queue, have to look again then.
+		if (!IsOverQuota())
+			sUnderQuotaCondition.NotifyAll();
+
 		if (queue.Count() < kNumPages) {
 			// wait the full amount when no one triggers us
 			if (!fPageWriterCondition.Wait(PAGES_FLUSH_DURATION_LOCAL_QUOTA, true))

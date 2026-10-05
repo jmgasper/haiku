@@ -612,8 +612,16 @@ VMAnonymousCache::Discard(off_t offset, off_t size)
 {
 	_FreeSwapPageRange(offset, offset + size);
 	const ssize_t discarded = VMCache::Discard(offset, size);
-	if (discarded > 0 && fCanOvercommit)
-		Commit(fCommittedSize - discarded, VM_PRIORITY_USER);
+	if (discarded > 0 && fCanOvercommit) {
+		// The pages that remain keep their commitment, whatever was counted
+		// for them when they were faulted in.
+		off_t commitment = fCommittedSize - discarded;
+		const off_t needed = (off_t)page_count * B_PAGE_SIZE;
+		if (commitment < needed)
+			commitment = needed;
+		if (commitment < fCommittedSize)
+			Commit(commitment, VM_PRIORITY_USER);
+	}
 	return discarded;
 }
 
@@ -1066,9 +1074,12 @@ VMAnonymousCache::Fault(struct VMAddressSpace* aspace, off_t offset)
 
 	if (fCanOvercommit && LookupPage(offset) == NULL && !StoreHasPage(offset)) {
 		if (fPrecommittedPages == 0) {
-			// never commit more than needed
-			if (fCommittedSize / B_PAGE_SIZE > page_count)
+			// never commit more than needed -- pages that are swapped out
+			// keep their commitment while they aren't counted in page_count
+			if (fCommittedSize > (off_t)page_count * B_PAGE_SIZE
+					+ fAllocatedSwapSize) {
 				return B_BAD_HANDLER;
+			}
 
 			// try to commit additional memory
 			int priority = aspace == VMAddressSpace::Kernel()
@@ -1255,6 +1266,12 @@ VMAnonymousCache::_MergePagesSmallerConsumer(VMAnonymousCache* source)
 			ASSERT_PRINT(sourcePage->WiredCount() == 0
 					&& sourcePage->mappings.IsEmpty(),
 				"sourcePage: %p, page: %p", sourcePage, page);
+			if (sourcePage->State() == PAGE_STATE_MODIFIED) {
+				// pages can't be freed in MODIFIED state (the page waited
+				// to be written to the swap file)
+				sourcePage->modified = false;
+				vm_page_set_state(sourcePage, PAGE_STATE_CACHED);
+			}
 			source->RemovePage(sourcePage);
 			vm_page_free_etc(source, sourcePage, &reservation);
 		}
@@ -1307,6 +1324,11 @@ VMAnonymousCache::_MergeSwapPages(VMAnonymousCache* source)
 					if (page != NULL) {
 						DEBUG_PAGE_ACCESS_START(page);
 						ASSERT_PRINT(!page->busy, "page: %p", page);
+						if (page->State() == PAGE_STATE_MODIFIED) {
+							// pages can't be freed in MODIFIED state
+							page->modified = false;
+							vm_page_set_state(page, PAGE_STATE_CACHED);
+						}
 						source->RemovePage(page);
 						vm_page_free(source, page);
 					}
