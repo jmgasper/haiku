@@ -13,3 +13,16 @@ if [ ! -e "$HOME/config/settings/boot/launch/wifiautojoin" ]; then
 	[ -x "$wifi_autojoin" ] || wifi_autojoin=/boot/system/bin/wifiautojoin
 	[ -x "$wifi_autojoin" ] && "$wifi_autojoin" > /dev/dprintf 2>&1 &
 fi
+
+# The Zink OpenGL renderer (x86_64), only where nvidia_rm drives a card and NVK
+# gives it a GPU: the GL kit takes the first renderer it finds, and anywhere
+# else Mesa's llvmpipe is the faster one.
+zink=/boot/system/non-packaged/add-ons/opengl-zink/Zink
+if [ -e "$zink" ]; then
+	opengl=/boot/system/non-packaged/add-ons/opengl
+	if [ -e /dev/nvidiactl ]; then
+		mkdir -p "$opengl" && ln -sf "$zink" "$opengl/Zink"
+	else
+		rm -f "$opengl/Zink"
+	fi
+fi
