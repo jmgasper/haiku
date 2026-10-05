@@ -72,10 +72,12 @@ rule AirosCIFiles directoryTokens : sourceDir : grist : pattern
 		return ;
 	}
 	local files = [ Glob $(sourceDir) : $(pattern) ] ;
+	# The glob of * also returns . and ..
+	files = [ FFilter $(files:BS) : . .. ] ;
 	if ! $(files) {
 		return ;
 	}
-	files = <$(grist)>$(files:BS) ;
+	files = <$(grist)>$(files) ;
 	SEARCH on $(files) = $(sourceDir) ;
 	AddFilesToHaikuImage $(directoryTokens) : $(files) ;
 }
