@@ -567,7 +567,7 @@ See [ARM64-PAGE-AGING.md](ARM64-PAGE-AGING.md) and
 
 | Area | Evidence and state |
 | --- | --- |
-| Repository | `jmgasper/haiku`; all work merged into `master` (2026-10-05); upstream base `855b5d0e3126c86acc84d09f8e859272019bbbc2` |
+| Repository | `jmgasper/haiku`; all work merged into `master` (2026-10-05); upstream base `b42b90f5ec2839f8074400c849ee025b50d0f7f1` (hrev60206, merged 2026-10-05) |
 | Build tools | Haiku GCC 13.3.0 cross-compiler and binutils built successfully; buildtools `8375c2dbeaf109c520798cb234d57f0895463201` |
 | ARM64 image and QEMU | Current clean 336 MiB `@minimum-mmc` image passes first login at both EL1 and EL2 with 4 virtual CPUs and 2 GiB RAM; a basic Tracker/Deskbar desktop was inspected during phase 0 |
 | ARM64 address-space reuse | The +174 USB image reserves ASID zero for the empty user table and passes 280 live-child private-page checks over four migration rounds on all eight CPUs on each of two boots, deliberate-corruption cleanup and subsequent reuse. All 119 host checks, full two-boot EL1/EL2 QEMU gates, sixteen checked network streams, profiler/storage/desktop checks, normal reboot and automatic recovery with independent Linux readback pass. The host model reproduces the old retained translation; no old native stale read is claimed. See [ARM64-ASID.md](ARM64-ASID.md); the SSD remains +156. |
