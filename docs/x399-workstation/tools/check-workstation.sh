@@ -182,6 +182,19 @@ $SSH 'set -u
 		say $result "$point reads as a disk does" "$detail"
 	done < /tmp/check-shares.log
 
+	echo "camera"
+	# A USB camera is a node of the media kit. None plugged in is fine; one
+	# that is there has to deliver its pictures, all of them.
+	if listusb | grep -qi "webcam\|camera"; then
+		grab=$(cd /boot/home/tests && ./camgrab 640 480 3 2>&1 | tail -1)
+		rate=$(echo "$grab" | sed -n "s/.*then \([0-9]*\)\.[0-9]* per second.*/\1/p")
+		[ -n "$rate" ] && [ "$rate" -ge 14 ] \
+			&& say ok "the camera delivers pictures" "$grab" \
+			|| say no "the camera delivers pictures" "$grab"
+	else
+		say ok "the camera delivers pictures" "none is plugged in"
+	fi
+
 	echo "the rest"
 	usb=$(listusb | grep -c RootHub)
 	[ "$usb" -ge 5 ] && say ok "every USB controller is up" "$usb root hubs" \
