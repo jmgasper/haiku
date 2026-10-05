@@ -7,6 +7,7 @@ resource(2, "META:S:DESC") #'MSDC' "MP4 audio file";
 
 resource(3, "META:EXTENS") message(234) {
 	"extensions" = "m4a",
+	"extensions" = "m4b",
 	"type" = "audio/mp4"
 };
 
