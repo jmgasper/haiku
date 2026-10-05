@@ -16,11 +16,14 @@
 #include "CamDebug.h"
 #include "CamDevice.h"
 
+#include <DormantNodeManager.h>
+
 
 WebCamMediaAddOn::WebCamMediaAddOn(image_id imid)
 	: BMediaAddOn(imid),
 	fInitStatus(B_NO_INIT),
-	fRoster(NULL)
+	fRoster(NULL),
+	fPinned(false)
 {
 	PRINT((CH "()" CT));
 	fInternalIDCounter = 0;
@@ -70,8 +73,14 @@ WebCamMediaAddOn::CountFlavors()
 	if (fInitStatus < B_OK)
 		return fInitStatus;
 
-	/* This addon only supports a single flavor, as defined in the
-	 * constructor */
+	// The media_addon_server unloads an add-on none of whose flavors has a
+	// node, which is what we are as long as no camera is plugged in. Keep
+	// a reference to ourselves, so that we are still here when one is.
+	if (!fPinned && AddonID() > 0 && gDormantNodeManager != NULL) {
+		fPinned = true;
+		gDormantNodeManager->GetAddOn(AddonID());
+	}
+
 	count = fRoster->CountCameras();
 	return count;//(count > 0)?count:1;//1;
 }

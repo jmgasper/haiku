@@ -50,6 +50,7 @@ private:
 	flavor_info			fDefaultFlavorInfo;
 	media_format		fMediaFormat;
 	CamRoster*			fRoster;
+	bool				fPinned;
 };
 
 #endif
