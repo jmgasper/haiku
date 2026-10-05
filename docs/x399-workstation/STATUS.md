@@ -31,6 +31,28 @@ each USB port, the serial console, and a Bluetooth device to pair with.
 
 ## Log
 
+- 2026-10-05: scaled screenshots no longer copy the screen first. At 200%
+  `DrawingEngine::ReadBitmap` still copied the drawing buffer's rectangle
+  (7680x2160 for the whole desktop) into a BBitmap, averaged it with
+  `floorf()` per pixel and copied the result again, all with the drawing
+  engine locked: 250 ms a capture, with every window waiting. Summit's
+  screen sharing reads the screen many times a second, so the desktop
+  stuttered and the whole desktop was shared at about 2 pictures a second.
+  The pixels are now averaged straight from the buffer into the caller's
+  bitmap (`drawing/ScaledReadback.cpp`, 348a5d8cc2); the cursor is blended
+  into a copy of only the pixels under it.
+  * `tests/scaledreadback.cpp` runs the new code and the old one on a
+    7680x2160 buffer: the same bytes for 64 rectangles (whole screen, bands,
+    windows, clipped at both edges, 2x and 1.5x, cursor in, across and out),
+    12 ms instead of 125 ms for the whole screen.
+  * Deployed (repack of servers/app_server, power cycle at 15:55). On the
+    machine a whole 3840x1080 read takes 10-11 ms instead of 250, a band of
+    135 rows 1-2 ms instead of 30; a screenshot with the pointer is right;
+    Summit shares the whole desktop at 16 pictures a second.
+  * The previous contents of /boot/home/x399-stage (Oct 3-4: Terminal
+    builds, airos scripts, a haiku.hpkg) are in
+    /boot/home/x399-stage.saved-20261005.
+
 - 2026-10-04: the workstation runs **air/OS**. `x399-workstation` took in
   `rock5-itx` (the branding, the whole-disk Installer, the USB, Bluetooth and
   video decoding work of the ROCK 5), and the seven system packages built from
