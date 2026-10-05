@@ -872,6 +872,34 @@ VideoProducer::_UpdateStats()
 }
 
 
+/*!	Called by the frame generator thread, which ends after it: leaves the
+	node as stopping and disconnecting it would have.
+*/
+void
+VideoProducer::_ConsumerGone()
+{
+	{
+		BAutolock lock(fCamDevice->Locker());
+		fCamDevice->StopTransfer();
+	}
+
+	fLock.Lock();
+	delete fBufferGroup;
+	fBufferGroup = NULL;
+	fLock.Unlock();
+
+	fEnabled = false;
+	fConnected = false;
+	fOutput.destination = media_destination::null;
+
+	// (HandleStop() does nothing for a node that is not running, so the
+	// semaphore is ours to delete.)
+	fRunning = false;
+	delete_sem(fFrameSync);
+	fFrameSync = -1;
+}
+
+
 float
 VideoProducer::_FieldRate()
 {
@@ -901,6 +929,16 @@ VideoProducer::FrameGenerator()
 		if (!fRunning || !fEnabled || !fConnected) {
 			snooze(20000);
 			continue;
+		}
+
+		// A consumer that crashed never disconnects, and nobody does it for
+		// it: the camera would stay on and taken until the media services
+		// are restarted. Its control port is gone with it, though.
+		port_info consumerPort;
+		if (get_port_info(fOutput.destination.port, &consumerPort) != B_OK) {
+			PRINTF(-1, ("FrameGenerator: the consumer is gone\n"));
+			_ConsumerGone();
+			break;
 		}
 
 		BAutolock _(fLock);
