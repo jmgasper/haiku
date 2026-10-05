@@ -494,7 +494,7 @@ dosfs_read_fs_stat(fs_volume* volume, struct fs_info* info)
 
 	MutexLocker locker(bsdVolume->mnt_mtx.haikuMutex);
 
-	info->flags = B_FS_IS_PERSISTENT | B_FS_HAS_MIME;
+	info->flags = B_FS_IS_PERSISTENT;
 	if ((bsdVolume->mnt_flag & MNT_RDONLY) != 0)
 		info->flags |= B_FS_IS_READONLY;
 
@@ -728,10 +728,6 @@ _dosfs_read_vnode(mount* bsdVolume, const ino_t id, vnode** newNode, bool create
 
 	vnode* bsdNode = fatNode->de_vnode;
 	if (bsdNode->v_type == VREG) {
-		status = set_mime_type(bsdNode, false);
-		if (status != B_OK)
-			REPORT_ERROR(status);
-
 		if (createFileCache) {
 			bsdNode->v_cache
 				= file_cache_create(fatVolume->pm_dev->si_id, fatNode->de_inode, fatNode->de_FileSize);
@@ -933,7 +929,7 @@ dosfs_can_page(fs_volume* vol, fs_vnode* vnode, void* cookie)
 
 
 static status_t
-dosfs_read_pages(fs_volume* volume, fs_vnode* vnode, void* cookie, off_t pos, const iovec* vecs,
+dosfs_read_pages(fs_volume* volume, fs_vnode* vnode, void*, off_t pos, const iovec* vecs,
 	size_t count, size_t* _numBytes)
 {
 	mount* bsdVolume = reinterpret_cast<mount*>(volume->private_volume);
@@ -979,7 +975,7 @@ dosfs_read_pages(fs_volume* volume, fs_vnode* vnode, void* cookie, off_t pos, co
 
 
 static status_t
-dosfs_write_pages(fs_volume* volume, fs_vnode* vnode, void* cookie, off_t pos, const iovec* vecs,
+dosfs_write_pages(fs_volume* volume, fs_vnode* vnode, void*, off_t pos, const iovec* vecs,
 	size_t count, size_t* _numBytes)
 {
 	mount* bsdVolume = reinterpret_cast<mount*>(volume->private_volume);
@@ -1028,7 +1024,7 @@ dosfs_write_pages(fs_volume* volume, fs_vnode* vnode, void* cookie, off_t pos, c
 
 
 static status_t
-dosfs_io(fs_volume* volume, fs_vnode* vnode, void* cookie, io_request* request)
+dosfs_io(fs_volume* volume, fs_vnode* vnode, void*, io_request* request)
 {
 #if KDEBUG_RW_LOCK_DEBUG
 	// dosfs_io depends on read-locks being implicitly transferrable across threads.
@@ -1699,8 +1695,6 @@ dosfs_rename(fs_volume* volume, fs_vnode* fromDir, const char* fromName, fs_vnod
 	if (status != B_OK)
 		REPORT_ERROR(status);
 
-	set_mime_type(fromBsdNode, true);
-
 	if ((bsdVolume->mnt_flag & MNT_SYNCHRONOUS) != 0) {
 		// sync the directory entry changes
 		status = block_cache_sync(bsdVolume->mnt_cache);
@@ -2312,7 +2306,7 @@ dosfs_read(fs_volume* volume, fs_vnode* vnode, void* cookie, off_t pos, void* bu
 	}
 #endif
 
-	RETURN_ERROR(file_cache_read(bsdNode->v_cache, fatCookie, pos, buffer, length));
+	RETURN_ERROR(file_cache_read(bsdNode->v_cache, pos, buffer, length));
 }
 
 
@@ -2381,7 +2375,7 @@ dosfs_write(fs_volume* volume, fs_vnode* vnode, void* cookie, off_t pos, const v
 	locker.Unlock();
 	status = file_cache_set_size(bsdNode->v_cache, fatNode->de_FileSize);
 	if (status == B_OK) {
-		status = file_cache_write(bsdNode->v_cache, fatCookie, pos, buffer, length);
+		status = file_cache_write(bsdNode->v_cache, pos, buffer, length);
 		if (status != B_OK) {
 			REPORT_ERROR(status);
 			status = B_OK;
@@ -2973,241 +2967,6 @@ dosfs_rewinddir(fs_volume* volume, fs_vnode* vnode, void* cookie)
 	WriteLocker locker(bsdNode->v_vnlock->haikuRW);
 
 	fatCookie->fIndex = 0;
-
-	return B_OK;
-}
-
-
-static status_t
-dosfs_open_attrdir(fs_volume* volume, fs_vnode* vnode, void** _cookie)
-{
-	mount* bsdVolume = reinterpret_cast<mount*>(volume->private_volume);
-	struct vnode* bsdNode = reinterpret_cast<struct vnode*>(vnode->private_node);
-
-	FUNCTION_START("%p\n", bsdNode);
-
-	if (_dosfs_access(bsdVolume, bsdNode, O_RDONLY) != B_OK)
-		RETURN_ERROR(B_NOT_ALLOWED);
-
-	if ((*_cookie = new(std::nothrow) int32) == NULL)
-		RETURN_ERROR(B_NO_MEMORY);
-
-	*reinterpret_cast<int32*>(*_cookie) = 0;
-
-	return B_OK;
-}
-
-
-static status_t
-dosfs_close_attrdir(fs_volume* volume, fs_vnode* vnode, void* cookie)
-{
-	FUNCTION_START("%p\n", vnode->private_node);
-
-	*reinterpret_cast<int32*>(cookie) = 1;
-
-	return B_OK;
-}
-
-
-static status_t
-dosfs_free_attrdir_cookie(fs_volume* volume, fs_vnode* vnode, void* cookie)
-{
-	FUNCTION_START("%p\n", vnode->private_node);
-
-	if (cookie == NULL)
-		return B_BAD_VALUE;
-
-	delete reinterpret_cast<int32*>(cookie);
-
-	return B_OK;
-}
-
-
-static status_t
-dosfs_read_attrdir(fs_volume* volume, fs_vnode* vnode, void* cookie, struct dirent* buffer,
-	size_t bufferSize, uint32* _num)
-{
-	struct vnode* bsdNode = reinterpret_cast<struct vnode*>(vnode->private_node);
-	int32* fatCookie = reinterpret_cast<int32*>(cookie);
-
-	FUNCTION_START("%p\n", bsdNode);
-
-	*_num = 0;
-
-	ReadLocker locker(bsdNode->v_vnlock->haikuRW);
-
-	if ((*fatCookie == 0) && (bsdNode->v_mime != NULL)) {
-		*_num = 1;
-		strcpy(buffer->d_name, "BEOS:TYPE");
-		buffer->d_reclen = offsetof(struct dirent, d_name) + 10;
-	}
-
-	*fatCookie = 1;
-
-	return B_OK;
-}
-
-
-static status_t
-dosfs_rewind_attrdir(fs_volume* volume, fs_vnode* vnode, void* cookie)
-{
-	FUNCTION_START("%p\n", vnode->private_node);
-
-	if (cookie == NULL)
-		return B_BAD_VALUE;
-
-	*reinterpret_cast<int32*>(cookie) = 0;
-
-	return B_OK;
-}
-
-
-static status_t
-dosfs_create_attr(fs_volume* volume, fs_vnode* vnode, const char* name, uint32 type, int openMode,
-	void** _cookie)
-{
-	mount* bsdVolume = reinterpret_cast<mount*>(volume->private_volume);
-	struct vnode* bsdNode = reinterpret_cast<struct vnode*>(vnode->private_node);
-
-	FUNCTION_START("%p\n", bsdNode);
-
-	ReadLocker locker(bsdNode->v_vnlock->haikuRW);
-
-	if (_dosfs_access(bsdVolume, bsdNode, open_mode_to_access(openMode)) != B_OK)
-		RETURN_ERROR(B_NOT_ALLOWED);
-
-	if (strcmp(name, "BEOS:TYPE") != 0)
-		return B_UNSUPPORTED;
-
-	if (bsdNode->v_mime == NULL)
-		return B_BAD_VALUE;
-
-	AttrCookie* cookie = new(std::nothrow) AttrCookie;
-	cookie->fMode = openMode;
-	cookie->fType = FAT_ATTR_MIME;
-	*_cookie = cookie;
-
-	return B_OK;
-}
-
-
-static status_t
-dosfs_open_attr(fs_volume* volume, fs_vnode* vnode, const char* name, int openMode, void** _cookie)
-{
-	mount* bsdVolume = reinterpret_cast<mount*>(volume->private_volume);
-	struct vnode* bsdNode = reinterpret_cast<struct vnode*>(vnode->private_node);
-
-	FUNCTION_START("%p\n", bsdNode);
-
-	ReadLocker locker(bsdNode->v_vnlock->haikuRW);
-
-	if (_dosfs_access(bsdVolume, bsdNode, open_mode_to_access(openMode)) != B_OK)
-		RETURN_ERROR(B_NOT_ALLOWED);
-
-	if (strcmp(name, "BEOS:TYPE") != 0)
-		return B_UNSUPPORTED;
-
-	if (bsdNode->v_mime == NULL)
-		return B_BAD_VALUE;
-
-	AttrCookie* cookie = new(std::nothrow) AttrCookie;
-	cookie->fMode = openMode;
-	cookie->fType = FAT_ATTR_MIME;
-	*_cookie = cookie;
-
-	return B_OK;
-}
-
-
-static status_t
-dosfs_close_attr(fs_volume* volume, fs_vnode* vnode, void* cookie)
-{
-	return B_OK;
-}
-
-
-static status_t
-dosfs_free_attr_cookie(fs_volume* volume, fs_vnode* vnode, void* cookie)
-{
-	delete reinterpret_cast<AttrCookie*>(cookie);
-
-	return B_OK;
-}
-
-
-static status_t
-dosfs_read_attr(fs_volume* volume, fs_vnode* vnode, void* cookie, off_t pos, void* buffer,
-	size_t* length)
-{
-	struct vnode* bsdNode = reinterpret_cast<struct vnode*>(vnode->private_node);
-
-	FUNCTION_START("%p\n", bsdNode);
-
-	AttrCookie* fatCookie = reinterpret_cast<AttrCookie*>(cookie);
-	if (fatCookie->fType != FAT_ATTR_MIME)
-		return B_NOT_ALLOWED;
-	if ((fatCookie->fMode & O_RWMASK) == O_WRONLY)
-		return B_NOT_ALLOWED;
-
-	ReadLocker locker(bsdNode->v_vnlock->haikuRW);
-
-	if (bsdNode->v_mime == NULL)
-		return B_BAD_VALUE;
-
-	if ((pos < 0) || (pos > static_cast<off_t>(strlen(bsdNode->v_mime))))
-		return B_BAD_VALUE;
-
-	ssize_t copied = user_strlcpy(reinterpret_cast<char*>(buffer),
-		bsdNode->v_mime + pos, *length);
-	if (copied < 0)
-		return B_BAD_ADDRESS;
-
-	if (static_cast<size_t>(copied) < *length)
-		*length = copied + 1;
-
-	return B_OK;
-}
-
-
-/*! suck up application attempts to set mime types; this hides an unsightly
-	error message printed out by zip
-*/
-static status_t
-dosfs_write_attr(fs_volume* volume, fs_vnode* vnode, void* cookie, off_t pos, const void* buffer,
-	size_t* length)
-{
-	FUNCTION_START("%p\n", vnode->private_node);
-
-	AttrCookie* fatCookie = reinterpret_cast<AttrCookie*>(cookie);
-	if (fatCookie->fType != FAT_ATTR_MIME)
-		return B_NOT_ALLOWED;
-	if ((fatCookie->fMode & O_RWMASK) == O_RDONLY)
-		return B_NOT_ALLOWED;
-
-	return B_OK;
-}
-
-
-static status_t
-dosfs_read_attr_stat(fs_volume* volume, fs_vnode* vnode, void* cookie, struct stat* stat)
-{
-	struct vnode* bsdNode = reinterpret_cast<struct vnode*>(vnode->private_node);
-
-	FUNCTION_START("%p\n", bsdNode);
-
-	AttrCookie* fatCookie = reinterpret_cast<AttrCookie*>(cookie);
-	if (fatCookie->fType != FAT_ATTR_MIME)
-		return B_NOT_ALLOWED;
-	if ((fatCookie->fMode & O_RWMASK) == O_WRONLY)
-		return B_NOT_ALLOWED;
-
-	ReadLocker locker(bsdNode->v_vnlock->haikuRW);
-
-	if (bsdNode->v_mime == NULL)
-		return B_BAD_VALUE;
-
-	stat->st_type = B_MIME_STRING_TYPE;
-	stat->st_size = strlen(bsdNode->v_mime) + 1;
 
 	return B_OK;
 }
@@ -3997,24 +3756,24 @@ fs_vnode_ops gFATVnodeOps = {
 	&dosfs_rewinddir,
 
 	// attribute directory operations
-	&dosfs_open_attrdir,
-	&dosfs_close_attrdir,
-	&dosfs_free_attrdir_cookie,
-	&dosfs_read_attrdir,
-	&dosfs_rewind_attrdir,
+	NULL,	// fs_open_attrdir
+	NULL,	// fs_close_attrdir
+	NULL,	// fs_free_attrdircookie
+	NULL,	// fs_read_attrdir
+	NULL,	// fs_rewind_attrdir
 
 	// attribute operations
-	&dosfs_create_attr,
-	&dosfs_open_attr,
-	&dosfs_close_attr,
-	&dosfs_free_attr_cookie,
-	&dosfs_read_attr,
-	&dosfs_write_attr,
+	NULL,	// fs_create_attr
+	NULL,	// fs_open_attr
+	NULL,	// fs_close_attr
+	NULL,	// fs_free_attr_cookie
+	NULL,	// fs_read_attr
+	NULL,	// fs_write_attr
 
-	&dosfs_read_attr_stat,
-	NULL, // fs_write_attr_stat,
-	NULL, // fs_rename_attr,
-	NULL, // fs_remove_attr
+	NULL,	// fs_read_attr_stat,
+	NULL,	// fs_write_attr_stat
+	NULL,	// fs_rename_attr
+	NULL,	// fs_remove_attr
 };
 
 

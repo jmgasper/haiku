@@ -169,10 +169,7 @@ struct ipv4_protocol : net_protocol {
 	{
 	}
 
-	~ipv4_protocol()
-	{
-		delete raw;
-	}
+	~ipv4_protocol();
 
 	RawSocket*			raw;
 	uint8				service_type;
@@ -884,7 +881,7 @@ receiving_protocol(uint8 protocol)
 status_t
 IPv4Multicast::JoinGroup(IPv4GroupInterface* state)
 {
-	MutexLocker _(sMulticastGroupsLock);
+	ASSERT_LOCKED_MUTEX(&sMulticastGroupsLock);
 
 	sockaddr_in groupAddr;
 	status_t status = sDatalinkModule->join_multicast(state->Interface(),
@@ -900,7 +897,7 @@ IPv4Multicast::JoinGroup(IPv4GroupInterface* state)
 status_t
 IPv4Multicast::LeaveGroup(IPv4GroupInterface* state)
 {
-	MutexLocker _(sMulticastGroupsLock);
+	ASSERT_LOCKED_MUTEX(&sMulticastGroupsLock);
 
 	sMulticastState->Remove(state);
 
@@ -997,14 +994,17 @@ generic_to_ipv4(int option)
 static net_interface*
 get_multicast_interface(ipv4_protocol* protocol, const in_addr* address)
 {
-	// TODO: this is broken and leaks references
 	sockaddr_in groupAddr;
 	net_route* route = sDatalinkModule->get_route(sDomain,
 		fill_sockaddr_in(&groupAddr, address ? address->s_addr : INADDR_ANY));
 	if (route == NULL)
 		return NULL;
 
-	return route->interface_address->interface;
+	net_interface* interface = sDatalinkModule->get_interface(sDomain,
+		route->interface_address->interface->index);
+
+	sDatalinkModule->put_route(sDomain, route);
+	return interface;
 }
 
 
@@ -1089,6 +1089,16 @@ ipv4_uninit_protocol(net_protocol* _protocol)
 	delete protocol;
 
 	return B_OK;
+}
+
+
+ipv4_protocol::~ipv4_protocol()
+{
+	delete raw;
+	delete multicast_address;
+
+	MutexLocker _(sMulticastGroupsLock);
+	multicast_filter.ClearStates();
 }
 
 
@@ -1344,6 +1354,8 @@ ipv4_setsockopt(net_protocol* _protocol, int level, int option,
 			}
 			fill_sockaddr_in(address, sin_addr.s_addr);
 
+			MutexLocker _(sMulticastGroupsLock);
+
 			// Using INADDR_ANY to remove the previous setting.
 			if (address->sin_addr.s_addr == htonl(INADDR_ANY)) {
 				delete address;
@@ -1391,6 +1403,7 @@ ipv4_setsockopt(net_protocol* _protocol, int level, int option,
 			if (user_memcpy(&mreq, value, sizeof(ip_mreq)) != B_OK)
 				return B_BAD_ADDRESS;
 
+			MutexLocker _(sMulticastGroupsLock);
 			return ipv4_delta_membership(protocol, option, &mreq.imr_interface,
 				&mreq.imr_multiaddr, NULL);
 		}
@@ -1406,6 +1419,7 @@ ipv4_setsockopt(net_protocol* _protocol, int level, int option,
 			if (user_memcpy(&mreq, value, sizeof(ip_mreq_source)) != B_OK)
 				return B_BAD_ADDRESS;
 
+			MutexLocker _(sMulticastGroupsLock);
 			return ipv4_delta_membership(protocol, option, &mreq.imr_interface,
 				&mreq.imr_multiaddr, &mreq.imr_sourceaddr);
 		}
@@ -1418,6 +1432,7 @@ ipv4_setsockopt(net_protocol* _protocol, int level, int option,
 			if (user_memcpy(&greq, value, sizeof(group_req)) != B_OK)
 				return B_BAD_ADDRESS;
 
+			MutexLocker _(sMulticastGroupsLock);
 			return ipv4_generic_delta_membership(protocol, option,
 				greq.gr_interface, &greq.gr_group, NULL);
 		}
@@ -1433,6 +1448,7 @@ ipv4_setsockopt(net_protocol* _protocol, int level, int option,
 			if (user_memcpy(&greq, value, sizeof(group_source_req)) != B_OK)
 				return B_BAD_ADDRESS;
 
+			MutexLocker _(sMulticastGroupsLock);
 			return ipv4_generic_delta_membership(protocol, option,
 				greq.gsr_interface, &greq.gsr_group, &greq.gsr_source);
 		}

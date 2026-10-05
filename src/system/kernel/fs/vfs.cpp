@@ -774,7 +774,7 @@ get_file_system(const char* fsName)
 	if (strncmp(fsName, "file_systems/", strlen("file_systems/"))) {
 		// construct module name if we didn't get one
 		// (we currently support only one API)
-		snprintf(name, sizeof(name), "file_systems/%s/v1", fsName);
+		snprintf(name, sizeof(name), "file_systems/%s" B_CURRENT_FS_API_VERSION, fsName);
 		fsName = NULL;
 	}
 
@@ -3408,7 +3408,7 @@ dump_vnode_caches(int argc, char** argv)
 }
 
 
-int
+static int
 dump_io_context(int argc, char** argv)
 {
 	if (argc > 2 || !strcmp(argv[1], "--help")) {
@@ -4103,46 +4103,6 @@ check_write_stat_permissions(gid_t nodeGroupID, uid_t nodeUserID, mode_t nodeMod
 
 	return B_OK;
 }
-
-
-#if 0
-extern "C" status_t
-read_pages(int fd, off_t pos, const iovec* vecs, size_t count,
-	size_t* _numBytes)
-{
-	struct file_descriptor* descriptor;
-	struct vnode* vnode;
-
-	descriptor = get_fd_and_vnode(fd, &vnode, true);
-	if (descriptor == NULL)
-		return B_FILE_ERROR;
-
-	status_t status = vfs_read_pages(vnode, descriptor->cookie, pos, vecs,
-		count, 0, _numBytes);
-
-	put_fd(descriptor);
-	return status;
-}
-
-
-extern "C" status_t
-write_pages(int fd, off_t pos, const iovec* vecs, size_t count,
-	size_t* _numBytes)
-{
-	struct file_descriptor* descriptor;
-	struct vnode* vnode;
-
-	descriptor = get_fd_and_vnode(fd, &vnode, true);
-	if (descriptor == NULL)
-		return B_FILE_ERROR;
-
-	status_t status = vfs_write_pages(vnode, descriptor->cookie, pos, vecs,
-		count, 0, _numBytes);
-
-	put_fd(descriptor);
-	return status;
-}
-#endif
 
 
 extern "C" status_t

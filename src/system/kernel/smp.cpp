@@ -282,7 +282,7 @@ try_acquire_spinlock(spinlock* lock)
 void
 acquire_spinlock(spinlock* lock)
 {
-#if DEBUG_SPINLOCKS
+#if KDEBUG
 	if (are_interrupts_enabled()) {
 		panic("acquire_spinlock: attempt to acquire lock %p with interrupts "
 			"enabled", lock);
@@ -332,16 +332,18 @@ acquire_spinlock(spinlock* lock)
 void
 release_spinlock(spinlock *lock)
 {
+#if KDEBUG
+	if (are_interrupts_enabled()) {
+		panic("release_spinlock: attempt to release lock %p with "
+			"interrupts enabled", lock);
+	}
+#endif
+
 #if B_DEBUG_SPINLOCK_CONTENTION
 	update_lock_held(lock);
 #endif
 
 	if (sNumCPUs > 1) {
-		if (are_interrupts_enabled()) {
-			panic("release_spinlock: attempt to release lock %p with "
-				"interrupts enabled\n", lock);
-		}
-
 #if DEBUG_SPINLOCKS
 		if (atomic_get_and_set(&lock->lock, 0) != 1)
 			panic("release_spinlock: lock %p was already released\n", lock);
@@ -350,10 +352,6 @@ release_spinlock(spinlock *lock)
 #endif
 	} else {
 #if DEBUG_SPINLOCKS
-		if (are_interrupts_enabled()) {
-			panic("release_spinlock: attempt to release lock %p with "
-				"interrupts enabled\n", lock);
-		}
 		if (atomic_get_and_set(&lock->lock, 0) != 1)
 			panic("release_spinlock: lock %p was already released\n", lock);
 #endif
@@ -819,7 +817,8 @@ invoke_smp_msg(struct smp_msg* msg, int currentCPU, bool* haltCPU)
 		case SMP_MSG_CALL_FUNCTION:
 		{
 			smp_call_func func = (smp_call_func)msg->data_ptr;
-			func(msg->data, currentCPU, msg->data2, msg->data3);
+			if (func != NULL)
+				func(msg->data, currentCPU, msg->data2, msg->data3);
 			break;
 		}
 		case SMP_MSG_RESCHEDULE:
@@ -1413,7 +1412,8 @@ call_single_cpu(uint32 targetCPU, void (*func)(void*, int), void* cookie, bool s
 
 	if (targetCPU == (uint32)smp_get_current_cpu()) {
 		cpu_status state = disable_interrupts();
-		func(cookie, smp_get_current_cpu());
+		if (func != NULL)
+			func(cookie, smp_get_current_cpu());
 		restore_interrupts(state);
 		thread_unpin_from_current_cpu(thread_get_current_thread());
 		return;
@@ -1455,7 +1455,8 @@ call_all_cpus(void (*function)(void*, int), void* cookie, bool sync)
 {
 	if (sNumCPUs == 1) {
 		cpu_status state = disable_interrupts();
-		function(cookie, 0);
+		if (function != NULL)
+			function(cookie, 0);
 		restore_interrupts(state);
 		return;
 	}

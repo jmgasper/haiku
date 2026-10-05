@@ -386,21 +386,17 @@ get_socket_descriptor(int fd, bool kernel, file_descriptor*& descriptor)
 static int
 create_socket_fd(net_socket* socket, int flags, bool kernel)
 {
-	// Get the socket's non-blocking flag, so we can set the respective
-	// open mode flag.
-	int32 nonBlock;
-	socklen_t nonBlockLen = sizeof(int32);
-	status_t error = sStackInterface->getsockopt(socket, SOL_SOCKET,
-		SO_NONBLOCK, &nonBlock, &nonBlockLen);
-	if (error != B_OK)
-		return error;
 	int oflags = 0;
+	int32 nonBlock = 0;
 	if ((flags & SOCK_CLOEXEC) != 0)
 		oflags |= O_CLOEXEC;
 	if ((flags & SOCK_CLOFORK) != 0)
 		oflags |= O_CLOFORK;
-	if ((flags & SOCK_NONBLOCK) != 0 || nonBlock)
+	if ((flags & SOCK_NONBLOCK) != 0) {
 		oflags |= O_NONBLOCK;
+		nonBlock = 1;
+	}
+	sStackInterface->setsockopt(socket, SOL_SOCKET, SO_NONBLOCK, &nonBlock, sizeof(nonBlock));
 
 	// allocate a file descriptor
 	file_descriptor* descriptor = alloc_fd();

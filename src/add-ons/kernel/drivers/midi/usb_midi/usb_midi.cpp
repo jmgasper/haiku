@@ -1,13 +1,14 @@
 /*
- * midi usb driver
- * usb_midi.c
+ * MIDI USB driver
+ * usb_midi.cpp
  *
- * Copyright 2006-2013 Haiku Inc.  All rights reserved.
+ * Copyright 2006-2026 Haiku Inc.  All rights reserved.
  * Distributed under the terms of the MIT Licence.
  *
  * Authors:
  *		Jérôme Duval
- *		Pete Goodeve, pete.goodeve@computer.org
+ *		Pete Goodeve <pete.goodeve@computer.org>
+ *		Philippe Houdoin
  *
  *		Some portions of this code were originally derived from
  *		USB Joystick driver for BeOS R5
@@ -17,18 +18,71 @@
  */
 
 
-/* #define DEBUG 1 */	/* Define this to enable DPRINTF_DEBUG statements */ 
+/* #define DEBUG 1 */ /* Define this to enable DPRINTF_DEBUG statements */
 /* (Other categories of printout set in usb_midi.h) */
-
-#include "usb_midi.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
+#include "midi_driver.h"
+#include "usb_midi.h"
+
 
 const char* midi_base_name = "midi/usb/";
+
+static status_t
+GetDescriptorString(const usb_device* device, int stringID, char* output, size_t outputMaxSize)
+{
+	if (device == NULL || stringID == 0 || output == NULL || outputMaxSize < 2)
+		return B_ERROR;
+
+	size_t actualLength = 0;
+	uint8 tmp[4];
+
+	// first, fetch default language ID
+	status_t status
+		= gUSBModule->get_descriptor(device, USB_DESCRIPTOR_STRING, 0, 0, tmp, 4, &actualLength);
+	if (status < B_OK || actualLength != 4 || tmp[1] != USB_DESCRIPTOR_STRING)
+		return status < B_OK ? status : B_IO_ERROR;
+
+	const uint16 langID = tmp[2] | (tmp[3] << 8);
+
+	// next fetch the UTF16 string length, in bytes
+	status = gUSBModule->get_descriptor(device, USB_DESCRIPTOR_STRING, stringID, langID, tmp, 2,
+		&actualLength);
+	if (status < B_OK || actualLength != 2 || tmp[1] != USB_DESCRIPTOR_STRING)
+		return status < B_OK ? status : B_IO_ERROR;
+
+	uint8 stringDescriptorLength = tmp[0];
+	if (stringDescriptorLength == 0) {
+		output[0] = 0;
+		return B_OK;
+	}
+
+	char stringDescriptor[256];
+
+	// retrieve the UTF16 string
+	status = gUSBModule->get_descriptor(device, USB_DESCRIPTOR_STRING, stringID, langID,
+		stringDescriptor, stringDescriptorLength, &actualLength);
+	if (status < B_OK || actualLength != stringDescriptorLength)
+		return status < B_OK ? status : B_IO_ERROR;
+
+	// lazy UTF16 conversion, assuming default language is english
+	// in little-endian, per USB spec
+
+	int len = MIN(outputMaxSize - 1, (size_t)((stringDescriptorLength - 1) / 2));
+	char* s = &stringDescriptor[2];
+	int i = 0;
+	for (; i < len; i++) {
+		output[i] = *s;
+		s += 2;
+	}
+	output[i] = 0;
+
+	return B_OK;
+}
 
 
 usbmidi_port_info*
@@ -36,13 +90,14 @@ create_usbmidi_port(usbmidi_device_info* devinfo,
 	int cable, bool has_in, bool has_out)
 {
 	usbmidi_port_info* port = NULL;
-	assert(usb != NULL && devinfo != NULL);
+	assert(gUSBModule != NULL && devinfo != NULL);
 
 	port = (usbmidi_port_info*)malloc(sizeof(usbmidi_port_info));
 	if (port == NULL)
 		return NULL;
 
-	sprintf(port->name, "%s-%d", devinfo->name, cable);
+	sprintf(port->name, "%s/%d", devinfo->name, cable);
+
 	port->device = devinfo;
 	port->cable = cable;
 	port->next = NULL;
@@ -53,6 +108,7 @@ create_usbmidi_port(usbmidi_device_info* devinfo,
 	port->rbuf = create_ring_buffer(1024);
 
 	devinfo->ports[cable] = port;
+	devinfo->port_count++;
 
 	DPRINTF_INFO((MY_ID "Created port %p cable %d: %s\n",
 		port, cable, port->name));
@@ -69,6 +125,7 @@ remove_port(usbmidi_port_info* port)
 		delete_ring_buffer(port->rbuf);
 		port->rbuf = NULL;
 	}
+	port->device->port_count--;
 	DPRINTF_INFO((MY_ID "remove_port %p done\n", port));
 
 	free(port);
@@ -76,7 +133,8 @@ remove_port(usbmidi_port_info* port)
 
 
 usbmidi_device_info*
-create_device(const usb_device* dev, uint16 ifno)
+create_device(const usb_device* usbDevice, const usb_device_descriptor* deviceDescriptor,
+	uint16 ifno)
 {
 	usbmidi_device_info* midiDevice = NULL;
 	int number;
@@ -84,13 +142,15 @@ create_device(const usb_device* dev, uint16 ifno)
 	sem_id sem;
 	char area_name[32];
 
-	assert(usb != NULL && dev != NULL);
+	assert(gUSBModule != NULL && usbDevice != NULL);
 
 	number = find_free_device_number();
 
 	midiDevice = (usbmidi_device_info*)malloc(sizeof(usbmidi_device_info));
 	if (midiDevice == NULL)
 		return NULL;
+
+	memset(midiDevice, 0, sizeof(usbmidi_device_info));
 
 	midiDevice->sem_lock = sem = create_sem(1, DRIVER_NAME "_lock");
 	if (sem < 0) {
@@ -99,7 +159,7 @@ create_device(const usb_device* dev, uint16 ifno)
 		return NULL;
 	}
 
-	sprintf(area_name, DRIVER_NAME "_buffer%d", number);
+	sprintf(area_name, DRIVER_NAME "_%d_buffers", number);
 	midiDevice->buffer_area = area = create_area(area_name,
 		(void**)&midiDevice->buffer, B_ANY_KERNEL_ADDRESS,
 		B_PAGE_SIZE, B_CONTIGUOUS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA);
@@ -126,16 +186,33 @@ create_device(const usb_device* dev, uint16 ifno)
 		DPRINTF_DEBUG((MY_ID "Allocated %" B_PRId32 " write buffers\n", bc));
 	}
 
-
-	sprintf(midiDevice->name, "%s%d", midi_base_name, number);
-	midiDevice->dev = dev;
+	snprintf(midiDevice->name, sizeof(midiDevice->name), "%s%d", midi_base_name, number);
+	midiDevice->dev = usbDevice;
 	midiDevice->devnum = number;
 	midiDevice->ifno = ifno;
 	midiDevice->active = true;
 	midiDevice->flags = 0;
+	midiDevice->consecutive_read_errors = 0;
+
 	memset(midiDevice->ports, 0, sizeof(midiDevice->ports));
-	midiDevice->inMaxPkt = midiDevice->outMaxPkt = B_PAGE_SIZE / 2;
-		/* Initially -- will get reduced */
+	midiDevice->inMaxPkt = midiDevice->outMaxPkt = B_PAGE_SIZE / 2; // Initially -- will get reduced
+
+	midiDevice->vendor_id = deviceDescriptor->vendor_id;
+	midiDevice->product_id = deviceDescriptor->product_id;
+
+	GetDescriptorString(usbDevice, deviceDescriptor->manufacturer, midiDevice->manufacturer_name,
+		sizeof(midiDevice->manufacturer_name));
+	GetDescriptorString(usbDevice, deviceDescriptor->product, midiDevice->product_name,
+		sizeof(midiDevice->product_name));
+	GetDescriptorString(usbDevice, deviceDescriptor->serial_number, midiDevice->serial_number,
+		sizeof(midiDevice->serial_number));
+
+	DPRINTF_INFO((MY_ID "Manufacturer:  0x%04X (%s) \n", midiDevice->vendor_id,
+		midiDevice->manufacturer_name));
+	DPRINTF_INFO((MY_ID "Product:       0x%04X (%s) \n", midiDevice->product_id,
+		midiDevice->product_name));
+	DPRINTF_INFO((MY_ID "Serial Number: %s\n", midiDevice->serial_number));
+
 	DPRINTF_INFO((MY_ID "Created device %p\n", midiDevice));
 
 	return midiDevice;
@@ -191,7 +268,7 @@ static const int CINbytes[] = {	/* See USB-MIDI Spec */
 	1,	/* 0xF --  Single Byte */
 };
 
-usb_module_info* usb;
+usb_module_info* gUSBModule = NULL;
 
 
 static void
@@ -214,8 +291,7 @@ interpret_midi_buffer(usbmidi_device_info* midiDevice)
 			DPRINTF_ERR((MY_ID "no port matching cable number %d!\n",
 				packet->cn));
 		} else if (port->open_fd == NULL) {
-			DPRINTF_ERR((MY_ID "received data for port %d but it is closed!\n",
-				packet->cn));
+			DPRINTF_DEBUG((MY_ID "received data for port %d but it is closed!\n", packet->cn));
 		} else {
 			ring_buffer_write(port->rbuf, packet->midi, pktlen);
 			release_sem_etc(port->open_fd->sem_cb, pktlen,
@@ -228,12 +304,11 @@ interpret_midi_buffer(usbmidi_device_info* midiDevice)
 }
 
 
-/*
-	callback: got a report, issue next request
-*/
+// #pragma mark - USB transfers callbacks
+
 
 static void
-midi_usb_read_callback(void* cookie, status_t status,
+usb_midi_read_callback(void* cookie, status_t status,
 	void* data, size_t actual_len)
 {
 	status_t st;
@@ -241,8 +316,7 @@ midi_usb_read_callback(void* cookie, status_t status,
 
 	assert(cookie != NULL);
 	if (actual_len > 0) {
-		DPRINTF_DEBUG((MY_ID "midi_usb_read_callback() -- packet length %ld\n",
-			actual_len));
+		DPRINTF_DEBUG((MY_ID "midi_usb_read_callback() -- packet length %ld\n",	actual_len));
 	}
 
 	acquire_sem(midiDevice->sem_lock);
@@ -268,19 +342,30 @@ midi_usb_read_callback(void* cookie, status_t status,
 			release_sem(midiDevice->sem_lock);
 			return;
 		}
-		release_sem(midiDevice->sem_lock);
+
+		// device still there, but (continuously?) returning errors
+		midiDevice->consecutive_read_errors++;
+		if (midiDevice->consecutive_read_errors > MAX_CONSECUTIVE_READ_ERRORS) {
+			// Stop re-queue expecting a different result
+			DPRINTF_ERR((MY_ID "%s: %d consecutive IN transfer errors: giving up. "
+				"Device likely unplugged or faulty\n",
+				midiDevice->name, midiDevice->consecutive_read_errors));
+			release_sem(midiDevice->sem_lock);
+			return;
+		}
 	} else {
 		/* got a report */
 		midiDevice->timestamp = system_time();	/* not used... */
+		midiDevice->consecutive_read_errors = 0;
 
 		interpret_midi_buffer(midiDevice);
-		release_sem(midiDevice->sem_lock);
 	}
 
+	release_sem(midiDevice->sem_lock);
+
 	/* issue next request */
-	st = usb->queue_bulk(midiDevice->ept_in->handle,
-		midiDevice->buffer, midiDevice->inMaxPkt,
-		(usb_callback_func)midi_usb_read_callback, midiDevice);
+	st = gUSBModule->queue_bulk(midiDevice->ept_in->handle, midiDevice->buffer,
+		midiDevice->inMaxPkt, (usb_callback_func)usb_midi_read_callback, midiDevice);
 	if (st != B_OK) {
 		/* probably endpoint stall */
 		DPRINTF_ERR((MY_ID "queue_bulk() error 0x%" B_PRIx32 "\n", st));
@@ -289,8 +374,7 @@ midi_usb_read_callback(void* cookie, status_t status,
 
 
 static void
-midi_usb_write_callback(void* cookie, status_t status,
-	void* data, size_t actual_len)
+usb_midi_write_callback(void* cookie, status_t status, void* data, size_t actual_len)
 {
 	usbmidi_device_info* midiDevice = (usbmidi_device_info*)cookie;
 #ifdef DEBUG
@@ -305,9 +389,8 @@ midi_usb_write_callback(void* cookie, status_t status,
 }
 
 
-/*
-	USB specific device hooks
-*/
+// #pragma mark - USB module hooks
+
 
 static status_t
 usb_midi_added(const usb_device* dev, void** cookie)
@@ -322,15 +405,14 @@ usb_midi_added(const usb_device* dev, void** cookie)
 	assert(dev != NULL && cookie != NULL);
 	DPRINTF_INFO((MY_ID "usb_midi_added(%p, %p)\n", dev, cookie));
 
-	const usb_device_descriptor* dev_desc = usb->get_device_descriptor(dev);
+	const usb_device_descriptor* dev_desc = gUSBModule->get_device_descriptor(dev);
 
 	DPRINTF_INFO((MY_ID "vendor ID 0x%04X, product ID 0x%04X\n",
 		dev_desc->vendor_id, dev_desc->product_id));
 
 	/* check interface class */
 	const usb_configuration_info* conf;
-	if ((conf = usb->get_nth_configuration(dev, DEFAULT_CONFIGURATION))
-		== NULL) {
+	if ((conf = gUSBModule->get_nth_configuration(dev, DEFAULT_CONFIGURATION)) == NULL) {
 		DPRINTF_ERR((MY_ID "cannot get default configuration\n"));
 		return B_ERROR;
 	}
@@ -362,16 +444,15 @@ usb_midi_added(const usb_device* dev, void** cookie)
 
 got_one:
 
-	if ((status = usb->set_configuration(dev, conf)) != B_OK) {
+	if ((status = gUSBModule->set_configuration(dev, conf)) != B_OK) {
 		DPRINTF_ERR((MY_ID "set_configuration() failed 0x%" B_PRIx32 "\n",
 			status));
 		return B_ERROR;
 	}
 
 	usbmidi_device_info* midiDevice;
-	if ((midiDevice = create_device(dev, ifno)) == NULL) {
+	if ((midiDevice = create_device(dev, dev_desc, ifno)) == NULL)
 		return B_ERROR;
-	}
 
 	/* get the actual number of  ports in and out */
 	for (uint16 i = 0; i < intf->generic_count; i++) {
@@ -430,12 +511,11 @@ got_one:
 		add_port_info(port);
 	}
 
-	/* issue bulk transfer */
+	/* issue bulk input transfer */
 	if (midiDevice->ept_in != NULL) {
 		DPRINTF_DEBUG((MY_ID "queueing bulk xfer IN endpoint\n"));
-		status = usb->queue_bulk(midiDevice->ept_in->handle, midiDevice->buffer,
-			midiDevice->inMaxPkt,
-			(usb_callback_func)midi_usb_read_callback, midiDevice);
+		status = gUSBModule->queue_bulk(midiDevice->ept_in->handle, midiDevice->buffer,
+			midiDevice->inMaxPkt, (usb_callback_func)usb_midi_read_callback, midiDevice);
 		if (status != B_OK) {
 			DPRINTF_ERR((MY_ID "queue_bulk() error 0x%" B_PRIx32 "\n", status));
 			return B_ERROR;
@@ -475,9 +555,9 @@ usb_midi_removed(void* cookie)
 	}
 
 	if (midiDevice->ept_in != NULL)
-		usb->cancel_queued_transfers(midiDevice->ept_in->handle);
+		gUSBModule->cancel_queued_transfers(midiDevice->ept_in->handle);
 	if (midiDevice->ept_out != NULL)
-		usb->cancel_queued_transfers(midiDevice->ept_out->handle);
+		gUSBModule->cancel_queued_transfers(midiDevice->ept_out->handle);
 	DPRINTF_DEBUG((MY_ID "usb_midi_removed: doing remove: %s\n",
 		midiDevice->name));
 	remove_device(midiDevice);
@@ -485,9 +565,9 @@ usb_midi_removed(void* cookie)
 }
 
 
-static usb_notify_hooks my_notify_hooks =
-{
-	usb_midi_added, usb_midi_removed
+static usb_notify_hooks my_notify_hooks = {
+	usb_midi_added,
+	usb_midi_removed
 };
 
 #define	SUPPORTED_DEVICES	1
@@ -501,10 +581,8 @@ usb_support_descriptor my_supported_devices[SUPPORTED_DEVICES] =
 };
 
 
-/*
-	Device Driver Hook Functions
-	-- open, read, write, close, and free
- */
+// #pragma mark device hooks
+
 
 static status_t
 usb_midi_open(const char* name, uint32 flags,
@@ -577,10 +655,15 @@ usb_midi_read(driver_cookie* cookie, off_t position,
 	while (midiDevice && midiDevice->active) {
 		ZDPRINTF_DEBUG((MY_ID "waiting on acquire_sem_etc\n"));
 		err = acquire_sem_etc(cookie->sem_cb, 1,
-			 B_RELATIVE_TIMEOUT, 1000000);
+			 B_RELATIVE_TIMEOUT | B_CAN_INTERRUPT, 1000000);
 		if (err == B_TIMED_OUT) {
 			ZDPRINTF_DEBUG((MY_ID "acquire_sem_etc timed out\n"));
 			continue;	/* see if we're still active */
+		}
+		if (err == B_INTERRUPTED) {
+			// reader got interrupted while device idle
+			*num_bytes = 0;
+			return err;
 		}
 		if (err != B_OK) {
 			*num_bytes = 0;
@@ -679,29 +762,40 @@ usb_midi_write(driver_cookie* cookie, off_t position,
 			memset(pkt, 0, sizeof(usb_midi_event_packet));
 			pkt->cin = cin;
 			pkt->cn = port->cable;
+
 			DPRINTF_DEBUG((MY_ID "using packet data (code %x -- %d bytes)"
 				" %x %x %x\n", pkt->cin, CINbytes[pkt->cin],
 				midiseq[0], midiseq[1], midiseq[2]));
-			if (user_memcpy(pkt->midi, midiseq, pkt_bytes) != B_OK)
+
+			if (user_memcpy(pkt->midi, midiseq, pkt_bytes) != B_OK) {
+				release_sem(midiDevice->sem_send);
 				return B_BAD_ADDRESS;
+			}
+
 			DPRINTF_DEBUG((MY_ID "built packet %p %x:%d %x %x %x\n",
 				pkt, pkt->cin, pkt->cn,
 				pkt->midi[0], pkt->midi[1], pkt->midi[2]));
+
 			xfer_bytes -= pkt_bytes;
 			bytes_left -= pkt_bytes;
 			midiseq += pkt_bytes;
 			packet_count++;
 			pkt++;
-			if (midicode == 0xF0 && bytes_left < 4) cin = 4 + bytes_left;
+
+			if (midicode == 0xF0 && bytes_left < 4) {
 				/* see USB-MIDI Spec */
+				cin = 4 + bytes_left;
+			}
 		}
-		status = usb->queue_bulk(midiDevice->ept_out->handle,
-			midiDevice->out_buffer,	sizeof(usb_midi_event_packet)
-			* packet_count, (usb_callback_func)midi_usb_write_callback,
-			midiDevice);
+
+		status = gUSBModule->queue_bulk(midiDevice->ept_out->handle, midiDevice->out_buffer,
+			sizeof(usb_midi_event_packet) * packet_count,
+			(usb_callback_func)usb_midi_write_callback,	midiDevice);
+
 		if (status != B_OK) {
 			DPRINTF_ERR((MY_ID "midi write queue_bulk() error 0x%" B_PRIx32
 				"\n", status));
+			release_sem(midiDevice->sem_send);
 			return B_ERROR;
 		}
 	}
@@ -710,9 +804,72 @@ usb_midi_write(driver_cookie* cookie, off_t position,
 
 
 static status_t
-usb_midi_control(void* cookie, uint32 iop, void* data, size_t len)
+usb_midi_control(driver_cookie* cookie, uint32 op, void* data, size_t len)
 {
-	return B_ERROR;
+	assert(cookie != NULL);
+
+	usbmidi_port_info* port = cookie->port;
+	usbmidi_device_info* midiDevice = cookie->device;
+	if (midiDevice == NULL || !midiDevice->active || port == NULL)
+		return B_ERROR; // already disconnected
+
+	switch (op) {
+		case B_MIDI_GET_PORT_INFO:
+		{
+			midi_device_port_info info;
+			if (len < sizeof(info))
+				return B_ERROR;
+
+			info.port_index = port->cable;
+
+			if (midiDevice->port_count > 1) {
+				// multiple ports => needs a distinct port name
+				snprintf(info.port_name, sizeof(info.port_name), "%c", 'A' + port->cable);
+			} else {
+				// single port device, no need for a distinct port name
+				info.port_name[0] = '\0';
+			}
+
+			return user_memcpy(data, &info, sizeof(info)) >= 0 ? B_OK : B_BAD_ADDRESS;
+		}
+
+		case B_GET_ICON_NAME:
+		{
+			const char* iconName = "devices/midi-usb";
+			return user_strlcpy((char*)data, iconName, len) >= 0 ? B_OK : B_BAD_ADDRESS;
+		}
+
+		case B_GET_DEVICE_NAME:
+		{
+			size_t nameLength = sizeof(midiDevice->manufacturer_name)
+				+ sizeof(midiDevice->product_name) + 1;
+
+			// shorten the device name: vendors loves
+			// to put their full company/division name, like "Xxxx Limited Inc.",
+			// "Xxxx Professional blablabla" etc.
+			// Let's stop after the vendor name first word, Xxxx
+			char* p = midiDevice->manufacturer_name;
+			for (size_t i = 0; i < sizeof(midiDevice->manufacturer_name); i++, p++) {
+				if (*p == ' ')
+					break;
+			}
+
+			char name[nameLength];
+			snprintf(name, nameLength, "%.*s %s", (int)(p - midiDevice->manufacturer_name),
+				midiDevice->manufacturer_name, midiDevice->product_name);
+
+			return user_strlcpy((char*)data, name, len) >= 0
+				? B_OK : B_BAD_ADDRESS;
+		}
+
+		case B_GET_DEVICE_SERIAL_NUMBER:
+		{
+			return user_strlcpy((char*)data, midiDevice->serial_number, len) > 0
+				? B_OK : B_BAD_ADDRESS;
+		}
+	}
+
+	return B_DEV_INVALID_IOCTL;
 }
 
 
@@ -721,7 +878,7 @@ usb_midi_close(driver_cookie* cookie)
 {
 	assert(cookie != NULL);
 	delete_sem(cookie->sem_cb);
-	
+
 	usbmidi_port_info* port = cookie->port;
 	usbmidi_device_info* midiDevice = cookie->device;
 	
@@ -765,9 +922,8 @@ static device_hooks usb_midi_hooks = {
 };
 
 
-/*
-	Driver Registration
- */
+// #pragma mark - driver registration
+
 
 _EXPORT status_t
 init_hardware(void)
@@ -783,7 +939,7 @@ init_driver(void)
 {
 	DPRINTF_INFO((MY_ID "init_driver() version:" __DATE__ " " __TIME__ "\n"));
 
-	if (get_module(B_USB_MODULE_NAME, (module_info**)&usb) != B_OK)
+	if (get_module(B_USB_MODULE_NAME, (module_info**)&gUSBModule) != B_OK)
 		return B_ERROR;
 
 	if ((usbmidi_port_list_lock = create_sem(1, "dev_list_lock")) < 0) {
@@ -791,9 +947,9 @@ init_driver(void)
 		return usbmidi_port_list_lock;		/* error code */
 	}
 
-	usb->register_driver(usb_midi_driver_name, my_supported_devices,
-		SUPPORTED_DEVICES, NULL);
-	usb->install_notify(usb_midi_driver_name, &my_notify_hooks);
+	gUSBModule->register_driver(usb_midi_driver_name, my_supported_devices, SUPPORTED_DEVICES,
+		NULL);
+	gUSBModule->install_notify(usb_midi_driver_name, &my_notify_hooks);
 	DPRINTF_INFO((MY_ID "init_driver() OK\n"));
 
 	return B_OK;
@@ -804,7 +960,7 @@ _EXPORT void
 uninit_driver(void)
 {
 	DPRINTF_INFO((MY_ID "uninit_driver()\n"));
-	usb->uninstall_notify(usb_midi_driver_name);
+	gUSBModule->uninstall_notify(usb_midi_driver_name);
 
 	delete_sem(usbmidi_port_list_lock);
 	put_module(B_USB_MODULE_NAME);
@@ -812,6 +968,8 @@ uninit_driver(void)
 	DPRINTF_INFO((MY_ID "uninit complete\n"));
 }
 
+
+// #pragma mark - devices paths
 
 _EXPORT const char**
 publish_devices(void)

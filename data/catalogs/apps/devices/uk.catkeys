@@ -1,74 +1,101 @@
-1	ukrainian	x-vnd.Haiku-Devices	1230536917
+1	ukrainian	x-vnd.Haiku-Devices	2344199970
 ACPI bus	DevicesView		Шина ACPI
-Encryption controller	Device		Контроллер шифрування
-Devices	System name		Devices
 USB bus	DevicesView		Шина USB
-Processor	Device		Процесор
-Generate system information	DevicesView		Зібрати інформацію про систему
 Class info	DevicePCI		Інфо про клас
 USB bus	Device		Шина USB
-Computer	DevicesView		Комп'ютер
 Communications	DeviceSCSI		Комунікації
 Mass storage controller	Device		Контролер накопичувачів
 Printer	DeviceSCSI		Принтер
-Connection	DevicesView		підключенням
+Enable driver	DevicesView		Підключити драйвер
 Manufacturer	Device		Виробник
-Scanner	DeviceSCSI		Сканер
 Memory controller	Device		Контролер пам’яті
 Unknown device	DevicesView		Невідомий пристрій
-ACPI node '%1'	DeviceACPI		Вузол ACPI «%1»
 Name	PropertyList		Назва
+Graphics peripheral	DeviceSCSI		Графічна периферія
 Manufacturer	DeviceSCSI		Виробник
-Device name	Device		Назва пристрою
+unknown	DeviceACPI		невідомо
 Satellite communications controller	Device		Контролер супутникового зв’язку
-Device class	DeviceSCSI		Клас пристрою
-Device	Device		Пристрій
-Input device controller	Device		Контролер пристроїв вводу
+OK	DevicesView		OK
 PCI bus	DevicesView		Шина PCI
+Device	Device		Пристрій
 Changer	DeviceSCSI		Чейнджер
-Serial bus controller	Device		Контроллер послідовної шини
-Refresh devices	DevicesView		Оновити список пристроїв
 Category	DevicesView		категорією
-RBC	DeviceSCSI		RBC
-Unknown device	Device		Невідомий пристрій
+Refresh devices	DevicesView		Оновити список пристроїв
 Device paths	Device		Шлях до пристрою
-Wireless controller	Device		Бездротовий контролер
-Generic system peripheral	Device		Загальна системна периферія
+Unknown device	Device		Невідомий пристрій
 Value	PropertyList		Значення
+Generic system peripheral	Device		Загальна системна периферія
 Devices	DevicesView		Пристрої
-Device name	DeviceACPI		Назва пристрою
+Optical drive	DeviceSCSI		Оптичний привід
 Display controller	Device		Контролер дисплея
 Bus	DevicesView		типом шини
-ACPI <unknown>	DeviceACPI		ACPI <невідомо>
 Device name	DevicePCI		Назва пристрою
 Other	DeviceSCSI		Інше
-Report compatibility	DevicesView		Звіт про сумісність
-Computer	Device		Комп’ютер
-PCI bus	Device		Шина PCI
-Enclosure	DeviceSCSI		Enclosure
 Order by:	DevicesView		Сортувати за:
 Intelligent controller	Device		Інтелектуальний контролер
+ACPI processor namespace '%2'	DeviceACPI		Простір імен процесора ACPI «%2»
+The driver path is not in a package volume: 	DevicesView		Шлях до драйвера не вказує на том пакета: 
 Multimedia controller	Device		Контролер мультимедіа
 Quit	DevicesView		Вийти
-ISA bus	Device		Шина ISA
-ISA bus	DevicesView		Шина ISA
-Basic information	PropertyList		Загальна інформація
+Filter:	DevicesView		Фільтр:
 Processor	DeviceSCSI		Процесор
+Disabling non-packaged drivers is not supported.	DevicesView		Відключення драйверів типу «non-packaged» не підтримується.
+Card reader	DeviceSCSI		Зчитувач карт пам'яті
 Bridge	Device		Міст
+ACPI button '%1'	DeviceACPI		Кнопка ACPI «%1»
 Attributes	PropertyList		Атрибути
 Worm	DeviceSCSI		Worm
 CD-ROM	DeviceSCSI		CD-ROM
+ACPI system bus	DeviceACPI		Системна шина ACPI
+Signal processing controller	Device		Контролер обробки сигналів
+Docking station	Device		Док-станція
+Unclassified device	Device		Некласифіковані пристрої
+Error	DevicesView		Помилка
+ACPI controller	Device		Контролер ACPI
+ACPI bus	Device		Шина ACPI
+Encryption controller	Device		Контроллер шифрування
+Devices	System name		Пристрої
+Generate system information	DevicesView		Зібрати інформацію про систему
+Processor	Device		Процесор
+Disable driver	DevicesView		Відключити драйвер
+Reboot needed	DevicesView		Потрібен перезапуск
+Computer	DevicesView		Комп'ютер
+ACPI thermal zone	DeviceACPI		Зона температур ACPI
+Connection	DevicesView		підключенням
+Failed to write to the settings file.	DevicesView		Збій під час запису даних у файл налаштувань.
+Scanner	DeviceSCSI		Сканер
+ACPI node '%1'	DeviceACPI		Вузол ACPI «%1»
+Clear	DevicesView		Очистити
+Device name	Device		Назва пристрою
+Device class	DeviceSCSI		Клас пристрою
+Input device controller	Device		Контролер пристроїв вводу
+Restart computer	DevicesView		Перезапуск комп'ютера
+Serial bus controller	Device		Контроллер послідовної шини
+RBC	DeviceSCSI		RBC
+Wireless controller	Device		Бездротовий контролер
+Device name	DeviceACPI		Назва пристрою
+Shutdown failed with error: 	DevicesView		Збій вимкнення через помилку: 
+unknown	DevicePCI		невідомо
+ACPI <unknown>	DeviceACPI		ACPI <невідомо>
+Report compatibility	DevicesView		Звіт про сумісність
+Computer	Device		Комп’ютер
+Tape drive	DeviceSCSI		Накопичувач на магнітній стрічці
+Enclosure	DeviceSCSI		Enclosure
+PCI bus	Device		Шина PCI
+none	Device		пусто
+Disabling critical system drivers is not allowed.	DevicesView		Відключення критично важливих системних драйверів заборонено.
+Driver disabled	DevicesView		Драйвер відключено
+ISA bus	Device		Шина ISA
+Basic information	PropertyList		Загальна інформація
+ISA bus	DevicesView		Шина ISA
+Disk drive	DeviceSCSI		Дисковий привід
 Manufacturer	DevicePCI		Виробник
 Bridge	DeviceSCSI		Міст
-Signal processing controller	Device		Контролер обробки сигналів
+ACPI system indicator	DeviceACPI		Системний індикатор ACPI
 Device name	DeviceSCSI		Назва пристрою
-Docking station	Device		Док-станція
 Array	DeviceSCSI		Масив
-Unclassified device	Device		Некласифіковані пристрої
 Manufacturer	DeviceACPI		Виробник
-ACPI controller	Device		Контролер ACPI
 Network controller	Device		Мережевий контролер
 Driver used	Device		Використовує драйвер
 Communication controller	Device		Контролер зв’язку
-ACPI bus	Device		Шина ACPI
 unknown	Device		невідомо

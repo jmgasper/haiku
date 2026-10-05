@@ -642,7 +642,7 @@ read_cd(cd_driver_info *info, const scsi_read_cd *readCD)
 	// are 10 seconds enough for timeout?
 	ccb->timeout = 10;
 
-	// TODO: we pass a user buffer here!
+	// we pass a user buffer here, scsi_periph is able to cope with it
 	ccb->data = (uint8 *)readCD->buffer;
 	ccb->sg_list = NULL;
 	ccb->data_length = readCD->buffer_length;
@@ -815,8 +815,14 @@ cd_ioctl(void* cookie, uint32 op, void* buffer, size_t length)
 		}
 
 		case B_SCSI_GET_TOC:
-			// TODO: we pass a user buffer here!
-			return get_toc(info, (scsi_toc *)buffer);
+		{
+			scsi_toc toc;
+			status_t status = get_toc(info, &toc);
+			if (status != B_OK)
+				return status;
+
+			return user_memcpy(buffer, &toc, sizeof(scsi_toc));
+		}
 
 		case B_EJECT_DEVICE:
 		case B_SCSI_EJECT:
@@ -839,11 +845,23 @@ cd_ioctl(void* cookie, uint32 op, void* buffer, size_t length)
 		}
 
 		case B_SCSI_GET_VOLUME:
-			// TODO: we pass a user buffer here!
-			return get_set_volume(info, (scsi_volume *)buffer, false);
+		{
+			scsi_volume volume;
+			status_t status = get_set_volume(info, &volume, false);
+			if (status != B_OK)
+				return status;
+
+			return user_memcpy(buffer, &volume, sizeof(scsi_volume));
+		}
 		case B_SCSI_SET_VOLUME:
-			// TODO: we pass a user buffer here!
-			return get_set_volume(info, (scsi_volume *)buffer, true);
+		{
+			scsi_volume volume;
+			status_t status = user_memcpy(&volume, buffer, sizeof(scsi_volume));
+			if (status != B_OK)
+				return status;
+
+			return get_set_volume(info, &volume, true);
+		}
 
 		case B_SCSI_PLAY_TRACK:
 		{
@@ -879,8 +897,14 @@ cd_ioctl(void* cookie, uint32 op, void* buffer, size_t length)
 			return scan(info, &scanBuffer);
 		}
 		case B_SCSI_READ_CD:
-			// TODO: we pass a user buffer here!
-			return read_cd(info, (scsi_read_cd *)buffer);
+		{
+			scsi_read_cd readCD;
+			status_t status = user_memcpy(&readCD, buffer, sizeof(scsi_read_cd));
+			if (status != B_OK)
+				return status;
+
+			return read_cd(info, &readCD);
+		}
 
 		default:
 			return sSCSIPeripheral->ioctl(handle->scsi_periph_handle, op,

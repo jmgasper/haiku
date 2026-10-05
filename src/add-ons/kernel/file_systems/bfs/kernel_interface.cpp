@@ -1,5 +1,5 @@
 /*
- * Copyright 2001-2020, Axel Dörfler, axeld@pinc-software.de.
+ * Copyright 2001-2026, Axel Dörfler, axeld@pinc-software.de.
  * This file may be used under the terms of the MIT License.
  */
 
@@ -409,7 +409,7 @@ bfs_can_page(fs_volume* _volume, fs_vnode* _v, void* _cookie)
 
 
 static status_t
-bfs_read_pages(fs_volume* _volume, fs_vnode* _node, void* _cookie,
+bfs_read_pages(fs_volume* _volume, fs_vnode* _node, void*,
 	off_t pos, const iovec* vecs, size_t count, size_t* _numBytes)
 {
 	Volume* volume = (Volume*)_volume->private_volume;
@@ -451,7 +451,7 @@ bfs_read_pages(fs_volume* _volume, fs_vnode* _node, void* _cookie,
 
 
 static status_t
-bfs_write_pages(fs_volume* _volume, fs_vnode* _node, void* _cookie,
+bfs_write_pages(fs_volume* _volume, fs_vnode* _node, void*,
 	off_t pos, const iovec* vecs, size_t count, size_t* _numBytes)
 {
 	Volume* volume = (Volume*)_volume->private_volume;
@@ -783,15 +783,15 @@ bfs_ioctl(fs_volume* _volume, fs_vnode* _node, void* _cookie, uint32 cmd,
 		}
 		case BFS_IOCTL_RESIZE:
 		{
-			if (bufferLength != sizeof(uint64))
+			if (bufferLength != sizeof(resize_control))
 				return B_BAD_VALUE;
 
-			uint64 size;
-			if (user_memcpy((uint8*)&size, buffer, sizeof(uint64)) != B_OK)
+			resize_control control;
+			if (user_memcpy((uint8*)&control, buffer, sizeof(control)) != B_OK)
 				return B_BAD_ADDRESS;
 
 			ResizeVisitor resizer(volume);
-			return resizer.Resize(size, -1);
+			return resizer.Resize(control.new_size, control.dry_run, -1);
 		}
 
 #ifdef DEBUG_FRAGMENTER
@@ -2336,8 +2336,41 @@ bfs_get_supported_operations(partition_data* partition, uint32 mask)
 {
 	// TODO: We should at least check the partition size.
 	return B_DISK_SYSTEM_SUPPORTS_INITIALIZING
+#ifdef FS_SHELL
+		| B_DISK_SYSTEM_SUPPORTS_RESIZING_WHILE_MOUNTED
+#endif
 		| B_DISK_SYSTEM_SUPPORTS_CONTENT_NAME
 		| B_DISK_SYSTEM_SUPPORTS_WRITING;
+}
+
+
+static status_t
+bfs_resize(int fd, partition_id partitionID, off_t size, disk_job_id job)
+{
+//#ifndef FS_SHELL
+#if 0
+	// get Volume pointer from partitionID
+	if (read_lock_disk_device(partitionID) == NULL)
+		return B_ERROR;
+
+	partition_data* partition = get_partition(partitionID);
+	read_unlock_disk_device(partitionID);
+
+	if (partition == NULL)
+		return B_ERROR;
+
+	Volume* volume = (Volume*)partition->mount_cookie;
+	if (volume == NULL)
+		return B_ERROR;
+
+	// do the resize
+	ResizeVisitor resizer(volume);
+	return resizer.Resize(size, job);
+#else
+	// fs_shell can't use this interface as it doesn't have the
+	// partion_data concept
+	return B_ERROR;
+#endif
 }
 
 
@@ -2565,7 +2598,9 @@ static file_system_module_info sBeFileSystem = {
 //	| B_DISK_SYSTEM_SUPPORTS_DEFRAGMENTING_WHILE_MOUNTED
 //	| B_DISK_SYSTEM_SUPPORTS_CHECKING_WHILE_MOUNTED
 //	| B_DISK_SYSTEM_SUPPORTS_REPAIRING_WHILE_MOUNTED
-//	| B_DISK_SYSTEM_SUPPORTS_RESIZING_WHILE_MOUNTED
+#ifdef FS_SHELL
+	| B_DISK_SYSTEM_SUPPORTS_RESIZING_WHILE_MOUNTED
+#endif
 //	| B_DISK_SYSTEM_SUPPORTS_MOVING_WHILE_MOUNTED
 //	| B_DISK_SYSTEM_SUPPORTS_SETTING_CONTENT_NAME_WHILE_MOUNTED
 //	| B_DISK_SYSTEM_SUPPORTS_SETTING_CONTENT_PARAMETERS_WHILE_MOUNTED
@@ -2595,7 +2630,7 @@ static file_system_module_info sBeFileSystem = {
 	/* writing */
 	NULL,	// defragment
 	NULL,	// repair
-	NULL,	// resize
+	bfs_resize,
 	NULL,	// move
 	NULL,	// set_content_name
 	NULL,	// set_content_parameters

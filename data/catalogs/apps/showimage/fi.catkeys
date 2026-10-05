@@ -1,5 +1,4 @@
-1	finnish	x-vnd.Haiku-ShowImage	3394555425
-ShowImage	System name		Kuvakatselin
+1	finnish	x-vnd.Haiku-ShowImage	2499375787
 Page setup…	Menus		Sivuasetus...
 Previous file	Menus		Edellinen tiedosto
 View	Menus		Näkymä
@@ -50,7 +49,6 @@ Previous page	Menus		Edellinen sivu
 Fit to window	Menus		Sovita ikkunaan
 Go to page	Menus		Siirry sivulle
 Browse	Menus		Selaa
-Progress monitor	ProgressWindow		Edistymisvalvonta
 Edit	Menus		Muokkaa
 Move to Trash	Menus		Siirrä roskakoriin
 Use as background…	Menus		Käytä taustana…

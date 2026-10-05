@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2010, Haiku, Inc. All Rights Reserved.
+ * Copyright 2003-2026, Haiku, Inc. All Rights Reserved.
  * Distributed under the terms of the MIT License.
  *
  * Authors:
@@ -55,6 +55,7 @@ private:
 };
 
 
+extern const char* kApplicationName;
 extern const char* kApplicationSignature;
 
 #define my_app dynamic_cast<ShowImageApp*>(be_app)

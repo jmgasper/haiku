@@ -1,4 +1,4 @@
-1	polish	x-vnd.Haiku-HaikuDepot	4091113752
+1	polish	x-vnd.Haiku-HaikuDepot	558160956
 Usage conditions download problem	ToLatestUserUsageConditionsWindow		Problem z pobieraniem warunków korzystania
 Available packages	MainWindow		Dostępne pakiety
 It was not possible to create the new user.	UserLoginWindow		Nie udało się utworzyć nowego użytkownika.
@@ -115,14 +115,13 @@ Uninstalled	PackageListView		Niezainstalowany
 I agree to the usage conditions	ToLatestUserUsageConditionsWindow		Zgadzam się na warunki korzystania
 Installing \"%PackageName%\"	InstallPackageProcess		Instalowanie „%PackageName%”
 OK	App		OK
-Fatal error	UninstallPackageAction		Błąd krytyczny
 Develop packages	MainWindow		Pakiety deweloperskie
 Starting the package daemon failed:\n\n%Error%	App		Uruchamianie demona pakietów nie powiodło się:\n\n%Error%
 No user ratings available.	PackageInfoView		Brak ocen użytkowników.
 <no info>	PackageInfoView		<brak informacji>
 Usage conditions download problem	UserUsageConditions		Problem z pobieraniem warunków korzystania
-An error has arisen downloading the password requirements required to create a new user. Check the log for details and try again. \nInformation about how to view the logs is available in the HaikuDepot section of the Haiku User Guide.	UserLoginWindow		Wystąpił błąd podczas pobierania wymagań dotyczących hasła niezbędnych by stworzyć nowego użytkownika. Sprawdź szczegóły w dzienniku i spróbuj ponownie. \nInformacje o tym jak dostać się do dziennika znajdują się w rozdziale HaikuDepot Podręcznika użytkownika Haiku.
 Fetching screenshot	CacheScreenshotProcess		Pobieranie zrzutu ekranu
+An error has arisen downloading the password requirements required to create a new user. Check the log for details and try again. \nInformation about how to view the logs is available in the HaikuDepot section of the Haiku User Guide.	UserLoginWindow		Wystąpił błąd podczas pobierania wymagań dotyczących hasła niezbędnych by stworzyć nowego użytkownika. Sprawdź szczegóły w dzienniku i spróbuj ponownie. \nInformacje o tym jak dostać się do dziennika znajdują się w rozdziale HaikuDepot Podręcznika użytkownika Haiku.
 A network transport error has arisen communicating with the server system: %s	ServerHelper		Wystąpił błąd transmisji sieciowej podczas komunikacji z serwerem: %s
 Rating	PackageListView		Ocena
 Synchronizing icons	ServerIconExportUpdateProcess		Synchronizowanie ikon
@@ -193,7 +192,6 @@ The password previously supplied for the user [%Nickname%] is not currently vali
 View the usage conditions	ToLatestUserUsageConditionsWindow		Zobacz warunki korzystania
 OK	ServerHelper		OK
 Reading repository data	LocalPkgDataLoadProcess		Odczytywanie danych repozytorium
-Fatal error	InstallPackageProcess		Błąd krytyczny
 A validation error has occurred	ServerHelper		Wystąpił błąd walidacji
 The nickname is required.	UserLoginWindow		Pseudonim jest wymagany.
 -	no package size		-

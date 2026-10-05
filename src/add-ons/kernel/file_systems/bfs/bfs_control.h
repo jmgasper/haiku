@@ -1,5 +1,6 @@
 /*
  * Copyright 2001-2014, Axel Dörfler, axeld@pinc-software.de
+ * Copyright 2012, Andreas Henriksson, sausageboy@gmail.com
  * This file may be used under the terms of the MIT License.
  */
 #ifndef BFS_CONTROL_H
@@ -28,6 +29,7 @@ struct update_boot_block {
 	const uint8*	data;
 	uint32			length;
 };
+
 
 /* ioctls to use the "chkbfs" feature from the outside
  * all calls use a struct check_result as single parameter
@@ -89,7 +91,7 @@ struct check_control {
 #define BFS_MISSING_BLOCKS		1
 #define BFS_BLOCKS_ALREADY_SET	2
 #define BFS_INVALID_BLOCK_RUN	4
-#define	BFS_COULD_NOT_OPEN		8
+#define BFS_COULD_NOT_OPEN		8
 #define BFS_WRONG_TYPE			16
 #define BFS_NAMES_DONT_MATCH	32
 #define BFS_INVALID_BPLUSTREE	64
@@ -103,5 +105,9 @@ struct check_control {
  */
 #define BFS_IOCTL_RESIZE		14205
 
+struct resize_control {
+	uint64	new_size;
+	bool	dry_run;
+};
 
 #endif	/* BFS_CONTROL_H */

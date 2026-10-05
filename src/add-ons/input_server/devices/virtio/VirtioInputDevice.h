@@ -1,16 +1,15 @@
 /*
- * Copyright 2021, Haiku, Inc. All rights reserved.
+ * Copyright 2021-2026, Haiku, Inc. All rights reserved.
  * Distributed under the terms of the MIT License.
  */
 #ifndef _VIRTIOINPUTDEVICE_H_
 #define _VIRTIOINPUTDEVICE_H_
 
 
-#include <add-ons/input_server/InputServerDevice.h>
 #include <AutoDeleter.h>
-#include <Handler.h>
-#include <InterfaceDefs.h>
-#include <MessageRunner.h>
+#include <Keymap.h>
+#include <Locker.h>
+#include <add-ons/input_server/InputServerDevice.h>
 
 
 struct VirtioInputPacket;
@@ -97,22 +96,25 @@ public:
 private:
 	static	bool			_IsKeyPressed(const KeyboardState& state,
 								uint32 key);
-			void			_KeyString(uint32 code, char* str, size_t len);
 			void			_StartRepeating(BMessage* msg);
 			void			_StopRepeating();
 	static	status_t		_RepeatThread(void* arg);
+
+			status_t		_SendKeyEvent(uint32 key, bool pressed);
+
 			void			_StateChanged();
 
-private:
 			KeyboardState	fState;
 			KeyboardState	fNewState;
-			BPrivate::AutoDeleter<key_map, BPrivate::MemoryDelete>
-							fKeyMap;
-			BPrivate::AutoDeleter<char, BPrivate::MemoryDelete>
-							fChars;
-
+			uint32			fPendingUnmappedKeys[8];
+			bool			fPendingUnmappedPressed[8];
+			uint8			fPendingUnmappedCount;
+			uint8			fActiveDeadKey;
+			BKeymap			fKeymap;
+			BLocker         fKeymapLock;
 			bigtime_t		fRepeatDelay;
 			int32			fRepeatRate;
+			uint32			fRepeatKey;
 			thread_id		fRepeatThread;
 			sem_id			fRepeatThreadSem;
 			BMessage		fRepeatMsg;

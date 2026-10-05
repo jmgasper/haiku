@@ -1,5 +1,4 @@
-1	french	x-vnd.Haiku-ShowImage	3394555425
-ShowImage	System name		Visionneuse
+1	french	x-vnd.Haiku-ShowImage	2499375787
 Page setup…	Menus		Mise en page…
 Previous file	Menus		Fichier précédent
 View	Menus		Vue
@@ -28,7 +27,7 @@ Attributes	Menus		Attributs
 High-quality zooming	Menus		Zoom haute qualité
 Close	Menus		Fermer
 Selection mode	Menus		Mode de sélection
-Reset rating	Menus		Effacer l'évaluation
+Reset rating	Menus		Effacer l’évaluation
 DPI:	PrintOptionsWindow		PPP :
 Fit image to page	PrintOptionsWindow		Adapter l’image à la page
 Show tool bar	Menus		Afficher la barre d’outils
@@ -50,7 +49,6 @@ Previous page	Menus		Page précédente
 Fit to window	Menus		Ajuster à la fenêtre
 Go to page	Menus		Aller à la page
 Browse	Menus		Parcourir
-Progress monitor	ProgressWindow		Moniteur de progression
 Edit	Menus		Editer
 Move to Trash	Menus		Mettre à la corbeille
 Use as background…	Menus		Utiliser comme fond d’écran…

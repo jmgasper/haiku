@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2022 Haiku, Inc. All Rights Reserved.
+ * Copyright 2019-2026 Haiku, Inc. All Rights Reserved.
  * Distributed under the terms of the MIT License.
  */
 
@@ -19,6 +19,8 @@
 #include <vm/vm_types.h>
 #include <vm/VMAddressSpace.h>
 #include <vm/VMArea.h>
+
+#include "VMSAv8TranslationMap.h"
 
 #define NUM_PREVIOUS_LOCATIONS 32
 
@@ -51,14 +53,16 @@ already_visited(addr_t* visited, int32* _last, int32* _num, addr_t fp)
 static status_t
 get_next_frame(addr_t fp, addr_t *next, addr_t *ip)
 {
-	if (fp != 0) {
-		*ip   = ((addr_t*)fp)[1];
-		*next = ((addr_t*)fp)[0];
+	if (fp == 0)
+		return B_BAD_VALUE;
 
-		return B_OK;
-	}
+	addr_t frame[2]; // [0] = saved fp, [1] = return address
+	if (debug_memcpy(B_CURRENT_TEAM, frame, (void*)fp, sizeof(frame)) != B_OK)
+		return B_BAD_ADDRESS;
 
-	return B_BAD_VALUE;
+	*next = frame[0];
+	*ip = frame[1];
+	return B_OK;
 }
 
 
@@ -110,6 +114,11 @@ static status_t
 print_demangled_call(const char* image, const char* symbol, addr_t args,
 	bool noObjectMethod, bool addDebugVariables)
 {
+	// Since arm64 uses registers rather than the stack for the first
+	// 8 integer and 8 floating-point arguments, we cannot use
+	// the same method as arm or x86 to read the function arguments from the stack.
+	// For now just print out the function signature without the argument values.
+
 	static const size_t kBufferSize = 256;
 	char* buffer = (char*)debug_malloc(kBufferSize);
 	if (buffer == NULL)
@@ -123,28 +132,7 @@ print_demangled_call(const char* image, const char* symbol, addr_t args,
 		return B_ERROR;
 	}
 
-	uint32* arg = (uint32*)args;
-
-	if (noObjectMethod)
-		isObjectMethod = false;
-	if (isObjectMethod) {
-		const char* lastName = strrchr(name, ':') - 1;
-		int namespaceLength = lastName - name;
-
-		uint32 argValue = 0;
-		if (debug_memcpy(B_CURRENT_TEAM, &argValue, arg, 4) == B_OK) {
-			kprintf("<%s> %.*s<\33[32m%#" B_PRIx32 "\33[0m>%s", image,
-				namespaceLength, name, argValue, lastName);
-		} else
-			kprintf("<%s> %.*s<\?\?\?>%s", image, namespaceLength, name, lastName);
-
-		if (addDebugVariables)
-			set_debug_variable("_this", argValue);
-		arg++;
-	} else
-		kprintf("<%s> %s", image, name);
-
-	kprintf("(");
+	kprintf("<%s> %s(", image, name);
 
 	size_t length;
 	int32 type, i = 0;
@@ -154,112 +142,10 @@ print_demangled_call(const char* image, const char* symbol, addr_t args,
 		if (i++ > 0)
 			kprintf(", ");
 
-		// retrieve value and type identifier
-
-		uint64 value;
-		bool valueKnown = false;
-
-		switch (type) {
-			case B_INT64_TYPE:
-				value = read_function_argument_value<int64>(arg, valueKnown);
-				if (valueKnown)
-					kprintf("int64: \33[34m%" B_PRId64 "\33[0m", value);
-				break;
-			case B_INT32_TYPE:
-				value = read_function_argument_value<int32>(arg, valueKnown);
-				if (valueKnown)
-					kprintf("int32: \33[34m%" B_PRId32 "\33[0m", (int32)value);
-				break;
-			case B_INT16_TYPE:
-				value = read_function_argument_value<int16>(arg, valueKnown);
-				if (valueKnown)
-					kprintf("int16: \33[34m%d\33[0m", (int16)value);
-				break;
-			case B_INT8_TYPE:
-				value = read_function_argument_value<int8>(arg, valueKnown);
-				if (valueKnown)
-					kprintf("int8: \33[34m%d\33[0m", (int8)value);
-				break;
-			case B_UINT64_TYPE:
-				value = read_function_argument_value<uint64>(arg, valueKnown);
-				if (valueKnown) {
-					kprintf("uint64: \33[34m%#" B_PRIx64 "\33[0m", value);
-					if (value < 0x100000)
-						kprintf(" (\33[34m%" B_PRIu64 "\33[0m)", value);
-				}
-				break;
-			case B_UINT32_TYPE:
-				value = read_function_argument_value<uint32>(arg, valueKnown);
-				if (valueKnown) {
-					kprintf("uint32: \33[34m%#" B_PRIx32 "\33[0m", (uint32)value);
-					if (value < 0x100000)
-						kprintf(" (\33[34m%" B_PRIu32 "\33[0m)", (uint32)value);
-				}
-				break;
-			case B_UINT16_TYPE:
-				value = read_function_argument_value<uint16>(arg, valueKnown);
-				if (valueKnown) {
-					kprintf("uint16: \33[34m%#x\33[0m (\33[34m%u\33[0m)",
-						(uint16)value, (uint16)value);
-				}
-				break;
-			case B_UINT8_TYPE:
-				value = read_function_argument_value<uint8>(arg, valueKnown);
-				if (valueKnown) {
-					kprintf("uint8: \33[34m%#x\33[0m (\33[34m%u\33[0m)",
-						(uint8)value, (uint8)value);
-				}
-				break;
-			case B_BOOL_TYPE:
-				value = read_function_argument_value<uint8>(arg, valueKnown);
-				if (valueKnown)
-					kprintf("\33[34m%s\33[0m", value ? "true" : "false");
-				break;
-			default:
-				if (buffer[0])
-					kprintf("%s: ", buffer);
-
-				if (length == 4) {
-					value = read_function_argument_value<uint32>(arg,
-						valueKnown);
-					if (valueKnown) {
-						if (value == 0
-							&& (type == B_POINTER_TYPE || type == B_REF_TYPE))
-							kprintf("NULL");
-						else
-							kprintf("\33[34m%#" B_PRIx32 "\33[0m", (uint32)value);
-					}
-					break;
-				}
-
-
-				if (length == 8) {
-					value = read_function_argument_value<uint64>(arg,
-						valueKnown);
-				} else
-					value = (uint64)arg;
-
-				if (valueKnown)
-					kprintf("\33[34m%#" B_PRIx64 "\33[0m", value);
-				break;
-		}
-
-		if (!valueKnown)
+		if (buffer[0])
+			kprintf("%s", buffer);
+		else
 			kprintf("???");
-
-		if (valueKnown && type == B_STRING_TYPE) {
-			if (value == 0)
-				kprintf(" \33[31m\"<NULL>\"\33[0m");
-			else if (debug_strlcpy(B_CURRENT_TEAM, buffer, (char*)(addr_t)value,
-					kBufferSize) < B_OK) {
-				kprintf(" \33[31m\"<\?\?\?>\"\33[0m");
-			} else
-				kprintf(" \33[36m\"%s\"\33[0m", buffer);
-		}
-
-		if (addDebugVariables)
-			set_debug_argument_variable(i, value);
-		arg = (uint32*)((uint8*)arg + length);
 	}
 
 	debug_free(buffer);
@@ -346,6 +232,39 @@ stack_trace(int argc, char **argv)
 	addr_t previousLocations[NUM_PREVIOUS_LOCATIONS];
 	Thread* thread = thread_get_current_thread();
 	addr_t fp = arm64_get_fp();
+
+	uint64 savedTTBR0 = 0;
+
+	if (argc > threadIndex) {
+		thread_id id = strtoul(argv[threadIndex], NULL, 0);
+		Thread* target = Thread::GetDebug(id);
+		if (target == NULL) {
+			kprintf("could not find thread %" B_PRId32 "\n", id);
+			return 0;
+		}
+		if (target != thread) {
+			if (target->state == B_THREAD_RUNNING) {
+				// TODO
+				kprintf("Thread %" B_PRId32 " is running on another CPU. "
+						"Tracing running threads isn't supported on arm64 yet\n",
+					id);
+				return 0;
+			}
+			thread = target;
+			// x29 (frame pointer) is stored at regs[10]
+			fp = thread->arch_info.regs[10];
+
+			// If switched to user-space, save current TTBR0 and switch to the thread's one
+			if (thread->team != NULL && thread->team->address_space != NULL) {
+				auto* map = dynamic_cast<VMSAv8TranslationMap*>(
+					thread->team->address_space->TranslationMap());
+				savedTTBR0 = READ_SPECIALREG(TTBR0_EL1);
+				WRITE_SPECIALREG(TTBR0_EL1, map->UserTTBR0());
+				arm64_isb();
+			}
+		}
+	}
+
 	int32 num = 0, last = 0;
 	struct iframe_stack *frameStack;
 
@@ -431,6 +350,11 @@ stack_trace(int argc, char **argv)
 		}
 		if (fp == 0)
 			break;
+	}
+
+	if (savedTTBR0 != 0) {
+		WRITE_SPECIALREG(TTBR0_EL1, savedTTBR0);
+		arm64_isb();
 	}
 
 	return 0;

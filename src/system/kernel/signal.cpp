@@ -1372,6 +1372,21 @@ has_permission_to_signal(Team* team)
 }
 
 
+/*!	Interrupts a thread (even a running one) for signal delivery.
+*/
+static void
+signal_interrupt_thread(Thread* thread, bool kill)
+{
+	if (thread->state == B_THREAD_RUNNING) {
+		// Send a dummy ICI to interrupt the running thread
+		call_single_cpu(thread->cpu->cpu_num, NULL, NULL);
+	} else {
+		// Interrupt waiting thread (if it is waiting interruptibly)
+		thread_interrupt(thread, kill);
+	}
+}
+
+
 /*!	Delivers a signal to the \a thread, but doesn't handle the signal -- it just
 	makes sure the thread gets the signal, i.e. unblocks it if needed.
 
@@ -1420,6 +1435,8 @@ send_signal_to_thread_locked(Thread* thread, uint32 signalNumber,
 	else
 		thread->AddPendingSignal(signalNumber);
 
+	update_thread_signals_flag(thread);
+
 	// the thread has the signal reference, now
 	signalReference.Detach();
 
@@ -1434,15 +1451,13 @@ send_signal_to_thread_locked(Thread* thread, uint32 signalNumber,
 
 				// wake up main thread
 				thread->going_to_suspend = false;
+				update_thread_signals_flag(mainThread);
 
 				SpinLocker locker(mainThread->scheduler_lock);
 				if (mainThread->state == B_THREAD_SUSPENDED)
 					scheduler_enqueue_in_run_queue(mainThread);
 				else
-					thread_interrupt(mainThread, true);
-				locker.Unlock();
-
-				update_thread_signals_flag(mainThread);
+					signal_interrupt_thread(mainThread, true);
 			}
 
 			// supposed to fall through
@@ -1456,7 +1471,7 @@ send_signal_to_thread_locked(Thread* thread, uint32 signalNumber,
 			if (thread->state == B_THREAD_SUSPENDED)
 				scheduler_enqueue_in_run_queue(thread);
 			else
-				thread_interrupt(thread, true);
+				signal_interrupt_thread(thread, true);
 
 			break;
 		}
@@ -1469,7 +1484,7 @@ send_signal_to_thread_locked(Thread* thread, uint32 signalNumber,
 			if (thread->state == B_THREAD_SUSPENDED)
 				scheduler_enqueue_in_run_queue(thread);
 			else
-				thread_interrupt(thread, false);
+				signal_interrupt_thread(thread, false);
 
 			break;
 		}
@@ -1502,19 +1517,15 @@ send_signal_to_thread_locked(Thread* thread, uint32 signalNumber,
 			break;
 		}
 		default:
-			// If the signal is not masked, interrupt the thread, if it is
-			// currently waiting (interruptibly).
+			// If the signal is not masked, interrupt the thread.
 			if ((thread->AllPendingSignals()
 						& (~thread->sig_block_mask | SIGNAL_TO_MASK(SIGCHLD)))
 					!= 0) {
-				// Interrupt thread if it was waiting
 				SpinLocker locker(thread->scheduler_lock);
-				thread_interrupt(thread, false);
+				signal_interrupt_thread(thread, false);
 			}
 			break;
 	}
-
-	update_thread_signals_flag(thread);
 
 	return B_OK;
 }
@@ -1643,6 +1654,8 @@ send_signal_to_team_locked(Team* team, uint32 signalNumber, Signal* signal,
 	else
 		team->AddPendingSignal(signalNumber);
 
+	update_team_threads_signal_flag(team);
+
 	// the team has the signal reference, now
 	signalReference.Detach();
 
@@ -1660,11 +1673,11 @@ send_signal_to_team_locked(Team* team, uint32 signalNumber, Signal* signal,
 				// wake up main thread
 				mainThread->going_to_suspend = false;
 
-				SpinLocker _(mainThread->scheduler_lock);
+				SpinLocker locker(mainThread->scheduler_lock);
 				if (mainThread->state == B_THREAD_SUSPENDED)
 					scheduler_enqueue_in_run_queue(mainThread);
 				else
-					thread_interrupt(mainThread, true);
+					signal_interrupt_thread(mainThread, true);
 			}
 			break;
 		}
@@ -1712,21 +1725,18 @@ send_signal_to_team_locked(Team* team, uint32 signalNumber, Signal* signal,
 
 			// fall through to interrupt threads
 		default:
-			// Interrupt all interruptibly waiting threads, if the signal is
-			// not masked.
+			// Interrupt all interruptable threads, if the signal is not masked.
 			for (Thread* thread = team->thread_list.First(); thread != NULL;
 					thread = team->thread_list.GetNext(thread)) {
 				sigset_t nonBlocked = ~thread->sig_block_mask
 					| SIGNAL_TO_MASK(SIGCHLD);
 				if ((thread->AllPendingSignals() & nonBlocked) != 0) {
-					SpinLocker _(thread->scheduler_lock);
-					thread_interrupt(thread, false);
+					SpinLocker locker(thread->scheduler_lock);
+					signal_interrupt_thread(thread, false);
 				}
 			}
 			break;
 	}
-
-	update_team_threads_signal_flag(team);
 
 	return B_OK;
 }
@@ -1826,24 +1836,31 @@ send_signal_to_process_group_locked(ProcessGroup* group, const Signal& signal,
 {
 	T(SendSignal(-group->id, signal.Number(), flags));
 
-	bool firstTeam = true;
+	bool found = false;
+	bool sent = false;
+	status_t status = B_OK;
 
 	for (Team* team = group->teams.First(); team != NULL; team = group->teams.GetNext(team)) {
 		status_t error = send_signal_to_team(team, signal,
 			flags | B_DO_NOT_RESCHEDULE);
-		// If sending to the first team in the group failed, let the whole call
-		// fail.
-		if (firstTeam) {
-			if (error != B_OK)
-				return error;
-			firstTeam = false;
-		}
+		// B_BAD_TEAM_ID means the team couldn't be found or is invisible
+		if (error != B_BAD_TEAM_ID)
+			found = true;
+		// B_OK means at least one team could be signaled
+		if (error == B_OK)
+			sent = true;
+		// save the first error returned
+		if (status == B_OK && error != EPERM && error != B_BAD_TEAM_ID)
+			status = error;
 	}
 
 	if ((flags & B_DO_NOT_RESCHEDULE) == 0)
 		scheduler_reschedule_if_necessary();
 
-	return B_OK;
+	if (status == B_OK && !sent)
+		status = found ? EPERM : B_BAD_TEAM_ID;
+
+	return status;
 }
 
 
@@ -1892,6 +1909,59 @@ send_signal_to_process_group(pid_t groupID, const Signal& signal, uint32 flags)
 }
 
 
+/*!	Sends the given signal to all teams except the one specified by the given ID.
+
+	Interrupts must be enabled.
+
+	\param exceptTeam The ID of the team the signal shall not be sent to.
+	\param signal The signal to be delivered. If the signal's number is \c 0, no
+		actual signal will be delivered. Only delivery checks will be performed.
+		The given object will be copied. The caller retains ownership.
+	\param flags A bitwise combination of any number of the following:
+		- \c B_CHECK_PERMISSION: Check the caller's permission to send the
+			target thread the signal.
+		- \c B_DO_NOT_RESCHEDULE: If clear and a higher level thread has been
+			woken up, the scheduler will be invoked. If set that will not be
+			done explicitly, but rescheduling can still happen, e.g. when the
+			current thread's time slice runs out.
+	\return \c B_OK, when the signal was delivered successfully, another error
+		code otherwise.
+*/
+status_t
+send_signal_to_all_teams(pid_t exceptTeam, const Signal& signal, uint32 flags)
+{
+	T(SendSignal(-1, signal.Number(), flags));
+
+	status_t status = B_OK;
+	bool found = false;
+	bool sent = false;
+
+	int32 cookie = 0;
+	team_info info;
+	while (get_next_team_info(&cookie, &info) == B_OK) {
+		if (info.team == B_SYSTEM_TEAM || info.team == exceptTeam)
+			continue;
+		status_t error = send_signal_to_team_id(info.team, signal, flags | B_DO_NOT_RESCHEDULE);
+		// B_BAD_TEAM_ID means the team couldn't be found or is invisible
+		if (error != B_BAD_TEAM_ID)
+			found = true;
+		// B_OK means at least one team could be signaled
+		if (error == B_OK)
+			sent = true;
+		// save the first error returned
+		if (status == B_OK && error != EPERM && error != B_BAD_TEAM_ID)
+			status = error;
+	}
+
+	if ((flags & B_DO_NOT_RESCHEDULE) == 0)
+		scheduler_reschedule_if_necessary();
+
+	if (status == B_OK && !sent)
+		status = found ? EPERM : B_BAD_TEAM_ID;
+	return status;
+}
+
+
 static status_t
 send_signal_internal(pid_t id, uint signalNumber, union sigval userValue,
 	uint32 flags)
@@ -1917,12 +1987,9 @@ send_signal_internal(pid_t id, uint signalNumber, union sigval userValue,
 		return send_signal_to_thread(thread, signal, flags);
 
 	// If id == -1, send the signal to all teams the calling team has permission
-	// to send signals to.
-	if (id == -1) {
-		// TODO: Implement correctly!
-		// currently only send to the current team
-		return send_signal_to_team_id(thread->team->id, signal, flags);
-	}
+	// to send signals to, except the current team.
+	if (id == -1)
+		return send_signal_to_all_teams(thread->team->id, signal, flags);
 
 	// Send a signal to the specified process group (the absolute value of the
 	// id).

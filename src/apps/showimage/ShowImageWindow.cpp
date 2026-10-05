@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2014, Haiku, Inc. All Rights Reserved.
+ * Copyright 2003-2026, Haiku, Inc. All Rights Reserved.
  * Copyright 2004-2005 yellowTAB GmbH. All Rights Reserverd.
  * Copyright 2006 Bernd Korz. All Rights Reserved
  * Distributed under the terms of the MIT License.
@@ -12,6 +12,7 @@
  *		Bernd Korz
  *		Axel Dörfler, axeld@pinc-software.de
  *		Stephan Aßmus <superstippi@gmx.de>
+ *		Philippe Houdoin
  */
 
 
@@ -54,7 +55,6 @@
 #include <posix/locale.h>
 
 #include "ImageCache.h"
-#include "ProgressWindow.h"
 #include "ShowImageApp.h"
 #include "ShowImageConstants.h"
 #include "ShowImageStatusView.h"
@@ -67,8 +67,8 @@
 const char* kTypeField = "be:type";
 const char* kTranslatorField = "be:translator";
 
-const bigtime_t kDefaultSlideShowDelay = 3000000;
-	// 3 seconds
+const bigtime_t kDefaultSlideShowDelay = 3000000; // 3 seconds
+const bigtime_t kQuietLoadingDelay = 200000; // 200ms
 
 
 // message constants
@@ -105,8 +105,10 @@ enum {
 	kMsgStretchToWindow			= 'mStW',
 	kMsgNextSlide				= 'mNxS',
 	kMsgToggleToolBar			= 'mTTB',
+	kMsgToggleBoundariesMarks	= 'mTBM',
 	kMsgSlideToolBar			= 'mSTB',
-	kMsgFinishSlidingToolBar	= 'mFST'
+	kMsgFinishSlidingToolBar	= 'mFST',
+	kMsgShowLoadingProgress		= 'mSLP'
 };
 
 
@@ -120,7 +122,7 @@ enum {
 ShowImageWindow::ShowImageWindow(BRect frame, const entry_ref& ref,
 	const BMessenger& trackerMessenger)
 	:
-	BWindow(frame, "", B_DOCUMENT_WINDOW, 0),
+	BWindow(frame, kApplicationName, B_DOCUMENT_WINDOW, 0),
 	fNavigator(ref, trackerMessenger),
 	fSavePanel(NULL),
 	fBar(NULL),
@@ -130,14 +132,15 @@ ShowImageWindow::ShowImageWindow(BRect frame, const entry_ref& ref,
 	fToolBar(NULL),
 	fImageView(NULL),
 	fStatusView(NULL),
-	fProgressWindow(new ProgressWindow()),
 	fModified(false),
 	fFullScreen(false),
 	fShowCaption(true),
 	fShowToolBar(true),
+	fShowBoundariesMarks(false),
 	fPrintSettings(NULL),
 	fSlideShowRunner(NULL),
-	fSlideShowDelay(kDefaultSlideShowDelay)
+	fSlideShowDelay(kDefaultSlideShowDelay),
+	fQuietLoadRunner(NULL)
 {
 	_ApplySettings();
 
@@ -229,6 +232,8 @@ ShowImageWindow::ShowImageWindow(BRect frame, const entry_ref& ref,
 	fImageView->SetExplicitMinSize(BSize(0, 0));
 	gridLayout->AddView(fImageView, 0, 0, 2, 1);
 
+	fImageView->EnableBoundariesMarks(fShowBoundariesMarks);
+
 	// create the scroll bars (wrapped to avoid double borders)
 	fVScrollBar = new BScrollBar(NULL, NULL, 0, 0, B_VERTICAL); {
 		BGroupView* vScrollBarContainer = new BGroupView(B_VERTICAL, 0);
@@ -238,7 +243,7 @@ ShowImageWindow::ShowImageWindow(BRect frame, const entry_ref& ref,
 	}
 
 	fHScrollBar = new BScrollBar(NULL, NULL, 0, 0, B_HORIZONTAL); {
-		BGroupView* hScrollBarContainer = new BGroupView(B_VERTICAL, 0);
+		BGroupView* hScrollBarContainer = new BGroupView(B_HORIZONTAL, 0);
 		hScrollBarContainer->GroupLayout()->AddView(fHScrollBar);
 		hScrollBarContainer->GroupLayout()->SetInsets(0, -1, -1, -1);
 		gridLayout->AddView(hScrollBarContainer, 1, 1);
@@ -256,14 +261,6 @@ ShowImageWindow::ShowImageWindow(BRect frame, const entry_ref& ref,
 	float toolBarMinWidth = fToolBar->MinSize().width;
 	SetSizeLimits(std::max(menuBarMinWidth, toolBarMinWidth), 100000,
 		fBar->MinSize().height + gridLayout->MinSize().height, 100000);
-
-	// finish creating the window
-	status_t status = _LoadImage();
-	if (status != B_OK) {
-		_LoadError(ref, status);
-		Quit();
-		return;
-	}
 
 	// add View menu here so it can access ShowImageView methods
 	BMenu* menu = new BMenu(B_TRANSLATE_CONTEXT("View", "Menus"));
@@ -288,16 +285,20 @@ ShowImageWindow::ShowImageWindow(BRect frame, const entry_ref& ref,
 	// and tell this window if it contains interesting data or not
 	be_app_messenger.SendMessage(B_CLIPBOARD_CHANGED);
 
-	// The window will be shown on screen automatically
+	status_t status = _LoadImage();
+	if (status != B_OK) {
+		_LoadError(ref, status);
+		Quit();
+		return;
+	}
+
+	// The window will show up on screen automatically
 	Run();
 }
 
 
 ShowImageWindow::~ShowImageWindow()
 {
-	fProgressWindow->Lock();
-	fProgressWindow->Quit();
-
 	_StopSlideShow();
 }
 
@@ -361,6 +362,10 @@ ShowImageWindow::_BuildViewMenu(BMenu* menu, bool popupMenu)
 
 	_MarkMenuItem(menu, MSG_SCALE_BILINEAR, fImageView->ScaleBilinear());
 	_MarkMenuItem(menu, kMsgStretchToWindow, fImageView->StretchesToBounds());
+
+	_AddItemMenu(menu, B_TRANSLATE("Show boundaries marks"),
+		kMsgToggleBoundariesMarks, 'M', 0, this);
+	_MarkMenuItem(menu, kMsgToggleBoundariesMarks, fImageView->IsBoundariesMarksEnabled());
 
 	if (!popupMenu) {
 		_AddItemMenu(menu, B_TRANSLATE("Show tool bar"), kMsgToggleToolBar,
@@ -638,8 +643,6 @@ ShowImageWindow::MessageReceived(BMessage* message)
 	switch (message->what) {
 		case kMsgImageCacheImageLoaded:
 		{
-			fProgressWindow->Stop();
-
 			BitmapOwner* bitmapOwner = NULL;
 			message->FindPointer("bitmapOwner", (void**)&bitmapOwner);
 
@@ -661,6 +664,11 @@ ShowImageWindow::MessageReceived(BMessage* message)
 					bitmapOwner->ReleaseReference();
 				break;
 			}
+
+			// image loading done
+			delete fQuietLoadRunner;
+			fQuietLoadRunner = NULL;
+			fStatusView->SetBusy(false);
 
 			status_t status = fImageView->SetImage(message);
 			if (status != B_OK) {
@@ -696,12 +704,24 @@ ShowImageWindow::MessageReceived(BMessage* message)
 
 		case kMsgImageCacheProgressUpdate:
 		{
-			entry_ref ref;
-			if (message->FindRef("ref", &ref) == B_OK
-				&& ref == fNavigator.CurrentRef()) {
-				message->what = kMsgProgressUpdate;
-				fProgressWindow->PostMessage(message);
+			_LoadProgressUpdate(message);
+			break;
+		}
+
+		case kMsgShowLoadingProgress:
+		{
+			delete fQuietLoadRunner;
+			fQuietLoadRunner = NULL;
+
+			if (fImageView->Bitmap() == NULL) {
+				// first image still loading, show window now
+				// so user can see loading progress status
+				Show();
+				BPath path(&fNavigator.CurrentRef());
+				SetTitle(path.Path());
 			}
+			// long image loading, show progress status
+			fStatusView->SetBusy();
 			break;
 		}
 
@@ -1085,6 +1105,20 @@ ShowImageWindow::MessageReceived(BMessage* message)
 			}
 			break;
 		}
+
+		case kMsgToggleBoundariesMarks:
+		{
+			fShowBoundariesMarks = _ToggleMenuItem(message->what);
+			fImageView->EnableBoundariesMarks(fShowBoundariesMarks);
+
+			ShowImageSettings* settings = my_app->Settings();
+			if (settings->Lock()) {
+				settings->SetBool("ShowBoundariesMarks", fShowBoundariesMarks);
+				settings->Unlock();
+			}
+			break;
+		}
+
 		case kShowToolBarIfEnabled:
 		{
 			bool show;
@@ -1093,6 +1127,7 @@ ShowImageWindow::MessageReceived(BMessage* message)
 			_SetToolBarVisible(fShowToolBar && show, true);
 			break;
 		}
+
 		case kMsgSlideToolBar:
 		{
 			float offset;
@@ -1105,6 +1140,7 @@ ShowImageWindow::MessageReceived(BMessage* message)
 			}
 			break;
 		}
+
 		case kMsgFinishSlidingToolBar:
 		{
 			float offset;
@@ -1170,7 +1206,7 @@ ShowImageWindow::_LoadError(const entry_ref& ref, status_t status)
 	locale_t locale = newlocale(LC_ALL_MASK, "", 0);
 	const char* errorMessage = strerror_l(status, locale);
 	freelocale(locale);
-	BAlert* alert = new BAlert(B_TRANSLATE_SYSTEM_NAME("ShowImage"), errorMessage,
+	BAlert* alert = new BAlert(kApplicationName, errorMessage,
 		B_TRANSLATE_CONTEXT("OK", "Alerts"), NULL, NULL,
 		B_WIDTH_AS_USUAL, B_STOP_ALERT);
 	alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);
@@ -1330,7 +1366,11 @@ ShowImageWindow::_LoadImage(bool forward)
 	if (status != B_OK)
 		return status;
 
-	fProgressWindow->Start(this);
+	// start of quiet loading phase
+	// fire a runner to show load progress if it take too long time
+	fStatusView->SetBusyText("Loading...");
+	fQuietLoadRunner
+		= new BMessageRunner(this, new BMessage(kMsgShowLoadingProgress), kQuietLoadingDelay, 1);
 
 	// Preload previous/next images - two in the navigation direction, one
 	// in the opposite direction.
@@ -1355,6 +1395,29 @@ ShowImageWindow::_PreloadImage(bool forward, entry_ref& ref)
 		return false;
 
 	return my_app->DefaultCache().RetrieveImage(ref) == B_OK;
+}
+
+
+void
+ShowImageWindow::_LoadProgressUpdate(const BMessage* message)
+{
+	entry_ref ref;
+	if (message->FindRef("ref", &ref) != B_OK || ref != fNavigator.CurrentRef()) {
+		// not the current image, ignore
+		return;
+	}
+
+	float percent;
+	const char* text = NULL;
+
+	bool hasPercent = message->FindFloat("percent", &percent) == B_OK;
+	message->FindString("message", &text);
+
+	if (text)
+		fStatusView->SetBusyText(BString(text));
+
+	if (hasPercent)
+		fStatusView->SetBusyProgress(percent / 100.0f);
 }
 
 
@@ -1390,6 +1453,7 @@ ShowImageWindow::_ToggleFullScreen()
 
 	fImageView->SetHideIdlingCursor(fFullScreen);
 	fImageView->SetShowCaption(fFullScreen && fShowCaption);
+	fImageView->SetNoBackground(fFullScreen && fSlideShowRunner != NULL);
 
 	Layout(false);
 		// We need to manually relayout here, as the views are layouted
@@ -1420,6 +1484,8 @@ ShowImageWindow::_ApplySettings()
 			settings->GetFloat("PO:Height", fPrintOptions.Height()));
 
 		fShowToolBar = settings->GetBool("ShowToolBar", fShowToolBar);
+
+		fShowBoundariesMarks = settings->GetBool("ShowBoundariesMarks", fShowBoundariesMarks);
 
 		settings->Unlock();
 	}

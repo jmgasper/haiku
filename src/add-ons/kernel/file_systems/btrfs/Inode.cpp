@@ -11,6 +11,7 @@
 #include "CachedBlock.h"
 #include "CRCTable.h"
 #include "Utility.h"
+#include <zlib.h>
 #ifdef ZSTD_ENABLED
 #include <zstd.h>
 #endif
@@ -259,7 +260,7 @@ Inode::ReadAt(off_t pos, uint8* buffer, size_t* _length)
 		TRACE("inode %" B_PRIdINO ": ReadAt cache (pos %" B_PRIdOFF ", length %lu)\n",
 			ID(), pos, length);
 		if (compression == BTRFS_EXTENT_COMPRESS_NONE)
-			return file_cache_read(FileCache(), NULL, pos, buffer, _length);
+			return file_cache_read(FileCache(), pos, buffer, _length);
 		else if (compression == BTRFS_EXTENT_COMPRESS_ZLIB
 			|| compression == BTRFS_EXTENT_COMPRESS_ZSTD) {
 			panic("compression type %d not supported for regular extent\n", compression);

@@ -1,4 +1,4 @@
-1	bokmål, norwegian; norwegian bokmål	x-vnd.Haiku-HaikuDepot	2935349206
+1	bokmål, norwegian; norwegian bokmål	x-vnd.Haiku-HaikuDepot	3697363706
 Usage conditions download problem	ToLatestUserUsageConditionsWindow		Problem med nedlasting av bruksbetingelser
 Available packages	MainWindow		Tilgjengelige pakker
 It was not possible to create the new user.	UserLoginWindow		Det var ikke mulig å opprette brukeren.
@@ -118,14 +118,13 @@ Uninstalled	PackageListView		Avinstallert
 I agree to the usage conditions	ToLatestUserUsageConditionsWindow		Jeg godtar bruksbetingelsene
 Installing \"%PackageName%\"	InstallPackageProcess		Installerer \"%PackageName%\"
 OK	App		OK
-Fatal error	UninstallPackageAction		Fatal feil
 Develop packages	MainWindow		Utviklerpakker
 Starting the package daemon failed:\n\n%Error%	App		Kunne ikke starte pakke-daemonen:\n\n%Error%
 No user ratings available.	PackageInfoView		Ingen brukervurderinger tilgjengelig.
 <no info>	PackageInfoView		<ingen info>
 Usage conditions download problem	UserUsageConditions		Problem med nedlasting av bruksbetingelser
-An error has arisen downloading the password requirements required to create a new user. Check the log for details and try again. \nInformation about how to view the logs is available in the HaikuDepot section of the Haiku User Guide.	UserLoginWindow		Det har oppstått en feil ved nedlasting av passordkravene som kreves for å opprette en ny bruker. Sjekk loggen for detaljer og prøv igjen.\nInformasjon om hvordan du viser loggene er tilgjengelig i HaikuDepot-delen av Haiku-brukerveiledningen.
 Fetching screenshot	CacheScreenshotProcess		Henter skjermdump
+An error has arisen downloading the password requirements required to create a new user. Check the log for details and try again. \nInformation about how to view the logs is available in the HaikuDepot section of the Haiku User Guide.	UserLoginWindow		Det har oppstått en feil ved nedlasting av passordkravene som kreves for å opprette en ny bruker. Sjekk loggen for detaljer og prøv igjen.\nInformasjon om hvordan du viser loggene er tilgjengelig i HaikuDepot-delen av Haiku-brukerveiledningen.
 A network transport error has arisen communicating with the server system: %s	ServerHelper		En nettverkstransportfeil har oppstått under kommunikasjon med serversystemet: %s
 Rating	PackageListView		Vurdering
 Synchronizing icons	ServerIconExportUpdateProcess		Synkroniserer ikoner
@@ -197,7 +196,6 @@ The password previously supplied for the user [%Nickname%] is not currently vali
 View the usage conditions	ToLatestUserUsageConditionsWindow		Vis bruksvilkår
 OK	ServerHelper		OK
 Reading repository data	LocalPkgDataLoadProcess		Leser programarkiv-data
-Fatal error	InstallPackageProcess		Fatal feil
 A validation error has occurred	ServerHelper		Det har oppstått en valideringsfeil
 The nickname is required.	UserLoginWindow		Brukernavn er påkrevet.
 -	no package size		-

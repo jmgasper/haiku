@@ -318,7 +318,9 @@ virtio_block_uninit_device(void* _cookie)
 	virtio_block_driver_info* info = (virtio_block_driver_info*)_cookie;
 
 	delete info->io_scheduler;
+	info->io_scheduler = NULL;
 	delete info->dma_resource;
+	info->dma_resource = NULL;
 }
 
 
@@ -598,6 +600,10 @@ virtio_block_uninit_driver(void *_cookie)
 {
 	CALLED();
 	virtio_block_driver_info* info = (virtio_block_driver_info*)_cookie;
+	// Device manager skips uninit_device unless init_device set
+	// *_cookie (after config read / alloc_queues). Same if
+	// create_id or publish_device fails after init_driver.
+	virtio_block_uninit_device(info);
 	mutex_destroy(&info->lock);
 	delete_area(info->bufferArea);
 	free(info);
@@ -621,7 +627,8 @@ virtio_block_register_child_devices(void* _cookie)
 
 	status = sDeviceManager->publish_device(info->node, name,
 		VIRTIO_BLOCK_DEVICE_MODULE_NAME);
-
+	if (status != B_OK)
+		sDeviceManager->free_id(VIRTIO_BLOCK_DEVICE_ID_GENERATOR, id);
 	return status;
 }
 

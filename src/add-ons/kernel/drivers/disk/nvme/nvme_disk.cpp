@@ -1133,6 +1133,27 @@ nvme_disk_trim(nvme_disk_driver_info* info, fs_trim_data* trimData)
 }
 
 
+/*!	Copies a space-padded, not necessarily terminated string from the
+	controller's identify data (model or serial number) to a user buffer.
+*/
+static status_t
+copy_identify_string(void* buffer, size_t length, const int8_t* field,
+	size_t fieldLength)
+{
+	while (fieldLength > 0 && (field[fieldLength - 1] == ' '
+			|| field[fieldLength - 1] == '\0'))
+		fieldLength--;
+
+	char string[NVME_MODEL_NUMBER_CHARACTERS + 1];
+	fieldLength = min_c(fieldLength, sizeof(string) - 1);
+	memcpy(string, field, fieldLength);
+	string[fieldLength] = '\0';
+
+	status_t status = user_strlcpy((char*)buffer, string, length);
+	return status < B_OK ? status : B_OK;
+}
+
+
 static status_t
 nvme_disk_ioctl(void* cookie, uint32 op, void* buffer, size_t length)
 {
@@ -1169,17 +1190,14 @@ nvme_disk_ioctl(void* cookie, uint32 op, void* buffer, size_t length)
 
 		case B_GET_DEVICE_NAME:
 		{
-			// the controller's model number, padded with spaces
-			const int8_t* model = info->ctrlr->cdata.mn;
-			size_t modelLength = NVME_MODEL_NUMBER_CHARACTERS;
-			while (modelLength > 0 && (model[modelLength - 1] == ' '
-					|| model[modelLength - 1] == '\0'))
-				modelLength--;
-			char name[NVME_MODEL_NUMBER_CHARACTERS + 1];
-			memcpy(name, model, modelLength);
-			name[modelLength] = '\0';
-			status_t status = user_strlcpy((char*)buffer, name, length);
-			return status < B_OK ? status : B_OK;
+			return copy_identify_string(buffer, length, info->ctrlr->cdata.mn,
+				NVME_MODEL_NUMBER_CHARACTERS);
+		}
+
+		case B_GET_DEVICE_SERIAL_NUMBER:
+		{
+			return copy_identify_string(buffer, length, info->ctrlr->cdata.sn,
+				NVME_SERIAL_NUMBER_CHARACTERS);
 		}
 
 		case B_GET_ICON_NAME:
@@ -1347,7 +1365,8 @@ nvme_disk_register_child_devices(void* _cookie)
 
 	status = sDeviceManager->publish_device(info->node, name,
 		NVME_DISK_DEVICE_MODULE_NAME);
-
+	if (status != B_OK)
+		sDeviceManager->free_id(NVME_DISK_DEVICE_ID_GENERATOR, id);
 	return status;
 }
 

@@ -298,7 +298,7 @@ status_t
 virtio_gpu_detach_backing(virtio_gpu_driver_info* info, int resourceId)
 {
 	CALLED();
-	struct virtio_gpu_resource_detach_backing backing;
+	struct virtio_gpu_resource_detach_backing backing = {};
 	struct virtio_gpu_ctrl_hdr response = {};
 
 	backing.hdr.type = VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING;
@@ -457,6 +457,7 @@ virtio_gpu_set_display_mode(virtio_gpu_driver_info* info, display_mode *mode)
 		sharedInfo.current_mode.virtual_width = info->displayWidth;
 		sharedInfo.current_mode.virtual_height = info->displayHeight;
 		sharedInfo.current_mode.space = B_RGB32;
+		sharedInfo.current_mode.timing = mode->timing;
 	}
 
 	return B_OK;
@@ -529,6 +530,7 @@ virtio_gpu_init_device(void* _info, void** _cookie)
 	return B_OK;
 
 err3:
+	mutex_destroy(&info->commandLock);
 err2:
 	delete_area(info->commandArea);
 err1:
@@ -565,6 +567,9 @@ virtio_gpu_open(void* _info, const char* path, int openMode, void** _cookie)
 		sizeof(virtio_gpu_handle));
 	if (handle == NULL)
 		return B_NO_MEMORY;
+
+	info->sharedArea = -1;
+	info->framebufferArea = -1;
 
 	info->commandDone = create_sem(1, "virtio_gpu_command");
 	if (info->commandDone < B_OK)
@@ -640,6 +645,8 @@ virtio_gpu_open(void* _info, const char* path, int openMode, void** _cookie)
 error:
 	delete_area(info->framebufferArea);
 	info->framebufferArea = -1;
+	delete_area(info->sharedArea);
+	info->sharedArea = -1;
 	delete_sem(info->commandDone);
 	info->commandDone = -1;
 	free(handle);
@@ -673,6 +680,10 @@ virtio_gpu_free(void* cookie)
 	wait_for_thread(info->updateThread, &result);
 	info->updateThread = -1;
 	virtio_gpu_drain_queues(info);
+	delete_area(info->framebufferArea);
+	info->framebufferArea = -1;
+	delete_area(info->sharedArea);
+	info->sharedArea = -1;
 	free(handle);
 	return B_OK;
 }
@@ -805,6 +816,9 @@ virtio_gpu_init_driver(device_node* node, void** cookie)
 
 	memset(info, 0, sizeof(*info));
 
+	info->framebufferArea = -1;
+	info->sharedArea = -1;
+
 	info->node = node;
 
 	*cookie = info;
@@ -838,7 +852,8 @@ virtio_gpu_register_child_devices(void* _cookie)
 
 	status = sDeviceManager->publish_device(info->node, name,
 		VIRTIO_GPU_DEVICE_MODULE_NAME);
-
+	if (status != B_OK)
+		sDeviceManager->free_id(VIRTIO_GPU_DEVICE_ID_GENERATOR, id);
 	return status;
 }
 

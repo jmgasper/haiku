@@ -1,4 +1,4 @@
-1	greek, modern (1453-)	x-vnd.Haiku-HaikuDepot	1478243293
+1	greek, modern (1453-)	x-vnd.Haiku-HaikuDepot	2240257793
 Usage conditions download problem	ToLatestUserUsageConditionsWindow		Σφάλμα λήψης όρων χρήσης
 Available packages	MainWindow		Διαθέσιμα πακέτα
 It was not possible to create the new user.	UserLoginWindow		Δεν ήταν δυνατή η δημιουργία του νέου χρήστη.
@@ -124,14 +124,13 @@ I agree to the usage conditions	ToLatestUserUsageConditionsWindow		Συμφων�
 Installing \"%PackageName%\"	InstallPackageProcess		Εγκαθίσταται το πακέτο \"%PackageName%\"
 Uninstall %PackageTitle%	PackageAction		Απεγκατάσταση %PackageTitle%
 OK	App		Εντάξει
-Fatal error	UninstallPackageAction		Κρίσιμο σφάλμα
 Develop packages	MainWindow		Ανάπτυξη πακέτων
 Starting the package daemon failed:\n\n%Error%	App		Η έναρξη του προγράμματος παρασκηνίου πακέτων απέτυχε:\n\n%Error%
 No user ratings available.	PackageInfoView		Δεν υπάρχουν διαθέσιμες αξιολογήσεις χρήστη.
 <no info>	PackageInfoView		<καμία πληροφορία>
 Usage conditions download problem	UserUsageConditions		Σφάλμα λήψης όρων χρήσης
-An error has arisen downloading the password requirements required to create a new user. Check the log for details and try again. \nInformation about how to view the logs is available in the HaikuDepot section of the Haiku User Guide.	UserLoginWindow		Προέκυψε ένα σφάλμα κατά τη λήψη των απαιτήσεων κωδικού πρόσβασης που απαιτούνται για τη δημιουργία νέου χρήστη. Ελέγξτε το αρχείο καταγραφής για λεπτομέρειες και δοκιμάστε ξανά. \nΠληροφορίες σχετικά με τον τρόπο προβολής των αρχείων καταγραφής είναι διαθέσιμες στην ενότητα HaikuDepot του Οδηγού χρήσης Haiku.
 Fetching screenshot	CacheScreenshotProcess		Λήψη στιγμιοτύπου σε εξέλιξη
+An error has arisen downloading the password requirements required to create a new user. Check the log for details and try again. \nInformation about how to view the logs is available in the HaikuDepot section of the Haiku User Guide.	UserLoginWindow		Προέκυψε ένα σφάλμα κατά τη λήψη των απαιτήσεων κωδικού πρόσβασης που απαιτούνται για τη δημιουργία νέου χρήστη. Ελέγξτε το αρχείο καταγραφής για λεπτομέρειες και δοκιμάστε ξανά. \nΠληροφορίες σχετικά με τον τρόπο προβολής των αρχείων καταγραφής είναι διαθέσιμες στην ενότητα HaikuDepot του Οδηγού χρήσης Haiku.
 A network transport error has arisen communicating with the server system: %s	ServerHelper		Ένα δικτυακό σφάλμα μεταφοράς προέκυψε κατά την επικοινωνία με τον εξυπηρετητή: %s
 Rating	PackageListView		Αξιολόγηση
 Synchronizing icons	ServerIconExportUpdateProcess		Γίνεται συγχρονισμός εικονιδίων
@@ -205,7 +204,6 @@ The password previously supplied for the user [%Nickname%] is not currently vali
 View the usage conditions	ToLatestUserUsageConditionsWindow		Προβολή των όρων χρήσης
 OK	ServerHelper		Εντάξει
 Reading repository data	LocalPkgDataLoadProcess		Ανάγνωση δεδομένων αποθετηρίου
-Fatal error	InstallPackageProcess		Κρίσιμο σφάλμα
 A validation error has occurred	ServerHelper		Προέκυψε σφάλμα επικύρωσης
 %Appname% communicates with a server component called HaikuDepotServer. These are the latest usage conditions for use of the HaikuDepotServer service.	UserUsageConditions		Η εφαρμογή %Appname% επικοινωνεί με ένα λογισμικό διακομιστή ονόματι HaikuDepotServer. Ακολουθούν οι πλέον πρόσφατοι όροι χρήσης της υπηρεσίας HaikuDepotServer.
 The nickname is required.	UserLoginWindow		Απαιτείται ψευδώνυμο.
