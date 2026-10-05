@@ -1,0 +1,15 @@
+#!/bin/sh
+# air/OS: run at every start by the boot script.
+
+# What the user put in ~/config/settings/boot/launch.
+for file in "$HOME"/config/settings/boot/launch/*; do
+	[ -e "$file" ] && /bin/open "$file" &
+done
+
+# Join a remembered Wi-Fi network once the adapter and net_server are ready;
+# net_server only does that by itself after a scan someone asked for.
+if [ ! -e "$HOME/config/settings/boot/launch/wifiautojoin" ]; then
+	wifi_autojoin=/boot/home/config/non-packaged/bin/wifiautojoin
+	[ -x "$wifi_autojoin" ] || wifi_autojoin=/boot/system/bin/wifiautojoin
+	[ -x "$wifi_autojoin" ] && "$wifi_autojoin" > /dev/dprintf 2>&1 &
+fi
