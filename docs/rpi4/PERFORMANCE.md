@@ -615,3 +615,45 @@ the new resource; its SHA-256 is
 It passes the 48-case readback probe and four patterned full-HD rounds
 (`final-mesa-native.txt`). The complete `hrev60097+660+dirty` image reaches
 the branded QEMU desktop (`final-full-build.log`, `qemu.png`).
+
+## ARM64 user memory fills
+
+The user library and runtime loader now use the Arm optimized `memset`
+from the same pinned revision as the copy routines. The upstream instruction
+sequence is unchanged; only symbol macros, unwind annotations and the stack
+note are adapted. Advanced SIMD is already enabled for user threads. The
+zero-fill path checks DCZID_EL0, including its prohibition bit, before using
+64-byte DC ZVA. Kernel memory fills retain the separate scalar implementation.
+
+On the Pi, `rpi4_memory_set_probe` passes 497,300 checks covering ten input
+values (including integer truncation), 64 alignments, exact boundaries,
+canaries and inaccessible guard pages. `--graphics` additionally passes
+8,192 cases on real write-combining and write-back V3D allocations. The
+isolated candidate libroot passes the same checks, all 50 loader cases and
+all four view-visibility checks. The full image boots to the branded desktop
+in QEMU, exercising the new runtime-loader implementation too.
+
+The native ABBA microbenchmark calls the installed and candidate entry points
+through function pointers. Representative mean throughput in MB/s:
+
+| Bytes / value / alignment | Installed scalar | Candidate |
+| --- | ---: | ---: |
+| 32 / nonzero / +3 | 727 | 3,933 |
+| 128 / nonzero / aligned | 3,804 | 10,644 |
+| 1,024 / zero / aligned | 5,338 | 16,027 |
+| 4,096 / nonzero / aligned | 5,815 | 11,640 |
+| 1 MiB / nonzero / aligned | 5,149 | 6,344 |
+| 8 MiB / nonzero / aligned | 2,688 | 2,724 |
+
+These are memory-operation results, not whole-application speedups. Warm
+StyledEdit launch remains around 119–124 ms. Evidence is in `memset/` under
+the performance evidence directory: `native.txt`, `graphics.txt`,
+`libroot-native.txt`, `full-build.log`, and `qemu.{log,png}`.
+
+The preceding integrated native build (+660) also passes all 50 loader
+cases, the 48 GPU readback combinations, full-HD depth/triangle pixels,
+Vulkan clear/triangle pixels, 1,506 SAND conversions and both TCP regression
+harnesses. Its global WebKit 12 engine passes the browser smoke fixture.
+See `gpu-readback/native-660-{install,startup,acceptance}.txt`. The recorded
+5.109-second first-tile launch used a fresh browser profile; it is not an
+A/B comparison with the earlier persistent-profile startup measurements.

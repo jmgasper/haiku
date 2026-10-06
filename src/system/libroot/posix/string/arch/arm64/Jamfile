@@ -14,7 +14,7 @@ for architectureObject in [ MultiArchSubDirSetup arm64 ] {
 
 		MergeObject <$(architecture)>posix_string_arch_$(TARGET_ARCH).o :
 			arm64_memcpy.S
-			generic_memset.c
+			arm64_memset.S
 			;
 	}
 }
