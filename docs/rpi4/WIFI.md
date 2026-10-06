@@ -124,6 +124,23 @@ so later join/leave requests can remain queued. This is a separate recovery
 obstacle; it does not establish the cause of the original WPA handshake
 timeout. Simply adding retries to the startup helper would not address it.
 
+After the final endurance run, clicking Cancel on that dialog lets the queued
+requests proceed. The second five-second status sample shows the saved WPA2
+network associated with DHCP, and it stays connected for the rest of the
+40-second observation. No password change or new join command was sent.
+This confirms a recovery path on this boot; it does not fix startup or prove
+that all association failures have the same cause. Evidence:
+`release/post-soak-wifi-dialog.jpg` and `wifi-after-dialog-cancel.txt`.
+
+The clean boot after removing the telemetry module also misses autojoin.
+After dismissing its error dialog, a fresh invocation of the normal packaged
+helper joins successfully with the saved credentials and obtains DHCP.
+The final device is left connected over both Wi-Fi and Ethernet. In the
+final image's three cold boots with saved credentials, one autojoins and
+two need recovery; this small sample is not an estimate of the general
+failure rate. See `release/cold-boot-4.txt`, `wifi-boot-4-recovery.txt` and
+`final-wifi-connected.jpg`.
+
 The OpenBSD compatibility layer now exports Broadcom's absolute RSSI as
 FreeBSD-format half-dB units over a -100 dBm reference floor. Previously a
 negative dBm byte wrapped into an unsigned RSSI, so the custom Wi-Fi tool

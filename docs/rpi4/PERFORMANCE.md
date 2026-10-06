@@ -914,6 +914,8 @@ resources that were successfully created. This change reserves about 4 MiB
 of shared GPU state for the machine's lifetime; it does not retain client
 rendering allocations or fix the HEVC driver's separate contiguous-buffer
 constraint.
+The shared hardware remains initialized between clients; idle power was not
+compared in this work.
 
 On the old driver, the lifetime probe fails after the last close because
 no page table remains. Over 100 open/ioctl/close cycles its median is
@@ -1063,3 +1065,43 @@ The first 8 MiB of the thumb drive hash identically on both, without any
 write. The separate physical mouse appears in neither enumeration; KVM
 input passes. Evidence: `apps-check.txt`, preferences screenshots,
 `network-{wifi,ethernet}.txt`, `wifi-ui-joined.jpg`, and `usb-*.txt`.
+
+### Final-image endurance
+
+The installed production build passes 168 combined GLES/Vulkan rounds over
+3,659 seconds, alongside three Zstandard workers completing 10,775, 10,395
+and 10,510 randomized checks (31,680 total). A persistent 1080p10 HEVC
+decoder completes 645 rounds / 38,700 frames over 3,661.079 seconds;
+every 60-frame round has the expected FNV hash `f4b657343670d5f6`. All workers
+exit successfully. This is a combined-load correctness test, not a claim of
+30 FPS playback while three CPU stress workers and graphics probes run.
+
+Peak sampled temperature is 74.950 C. Every sampled firmware throttle value
+is zero. Swap is entirely free at every progress sample and after the run.
+The final free-memory reading is 3,806,687,232 bytes. The serial interval
+contains no kernel panic, GPU timeout or HEVC allocation failure.
+
+Unlike the earlier clock test, this harness holds no extra GPU descriptor:
+each graphics process closes its contexts normally, leaving hardware
+retention to the packaged driver. A further 100 lifetime rounds after the
+test retain the original page table and leave zero client buffers. The
+decoder deliberately reuses its picture allocations. This does not fix or
+retest the separate repeated-HEVC-allocation failure under fragmentation.
+
+Firmware telemetry uses a temporary lab-only `rpi_property` module, which
+is intentionally excluded from the image. No production driver or library
+override is used. Its cleanup and the final clean boot are recorded in
+`STATUS.md`. Evidence: `final-soak-summary.json`, `final-soak-complete.txt`,
+`final-decoder-complete.txt`, `final-soak-cpu-{7,101,1009}.txt`,
+`final-soak-memory.txt`, `soak-progress-*.txt` and `serial-{1,2}.{log,jsonl}`.
+
+After the load ends, another five launches per app give warm-window medians
+of 105.769 ms for StyledEdit, 278.711 ms for AirPins and 332.284 ms for Natter.
+The GPU again retains its original table with zero client buffers after
+100 further lifetime rounds (`post-soak-apps.{txt,json}`).
+
+Clicking Cancel on the Wi-Fi error dialog releases the queued requests;
+the saved network is associated with DHCP by the second five-second status
+sample, without changing credentials or issuing another join. The subsequent
+clean cold boot nevertheless reproduces the startup failure. This confirms
+the dialog recovery obstacle and leaves the initial handshake timeout open.
