@@ -478,5 +478,8 @@ at 52.67 FPS with a 21 ms 95th-percentile interval in one 30-second check.
 `listimage` confirms the system WebKit and Mesa libraries. This is a
 combined-system check, not an isolated attribution of the difference from
 the earlier cached-texture runs (`gpu-default-656-apps.txt`). The attempted
-Natter launch benchmark in that file declines to disturb an already running
-instance and is not a launch measurement.
+Natter launch benchmark in that file names its containing directory, so the
+roster reports Tracker already running; it is not a Natter measurement.
+Using the executable `/boot/system/apps/Natter/Natter`, Natter opens and
+answers its looper in 939 ms (`utile/native-results.txt`). The benchmark now
+rejects directory arguments before asking the roster to launch them.

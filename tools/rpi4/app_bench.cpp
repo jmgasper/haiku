@@ -46,6 +46,11 @@ main(int argc, char** argv)
 		return 2;
 	}
 	BApplication application("application/x-vnd.airOS-app-bench");
+	BEntry entry(argv[2], true);
+	if (!entry.IsFile()) {
+		fprintf(stderr, "%s: expected an application file\n", argv[2]);
+		return 1;
+	}
 	entry_ref ref;
 	status_t status = get_ref_for_path(argv[2], &ref);
 	if (status != B_OK) {
