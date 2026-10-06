@@ -11,8 +11,9 @@ Raw evidence belongs outside Git in
 `/mnt/HaikuWork/rpi4/evidence/performance-20261006`. That directory also
 preserves the starting image and boot archive. The board initially ran
 kernel `hrev60097+639` and Summit packages `1.10.0-10` / `git20261005-2`.
-Ethernet currently uses `192.168.1.214`; recovery's recorded address is
-`192.168.1.209`. Check DHCP rather than assuming either is permanent.
+Ethernet and Alpine recovery currently use `192.168.1.214`; the older
+recorded recovery address was `.209`. Check DHCP rather than assuming
+either is permanent.
 
 - `jam rpi4_app_bench` builds the GUI launch probe.
   `rpi4_app_bench 5 /boot/system/apps/StyledEdit` measures elapsed time
@@ -330,3 +331,68 @@ The full `rpi4-airos` image builds and reaches the branded desktop in QEMU
 with the TCP change (`tcp-fix-profile-build.log`,
 `tcp-fix-profile-qemu.*`). The final harness rerun also passes all 320
 cases (`tcp-spawn-final.txt`).
+
+The installed `hrev60097+654+dirty` kernel then completed a normal reboot
+and a reboot under connection churn. Two host workers repeatedly opened
+and closed TCP port 23 for 70 seconds, crossing shutdown and startup:
+260 connections completed, with refusals/timeouts during the reboot and
+no kernel panic. Evidence: `tcp-fix-654-first-boot.*`,
+`tcp-fix-654-reboot-churn.*`, `tcp-reboot-churn-client.txt`.
+
+## Cached tiled textures
+
+An opt-in V3D buffer protocol adds explicit CPU/GPU ownership for Normal-WB
+allocations. Mesa uses it only for tiled textures, excluding persistent and
+coherent mappings; ordinary buffers and Vulkan retain their previous type.
+Every CPU interval waits for the last GPU job. Read intervals invalidate,
+write intervals additionally mark dirty, and submission cleans dirty lines.
+All aliases share the memory type and whole-page allocations avoid sharing
+cache lines with unrelated objects. Capability version 2 adds read-only
+intervals; old kernels cause Mesa to keep its existing allocation path.
+
+On native kernels +653/+654, the direct TFU probe passes 64 alternating
+read/write/GPU cycles. The texture probe passes 200 small and 100 full-HD
+rounds, checking every byte after uploads, repeated maps, overlapping
+subimage updates, GPU draws, narrow-band reads, and PBO readback. Vulkan's
+headless clear and triangle remain pixel-exact. The full-HD run took
+73.673 seconds. Evidence: `v3d-cache2-native.txt`,
+`v3d-cache2-full-size.txt`.
+
+With the same isolated Mesa library and installed WebKit 1.10.0-11, a
+1024x768 WebGL animation in a fixed 1150x940 window gave these 30-second
+measurements after five seconds of warm-up:
+
+| Texture mapping | FPS | 95th percentile frame interval, ms |
+| --- | ---: | ---: |
+| Existing, first run | 31.41 | 33 |
+| Cached, first run | 49.08 | 22 |
+| Cached, second run | 49.75 | 21 |
+| Existing, second run | 31.39 | 33 |
+
+`listimage` confirms the intended Mesa and WebKit libraries in the web
+processes. This is a local workload, not a general WebGL score.
+`v3d-cache2-renderbench-repeat.txt` is the valid alternating comparison;
+the earlier `v3d-cache2-renderbench.txt` includes two failed launches caused
+by a wrong executable path and is not the four-run comparison.
+
+Full-HD client readback falls from a median 55.45 to 39.8 ms; read-only tracking
+keeps the preceding GPU finish near 2 ms instead of the first experiment's
+4.7 ms. Pbuffer readback falls from a median 59.9 to 43.85 ms. A 64-row band
+is slower (about 1.7 to 3.4 ms) because preparing the texture invalidates
+the whole allocation. PBO CPU-copy time stays near 19.6 ms because its
+buffer remains write-combining. Evidence: `v3d-cache2-readback.txt`.
+
+The build script reproduces the isolated tested Mesa library byte for byte
+(SHA-256 `a89890d31d1dfd6f65d3650374247ec8e096519243198c608e9758e81b78a475`).
+The driver and source patches are being retained with the feature default
+off while scrolling and broader application checks are collected.
+
+A content-heavy local page also improves. Four alternating existing/cached/
+cached/existing browser runs each delivered four 80-notch wheel bursts
+(25 ms spacing, alternating down/up) in the same window. All 1,280 events
+were delivered with status zero. Native-view frame counts yield roughly
+23.2–24.2 FPS with existing mapping versus 36.3–39.1 FPS with cached
+textures. These use the frame-counter snapshot taken at completion of each
+burst, excluding the later idle polling gap. The page was in manual mode;
+no requestAnimationFrame auto-scroll ran alongside the wheel test. Evidence:
+`v3d-cache2-scroll.txt`.

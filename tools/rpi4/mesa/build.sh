@@ -19,7 +19,8 @@ mkdir -p "$ROOT"
 [ -d "$ROOT/mesa-25.3.6" ] || cp -a "$BASE/mesa-25.3.6" "$ROOT/"
 
 # A clean copy and an already patched working tree are both supported.
-for patch in mesa-haiku-v3d.patch mesa-haiku-shader-cache.patch; do
+for patch in mesa-haiku-v3d.patch mesa-haiku-shader-cache.patch \
+        mesa-haiku-texture-cache.patch; do
     if patch --batch --dry-run -N -p1 -d "$ROOT/mesa-25.3.6" < "$TOOLS/$patch" >/dev/null 2>&1; then
         patch --batch -N -p1 -d "$ROOT/mesa-25.3.6" < "$TOOLS/$patch"
     elif ! patch --batch --dry-run -R -p1 -d "$ROOT/mesa-25.3.6" < "$TOOLS/$patch" >/dev/null 2>&1; then

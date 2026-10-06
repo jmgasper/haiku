@@ -61,7 +61,19 @@ enum {
 		// signalled without a job
 	V3D_HAIKU_SYNC_TRANSFER,
 		// takes over the state of the sync object named in "seqno"
+	V3D_HAIKU_CPU_PREPARE,
+		// v3d_haiku_handle: wait for GPU ownership, then synchronize for CPU
 };
+
+// Haiku-private capability and allocation flag. Cacheable buffers require
+// CPU_PREPARE before EVERY CPU access interval, including an already mapped
+// buffer. Submission transfers ownership back to the GPU. They must not be
+// used for persistent/coherent mappings or accessed while a job uses them.
+#define V3D_HAIKU_PARAM_CACHEABLE_BO	0x10000
+#define V3D_HAIKU_BO_CACHEABLE		0x80000000u
+// Capability version 2 permits a read-only CPU interval. A zero pad is
+// read/write; CPU writes require that mode before the first store.
+#define V3D_HAIKU_CPU_READ_ONLY		0x1
 
 // v3d_haiku_handle.pad of V3D_HAIKU_SYNC_CREATE: the sync object starts
 // without a job and not signalled (DRM's default; Vulkan relies on it).

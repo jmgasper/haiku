@@ -3,8 +3,7 @@
 `build.sh` builds Mesa 25.3.6 with the `v3d` Gallium driver (and softpipe) for
 Haiku arm64. It sits on the ROCK 5's pinned Mesa port
 (`tools/rock5-itx/mesa`): the same sysroot, cross file, libglvnd and patched
-source, plus `mesa-haiku-v3d.patch` and `mesa-haiku-shader-cache.patch` from
-this directory. The build script applies them to its copy of the source
+source, plus the V3D, shader-cache and texture-cache patches from this directory. The build script applies them to its copy of the source
 under `/mnt/HaikuWork/rpi4/mesa/mesa-25.3.6`, or checks that they are already
 applied. It reconfigures existing builds to pick up changed options.
 
@@ -57,6 +56,31 @@ processes, and a read-only cache location (which disables caching).
 Summit's later compositor shaders fall from roughly 50–78 ms each to
 3–10 ms for cache hits. First page timing varies with which shaders have
 been warmed; see `docs/rpi4/PERFORMANCE.md` and the evidence there.
+
+## Cached texture experiment
+
+`V3D_HAIKU_CACHED_TEXTURES=1` opts tiled Gallium textures into Normal-WB
+memory with explicit CPU/GPU ownership transfers. The default remains off
+while application coverage is being collected. It requires driver capability
+`V3D_HAIKU_PARAM_CACHEABLE_BO >= 2`; an older kernel falls back to the
+existing write-combining allocation. Persistent/coherent resources, ordinary
+buffers and Vulkan allocations keep their existing memory type.
+
+Every CPU map prepares the buffer, even if its virtual address was cached.
+The driver waits for prior GPU work and invalidates CPU lines; writable maps
+also mark the buffer dirty. A job submission cleans dirty CPU lines before
+handing ownership to the GPU. Read-only maps avoid an unnecessary subsequent
+clean. Buffer-cache reuse matches both size and memory type. See the public
+protocol comments in `headers/private/graphics/v3d/v3d_haiku.h`.
+
+`jam rpi4_v3d_probe`, followed by `rpi4_v3d_probe --cached`, exercises the
+capability, TFU transfer and 64 alternating read/write ownership cycles.
+`texture_probe.cpp` checks every pixel after repeated maps, partial writes,
+GPU rendering, narrow-band reads and PBO transfers. Its optional arguments
+are round count, base width and base height (defaults: `40 257 131`). Build
+against the same EGL and GLESv2 libraries as the GL probe. Native pixel and
+application measurements, including the narrow-band readback regression,
+are in `docs/rpi4/PERFORMANCE.md`.
 
 ## Vulkan (v3dv)
 

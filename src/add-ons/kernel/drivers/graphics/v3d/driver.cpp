@@ -38,11 +38,13 @@
 #include <device_manager.h>
 
 #include <condition_variable.h>
+#include <arch/arm64/cache_poc.h>
 #include <kernel.h>
 #include <lock.h>
 #include <rpi_firmware.h>
 #include <team.h>
 #include <util/AutoLock.h>
+#include <util/ThreadAutoLock.h>
 #include <vm/vm.h>
 
 #include <graphics/v3d/v3d_drm.h>
@@ -95,6 +97,9 @@ struct v3d_bo {
 	uint32		pageCount;
 	int32		references;	// handles and jobs
 	uint64		lastJob;
+	bool		cacheable;
+	bool		cpuOwned;
+	bool		cpuDirty;
 };
 
 struct v3d_job {
@@ -305,6 +310,26 @@ make_uncached(area_id area, void* address, size_t size)
 }
 
 
+// Buffers occupy whole pages, so no cache line is shared with another
+// allocation. All clones retain the same Normal-WB memory type. Maintenance
+// by VA reaches the PoC across the Cortex-A72 cluster; DSB completes it
+// before either processor is allowed to use the buffer.
+static void
+sync_buffer_cache(v3d_bo* buffer, bool forCPU)
+{
+	ThreadCPUPinner pinner(thread_get_current_thread());
+	size_t lineSize = arm64_current_data_cache_line_size();
+	for (addr_t line = (addr_t)buffer->address;
+			line < (addr_t)buffer->address + buffer->size; line += lineSize) {
+		if (forCPU)
+			arm64_invalidate_data_cache_line_poc(line);
+		else
+			arm64_clean_invalidate_data_cache_line_poc(line);
+	}
+	memory_full_barrier();
+}
+
+
 static status_t
 mmu_flush(v3d_info* info)
 {
@@ -362,7 +387,8 @@ mmu_enable(v3d_info* info)
 	reference.
 */
 static status_t
-create_buffer(v3d_info* info, size_t size, v3d_bo*& _buffer)
+create_buffer(v3d_info* info, size_t size, v3d_bo*& _buffer,
+	bool cacheable = false)
 {
 	size = ROUNDUP(size, B_PAGE_SIZE);
 	if (size == 0 || size > V3D_MAX_BO_SIZE)
@@ -375,6 +401,9 @@ create_buffer(v3d_info* info, size_t size, v3d_bo*& _buffer)
 	buffer->size = size;
 	buffer->pageCount = size >> V3D_PAGE_SHIFT;
 	buffer->references = 1;
+	buffer->cacheable = cacheable;
+	buffer->cpuOwned = cacheable;
+	buffer->cpuDirty = cacheable;
 
 	// first fit in the address space; page 0 stays unmapped
 	uint32 page = 1;
@@ -422,7 +451,8 @@ create_buffer(v3d_info* info, size_t size, v3d_bo*& _buffer)
 	}
 	memory_full_barrier();
 
-	status_t status = make_uncached(buffer->area, buffer->address, size);
+	status_t status = cacheable ? B_OK
+		: make_uncached(buffer->area, buffer->address, size);
 	if (status != B_OK) {
 		for (uint32 i = 0; i < buffer->pageCount; i++)
 			info->pageTable[buffer->page + i] = 0;
@@ -987,8 +1017,17 @@ submit_job(v3d_file* file, v3d_job* job, const uint32* handles, uint32 count,
 	}
 
 	job->seqno = ++info->submitted;
-	for (uint32 i = 0; i < job->boCount; i++)
-		job->bos[i]->lastJob = job->seqno;
+	for (uint32 i = 0; i < job->boCount; i++) {
+		v3d_bo* bo = job->bos[i];
+		if (bo->cacheable) {
+			if (bo->cpuDirty) {
+				sync_buffer_cache(bo, false);
+				bo->cpuDirty = false;
+			}
+			bo->cpuOwned = false;
+		}
+		bo->lastJob = job->seqno;
+	}
 	for (uint32 i = 0; i < outSyncCount; i++)
 		file->syncs[outSyncs[i] - 1] = job->seqno + 1;
 
@@ -1276,6 +1315,9 @@ get_param(v3d_info* info, drm_v3d_get_param& request)
 		case DRM_V3D_PARAM_SUPPORTS_MULTISYNC_EXT:
 			request.value = 1;
 			break;
+		case V3D_HAIKU_PARAM_CACHEABLE_BO:
+			request.value = 2;
+			break;
 		case DRM_V3D_PARAM_SUPPORTS_PERFMON:
 		case DRM_V3D_PARAM_SUPPORTS_CPU_QUEUE:
 		case DRM_V3D_PARAM_MAX_PERF_COUNTERS:
@@ -1317,6 +1359,8 @@ v3d_control(void* cookie, uint32 op, void* buffer, size_t length)
 			status_t status = copy_in(request, buffer, length);
 			if (status != B_OK)
 				return status;
+			if ((request.flags & ~V3D_HAIKU_BO_CACHEABLE) != 0)
+				return B_BAD_VALUE;
 
 			MutexLocker locker(info->lock);
 
@@ -1337,7 +1381,8 @@ v3d_control(void* cookie, uint32 op, void* buffer, size_t length)
 			}
 
 			v3d_bo* bo;
-			status = create_buffer(info, request.size, bo);
+			status = create_buffer(info, request.size, bo,
+				(request.flags & V3D_HAIKU_BO_CACHEABLE) != 0);
 			if (status != B_OK)
 				return status;
 			file->buffers[index] = bo;
@@ -1412,6 +1457,42 @@ v3d_control(void* cookie, uint32 op, void* buffer, size_t length)
 
 			status = wait_for_job(info, seqno, request.timeout_ns);
 			return status == B_WOULD_BLOCK ? B_TIMED_OUT : status;
+		}
+
+		case V3D_HAIKU_CPU_PREPARE:
+		{
+			v3d_haiku_handle request;
+			status_t status = copy_in(request, buffer, length);
+			if (status != B_OK)
+				return status;
+			if ((request.pad & ~V3D_HAIKU_CPU_READ_ONLY) != 0)
+				return B_BAD_VALUE;
+
+			MutexLocker locker(info->lock);
+			v3d_bo* bo = lookup_buffer(file, request.handle);
+			if (bo == NULL || !bo->cacheable)
+				return B_BAD_VALUE;
+			// Closing the handle while the wait drops the lock must not free
+			// the backing area. Recheck submissions after every unlocked wait.
+			bo->references++;
+			while (bo->lastJob > info->completed) {
+				uint64 seqno = bo->lastJob;
+				locker.Unlock();
+				status = wait_for_job(info, seqno, -1);
+				locker.Lock();
+				if (status != B_OK)
+					break;
+			}
+			if (status == B_OK && !bo->cpuOwned) {
+				// Never invalidate twice in one CPU interval: the first caller
+				// may already have written data that the next job will need.
+				sync_buffer_cache(bo, true);
+				bo->cpuOwned = true;
+			}
+			if (status == B_OK && (request.pad & V3D_HAIKU_CPU_READ_ONLY) == 0)
+				bo->cpuDirty = true;
+			put_buffer(info, bo);
+			return status;
 		}
 
 		case V3D_HAIKU_CLOSE_BO:
