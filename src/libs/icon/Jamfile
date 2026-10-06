@@ -16,7 +16,7 @@ local sourceDirs =
 # system headers
 UseLibraryHeaders agg icon ;
 
-UsePrivateHeaders shared ;
+UsePrivateHeaders shared interface ;
 
 local architectureObject ;
 for architectureObject in [ MultiArchSubDirSetup ] {

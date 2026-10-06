@@ -536,9 +536,26 @@ mirror_sizes()
 }
 
 
+static void
+single_scaled_timing()
+{
+	DisplayLayout layout;
+	display_timing timing = fhd_timing();
+	timing.h_display = 1280;
+	timing.v_display = 800;
+	layout.SetSingle(BRect(0, 0, 568, 355), 225, NULL, &timing);
+	check(layout.DisplayAt(0)->timing.h_display == 1280
+		&& layout.DisplayAt(0)->timing.v_display == 800,
+		"physical mode is retained when logical dimensions round");
+	check(layout.Frame() == BRect(0, 0, 568, 355),
+		"single display still uses the logical frame");
+}
+
+
 int
 main()
 {
+	single_scaled_timing();
 	swapped_pair(false);
 	swapped_pair(true);
 	row_of_three();
