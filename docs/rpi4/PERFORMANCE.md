@@ -843,10 +843,15 @@ core packages, global Mesa/WebKit and persistent browser profile. Readiness
 and first content are separate browser milestones; window visibility is not
 proof that an application has finished all painting.
 
+These clock-comparison runs hash the engine before launch, warming its file
+cache. They compare the first browser process after each cold boot under
+that same preparation; they are not measurements of an untouched cold file
+cache. The final-image harness moves byte verification after the first launch.
+
 | Measurement | 1.5 GHz, two runs | 1.8 GHz, two runs |
 | --- | ---: | ---: |
-| Cold Summit ready, seconds | 2.295, 2.296 | 2.202, 2.201 |
-| Cold first browser tiles, seconds | 4.817, 4.829 | 4.681, 4.609 |
+| First Summit ready, seconds | 2.295, 2.296 | 2.202, 2.201 |
+| First browser tiles, seconds | 4.817, 4.829 | 4.681, 4.609 |
 | Warm StyledEdit window, ms | 118.055, 118.371 | 105.171, 104.758 |
 | Warm About window, ms | 124.532, 123.681 | 108.850, 107.781 |
 | Warm AirPins window, ms | 325.770, 325.689 | 280.317, 279.177 |
