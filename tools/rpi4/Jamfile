@@ -20,6 +20,8 @@ SimpleTest rpi4_kdl : kdl.cpp ;
 SimpleTest rpi4_orphan : orphan.cpp ;
 SimpleTest rpi4_app_bench : app_bench.cpp : be [ TargetLibsupc++ ] ;
 SimpleTest rpi4_view_visibility : view_visibility.cpp : be [ TargetLibsupc++ ] ;
+SimpleTest rpi4_memory_move_probe : memory_move_probe.cpp : [ TargetLibstdc++ ] ;
+SimpleTest rpi4_memory_bench : memory_bench.cpp : [ TargetLibstdc++ ] ;
 
 # the firmware's H.264 decoder, the class of the media add-on
 SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) src add-ons media plugins rpi_mmal ] ;

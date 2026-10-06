@@ -396,3 +396,57 @@ textures. These use the frame-counter snapshot taken at completion of each
 burst, excluding the later idle polling gap. The page was in manual mode;
 no requestAnimationFrame auto-scroll ran alongside the wheel test. Evidence:
 `v3d-cache2-scroll.txt`.
+
+## ARM64 user memory copies and overlapping moves
+
+The scalar AArch64 routine from [Arm optimized-routines, pinned revision
+503fafe311c177de0e571c458c7c337b1ca5f522](https://github.com/ARM-software/optimized-routines/blob/503fafe311c177de0e571c458c7c337b1ca5f522/string/aarch64/memcpy.S)
+outperformed its Advanced SIMD alternative on this Cortex-A72 in the
+alignment sweep. The user libroot candidate uses the scalar assembly for
+both memcpy and memmove, with Haiku symbol/CFI annotations and the upstream
+MIT notice preserved. The runtime loader shares that architecture object;
+its separate musl memmove input is omitted on ARM64. The kernel retains
+its existing scalar C routine.
+
+In an original/candidate/candidate/original comparison, `dladdr` verifies
+that both symbols resolve to the selected libroot. Each run has three
+rounds; these are medians in MB/s for warm buffers:
+
+| Operation | Bytes | Destination offset / overlap | Original | Candidate |
+| --- | ---: | --- | ---: | ---: |
+| Copy | 128 | aligned destination | 5986 | 7983 |
+| Copy | 4096 | destination +3 | 7748 | 11460 |
+| Copy | 8388608 | aligned destination | 1976 | 1984 |
+| Copy | 8388608 | destination +3 | 1114 | 1996 |
+| Move backward | 128 | overlap by offset 1 | 652 | 7369 |
+| Move backward | 4096 | overlap by offset 1 | 746 | 11407 |
+| Move forward | 4096 | overlap by offset 1 | 746 | 11404 |
+| Move backward | 8388608 | overlap by offset 64 | 1087 | 1076 |
+
+This primarily fixes unaligned-copy and small/medium overlapping-move
+costs. Large aligned copies and large aligned overlapping moves are
+essentially unchanged; the table is not an application-level speedup.
+`jam rpi4_memory_bench` builds the reproducible benchmark. Evidence:
+`memory-copy-first.txt`, `memory-copy-alignment.txt`,
+`arm-copy-libroot-bench.txt`. The first experiment used unaligned
+destinations only; the later alignment sweep includes aligned cases.
+
+The actual candidate libroot passes 51,301 memcpy alignment, canary and
+protected/read-only-page cases, plus 549,027 memmove cases covering both
+overlap directions, 32 alignments, canaries and protected-page edges.
+`jam rpi4_memory_move_probe` builds the latter. All 50 runtime-loader
+checks also pass with the candidate library path. These are isolated
+user-process tests, before replacing the system library. Evidence:
+`arm-copy-libroot-checks.txt`.
+
+The four visibility/pixel checks pass with original and candidate libroot
+in alternating runs. Warm StyledEdit windows remain near 119–121 ms and
+AirPins near 325–330 ms; this isolated user-library change has not shown a
+meaningful launch-time improvement in those two apps. App_server still
+uses the installed library in these tests. Evidence:
+`arm-copy-app-bench.txt`.
+
+The complete ARM64 image with the new library and runtime-loader string
+object builds and boots to the branded desktop in QEMU (`arm-copy-full-build.log`, `arm-copy-qemu.*`). This includes the staged WebKit 1.10.0-11
+package and the cached-texture-capable Mesa, still default off in that
+image.

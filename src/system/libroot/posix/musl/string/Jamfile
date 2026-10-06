@@ -9,13 +9,18 @@ local architectureObject ;
 for architectureObject in [ MultiArchSubDirSetup ] {
 	on $(architectureObject) {
 		local architecture = $(TARGET_PACKAGING_ARCH) ;
+		local memmoveSource = memmove.c ;
+		# ARM64's assembly copy routine also handles overlapping ranges.
+		if $(architecture) = arm64 {
+			memmoveSource = ;
+		}
 
 		MergeObject <$(architecture)>posix_musl_string.o :
 			index.c
 			memccpy.c
 			memchr.c
 			memmem.c
-			memmove.c
+			$(memmoveSource)
 			memrchr.c
 			stpcpy.c
 			stpncpy.c
