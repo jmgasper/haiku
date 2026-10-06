@@ -796,3 +796,35 @@ These are string microbenchmarks, not whole-application improvements.
 Evidence: `strlen/benchmark-native.txt`, `correctness-under-load.txt`,
 `private-library-native-trace.txt`, `instruction-verification.txt`, and
 `qemu.{log,png}`.
+
+## Native EGL window bitmap reuse
+
+Window swaps previously allocated a BBitmap, cleared it, copied the frame,
+published it, and deleted the retired bitmap on every frame. Mesa now keeps
+that retired bitmap for the next swap and clears only row padding. The
+displayed bitmap remains untouched until the view retires it under its draw
+lock. Size changes discard mismatched retired storage; destruction releases
+both bitmaps. This keeps one additional frame-sized bitmap per active window.
+
+The native probe checks published pixels, alpha and padding immediately,
+then independently waits for matching screen pixels. Two create/destroy
+cycles each alternate six sizes from 63x65 to 1920x908. Both the old and new
+libraries pass. The probe explicitly hides the pointer and keeps its window
+within HDMI0; earlier harness attempts crossed the display boundary or
+included the software pointer in the screenshot and are excluded.
+
+An idle 1.8 GHz ABBA comparison waits for every BView draw, after four warmup
+frames. Rates are completed window draws per second, not physical refresh:
+
+| Window size | Old, two runs | Reuse, two runs |
+| --- | ---: | ---: |
+| 640x480 | 205.47, 204.80 | 226.65, 229.02 |
+| 1280x720 | 81.12, 81.06 | 91.88, 92.04 |
+| 1920x908 | 45.54, 45.47 | 51.83, 51.92 |
+
+This improves completed native-window drawing by about 11–14%. Summit uses
+a separate pbuffer path, so these figures do not claim a browser speedup.
+The ordered Mesa patch series passes clean, four-patch-prefix, already-applied
+and conflicting-source checks; the conflict leaves source files unchanged.
+Evidence: `egl-window/{control-correctness-7,candidate-correctness}.txt`,
+`bench-*.txt`, `test-notes.txt`, and `patch-tests/results.txt`.

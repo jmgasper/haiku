@@ -22,7 +22,8 @@ mkdir -p "$ROOT"
 # earlier ones; checking each reverse patch independently is insufficient.
 python3 "$TOOLS/apply-patches.py" "$ROOT/mesa-25.3.6" \
     "$TOOLS/mesa-haiku-v3d.patch" "$TOOLS/mesa-haiku-shader-cache.patch" \
-    "$TOOLS/mesa-haiku-texture-cache.patch" "$TOOLS/mesa-haiku-gpu-readback.patch"
+    "$TOOLS/mesa-haiku-texture-cache.patch" "$TOOLS/mesa-haiku-gpu-readback.patch" \
+    "$TOOLS/mesa-haiku-window-present.patch"
 
 # The bootstrap zlib.pc names its original /packages location, which is
 # absent from the cross sysroot. Use its installed development paths.

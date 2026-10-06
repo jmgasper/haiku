@@ -3,7 +3,7 @@
 `build.sh` builds Mesa 25.3.6 with the `v3d` Gallium driver (and softpipe) for
 Haiku arm64. It sits on the ROCK 5's pinned Mesa port
 (`tools/rock5-itx/mesa`): the same sysroot, cross file, libglvnd and patched
-source, plus the V3D, shader-cache, texture-cache and GPU-readback patches
+source, plus the V3D, shader-cache, texture-cache, GPU-readback and window-presentation patches
 from this directory. The build script applies them to its copy of the source
 under `/mnt/HaikuWork/rpi4/mesa/mesa-25.3.6`, or checks that they are already
 applied. It reconfigures existing builds to pick up changed options.
@@ -79,7 +79,7 @@ capability, TFU transfer and 64 alternating read/write ownership cycles.
 `texture_probe.cpp` checks every pixel after repeated maps, partial writes,
 GPU rendering, narrow-band reads and PBO transfers. Its optional arguments
 are round count, base width and base height (defaults: `40 257 131`).
-`build-probes.sh` builds the three GLES probes into `mesa/probes` against the
+`build-probes.sh` builds the GLES probes into `mesa/probes` against the
 same pinned EGL/GLESv2 libraries. Native pixel and
 application measurements, including the narrow-band readback regression,
 are in `docs/rpi4/PERFORMANCE.md`.
@@ -141,3 +141,20 @@ Haiku) and renders into an image without a window: a clear, and a triangle
 with two shaders written out as SPIR-V words by hand. Build it like the GL
 probe, with `-I<mesa>/include -L<build-vk>/src/broadcom/vulkan
 -lvulkan_broadcom`, and run it with the library in `LIBRARY_PATH`.
+
+## Native window presentation
+
+The window-presentation patch retains the bitmap returned by `SetBitmap()` as
+its next back bitmap. The hook retires it under the view's draw lock, and
+`DrawBitmap()` synchronizes app_server access before that lock is released.
+The currently displayed bitmap is never overwritten. Resizing discards a
+retired bitmap with the wrong dimensions; surface destruction frees both
+bitmaps. All visible bytes are copied, and only row padding needs clearing.
+
+`window_probe.cpp` checks every published pixel and padding byte, visible
+screen RGB, alternating odd and large sizes, and repeated surface destruction.
+Run with HDMI0 awake and unobstructed. It hides the pointer while checking the
+screen. `--benchmark WIDTH HEIGHT FRAMES` waits for each BView draw and reports
+completed draw throughput, not physical display FPS. Its area-ID count is not
+an allocation count: several BBitmaps can share an app_server area.
+This path improves native EGL windows; Summit uses a separate pbuffer path.
