@@ -73,6 +73,9 @@ USB are up, both logical displays retain their layout, and the GPU lifetime
 probe leaves zero client buffers. The device is left running with Ethernet
 and the saved Wi-Fi network connected. Evidence: `release/clean-boot-checks.txt`,
 `verify-installed-final.txt`, `hid-boot-4.txt` and `wifi-boot-4-recovery.txt`.
+An additional Wi-Fi-only transfer after recovery matches its checksum and
+runs at 73–75 Mbit/s, with no ping loss; Ethernet is restored afterward
+(`final-network-wifi.txt`, `final-idle-2.txt`).
 
 The graphics and memory suite passes on the installed libraries: 737,600
 string-length cases, 6,422,376 string comparisons, 549,027 memory moves,

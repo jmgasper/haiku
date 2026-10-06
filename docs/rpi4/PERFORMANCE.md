@@ -21,6 +21,11 @@ Ethernet and Alpine recovery currently use `192.168.1.214`; the older
 recorded recovery address was `.209`. Check DHCP rather than assuming
 either is permanent.
 
+Native hardware measurements here cover this one Pi. The VM, app_server
+and TCP changes also affect other platforms, and the ARM64 library/link
+changes affect other ARM64 builds. Performance comparisons on the other
+workstation targets were not run during this work.
+
 - `jam rpi4_app_bench` builds the GUI launch probe.
   `rpi4_app_bench 5 /boot/system/apps/StyledEdit` measures elapsed time
   through application registration, its first shown window (2 ms polling),

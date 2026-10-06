@@ -141,6 +141,13 @@ two need recovery; this small sample is not an estimate of the general
 failure rate. See `release/cold-boot-4.txt`, `wifi-boot-4-recovery.txt` and
 `final-wifi-connected.jpg`.
 
+Traffic is checked again after that recovery with Ethernet administratively
+down: five gateway pings have no loss (1.412 ms average), a 32 MiB file to SD
+matches SHA-256, and three downloads to `/dev/null` take 3.66, 3.63 and
+3.58 seconds (about 73–75 Mbit/s). The server sees the Wi-Fi address for
+every transfer. Ethernet is then restored and both links remain up.
+Evidence: `release/final-network-wifi.txt` and `final-idle-2.txt`.
+
 The OpenBSD compatibility layer now exports Broadcom's absolute RSSI as
 FreeBSD-format half-dB units over a -100 dBm reference floor. Previously a
 negative dBm byte wrapped into an unsigned RSSI, so the custom Wi-Fi tool
