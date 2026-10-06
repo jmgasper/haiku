@@ -1548,15 +1548,20 @@ int32
 TCPEndpoint::_Spawn(TCPEndpoint* parent, tcp_segment_header& segment,
 	net_buffer* buffer)
 {
-	MutexLocker _(fLock);
+	MutexLocker locker(fLock);
 
 	TRACE("Spawn()");
 
-	// TODO: proper error handling!
 	if (ProtocolSocket::Open() != B_OK) {
 		T(Error(this, "opening failed", __LINE__));
-		return DROP;
+		goto abort;
 	}
+
+	// spawn_pending_socket() copies the listener's address, but this child
+	// has not been entered in the endpoint manager's bound-socket table yet.
+	// A failed bind (e.g. the interface went away during shutdown) must not
+	// make the destructor try to remove a socket that was never inserted.
+	socket->address.ss_len = 0;
 
 	fState = SYNCHRONIZE_RECEIVED;
 	T(Spawn(parent, this));
@@ -1565,11 +1570,11 @@ TCPEndpoint::_Spawn(TCPEndpoint* parent, tcp_segment_header& segment,
 
 	if (fManager->BindChild(this, buffer->destination) != B_OK) {
 		T(Error(this, "binding failed", __LINE__));
-		return DROP;
+		goto abort;
 	}
 	if (_PrepareSendPath(buffer->source) != B_OK) {
-		T(Error(this, "prepare send faild", __LINE__));
-		return DROP;
+		T(Error(this, "prepare send failed", __LINE__));
+		goto abort;
 	}
 
 	fOptions = parent->fOptions;
@@ -1580,13 +1585,23 @@ TCPEndpoint::_Spawn(TCPEndpoint* parent, tcp_segment_header& segment,
 	// send SYN+ACK
 	if (_SendAcknowledge() != B_OK) {
 		T(Error(this, "sending failed", __LINE__));
-		return DROP;
+		goto abort;
 	}
 
 	segment.flags &= ~TCP_FLAG_SYNCHRONIZE;
 		// we handled this flag now, it must not be set for further processing
 
 	return _Receive(segment, buffer);
+
+abort:
+	// No application can accept this incomplete connection. Remove it from
+	// the listener's backlog now; set_aborted() can drop its last reference
+	// and destroy this endpoint, so release the endpoint lock first.
+	fState = CLOSED;
+	_CancelConnectionTimers();
+	locker.Unlock();
+	gSocketModule->set_aborted(socket);
+	return DROP;
 }
 
 

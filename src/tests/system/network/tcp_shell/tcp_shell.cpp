@@ -9,6 +9,7 @@
 
 #include "argv.h"
 #include "tcp.h"
+#include "TCPEndpoint.h"
 #include "pcap.h"
 #include "utility.h"
 
@@ -114,6 +115,9 @@ static std::set<uint32> sReorderList;
 static bool sSimultaneousConnect = false;
 static bool sSimultaneousClose = false;
 static bool sServerActiveClose = false;
+static bool sSpawnFailureTest = false;
+static int sSpawnFailureStage = 0;
+static int sAbortedChildren = 0;
 
 static struct net_domain sDomain = {
 	"ipv4",
@@ -209,9 +213,10 @@ dummy_is_restarted_syscall(void)
 }
 
 
-static void
+static bigtime_t
 dummy_store_syscall_restart_timeout(bigtime_t timeout)
 {
+	return timeout;
 }
 
 
@@ -283,6 +288,10 @@ socket_create(int family, int type, int protocol, net_socket **_socket)
 		return B_NO_MEMORY;
 
 	memset(socket, 0, sizeof(net_socket));
+	socket->parent = NULL;
+	socket->owner = -1;
+	socket->child_count = 0;
+	socket->max_backlog = 0;
 	socket->family = family;
 	socket->type = type;
 	socket->protocol = protocol;
@@ -328,7 +337,9 @@ socket_delete(net_socket *_socket)
 	if (socket->parent != NULL)
 		panic("socket still has a parent!");
 
+	net_protocol* domain = socket->first_protocol->next;
 	socket->first_info->uninit_protocol(socket->first_protocol);
+	delete domain;
 	mutex_destroy(&socket->lock);
 	delete socket;
 }
@@ -649,6 +660,23 @@ socket_notify(net_socket *_socket, uint8 event, int32 value)
 }
 
 
+static status_t
+abort_test_child(net_socket* _socket)
+{
+	net_socket_private* socket = (net_socket_private*)_socket;
+	net_socket_private* parent = (net_socket_private*)socket->parent;
+	if (parent == NULL)
+		return B_BAD_VALUE;
+	MutexLocker locker(parent->lock);
+	parent->pending_children.Remove(socket);
+	parent->child_count--;
+	socket->parent = NULL;
+	sAbortedChildren++;
+	socket_delete(socket);
+	return B_OK;
+}
+
+
 net_socket_module_info gNetSocketModule = {
 	{
 		NET_SOCKET_MODULE_NAME,
@@ -681,7 +709,7 @@ net_socket_module_info gNetSocketModule = {
 	socket_set_max_backlog,
 	socket_has_parent,
 	socket_connected,
-	NULL, // set_aborted
+	NULL, // set_aborted (installed by the spawn-failure test)
 
 	// notifications
 	NULL, // request_notification,
@@ -743,6 +771,12 @@ close_protocol(net_protocol* protocol)
 status_t
 datalink_send_data(struct net_route *route, net_buffer *buffer)
 {
+	if (sSpawnFailureTest) {
+		if (sSpawnFailureStage == 4)
+			return B_ERROR;
+		gNetBufferModule.free(buffer);
+		return B_OK;
+	}
 	struct context* context = (struct context*)route->gateway;
 
 	buffer->interface_address = &gInterfaceAddress;
@@ -769,6 +803,8 @@ datalink_send_datagram(net_protocol *protocol, net_domain *domain,
 struct net_route *
 get_route(struct net_domain *_domain, const struct sockaddr *address)
 {
+	if (sSpawnFailureStage == 3)
+		return NULL;
 	if (is_server(address)) {
 		// to the server
 		return &sServerContext.route;
@@ -869,10 +905,20 @@ domain_control(net_protocol *protocol, int level, int option, void *value,
 status_t
 domain_bind(net_protocol *protocol, const struct sockaddr *address)
 {
+	if (sSpawnFailureStage == 2)
+		return EADDRNOTAVAIL;
 	memcpy(&protocol->socket->address, address, sizeof(struct sockaddr_in));
 	protocol->socket->address.ss_len = sizeof(struct sockaddr_in);
 		// explicitly set length, as our callers can't be trusted to
 		// always provide the correct length!
+	return B_OK;
+}
+
+
+static status_t
+domain_setsockopt(net_protocol* protocol, int level, int option,
+	const void* value, int length)
+{
 	return B_OK;
 }
 
@@ -943,6 +989,9 @@ domain_read_avail(net_protocol *protocol)
 struct net_domain *
 domain_get_domain(net_protocol *protocol)
 {
+	if (sSpawnFailureStage == 1
+		&& ((net_socket_private*)protocol->socket)->parent != NULL)
+		return NULL;
 	return &sDomain;
 }
 
@@ -1021,7 +1070,7 @@ net_protocol_module_info gDomainModule = {
 	domain_accept,
 	domain_control,
 	NULL, // getsockopt
-	NULL, // setsockopt
+	domain_setsockopt,
 	domain_bind,
 	domain_unbind,
 	domain_listen,
@@ -1754,6 +1803,76 @@ do_help(int argc, char** argv)
 //	#pragma mark -
 
 
+static int
+test_spawn_failures()
+{
+	sSpawnFailureTest = true;
+	// Model the listener holding the only reference to a not-yet-accepted
+	// child. Aborting must destroy it, catching lock and bind-table errors.
+	gNetSocketModule.set_aborted = abort_test_child;
+	net_socket* listener;
+	if (init_protocol(&listener) == NULL)
+		return 1;
+	sockaddr_in local = {};
+	local.sin_len = sizeof(local);
+	local.sin_family = AF_INET;
+	local.sin_port = htons(1024);
+	if (socket_bind(listener, (sockaddr*)&local, sizeof(local)) != B_OK
+		|| socket_listen(listener, 2) != B_OK)
+		return 1;
+
+	sClientContext.route.interface_address = &gInterfaceAddress;
+	sClientContext.route.mtu = 1500;
+	net_socket_private* parent = (net_socket_private*)listener;
+	TCPEndpoint* endpoint = (TCPEndpoint*)listener->first_protocol;
+	const char* stages[] = {"success", "open", "bind", "route", "send"};
+	for (int stage = 1; stage <= 5; stage++) {
+		sSpawnFailureStage = stage % 5;
+		for (int iteration = 0; iteration < 64; iteration++) {
+			net_buffer* buffer = gNetBufferModule.create(256);
+			if (buffer == NULL)
+				return 1;
+			sockaddr_in peer = local;
+			peer.sin_port = htons(2048 + iteration);
+			peer.sin_addr.s_addr = htonl(0xc0a80002);
+			local.sin_addr.s_addr = htonl(0xc0a80001);
+			memcpy(buffer->source, &peer, sizeof(peer));
+			memcpy(buffer->destination, &local, sizeof(local));
+			tcp_segment_header syn(TCP_FLAG_SYNCHRONIZE);
+			syn.sequence = 1000;
+			syn.acknowledge = 0;
+			syn.advertised_window = 65535;
+			syn.urgent_offset = 0;
+			int aborted = sAbortedChildren;
+			int32 action = endpoint->SegmentReceived(syn, buffer);
+			if ((action & KEEP) == 0)
+				gNetBufferModule.free(buffer);
+
+			if (sSpawnFailureStage == 0) {
+				if (parent->child_count != 1)
+					return 1;
+				net_socket_private* child = parent->pending_children.Head();
+				if (child == NULL
+					|| !((TCPEndpoint*)child->first_protocol)->IsBound())
+					return 1;
+				abort_test_child(child);
+			}
+			if (parent->child_count != 0 || !parent->pending_children.IsEmpty()
+				|| sAbortedChildren != aborted + 1) {
+				fprintf(stderr, "FAIL: %s left an incomplete child, round %d\n",
+					stages[sSpawnFailureStage], iteration);
+				return 1;
+			}
+		}
+		printf("PASS: 64 %s spawn/cleanup cycles\n", stages[sSpawnFailureStage]);
+	}
+	sSpawnFailureStage = 0;
+	gTCPModule->close(listener->first_protocol);
+	socket_delete(listener);
+	return 0;
+}
+
+
 int
 main(int argc, char* argv[])
 {
@@ -1798,6 +1917,8 @@ main(int argc, char* argv[])
 			strerror(status));
 		return 1;
 	}
+	if (argc == 2 && strcmp(argv[1], "--spawn-failures") == 0)
+		return test_spawn_failures();
 
 	net_protocol* client = init_protocol(&gClientSocket);
 	if (client == NULL)

@@ -275,8 +275,8 @@ fresh boots with the 1 MiB prefetch kernel yielded:
 | --- | ---: | ---: |
 | Control, first boot | 3.881 | 10.518 |
 | Restricted exports, first boot | 2.779 | 9.086 |
-| Control, second boot | 3.881 | 10.517 |
-| Restricted exports, second boot | 2.782 | 9.086 |
+| Control, second boot | 3.881 | 9.953 |
+| Restricted exports, second boot | 2.782 | 9.090 |
 
 Relocation time falls from about 1.983 to 1.005 seconds. Every boot passes
 the local JavaScript, WebAssembly, WebGL pixel and basic WebRTC/API smoke
@@ -299,3 +299,34 @@ Discarded comparisons are retained as evidence: `summit-exports-smoke.txt`
 used a library path that the executable's absolute RPATH overrode, and
 `summit-exports-preload-smoke.txt` placed the candidate outside the helper
 process directory layout. Neither establishes candidate performance.
+
+## Failed TCP child cleanup during reboot
+
+A native reboot on `hrev60097+652+dirty` stopped in the kernel debugger
+with `bound endpoint ... not in hash!` while net_server destroyed its
+port-23 listener. The child was still SYN_RECEIVED with no initialized
+send path; the listener was the only connection-table entry.
+`spawn_pending_socket()` copies the listener's address before TCP binding,
+but `_Spawn()` left failed children in the backlog and retained that
+address. Destruction then mistook the never-bound child for a bound socket.
+
+TCP now clears the inherited address before binding and aborts incomplete
+children on open, bind, route preparation and SYN-ACK send failures. The
+abort runs after releasing the child lock because removing the listener's
+last reference can destroy the child immediately. The bound-table panic
+remains in place.
+
+`tcp_shell --spawn-failures` runs the real TCP endpoint and manager in
+Haiku's kernel emulation harness. On the Pi, 64 repetitions of each of the
+four injected failures and of a successful SYN/setup/cleanup pass (320
+cycles), including immediate destruction and backlog reuse. Linking the
+same harness against the original endpoint fails on the first open error
+with an incomplete child left behind. This is a focused lifecycle test;
+reboot stress on the installed kernel is a separate check. Evidence:
+`v3d-cache2-native-boot.log`, `tcp-unbind-panic-inspect.*`,
+`tcp-spawn-failures.txt`, `tcp-spawn-unfixed.txt`.
+
+The full `rpi4-airos` image builds and reaches the branded desktop in QEMU
+with the TCP change (`tcp-fix-profile-build.log`,
+`tcp-fix-profile-qemu.*`). The final harness rerun also passes all 320
+cases (`tcp-spawn-final.txt`).
