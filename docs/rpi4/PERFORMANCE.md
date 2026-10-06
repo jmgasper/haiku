@@ -828,3 +828,62 @@ The ordered Mesa patch series passes clean, four-patch-prefix, already-applied
 and conflicting-source checks; the conflict leaves source files unchanged.
 Evidence: `egl-window/{control-correctness-7,candidate-correctness}.txt`,
 `bench-*.txt`, `test-notes.txt`, and `patch-tests/results.txt`.
+
+## Firmware-supported CPU boost
+
+`arm_boost=1` lets Raspberry Pi firmware expose its supported turbo limit.
+On the lab revision 1.5 Pi 4 this is 1.8 GHz, up from 1.5 GHz. The image does
+not set an explicit `arm_freq`, `force_turbo`, voltage override or GPU overclock.
+V3D and the core remain at 500 MHz. Older revisions retain the limit chosen
+by their firmware. The board revision and supported behavior are checked
+against the [official Raspberry Pi `arm_boost` documentation](https://www.raspberrypi.com/documentation/computers/config_txt.html#arm_boost).
+
+Four actual cold-power boots compare 1.5 / 1.8 / 1.8 / 1.5 GHz with identical
+core packages, global Mesa/WebKit and persistent browser profile. Readiness
+and first content are separate browser milestones; window visibility is not
+proof that an application has finished all painting.
+
+| Measurement | 1.5 GHz, two runs | 1.8 GHz, two runs |
+| --- | ---: | ---: |
+| Cold Summit ready, seconds | 2.295, 2.296 | 2.202, 2.201 |
+| Cold first browser tiles, seconds | 4.817, 4.829 | 4.681, 4.609 |
+| Warm StyledEdit window, ms | 118.055, 118.371 | 105.171, 104.758 |
+| Warm About window, ms | 124.532, 123.681 | 108.850, 107.781 |
+| Warm AirPins window, ms | 325.770, 325.689 | 280.317, 279.177 |
+| Warm Natter window, ms | 372.292, 375.006 | 332.715, 336.881 |
+| DOM fixture median, ms | 1513, 1485 | 1270, 1260 |
+
+Warm values are medians of launches two through five. The synthetic CPU
+loop gains about 20%; the DOM workload takes about 15.6% less time. Full-window
+WebGL remains at its roughly 59 FPS refresh ceiling. HEVC decode improves
+modestly because CPU work is only part of the decode pipeline. The later
+integrated scrolling rate remains around 29–31 FPS.
+
+The serial display-layout marker moves from 22.77–22.88 seconds after the
+EEPROM banner to 22.04–22.14 seconds. This is not first desktop paint. The
+EEPROM timeout improvement is separate and is not encoded in the SD image.
+
+A fresh-boot endurance run passes 173 graphics/Vulkan rounds over 3,659
+seconds, alongside three randomized compression workers completing 31,033
+checks. A persistent HEVC decoder produces 39,300 frames, with every 60-frame
+round matching the known FNV hash. Peak sampled temperature is 73.489 C;
+all firmware throttle flags are zero. Swap remains unused.
+
+This run deliberately holds one GPU descriptor open and reuses the decoder's
+buffers. It validates the supported clock under sustained CPU/GPU/playback
+load, not repeated full GPU teardown or HEVC allocation. The final image's
+GPU lifetime test and subsequent endurance run are recorded separately.
+
+The earlier repeated-allocation stress run is a failure, not a passed soak:
+with three bounded Zstandard workers, round 109 fails to allocate a 1,020-page
+HEVC picture after about 36 minutes. Subsequent GPU initialization can also
+fail to allocate its 1,024-page MMU table and select software rendering. The
+machine stays responsive, and memory is free after workers exit; the issue
+is the need for large physically contiguous runs. The persistent decoder
+run tests playback stability separately from repeated allocation behavior.
+
+Evidence: `arm-boost/clock{1500,1800}-run{1,2}.txt`, `abba-verification.txt`,
+`abba-serial-markers.json`, `soak-bounded-native.txt`,
+`soak-persistent-fragmented-pilot.txt`, `soak-persistent-native.txt`, and
+`soak-serial.{log,jsonl}`. The previously documented large-dictionary pilot
+is another failed run, not part of the endurance pass.
