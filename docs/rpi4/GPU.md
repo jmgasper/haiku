@@ -26,6 +26,12 @@ v3dv, 2026-10-04) renders without a window: `rpi4_vk_probe` reports "V3D
   locked, write-combining area plus a first-fit range of GPU addresses and its
   page table entries. `MMAP_BO` clones the area into the caller's team and
   returns the address (there is no mmap on a device node).
+- Lifetime: the fixed FDT driver node is retained. Its page table, scratch
+  page, register mappings and executor are initialized at registration and
+  survive the last application close. This avoids repeatedly finding a
+  contiguous 4 MiB table after memory fragmentation. Client buffers and sync
+  objects are still released per file. `rpi4_v3d_lifetime_probe` checks this
+  distinction; native measurements are in `PERFORMANCE.md`.
 - Jobs: bin/render lists, TFU and compute (CSD) jobs go into one queue and run
   in submission order on an executor thread; the interrupt handler reports
   frame/flush done, out-of-memory in the binner (the driver hands it another

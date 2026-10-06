@@ -1100,9 +1100,15 @@ read_out_syncs(uint32 flags, uint64 extensions, uint32 outSync,
 
 
 static status_t
-v3d_init_device(void* _info, void** _cookie)
+initialize_device(v3d_info* info)
 {
-	v3d_info* info = (v3d_info*)_info;
+	info->hubArea = info->coreArea = info->pmArea = info->asbArea = -1;
+	info->pageTableArea = info->scratchArea = -1;
+	info->jobSemaphore = -1;
+	info->executor = -1;
+	mutex_init(&info->lock, "v3d");
+	info->completedCondition.Init(info, "v3d job done");
+	info->eventCondition.Init(info, "v3d event");
 
 	status_t status = map("v3d hub", info->hubBase, info->hubSize,
 		info->hubArea, info->hub);
@@ -1144,10 +1150,6 @@ v3d_init_device(void* _info, void** _cookie)
 	info->version = V3D_HUB_IDENT1_TVER(hubIdent1) * 10
 		+ V3D_HUB_IDENT1_REV(hubIdent1);
 
-	mutex_init(&info->lock, "v3d");
-	info->completedCondition.Init(info, "v3d job done");
-	info->eventCondition.Init(info, "v3d event");
-
 	// the page table: one word per page of the 4 GB, in uncached memory
 	virtual_address_restrictions virtualRestrictions = {};
 	physical_address_restrictions physicalRestrictions = {};
@@ -1167,15 +1169,24 @@ v3d_init_device(void* _info, void** _cookie)
 		return info->scratchArea;
 
 	physical_entry entry;
-	get_memory_map(info->pageTable, tableSize, &entry, 1);
+	status = get_memory_map(info->pageTable, tableSize, &entry, 1);
+	if (status != B_OK)
+		return status;
 	info->pageTableAddress = entry.address;
-	get_memory_map(scratch, B_PAGE_SIZE, &entry, 1);
+	status = get_memory_map(scratch, B_PAGE_SIZE, &entry, 1);
+	if (status != B_OK)
+		return status;
 	info->scratchAddress = entry.address;
 
-	make_uncached(info->pageTableArea, info->pageTable, tableSize);
-	make_uncached(info->scratchArea, scratch, B_PAGE_SIZE);
+	status = make_uncached(info->pageTableArea, info->pageTable, tableSize);
+	if (status == B_OK)
+		status = make_uncached(info->scratchArea, scratch, B_PAGE_SIZE);
+	if (status != B_OK)
+		return status;
 
 	info->jobSemaphore = create_sem(0, "v3d jobs");
+	if (info->jobSemaphore < 0)
+		return info->jobSemaphore;
 	info->stopping = false;
 
 	status = install_io_interrupt_handler(info->interrupt, v3d_interrupt,
@@ -1188,6 +1199,8 @@ v3d_init_device(void* _info, void** _cookie)
 
 	info->executor = spawn_kernel_thread(executor_thread, "v3d executor",
 		B_DISPLAY_PRIORITY, info);
+	if (info->executor < 0)
+		return info->executor;
 	resume_thread(info->executor);
 
 	INFO("V3D %" B_PRIu32 ".%" B_PRIu32 ".%" B_PRIu32 ".%" B_PRIu32 ", %"
@@ -1198,36 +1211,45 @@ v3d_init_device(void* _info, void** _cookie)
 		(hubIdent2 & V3D_HUB_IDENT2_WITH_MMU) != 0 ? ", MMU" : "",
 		info->clockRate, info->interrupt);
 
-	*_cookie = info;
 	return B_OK;
 }
 
 
 static void
-v3d_uninit_device(void* cookie)
+uninitialize_device(v3d_info* info)
 {
-	v3d_info* info = (v3d_info*)cookie;
-
 	info->stopping = true;
-	delete_sem(info->jobSemaphore);
-	status_t result;
-	wait_for_thread(info->executor, &result);
+	if (info->jobSemaphore >= 0)
+		delete_sem(info->jobSemaphore);
+	if (info->executor >= 0) {
+		status_t result;
+		wait_for_thread(info->executor, &result);
+	}
 
-	write32(info->core, V3D_CTL_INT_MSK_SET, 0xffffffff);
-	write32(info->hub, V3D_HUB_INT_MSK_SET, 0xffffffff);
 	if (info->interruptInstalled) {
+		write32(info->core, V3D_CTL_INT_MSK_SET, 0xffffffff);
+		write32(info->hub, V3D_HUB_INT_MSK_SET, 0xffffffff);
 		remove_io_interrupt_handler(info->interrupt, v3d_interrupt, info);
 		info->interruptInstalled = false;
 	}
 
-	delete_area(info->pageTableArea);
-	delete_area(info->scratchArea);
+	const area_id areas[] = {info->pageTableArea, info->scratchArea,
+		info->hubArea, info->coreArea, info->pmArea, info->asbArea};
+	for (area_id area : areas) {
+		if (area >= 0)
+			delete_area(area);
+	}
 	mutex_destroy(&info->lock);
+}
 
-	delete_area(info->hubArea);
-	delete_area(info->coreArea);
-	delete_area(info->pmArea);
-	delete_area(info->asbArea);
+
+static status_t
+v3d_init_device(void* cookie, void** _cookie)
+{
+	// Hardware belongs to the retained driver node; opening the published
+	// device only acquires access to it. Each file still owns its own buffers.
+	*_cookie = cookie;
+	return B_OK;
 }
 
 
@@ -1801,6 +1823,7 @@ v3d_register_device(device_node* parent)
 {
 	device_attr attrs[] = {
 		{B_DEVICE_PRETTY_NAME, B_STRING_TYPE, {.string = "Broadcom V3D"}},
+		{B_DEVICE_FLAGS, B_UINT32_TYPE, {.ui32 = B_KEEP_DRIVER_LOADED}},
 		{}
 	};
 
@@ -1836,6 +1859,17 @@ v3d_init_driver(device_node* node, void** _cookie)
 	}
 	info->interrupt = interrupt;
 
+	// Reserve the contiguous MMU table when this fixed FDT device is
+	// registered, and retain it between applications. Recreating it on every
+	// last-close/first-open both costs startup time and can fail after memory
+	// fragmentation even when several gigabytes remain free.
+	status = initialize_device(info);
+	if (status != B_OK) {
+		uninitialize_device(info);
+		free(info);
+		return status;
+	}
+
 	*_cookie = info;
 	return B_OK;
 }
@@ -1844,7 +1878,9 @@ v3d_init_driver(device_node* node, void** _cookie)
 static void
 v3d_uninit_driver(void* cookie)
 {
-	free(cookie);
+	v3d_info* info = (v3d_info*)cookie;
+	uninitialize_device(info);
+	free(info);
 }
 
 
@@ -1870,7 +1906,7 @@ static device_module_info sV3dDevice = {
 		NULL
 	},
 	v3d_init_device,
-	v3d_uninit_device,
+	NULL,	// hardware state lives with the retained driver node
 	NULL,	// removed
 	v3d_open,
 	v3d_close,

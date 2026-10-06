@@ -887,3 +887,44 @@ Evidence: `arm-boost/clock{1500,1800}-run{1,2}.txt`, `abba-verification.txt`,
 `soak-persistent-fragmented-pilot.txt`, `soak-persistent-native.txt`, and
 `soak-serial.{log,jsonl}`. The previously documented large-dictionary pilot
 is another failed run, not part of the endurance pass.
+
+## GPU hardware lifetime
+
+The fixed V3D device now initializes its shared hardware state when its FDT
+node is registered and retains that driver node. It keeps the 4 MiB MMU page
+table, scratch page, register mappings and sleeping executor between clients.
+The previous last-close path freed the table, forcing the next application
+to find another contiguous 4 MiB allocation. Under the fragmentation stress
+that allocation failed despite several gigabytes of free memory.
+
+Buffers and synchronization objects still belong to each client and are
+released by the file cleanup path. Initialization failure unwinds only the
+resources that were successfully created. This change reserves about 4 MiB
+of shared GPU state for the machine's lifetime; it does not retain client
+rendering allocations or fix the HEVC driver's separate contiguous-buffer
+constraint.
+
+On the old driver, the lifetime probe fails after the last close because
+no page table remains. Over 100 open/ioctl/close cycles its median is
+9.281 ms. The retained driver measures 0.070 ms, and a 1,000-round client
+allocation/mapping/close test retains the same table with zero client buffers
+remaining. These are device-open costs, not whole-application launch times.
+
+The native candidate passes 48 GLES readback checks, ten full-HD texture
+rounds, a full-HD depth scene, exact Vulkan clear/triangle checks, and twenty
+additional cached-buffer probe processes. Another 100 lifetime rounds still
+retain the original table and release all client buffers. Firmware throttle
+flags remain zero. The loaded kernel image path confirms the staged candidate.
+
+Two initial test harness runs stopped because diagnostic executables were
+at different paths in the old installation; their output is retained. The
+complete corrected run passes. One control cold boot also missed Wi-Fi
+autojoin; the subsequent candidate cold boot joins successfully. The old
+installation still contained the experimental scan-listener helper, so this
+is recorded as a pre-flash failure without attributing a cause.
+
+The full image also passes the QEMU desktop smoke check. QEMU does not
+emulate V3D, so GPU claims rely on the native results above. Evidence:
+`v3d-resident/control-opens.txt`, `control-lifetime-expected-failure.txt`,
+`candidate-opens.txt`, `candidate-lifetime.txt`, `candidate-pixels.txt`,
+`full-build-2.log` and `qemu-2.{log,png}`.

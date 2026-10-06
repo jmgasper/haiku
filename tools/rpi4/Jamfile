@@ -8,6 +8,7 @@ SubDirHdrs [ FDirName $(HAIKU_TOP) src add-ons media plugins rpi_hevc ] ;
 
 # lab programs for the Raspberry Pi 4 port
 SimpleTest rpi4_v3d_probe : v3d_probe.cpp ;
+SimpleTest rpi4_v3d_lifetime_probe : v3d_lifetime_probe.cpp ;
 SimpleTest rpi4_fetch : fetch.cpp : network ;
 SimpleTest rpi4_fw : fw.cpp ;
 SimpleTest rpi4_vchiq_audio : vchiq_audio.cpp ;
