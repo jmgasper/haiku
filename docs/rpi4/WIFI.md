@@ -114,6 +114,16 @@ its outer retry loop covers unavailable scans and networks, not failed joins.
 Evidence: `evidence/performance-20261006/release/cold-boot-3.txt`,
 `wifi-boot-3-retry.txt` and `wifi-boot-3-leave-rejoin.txt`.
 
+The failed boot leaves the supplicant's "Failed to join network" password
+dialog visible (`release/wifi-failure-during-soak.jpg`). In the pinned
+supplicant source `bdf3144ad606b226aca6f8fae103e671e4655138`,
+`WPASupplicantApp::MessageReceived()` synchronously calls
+`wireless_config_dialog()`, whose `WaitForDialog()` waits on a semaphore.
+That blocks the application's message loop until the dialog is dismissed,
+so later join/leave requests can remain queued. This is a separate recovery
+obstacle; it does not establish the cause of the original WPA handshake
+timeout. Simply adding retries to the startup helper would not address it.
+
 The OpenBSD compatibility layer now exports Broadcom's absolute RSSI as
 FreeBSD-format half-dB units over a -100 dBm reference floor. Previously a
 negative dBm byte wrapped into an unsigned RSSI, so the custom Wi-Fi tool
