@@ -17,7 +17,7 @@ ARCHIVE=${RPI4_ARCHIVE:-$BUILD/airos-boot.tgz}
 LOG=$(mktemp "${TMPDIR:-/mnt/HaikuWork/tmp}/rpi4-qemu.XXXXXX")
 trap 'rm -f "$LOG" "$LOG.ppm"' EXIT
 args=(-M raspi4b -kernel "$LOADER" -dtb "$WORK/firmware/qemu-rpi4.dtb"
-    -append "airos.debug $*" -serial "file:$LOG" -display none -monitor stdio)
+    -append "$*" -serial "file:$LOG" -display none -monitor stdio)
 [ -f "$ARCHIVE" ] && args+=(-initrd "$ARCHIVE")
 [ -n "${RPI4_SD:-}" ] && args+=(-drive "file=$RPI4_SD,if=sd,format=raw")
 {

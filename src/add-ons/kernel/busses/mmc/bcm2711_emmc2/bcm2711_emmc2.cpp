@@ -671,8 +671,10 @@ Emmc2Bus::DoIO(uint8 command, IOOperation* operation, bool offsetAsSectors)
 		// SDMA, and no interrupt at the buffer boundary: the buffer is
 		// aligned to it and never larger.
 		_Write(REG_CONTROL0, _Read(REG_CONTROL0) & ~CONTROL0_DMA_MASK);
-		_Write(REG_SDMA_ADDRESS,
-			(uint32)(fBufferAddress + fDevice.dmaBusOffset));
+		if (fUseDMA) {
+			_Write(REG_SDMA_ADDRESS,
+				(uint32)(fBufferAddress + fDevice.dmaBusOffset));
+		}
 		_Write(REG_BLOCK, kBlockSize | BLOCK_SDMA_BOUNDARY_512K
 			| (uint32)(size / kBlockSize) << 16);
 
@@ -765,7 +767,11 @@ status_t
 Emmc2Bus::_ReadData(uint8 command, uint32 argument, size_t size)
 {
 	_Write(REG_CONTROL0, _Read(REG_CONTROL0) & ~CONTROL0_DMA_MASK);
-	_Write(REG_SDMA_ADDRESS, (uint32)(fBufferAddress + fDevice.dmaBusOffset));
+	// Writing SDMA_ADDRESS can resume a suspended DMA transfer. Leave it
+	// alone for PIO, especially after a short single-block command (CMD6)
+	// whose block-count register need not have reached zero.
+	if (fUseDMA)
+		_Write(REG_SDMA_ADDRESS, (uint32)(fBufferAddress + fDevice.dmaBusOffset));
 	_Write(REG_BLOCK, (uint32)size | BLOCK_SDMA_BOUNDARY_512K | 1 << 16);
 
 	uint32 flags = CMD_R1 | CMD_DATA | TM_READ;

@@ -56,3 +56,42 @@ Two further candidates need measurement: GNU symbol hash tables for the
 system libraries (the runtime loader already supports them), and Mesa's
 shader disk cache (disabled in the starting build). No improvement is
 claimed until the changed binaries run on the board.
+
+## Restoring the emulator regression check
+
+The starting tree failed to mount its SD boot volume in QEMU 10.2.0 after
+the high-speed card change of 5 October. The short CMD6 transfer leaves a
+nonzero block count; writing SDMA_ADDRESS for the next PIO transfer makes
+QEMU resume a DMA operation that the driver never intended. The driver now
+writes that register only when using DMA. With the same minimum SD image,
+the new boot archive reaches the desktop (serial and screenshot:
+`pio-fix-qemu.*`). The real board uses DMA, so this does not change its
+transfer path.
+
+`qemu-run.sh` no longer forces `airos.debug`. Serial is still captured;
+screen debugging can be requested explicitly. The screen debug pager was
+stopping unattended runs while printing the boot-volume information.
+
+## GNU hashes: isolated library comparison
+
+Six rebuilt libraries (`libroot`, `libbe`, `libmedia`, `libtranslation`,
+`libtracker`, `libnetwork`) have both GNU and SysV hash tables. Keeping the
+SysV table preserves the symbol count used by the relocation cache. This
+change applies to ARM64 userspace links, not kernel or boot-loader links.
+
+The libraries were staged in a separate directory and selected only for
+test processes with `LIBRARY_PATH`; `listimage` confirms the paths. Warm
+StyledEdit registration fell from about 71 to 52 ms, and first window from
+145 to 125 ms. About registration fell from 51 to 44 ms. AirPins remains
+dominated by another cost. Evidence: `gnu-apps-verified.txt`; the earlier
+`gnu-apps.txt` is an invalid trial because the board lacks `tar` and did not
+unpack the candidate libraries. Full-system boot and broader applications
+still need checking before this becomes the installed default.
+
+AirPins' complete startup profile attributes 89% of its app_server window
+thread's samples to `View::RebuildClipping()`. The window starts hidden,
+but its server-side root view initially starts visible, so adding and
+laying out children repeatedly rebuilds clipping that cannot be displayed.
+A candidate synchronizes the root view's initial state with the window,
+while preserving offscreen bitmap drawing. Native pixel checks and
+measurements are pending.
