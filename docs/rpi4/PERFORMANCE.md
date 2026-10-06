@@ -168,3 +168,19 @@ programs are already cached affects each run, so these are observations,
 not a claimed fixed percentage gain. Evidence:
 `summit-cache-comparison.txt`. Initial cold application loading still takes
 several seconds and remains a separate target for investigation.
+
+## Loader regression coverage
+
+`tools/rpi4/build-loader-tests.sh` cross-builds the existing runtime-loader
+suite twice, with SysV-only and dual SysV/GNU hashes, into a package that
+can be extracted privately on the target. All 50 checks pass before and
+after explicitly masking the GNU Bloom filter's second bit index to the
+machine word width. The previous unbounded C++ shift happened to work with
+ARM64's masked shift instruction, but was undefined in the language.
+
+The matching system package and boot archive (`hrev60097+648+dirty`) pass
+the full-image QEMU desktop check and native reboot, all 50 loader checks,
+and the four window drawing checks. Evidence: `loader-tests-before.txt`,
+`candidate3-qemu.*`, `candidate3-native-checks.txt`. That native command's
+last step names a nonexistent GL probe; the corrected GL and network
+checks are recorded separately in `candidate3-network-gl.txt`.

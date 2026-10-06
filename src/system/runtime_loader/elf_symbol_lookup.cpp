@@ -203,7 +203,8 @@ find_symbol_gnuhash(const image_t* image, const SymbolLookupInfo& lookupInfo)
 	// Test against the Bloom filter.
 	const uint32 wordSize = sizeof(elf_addr) * 8;
 	const uint32 firstHash = lookupInfo.gnuhash & (wordSize - 1);
-	const uint32 secondHash = lookupInfo.gnuhash >> image->gnuhash.shift2;
+	const uint32 secondHash = (lookupInfo.gnuhash >> image->gnuhash.shift2)
+		& (wordSize - 1);
 	const uint32 index = (lookupInfo.gnuhash / wordSize) & image->gnuhash.mask_words_count_mask;
 	const elf_addr bloomWord = image->gnuhash.bloom[index];
 	if (((bloomWord >> firstHash) & (bloomWord >> secondHash) & 1) == 0)
