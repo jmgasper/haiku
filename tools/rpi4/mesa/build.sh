@@ -18,16 +18,11 @@ unset PKG_CONFIG_PATH
 mkdir -p "$ROOT"
 [ -d "$ROOT/mesa-25.3.6" ] || cp -a "$BASE/mesa-25.3.6" "$ROOT/"
 
-# A clean copy and an already patched working tree are both supported.
-for patch in mesa-haiku-v3d.patch mesa-haiku-shader-cache.patch \
-        mesa-haiku-texture-cache.patch; do
-    if patch --batch --dry-run -N -p1 -d "$ROOT/mesa-25.3.6" < "$TOOLS/$patch" >/dev/null 2>&1; then
-        patch --batch -N -p1 -d "$ROOT/mesa-25.3.6" < "$TOOLS/$patch"
-    elif ! patch --batch --dry-run -R -p1 -d "$ROOT/mesa-25.3.6" < "$TOOLS/$patch" >/dev/null 2>&1; then
-        echo "Cannot apply or recognize $patch; check the pinned Mesa source" >&2
-        exit 1
-    fi
-done
+# Validate the ordered series before applying it. Later patches overlap
+# earlier ones; checking each reverse patch independently is insufficient.
+python3 "$TOOLS/apply-patches.py" "$ROOT/mesa-25.3.6" \
+    "$TOOLS/mesa-haiku-v3d.patch" "$TOOLS/mesa-haiku-shader-cache.patch" \
+    "$TOOLS/mesa-haiku-texture-cache.patch" "$TOOLS/mesa-haiku-gpu-readback.patch"
 
 # The bootstrap zlib.pc names its original /packages location, which is
 # absent from the cross sysroot. Use its installed development paths.

@@ -118,6 +118,27 @@ int main(int argc, char** argv)
 			glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
 			verify(pixels.data(), expected, "upload / sample / repeated CPU read");
 		}
+		// Cropped readback with a nonzero origin and padded client rows.
+		const int readX = 13, readY = 7;
+		const int readWidth = width - 31, readHeight = height - 23;
+		const int packStride = (readWidth + 13) * 4;
+		std::vector<unsigned char> packed(size_t(packStride) * (readHeight + 6)
+			+ 32, 0xa7);
+		std::vector<unsigned char> packedExpected = packed;
+		for (int row = 0; row < readHeight; row++)
+			std::memcpy(packedExpected.data() + 16
+				+ size_t(row + 3) * packStride + 7 * 4,
+				expected.data() + size_t(row + readY) * width * 4 + readX * 4,
+				readWidth * 4);
+		glPixelStorei(GL_PACK_ROW_LENGTH, readWidth + 13);
+		glPixelStorei(GL_PACK_SKIP_PIXELS, 7);
+		glPixelStorei(GL_PACK_SKIP_ROWS, 3);
+		glReadPixels(readX, readY, readWidth, readHeight, GL_RGBA, GL_UNSIGNED_BYTE,
+			packed.data() + 16);
+		verify(packed.data(), packedExpected, "cropped read with padded rows and skips");
+		glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+		glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
+		glPixelStorei(GL_PACK_SKIP_ROWS, 0);
 		// GPU writes followed by two CPU updates without intervening GPU use.
 		// The second prepare must preserve the first update's dirty cache lines.
 		glEnable(GL_SCISSOR_TEST);

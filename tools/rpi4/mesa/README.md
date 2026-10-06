@@ -3,7 +3,8 @@
 `build.sh` builds Mesa 25.3.6 with the `v3d` Gallium driver (and softpipe) for
 Haiku arm64. It sits on the ROCK 5's pinned Mesa port
 (`tools/rock5-itx/mesa`): the same sysroot, cross file, libglvnd and patched
-source, plus the V3D, shader-cache and texture-cache patches from this directory. The build script applies them to its copy of the source
+source, plus the V3D, shader-cache, texture-cache and GPU-readback patches
+from this directory. The build script applies them to its copy of the source
 under `/mnt/HaikuWork/rpi4/mesa/mesa-25.3.6`, or checks that they are already
 applied. It reconfigures existing builds to pick up changed options.
 
@@ -78,10 +79,44 @@ capability, TFU transfer and 64 alternating read/write ownership cycles.
 `texture_probe.cpp` checks every pixel after repeated maps, partial writes,
 GPU rendering, narrow-band reads and PBO transfers. Its optional arguments
 are round count, base width and base height (defaults: `40 257 131`).
-`build-probes.sh` builds both GLES probes into `mesa/probes` against the
+`build-probes.sh` builds the three GLES probes into `mesa/probes` against the
 same pinned EGL/GLESv2 libraries. Native pixel and
 application measurements, including the narrow-band readback regression,
 are in `docs/rpi4/PERFORMANCE.md`.
+
+## GPU-assisted readback
+
+Large, read-only RGBA8/BGRA8 (including opaque RGBX) texture maps use a
+linear GPU staging target by default. V3D stores raster-order pixels there,
+and the existing ownership API makes them safe for CPU access. This avoids
+CPU detiling and its temporary copy. The minimum is 128 x 64 pixels and
+128 Ki pixels in total; small reads keep their CPU path. Writes,
+unsynchronized, direct, nonblocking, persistent/coherent, array and other
+format mappings retain their existing path. `V3D_HAIKU_GPU_READBACK=0`
+disables the optimization. It also falls back when cached textures or the
+required kernel capability are unavailable.
+
+The Haiku EGL library exports a private performance hint:
+`int haiku_mesa_readback_band_bytes(void)`. It examines the current context,
+changes no GL state, and returns -1 for no preference, 0 for whole readback
+rectangles, or a positive preferred band size in bytes. Currently only
+V3D with GPU readback enabled returns 0. With no current context it returns
+-1. Consumers discover the optional symbol in the loaded EGL vendor
+library, so older libraries remain usable.
+
+`../summit/webkit-haiku-readback-hint.patch` uses that hint to avoid turning
+Summit's former 384 KiB CPU bands into many small GPU jobs. An explicit
+`SUMMIT_READBACK_BAND_KB` still takes precedence. `readback_probe.cpp`
+checks 48 combinations of formats, MSAA resolve, mip levels, cropped
+origins, padded rows and guards. Set `PROBE_READBACK_HINT=0` (or -1 for a
+fallback configuration) to check the hint too. The texture probe additionally
+checks cropped patterned reads; the depth/triangle probe remains unchanged.
+
+The build validates the entire ordered patch series on temporary copies
+before updating the source, recognizing both clean trees and already applied
+prefixes. This matters because the readback patch overlaps the texture patch.
+Measured application results and rejected experiments are recorded in
+`docs/rpi4/PERFORMANCE.md`.
 
 ## Vulkan (v3dv)
 

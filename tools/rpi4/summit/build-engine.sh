@@ -16,12 +16,8 @@ for option in ENABLE_WEBGL ENABLE_WEB_RTC USE_HAIKU_GL_COMPOSITING; do
         echo "Required release feature $option is disabled in $BUILD" >&2; exit 1;
     }
 done
-PATCH=$TOOLS/webkit-haiku-exports.patch
-if patch --batch --dry-run -N -p1 -d "$SOURCE" < "$PATCH" >/dev/null 2>&1; then
-    patch --batch -N -p1 -d "$SOURCE" < "$PATCH"
-elif ! patch --batch --dry-run -R -p1 -d "$SOURCE" < "$PATCH" >/dev/null 2>&1; then
-    echo "Cannot apply or recognize the export patch; inspect the engine source" >&2; exit 1
-fi
+python3 "$TOOLS/../mesa/apply-patches.py" "$SOURCE" \
+    "$TOOLS/webkit-haiku-exports.patch" "$TOOLS/webkit-haiku-readback-hint.patch"
 source /mnt/HaikuWork/build/summit-arm64/hosttools/env.sh
 cmake -S "$SOURCE" -B "$BUILD" > "$LOG" 2>&1
 ninja -C "$BUILD" -j"${HAIKU_JOBS:-8}" WebKit WebProcess NetworkProcess >> "$LOG" 2>&1

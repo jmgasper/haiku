@@ -549,3 +549,69 @@ rebuilt, SHA-256 `c2cc66226765509020b98a38de11b988104f0920dda566c7bd5ec377ca2504
 The complete `hrev60097+659+dirty` image builds and reaches the branded
 QEMU desktop (`tcp-reuse/full-build.log`, `tcp-reuse/qemu.*`). Native kernel
 installation and final-image acceptance remain separate steps.
+
+
+## GPU-assisted frame readback
+
+Mesa now blits large, read-only color maps into a linear staging texture,
+using the existing version-2 CPU/GPU ownership protocol. V3D stores the
+pixels in CPU row order, avoiding CPU detiling and a temporary copy. Small
+reads and unsupported formats/flags retain the original path. The driver
+option `V3D_HAIKU_GPU_READBACK=0` restores the previous behavior; disabling
+cached textures or using an older kernel also disables the new path.
+
+The first prototype improved full-HD RGBA copies from roughly 39–40 ms to
+10–11 ms, but **regressed Summit**. Tracing showed that Summit's previous
+384 KiB readback bands became separate GPU jobs. The final driver keeps
+maps below 128 Ki pixels on the CPU and exposes an optional current-context
+performance hint. WebKit uses whole rectangles when that hint is present
+and enabled, and retains bands with an older/disabled driver. Explicit
+`SUMMIT_READBACK_BAND_KB` settings still override the hint.
+
+With the same private Mesa and WebKit binaries, alternating off/on/on/off
+runs give these ranges. The control uses the existing cached textures and
+CPU bands; the candidate automatically uses GPU readback and whole reads.
+
+| Window frame | Workload | Control FPS | Candidate FPS |
+| --- | --- | ---: | ---: |
+| (10,60)–(1160,1000) | WebGL requestAnimationFrame | 59.3–59.5 | 59.78–59.79 |
+| (10,60)–(1160,1000) | Scrolling, native view frames | 46.7–49.2 | 53.3–57.8 |
+| (0,25)–(1919,1075) | WebGL requestAnimationFrame | 40.7–40.9 | 59.78–59.79 |
+| (0,25)–(1919,1075) | Scrolling, native view frames | 24.8–26.3 | 38.8–39.8 |
+
+The local WebGL canvas is 1024x768; the larger window also changes the
+compositor/readback area. Scrolling uses four 80-event bursts per run,
+25 ms between events, alternating direction. Every burst delivers all
+80 events with status 0. Rates use frame notifications delivered to the
+native view at burst completion, not idle time afterward. Neither metric
+is a physical display-refresh measurement. Evidence:
+`gpu-readback/automatic-browser.txt`, `gpu-readback/fullscreen-browser.txt`.
+`listimage` confirms the private libraries in the browser processes.
+
+Native checks cover all 48 format/MSAA/mip/crop/padding combinations with
+GPU readback on and off, and with cached textures disabled. The hint
+returns -1 with no current context and in fallback configurations. The
+expanded texture probe passes 100 small and 20 full-HD rounds with repeated
+maps, overlapping writes, patterned crops, narrow bands and PBOs. The full-HD
+depth/clear/triangle check validates all 2,073,600 pixels. Evidence:
+`gpu-readback/repo-readback-results.txt`, `gpu-readback/release-default-native.txt`.
+Earlier experimental positional `pipe_box` initialization was wrong and
+caused GPU MMU faults; it was rejected. The final code uses named fields,
+and the subsequent integrated serial capture has no such faults.
+
+All 28 patched Mesa source files reproduce from the pinned base. Patch
+application is checked on copies before touching source files, including
+clean, partially applied, already applied and conflicting states. WebKit
+retains its 1,804 exports and passes the consumer symbol checks. Its release
+package is `summit_webkit-1.10.0-12-arm64.hpkg`, SHA-256
+`d3818f4148e8300c9cb5418e6b7ed52733bffd597d51d5de623857f3d05b5aef`.
+The packaged engine's SHA-256 is
+`635874118ebcdba2af507c121f7e0d48e4ae4ede0eb3d6455f26f5c684380114`.
+It differs from the private candidate only in 56 unused RPATH-padding bytes:
+CMake writes zeros where patchelf wrote `X` (`engine-byte-comparison.txt`).
+The final Mesa also checks resource-allocation failure before dereferencing
+the new resource; its SHA-256 is
+`e62fc032edb97ebca6479349803fe14c17aad274817452bedfc73498b7b7218b`.
+It passes the 48-case readback probe and four patterned full-HD rounds
+(`final-mesa-native.txt`). The complete `hrev60097+660+dirty` image reaches
+the branded QEMU desktop (`final-full-build.log`, `qemu.png`).
