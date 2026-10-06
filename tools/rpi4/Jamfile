@@ -2,6 +2,7 @@ SubDir HAIKU_TOP tools rpi4 ;
 
 UsePrivateHeaders drivers graphics ;
 UsePrivateSystemHeaders ;
+UsePrivateHeaders interface ;
 SubDirHdrs [ FDirName $(HAIKU_TOP) src add-ons media plugins rpi_mmal ] ;
 SubDirHdrs [ FDirName $(HAIKU_TOP) src add-ons media plugins rpi_hevc ] ;
 
@@ -17,6 +18,7 @@ SimpleTest rpi4_gpio : gpio.cpp ;
 SimpleTest rpi4_swap_commit : swap_commit.cpp ;
 SimpleTest rpi4_kdl : kdl.cpp ;
 SimpleTest rpi4_orphan : orphan.cpp ;
+SimpleTest rpi4_app_bench : app_bench.cpp : be [ TargetLibsupc++ ] ;
 
 # the firmware's H.264 decoder, the class of the media add-on
 SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) src add-ons media plugins rpi_mmal ] ;
