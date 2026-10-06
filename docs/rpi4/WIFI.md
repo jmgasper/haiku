@@ -103,6 +103,17 @@ join timeouts. Three of four consecutive cold browser tests joined; the
 fourth associated but did not finish its handshake before the supplicant's
 15-second timeout. This remains under investigation.
 
+The final flashed image (`hrev60097+672`, source `63f5e1e916`) also reproduces
+this failure. Joining through the custom preferences window succeeds and
+remembers the network; the next cold boot joins automatically. The following
+cold boot times out, as do a manual helper retry and an explicit leave/rejoin.
+Ethernet and the desktop remain available. This uses the packaged autojoin
+helper, not the earlier experimental scan listener. It is a release limitation,
+not a passed reboot test. The helper currently exits after a join timeout;
+its outer retry loop covers unavailable scans and networks, not failed joins.
+Evidence: `evidence/performance-20261006/release/cold-boot-3.txt`,
+`wifi-boot-3-retry.txt` and `wifi-boot-3-leave-rejoin.txt`.
+
 The OpenBSD compatibility layer now exports Broadcom's absolute RSSI as
 FreeBSD-format half-dB units over a -100 dBm reference floor. Previously a
 negative dBm byte wrapped into an unsigned RSSI, so the custom Wi-Fi tool

@@ -5,6 +5,12 @@ Work started 2026-10-06 on `rpi4`, from `e762318b83`. Target: the lab's
 existing 8 GB SD card, and the full air/OS image. Improvements must retain
 the custom applications, preferences and hardware support.
 
+The installed result is summarized in [STATUS.md](STATUS.md). The sections
+below are a chronological experiment record: statements about candidates,
+uninstalled builds and pending checks describe that experiment's state at
+the time. The final-image measurements at the end distinguish the shipped
+combination from isolated A/B results.
+
 ## Measurement
 
 Raw evidence belongs outside Git in
@@ -933,3 +939,127 @@ emulate V3D, so GPU claims rely on the native results above. Evidence:
 `v3d-resident/control-opens.txt`, `control-lifetime-expected-failure.txt`,
 `candidate-opens.txt`, `candidate-lifetime.txt`, `candidate-pixels.txt`,
 `full-build-2.log` and `qemu-2.{log,png}`.
+
+## Final flashed image, 2026-10-06
+
+The complete image built from clean source `63f5e1e916c41369d9464a062f20a23912fe8ee6`
+is 4,030,726,144 bytes, SHA-256
+`dc071043870ab5e704c5b6cc76a5db8f9f307a49849a70a0f786f1c719fe2d32`.
+It reaches the branded desktop in QEMU, was written to the lab SD card,
+and the full readback matches before boot. The installed kernel reports
+`hrev60097+672`. FAT configuration, loader and boot archive, packaged core
+libraries, WebKit, Mesa, V3D and the Wi-Fi helper match the build manifest.
+No production V3D override remains. Later documentation commits do not
+change the image. Evidence below is under `release/`.
+
+### Boot and application launch
+
+The first observed fresh HDMI desktop is 34.407 seconds after the EEPROM
+banner. MJPEG stream gaps cover the display reset; this is an observed upper
+bound, not exact first paint. Serial display layout appears at 22.493 seconds
+and Ethernet link at 25.982 seconds. The EEPROM USB timeout reduction saves
+about 22.5 seconds before SD selection in its separate controlled comparison;
+that EEPROM setting is on this board, not in the image file.
+
+All three final launch runs leave the WebKit library unread until after
+the first browser process. Boot 1 starts with an empty persistent shader
+cache; boots 2 and 3 retain it across cold power cycles. The local start page,
+application versions and dual-display layout stay fixed. Boot 3 follows a
+Wi-Fi startup failure and unsuccessful manual retry; Ethernet remains up.
+
+| Measurement | Fresh image / boot 1 | Cold boot 2 | Cold boot 3 |
+| --- | ---: | ---: | ---: |
+| Summit ready, seconds | 2.557 | 2.593 | 2.544 |
+| First content tiles, seconds | 8.636 | 8.388 | 8.422 |
+| Warm StyledEdit window, ms | 102.910 | 103.680 | 120.151 |
+| Warm About window, ms | 107.823 | 107.445 | 107.658 |
+| Warm AirPins window, ms | 279.176 | 280.831 | 276.669 |
+| Warm Natter window, ms | 335.662 | 335.272 | 329.523 |
+| DOM fixture median, ms | 1307 | 1296 | 1243 |
+| Full-window WebGL fixture, FPS | 58.37 | 59.00 | 59.08 |
+| Active scrolling, FPS range | 30.24–31.68 | 30.68–31.68 | 30.13–31.58 |
+
+Window values are medians of launches two through five. StyledEdit's third
+boot has two slower samples (132.5 and 147.2 ms); these are retained, not
+discarded. The initial warm medians were 142.9 ms for StyledEdit, 134.1 ms
+for About and 1099.2 ms for AirPins. Those initial observations and the final
+combination show the overall change; the earlier isolated comparisons
+establish which changes helped. Each final boot passes the 12-case WebKit
+fixture. No final scrolling result reproduces the earlier isolated 39 FPS
+result, so the release measurement remains approximately 30–32 FPS.
+
+Evidence: `boot-1-observed.json`, `boot-1-video/`,
+`benchmark-boot-{1,2,3}.{txt,json}`, `hid-boot-{1,2,3}.txt` and
+`gpu-after-boot-{2,3}.txt`. All three HID checks deliver 20 keyboard,
+20 relative-mouse and 20 absolute-tablet events. The native 1,000-round
+GPU lifetime test and later 100-round checks retain the shared page table
+with zero client buffers remaining.
+
+### Browser and media workloads
+
+The WebGL Aquarium source is pinned at
+`425fa919b1abf5ba0824bcffa6d711ce6c6f3d9e`. Both local variants keep 500 fish,
+a 1024x1024 canvas and the same 1125x688 window, with automatic quality
+increase disabled. After 40 seconds of warm-up, 20 samples give 36 FPS
+median (33–37) without normal maps/reflections and 32 FPS (30–33) with both.
+The older 21 FPS screenshot did not control those settings and is not a
+valid percentage comparison. The final scene is visually checked.
+
+This WebKit revision hardcodes the JavaScript debug-renderer string to
+`Apple GPU` in `WebGLRenderingContextBase.cpp`; that string is not hardware
+identification. Native EGL and pixel probes identify V3D. Evidence:
+`aquarium-check.txt`, `aquarium-summary.json` and `aquarium.jpg`.
+
+| airTime fixture | Shown FPS | Dropped during measurement | Actual interval |
+| --- | ---: | ---: | ---: |
+| H.264 1080p30 | 29.6 | 9 | 20.3 s |
+| HEVC 1080p30, 8-bit | 30.1 | 0 | 14.1 s |
+| HEVC 1080p30, 10-bit | 30.1 | 0 | 15.8 s |
+| HEVC 4K30, 8-bit | 30.0 | 0 | 20.4 s |
+
+The short 1080p HEVC clips end before the requested 20-second interval;
+the table reports their actual samples. Hardware decoder selection is
+confirmed. H.264 dropped another five frames before its measurement began.
+Across the three benchmark boots, raw 4K10 decoding remains 18.4–19.6 FPS,
+below real time. These short playback tests do not establish performance
+on all content or prove physical audio output. Evidence: `airtime-*.txt`
+and the visually checked `airtime-playback.jpg`.
+
+### Correctness and device coverage
+
+The installed libraries pass 737,600 strlen cases, 6,422,376 strcmp cases,
+549,027 memmove cases, 497,300 memset guards and 8,192 graphics-buffer cases.
+All 50 loader cases, four view checks, 48 GLES readback checks, full-HD
+texture/depth checks, native EGL window pixel/resize/retirement checks,
+exact Vulkan clear/triangle checks, 1,506 SAND conversion cases, 512 TCP
+rekeys and 320 failed-child cleanup cases pass (`correctness.txt`).
+
+All 25 HEVC streams match their FFmpeg references. The H.264 harness first
+omitted required width/height arguments, then used a stale expected digest;
+both failures are retained. A fresh host FFmpeg decode and both native input
+modes agree on 90 frames with MD5 `2ceb043d50df9e2292ac39efaeac639b`.
+The corrected fixture bundle's 479-file manifest passes. Evidence:
+`decoder-check.txt`, `h264-host-reference.txt`, `h264-corrected-reference.txt`
+and `bundle-final-check.txt`.
+
+airShot, Amp, Burrow, Kiri, Natter, TurboChook and AirPins pass repeated launch
+checks; Clipper's history window opens; LCDMonitor renders a checked JPEG.
+The custom Screen, Wi-Fi and Bluetooth preferences open and are visually
+checked. BLE scanning finds 18 nearby devices. The audio API accepts a
+three-second 48 kHz tone, but nobody has heard the physical output. The
+second HDMI display is logically present at 1920x1080; only HDMI0 is observed.
+
+With the other physical network interface administratively down, a 32 MiB
+download to SD matches its SHA-256 over each interface. Three downloads to
+`/dev/null` measure approximately 72–74 Mbit/s over Wi-Fi and 639–746 Mbit/s
+over Ethernet; the server verifies the source address. Both interfaces are
+restored afterward. Wi-Fi is joined and remembered through the custom GUI.
+It autojoins on boot 2 but times out on boot 3, including two manual recovery
+attempts. This is a production-image failure, not evidence that the earlier
+experimental helper caused it. See `WIFI.md`.
+
+Linux recovery and air/OS enumerate the Verbatim thumb drive and NanoKVM.
+The first 8 MiB of the thumb drive hash identically on both, without any
+write. The separate physical mouse appears in neither enumeration; KVM
+input passes. Evidence: `apps-check.txt`, preferences screenshots,
+`network-{wifi,ethernet}.txt`, `wifi-ui-joined.jpg`, and `usb-*.txt`.
