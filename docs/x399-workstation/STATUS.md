@@ -6,7 +6,7 @@ listed as verified is untested.
 `tools/check-workstation.sh` re-checks the machine against all of this in one
 pass, with nothing set in the environment of the programs it runs, because
 several of these have looked fine while being quietly broken. It last came back
-24 working, 0 not (2026-10-04, running air/OS hrev60097+573).
+25 working, 0 not (2026-10-06, running air/OS hrev60206+686).
 
 What still needs someone at the machine: a look at the scaled picture on the
 two 4K monitors, a monitor pulled out and plugged back in (the syslog says
@@ -30,6 +30,48 @@ each USB port, the serial console, and a Bluetooth device to pair with.
 | Sleep | S3 suspend and resume | sleeps and wakes; the display comes back, but the NVMe and the network card usually do not. Paused until a serial console arrives, which is also what the one untested path in the vertical sync work needs |
 
 ## Log
+
+- 2026-10-06: fractional drawing and vector icon scaling were reviewed and
+  corrected (`6a0056c5d4`, `3528aa6eb0`). The X399 now runs the clean
+  **hrev60206+686** build from `3528aa6eb0`, including the concurrent fork
+  master/CI changes merged in `cb915b1f0d`.
+  * One-logical-pixel moves and scrolls at fractional density now redraw
+    instead of accumulating rounded pixel-copy offsets. Rectangular gradient
+    fills use the same edges as borders. Device clipping prevents a rounded
+    logical desktop from extending beyond its physical framebuffer (the
+    1280x800 QEMU display previously crashed when switched to 225%).
+  * Vector sources survive bitmap copies, full imports, archives, button
+    states and Tracker selection. app_server caches a raster at the drawing
+    density, and discards it after raw pixel edits. RGB alpha behaviour and
+    palette icons were checked separately.
+  * The native sweep uncovered another issue: successive scale increases
+    left gaps between the monitors until NVIDIA rejected the oversized
+    framebuffer allocation. Scale changes now keep displays adjacent unless
+    positions are also changed explicitly. The repeated native sweep passes
+    with the expected desktop dimensions at every scale.
+  * `fractionalscale`: all 64 border samples and all eight icon comparisons
+    pass at 100, 125, 150, 175, 200, 225 and 250%, including eight one-pixel
+    moves, eight scrolls and direct pixel mutation. Every icon comparison has
+    zero differing pixels against an independently rasterized reference.
+    RGB and palette variants also pass at 175%. The same checks passed in
+    QEMU, along with live density changes using the same cached icons.
+    `displaylayouttest` passes, including the new physical timing, adjacency
+    and explicit-position cases. ARM64 app_server, libbe and libtracker build;
+    no ARM hardware rendering claim is made.
+  * All seven system packages and the EFI loader were installed, followed by
+    a cold restart. Package, app_server, libbe and libtracker hashes match the
+    build manifest. Existing non-packaged drivers remain in place. Original
+    packages and loader are retained in
+    `/boot/home/x399-backup/fractional-20261006`; the previous staged build is
+    also retained. The final layout is DP-4 at (0,0), DP-2 primary at (1920,0),
+    both 3840x2160 at 200%, desktop 3840x1080.
+  * `check-workstation.sh`: **25 working, 0 not** after the final cold boot
+    and scale sweep, including GPU OpenGL/Vulkan, displays, audio, USB and
+    network shares.
+  * Reproduction instructions and the shared-renderer/bitmap-only limits are
+    in [FRACTIONAL-SCALING.md](FRACTIONAL-SCALING.md). Raw logs, captures and
+    the pinned source/compiler/artifact manifest are outside the repository
+    under `/mnt/HaikuWork/artifacts/fractional-scaling`.
 
 - 2026-10-05: scaled screenshots no longer copy the screen first. At 200%
   `DrawingEngine::ReadBitmap` still copied the drawing buffer's rectangle
