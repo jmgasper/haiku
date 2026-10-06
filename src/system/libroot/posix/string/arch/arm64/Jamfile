@@ -16,6 +16,7 @@ for architectureObject in [ MultiArchSubDirSetup arm64 ] {
 			arm64_memcpy.S
 			arm64_memset.S
 			arm64_strcmp.S
+			arm64_strlen.S
 			;
 	}
 }

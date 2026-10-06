@@ -763,3 +763,36 @@ after the workers exit. This is an outstanding allocation-pressure limit,
 not a passed endurance test. A separate clock endurance run skips the
 large compression setup tests and uses the randomized workloads directly.
 Evidence: `arm-boost/soak-monotonic-memory-pilot.txt` and `serial.log`.
+
+## ARM64 string length
+
+The user library and runtime loader also use Arm's `strlen` from the same
+optimized-routines revision. Its 304 instruction bytes exactly match the
+upstream build, including the backward-compatible BTI entry instruction.
+It uses SIMD for longer strings and checks page boundaries before unaligned
+loads. Kernel and boot implementations are unchanged; this routine does not
+support memory tagging, which the current ARM64 port does not enable.
+
+The standalone comparison passes 2,212,800 constructed-length checks across
+the installed, candidate and forced-page-boundary implementations. The public
+probe supplies 737,600 checks against the installed library. A private libroot
+passes the string and memory guards, 50 loader cases, four view checks and
+the 12-case browser fixture. The full image boots to the desktop in QEMU.
+An initial visible-window test ran with the screen blanker active and failed;
+after waking the display, all four view checks pass.
+
+Four alternating benchmark rounds at 1.8 GHz give these median nanoseconds:
+
+| Bytes / alignment | Installed | Candidate |
+| --- | ---: | ---: |
+| 3 / aligned | 11.72 | 7.82 |
+| 8 / +3 | 23.12 | 7.82 |
+| 128 / aligned | 30.63 | 21.44 |
+| 512 / +3 | 113.40 | 62.11 |
+| 4,096 / aligned | 636.20 | 427.00 |
+| 32,768 / +3 | 5,167.19 | 3,314.94 |
+
+These are string microbenchmarks, not whole-application improvements.
+Evidence: `strlen/benchmark-native.txt`, `correctness-under-load.txt`,
+`private-library-native-trace.txt`, `instruction-verification.txt`, and
+`qemu.{log,png}`.

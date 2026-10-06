@@ -24,6 +24,7 @@ SimpleTest rpi4_memory_move_probe : memory_move_probe.cpp : [ TargetLibstdc++ ] 
 SimpleTest rpi4_memory_bench : memory_bench.cpp : [ TargetLibstdc++ ] ;
 SimpleTest rpi4_memory_set_probe : memory_set_probe.cpp : [ TargetLibstdc++ ] ;
 SimpleTest rpi4_string_compare_probe : string_compare_probe.cpp : [ TargetLibstdc++ ] ;
+SimpleTest rpi4_string_length_probe : string_length_probe.cpp : [ TargetLibstdc++ ] ;
 
 # the firmware's H.264 decoder, the class of the media add-on
 SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) src add-ons media plugins rpi_mmal ] ;

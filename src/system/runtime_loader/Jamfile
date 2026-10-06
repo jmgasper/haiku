@@ -14,10 +14,13 @@ for architectureObject in [ MultiArchSubDirSetup ] {
 			= <src!system!libroot!posix!musl!string!$(architecture)>memmove.o ;
 		local strcmpObject
 			= <src!system!libroot!posix!string!$(architecture)>strcmp.o ;
-		# ARM64's architecture string object provides memcpy, memmove and strcmp.
+		local strlenObject
+			= <src!system!libroot!posix!musl!string!$(architecture)>strlen.o ;
+		# ARM64 supplies these in the architecture string object.
 		if $(architecture) = arm64 {
 			memmoveObject = ;
 			strcmpObject = ;
+			strlenObject = ;
 		}
 
 		UsePrivateHeaders libroot runtime_loader shared ;
@@ -71,7 +74,7 @@ for architectureObject in [ MultiArchSubDirSetup ] {
 			<src!system!libroot!posix!musl!string!$(architecture)>strcspn.o
 			<src!system!libroot!posix!musl!string!$(architecture)>strlcat.o
 			<src!system!libroot!posix!musl!string!$(architecture)>strlcpy.o
-			<src!system!libroot!posix!musl!string!$(architecture)>strlen.o
+			$(strlenObject)
 			<src!system!libroot!posix!musl!string!$(architecture)>strnlen.o
 			<src!system!libroot!posix!musl!string!$(architecture)>strpbrk.o
 			<src!system!libroot!posix!musl!string!$(architecture)>strspn.o
