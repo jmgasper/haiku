@@ -3,6 +3,7 @@
 # build directory.
 #
 # usage: build-cross.sh <haiku build dir> <work dir> <output dir>
+#        (OGKM_SRC=<open-gpu-kernel-modules checkout at OGKM_COMMIT>)
 #
 # The RM core of NVIDIA's proprietary driver is non-PIC code for GCC's kernel
 # code model, so nvidia_rm is linked as an ET_EXEC image at a fixed address in
@@ -42,12 +43,20 @@ NV_DIR=$WORK/NVIDIA-Linux-x86_64-$NV_VERSION
 [ -d "$NV_DIR" ] || (cd "$WORK" && sh "$NV_RUN" -x >/dev/null)
 NV_KERNEL=$NV_DIR/kernel/nvidia/nv-kernel.o_binary
 
-# Open GPU kernel modules with Haiku build support: headers and NVKMS
-OGKM=$WORK/open-gpu-kernel-modules
-if [ ! -d "$OGKM/.git" ]; then
-	git clone -q "$OGKM_URL" "$OGKM"
+# Open GPU kernel modules with Haiku build support: headers and NVKMS.
+# OGKM_SRC names a checkout of that commit made elsewhere (the air/OS CI
+# uses jmgasper's fork); otherwise it is cloned into the work dir.
+if [ -n "${OGKM_SRC:-}" ]; then
+	OGKM=$(realpath "$OGKM_SRC")
+else
+	OGKM=$WORK/open-gpu-kernel-modules
+	if [ ! -d "$OGKM/.git" ]; then
+		git clone -q "$OGKM_URL" "$OGKM"
+	fi
+	git -C "$OGKM" checkout -q "$OGKM_COMMIT"
 fi
-git -C "$OGKM" checkout -q "$OGKM_COMMIT"
+[ "$(git -C "$OGKM" rev-parse HEAD)" = "$OGKM_COMMIT" ] \
+	|| { echo "$OGKM is not at $OGKM_COMMIT" >&2; exit 1; }
 
 KCC=$WORK/haiku-kcc
 cat > "$KCC" <<KCCEOF

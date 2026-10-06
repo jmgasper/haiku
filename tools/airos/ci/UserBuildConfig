@@ -21,6 +21,9 @@
 #   AIROS_CI_LIBS           libraries for system/non-packaged/lib (GL stack)
 #   AIROS_CI_EGL            EGL vendor files for .../add-ons/opengl/egl_vendor.d
 #   AIROS_CI_DEMOS          demos for system/non-packaged/demos (GLTeapot)
+#   AIROS_CI_ADDONS         an add-ons tree for system/non-packaged/add-ons
+#   AIROS_CI_FLUIDLITE      (arm64) a prefix with FluidLite for the MIDI kit,
+#                           read by build/jam/BuildFeatures
 #   AIROS_CI_FIRMWARE       a tree copied to system/non-packaged/data/firmware
 #   AIROS_CI_IMAGE_SIZE     image size in MiB (optional)
 #   HAIKU_RPI_FIRMWARE_DIR  (Pi) the Raspberry Pi boot firmware files
@@ -72,10 +75,12 @@ rule AirosCIFiles directoryTokens : sourceDir : grist : pattern
 		return ;
 	}
 	local files = [ Glob $(sourceDir) : $(pattern) ] ;
+	# The glob of * also returns . and ..
+	files = [ FFilter $(files:BS) : . .. ] ;
 	if ! $(files) {
 		return ;
 	}
-	files = <$(grist)>$(files:BS) ;
+	files = <$(grist)>$(files) ;
 	SEARCH on $(files) = $(sourceDir) ;
 	AddFilesToHaikuImage $(directoryTokens) : $(files) ;
 }
@@ -90,6 +95,12 @@ rule UserBuildConfigRulePreImage
 	AirosCIFiles system non-packaged add-ons opengl egl_vendor.d : $(AIROS_CI_EGL)
 		: airos-ci-egl : *.json ;
 	AirosCIFiles system non-packaged demos : $(AIROS_CI_DEMOS) : airos-ci-demo : * ;
+	# Add-ons outside packages (x86_64: nvidia_rm, its accelerant, NVDEC), so
+	# the boot menu's "Disable user add-ons" turns them off.
+	if $(AIROS_CI_ADDONS) {
+		CopyDirectoryToHaikuImage system non-packaged : $(AIROS_CI_ADDONS)
+			: add-ons ;
+	}
 	if $(AIROS_CI_FIRMWARE) {
 		CopyDirectoryToHaikuImage system non-packaged data : $(AIROS_CI_FIRMWARE)
 			: firmware ;

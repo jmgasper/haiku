@@ -222,8 +222,16 @@ if [ IsPackageAvailable ffmpeg6_devel ] {
 # Fluidlite
 # The arm64 Rock 5 image uses a pinned, locally cross-built FluidLite archive
 # with its bundled stb Vorbis decoder. The public arm64 package repository does
-# not yet provide fluidlite_devel or libvorbis_devel.
-if $(TARGET_PACKAGING_ARCH) = arm64 && $(HAIKU_BUILD_PROFILE) = rock5full-mmc {
+# not yet provide fluidlite_devel or libvorbis_devel. The air/OS CI builds the
+# same FluidLite from jmgasper/FluidLite and names its prefix (develop/headers,
+# develop/lib/libfluidlite.a) in AIROS_CI_FLUIDLITE.
+if $(TARGET_PACKAGING_ARCH) = arm64 && $(AIROS_CI_FLUIDLITE) {
+	SetBuildFeatureAttribute fluidlite : headers
+		: $(AIROS_CI_FLUIDLITE)/develop/headers ;
+	SetBuildFeatureAttribute fluidlite : library
+		: $(AIROS_CI_FLUIDLITE)/develop/lib/libfluidlite.a ;
+	EnableBuildFeatures fluidlite ;
+} else if $(TARGET_PACKAGING_ARCH) = arm64 && $(HAIKU_BUILD_PROFILE) = rock5full-mmc {
 	local fluidliteRoot = /mnt/HaikuWork/rock5-image-extras/develop/fluidlite ;
 	SetBuildFeatureAttribute fluidlite : headers : $(fluidliteRoot)/include ;
 	SetBuildFeatureAttribute fluidlite : library : $(fluidliteRoot)/lib/libfluidlite.a ;

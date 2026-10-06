@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <MediaFormats.h>
 
@@ -483,6 +484,12 @@ status_t
 NVDecPlugin::GetSupportedFormats(media_format** formats, size_t* count)
 {
 	static media_format sFormats[1];
+
+	// Haiku picks one decoder for a format and does not fall back: without
+	// NVIDIA's resource manager (no nvidia_rm, or no card it drives) claim
+	// nothing, so H.264 stays with the other decoders.
+	if (access("/dev/nvidiactl", F_OK) != 0)
+		return B_NOT_SUPPORTED;
 
 	media_format_description description;
 	memset(&description, 0, sizeof(description));
