@@ -689,3 +689,38 @@ packages. Zstandard's native fuzzer passes 1,000 randomized cases with seed 1
 (`--no-big-tests --no-long-tests`). Evidence: `zstd/cold-*.txt`,
 `native-payload-and-smoke.txt`, `native-fuzzer.txt`,
 `native-662-acceptance.txt`; build/QEMU evidence is in `/rpi4/zstd/`.
+
+## ARM64 string comparison
+
+The user library and runtime loader now use Arm's scalar `strcmp` from
+optimized-routines revision `503fafe311c177de0e571c458c7c337b1ca5f522`.
+The instruction sequence is unchanged; symbol macros, unwind annotations
+and the stack note are adapted for Haiku. Kernel and boot strings retain
+their existing implementation.
+
+The native probe checks 6,422,376 comparisons against a byte-wise oracle,
+including all 16-by-16 alignment combinations, unsigned bytes, early and
+late differences, and strings ending immediately before inaccessible pages.
+It compares result signs, as required by ISO C, rather than assuming a
+particular nonzero return value. A private candidate libroot passes the
+same probe, all 50 loader cases, all four view-visibility checks and Summit's
+12-case browser fixture. `listimage` confirms the candidate in the browser
+and its child processes. The new runtime loader also boots the full image
+to the branded desktop in QEMU.
+
+Four alternating native benchmark rounds compare installed and candidate
+entry points through function pointers. Mean nanoseconds per equal-string
+comparison (the second string's offset is relative to aligned storage):
+
+| Bytes / second-string alignment | Installed | Candidate |
+| --- | ---: | ---: |
+| 8 / aligned | 20.18 | 15.36 |
+| 32 / +3 | 65.43 | 24.03 |
+| 128 / aligned | 93.44 | 43.05 |
+| 128 / +3 | 193.59 | 47.60 |
+| 512 / aligned | 285.64 | 158.88 |
+| 4,096 / +3 | 5,488.81 | 1,107.65 |
+
+These are comparison microbenchmarks, not measured application speedups.
+Evidence: `strcmp/native.txt`, `libroot-native.txt`, `summit-native.txt`,
+`full-build.log` and `qemu.{log,png}` under the performance evidence directory.

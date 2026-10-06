@@ -12,9 +12,12 @@ for architectureObject in [ MultiArchSubDirSetup ] {
 		local architecture = $(TARGET_PACKAGING_ARCH) ;
 		local memmoveObject
 			= <src!system!libroot!posix!musl!string!$(architecture)>memmove.o ;
-		# ARM64's architecture string object provides both memcpy and memmove.
+		local strcmpObject
+			= <src!system!libroot!posix!string!$(architecture)>strcmp.o ;
+		# ARM64's architecture string object provides memcpy, memmove and strcmp.
 		if $(architecture) = arm64 {
 			memmoveObject = ;
+			strcmpObject = ;
 		}
 
 		UsePrivateHeaders libroot runtime_loader shared ;
@@ -76,7 +79,7 @@ for architectureObject in [ MultiArchSubDirSetup ] {
 
 			<src!system!libroot!posix!string!$(architecture)>memcmp.o
 			<src!system!libroot!posix!string!$(architecture)>strcasecmp.o
-			<src!system!libroot!posix!string!$(architecture)>strcmp.o
+			$(strcmpObject)
 			<src!system!libroot!posix!string!$(architecture)>strdup.o
 			<src!system!libroot!posix!string!$(architecture)>strerror.o
 			<src!system!libroot!posix!string!$(architecture)>strncmp.o
