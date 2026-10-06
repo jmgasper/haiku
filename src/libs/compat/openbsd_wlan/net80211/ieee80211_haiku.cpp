@@ -246,6 +246,14 @@ wlan_control(void* cookie, uint32 op, void* arg, size_t length)
 				sr->isr_flags = 0; /* not actually used by userland */
 				sr->isr_noise = 0; /* unknown */
 				sr->isr_rssi = nodereq.nr_rssi;
+				if (nodereq.nr_max_rssi == 0) {
+					// OpenBSD reports signed dBm when no relative maximum is
+					// supplied. Export FreeBSD's half-dB units above a noise
+					// floor, not a negative value wrapped into an unsigned RSSI.
+					sr->isr_noise = -100;
+					sr->isr_rssi = 2 * max_c(0, min_c(100,
+						(int)nodereq.nr_rssi + 100));
+				}
 				sr->isr_intval = nodereq.nr_intval;
 				sr->isr_capinfo = fbsd_capinfo_from_obsd(nodereq.nr_capinfo);
 				sr->isr_erp = nodereq.nr_erp;

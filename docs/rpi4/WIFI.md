@@ -98,6 +98,22 @@ at start. The image's `UserBootscript` (`data/boot/rpi/UserBootscript`)
 starts `wifiautojoin`, which scans, picks the strongest remembered network
 and joins it through net_server; checked on two restarts.
 
+On 2026-10-06, repeated performance-test boots exposed intermittent startup
+join timeouts. Three of four consecutive cold browser tests joined; the
+fourth associated but did not finish its handshake before the supplicant's
+15-second timeout. This remains under investigation.
+
+The OpenBSD compatibility layer now exports Broadcom's absolute RSSI as
+FreeBSD-format half-dB units over a -100 dBm reference floor. Previously a
+negative dBm byte wrapped into an unsigned RSSI, so the custom Wi-Fi tool
+and autojoin helper showed every network at 0 dBm. Relative-RSSI Intel
+drivers keep their existing format. Native build +663 reports the strongest
+saved network at -29 dBm and distinct weaker levels, joins WPA2, obtains its
+address, and completes an associated scan. Evidence:
+`evidence/performance-20261006/wifi-startup/signal{,-boot}.txt`/`.log`;
+the complete image also reaches the branded QEMU desktop. This reporting
+fix alone does not remove the second association attempt.
+
 ## Traps in the lab
 
 - devfs loads anything that appears in a drivers directory. A staged
