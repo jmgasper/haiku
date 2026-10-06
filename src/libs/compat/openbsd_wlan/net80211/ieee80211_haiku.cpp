@@ -427,7 +427,8 @@ wlan_control(void* cookie, uint32 op, void* arg, size_t length)
 		}
 
 		case IEEE80211_IOC_HAIKU_JOIN: {
-			if (op != SIOCS80211)
+			if (op != SIOCS80211
+				|| ireq.i_len < (int)sizeof(struct ieee80211_haiku_join_req))
 				return B_BAD_VALUE;
 
 			struct ieee80211_haiku_join_req* haiku_join =
@@ -439,8 +440,13 @@ wlan_control(void* cookie, uint32 op, void* arg, size_t length)
 			if (user_memcpy(haiku_join, ireq.i_data, ireq.i_len) != B_OK)
 				return B_BAD_ADDRESS;
 
+			if (haiku_join->i_nwid_len > IEEE80211_NWID_LEN
+				|| haiku_join->i_key_len > IEEE80211_PMK_LEN
+				|| haiku_join->i_key_len > ireq.i_len - sizeof(*haiku_join))
+				return B_BAD_VALUE;
+
 			struct ifreq ifr;
-			struct ieee80211_nwid nwid;
+			struct ieee80211_nwid nwid = {};
 			struct ieee80211_wpaparams wpaparams;
 			struct ieee80211_wpapsk wpapsk;
 			memset(&wpaparams, 0, sizeof(wpaparams));
@@ -491,14 +497,20 @@ wlan_control(void* cookie, uint32 op, void* arg, size_t length)
 			}
 
 			IFF_LOCKGIANT(ifp);
-			status_t status = ifp->if_ioctl(ifp, SIOCS80211NWID, (caddr_t)&ifr);
-			if (status != B_OK) {
+			// Install the complete WPA configuration before asking the driver
+			// to restart. Each of these net80211 setters requests ENETRESET;
+			// restarting after each one starts scans with incomplete key/RSN
+			// parameters and needlessly resets the radio three times.
+			status_t status = wpaparams.i_enabled
+				? ieee80211_ioctl(ifp, SIOCS80211NWID, (caddr_t)&ifr)
+				: ifp->if_ioctl(ifp, SIOCS80211NWID, (caddr_t)&ifr);
+			if (status != B_OK && !(wpaparams.i_enabled && status == ENETRESET)) {
 				IFF_UNLOCKGIANT(ifp);
 				return status;
 			}
 			if (wpapsk.i_enabled) {
-				status = ifp->if_ioctl(ifp, SIOCS80211WPAPSK, (caddr_t)&wpapsk);
-				if (status != B_OK) {
+				status = ieee80211_ioctl(ifp, SIOCS80211WPAPSK, (caddr_t)&wpapsk);
+				if (status != B_OK && status != ENETRESET) {
 					IFF_UNLOCKGIANT(ifp);
 					return status;
 				}

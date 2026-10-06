@@ -110,9 +110,58 @@ and autojoin helper showed every network at 0 dBm. Relative-RSSI Intel
 drivers keep their existing format. Native build +663 reports the strongest
 saved network at -29 dBm and distinct weaker levels, joins WPA2, obtains its
 address, and completes an associated scan. Evidence:
-`evidence/performance-20261006/wifi-startup/signal{,-boot}.txt`/`.log`;
+`evidence/performance-20261006/wifi-startup/signal.txt` and
+`signal-boot.{log,jsonl}`;
 the complete image also reaches the branded QEMU desktop. This reporting
 fix alone does not remove the second association attempt.
+
+### Startup performance, 2026-10-06
+
+A diagnostic trace identified a firmware roam during the first WPA handshake:
+net80211 selected a 5 GHz BSSID, but firmware switched to the same SSID's
+2.4 GHz BSSID while the host still derived keys for the original peer. The
+driver now sets `roam_off=1`, leaving BSS selection and roaming to net80211.
+Subsequent traces keep the firmware and host on the same BSSID.
+
+The Haiku join ioctl also now installs SSID and key in net80211 before
+passing the final WPA parameters to the driver. This requests one radio
+restart instead of three. Open-network joins keep their existing path.
+The ioctl validates the request/header, SSID and key lengths before copying
+into fixed-size structures. A native probe rejects six malformed requests
+and confirms that the existing WPA2 association survives.
+
+After host scanning selects an AP, `bwfm_connect` supplies its primary
+channel to the firmware's join request. The previous empty channel list
+caused another full scan on every association attempt. In repeated traces,
+join-to-authentication falls from about 2.8 seconds to 35–43 milliseconds.
+The all-channel fallback remains when no valid channel is known, and the
+legacy SET_SSID fallback remains for firmware without the extended join.
+
+The first handshake still receives a reason-6 deauthentication immediately
+after the host sends its second message. A second association to the same
+AP completes. Its cause remains unresolved; the channel change makes the
+retry substantially cheaper. Two observed startup runs connect about
+13.1 seconds after the autojoin helper begins, versus about 18.1 seconds
+with unrestricted firmware scans. These are host-received serial timings,
+not a guarantee for other APs.
+
+With Ethernet administratively down, three 32 MiB downloads to `/dev/null`
+take 3.70, 3.74 and 3.77 seconds (about 71–73 Mbit/s). A separate 32 MiB
+download to SD has matching SHA-256; five gateway pings have no loss and
+1.29–1.38 ms latency. Ethernet is restored afterward. This verifies that
+the startup changes retain normal traffic, rather than establishing an
+isolated throughput speedup.
+
+Evidence is in `evidence/performance-20261006/wifi-startup/`: diagnostics
+`handshake-trace` and `tx-trace`, `join-probe-native.txt`, `throughput.txt`,
+`channel-trace-1.txt` and `listener-1.txt`. The full image reaches the QEMU
+desktop. After removing the diagnostic override and restoring the original
+package settings, the packaged driver passes the six rejection checks and
+joins on both a warm restart and a cold power cycle (`production-driver-check.txt`,
+`production-warm-1.txt`, `production-cold-1.txt`). The temporary scan-notification helper experiment still took its
+six-second fallback: initial automatic scans do not send that notification.
+It is not included in the release changes. Diagnostic packet metadata and
+firmware readbacks are also excluded from the production driver.
 
 ## Traps in the lab
 

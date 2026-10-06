@@ -35,3 +35,7 @@ SimpleTest rpi4_hevc_decode : hevc_decode.cpp HevcDecoder.cpp HevcParser.cpp
 	SandConvert.cpp : be [ TargetLibsupc++ ] [ TargetLibstdc++ ] ;
 SimpleTest rpi4_sand_convert_test : sand_convert_test.cpp SandConvert.cpp
 	: [ TargetLibstdc++ ] ;
+
+UseHeaders [ FDirName $(HAIKU_TOP) src libs compat freebsd_network ] : true ;
+UseHeaders [ FDirName $(HAIKU_TOP) src libs compat freebsd_wlan ] : true ;
+SimpleTest rpi4_wifi_join_probe : wifi_join_probe.cpp : network ;
