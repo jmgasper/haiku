@@ -449,6 +449,9 @@ DisplayLayout::ApplyRequest(const BMessage& request)
 	for (size_t i = 0; i < fDisplays.size(); i++)
 		fDisplays[i].pinned = false;
 
+	bool scaleChanged = false;
+	bool positionChanged = false;
+
 	// what was asked of mirrors, to tell whether it could be done
 	std::vector<std::pair<uint32, uint32> > mirrorRequests;
 	uint32 requestedPrimary = kNotMirrored;
@@ -475,6 +478,7 @@ DisplayLayout::ApplyRequest(const BMessage& request)
 		if (displayMessage.FindInt32("scale", &scale) == B_OK) {
 			if (!IsValidScale(scale))
 				return B_BAD_VALUE;
+			scaleChanged |= display->scale != scale;
 			display->scale = scale;
 		}
 		int32 width, height;
@@ -532,6 +536,8 @@ DisplayLayout::ApplyRequest(const BMessage& request)
 				display->pinned = false;
 			}
 		}
+
+		positionChanged |= origin != display->frame.LeftTop();
 
 		int32 logicalWidth = (display->timing.h_display * 100
 			+ display->scale / 2) / display->scale;
@@ -605,6 +611,10 @@ DisplayLayout::ApplyRequest(const BMessage& request)
 		}
 	}
 	_Separate();
+	// Scaling shrinks logical frames. Keep neighbouring displays together
+	// unless the request also deliberately changes their positions.
+	if (scaleChanged && !positionChanged)
+		_CloseGaps();
 	_PlaceMirrors();
 	_Normalize();
 	return B_OK;

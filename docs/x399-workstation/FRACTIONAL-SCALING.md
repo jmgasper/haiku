@@ -1,6 +1,6 @@
 # Fractional drawing regression checks
 
-The October 2026 review found three different causes of poor edges:
+The October 2026 review found these causes of poor edges:
 
 - Moving or scrolling by one logical pixel at 175% copied the old pixels by
   a rounded two device pixels. Repeating that operation accumulated drift.
@@ -15,6 +15,10 @@ The October 2026 review found three different causes of poor edges:
   an 800-row framebuffer. Device clipping and the background fill now respect
   the actual buffer size. Single-display reporting retains the real hardware
   timing instead of reconstructing it from rounded logical dimensions.
+- Sequentially scaling two displays down in logical size left their old
+  origins in place. The growing gap could exceed the NVIDIA framebuffer
+  allocation limit. Scale changes now close gaps unless the request also
+  changes display positions. Explicit positions are retained.
 
 ## Vector icon rendering
 

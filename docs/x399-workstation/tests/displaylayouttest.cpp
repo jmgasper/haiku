@@ -537,6 +537,41 @@ mirror_sizes()
 
 
 static void
+scale_pair()
+{
+	FakeAccelerant hardware;
+	hardware.Add(1, "DP-2");
+	hardware.Add(2, "DP-4");
+	DisplayLayout layout;
+	BMessage saved;
+	configure(layout, hardware, saved, false);
+	request(layout, hardware, saved, 2, 0, 0);
+	for (int scale = 100; scale <= 250; scale += 25) {
+		for (int id = 1; id <= 2; id++) {
+			BMessage change;
+			change.AddInt32("id", id);
+			change.AddInt32("scale", scale);
+			check(request_message(layout, hardware, saved, change) == B_OK,
+				"scale change accepted");
+		}
+		const DisplayInfo* left = layout.DisplayByID(2);
+		const DisplayInfo* right = layout.DisplayByID(1);
+		check(right->frame.left == left->frame.right + 1,
+			"scaling both displays preserves their adjacency");
+		check(layout.Frame().IntegerWidth() + 1 == 2 * ((384000 + scale / 2) / scale),
+			"scale changes do not grow an unused framebuffer gap");
+	}
+	BMessage moved;
+	moved.AddInt32("id", 1);
+	moved.AddInt32("scale", 200);
+	moved.AddPoint("origin", BPoint(2500, 0));
+	check(request_message(layout, hardware, saved, moved) == B_OK,
+		"scale and position request accepted");
+	expect(layout, 1, 2500, 0, "an explicitly requested position is retained");
+}
+
+
+static void
 single_scaled_timing()
 {
 	DisplayLayout layout;
@@ -556,6 +591,7 @@ int
 main()
 {
 	single_scaled_timing();
+	scale_pair();
 	swapped_pair(false);
 	swapped_pair(true);
 	row_of_three();
