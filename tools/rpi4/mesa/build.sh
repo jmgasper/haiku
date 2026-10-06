@@ -4,11 +4,12 @@
 # This sits on top of the ROCK 5's pinned Haiku Mesa port: it uses that
 # build's sysroot, cross file and libglvnd (BASE), and a copy of its patched
 # Mesa 25.3.6 source with the v3d patch of this directory applied on top.
-#   build.sh [configure|build]     (default: both, configuring only once)
+#   build.sh [configure|build]     (default: configure and build)
 set -euo pipefail
 BASE=${RPI4_MESA_BASE:-/mnt/HaikuWork/artifacts/mali-system-opengl-build/20260918T125722Z}
 ROOT=${RPI4_MESA_ROOT:-/mnt/HaikuWork/rpi4/mesa}
 WORK=/mnt/HaikuWork
+TOOLS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 export PATH=$WORK/toolchains/mesa-python/bin:$WORK/toolchains/mesa-host/bin:$WORK/toolchains/host/usr/bin:$PATH
 export LD_LIBRARY_PATH=$WORK/toolchains/mesa-native-deps/usr/lib/x86_64-linux-gnu:$WORK/toolchains/mesa-native-deps/usr/lib/llvm-18/lib
 export TMPDIR=$WORK/tmp
@@ -17,20 +18,49 @@ unset PKG_CONFIG_PATH
 mkdir -p "$ROOT"
 [ -d "$ROOT/mesa-25.3.6" ] || cp -a "$BASE/mesa-25.3.6" "$ROOT/"
 
+# A clean copy and an already patched working tree are both supported.
+for patch in mesa-haiku-v3d.patch mesa-haiku-shader-cache.patch; do
+    if patch --batch --dry-run -N -p1 -d "$ROOT/mesa-25.3.6" < "$TOOLS/$patch" >/dev/null 2>&1; then
+        patch --batch -N -p1 -d "$ROOT/mesa-25.3.6" < "$TOOLS/$patch"
+    elif ! patch --batch --dry-run -R -p1 -d "$ROOT/mesa-25.3.6" < "$TOOLS/$patch" >/dev/null 2>&1; then
+        echo "Cannot apply or recognize $patch; check the pinned Mesa source" >&2
+        exit 1
+    fi
+done
+
+# The bootstrap zlib.pc names its original /packages location, which is
+# absent from the cross sysroot. Use its installed development paths.
+mkdir -p "$ROOT/cache-pkgconfig"
+cat > "$ROOT/cache-pkgconfig/zlib.pc" <<'PC'
+prefix=/boot/system/develop
+libdir=${prefix}/lib
+includedir=${prefix}/headers
+Name: zlib
+Description: zlib in the pinned Haiku ARM64 sysroot
+Version: 1.2.13
+Libs: -L${libdir} -lz
+Cflags: -I${includedir}
+PC
+cat > "$ROOT/cache-cross.ini" <<INI
+[properties]
+pkg_config_libdir = ['$ROOT/cache-pkgconfig', '$BASE/sysroot/boot/system/develop/lib/pkgconfig', '$BASE/sysroot/boot/system/lib/pkgconfig']
+INI
+
 CONFIGURE=${1:-}
-if [ "$CONFIGURE" = configure ] || [ ! -f "$ROOT/build/build.ninja" ]; then
-    rm -rf "$ROOT/build"
-    meson setup "$ROOT/build" "$ROOT/mesa-25.3.6" \
-        --cross-file="$BASE/haiku-aarch64.ini" --prefix="$ROOT/install" \
+reconfigure=()
+[ ! -f "$ROOT/build/build.ninja" ] || reconfigure=(--reconfigure)
+meson setup "${reconfigure[@]}" "$ROOT/build" "$ROOT/mesa-25.3.6" \
+        --cross-file="$BASE/haiku-aarch64.ini" \
+        --cross-file="$ROOT/cache-cross.ini" --prefix="$ROOT/install" \
         --libdir=lib --buildtype=debugoptimized --wrap-mode=nofallback \
         -Dplatforms=haiku -Dexpat=disabled -Dgallium-drivers=v3d,softpipe \
-        -Dgallium-va=disabled '-Dvulkan-drivers=[]' -Dshader-cache=disabled \
+        -Dgallium-va=disabled '-Dvulkan-drivers=[]' -Dshader-cache=enabled \
+        -Dshader-cache-max-size=64M \
         -Dgles1=disabled -Dgles2=enabled -Dopengl=true -Dgbm=disabled \
         -Dglx=disabled -Degl=enabled -Dglvnd=enabled -Dllvm=disabled \
         -Dvalgrind=disabled -Dbuild-tests=false '-Dtools=[]' -Dzstd=disabled \
-        -Dzlib=disabled -Dxmlconfig=disabled -Dmesa-clc=system \
+        -Dzlib=enabled -Dxmlconfig=disabled -Dmesa-clc=system \
         -Dprecomp-compiler=system -Dspirv-tools=disabled
-fi
 [ "$CONFIGURE" = configure ] || ninja -C "$ROOT/build" -j"${HAIKU_JOBS:-12}"
 
 # The Vulkan driver (v3dv) is a build of its own: libvulkan_broadcom.so.

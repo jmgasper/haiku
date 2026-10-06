@@ -142,3 +142,29 @@ the boot card's controller. The emulator runner removes the HVS and V3D
 compatible properties from a temporary DTB: those GPU blocks are not
 emulated. The full image uses the generic framebuffer for this check;
 GPU and multi-display validation belongs on the real board.
+
+## Persistent OpenGL shader cache
+
+The Pi Mesa build now enables the disk shader cache with compression and a
+64 MB limit. Haiku uses Mesa's existing `dladdr`/file timestamp identity
+fallback, since it cannot inspect mapped ELF build IDs with
+`dl_iterate_phdr`. Changing the driver invalidates the corresponding cache.
+An isolated EGL vendor file selected the candidate on the board; the
+installed system driver was left available for comparison.
+
+The clear and triangle probes pass pixel-exact checks with seven cache
+hits, with a truncated cache entry, in four concurrent processes, and with
+an unwritable cache directory. The last case disables caching and still
+renders correctly. Evidence: `mesa-cache-resilience.txt` and
+`mesa-cache-cleanup-probe.txt`. The integrated build reproduces the tested
+`libEGL_mesa.so.0` byte for byte (SHA-256
+`bc6ddaae91af0111994aacc6663f3a20bba2bec3df755fc5ca651bf8ba3a34db`).
+
+Summit's compositor shader creation takes about 3–10 ms on cache hits,
+compared with 50–78 ms for compilation. Alternating warm launches against
+the same local page yielded first tiles at 1.014 and 1.009 seconds with the
+cache disabled, and 1.035, 0.973 and 0.847 seconds with it enabled. Which
+programs are already cached affects each run, so these are observations,
+not a claimed fixed percentage gain. Evidence:
+`summit-cache-comparison.txt`. Initial cold application loading still takes
+several seconds and remains a separate target for investigation.
