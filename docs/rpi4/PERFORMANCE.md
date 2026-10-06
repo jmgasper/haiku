@@ -724,3 +724,42 @@ comparison (the second string's offset is relative to aligned storage):
 These are comparison microbenchmarks, not measured application speedups.
 Evidence: `strcmp/native.txt`, `libroot-native.txt`, `summit-native.txt`,
 `full-build.log` and `qemu.{log,png}` under the performance evidence directory.
+
+## Integrated measurements and rejected follow-up experiments
+
+The later integrated browser workload uses the global WebKit 12 package,
+the same dual-1080p desktop, and a 1920x908 content area. Its WebGL fixture
+runs at about 59 FPS, while the scrolling fixture reports about 29–31 FPS.
+The earlier isolated readback comparison reached 38.8–39.8 scrolling FPS;
+that absolute rate did not reproduce in the integrated sequence. Fresh
+browser profiles, the earlier private WebKit binary, and the earlier Mesa
+readback-hint binary all reproduce the later, lower scrolling rate. Do not
+present the earlier isolated rate as a final-image result.
+
+Whole-system sampling attributes most of the browser's app_server window
+thread time to bitmap copies: roughly half drawing into the back buffer
+and half copying back to front. The browser's short `draw(app_server)`
+timer omits synchronization inside `DrawBitmap()` and is not a measure of
+all server presentation work. Evidence: `arm-boost/scroll-*.txt` and
+`scroll-{all,full}.profile`.
+
+An additional copy microbenchmark checks real V3D write-combining and
+write-back allocations, row-sized and frame-sized transfers, and four
+alignments. The installed Arm GPR copy routine does not regress relative
+to the original C routine. An alternative SIMD routine is worse for some
+misalignments, so it is not installed. All copied bytes match. Evidence:
+`arm-boost/graphics-copy-{bench.cpp,native.txt}`.
+
+Five additional HEVC SAND prefetch variants pass 7,500 conversion and
+canary cases, but none consistently improves the existing eight-row
+converter. They are rejected; the shipping converter is unchanged.
+Evidence: `sand-prefetch/decision.txt` and the accompanying raw results.
+
+A combined stress pilot with three concurrent Zstandard basic-test
+workers passes 15 complete graphics/Vulkan/HEVC rounds, then cannot
+allocate a 1,020-page contiguous HEVC picture in round 16. The board
+remains responsive and the same stream decodes to the reference checksum
+after the workers exit. This is an outstanding allocation-pressure limit,
+not a passed endurance test. A separate clock endurance run skips the
+large compression setup tests and uses the randomized workloads directly.
+Evidence: `arm-boost/soak-monotonic-memory-pilot.txt` and `serial.log`.
