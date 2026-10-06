@@ -255,3 +255,47 @@ then verifies all data, releases it with `MADV_FREE`, and reports `OK`.
 Login becomes unresponsive during the severe pressure, but recovers without
 a reboot. The suspended-child cleanup check also completes. Evidence:
 `prefetch-1m-regression.txt`, `prefetch-1m-memory-serial.*`.
+
+## Restricting WebKit exports
+
+The WebRTC engine in `summit-rtc/WebKitBuild` reproduces the installed
+1.10.0-10 library byte for byte after stripping and setting its package
+RPATH. The older `summit-gl` engine is not a suitable release replacement:
+it omits newer features. A version script now exports the `WK*` C API,
+native `BWebKit` classes, helper process entry points and Haiku ABI markers.
+It reduces global/weak dynamic definitions from 206,091 to 1,804 and the
+stripped library from 140,607,624 to 105,306,968 bytes.
+
+Control and candidate bundles were installed in the same private hpkg,
+with identical browsers and dependency libraries. Their relative RPATHs
+select the intended engine, confirmed with `listimage`. Alternating four
+fresh boots with the 1 MiB prefetch kernel yielded:
+
+| Engine | Browser ready, seconds | First tiles, seconds |
+| --- | ---: | ---: |
+| Control, first boot | 3.881 | 10.518 |
+| Restricted exports, first boot | 2.779 | 9.086 |
+| Control, second boot | 3.881 | 10.517 |
+| Restricted exports, second boot | 2.782 | 9.086 |
+
+Relocation time falls from about 1.983 to 1.005 seconds. Every boot passes
+the local JavaScript, WebAssembly, WebGL pixel and basic WebRTC/API smoke
+checks. Evidence: `webkit-ab-cold-*.bench.txt`. The DOM workload's median
+round times in a subsequent warm control/candidate/candidate/control
+sequence are 1527, 1467, 1484 and 1548 ms. This is a small local workload,
+not a general browser benchmark (`webkit-dom-bench.txt`). The earlier
+10-second DOM polling in the cold test stopped before its result and is
+not usable for DOM timing.
+
+`check-exports.py` checks Summit, WebProcess, NetworkProcess and Natter's
+dynamic requirements. Their native WebKit symbols remain exported;
+ordinary C++ allocation operators resolve from the existing libstdc++
+dependency. This static check supplements runtime coverage. The packaged
+1.10.0-11 library reproduces the tested candidate exactly (SHA-256
+`337b6eeeeaeb615552aae8eff9330b5109a33c1d108a89f6cee4b022cb31f751`).
+Evidence: `webkit-exports-coverage.txt`, `webkit-exports-package.txt`.
+
+Discarded comparisons are retained as evidence: `summit-exports-smoke.txt`
+used a library path that the executable's absolute RPATH overrode, and
+`summit-exports-preload-smoke.txt` placed the candidate outside the helper
+process directory layout. Neither establishes candidate performance.

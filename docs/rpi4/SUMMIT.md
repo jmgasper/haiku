@@ -104,6 +104,35 @@ OS is in its `docs/kunanyios-platform-issues.md` ("Raspberry Pi 4"):
 
 ## Building it again
 
+The release engine now uses the **WebRTC configuration** in
+`/mnt/HaikuWork/rpi4/summit-rtc/WebKitBuild`. Preserve this configuration:
+the earlier `summit-gl` build below does not contain all the features in
+1.10.0-10. With that build already configured:
+
+```sh
+tools/rpi4/summit/build-engine.sh
+SUMMIT_ENGINE=/mnt/HaikuWork/rpi4/summit-rtc/WebKitBuild \
+SUMMIT_ENGINE_LOG=/mnt/HaikuWork/rpi4/summit-rtc/performance-build.log \
+SUMMIT_ENGINE_EXTRA_DEPS=/mnt/HaikuWork/rpi4/summit-gl/deps \
+SUMMIT_SRC=/mnt/HaikuWork/apps/summit \
+SUMMIT_WEBKIT_VERSION=1.10.0-11 \
+    tools/airos/build-arm64-app-packages.sh \
+    /mnt/HaikuWork/rpi4/packages-arm64 summit_webkit
+tools/rpi4/stage-packages.sh
+```
+
+The build helper checks the pinned port snapshot and required GL/WebRTC
+options, applies `webkit-haiku-exports.patch` idempotently, and rebuilds
+the engine and its helper executables. The export map preserves public
+embedding and process entry points while removing private symbols from
+dynamic lookup. It does not disable browser features. Native comparisons,
+limitations and exact binary hashes are recorded in `PERFORMANCE.md`.
+When changing the map, run `check-exports.py` against the previous library,
+the candidate and all consumers; name libstdc++ with `--provider` for its
+ordinary allocation operators. Then run browser and embedded-view checks.
+
+The first GL-only build was configured as follows (historical):
+
     tools/rpi4/summit/build-gl-deps.sh
     cd /mnt/HaikuWork/rpi4/summit-gl
     . /mnt/HaikuWork/build/summit-arm64/hosttools/env.sh
