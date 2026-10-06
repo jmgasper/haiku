@@ -10,6 +10,7 @@
 #include "argv.h"
 #include "tcp.h"
 #include "TCPEndpoint.h"
+#include "EndpointManager.h"
 #include "pcap.h"
 #include "utility.h"
 
@@ -37,9 +38,11 @@
 #include <errno.h>
 #include <new>
 #include <set>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 
 struct context {
@@ -1803,6 +1806,65 @@ do_help(int argc, char** argv)
 //	#pragma mark -
 
 
+static void
+connection_test_timeout(int)
+{
+	const char message[] = "FAIL: connection table stopped making progress\n";
+	write(STDERR_FILENO, message, sizeof(message) - 1);
+	_exit(1);
+}
+
+
+static int
+test_connection_reuse()
+{
+	// A closed socket can connect again to a different peer. Repeated changes
+	// must not leave the same intrusive node in multiple hash buckets.
+	signal(SIGALRM, connection_test_timeout);
+	alarm(10);
+	net_socket* socket;
+	TCPEndpoint* endpoint = (TCPEndpoint*)init_protocol(&socket);
+	EndpointManager* manager = get_endpoint_manager(&sDomain);
+	if (endpoint == NULL || manager == NULL)
+		return 1;
+	sockaddr_in local = {};
+	local.sin_len = sizeof(local);
+	local.sin_family = AF_INET;
+	local.sin_port = htons(4096);
+	local.sin_addr.s_addr = htonl(0xc0a80001);
+	if (socket_bind(socket, (sockaddr*)&local, sizeof(local)) != B_OK)
+		return 1;
+	sockaddr_in previous = local;
+	for (unsigned iteration = 0; iteration < 512; iteration++) {
+		sockaddr_in peer = local;
+		peer.sin_port = htons(8192 + iteration);
+		// Vary the first address octet too: IPv4's current hash keeps it
+		// in the low bits on little-endian machines.
+		peer.sin_addr.s_addr = htonl(0x01010001
+			+ ((iteration % 223) << 24) + (iteration << 8));
+		if (manager->SetConnection(endpoint, (sockaddr*)&local,
+				(sockaddr*)&peer, (sockaddr*)&local) != B_OK
+			|| manager->FindConnection((sockaddr*)&local,
+				(sockaddr*)&peer) != endpoint
+			|| (iteration != 0 && manager->FindConnection((sockaddr*)&local,
+				(sockaddr*)&previous) != NULL)) {
+			fprintf(stderr, "FAIL: connection reuse round %u\n", iteration);
+			return 1;
+		}
+		previous = peer;
+	}
+	if (manager->Unbind(endpoint) != B_OK
+		|| manager->FindConnection((sockaddr*)&local,
+			(sockaddr*)&previous) != NULL)
+		return 1;
+	socket_delete(socket);
+	put_endpoint_manager(manager);
+	alarm(0);
+	puts("PASS: 512 connection changes, old-key removal and final unbind");
+	return 0;
+}
+
+
 static int
 test_spawn_failures()
 {
@@ -1919,6 +1981,8 @@ main(int argc, char* argv[])
 	}
 	if (argc == 2 && strcmp(argv[1], "--spawn-failures") == 0)
 		return test_spawn_failures();
+	if (argc == 2 && strcmp(argv[1], "--connection-reuse") == 0)
+		return test_connection_reuse();
 
 	net_protocol* client = init_protocol(&gClientSocket);
 	if (client == NULL)

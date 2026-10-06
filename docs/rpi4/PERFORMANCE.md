@@ -524,3 +524,28 @@ real-time clip (`sand/airtime-4k-abba.txt`). The fixture is an x265 ultrafast
 CRF-28 upscale of `multi.mkv`, 3840x2160 at 30 FPS, SHA-256
 `5df0e26d72cbb002c1860f2bd803fc78724e58fb1755cb065f3267e615c87092`.
 It is not evidence that arbitrary 4K content, or 4K ten-bit, plays smoothly.
+
+
+## Reusing TCP connections
+
+`EndpointManager::SetConnection()` changed the local/peer addresses before
+removing the endpoint from its intrusive hash table. Removal therefore
+searched the new bucket, leaving a stale entry in the old bucket. Reusing
+the endpoint across different buckets could eventually create a cycle and
+stop connection lookup. Removal now precedes the address change.
+
+The native `tcp_shell --connection-reuse` regression uses 512 different
+peer tuples, verifies that each previous tuple disappears, and checks the
+final unbind. The original manager stops making progress and the test's
+10-second watchdog fails it; the candidate completes all 512 changes.
+All 320 `--spawn-failures` cases still pass. This is the actual TCP/manager
+code running in the existing kernel emulation harness, not a model.
+Evidence: `tcp-reuse/native2.txt` (control) and `tcp-reuse/native3.txt`
+(candidate). The first fixture kept all tuples in the same hash bucket and
+did not expose the defect. An incremental rebuild also reused the control
+object within one timestamp tick; the final candidate was explicitly
+rebuilt, SHA-256 `c2cc66226765509020b98a38de11b988104f0920dda566c7bd5ec377ca2504bd`.
+
+The complete `hrev60097+659+dirty` image builds and reaches the branded
+QEMU desktop (`tcp-reuse/full-build.log`, `tcp-reuse/qemu.*`). Native kernel
+installation and final-image acceptance remain separate steps.
