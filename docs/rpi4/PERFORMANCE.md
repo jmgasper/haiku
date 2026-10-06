@@ -127,3 +127,18 @@ There is no established cause yet. Repeated unattended boots and Wi-Fi
 checks remain required. `shell.py` accepts `RPI4_TELNET_PORT` for an SSH
 tunnel through the KVM. The first MJPEG frame can be stale, so the KVM
 screenshot helper now waits for fresh frames before saving.
+
+A subsequent clean reboot passed Ethernet ping and telnet without any
+intervention, automatically joined Gaspers and acquired its Wi-Fi address,
+and passed all four drawing checks again (`candidate1-clean-*`). The
+earlier connection attempts overlapped boot and serial-debugger stops;
+they do not establish an Ethernet regression.
+
+The full image also reaches the branded desktop in QEMU
+(`candidate2-qemu-software.*`). Its emmc2 node is redirected to the sole
+emulated SDHCI controller, which overlaps the physical Pi's Wi-Fi SDIO
+address. The Wi-Fi probe now refuses that conflict instead of resetting
+the boot card's controller. The emulator runner removes the HVS and V3D
+compatible properties from a temporary DTB: those GPU blocks are not
+emulated. The full image uses the generic framebuffer for this check;
+GPU and multi-display validation belongs on the real board.
