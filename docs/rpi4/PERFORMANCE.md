@@ -450,3 +450,33 @@ The complete ARM64 image with the new library and runtime-loader string
 object builds and boots to the branded desktop in QEMU (`arm-copy-full-build.log`, `arm-copy-qemu.*`). This includes the staged WebKit 1.10.0-11
 package and the cached-texture-capable Mesa, still default off in that
 image.
+
+After the scrolling and application checks, cached textures are enabled by
+default. `V3D_HAIKU_CACHED_TEXTURES=0` remains available for comparison, and
+an older kernel automatically uses write-combining buffers. The default-on
+library (SHA-256
+`ea84cc103cdfc2426cc3cd403cfa5be87b745271818556a3483110c079123aec`)
+passes 100 texture-probe rounds and the full-HD clear/triangle pixel check
+without environment overrides (`gpu-default-native.txt`). GLTeapot also
+renders correctly (`glteapot-cached.jpg`); its displayed FPS is a spot
+check, not an alternating comparison.
+
+The full +656 core and matching boot archive were installed and rebooted
+on the Pi. The installed libroot passes all 51,301 copy cases and 549,027
+move cases; the installed runtime loader passes all 50 checks. All four
+visibility tests pass. Warm StyledEdit and AirPins window times remain near
+117–119 and 320–336 ms respectively. Evidence:
+`arm-copy-656-install.txt`, `arm-copy-656-boot.*`,
+`arm-copy-656-native.txt`. The core package SHA-256 is
+`d47b8ce6107895de31f61135061fc494c14f57faca8c20fd9c62532707f54104`;
+the boot archive is
+`3e1a3b62758246f6fa60b9892af22b4a915d28ac8411573fd479565a5f81ce16`.
+
+With the installed library and default GPU settings, Summit passes the 12
+JavaScript/Wasm/WebRTC/WebGL smoke checks. The local WebGL animation runs
+at 52.67 FPS with a 21 ms 95th-percentile interval in one 30-second check.
+`listimage` confirms the system WebKit and Mesa libraries. This is a
+combined-system check, not an isolated attribution of the difference from
+the earlier cached-texture runs (`gpu-default-656-apps.txt`). The attempted
+Natter launch benchmark in that file declines to disturb an already running
+instance and is not a launch measurement.

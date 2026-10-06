@@ -57,11 +57,11 @@ Summit's later compositor shaders fall from roughly 50–78 ms each to
 3–10 ms for cache hits. First page timing varies with which shaders have
 been warmed; see `docs/rpi4/PERFORMANCE.md` and the evidence there.
 
-## Cached texture experiment
+## Cached textures
 
-`V3D_HAIKU_CACHED_TEXTURES=1` opts tiled Gallium textures into Normal-WB
-memory with explicit CPU/GPU ownership transfers. The default remains off
-while application coverage is being collected. It requires driver capability
+Tiled Gallium textures use Normal-WB memory with explicit CPU/GPU ownership
+transfers by default. `V3D_HAIKU_CACHED_TEXTURES=0` restores write-combining
+mapping for comparisons or troubleshooting. This requires driver capability
 `V3D_HAIKU_PARAM_CACHEABLE_BO >= 2`; an older kernel falls back to the
 existing write-combining allocation. Persistent/coherent resources, ordinary
 buffers and Vulkan allocations keep their existing memory type.
@@ -77,8 +77,9 @@ protocol comments in `headers/private/graphics/v3d/v3d_haiku.h`.
 capability, TFU transfer and 64 alternating read/write ownership cycles.
 `texture_probe.cpp` checks every pixel after repeated maps, partial writes,
 GPU rendering, narrow-band reads and PBO transfers. Its optional arguments
-are round count, base width and base height (defaults: `40 257 131`). Build
-against the same EGL and GLESv2 libraries as the GL probe. Native pixel and
+are round count, base width and base height (defaults: `40 257 131`).
+`build-probes.sh` builds both GLES probes into `mesa/probes` against the
+same pinned EGL/GLESv2 libraries. Native pixel and
 application measurements, including the narrow-band readback regression,
 are in `docs/rpi4/PERFORMANCE.md`.
 
