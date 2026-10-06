@@ -657,7 +657,42 @@ if [ IsPackageAvailable expat_devel ] {
 
 
 # zstd
-if [ IsPackageAvailable zstd_devel ] {
+if $(HAIKU_ARM64_ZSTD_PACKAGES_DIR) && $(TARGET_PACKAGING_ARCH) = arm64 {
+	# The arm64 bootstrap repository does not supply zstd yet. The Pi's
+	# pinned cross-build provides the same runtime, header and source inputs
+	# as the regular repository feature, without changing other builds.
+	local packageDirectory = $(HAIKU_ARM64_ZSTD_PACKAGES_DIR) ;
+	local base = [ FDirName $(packageDirectory) zstd-1.5.7-1-arm64.hpkg ] ;
+	local devel = [ FDirName $(packageDirectory) zstd_devel-1.5.7-1-arm64.hpkg ] ;
+	local source = [ FDirName $(packageDirectory) zstd_source-1.5.7-1-source.hpkg ] ;
+	if ! [ Glob $(packageDirectory) : $(base:BS) ]
+		|| ! [ Glob $(packageDirectory) : $(devel:BS) ]
+		|| ! [ Glob $(packageDirectory) : $(source:BS) ] {
+		Exit "Missing arm64 zstd packages; run tools/rpi4/build-zstd.sh" ;
+	}
+	local directory = [ FDirName $(HAIKU_OPTIONAL_BUILD_PACKAGES_DIR)
+		airos-zstd-1.5.7-1-arm64 ] ;
+	# Extraction shares the prefix (including .PackageInfo), so serialize it.
+	Depends $(directory:G=zstd-devel) : $(directory:G=zstd-base) ;
+	Depends $(directory:G=zstd-source) : $(directory:G=zstd-devel) ;
+	SetBuildFeatureAttribute zstd : runtime
+		: [ ExtractArchive $(directory:G=zstd-base) : lib
+			: $(base) : extracted-arm64-zstd-base ] : base ;
+	SetBuildFeatureAttribute zstd : library
+		: [ ExtractArchive $(directory:G=zstd-base) : lib/libzstd.so.1.5.7
+			: $(base) : extracted-arm64-zstd-base ] : base ;
+	SetBuildFeatureAttribute zstd : headers
+		: [ ExtractArchive $(directory:G=zstd-devel) : develop/headers
+			: $(devel) : extracted-arm64-zstd-devel ] : devel ;
+	SetBuildFeatureAttribute zstd : sources
+		: [ ExtractArchive $(directory:G=zstd-source)
+			: develop/sources/zstd-1.5.7-1/sources
+			: $(source) : extracted-arm64-zstd-source ] : source ;
+	SetBuildFeatureAttribute zstd : base:directory : $(directory) ;
+	SetBuildFeatureAttribute zstd : devel:directory : $(directory) ;
+	SetBuildFeatureAttribute zstd : source:directory : $(directory) ;
+	EnableBuildFeatures zstd ;
+} else if [ IsPackageAvailable zstd_devel ] {
 	ExtractBuildFeatureArchives zstd :
 		file: base zstd
 			runtime: lib

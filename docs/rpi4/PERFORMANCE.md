@@ -657,3 +657,35 @@ harnesses. Its global WebKit 12 engine passes the browser smoke fixture.
 See `gpu-readback/native-660-{install,startup,acceptance}.txt`. The recorded
 5.109-second first-tile launch used a fresh browser profile; it is not an
 A/B comparison with the earlier persistent-profile startup measurements.
+
+## Zstandard package compression
+
+The arm64 bootstrap repository lacks Zstandard, leaving packagefs to inflate
+zlib chunks during demand paging. A pinned cross-build of Zstandard 1.5.7
+now enables Haiku's existing boot, kernel and user codec support. Application
+staging recompresses copies while preserving package payload and metadata;
+the source release packages remain unchanged. The runtime package itself
+uses zlib for upgrade compatibility. See `BOOT.md` for the transition order.
+
+Four cold boots compare identical private Summit/WebKit payloads in
+zlib/Zstandard/Zstandard/zlib order, using the same persistent profile and
+local fixture. All 116 regular files across both installations match their
+host SHA-256 values; all four browser runs pass the 12-case smoke fixture.
+
+| Phase, seconds after launch | zlib runs | Zstandard runs |
+| --- | ---: | ---: |
+| Browser ready | 2.905, 2.906 | 2.643, 2.642 |
+| First frame with tiles | 9.372, 9.400 | 8.486, 8.500 |
+
+First content improves by about 9.5%; readiness improves by about 9%.
+The browser comparison package shrinks from 79,704,347 to 72,437,855 bytes.
+The new core package shrinks from 36,229,313 to 32,587,810 bytes. These
+measurements isolate compression, not changes to browser code or settings.
+
+The new core boots in QEMU with Zstandard compression. On the Pi the
+zlib-compressed transition core boots, passes all memory-fill checks,
+50 loader cases and four view-visibility cases, and reads both comparison
+packages. Zstandard's native fuzzer passes 1,000 randomized cases with seed 1
+(`--no-big-tests --no-long-tests`). Evidence: `zstd/cold-*.txt`,
+`native-payload-and-smoke.txt`, `native-fuzzer.txt`,
+`native-662-acceptance.txt`; build/QEMU evidence is in `/rpi4/zstd/`.

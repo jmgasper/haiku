@@ -9,6 +9,10 @@
 
 HAIKU_RPI_FIRMWARE_DIR ?= /mnt/HaikuWork/rpi4/firmware/1.20260915 ;
 
+# Built by tools/rpi4/build-zstd.sh. This enables the existing boot, kernel
+# and user package readers and selects Zstandard for newly built packages.
+HAIKU_ARM64_ZSTD_PACKAGES_DIR ?= /mnt/HaikuWork/rpi4/zstd/packages ;
+
 if $(HAIKU_BUILD_PROFILE) = minimum-rpi4 {
 	HAIKU_IMAGE_SIZE = 600 ;
 	HAIKU_RPI_IMAGE_NAME = airos-rpi4-minimum.img ;
@@ -43,6 +47,12 @@ DeferredSubInclude HAIKU_TOP tools rpi4 ;
 
 rule UserBuildConfigRulePreImage
 {
+	if $(HAIKU_ARM64_ZSTD_PACKAGES_DIR) {
+		local zstdPackage = <rpi4-zstd>zstd-1.5.7-1-arm64.hpkg ;
+		SEARCH on $(zstdPackage) = $(HAIKU_ARM64_ZSTD_PACKAGES_DIR) ;
+		AddPackageFilesToHaikuImage system packages : $(zstdPackage) ;
+	}
+
 	if $(RPI4_LAB_IMAGE) {
 		AddFilesToHaikuImage home config non-packaged bin
 			: rpi4_v3d_probe rpi4_fetch rpi4_tone rpi4_vchiq_audio rpi4_hevc_decode rpi4_memprobe

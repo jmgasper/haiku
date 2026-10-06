@@ -70,6 +70,22 @@ words:
 Firmware files come from `tools/rpi4/fetch-firmware.sh` (pinned tag, sha256
 recorded next to them); they are not in the tree.
 
+For the full image, the configured arm64 bootstrap build also needs
+`tools/rpi4/build-zstd.sh`. It creates pinned Zstandard runtime, development
+and source packages in `/mnt/HaikuWork/rpi4/zstd/packages`, supplying the
+feature missing from the bootstrap package repository. Run the full build
+once to rebuild the host package tool with that feature, then run
+`tools/rpi4/stage-packages.sh` and build `@rpi4-airos` again. Staging
+recompresses application package copies with Zstandard without changing
+their files, attributes or original release packages. Set
+`RPI4_PACKAGE_COMPRESSION=zlib` when staging for an older system.
+
+The new image contains Zstandard support in the boot, kernel and user
+package readers. An in-place upgrade from an older image must first install
+a **zlib-compressed** copy of the new core package and the Zstandard runtime,
+update its matching boot archive and loader, and reboot. Only then can it
+activate Zstandard packages. A fresh SD image needs no transition.
+
 ## Things that were not obvious
 
 - With the MMU off, GCC's unaligned accesses (packed kernel_args, inline
