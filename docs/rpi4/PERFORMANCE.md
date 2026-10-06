@@ -208,3 +208,30 @@ Evidence: `candidate3-clean-boot.*`, `eeprom-fast-sd-1.*`,
 This change is stored in the lab board's EEPROM, separately from the SD
 image. A user's board configured to try SD first does not incur this lab's
 USB recovery timeout in the first place.
+
+The second test, a warm reboot, selected SD 8.57 seconds after the EEPROM
+banner and brought Ethernet link up at 26.89 seconds. The shorter wait is
+repeatable across these cold and warm boots (`eeprom-fast-sd-2.*`).
+
+## Locating cold-launch costs
+
+`HAIKU_LOADER_TIMING=1` reports individual file mapping times and the
+program's load, relocation, protection-remap and initialization phases.
+It is off by default. The loader's private `printf` also now writes at the
+current stderr position and bounds the formatted length: its previous
+positioned writes overwrote redirected diagnostics at offset zero.
+
+After a native reboot, Summit spends 4.137 seconds loading images,
+1.369 seconds relocating, 0.011 seconds remapping protection and 0.106
+seconds initializing. File mapping itself accounts for 3.649 seconds:
+ICU's data segment 0.765, WebKit 0.684, JavaScriptCore 0.567, OpenSSL crypto
+0.332 seconds. `vm_map_file()` requests up to 10 MB of prefetch per mapping;
+packagefs services these requests synchronously. The recorded trace is
+`loader-timing-cold-fixed.txt`. The earlier `loader-timing-cold.txt` is
+corrupted by the diagnostic output bug and is not usable for phase timing.
+
+The full image reaches the desktop in QEMU with this instrumentation.
+After rebooting the installed `hrev60097+650+dirty` package and matching
+archive, all 50 loader checks pass with timing enabled, and a redirected
+`true` invocation retains all six map lines plus its phase summary.
+Evidence: `loader-timing-fixed-qemu.*`, `loader-timing-cold-fixed.txt`.

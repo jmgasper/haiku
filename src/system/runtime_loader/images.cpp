@@ -385,10 +385,16 @@ map_image(int fd, char const* path, image_t* image, bool fixed)
 			uint32 protection = B_READ_AREA | B_WRITE_AREA
 				| ((region.flags & RFLAG_WRITABLE) != 0
 					? 0 : B_OVERCOMMITTING_AREA);
+			bigtime_t mapStart = gTraceLoaderTiming ? _kern_system_time() : 0;
 			region.id = _kern_map_file(regionName,
 				(void**)&loadAddress, B_EXACT_ADDRESS,
 				region.vmsize, protection, REGION_PRIVATE_MAP, false,
 				fd, PAGE_BASE(region.fdstart));
+			if (gTraceLoaderTiming) {
+				printf("loader map: %.256s region=%" B_PRIu32
+					" size=%" B_PRIuSIZE " time=%" B_PRIdBIGTIME " us\n",
+					path, i, region.vmsize, _kern_system_time() - mapStart);
+			}
 
 			if (region.id < 0) {
 				_kern_unreserve_address_range(reservedAddress, reservedSize);

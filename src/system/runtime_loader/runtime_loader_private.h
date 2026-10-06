@@ -56,6 +56,7 @@ extern void* __gCommPageAddress;
 extern struct rld_export gRuntimeLoader;
 extern char* (*gGetEnv)(const char* name);
 extern bool gProgramLoaded;
+extern bool gTraceLoaderTiming;
 extern image_t* gProgramImage;
 
 
