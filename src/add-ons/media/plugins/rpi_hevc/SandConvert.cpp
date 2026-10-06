@@ -16,27 +16,11 @@
 
 static const uint32_t kColumnBytes = 128;
 static const uint32_t kColumnSamples30 = 96;
+// Keep both the column input and the row output local while converting.
+static const uint32_t kTileRows = 8;
 
 
-/*!	Copies \a count bytes of a row that starts at byte \a first of the
-	row, across the columns. */
-static void
-copy_row8(const uint8_t* rows, uint32_t columnStride, uint32_t first,
-	uint32_t count, uint8_t* out)
-{
-	while (count > 0) {
-		uint32_t column = first / kColumnBytes;
-		uint32_t offset = first % kColumnBytes;
-		uint32_t run = std::min(kColumnBytes - offset, count);
-		memcpy(out, rows + (size_t)column * columnStride + offset, run);
-		out += run;
-		first += run;
-		count -= run;
-	}
-}
-
-
-/*!	The same for a row of pairs, into two rows. */
+/*!	Split a row of interleaved chroma pairs into two rows. */
 static void
 split_row8(const uint8_t* rows, uint32_t columnStride, uint32_t firstPair,
 	uint32_t pairs, uint8_t* cb, uint8_t* cr)
@@ -68,24 +52,61 @@ split_row8(const uint8_t* rows, uint32_t columnStride, uint32_t firstPair,
 }
 
 
+static void
+copy_plane8(const uint8_t* in, uint32_t columnStride, uint32_t first,
+	uint32_t width, uint32_t height, uint8_t* out, uint32_t outStride)
+{
+	for (uint32_t row = 0; row < height; row += kTileRows) {
+		uint32_t rows = std::min(kTileRows, height - row);
+		for (uint32_t x = 0; x < width;) {
+			uint32_t position = first + x;
+			uint32_t run = std::min(kColumnBytes - position % kColumnBytes,
+				width - x);
+			const uint8_t* column = in
+				+ (size_t)(position / kColumnBytes) * columnStride
+				+ position % kColumnBytes + (size_t)row * kColumnBytes;
+			uint8_t* target = out + (size_t)row * outStride + x;
+			for (uint32_t y = 0; y < rows; y++) {
+				memcpy(target + (size_t)y * outStride,
+					column + y * kColumnBytes, run);
+			}
+			x += run;
+		}
+	}
+}
+
+
+static void
+split_plane8(const uint8_t* in, uint32_t columnStride, uint32_t first,
+	uint32_t width, uint32_t height, uint8_t* cb, uint8_t* cr, uint32_t outStride)
+{
+	for (uint32_t row = 0; row < height; row += kTileRows) {
+		uint32_t rows = std::min(kTileRows, height - row);
+		for (uint32_t x = 0; x < width;) {
+			uint32_t run = std::min(
+				kColumnBytes / 2 - (first + x) % (kColumnBytes / 2), width - x);
+			for (uint32_t y = 0; y < rows; y++) {
+				split_row8(in + (size_t)(row + y) * kColumnBytes, columnStride,
+					first + x, run, cb + (size_t)(row + y) * outStride + x,
+					cr + (size_t)(row + y) * outStride + x);
+			}
+			x += run;
+		}
+	}
+}
+
+
 void
 sand8_to_i420(const SandPicture& picture, uint8_t* luma, uint32_t lumaStride,
 	uint8_t* cb, uint8_t* cr, uint32_t chromaStride)
 {
-	for (uint32_t y = 0; y < picture.height; y++) {
-		copy_row8(picture.data + (size_t)(picture.top + y) * kColumnBytes,
-			picture.columnStride, picture.left, picture.width,
-			luma + (size_t)y * lumaStride);
-	}
-
-	const uint8_t* chroma = picture.data + picture.chromaOffset;
-	uint32_t rows = (picture.height + 1) / 2;
-	uint32_t pairs = (picture.width + 1) / 2;
-	for (uint32_t y = 0; y < rows; y++) {
-		split_row8(chroma + (size_t)(picture.top / 2 + y) * kColumnBytes,
-			picture.columnStride, picture.left / 2, pairs,
-			cb + (size_t)y * chromaStride, cr + (size_t)y * chromaStride);
-	}
+	copy_plane8(picture.data + (size_t)picture.top * kColumnBytes,
+		picture.columnStride, picture.left, picture.width, picture.height,
+		luma, lumaStride);
+	split_plane8(picture.data + picture.chromaOffset
+			+ (size_t)(picture.top / 2) * kColumnBytes,
+		picture.columnStride, picture.left / 2, (picture.width + 1) / 2,
+		(picture.height + 1) / 2, cb, cr, chromaStride);
 }
 
 
@@ -93,20 +114,13 @@ void
 sand8_to_nv12(const SandPicture& picture, uint8_t* luma, uint32_t lumaStride,
 	uint8_t* chroma, uint32_t chromaStride)
 {
-	for (uint32_t y = 0; y < picture.height; y++) {
-		copy_row8(picture.data + (size_t)(picture.top + y) * kColumnBytes,
-			picture.columnStride, picture.left, picture.width,
-			luma + (size_t)y * lumaStride);
-	}
-
-	const uint8_t* source = picture.data + picture.chromaOffset;
-	uint32_t rows = (picture.height + 1) / 2;
-	uint32_t pairs = (picture.width + 1) / 2;
-	for (uint32_t y = 0; y < rows; y++) {
-		copy_row8(source + (size_t)(picture.top / 2 + y) * kColumnBytes,
-			picture.columnStride, 2 * (picture.left / 2), 2 * pairs,
-			chroma + (size_t)y * chromaStride);
-	}
+	copy_plane8(picture.data + (size_t)picture.top * kColumnBytes,
+		picture.columnStride, picture.left, picture.width, picture.height,
+		luma, lumaStride);
+	copy_plane8(picture.data + picture.chromaOffset
+			+ (size_t)(picture.top / 2) * kColumnBytes,
+		picture.columnStride, 2 * (picture.left / 2), 2 * ((picture.width + 1) / 2),
+		(picture.height + 1) / 2, chroma, chromaStride);
 }
 
 
@@ -169,22 +183,35 @@ unpack_row30(const uint8_t* rows, uint32_t columnStride, uint32_t first,
 }
 
 
+static void
+unpack_plane30(const uint8_t* in, uint32_t columnStride, uint32_t first,
+	uint32_t width, uint32_t height, uint8_t* out, uint32_t outStride)
+{
+	for (uint32_t row = 0; row < height; row += kTileRows) {
+		uint32_t rows = std::min(kTileRows, height - row);
+		for (uint32_t x = 0; x < width;) {
+			uint32_t run = std::min(
+				kColumnSamples30 - (first + x) % kColumnSamples30, width - x);
+			for (uint32_t y = 0; y < rows; y++) {
+				unpack_row30(in + (size_t)(row + y) * kColumnBytes, columnStride,
+					first + x, run,
+					(uint16_t*)(out + (size_t)(row + y) * outStride) + x);
+			}
+			x += run;
+		}
+	}
+}
+
+
 void
 sand30_to_p010(const SandPicture& picture, uint8_t* luma, uint32_t lumaStride,
 	uint8_t* chroma, uint32_t chromaStride)
 {
-	for (uint32_t y = 0; y < picture.height; y++) {
-		unpack_row30(picture.data + (size_t)(picture.top + y) * kColumnBytes,
-			picture.columnStride, picture.left, picture.width,
-			(uint16_t*)(luma + (size_t)y * lumaStride));
-	}
-
-	const uint8_t* source = picture.data + picture.chromaOffset;
-	uint32_t rows = (picture.height + 1) / 2;
-	uint32_t pairs = (picture.width + 1) / 2;
-	for (uint32_t y = 0; y < rows; y++) {
-		unpack_row30(source + (size_t)(picture.top / 2 + y) * kColumnBytes,
-			picture.columnStride, 2 * (picture.left / 2), 2 * pairs,
-			(uint16_t*)(chroma + (size_t)y * chromaStride));
-	}
+	unpack_plane30(picture.data + (size_t)picture.top * kColumnBytes,
+		picture.columnStride, picture.left, picture.width, picture.height,
+		luma, lumaStride);
+	unpack_plane30(picture.data + picture.chromaOffset
+			+ (size_t)(picture.top / 2) * kColumnBytes,
+		picture.columnStride, 2 * (picture.left / 2), 2 * ((picture.width + 1) / 2),
+		(picture.height + 1) / 2, chroma, chromaStride);
 }

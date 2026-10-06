@@ -483,3 +483,44 @@ roster reports Tracker already running; it is not a Natter measurement.
 Using the executable `/boot/system/apps/Natter/Natter`, Natter opens and
 answers its looper in 939 ms (`utile/native-results.txt`). The benchmark now
 rejects directory arguments before asking the roster to launch them.
+
+## HEVC picture conversion
+
+SAND conversion now processes eight rows of one column at a time, keeping
+the column input and row output local. It retains the existing pixel
+formats, crop behavior and NEON unpacking. An isolated sweep of tile heights
+1–64 selected eight as a useful compromise across I420, NV12 and P010 at
+1080p and 4K. A separate NEON table-shuffle experiment did not improve the
+ten-bit path and was not adopted. Evidence: `sand/traversal-results.txt`,
+`sand/table-results.txt`.
+
+On the actual hardware decoder, original/candidate/candidate/original runs
+give these ranges, with decoded pictures converted but not written to disk:
+
+| Stream | Original FPS | Candidate FPS | Original plane conversion, ms | Candidate, ms |
+| --- | ---: | ---: | ---: | ---: |
+| 1080p eight-bit | 113.4 | 122.6–122.9 | 3.6 | 2.9 |
+| 1080p ten-bit | 68.8 | 72.1–72.5 | 8.6 | 7.8–7.9 |
+| 4K eight-bit | 27.6–27.7 | 30.4–30.5 | 16.1–16.2 | 12.7 |
+| 4K ten-bit | 16.3 | 17.8 | 38.1 | 32.6–32.8 |
+
+All 25 hardware-decoded conformance streams retain their host FFmpeg MD5,
+including ten-bit, odd dimensions, weighted prediction and 4K. The new
+`jam rpi4_sand_convert_test` checks 1,506 conversions against an independent
+per-sample reference, covering random crops, independent plane strides,
+unaligned source addresses, padding, canaries and unchanged source data.
+It passes natively with NEON and on the host with ASan/UBSan. The complete
+image builds and reaches the branded desktop in QEMU. Evidence:
+`sand/conformance.txt`, `sand/conformance-verification.txt`,
+`sand/native-converter-test.txt`, `sand/decoder-bench.txt`, `sand/qemu.*`.
+
+The candidate Media Kit add-on is confirmed in airTime by `listimage`.
+Both 1080p eight-bit and ten-bit playback remain at approximately 30 FPS
+with no steady-state drops (`sand/airtime-candidate.txt`). A separately
+encoded 30-second 4K eight-bit fixture also plays at 30 FPS with no drops
+in all four original/candidate/candidate/original runs. The conversion
+benchmark gain has **not** produced a playback-FPS gain on that already
+real-time clip (`sand/airtime-4k-abba.txt`). The fixture is an x265 ultrafast
+CRF-28 upscale of `multi.mkv`, 3840x2160 at 30 FPS, SHA-256
+`5df0e26d72cbb002c1860f2bd803fc78724e58fb1755cb065f3267e615c87092`.
+It is not evidence that arbitrary 4K content, or 4K ten-bit, plays smoothly.
