@@ -4,8 +4,8 @@
 #	jam -q @minimum-rpi4 build airos-rpi-image
 #
 # minimum-rpi4 is the small bring-up image (a profile name starting with
-# "minimum-" selects the minimum image definition); the full air/OS profile
-# follows once the board boots.
+# "minimum-" selects the minimum image definition). Use @rpi4-airos for the
+# full branded desktop with the custom applications and preferences.
 
 HAIKU_RPI_FIRMWARE_DIR ?= /mnt/HaikuWork/rpi4/firmware/1.20260915 ;
 

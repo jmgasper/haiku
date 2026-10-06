@@ -7,7 +7,7 @@ it starts a Linux kernel.
 EEPROM bootloader
   -> start4.elf, fixup4.dat          from the FAT partition
        reads config.txt, loads:
-         bcm2711-rpi-4-b.dtb + overlays/disable-bt.dtbo
+         bcm2711-rpi-4-b.dtb + overlays/miniuart-bt.dtbo
          airos-loader.img            kernel=..., kernel_address=0x80000
          airos-boot.tgz              initramfs ... followkernel
          cmdline.txt                 -> /chosen/bootargs
