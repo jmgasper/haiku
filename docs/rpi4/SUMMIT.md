@@ -1,6 +1,14 @@
 # Summit on the Raspberry Pi 4
 
-State 2026-10-04: Summit composites on the GPU and has WebGL.
+The installed 2026-10-06 image keeps GPU compositing, WebGL, JIT and the
+WebRTC-enabled engine. Across three cold boots, the local start page is
+ready in 2.54–2.59 seconds and sends first content tiles in 8.39–8.64 seconds.
+The controlled 500-fish Aquarium measures 32–36 FPS depending on effects;
+full-window synthetic WebGL is about 59 FPS and scrolling 30–32 FPS.
+Preparation, limitations and raw evidence are in
+[PERFORMANCE.md](PERFORMANCE.md). The older comparisons below are historical.
+
+Initial state, 2026-10-04: Summit composites on the GPU and has WebGL.
 `https://get.webgl.org/` says "Your browser supports WebGL" and shows the
 spinning cube (`evidence/summit-gl1.jpg`); the WebGL Aquarium
 (`webglsamples.org/aquarium`) runs at 21 frames a second with 500 fish on a
@@ -122,7 +130,7 @@ tools/rpi4/stage-packages.sh
 ```
 
 The build helper checks the pinned port snapshot and required GL/WebRTC
-options, applies `webkit-haiku-exports.patch` idempotently, and rebuilds
+options, applies the export and readback-hint patches idempotently, and rebuilds
 the engine and its helper executables. The export map preserves public
 embedding and process entry points while removing private symbols from
 dynamic lookup. It does not disable browser features. Native comparisons,
@@ -147,12 +155,13 @@ The first GL-only build was configured as follows (historical):
 
 ## Open
 
-- Only two pages were looked at before the newer engine; see that section
-  for the Summit session's measurements since.
-- The SD card runs at 25 MHz (default speed): a faster card mode would
-  shorten Summit's cold start most.
+- The current checks cover a local 12-case browser fixture, DOM work,
+  scrolling, WebGL and Aquarium; broad website compatibility remains open.
+- The SD card now uses 50 MHz high-speed timing and DMA. Initial browser
+  content still takes several seconds to load and prepare from SD.
 - The web process logs "page stall" lines while a page loads; whether they
   matter was not looked into.
 - HTTPS needs the clock: the board has no RTC and sets the time from the
   network at start (`data/boot/rpi/UserBootscript`).
-- Video in pages decodes in software, like airTime (`MEDIA.md`).
+- Supported H.264 uses the hardware decoder; unsupported formats and
+  hardware-decoder failures need their software fallback (`MEDIA.md`).

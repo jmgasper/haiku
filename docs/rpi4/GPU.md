@@ -1,6 +1,12 @@
 # GPU on the Raspberry Pi 4 (VideoCore VI, V3D 4.2)
 
-State 2026-10-03: OpenGL runs on the GPU. GLTeapot renders in a window at
+The installed 2026-10-06 build adds persistent shader caching, cached Gallium
+textures with explicit CPU/GPU ownership, GPU-assisted large readbacks,
+native EGL bitmap reuse and retained kernel hardware state. Native pixel,
+lifetime and application results are in [PERFORMANCE.md](PERFORMANCE.md).
+OpenGL/GLES and Summit WebGL use V3D; Vulkan remains headless.
+
+Initial bring-up, 2026-10-03: GLTeapot renders in a window at
 about 315 FPS (`evidence/teapot6.jpg`); the offscreen probe is pixel-exact
 from 128x128 to 1920x1080 with and without a depth buffer. Vulkan (Mesa's
 v3dv, 2026-10-04) renders without a window: `rpi4_vk_probe` reports "V3D
@@ -23,9 +29,11 @@ v3dv, 2026-10-04) renders without a window: `rpi4_vk_probe` reports "V3D
   stalls the bus.
 - Memory: the core sees memory only through its MMU. One flat page table
   (4 MB, uncached) covers the 4 GB GPU address space; a buffer object is a
-  locked, write-combining area plus a first-fit range of GPU addresses and its
-  page table entries. `MMAP_BO` clones the area into the caller's team and
-  returns the address (there is no mmap on a device node).
+  locked area plus a first-fit range of GPU addresses and its page table
+  entries. Ordinary buffers and Vulkan use write-combining memory; eligible
+  Gallium textures use write-back memory with explicit cache maintenance.
+  `MMAP_BO` clones the area into the caller's team and returns the address
+  (there is no mmap on a device node).
 - Lifetime: the fixed FDT driver node is retained. Its page table, scratch
   page, register mappings and executor are initialized at registration and
   survive the last application close. This avoids repeatedly finding a
@@ -84,7 +92,8 @@ The probe:
   `vk_icdGetInstanceProcAddr`) and no window system layer, so nothing can
   present yet. Sync files, timeline semaphores, the CPU job queue (indirect
   compute, timestamp and performance queries) and PRIME are not there.
-  Nothing beyond the probe's two frames has been run.
+  Render coverage remains the probe's clear and triangle workloads,
+  including repeated execution under combined CPU/GPU/decoder load.
 - Presentation without the read-back copy.
 - 8 GB boards: buffers above 4 GB cannot be mapped by this MMU setup
   (28-bit page numbers are fine, but the driver has only been run on 4 GB).
