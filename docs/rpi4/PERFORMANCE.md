@@ -235,3 +235,23 @@ After rebooting the installed `hrev60097+650+dirty` package and matching
 archive, all 50 loader checks pass with timing enabled, and a redirected
 `true` invocation retains all six map lines plus its phase summary.
 Evidence: `loader-timing-fixed-qemu.*`, `loader-timing-cold-fixed.txt`.
+
+## Bounded initial file prefetch
+
+The initial mapping prefetch is now capped at 1 MiB instead of 10 MiB.
+The first native cold Summit launch on `hrev60097+651+dirty` reaches the
+browser-ready marker in 3.729 seconds, versus 5.655 seconds on the previous
+build. First tiles arrive in 9.768 versus 11.675 seconds. These are one
+installed-app cold launch per build; the separate engine comparison below
+uses repeated boots. The smaller read shifts some work into page faults:
+load time falls from 4.137 to 1.566 seconds while relocation rises from
+1.369 to 1.934 seconds. Total startup improves. Evidence:
+`prefetch-1m-cold.txt`.
+
+Warm StyledEdit and AirPins window medians remain about 119 and 329 ms.
+The texture regression probe passes 40 rounds on the existing uncached
+driver. The memory-pressure check reaches 6 MB free with 181 MB swapped,
+then verifies all data, releases it with `MADV_FREE`, and reports `OK`.
+Login becomes unresponsive during the severe pressure, but recovers without
+a reboot. The suspended-child cleanup check also completes. Evidence:
+`prefetch-1m-regression.txt`, `prefetch-1m-memory-serial.*`.
