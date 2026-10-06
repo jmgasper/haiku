@@ -3,8 +3,8 @@
 #   x86_64  airos-x86_64.iso   USB stick / CD, EFI and BIOS (X399 and other PCs)
 #   arm64   airos-arm64.iso    USB stick, UEFI (ROCK 5 ITX and other arm64 machines)
 #   rpi4    airos-rpi4.img     Raspberry Pi 4 SD card (Balena Etcher), boots directly
-# Each image is smoke-tested in QEMU and published on the build server
-# (http://airos-build.local/images/<target>/latest/). They are rebuilt nightly
+# Each image is smoke-tested (Pi: SD layout) and published on the build server
+# and as a public, immutable GitHub prerelease. They are rebuilt nightly
 # too, to pick up new builds of the applications and Summit.
 name: air/OS images
 
@@ -21,7 +21,7 @@ on:
         default: x86_64 arm64 rpi4
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: airos-images
@@ -57,6 +57,12 @@ jobs:
       - name: Smoke test
         if: steps.selected.outputs.build
         run: '"$RUNNER_TEMP/airos-ci/images/smoke-test.sh" "${{ matrix.target }}" "${{ steps.build.outputs.IMAGE_DIR }}"'
+
+      - name: Publish verified image to GitHub Releases
+        if: steps.selected.outputs.build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: 'python3 "$RUNNER_TEMP/airos-ci/images/publish-github.py" "${{ matrix.target }}" "${{ steps.build.outputs.IMAGE_DIR }}"'
 
       - name: Summary
         if: always() && steps.build.outputs.IMAGE_DIR
