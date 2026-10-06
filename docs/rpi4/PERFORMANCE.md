@@ -184,3 +184,27 @@ and the four window drawing checks. Evidence: `loader-tests-before.txt`,
 `candidate3-qemu.*`, `candidate3-native-checks.txt`. That native command's
 last step names a nonexistent GL probe; the corrected GL and network
 checks are recorded separately in `candidate3-network-gl.txt`.
+
+## USB-first EEPROM boot delay
+
+The lab EEPROM retains version 2022-01-25 and `BOOT_ORDER=0xf14`, with
+`USB_MSD_DISCOVER_TIMEOUT=5000` and `USB_MSD_LUN_TIMEOUT=500`. Its update
+verified and reset, then booted the attached NanoKVM recovery disk. Linux
+reported the new configuration and unchanged firmware version. The SD FAT
+partition was backed up before staging the update; all update files were
+removed afterwards. Evidence: `recovery-before-timeout.*`,
+`eeprom-after-reboot.txt`, `eeprom-cleanup.txt`.
+
+With recovery detached and both the thumb drive and empty NanoKVM LUN
+present, the first cold-power test selected SD 8.58 seconds after the
+EEPROM banner, versus 31.07 seconds previously: **22.5 seconds saved**.
+The display layout appeared at 23.86 seconds and Ethernet link at 26.66
+seconds after the banner, versus 46.45 and 49.31 seconds on the preceding
+system build. These are serial milestones, not measurements of the first
+fully drawn desktop. Native telnet and automatic Wi-Fi joining also pass.
+Evidence: `candidate3-clean-boot.*`, `eeprom-fast-sd-1.*`,
+`eeprom-fast-sd-1-checks.txt`. Repeated warm and cold boots remain planned.
+
+This change is stored in the lab board's EEPROM, separately from the SD
+image. A user's board configured to try SD first does not incur this lab's
+USB recovery timeout in the first place.
