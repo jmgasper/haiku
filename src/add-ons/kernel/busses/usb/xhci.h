@@ -94,6 +94,9 @@ struct xhci_endpoint {
 	DoublyLinkedList<xhci_td> td_list;
 	uint8			used;
 	uint8			next;
+	uint32			cancel_count;
+		// Cancellation drops lock while stopping the controller. Do not link
+		// new descriptors until every overlapping cancellation has finished.
 
 	xhci_trb*		trbs; // [XHCI_ENDPOINT_RING_SIZE]
 	phys_addr_t 	trb_addr;

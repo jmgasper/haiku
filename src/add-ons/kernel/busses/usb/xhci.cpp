@@ -1407,6 +1407,8 @@ XHCI::CancelQueuedTransfers(Pipe *pipe, bool force)
 
 	MutexLocker endpointLocker(endpoint->lock);
 
+	endpoint->cancel_count++;
+
 	// Calling the callbacks while holding the endpoint lock could potentially
 	// cause deadlocks, so we instead store them in a pointer array. We need
 	// to do this separately from freeing the TDs, for in the case we fail
@@ -1487,6 +1489,9 @@ XHCI::CancelQueuedTransfers(Pipe *pipe, bool force)
 	xhci_td* td;
 	while ((td = tdList.RemoveHead()) != NULL)
 		FreeDescriptor(td);
+
+	endpointLocker.Lock();
+	endpoint->cancel_count--;
 
 	return B_OK;
 }
@@ -2050,6 +2055,7 @@ XHCI::AllocateDevice(Hub *parent, int8 hubAddress, uint8 hubPort,
 	ASSERT(endpoint0->td_list.IsEmpty());
 	endpoint0->used = 0;
 	endpoint0->next = 0;
+	endpoint0->cancel_count = 0;
 	endpoint0->trbs = device->trbs;
 	endpoint0->trb_addr = device->trb_addr;
 
@@ -2306,6 +2312,7 @@ XHCI::_InsertEndpointForPipe(Pipe *pipe)
 		ASSERT(endpoint->td_list.IsEmpty());
 		endpoint->used = 0;
 		endpoint->next = 0;
+		endpoint->cancel_count = 0;
 
 		endpoint->trbs = device->trbs + id * XHCI_ENDPOINT_RING_STRIDE;
 		endpoint->trb_addr = device->trb_addr
@@ -2402,6 +2409,16 @@ XHCI::_LinkDescriptorForPipe(xhci_td *descriptor, xhci_endpoint *endpoint)
 
 	// Use mutex_trylock first, in case we are in KDL.
 	MutexLocker endpointLocker(&endpoint->lock, mutex_trylock(&endpoint->lock) == B_OK);
+
+	// CancelQueuedTransfers() must unlock while waiting for controller
+	// commands. Linking in that interval would put a live Transfer on the
+	// list after cancellation took its snapshot; clearing the list would
+	// then lose that Transfer and its Pipe reference. Also reject a request
+	// that obtained a pipe reference just before teardown withdrew its ID.
+	if (endpoint->cancel_count != 0
+			|| descriptor->transfer->TransferPipe()->USBID() == UINT32_MAX) {
+		return B_CANCELED;
+	}
 
 	// "used" refers to the number of currently linked TDs, not the number of
 	// used TRBs on the ring (we use 2 TRBs on the ring per transfer.)
