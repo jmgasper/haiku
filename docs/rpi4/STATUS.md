@@ -4,7 +4,7 @@ The lab board is a Raspberry Pi 4 Model B revision 1.5, 4 GB (`c03115`),
 with two HDMI displays, Ethernet, the NanoKVM's USB HID devices,
 and a USB thumb drive. The fresh-install investigation on 2026-10-07 uses
 a 128 GB SD card; the earlier performance run below used 8 GB. Current
-reliability work is on `rpi-firstboot-reliability`, based on `master`.
+reliability fixes were merged into private `master` as `6ea9a7d410`.
 Earlier bring-up notes are retained in `HISTORY-20261005.md`;
 this page supersedes their older status statements.
 
@@ -38,14 +38,17 @@ no allocation errors). Choosing a zone preserves UTC; a failed actual
 attach/remove cycles completed with working input afterward. A networked
 candidate synchronizes time automatically and Summit opens HTTPS.
 
-The native SD now runs the candidate packages (`hrev60206+731+dirty`) and
-matching loader/archive, installed in place with the old files retained for
-rollback. It reaches the timezone step, NTP reports synchronization success,
+The native SD has been upgraded to clean `hrev60206+733` packages and
+matching loader/archive from `6ea9a7d410`, with the original files retained
+for rollback. The complete image booted in QEMU before native deployment.
+It reaches the timezone step, NTP reports synchronization success,
 and both curl and Summit load HTTPS with certificate validation enabled.
-Seven native USB gadget disconnect/reconnect cycles complete without a panic.
-Keyboard input works after restarting NanoKVM's HID service, whose stale Linux
-handles otherwise produce `ENXIO` before reports can reach the Pi. The KVM's
-RNDIS interface times out on reinitialization; this is not a successful USB
+Repeated native USB gadget disconnect/reconnect cycles complete without a
+panic. The final three cycles use NanoKVM's supported HID-reset endpoint and
+confirm a typed serial marker after every reconnect. Manual gadget rebinding
+can leave the KVM with stale Linux HID handles (`ENXIO`); use its HID reset
+when recovering input, and explicitly refocus Terminal after device dialogs.
+The KVM's RNDIS interface times out on reinitialization; this is not a successful USB
 network hotplug qualification. Ethernet remains available.
 
 HDMI now polls the BCM2711 HPD register, debounces edges, reads EDID using
@@ -64,12 +67,34 @@ Evidence: `/mnt/HaikuWork/rpi4/evidence/fresh-install-20261007`, including
 `sd-allocated-manifest.json`, `bfs-check.log`, `no-boot-media-serial.log`,
 `qemu/expanded-bfs-check.log`, `qemu-final/hotplug.log`,
 `native-verify.log`, `native-summit-visible.jpg`, `native-hdmi-hotplug.log`,
-`native-final-late-hdmi.log`, `native-final-late-hdmi.jpg` and
-`native-usb-fixture-reset.log`. RPiInstaller 1.1.0 is staged in the build
-server's ARM64 package pool; its old 1.0.0 package is retained in the task
+`native-final-late-hdmi.log`, `native-final-late-hdmi.jpg`,
+`native-usb-fixture-reset.log`, `native-usb-reset-cycles.log`,
+`native-release-install.log`, `native-release-verify.log`,
+`native-release-summit.jpg` and `release-manifest.json`. RPiInstaller 1.1.0 is
+staged in the build server's ARM64 package pool; its old 1.0.0 package is retained in the task
 backup directory. The complete CI image pipeline has not been run here.
 
-## Tested image
+## Current reliability image
+
+Built on 2026-10-07 from clean `6ea9a7d410`, version `hrev60206+733`:
+
+- Image: `/mnt/HaikuWork/rpi4/build-installer/airos-rpi4.img`.
+- SHA-256: `2e1c5e1f9faf05cc0d51c7a212701e8df58cb6b1aa244dd91d1ae5fc6f15137d`.
+- Includes RPiInstaller 1.1.0, the CA bundle and compatibility path, automatic
+  time synchronization, USB HID lifetime fixes, and HDMI hotplug support.
+- Native cold boot after a clean shutdown and smart-plug power cycle passes.
+  The recovery detach command leaves a valid read-only idle disk, and all six
+  installed package/boot-file hashes match the staged artifacts. Automatic
+  NTP, two verified HTTPS requests, Summit, keyboard input and the dual-display
+  layout pass after this boot. The temporary diagnostic driver is absent.
+- The generic image excludes the private lab overlay and diagnostic mailbox
+  driver. Native installation updates the existing expanded card in place;
+  it does not erase the user's volume or rerun expansion.
+
+The earlier performance results below describe the previous image and were
+not all repeated for this reliability build.
+
+## Previous performance image
 
 Built on 2026-10-06 from clean source commit `63f5e1e916c41369d9464a062f20a23912fe8ee6`:
 
