@@ -21,7 +21,7 @@
 #endif
 
 #if DEBUG_TCP_BUFFER_QUEUE
-#	define VERIFY() Verify();
+#	define VERIFY() Verify(DEBUG_TCP_BUFFER_QUEUE > 1);
 #else
 #	define VERIFY() ;
 #endif
@@ -477,17 +477,26 @@ BufferQueue::PopulateSackInfo(tcp_sequence sequence, int maxSackCount,
 
 #if DEBUG_TCP_BUFFER_QUEUE
 
-/*!	Perform a sanity check of the whole queue.
+/*!	Check the queue's boundary invariants. A full scan is available for
+	diagnostics, but doing it on every packet makes a growing queue quadratic.
 */
 void
-BufferQueue::Verify() const
+BufferQueue::Verify(bool full) const
 {
 	ASSERT(Available() == 0 || fList.First() != NULL);
+	ASSERT(fContiguousBytes <= fNumBytes);
 
 	if (fList.First() == NULL) {
 		ASSERT(fNumBytes == 0);
 		return;
 	}
+	ASSERT(fList.First()->size > 0);
+	ASSERT(fFirstSequence <= fList.First()->sequence);
+	ASSERT(fContiguousBytes == 0 || fFirstSequence == fList.First()->sequence);
+	ASSERT(fList.Last()->size > 0);
+	ASSERT(fLastSequence == fList.Last()->sequence + fList.Last()->size);
+	if (!full)
+		return;
 
 	SegmentList::ConstIterator iterator = fList.GetIterator();
 	size_t numBytes = 0;
