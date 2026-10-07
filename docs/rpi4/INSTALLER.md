@@ -94,7 +94,7 @@ The build server's `airos-rpi4` profile uses the same growable format and
 requires `rpi_installer` in `AIROS_CI_PACKAGES`. Its image pipeline selects
 this Pi-only package from the ARM64 package pool.
 
-The final image (`505134964a`, 2026-10-07) includes the build server's fresh
+A validation image (`505134964a`, 2026-10-07) included the build server's fresh
 Summit `60f37cb` packages: `summit-0.1.0~git20261007.0055-1-arm64` and
 `summit_webkit-1.10.1~git20261007.0055-1-arm64`. The package hashes extracted
 from the image match the staged copies. Its installer expanded a decimal
@@ -109,3 +109,11 @@ Rebuild the stale aggregates/readers or use a clean output directory. The
 final image was tested after rebuilding those objects; no application
 package failed to load. The compressed deliverable and source/package
 manifest are in the artifact directory's `release/` subdirectory.
+
+The delivered image uses Haiku `b6854ab9f8` and the newer completed Summit
+build `cfbe5f5` (`git20261007.0112-1` packages, including certificate details).
+Its fresh boot displayed setup, loaded all packages, and rendered a local
+JavaScript test. All 42 package hashes extracted from the image matched
+their expected inputs. The xz stream expands to the exact raw-image SHA-256.
+The final evidence is in `latest-qemu/`, `latest-verification/`, and the
+release manifest. The physical Pi test remains separate.
