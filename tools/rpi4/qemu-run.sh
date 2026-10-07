@@ -15,9 +15,16 @@ shift || true
 LOADER=$BUILD/objects/haiku/arm64/release/system/boot/rpi/haiku_loader.rpi
 ARCHIVE=${RPI4_ARCHIVE:-$BUILD/airos-boot.tgz}
 LOG=$(mktemp "${TMPDIR:-/mnt/HaikuWork/tmp}/rpi4-qemu.XXXXXX")
-trap 'rm -f "$LOG" "$LOG.ppm"' EXIT
-args=(-M raspi4b -kernel "$LOADER" -dtb "$WORK/firmware/qemu-rpi4.dtb"
-    -append "airos.debug $*" -serial "file:$LOG" -display none -monitor stdio)
+trap 'rm -f "$LOG" "$LOG.ppm" "$LOG.dtb"' EXIT
+# QEMU has the firmware framebuffer, but not HVS scanout or the V3D core.
+# Keep the full image on the generic framebuffer driver for this smoke test.
+# Removing the compatible property avoids binding rpi_display; FDT status
+# alone does not suppress driver matching in Haiku's current FDT bus.
+cp "$WORK/firmware/qemu-rpi4.dtb" "$LOG.dtb"
+fdtput -d "$LOG.dtb" /soc/hvs@7e400000 compatible
+fdtput -d "$LOG.dtb" /v3dbus/v3d@7ec04000 compatible
+args=(-M raspi4b -kernel "$LOADER" -dtb "$LOG.dtb"
+    -append "$*" -serial "file:$LOG" -display none -monitor stdio)
 [ -f "$ARCHIVE" ] && args+=(-initrd "$ARCHIVE")
 [ -n "${RPI4_SD:-}" ] && args+=(-drive "file=$RPI4_SD,if=sd,format=raw")
 {

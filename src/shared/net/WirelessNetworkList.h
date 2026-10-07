@@ -113,8 +113,9 @@ WiFiDebugLog(const char* component, const char* format, ...)
 
 /*!	Estimates the received signal level in dBm.
 
-	Drivers derived from OpenBSD (iwx, iwm, ...) leave the noise level at zero
-	and report the signal normalized as "dBm + 100", clipped to their maximum.
+	Relative-RSSI drivers derived from OpenBSD (iwx, iwm, ...) leave the noise
+	level at zero and report "dBm + 100", clipped to their maximum. The OpenBSD
+	compatibility layer converts absolute-dBm drivers to the FreeBSD format.
 	FreeBSD-derived drivers report the noise floor in dBm (as a signed byte)
 	and the signal in 0.5 dB steps above it.
 */

@@ -10,6 +10,18 @@ local architectureObject ;
 for architectureObject in [ MultiArchSubDirSetup ] {
 	on $(architectureObject) {
 		local architecture = $(TARGET_PACKAGING_ARCH) ;
+		local memmoveObject
+			= <src!system!libroot!posix!musl!string!$(architecture)>memmove.o ;
+		local strcmpObject
+			= <src!system!libroot!posix!string!$(architecture)>strcmp.o ;
+		local strlenObject
+			= <src!system!libroot!posix!musl!string!$(architecture)>strlen.o ;
+		# ARM64 supplies these in the architecture string object.
+		if $(architecture) = arm64 {
+			memmoveObject = ;
+			strcmpObject = ;
+			strlenObject = ;
+		}
 
 		UsePrivateHeaders libroot runtime_loader shared ;
 		UsePrivateHeaders kernel ;
@@ -53,7 +65,7 @@ for architectureObject in [ MultiArchSubDirSetup ] {
 			<src!system!libroot!posix!locale!$(architecture)>LocaleData.o
 
 			<src!system!libroot!posix!musl!string!$(architecture)>memchr.o
-			<src!system!libroot!posix!musl!string!$(architecture)>memmove.o
+			$(memmoveObject)
 			<src!system!libroot!posix!musl!string!$(architecture)>stpcpy.o
 			<src!system!libroot!posix!musl!string!$(architecture)>strcat.o
 			<src!system!libroot!posix!musl!string!$(architecture)>strchr.o
@@ -62,7 +74,7 @@ for architectureObject in [ MultiArchSubDirSetup ] {
 			<src!system!libroot!posix!musl!string!$(architecture)>strcspn.o
 			<src!system!libroot!posix!musl!string!$(architecture)>strlcat.o
 			<src!system!libroot!posix!musl!string!$(architecture)>strlcpy.o
-			<src!system!libroot!posix!musl!string!$(architecture)>strlen.o
+			$(strlenObject)
 			<src!system!libroot!posix!musl!string!$(architecture)>strnlen.o
 			<src!system!libroot!posix!musl!string!$(architecture)>strpbrk.o
 			<src!system!libroot!posix!musl!string!$(architecture)>strspn.o
@@ -70,7 +82,7 @@ for architectureObject in [ MultiArchSubDirSetup ] {
 
 			<src!system!libroot!posix!string!$(architecture)>memcmp.o
 			<src!system!libroot!posix!string!$(architecture)>strcasecmp.o
-			<src!system!libroot!posix!string!$(architecture)>strcmp.o
+			$(strcmpObject)
 			<src!system!libroot!posix!string!$(architecture)>strdup.o
 			<src!system!libroot!posix!string!$(architecture)>strerror.o
 			<src!system!libroot!posix!string!$(architecture)>strncmp.o
@@ -124,4 +136,3 @@ local arch ;
 for arch in $(TARGET_ARCHS) {
 	HaikuSubInclude arch $(arch) ;
 }
-

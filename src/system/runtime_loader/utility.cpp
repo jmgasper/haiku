@@ -52,7 +52,12 @@ printf(const char *format, ...)
 	int length = vsnprintf(buffer, sizeof(buffer), format, args);
 	va_end(args);
 
-	_kern_write(STDERR_FILENO, 0, buffer, length);
+	if (length > 0) {
+		// Use the file's current position, including when stderr is redirected.
+		// vsnprintf() reports the untruncated length, not the bytes stored.
+		_kern_write(STDERR_FILENO, -1, buffer,
+			std::min((size_t)length, sizeof(buffer) - 1));
+	}
 
 	return length;
 }

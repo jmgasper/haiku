@@ -34,6 +34,17 @@ static const uint32 kSize = 64;
 
 
 static int sDevice;
+static bool sCacheable;
+
+
+static bool
+prepare(uint32 handle, bool readOnly = false)
+{
+	if (!sCacheable)
+		return true;
+	v3d_haiku_handle request = {handle, readOnly ? V3D_HAIKU_CPU_READ_ONLY : 0};
+	return ioctl(sDevice, V3D_HAIKU_CPU_PREPARE, &request, sizeof(request)) == 0;
+}
 
 
 static bool
@@ -49,6 +60,7 @@ create_buffer(uint32 size, uint32& handle, uint32& offset)
 {
 	drm_v3d_create_bo create = {};
 	create.size = size;
+	create.flags = sCacheable ? V3D_HAIKU_BO_CACHEABLE : 0;
 	if (ioctl(sDevice, V3D_HAIKU_CREATE_BO, &create, sizeof(create)) != 0)
 		return NULL;
 	handle = create.handle;
@@ -72,8 +84,9 @@ compare(const void* a, const void* b)
 
 
 int
-main()
+main(int argc, char** argv)
 {
+	sCacheable = argc == 2 && strcmp(argv[1], "--cached") == 0;
 	sDevice = open(V3D_HAIKU_DEVICE_PATH, O_RDWR);
 	if (sDevice < 0) {
 		printf("FAIL: open %s: %s\n", V3D_HAIKU_DEVICE_PATH, strerror(errno));
@@ -81,6 +94,14 @@ main()
 	}
 
 	bool ok = true;
+	if (sCacheable) {
+		drm_v3d_get_param param = {};
+		param.param = V3D_HAIKU_PARAM_CACHEABLE_BO;
+		if (!check(ioctl(sDevice, V3D_HAIKU_GET_PARAM, &param, sizeof(param)) == 0
+				&& param.value >= 2, "cacheable buffer ownership capability")) {
+			return 1;
+		}
+	}
 
 	static const struct {
 		uint32 param;
@@ -117,10 +138,14 @@ main()
 	ok &= check(sourceOffset != 0 && targetOffset != 0
 		&& sourceOffset != targetOffset, "distinct GPU addresses");
 
+	if (!check(prepare(sourceHandle) && prepare(targetHandle), "CPU ownership"))
+		return 1;
 	for (uint32 i = 0; i < kSize * kSize; i++) {
 		source[i] = 0xff000000 | i * 2654435761u >> 8;
 		target[i] = 0xdeadbeef;
 	}
+	ok &= check(prepare(sourceHandle) && prepare(targetHandle),
+		"repeated CPU ownership preserves writes");
 	bool readback = true;
 	for (uint32 i = 0; i < kSize * kSize; i++)
 		readback &= source[i] == (0xff000000 | i * 2654435761u >> 8);
@@ -161,6 +186,10 @@ main()
 	waitBuffer.timeout_ns = 1000000000LL;
 	ok &= check(ioctl(sDevice, V3D_HAIKU_WAIT_BO, &waitBuffer,
 		sizeof(waitBuffer)) == 0, "wait for the target buffer");
+	if (!check(prepare(sourceHandle, true) && prepare(targetHandle, true),
+			"GPU to CPU ownership")) {
+		return 1;
+	}
 
 	// The tiled layout moves the pixels around in 4x4 blocks: the first
 	// block must be the image's top left corner, and (nearly) all of the
@@ -187,6 +216,23 @@ main()
 	ok &= check(found + untouched == kSize * kSize
 		&& found >= kSize * kSize * 15 / 16,
 		"the TFU wrote the image in a tiled layout");
+
+	if (sCacheable) {
+		bool repeated = true;
+		for (int round = 0; round < 64 && repeated; round++) {
+			repeated = prepare(sourceHandle);
+			if (!repeated)
+				break;
+			source[0] ^= 0x112233;
+			uint32 expected = source[0];
+			repeated = ioctl(sDevice, V3D_HAIKU_SUBMIT_TFU, &tfu, sizeof(tfu)) == 0
+				&& prepare(targetHandle, true) && target[0] == expected;
+			// Source is GPU-owned too, even though the job only reads it.
+			repeated &= prepare(sourceHandle, true);
+		}
+		ok &= check(repeated, "64 read-only / write / GPU ownership cycles");
+	}
+	free(sorted);
 
 	v3d_haiku_handle close = {sourceHandle, 0};
 	ok &= check(ioctl(sDevice, V3D_HAIKU_CLOSE_BO, &close, sizeof(close)) == 0,

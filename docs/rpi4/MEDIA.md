@@ -1,6 +1,15 @@
 # Media on the Raspberry Pi 4
 
-State 2026-10-04 (evening): sound output, hardware H.264 decoding (the
+The installed 2026-10-06 build passes all 25 HEVC reference streams and
+the 90-frame H.264 reference in both input modes. SAND conversion now works
+in cache-sized row groups. The final airTime samples show 1080p HEVC at
+30 FPS without drops, 4K8 at 30 FPS over 20.4 seconds, and H.264 at 29.6 FPS
+with nine drops over 20.3 seconds. Raw 4K10 decoding remains below real time.
+See [PERFORMANCE.md](PERFORMANCE.md) for exact fixtures, intervals and
+endurance results. Physical audio remains unverified, and repeated HEVC
+allocations can fail under memory fragmentation despite free RAM.
+
+Bring-up state, 2026-10-04 (evening): sound output, hardware H.264 decoding (the
 VideoCore firmware's decoder) and hardware HEVC decoding (the SoC's own HEVC
 block) work. airTime plays 1080p30 in either at 30 pictures a second with
 sound. Nobody has listened to the sound: the lab has no ears (see "How the
@@ -36,9 +45,11 @@ firmware, synchronous services, suspend, message quotas.
   hook that gets its messages, queue a message, bulk transmit and receive.
 - `/dev/misc/vchiq` has the same as ioctls; a service is closed with the file
   descriptor that opened it, so a program that dies leaves nothing open.
-- Bulk transfers go through a bounce buffer per service and direction
-  (memory in the first gigabyte, CPU cache flushed around the firmware's
-  access). That costs a copy; see "Open".
+- Bulk transfers go through a buffer per service and direction, with CPU
+  cache maintenance around firmware access. The page-list allocation stays
+  below 1 GB and is retained by the service. On BCM2711, data can use
+  noncontiguous pages described by the 36-bit page-list format; it no longer
+  needs a contiguous multi-megabyte run below 1 GB. Copies remain.
 
 Two things cost time and are worth knowing:
 

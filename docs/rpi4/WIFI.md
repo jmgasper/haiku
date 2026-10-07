@@ -98,6 +98,116 @@ at start. The image's `UserBootscript` (`data/boot/rpi/UserBootscript`)
 starts `wifiautojoin`, which scans, picks the strongest remembered network
 and joins it through net_server; checked on two restarts.
 
+On 2026-10-06, repeated performance-test boots exposed intermittent startup
+join timeouts. Three of four consecutive cold browser tests joined; the
+fourth associated but did not finish its handshake before the supplicant's
+15-second timeout. This remains under investigation.
+
+The final flashed image (`hrev60097+672`, source `63f5e1e916`) also reproduces
+this failure. Joining through the custom preferences window succeeds and
+remembers the network; the next cold boot joins automatically. The following
+cold boot times out, as do a manual helper retry and an explicit leave/rejoin.
+Ethernet and the desktop remain available. This uses the packaged autojoin
+helper, not the earlier experimental scan listener. It is a release limitation,
+not a passed reboot test. The helper currently exits after a join timeout;
+its outer retry loop covers unavailable scans and networks, not failed joins.
+Evidence: `evidence/performance-20261006/release/cold-boot-3.txt`,
+`wifi-boot-3-retry.txt` and `wifi-boot-3-leave-rejoin.txt`.
+
+The failed boot leaves the supplicant's "Failed to join network" password
+dialog visible (`release/wifi-failure-during-soak.jpg`). In the pinned
+supplicant source `bdf3144ad606b226aca6f8fae103e671e4655138`,
+`WPASupplicantApp::MessageReceived()` synchronously calls
+`wireless_config_dialog()`, whose `WaitForDialog()` waits on a semaphore.
+That blocks the application's message loop until the dialog is dismissed,
+so later join/leave requests can remain queued. This is a separate recovery
+obstacle; it does not establish the cause of the original WPA handshake
+timeout. Simply adding retries to the startup helper would not address it.
+
+After the final endurance run, clicking Cancel on that dialog lets the queued
+requests proceed. The second five-second status sample shows the saved WPA2
+network associated with DHCP, and it stays connected for the rest of the
+40-second observation. No password change or new join command was sent.
+This confirms a recovery path on this boot; it does not fix startup or prove
+that all association failures have the same cause. Evidence:
+`release/post-soak-wifi-dialog.jpg` and `wifi-after-dialog-cancel.txt`.
+
+The clean boot after removing the telemetry module also misses autojoin.
+After dismissing its error dialog, a fresh invocation of the normal packaged
+helper joins successfully with the saved credentials and obtains DHCP.
+The final device is left connected over both Wi-Fi and Ethernet. In the
+final image's three cold boots with saved credentials, one autojoins and
+two need recovery; this small sample is not an estimate of the general
+failure rate. See `release/cold-boot-4.txt`, `wifi-boot-4-recovery.txt` and
+`final-wifi-connected.jpg`.
+
+Traffic is checked again after that recovery with Ethernet administratively
+down: five gateway pings have no loss (1.412 ms average), a 32 MiB file to SD
+matches SHA-256, and three downloads to `/dev/null` take 3.66, 3.63 and
+3.58 seconds (about 73–75 Mbit/s). The server sees the Wi-Fi address for
+every transfer. Ethernet is then restored and both links remain up.
+Evidence: `release/final-network-wifi.txt` and `final-idle-2.txt`.
+
+The OpenBSD compatibility layer now exports Broadcom's absolute RSSI as
+FreeBSD-format half-dB units over a -100 dBm reference floor. Previously a
+negative dBm byte wrapped into an unsigned RSSI, so the custom Wi-Fi tool
+and autojoin helper showed every network at 0 dBm. Relative-RSSI Intel
+drivers keep their existing format. Native build +663 reports the strongest
+saved network at -29 dBm and distinct weaker levels, joins WPA2, obtains its
+address, and completes an associated scan. Evidence:
+`evidence/performance-20261006/wifi-startup/signal.txt` and
+`signal-boot.{log,jsonl}`;
+the complete image also reaches the branded QEMU desktop. This reporting
+fix alone does not remove the second association attempt.
+
+### Startup performance, 2026-10-06
+
+A diagnostic trace identified a firmware roam during the first WPA handshake:
+net80211 selected a 5 GHz BSSID, but firmware switched to the same SSID's
+2.4 GHz BSSID while the host still derived keys for the original peer. The
+driver now sets `roam_off=1`, leaving BSS selection and roaming to net80211.
+Subsequent traces keep the firmware and host on the same BSSID.
+
+The Haiku join ioctl also now installs SSID and key in net80211 before
+passing the final WPA parameters to the driver. This requests one radio
+restart instead of three. Open-network joins keep their existing path.
+The ioctl validates the request/header, SSID and key lengths before copying
+into fixed-size structures. A native probe rejects six malformed requests
+and confirms that the existing WPA2 association survives.
+
+After host scanning selects an AP, `bwfm_connect` supplies its primary
+channel to the firmware's join request. The previous empty channel list
+caused another full scan on every association attempt. In repeated traces,
+join-to-authentication falls from about 2.8 seconds to 35–43 milliseconds.
+The all-channel fallback remains when no valid channel is known, and the
+legacy SET_SSID fallback remains for firmware without the extended join.
+
+The first handshake still receives a reason-6 deauthentication immediately
+after the host sends its second message. A second association to the same
+AP completes. Its cause remains unresolved; the channel change makes the
+retry substantially cheaper. Two observed startup runs connect about
+13.1 seconds after the autojoin helper begins, versus about 18.1 seconds
+with unrestricted firmware scans. These are host-received serial timings,
+not a guarantee for other APs.
+
+With Ethernet administratively down, three 32 MiB downloads to `/dev/null`
+take 3.70, 3.74 and 3.77 seconds (about 71–73 Mbit/s). A separate 32 MiB
+download to SD has matching SHA-256; five gateway pings have no loss and
+1.29–1.38 ms latency. Ethernet is restored afterward. This verifies that
+the startup changes retain normal traffic, rather than establishing an
+isolated throughput speedup.
+
+Evidence is in `evidence/performance-20261006/wifi-startup/`: diagnostics
+`handshake-trace` and `tx-trace`, `join-probe-native.txt`, `throughput.txt`,
+`channel-trace-1.txt` and `listener-1.txt`. The full image reaches the QEMU
+desktop. After removing the diagnostic override and restoring the original
+package settings, the packaged driver passes the six rejection checks and
+joins on both a warm restart and a cold power cycle (`production-driver-check.txt`,
+`production-warm-1.txt`, `production-cold-1.txt`). The temporary scan-notification helper experiment still took its
+six-second fallback: initial automatic scans do not send that notification.
+It is not included in the release changes. Diagnostic packet metadata and
+firmware readbacks are also excluded from the production driver.
+
 ## Traps in the lab
 
 - devfs loads anything that appears in a drivers directory. A staged

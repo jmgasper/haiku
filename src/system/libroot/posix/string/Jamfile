@@ -15,6 +15,10 @@ local architectureObject ;
 for architectureObject in [ MultiArchSubDirSetup ] {
 	on $(architectureObject) {
 		local architecture = $(TARGET_PACKAGING_ARCH) ;
+		local strcmpSource = strcmp.c ;
+		if $(architecture) = arm64 {
+			strcmpSource = ;
+		}
 
 		MergeObject <$(architecture)>posix_string.o :
 			bcmp.c
@@ -23,7 +27,7 @@ for architectureObject in [ MultiArchSubDirSetup ] {
 			memcmp.c
 			strcasecmp.c
 			strcasestr.c
-			strcmp.c
+			$(strcmpSource)
 			strcoll.cpp
 			strdup.cpp
 			strerror.c

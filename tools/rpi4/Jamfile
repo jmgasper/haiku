@@ -2,11 +2,13 @@ SubDir HAIKU_TOP tools rpi4 ;
 
 UsePrivateHeaders drivers graphics ;
 UsePrivateSystemHeaders ;
+UsePrivateHeaders interface ;
 SubDirHdrs [ FDirName $(HAIKU_TOP) src add-ons media plugins rpi_mmal ] ;
 SubDirHdrs [ FDirName $(HAIKU_TOP) src add-ons media plugins rpi_hevc ] ;
 
 # lab programs for the Raspberry Pi 4 port
 SimpleTest rpi4_v3d_probe : v3d_probe.cpp ;
+SimpleTest rpi4_v3d_lifetime_probe : v3d_lifetime_probe.cpp ;
 SimpleTest rpi4_fetch : fetch.cpp : network ;
 SimpleTest rpi4_fw : fw.cpp ;
 SimpleTest rpi4_vchiq_audio : vchiq_audio.cpp ;
@@ -17,6 +19,13 @@ SimpleTest rpi4_gpio : gpio.cpp ;
 SimpleTest rpi4_swap_commit : swap_commit.cpp ;
 SimpleTest rpi4_kdl : kdl.cpp ;
 SimpleTest rpi4_orphan : orphan.cpp ;
+SimpleTest rpi4_app_bench : app_bench.cpp : be [ TargetLibsupc++ ] ;
+SimpleTest rpi4_view_visibility : view_visibility.cpp : be [ TargetLibsupc++ ] ;
+SimpleTest rpi4_memory_move_probe : memory_move_probe.cpp : [ TargetLibstdc++ ] ;
+SimpleTest rpi4_memory_bench : memory_bench.cpp : [ TargetLibstdc++ ] ;
+SimpleTest rpi4_memory_set_probe : memory_set_probe.cpp : [ TargetLibstdc++ ] ;
+SimpleTest rpi4_string_compare_probe : string_compare_probe.cpp : [ TargetLibstdc++ ] ;
+SimpleTest rpi4_string_length_probe : string_length_probe.cpp : [ TargetLibstdc++ ] ;
 
 # the firmware's H.264 decoder, the class of the media add-on
 SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) src add-ons media plugins rpi_mmal ] ;
@@ -26,3 +35,9 @@ SimpleTest rpi4_mmal_decode : mmal_decode.cpp MmalDecoder.cpp : be [ TargetLibsu
 SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) src add-ons media plugins rpi_hevc ] ;
 SimpleTest rpi4_hevc_decode : hevc_decode.cpp HevcDecoder.cpp HevcParser.cpp
 	SandConvert.cpp : be [ TargetLibsupc++ ] [ TargetLibstdc++ ] ;
+SimpleTest rpi4_sand_convert_test : sand_convert_test.cpp SandConvert.cpp
+	: [ TargetLibstdc++ ] ;
+
+UseHeaders [ FDirName $(HAIKU_TOP) src libs compat freebsd_network ] : true ;
+UseHeaders [ FDirName $(HAIKU_TOP) src libs compat freebsd_wlan ] : true ;
+SimpleTest rpi4_wifi_join_probe : wifi_join_probe.cpp : network ;

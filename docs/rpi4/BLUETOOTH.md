@@ -1,5 +1,11 @@
 # Bluetooth on the Raspberry Pi 4 (BCM4345C0)
 
+The installed 2026-10-06 image is checked again for controller startup,
+the custom preferences window and LE scanning (18 nearby devices in the
+ten-second scan). Pairing, audio and HID profiles remain untested. Evidence:
+`evidence/performance-20261006/release/apps-check.txt` and
+`bluetooth-preferences.jpg`.
+
 State 2026-10-04: the onboard controller is a local device of the Bluetooth
 server. Checked on the board: the Bluetooth preferences shows "Bluetooth is
 on - BCM43455 37.4MHz Raspberry Pi 3+-0190 (E4:5F:01:34:72:48)" and lists

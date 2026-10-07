@@ -579,6 +579,13 @@ Window::SetTopView(View* topView)
 			(int32)(fFrame.Height() - fTopView->Frame().Height()), NULL);
 
 		fTopView->AttachedToWindow(this);
+
+		// BView creates its top view without the window's hidden state.
+		// Keep the server tree hidden while the client builds and lays it
+		// out; Show() then rebuilds its clipping once. Offscreen windows
+		// must remain drawable without ever being shown.
+		if (!IsOffscreenWindow())
+			fTopView->SetHidden(fHidden);
 	}
 }
 

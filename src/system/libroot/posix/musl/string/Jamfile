@@ -9,13 +9,20 @@ local architectureObject ;
 for architectureObject in [ MultiArchSubDirSetup ] {
 	on $(architectureObject) {
 		local architecture = $(TARGET_PACKAGING_ARCH) ;
+		local memmoveSource = memmove.c ;
+		local strlenSource = strlen.c ;
+		# ARM64 supplies these in the architecture string object.
+		if $(architecture) = arm64 {
+			memmoveSource = ;
+			strlenSource = ;
+		}
 
 		MergeObject <$(architecture)>posix_musl_string.o :
 			index.c
 			memccpy.c
 			memchr.c
 			memmem.c
-			memmove.c
+			$(memmoveSource)
 			memrchr.c
 			stpcpy.c
 			stpncpy.c
@@ -26,7 +33,7 @@ for architectureObject in [ MultiArchSubDirSetup ] {
 			strcspn.c
 			strlcat.c
 			strlcpy.c
-			strlen.c
+			$(strlenSource)
 			strncat.c
 			strnlen.c
 			strpbrk.c

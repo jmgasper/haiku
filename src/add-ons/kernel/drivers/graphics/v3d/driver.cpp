@@ -38,11 +38,13 @@
 #include <device_manager.h>
 
 #include <condition_variable.h>
+#include <arch/arm64/cache_poc.h>
 #include <kernel.h>
 #include <lock.h>
 #include <rpi_firmware.h>
 #include <team.h>
 #include <util/AutoLock.h>
+#include <util/ThreadAutoLock.h>
 #include <vm/vm.h>
 
 #include <graphics/v3d/v3d_drm.h>
@@ -95,6 +97,9 @@ struct v3d_bo {
 	uint32		pageCount;
 	int32		references;	// handles and jobs
 	uint64		lastJob;
+	bool		cacheable;
+	bool		cpuOwned;
+	bool		cpuDirty;
 };
 
 struct v3d_job {
@@ -305,6 +310,26 @@ make_uncached(area_id area, void* address, size_t size)
 }
 
 
+// Buffers occupy whole pages, so no cache line is shared with another
+// allocation. All clones retain the same Normal-WB memory type. Maintenance
+// by VA reaches the PoC across the Cortex-A72 cluster; DSB completes it
+// before either processor is allowed to use the buffer.
+static void
+sync_buffer_cache(v3d_bo* buffer, bool forCPU)
+{
+	ThreadCPUPinner pinner(thread_get_current_thread());
+	size_t lineSize = arm64_current_data_cache_line_size();
+	for (addr_t line = (addr_t)buffer->address;
+			line < (addr_t)buffer->address + buffer->size; line += lineSize) {
+		if (forCPU)
+			arm64_invalidate_data_cache_line_poc(line);
+		else
+			arm64_clean_invalidate_data_cache_line_poc(line);
+	}
+	memory_full_barrier();
+}
+
+
 static status_t
 mmu_flush(v3d_info* info)
 {
@@ -362,7 +387,8 @@ mmu_enable(v3d_info* info)
 	reference.
 */
 static status_t
-create_buffer(v3d_info* info, size_t size, v3d_bo*& _buffer)
+create_buffer(v3d_info* info, size_t size, v3d_bo*& _buffer,
+	bool cacheable = false)
 {
 	size = ROUNDUP(size, B_PAGE_SIZE);
 	if (size == 0 || size > V3D_MAX_BO_SIZE)
@@ -375,6 +401,9 @@ create_buffer(v3d_info* info, size_t size, v3d_bo*& _buffer)
 	buffer->size = size;
 	buffer->pageCount = size >> V3D_PAGE_SHIFT;
 	buffer->references = 1;
+	buffer->cacheable = cacheable;
+	buffer->cpuOwned = cacheable;
+	buffer->cpuDirty = cacheable;
 
 	// first fit in the address space; page 0 stays unmapped
 	uint32 page = 1;
@@ -422,7 +451,8 @@ create_buffer(v3d_info* info, size_t size, v3d_bo*& _buffer)
 	}
 	memory_full_barrier();
 
-	status_t status = make_uncached(buffer->area, buffer->address, size);
+	status_t status = cacheable ? B_OK
+		: make_uncached(buffer->area, buffer->address, size);
 	if (status != B_OK) {
 		for (uint32 i = 0; i < buffer->pageCount; i++)
 			info->pageTable[buffer->page + i] = 0;
@@ -987,8 +1017,17 @@ submit_job(v3d_file* file, v3d_job* job, const uint32* handles, uint32 count,
 	}
 
 	job->seqno = ++info->submitted;
-	for (uint32 i = 0; i < job->boCount; i++)
-		job->bos[i]->lastJob = job->seqno;
+	for (uint32 i = 0; i < job->boCount; i++) {
+		v3d_bo* bo = job->bos[i];
+		if (bo->cacheable) {
+			if (bo->cpuDirty) {
+				sync_buffer_cache(bo, false);
+				bo->cpuDirty = false;
+			}
+			bo->cpuOwned = false;
+		}
+		bo->lastJob = job->seqno;
+	}
 	for (uint32 i = 0; i < outSyncCount; i++)
 		file->syncs[outSyncs[i] - 1] = job->seqno + 1;
 
@@ -1061,9 +1100,15 @@ read_out_syncs(uint32 flags, uint64 extensions, uint32 outSync,
 
 
 static status_t
-v3d_init_device(void* _info, void** _cookie)
+initialize_device(v3d_info* info)
 {
-	v3d_info* info = (v3d_info*)_info;
+	info->hubArea = info->coreArea = info->pmArea = info->asbArea = -1;
+	info->pageTableArea = info->scratchArea = -1;
+	info->jobSemaphore = -1;
+	info->executor = -1;
+	mutex_init(&info->lock, "v3d");
+	info->completedCondition.Init(info, "v3d job done");
+	info->eventCondition.Init(info, "v3d event");
 
 	status_t status = map("v3d hub", info->hubBase, info->hubSize,
 		info->hubArea, info->hub);
@@ -1105,10 +1150,6 @@ v3d_init_device(void* _info, void** _cookie)
 	info->version = V3D_HUB_IDENT1_TVER(hubIdent1) * 10
 		+ V3D_HUB_IDENT1_REV(hubIdent1);
 
-	mutex_init(&info->lock, "v3d");
-	info->completedCondition.Init(info, "v3d job done");
-	info->eventCondition.Init(info, "v3d event");
-
 	// the page table: one word per page of the 4 GB, in uncached memory
 	virtual_address_restrictions virtualRestrictions = {};
 	physical_address_restrictions physicalRestrictions = {};
@@ -1128,15 +1169,24 @@ v3d_init_device(void* _info, void** _cookie)
 		return info->scratchArea;
 
 	physical_entry entry;
-	get_memory_map(info->pageTable, tableSize, &entry, 1);
+	status = get_memory_map(info->pageTable, tableSize, &entry, 1);
+	if (status != B_OK)
+		return status;
 	info->pageTableAddress = entry.address;
-	get_memory_map(scratch, B_PAGE_SIZE, &entry, 1);
+	status = get_memory_map(scratch, B_PAGE_SIZE, &entry, 1);
+	if (status != B_OK)
+		return status;
 	info->scratchAddress = entry.address;
 
-	make_uncached(info->pageTableArea, info->pageTable, tableSize);
-	make_uncached(info->scratchArea, scratch, B_PAGE_SIZE);
+	status = make_uncached(info->pageTableArea, info->pageTable, tableSize);
+	if (status == B_OK)
+		status = make_uncached(info->scratchArea, scratch, B_PAGE_SIZE);
+	if (status != B_OK)
+		return status;
 
 	info->jobSemaphore = create_sem(0, "v3d jobs");
+	if (info->jobSemaphore < 0)
+		return info->jobSemaphore;
 	info->stopping = false;
 
 	status = install_io_interrupt_handler(info->interrupt, v3d_interrupt,
@@ -1149,6 +1199,8 @@ v3d_init_device(void* _info, void** _cookie)
 
 	info->executor = spawn_kernel_thread(executor_thread, "v3d executor",
 		B_DISPLAY_PRIORITY, info);
+	if (info->executor < 0)
+		return info->executor;
 	resume_thread(info->executor);
 
 	INFO("V3D %" B_PRIu32 ".%" B_PRIu32 ".%" B_PRIu32 ".%" B_PRIu32 ", %"
@@ -1159,36 +1211,45 @@ v3d_init_device(void* _info, void** _cookie)
 		(hubIdent2 & V3D_HUB_IDENT2_WITH_MMU) != 0 ? ", MMU" : "",
 		info->clockRate, info->interrupt);
 
-	*_cookie = info;
 	return B_OK;
 }
 
 
 static void
-v3d_uninit_device(void* cookie)
+uninitialize_device(v3d_info* info)
 {
-	v3d_info* info = (v3d_info*)cookie;
-
 	info->stopping = true;
-	delete_sem(info->jobSemaphore);
-	status_t result;
-	wait_for_thread(info->executor, &result);
+	if (info->jobSemaphore >= 0)
+		delete_sem(info->jobSemaphore);
+	if (info->executor >= 0) {
+		status_t result;
+		wait_for_thread(info->executor, &result);
+	}
 
-	write32(info->core, V3D_CTL_INT_MSK_SET, 0xffffffff);
-	write32(info->hub, V3D_HUB_INT_MSK_SET, 0xffffffff);
 	if (info->interruptInstalled) {
+		write32(info->core, V3D_CTL_INT_MSK_SET, 0xffffffff);
+		write32(info->hub, V3D_HUB_INT_MSK_SET, 0xffffffff);
 		remove_io_interrupt_handler(info->interrupt, v3d_interrupt, info);
 		info->interruptInstalled = false;
 	}
 
-	delete_area(info->pageTableArea);
-	delete_area(info->scratchArea);
+	const area_id areas[] = {info->pageTableArea, info->scratchArea,
+		info->hubArea, info->coreArea, info->pmArea, info->asbArea};
+	for (area_id area : areas) {
+		if (area >= 0)
+			delete_area(area);
+	}
 	mutex_destroy(&info->lock);
+}
 
-	delete_area(info->hubArea);
-	delete_area(info->coreArea);
-	delete_area(info->pmArea);
-	delete_area(info->asbArea);
+
+static status_t
+v3d_init_device(void* cookie, void** _cookie)
+{
+	// Hardware belongs to the retained driver node; opening the published
+	// device only acquires access to it. Each file still owns its own buffers.
+	*_cookie = cookie;
+	return B_OK;
 }
 
 
@@ -1276,6 +1337,9 @@ get_param(v3d_info* info, drm_v3d_get_param& request)
 		case DRM_V3D_PARAM_SUPPORTS_MULTISYNC_EXT:
 			request.value = 1;
 			break;
+		case V3D_HAIKU_PARAM_CACHEABLE_BO:
+			request.value = 2;
+			break;
 		case DRM_V3D_PARAM_SUPPORTS_PERFMON:
 		case DRM_V3D_PARAM_SUPPORTS_CPU_QUEUE:
 		case DRM_V3D_PARAM_MAX_PERF_COUNTERS:
@@ -1317,6 +1381,8 @@ v3d_control(void* cookie, uint32 op, void* buffer, size_t length)
 			status_t status = copy_in(request, buffer, length);
 			if (status != B_OK)
 				return status;
+			if ((request.flags & ~V3D_HAIKU_BO_CACHEABLE) != 0)
+				return B_BAD_VALUE;
 
 			MutexLocker locker(info->lock);
 
@@ -1337,7 +1403,8 @@ v3d_control(void* cookie, uint32 op, void* buffer, size_t length)
 			}
 
 			v3d_bo* bo;
-			status = create_buffer(info, request.size, bo);
+			status = create_buffer(info, request.size, bo,
+				(request.flags & V3D_HAIKU_BO_CACHEABLE) != 0);
 			if (status != B_OK)
 				return status;
 			file->buffers[index] = bo;
@@ -1412,6 +1479,42 @@ v3d_control(void* cookie, uint32 op, void* buffer, size_t length)
 
 			status = wait_for_job(info, seqno, request.timeout_ns);
 			return status == B_WOULD_BLOCK ? B_TIMED_OUT : status;
+		}
+
+		case V3D_HAIKU_CPU_PREPARE:
+		{
+			v3d_haiku_handle request;
+			status_t status = copy_in(request, buffer, length);
+			if (status != B_OK)
+				return status;
+			if ((request.pad & ~V3D_HAIKU_CPU_READ_ONLY) != 0)
+				return B_BAD_VALUE;
+
+			MutexLocker locker(info->lock);
+			v3d_bo* bo = lookup_buffer(file, request.handle);
+			if (bo == NULL || !bo->cacheable)
+				return B_BAD_VALUE;
+			// Closing the handle while the wait drops the lock must not free
+			// the backing area. Recheck submissions after every unlocked wait.
+			bo->references++;
+			while (bo->lastJob > info->completed) {
+				uint64 seqno = bo->lastJob;
+				locker.Unlock();
+				status = wait_for_job(info, seqno, -1);
+				locker.Lock();
+				if (status != B_OK)
+					break;
+			}
+			if (status == B_OK && !bo->cpuOwned) {
+				// Never invalidate twice in one CPU interval: the first caller
+				// may already have written data that the next job will need.
+				sync_buffer_cache(bo, true);
+				bo->cpuOwned = true;
+			}
+			if (status == B_OK && (request.pad & V3D_HAIKU_CPU_READ_ONLY) == 0)
+				bo->cpuDirty = true;
+			put_buffer(info, bo);
+			return status;
 		}
 
 		case V3D_HAIKU_CLOSE_BO:
@@ -1720,6 +1823,7 @@ v3d_register_device(device_node* parent)
 {
 	device_attr attrs[] = {
 		{B_DEVICE_PRETTY_NAME, B_STRING_TYPE, {.string = "Broadcom V3D"}},
+		{B_DEVICE_FLAGS, B_UINT32_TYPE, {.ui32 = B_KEEP_DRIVER_LOADED}},
 		{}
 	};
 
@@ -1755,6 +1859,17 @@ v3d_init_driver(device_node* node, void** _cookie)
 	}
 	info->interrupt = interrupt;
 
+	// Reserve the contiguous MMU table when this fixed FDT device is
+	// registered, and retain it between applications. Recreating it on every
+	// last-close/first-open both costs startup time and can fail after memory
+	// fragmentation even when several gigabytes remain free.
+	status = initialize_device(info);
+	if (status != B_OK) {
+		uninitialize_device(info);
+		free(info);
+		return status;
+	}
+
 	*_cookie = info;
 	return B_OK;
 }
@@ -1763,7 +1878,9 @@ v3d_init_driver(device_node* node, void** _cookie)
 static void
 v3d_uninit_driver(void* cookie)
 {
-	free(cookie);
+	v3d_info* info = (v3d_info*)cookie;
+	uninitialize_device(info);
+	free(info);
 }
 
 
@@ -1789,7 +1906,7 @@ static device_module_info sV3dDevice = {
 		NULL
 	},
 	v3d_init_device,
-	v3d_uninit_device,
+	NULL,	// hardware state lives with the retained driver node
 	NULL,	// removed
 	v3d_open,
 	v3d_close,
