@@ -19,6 +19,7 @@
 #include <string.h>
 
 #include <KernelExport.h>
+#include <bus/FDT.h>
 #include <device_manager.h>
 
 #include <lock.h>
@@ -385,8 +386,20 @@ rpi_sdio_present(void)
 	device_node* root = manager->get_root_node();
 	device_node* node = NULL;
 	bool found = manager->find_child_node(root, attributes, &node) == B_OK;
-	if (found)
+	if (found) {
+		// The lab's QEMU tree redirects emmc2 to the only emulated SDHCI.
+		// It then occupies our SDIO registers: resetting them would destroy
+		// the boot card's transfer state. Never claim a shared controller.
+		fdt_device_module_info* module;
+		fdt_device* device;
+		uint64 address;
+		uint64 length;
+		found = manager->get_driver(node, (driver_module_info**)&module,
+			(void**)&device) == B_OK
+			&& module->get_reg(device, 0, &address, &length)
+			&& address != SDHCI_BASE;
 		manager->put_node(node);
+	}
 	manager->put_node(root);
 
 	put_module(B_DEVICE_MANAGER_MODULE_NAME);

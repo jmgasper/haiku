@@ -47,6 +47,7 @@ typedef void (*init_term_function)(image_id);
 typedef void (*initfini_array_function)();
 
 bool gProgramLoaded = false;
+bool gTraceLoaderTiming = false;
 image_t* gProgramImage;
 
 static image_t** sPreloadedAddons = NULL;
@@ -542,6 +543,10 @@ load_program(char const *path, void **_entry)
 {
 	status_t status;
 	image_t *image;
+	const char* timing = getenv("HAIKU_LOADER_TIMING");
+	gTraceLoaderTiming = timing != NULL && strcmp(timing, "1") == 0;
+	bigtime_t start = gTraceLoaderTiming ? _kern_system_time() : 0;
+	bigtime_t loaded = 0, relocated = 0, remapped = 0;
 
 	KTRACE("rld: load_program(\"%s\")", path);
 
@@ -562,6 +567,8 @@ load_program(char const *path, void **_entry)
 	status = load_dependencies(gProgramImage, true);
 	if (status < B_OK)
 		goto err;
+	if (gTraceLoaderTiming)
+		loaded = _kern_system_time();
 
 	// Set RTLD_GLOBAL on all libraries including the program.
 	// This results in the desired symbol resolution for dlopen()ed libraries.
@@ -570,11 +577,22 @@ load_program(char const *path, void **_entry)
 	status = relocate_dependencies(gProgramImage);
 	if (status < B_OK)
 		goto err;
+	if (gTraceLoaderTiming)
+		relocated = _kern_system_time();
 
 	inject_runtime_loader_api(gProgramImage);
 
 	remap_images();
+	if (gTraceLoaderTiming)
+		remapped = _kern_system_time();
 	init_dependencies(gProgramImage, true);
+	if (gTraceLoaderTiming) {
+		printf("loader timing: %.256s load=%" B_PRIdBIGTIME
+			" relocate=%" B_PRIdBIGTIME " remap=%" B_PRIdBIGTIME
+			" init=%" B_PRIdBIGTIME " us\n", path, loaded - start,
+			relocated - loaded, remapped - relocated,
+			_kern_system_time() - remapped);
+	}
 
 	// Since the images are initialized now, we no longer should use our
 	// getenv(), but use the one from libroot.so

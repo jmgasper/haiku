@@ -1,9 +1,10 @@
 # Displays on the Raspberry Pi 4
 
-State 2026-10-03: both HDMI outputs are displays of one desktop, arranged
-with the Screen preferences (or `screenmode`). Verified on HDMI0 through the
-KVM; **nothing was seen on HDMI1**: the firmware finds no monitor there (see
-"The lab's HDMI1" below), so the second output was run forced at 640x480.
+State 2026-10-06: both HDMI outputs are displays of one desktop, arranged
+with the Screen preferences (or `screenmode`). The current lab configuration
+detects both displays at 1920x1080 and uses a 3840x1080 desktop. HDMI0 is
+visible through the KVM; HDMI1's physical picture has not been observed.
+The earlier 640x480 forced-output tests below are historical.
 
 ## How it works
 
@@ -44,7 +45,7 @@ outputs.
 - The number of displays is what the firmware saw at boot. There is no hot
   plug: a monitor connected later needs a restart.
 
-## Checked on the board
+## Earlier checks on the board (2026-10-03)
 
 | What | How | Result |
 |---|---|---|
@@ -59,12 +60,14 @@ outputs.
 
 ## The lab's HDMI1
 
-The firmware reports one display unless `hdmi_force_hotplug:1=1` is added to
-`config.txt` (the lab card has it; the tree's `config.txt` does not), and it
-reads no EDID from HDMI1. The Linux recovery system saw the same ("Registered
-framebuffer for display 0" only). So the Dell monitor on HDMI1 is off, on
-another input, or its cable does not carry hot plug; the picture on it has
-not been checked.
+During the 3 October tests, the firmware reported one display unless
+`hdmi_force_hotplug:1=1` was added to
+`config.txt`, and read no EDID from HDMI1. The Linux recovery system saw
+the same ("Registered
+framebuffer for display 0" only). The cause was not established. By the
+6 October performance run both outputs supplied 1080p modes without that
+forced-output setting. This establishes detection, not HDMI1 picture quality;
+the Dell monitor still needs a physical check.
 
 ## Open
 

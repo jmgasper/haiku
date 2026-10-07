@@ -61,9 +61,11 @@ def login(username):
 
 def screenshot(path):
     request = urllib.request.Request(BASE + "/api/stream/mjpeg", headers={"Cookie": cookie()})
-    deadline = time.monotonic() + 15
+    started = time.monotonic()
+    deadline = started + 15
     with urllib.request.urlopen(request, timeout=10) as response:
         data = b""
+        frames = 0
         while time.monotonic() < deadline:
             chunk = response.read1(65536)
             if not chunk:
@@ -72,6 +74,12 @@ def screenshot(path):
             start = data.find(b"\xff\xd8")
             end = data.find(b"\xff\xd9", max(0, start))
             if start >= 0 and end >= 0:
+                frames += 1
+                # The stream starts with its cached frame, which can predate
+                # the last HID action or even a reboot. Let capture catch up.
+                if frames < 3 or time.monotonic() - started < 0.5:
+                    data = data[end + 2:]
+                    continue
                 output = Path(path)
                 output.parent.mkdir(parents=True, exist_ok=True)
                 output.write_bytes(data[start:end + 2])

@@ -4,6 +4,10 @@
 arm_64bit=1
 enable_gic=1
 
+# Let firmware select the supported turbo speed for this board revision.
+# Later Pi 4B boards support 1.8 GHz; older boards keep their supported limit.
+arm_boost=1
+
 # The loader has no Linux image header, so say where it is linked.
 kernel=airos-loader.img
 kernel_address=0x80000

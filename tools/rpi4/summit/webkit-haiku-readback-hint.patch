@@ -1,0 +1,24 @@
+--- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
++++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/AcceleratedSurface.cpp
+@@ -896,6 +896,21 @@
+     static const int bandBytes = [] {
+         if (const char* value = getenv("SUMMIT_READBACK_BAND_KB"))
+             return atoi(value) * 1024;
++        // Newer air/OS V3D can store a whole readback in linear GPU memory.
++        // Its hint is conditional on the current context, kernel ownership
++        // API and driver option. Older Mesa retains the CPU-cache band size.
++        image_info info;
++        int32 cookie = 0;
++        while (get_next_image_info(B_CURRENT_TEAM, &cookie, &info) == B_OK) {
++            if (!std::strstr(info.name, "libEGL_mesa"))
++                continue;
++            void* address = nullptr;
++            if (get_image_symbol(info.id, "haiku_mesa_readback_band_bytes", B_SYMBOL_TYPE_TEXT, &address) == B_OK) {
++                int preferred = reinterpret_cast<int (*)()>(address)();
++                if (preferred >= 0)
++                    return preferred;
++            }
++        }
+         auto* renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+         return renderer && !strncmp(renderer, "V3D", 3) ? 384 * 1024 : 0;
+     }();

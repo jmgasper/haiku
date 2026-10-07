@@ -115,6 +115,7 @@ AddVariableToScript $(script) : installDir : $(HAIKU_INSTALL_DIR) ;
 #AddVariableToScript $(script) : isImage : 1 ;
 AddVariableToScript $(script) : imageSize : $(HAIKU_IMAGE_SIZE) ;
 AddVariableToScript $(script) : imageLabel : $(HAIKU_IMAGE_LABEL) ;
+AddVariableToScript $(script) : bfsGrowable : $(HAIKU_BFS_GROWABLE) ;
 AddVariableToScript $(script) : addBuildCompatibilityLibDir
 	: "export $(HOST_ADD_BUILD_COMPATIBILITY_LIB_DIR)" ;
 AddVariableToScript $(script) : dontClearImage : $(HAIKU_DONT_CLEAR_IMAGE) ;

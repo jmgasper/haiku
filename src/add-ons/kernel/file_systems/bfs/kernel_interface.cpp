@@ -783,6 +783,10 @@ bfs_ioctl(fs_volume* _volume, fs_vnode* _node, void* _cookie, uint32 cmd,
 		}
 		case BFS_IOCTL_RESIZE:
 		{
+			if (BFS_ENDIAN_TO_HOST_INT32(volume->SuperBlock()._reserved[0])
+					== BFS_GROWABLE_MAGIC)
+				return B_NOT_SUPPORTED;
+
 			if (bufferLength != sizeof(resize_control))
 				return B_BAD_VALUE;
 

@@ -245,6 +245,14 @@ Volume::Mount(const char* deviceName, uint32 flags)
 			// of letting him just find this in the syslog.
 	}
 
+	// Nothing has published vnodes or started the allocator yet. Only images
+	// explicitly formatted with reserved growth metadata may grow here.
+	if (!IsReadOnly()) {
+		status = GrowIntoReservedSpace(diskSize);
+		if (status != B_OK)
+			return status;
+	}
+
 	status = fBlockAllocator.Initialize();
 	if (status != B_OK) {
 		FATAL(("could not initialize block bitmap allocator!\n"));
@@ -295,6 +303,78 @@ Volume::Mount(const char* deviceName, uint32 flags)
 	// all went fine
 	opener.Keep();
 	return B_OK;
+}
+
+
+status_t
+Volume::GrowIntoReservedSpace(off_t diskSize)
+{
+	if (BFS_ENDIAN_TO_HOST_INT32(fSuperBlock._reserved[0]) != BFS_GROWABLE_MAGIC)
+		return B_OK;
+
+	off_t newBlocks = diskSize / BlockSize();
+	if (newBlocks == NumBlocks())
+		return B_OK;
+
+	// Fixed layout/version checks keep this separate from general resizing.
+	if (BFS_ENDIAN_TO_HOST_INT32(fSuperBlock._reserved[1]) != BFS_GROWABLE_VERSION
+		|| BlockSize() != BFS_GROWABLE_BLOCK_SIZE
+		|| AllocationGroupShift() != 16
+		|| fSuperBlock.BlocksPerAllocationGroup() != 2
+		|| ToBlock(Log()) != BFS_GROWABLE_BITMAP_BLOCKS + 1
+		|| Log().Length() != BFS_GROWABLE_LOG_BLOCKS
+		|| newBlocks < NumBlocks() || newBlocks > BFS_GROWABLE_MAX_BLOCKS
+		|| NumBlocks() <= ToBlock(Log()) + Log().Length())
+		return B_BAD_VALUE;
+
+	uint8* buffer = (uint8*)malloc(BlockSize());
+	if (buffer == NULL)
+		return B_NO_MEMORY;
+
+	const off_t bitsPerBlock = BlockSize() * 8;
+	const off_t bitmapEnd = (newBlocks + bitsPerBlock - 1) / bitsPerBlock;
+	for (off_t block = NumBlocks() / bitsPerBlock; block < bitmapEnd; block++) {
+		off_t offset = (block + 1) * BlockSize();
+		memset(buffer, 0, BlockSize());
+		if (block == NumBlocks() / bitsPerBlock && NumBlocks() % bitsPerBlock != 0) {
+			if (read_pos(fDevice, offset, buffer, BlockSize()) != BlockSize()) {
+				free(buffer);
+				return B_IO_ERROR;
+			}
+			uint32 bit = NumBlocks() % bitsPerBlock;
+			// Preserve every allocated bit in the original volume, including a
+			// partial byte, and clear only newly addressable space.
+			buffer[bit / 8] &= (1U << (bit % 8)) - 1;
+			memset(buffer + bit / 8 + 1, 0, BlockSize() - bit / 8 - 1);
+		}
+		if (write_pos(fDevice, offset, buffer, BlockSize()) != BlockSize()) {
+			free(buffer);
+			return B_IO_ERROR;
+		}
+	}
+	free(buffer);
+
+	// Until the superblock is committed, these writes affect only unused
+	// bitmap bits in reserved space. Interrupted attempts can be retried.
+	status_t status = FlushDevice();
+	if (status != B_OK)
+		return status;
+	if (ioctl(fDevice, B_FLUSH_DRIVE_CACHE) != 0)
+		return B_IO_ERROR;
+	status = ResizeBlockCache(newBlocks);
+	if (status != B_OK)
+		return status;
+
+	fSuperBlock.num_blocks = HOST_ENDIAN_TO_BFS_INT64(newBlocks);
+	fSuperBlock.num_ags = HOST_ENDIAN_TO_BFS_INT32((newBlocks + 65535) / 65536);
+	status = WriteSuperBlock();
+	if (status == B_OK)
+		status = FlushDevice();
+	if (status == B_OK && ioctl(fDevice, B_FLUSH_DRIVE_CACHE) != 0)
+		status = B_IO_ERROR;
+	INFORM(("Reserved-space growth to %" B_PRIdOFF " bytes: %s\n",
+		newBlocks * BlockSize(), strerror(status)));
+	return status;
 }
 
 
@@ -640,6 +720,20 @@ Volume::Initialize(int fd, const char* name, uint32 blockSize,
 	// since the allocator has not been initialized yet, we
 	// cannot use BlockAllocator::BitmapSize() here
 	off_t bitmapBlocks = (numBlocks + blockSize * 8 - 1) / (blockSize * 8);
+	if ((flags & VOLUME_GROWABLE) != 0) {
+		if (blockSize != BFS_GROWABLE_BLOCK_SIZE
+			|| numBlocks > BFS_GROWABLE_MAX_BLOCKS
+			|| numBlocks <= BFS_GROWABLE_BITMAP_BLOCKS + BFS_GROWABLE_LOG_BLOCKS + 1024)
+			return B_BAD_VALUE;
+		bitmapBlocks = BFS_GROWABLE_BITMAP_BLOCKS;
+		logSize = BFS_GROWABLE_LOG_BLOCKS;
+		fAllocationGroupShift = 16;
+		fSuperBlock.ag_shift = HOST_ENDIAN_TO_BFS_INT32(16);
+		fSuperBlock.blocks_per_ag = HOST_ENDIAN_TO_BFS_INT32(2);
+		fSuperBlock.num_ags = HOST_ENDIAN_TO_BFS_INT32((numBlocks + 65535) / 65536);
+		fSuperBlock._reserved[0] = HOST_ENDIAN_TO_BFS_INT32(BFS_GROWABLE_MAGIC);
+		fSuperBlock._reserved[1] = HOST_ENDIAN_TO_BFS_INT32(BFS_GROWABLE_VERSION);
+	}
 
 	fSuperBlock.log_blocks = ToBlockRun(bitmapBlocks + 1);
 	fSuperBlock.log_blocks.length = HOST_ENDIAN_TO_BFS_INT16(logSize);

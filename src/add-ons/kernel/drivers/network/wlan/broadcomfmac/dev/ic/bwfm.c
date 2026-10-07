@@ -545,6 +545,16 @@ bwfm_init(struct ifnet *ifp)
 	/* Select default channel */
 	ic->ic_bss->ni_chan = ic->ic_ibss_chan;
 
+	/*
+	 * net80211 selects the BSS and performs the WPA handshake. Firmware
+	 * roaming can change peers underneath ic_bss, even before the first
+	 * handshake completes. Leave roaming to net80211's background scan.
+	 */
+	if (bwfm_fwvar_var_set_int(sc, "roam_off", 1)) {
+		printf("%s: could not disable firmware roaming\n", DEVNAME(sc));
+		return;
+	}
+
 	if (bwfm_fwvar_var_set_int(sc, "mpc", 1)) {
 		printf("%s: could not set mpc\n", DEVNAME(sc));
 		return;
@@ -2150,7 +2160,19 @@ bwfm_connect(struct bwfm_softc *sc)
 	bwfm_fwvar_var_set_int(sc, "mfp", BWFM_MFP_NONE);
 
 	if (ic->ic_des_esslen && ic->ic_des_esslen <= BWFM_MAX_SSID_LEN) {
-		params = malloc(sizeof(*params), M_TEMP, M_WAITOK | M_ZERO);
+		/* net80211 has just selected this BSS from a scan. Do not make
+		 * the firmware scan every channel again before associating. */
+		struct ieee80211_channel *chan = ic->ic_bss->ni_chan;
+		int have_channel = chan != NULL && chan != IEEE80211_CHAN_ANYC
+		    && chan->ic_freq != 0;
+		size_t params_size = sizeof(*params)
+		    + (have_channel ? sizeof(uint16_t) : 0);
+		params = malloc(params_size, M_TEMP, M_WAITOK | M_ZERO);
+		if (have_channel) {
+			params->assoc.chanspec_num = htole32(1);
+			params->assoc.chanspec_list[0] =
+			    htole16(bwfm_chan2spec(sc, chan));
+		}
 		memcpy(params->ssid.ssid, ic->ic_des_essid, ic->ic_des_esslen);
 		params->ssid.len = htole32(ic->ic_des_esslen);
 		memcpy(params->assoc.bssid, ic->ic_bss->ni_bssid,
@@ -2160,7 +2182,7 @@ bwfm_connect(struct bwfm_softc *sc)
 		params->scan.active_time = htole32(-1);
 		params->scan.passive_time = htole32(-1);
 		params->scan.home_time = htole32(-1);
-		if (bwfm_fwvar_var_set_data(sc, "join", params, sizeof(*params))) {
+		if (bwfm_fwvar_var_set_data(sc, "join", params, params_size)) {
 			struct bwfm_join_params join;
 			memset(&join, 0, sizeof(join));
 			memcpy(join.ssid.ssid, ic->ic_des_essid,
@@ -2171,7 +2193,7 @@ bwfm_connect(struct bwfm_softc *sc)
 			bwfm_fwvar_cmd_set_data(sc, BWFM_C_SET_SSID, &join,
 			    sizeof(join));
 		}
-		free(params, M_TEMP, sizeof(*params));
+		free(params, M_TEMP, params_size);
 	}
 }
 

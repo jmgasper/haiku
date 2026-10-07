@@ -113,6 +113,16 @@ struct disk_super_block {
 #define SUPER_BLOCK_DISK_CLEAN		'CLEN'		/* CLEN */
 #define SUPER_BLOCK_DISK_DIRTY		'DIRT'		/* DIRT */
 
+// Opt-in images reserve the bitmap and journal for a 2 TiB volume. Growing
+// the containing partition then permits growth at mount, without moving any
+// inode or live data. Ordinary BFS volumes never take this path.
+#define BFS_GROWABLE_MAGIC			0x47524f57 // GROW
+#define BFS_GROWABLE_VERSION			1
+#define BFS_GROWABLE_BLOCK_SIZE		4096
+#define BFS_GROWABLE_MAX_BLOCKS		(1LL << 29)
+#define BFS_GROWABLE_BITMAP_BLOCKS	16384
+#define BFS_GROWABLE_LOG_BLOCKS		4096
+
 //**************************************
 
 #define NUM_DIRECT_BLOCKS			12

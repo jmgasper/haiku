@@ -5,7 +5,7 @@
 
 The account comes from $RPI4_STATE/lab-overlay/credentials.json (the lab
 overlay of tools/rpi4/UserBuildConfig). Output is printed; the exit status is
-the command's.
+the command's. RPI4_TELNET_PORT overrides port 23 for an SSH tunnel.
 """
 
 import json
@@ -22,7 +22,8 @@ IAC, DONT, DO, WONT, WILL, SB, SE = 255, 254, 253, 252, 251, 250, 240
 
 class Telnet:
     def __init__(self, host, timeout):
-        self.socket = socket.create_connection((host, 23), timeout)
+        port = int(os.environ.get("RPI4_TELNET_PORT", "23"))
+        self.socket = socket.create_connection((host, port), timeout)
         self.buffer = b""
 
     def _negotiate(self, data):

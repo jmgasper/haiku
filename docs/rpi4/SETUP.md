@@ -170,21 +170,34 @@ USB-C power <- official PSU <- smart plug (Home Assistant)
 
 ### EEPROM
 
-Update to the newest release of the default channel from the recovery OS
-(`rpi-eeprom-update -a`; the newest Pi 4 release on GitHub is
-v2026.09.23-2711). Then apply (`rpi-eeprom-config --apply`):
+The lab board runs the 2022-01-25 EEPROM. Its configuration was updated on
+2026-10-06 without changing the firmware version:
 
 ```ini
 [all]
 BOOT_UART=1          # bootloader log on GPIO14/15
 BOOT_ORDER=0xf14     # read right to left: USB mass storage, SD card, retry
+WAKE_ON_GPIO=1
 POWER_OFF_ON_HALT=0
+USB_MSD_DISCOVER_TIMEOUT=5000
+USB_MSD_LUN_TIMEOUT=500
 ```
 
-With nothing attached on the NanoKVM, USB boot gives up and the SD card boots.
-`USB_MSD_DISCOVER_TIMEOUT` (minimum 5 s) bounds that wait if no USB disk
-appears at all. **Verify** how long the fall-through takes with the KVM's
-empty gadget.
+With nothing attached on the NanoKVM, USB boot gives up and the SD card
+boots. The default timeouts had cost about 31 seconds before SD selection
+with the lab's thumb drive and empty KVM LUN. The shorter timeouts preserve
+booting the attached NanoKVM recovery disk; timings and validation are in
+`PERFORMANCE.md`. This is a lab EEPROM setting, not part of the SD image.
+
+For a config change, first boot and verify the recovery OS, preserve the
+SD FAT partition and current EEPROM configuration, and capture serial. Use
+the pinned `rpi-eeprom-config` to put the new configuration into the same
+EEPROM version, and `rpi-eeprom-digest` to generate its signature. Stage
+`pieeprom.upd`, `pieeprom.sig`, and the pinned `recovery.bin` on the SD FAT
+partition. The ROM update reports verification, renames `recovery.bin`
+to `RECOVERY.000`, and resets. Check the reported EEPROM configuration from
+the recovery OS, remove these three update files, and test both recovery
+boot and SD fall-through. Preserve the USB-first order for this lab.
 
 Bootstrap: factory EEPROMs since 2020 default to SD first, then USB. So the
 first recovery boot only needs the SD slot empty. An EEPROM from 2019 without

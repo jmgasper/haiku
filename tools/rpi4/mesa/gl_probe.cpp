@@ -15,6 +15,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <OS.h>
+
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 
@@ -55,6 +57,7 @@ compile(GLenum type, const char* source)
 int
 main(int argc, char** argv)
 {
+	bigtime_t start = system_time();
 	int only = argc > 1 ? atoi(argv[1]) : 0;
 	if (getenv("PROBE_WIDTH") != NULL)
 		kWidth = atoi(getenv("PROBE_WIDTH"));
@@ -200,6 +203,14 @@ main(int argc, char** argv)
 			&& high[2] == 255, "triangle over a clear");
 	}
 
+	printf("render and validation: %.3f ms\n",
+		(system_time() - start) / 1000.0);
+	free(pixels);
+	eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+	eglDestroyContext(display, context);
+	eglDestroySurface(display, surface);
+	eglTerminate(display);
+	eglReleaseThread();
 	printf("%s\n", ok ? "GL PROBE PASSED" : "GL PROBE FAILED");
 	return ok ? 0 : 1;
 }

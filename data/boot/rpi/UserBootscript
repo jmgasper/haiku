@@ -1,4 +1,10 @@
 #!/bin/sh
+# The installer remembers completed and declined setup in user settings.
+# Closing it without choosing leaves setup available on the next boot.
+if [ -x /boot/system/apps/RPiInstaller ]; then
+	/boot/system/apps/RPiInstaller --first-boot > /dev/dprintf 2>&1 &
+fi
+
 # The Raspberry Pi has no battery-backed clock: every start begins in 1970,
 # and nothing that checks a certificate works until the time is right. Set it
 # from the network as soon as there is one. An attempt made before the
