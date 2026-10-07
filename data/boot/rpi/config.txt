@@ -29,6 +29,10 @@ gpu_mem=192
 disable_overscan=1
 # one frame buffer per HDMI output
 max_framebuffers=2
+# Firmware KMS cannot initialize a previously absent output after boot.
+# Prepare both pipelines; the driver uses real HPD to expose connected screens.
+hdmi_force_hotplug:0=1
+hdmi_force_hotplug:1=1
 disable_splash=1
 
 # cmdline.txt takes the loader's options, each a word of its own:

@@ -17,7 +17,7 @@
 
 #define RPI_DISPLAY_ACCELERANT		"rpi_display.accelerant"
 #define RPI_DISPLAY_DEVICE			"graphics/rpi_display/0"
-#define RPI_DISPLAY_VERSION			1
+#define RPI_DISPLAY_VERSION			2
 #define RPI_DISPLAY_MAX_OUTPUTS		2
 
 enum {
@@ -26,7 +26,11 @@ enum {
 	// struct rpi_display_layout; the caller becomes the frame buffer's owner
 	RPI_DISPLAY_SET_LAYOUT,
 	// maps the frame buffer into the caller's team; returns an area_info
-	RPI_DISPLAY_CLONE_FRAME_BUFFER
+	RPI_DISPLAY_CLONE_FRAME_BUFFER,
+	// consistent snapshot of rpi_display_shared_info, including hotplug state
+	RPI_DISPLAY_GET_STATE,
+	// struct rpi_display_change_port; negative port unregisters notifications
+	RPI_DISPLAY_SET_CHANGE_PORT
 };
 
 #define RPI_DISPLAY_OUTPUT_CONNECTED	0x1
@@ -71,6 +75,11 @@ struct rpi_display_layout {
 	rpi_display_output outputs[RPI_DISPLAY_MAX_OUTPUTS];
 		// by index as in the shared info; id, flags and the region and
 		// mode fields count
+};
+
+struct rpi_display_change_port {
+	port_id port;
+	int32 code;
 };
 
 

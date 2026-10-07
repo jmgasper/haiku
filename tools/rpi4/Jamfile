@@ -41,3 +41,6 @@ SimpleTest rpi4_sand_convert_test : sand_convert_test.cpp SandConvert.cpp
 UseHeaders [ FDirName $(HAIKU_TOP) src libs compat freebsd_network ] : true ;
 UseHeaders [ FDirName $(HAIKU_TOP) src libs compat freebsd_wlan ] : true ;
 SimpleTest rpi4_wifi_join_probe : wifi_join_probe.cpp : network ;
+
+UsePrivateHeaders kernel ;
+SimpleTest rpi4_hdmi_hpd : hdmi_hpd.cpp ;

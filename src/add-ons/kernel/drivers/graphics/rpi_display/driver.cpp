@@ -5,7 +5,7 @@
 
 /*	The Raspberry Pi 4's HDMI outputs through the VideoCore firmware.
 
-	The firmware sets the outputs' video modes at boot and runs the
+	The firmware sets the outputs' initial video modes and runs the
 	compositor (HVS). This driver owns one frame buffer and asks the firmware
 	for one plane per output, each showing a region of that buffer scaled to
 	the output's mode: the "firmware KMS" property tags. The accelerant
@@ -32,6 +32,8 @@
 #include <rpi_display.h>
 #include <rpi_firmware.h>
 
+#include "edid_timing.h"
+
 
 #define RPI_DISPLAY_DRIVER_MODULE_NAME	"drivers/graphics/rpi_display/driver_v1"
 #define RPI_DISPLAY_DEVICE_MODULE_NAME	"drivers/graphics/rpi_display/device_v1"
@@ -45,6 +47,8 @@
 #define TAG_FB_GET_NUM_DISPLAYS			0x00040013
 #define TAG_FB_GET_DISPLAY_ID			0x00040016
 #define TAG_FB_SET_DISPLAY_NUM			0x00048013
+#define TAG_SET_TIMING					0x00048017
+#define TAG_SET_DISPLAY_POWER			0x00048019
 #define TAG_SET_PLANE					0x00048015
 
 #define VC_IMAGE_XRGB8888				44
@@ -94,6 +98,14 @@ struct display_info {
 	uint8*			buffer;
 	phys_addr_t		bufferAddress;
 	size_t			bufferSize;
+
+	area_id			hpdAreas[2];
+	volatile uint32*	hpdRegisters[2];
+	thread_id		pollThread;
+	int32			stopping;
+	port_id			changePort;
+	int32			changeCode;
+	void*			notificationOwner;
 };
 
 
@@ -122,12 +134,38 @@ remove_plane(uint32 index, uint32 display)
 }
 
 
-/*!	What the firmware set up at boot: the displays and their modes. */
+static void
+read_edid(rpi_display_output& output)
+{
+	output.edid_length = 0;
+	memset(output.edid, 0, sizeof(output.edid));
+	for (uint32 block = 0; block < 2; block++) {
+		struct {
+			uint32 block;
+			uint32 display;
+			uint8 data[128];
+		} edid = {block, output.id, {}};
+		if (sFirmware->property(TAG_GET_EDID_BLOCK_DISPLAY, &edid,
+				sizeof(edid)) != B_OK || edid.display != 0
+			|| !valid_edid_block(edid.data, block == 0)) {
+			break;
+		}
+		memcpy(output.edid + block * 128, edid.data, 128);
+		output.edid_length = (block + 1) * 128;
+		if (block == 0 && edid.data[126] == 0)
+			break;
+	}
+}
+
+
+/*! The firmware's boot-time modes, mapped to stable physical connectors. */
 static status_t
 read_outputs(display_info* info)
 {
 	rpi_display_shared_info& shared = *info->shared;
-
+	shared.output_count = RPI_DISPLAY_MAX_OUTPUTS;
+	shared.outputs[0].id = 2;
+	shared.outputs[1].id = 7;
 	uint32 count = 0;
 	status_t status = sFirmware->property(TAG_FB_GET_NUM_DISPLAYS, &count,
 		sizeof(count));
@@ -135,72 +173,106 @@ read_outputs(display_info* info)
 		return status;
 	if (count > RPI_DISPLAY_MAX_OUTPUTS)
 		count = RPI_DISPLAY_MAX_OUTPUTS;
-
+	bool found = false;
 	for (uint32 i = 0; i < count; i++) {
-		rpi_display_output& output = shared.outputs[i];
-
-		// the frame buffer tags work on the display selected last
 		uint32 number = i;
 		sFirmware->property(TAG_FB_SET_DISPLAY_NUM, &number, sizeof(number));
-		uint32 id[2] = { i, 0 };
-		uint32 size[2] = { 0, 0 };
+		uint32 id[2] = {i, 0};
+		uint32 size[2] = {0, 0};
 		if (sFirmware->property(TAG_FB_GET_DISPLAY_ID, id, sizeof(id)) != B_OK
 			|| sFirmware->property(TAG_FB_GET_PHYSICAL_SIZE, size,
-				sizeof(size)) != B_OK
-			|| size[0] == 0 || size[1] == 0) {
+				sizeof(size)) != B_OK || size[0] == 0 || size[1] == 0
+			|| (id[0] != 2 && id[0] != 7)) {
 			continue;
 		}
-
-		output.id = id[0];
+		uint32 index = id[0] == 2 ? 0 : 1;
+		rpi_display_output& output = shared.outputs[index];
 		output.flags = RPI_DISPLAY_OUTPUT_CONNECTED;
 		output.native_width = size[0];
 		output.native_height = size[1];
-
-		// EDID: block 0 and its first extension
-		for (uint32 block = 0; block < 2; block++) {
-			struct {
-				uint32	block;
-				uint32	display;
-				uint8	data[128];
-			} edid = { block, i, {} };
-			uint32 status32[2];
-			if (sFirmware->property(TAG_GET_EDID_BLOCK_DISPLAY, &edid,
-					sizeof(edid)) != B_OK) {
-				break;
-			}
-			memcpy(status32, &edid, sizeof(status32));
-			static const uint8 kHeader[8]
-				= { 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0 };
-			if (status32[1] != 0
-				|| (block == 0 && memcmp(edid.data, kHeader, 8) != 0)) {
-				break;
-			}
-			memcpy(output.edid + block * 128, edid.data, 128);
-			output.edid_length = (block + 1) * 128;
-			if (block == 0 && edid.data[126] == 0)
-				break;
-		}
-
-		INFO("output %" B_PRIu32 ": display id %" B_PRIu32 ", %ux%u, %"
-			B_PRIu32 " bytes of EDID\n", i, output.id, output.native_width,
-			output.native_height, output.edid_length);
+		read_edid(output);
+		found = true;
+		INFO("HDMI%" B_PRIu32 ": display id %" B_PRIu32 ", %ux%u, %"
+			B_PRIu32 " bytes of EDID\n", index, output.id,
+			output.native_width, output.native_height, output.edid_length);
 	}
-
 	uint32 number = 0;
 	sFirmware->property(TAG_FB_SET_DISPLAY_NUM, &number, sizeof(number));
+	return found ? B_OK : B_DEVICE_NOT_FOUND;
+}
 
-	// The firmware answers for a display without a monitor with the other
-	// display's EDID; that says nothing about this one.
-	if (count == 2 && shared.outputs[1].edid_length != 0
-		&& shared.outputs[0].edid_length == shared.outputs[1].edid_length
-		&& memcmp(shared.outputs[0].edid, shared.outputs[1].edid,
-			shared.outputs[0].edid_length) == 0) {
-		shared.outputs[1].edid_length = 0;
+
+static status_t
+connect_output(rpi_display_output& output)
+{
+	rpi_display_output connected = {};
+	connected.id = output.id;
+	read_edid(connected);
+	firmware_timing timing;
+	if (!preferred_edid_timing(connected.edid, connected.edid_length, timing))
+		return B_DEV_NOT_READY;
+	timing.display = output.id;
+	status_t status = sFirmware->property(TAG_SET_TIMING, &timing,
+		sizeof(timing));
+	if (status != B_OK)
+		return status;
+	uint32 power[2] = {output.id, 1};
+	status = sFirmware->property(TAG_SET_DISPLAY_POWER, power, sizeof(power));
+	if (status != B_OK)
+		return status;
+	connected.native_width = timing.hdisplay;
+	connected.native_height = timing.vdisplay;
+	connected.flags = RPI_DISPLAY_OUTPUT_CONNECTED;
+	output = connected;
+	return B_OK;
+}
+
+
+static int32
+poll_outputs(void* cookie)
+{
+	display_info* info = (display_info*)cookie;
+	bool previous[2] = {false, false};
+	bigtime_t retryAt[2] = {0, 0};
+	while (atomic_get(&info->stopping) == 0) {
+		snooze(250000);
+		MutexLocker locker(info->lock);
+		bool changed = false;
+		for (uint32 i = 0; i < RPI_DISPLAY_MAX_OUTPUTS; i++) {
+			if (info->hpdRegisters[i] == NULL)
+				continue;
+			bool present = (*info->hpdRegisters[i] & 1) != 0;
+			// Two matching samples suppress short HPD pulses and contact bounce.
+			bool stable = previous[i] == present;
+			previous[i] = present;
+			rpi_display_output& output = info->shared->outputs[i];
+			bool connected = (output.flags & RPI_DISPLAY_OUTPUT_CONNECTED) != 0;
+			if (!stable || connected == present || system_time() < retryAt[i])
+				continue;
+			if (present) {
+				status_t status = connect_output(output);
+				if (status != B_OK) {
+					retryAt[i] = system_time() + 2000000;
+					continue;
+				}
+			} else {
+				remove_plane(i, output.id);
+				output.flags = 0;
+				output.edid_length = 0;
+				retryAt[i] = 0;
+			}
+			changed = true;
+			INFO("HDMI%" B_PRIu32 " %s (%ux%u)\n", i,
+				present ? "connected" : "disconnected", output.native_width,
+				output.native_height);
+		}
+		if (changed && info->changePort >= 0) {
+			// Never let a full or abandoned app_server port block the driver.
+			write_port_etc(info->changePort, info->changeCode, NULL, 0,
+				B_RELATIVE_TIMEOUT, 0);
+		}
 	}
-
-	shared.output_count = count;
-	return count > 0 && (shared.outputs[0].flags
-			& RPI_DISPLAY_OUTPUT_CONNECTED) != 0 ? B_OK : B_DEVICE_NOT_FOUND;
+	return B_OK;
 }
 
 
@@ -429,6 +501,29 @@ display_init_device(void* _info, void** _cookie)
 	}
 
 	mutex_init(&info->lock, "rpi display");
+	info->changePort = -1;
+	info->pollThread = -1;
+	// BCM2711 only (the driver's compatible match). The VC5 HDMI_HOTPLUG
+	// register is at offset 0x1a8 of each HDMI block, bit 0 = connected.
+	// These read-only maps do not touch clocks, PHYs or interrupt state;
+	// those remain owned by the VideoCore firmware.
+	for (uint32 i = 0; i < RPI_DISPLAY_MAX_OUTPUTS; i++) {
+		void* registers;
+		info->hpdAreas[i] = map_physical_memory("BCM2711 HDMI hotplug",
+			0xfef00000 + i * 0x5000, B_PAGE_SIZE,
+			B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY, B_KERNEL_READ_AREA,
+			&registers);
+		if (info->hpdAreas[i] >= 0)
+			info->hpdRegisters[i] = (volatile uint32*)((uint8*)registers + 0x8a8);
+		else
+			ERROR("cannot map HDMI%" B_PRIu32 " hotplug register\n", i);
+	}
+	info->pollThread = spawn_kernel_thread(poll_outputs, "rpi HDMI hotplug",
+		B_NORMAL_PRIORITY, info);
+	if (info->pollThread >= 0)
+		resume_thread(info->pollThread);
+	else
+		ERROR("cannot start HDMI hotplug thread\n");
 	*_cookie = info;
 	return B_OK;
 }
@@ -438,6 +533,15 @@ static void
 display_uninit_device(void* cookie)
 {
 	display_info* info = (display_info*)cookie;
+	atomic_set(&info->stopping, 1);
+	if (info->pollThread >= 0) {
+		status_t result;
+		wait_for_thread(info->pollThread, &result);
+	}
+	for (uint32 i = 0; i < RPI_DISPLAY_MAX_OUTPUTS; i++) {
+		if (info->hpdAreas[i] >= 0)
+			delete_area(info->hpdAreas[i]);
+	}
 	mutex_destroy(&info->lock);
 	if (info->bufferArea >= 0)
 		delete_area(info->bufferArea);
@@ -478,6 +582,10 @@ display_free(void* cookie)
 {
 	display_info* info = sInfo;
 	MutexLocker locker(info->lock);
+	if (info->notificationOwner == cookie) {
+		info->notificationOwner = NULL;
+		info->changePort = -1;
+	}
 	if (info->owner == cookie) {
 		release_layout(info);
 		info->owner = NULL;
@@ -500,6 +608,42 @@ display_control(void* cookie, uint32 op, void* buffer, size_t length)
 
 		case RPI_DISPLAY_GET_SHARED_AREA:
 			return user_memcpy(buffer, &info->sharedArea, sizeof(area_id));
+
+		case RPI_DISPLAY_GET_STATE:
+		{
+			if (length != sizeof(rpi_display_shared_info))
+				return B_BAD_VALUE;
+			MutexLocker locker(info->lock);
+			return user_memcpy(buffer, info->shared, sizeof(*info->shared));
+		}
+
+		case RPI_DISPLAY_SET_CHANGE_PORT:
+		{
+			rpi_display_change_port request;
+			if (length != sizeof(request))
+				return B_BAD_VALUE;
+			status_t status = user_memcpy(&request, buffer, sizeof(request));
+			if (status != B_OK)
+				return status;
+			if (request.port >= 0) {
+				port_info port;
+				status = get_port_info(request.port, &port);
+				if (status != B_OK || port.team != team_get_current_team_id())
+					return B_NOT_ALLOWED;
+			}
+			MutexLocker locker(info->lock);
+			if (info->notificationOwner != NULL
+				&& info->notificationOwner != cookie)
+				return B_BUSY;
+			info->notificationOwner = request.port >= 0 ? cookie : NULL;
+			info->changePort = request.port;
+			info->changeCode = request.code;
+			// Catch changes between the initial output query and registration.
+			if (request.port >= 0)
+				write_port_etc(request.port, request.code, NULL, 0,
+					B_RELATIVE_TIMEOUT, 0);
+			return B_OK;
+		}
 
 		case RPI_DISPLAY_SET_LAYOUT:
 		{

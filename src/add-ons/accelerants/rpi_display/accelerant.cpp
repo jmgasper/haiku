@@ -5,7 +5,7 @@
 
 /*	The accelerant of the Raspberry Pi 4's HDMI outputs (rpi_display).
 
-	The firmware holds each output at the video mode it chose at boot and
+	The firmware holds each output at its native video mode and
 	scales whatever region of the frame buffer the driver gives it to that
 	mode. So an output's "resolution" and its scale are both the size of its
 	region; app_server arranges the regions through the display layout hooks.
@@ -121,6 +121,26 @@ region_size(uint32 pixels, uint16 scale, uint16 renderScale)
 
 
 static status_t
+read_state(rpi_display_shared_info& state)
+{
+	if (ioctl(gInfo->device, RPI_DISPLAY_GET_STATE, &state, sizeof(state)) != 0)
+		return errno != 0 ? errno : B_ERROR;
+	return B_OK;
+}
+
+
+static status_t
+rpi_set_display_change_port(port_id port, int32 code)
+{
+	rpi_display_change_port request = {port, code};
+	if (ioctl(gInfo->device, RPI_DISPLAY_SET_CHANGE_PORT, &request,
+			sizeof(request)) != 0)
+		return errno != 0 ? errno : B_ERROR;
+	return B_OK;
+}
+
+
+static status_t
 map_frame_buffer()
 {
 	area_info info;
@@ -173,7 +193,7 @@ init_common(int device, bool isClone)
 	}
 	if (status == B_OK) {
 		gInfo->shared_area = clone_area("rpi display shared info",
-			(void**)&gInfo->shared, B_ANY_ADDRESS, B_READ_AREA | B_WRITE_AREA,
+			(void**)&gInfo->shared, B_ANY_ADDRESS, B_READ_AREA,
 			sharedArea);
 		if (gInfo->shared_area < 0)
 			status = gInfo->shared_area;
@@ -194,6 +214,8 @@ init_common(int device, bool isClone)
 static void
 uninit_common()
 {
+	if (!gInfo->is_clone)
+		rpi_set_display_change_port(-1, 0);
 	if (gInfo->frame_buffer_area >= 0)
 		delete_area(gInfo->frame_buffer_area);
 	delete_area(gInfo->shared_area);
@@ -216,17 +238,30 @@ rpi_init_accelerant(int device)
 
 	// Until app_server arranges them: the first output at its own size and
 	// the other one showing the same.
-	const rpi_display_shared_info& shared = *gInfo->shared;
+	rpi_display_shared_info shared;
+	status = read_state(shared);
+	if (status != B_OK) {
+		uninit_common();
+		return status;
+	}
 	rpi_display_layout layout = {};
 	layout.version = RPI_DISPLAY_VERSION;
-	layout.width = shared.outputs[0].native_width;
-	layout.height = shared.outputs[0].native_height;
+	uint32 first = 0;
+	while (first < shared.output_count
+		&& (shared.outputs[first].flags & RPI_DISPLAY_OUTPUT_CONNECTED) == 0)
+		first++;
+	if (first == shared.output_count) {
+		uninit_common();
+		return B_DEVICE_NOT_FOUND;
+	}
+	layout.width = shared.outputs[first].native_width;
+	layout.height = shared.outputs[first].native_height;
 	for (uint32 i = 0; i < shared.output_count; i++) {
 		if ((shared.outputs[i].flags & RPI_DISPLAY_OUTPUT_CONNECTED) == 0)
 			continue;
 		rpi_display_output& output = layout.outputs[i];
 		output.flags = RPI_DISPLAY_OUTPUT_ENABLED
-			| (i > 0 ? RPI_DISPLAY_OUTPUT_MIRROR : 0);
+			| (i != first ? RPI_DISPLAY_OUTPUT_MIRROR : 0);
 		output.width = output.mode_width = layout.width;
 		output.height = output.mode_height = layout.height;
 		output.scale = output.render_scale = 100;
@@ -385,7 +420,17 @@ rpi_get_pixel_clock_limits(display_mode* mode, uint32* _low, uint32* _high)
 static status_t
 rpi_get_edid_info(void* info, size_t size, uint32* _version)
 {
-	const rpi_display_output& output = gInfo->shared->outputs[0];
+	rpi_display_shared_info state;
+	status_t status = read_state(state);
+	if (status != B_OK)
+		return status;
+	uint32 first = 0;
+	while (first < state.output_count
+		&& (state.outputs[first].flags & RPI_DISPLAY_OUTPUT_CONNECTED) == 0)
+		first++;
+	if (first == state.output_count)
+		return B_DEVICE_NOT_FOUND;
+	const rpi_display_output& output = state.outputs[first];
 	if (output.edid_length < 128 || size < sizeof(edid1_info))
 		return B_ERROR;
 
@@ -419,7 +464,10 @@ output_name(const rpi_display_output& output, uint32 index)
 static status_t
 rpi_get_display_outputs(display_output* outputs, uint32* _count)
 {
-	const rpi_display_shared_info& shared = *gInfo->shared;
+	rpi_display_shared_info shared;
+	status_t status = read_state(shared);
+	if (status != B_OK)
+		return status;
 	uint32 count = 0;
 	for (uint32 i = 0; i < shared.output_count && count < *_count; i++) {
 		const rpi_display_output& source = shared.outputs[i];
@@ -465,7 +513,10 @@ rpi_get_display_outputs(display_output* outputs, uint32* _count)
 static status_t
 rpi_get_display_output_modes(uint32 id, display_mode* modes, uint32* _count)
 {
-	const rpi_display_shared_info& shared = *gInfo->shared;
+	rpi_display_shared_info shared;
+	status_t status = read_state(shared);
+	if (status != B_OK)
+		return status;
 	if (id < 1 || id > shared.output_count)
 		return B_ENTRY_NOT_FOUND;
 	const rpi_display_output& output = shared.outputs[id - 1];
@@ -498,7 +549,10 @@ static status_t
 rpi_set_display_layout(const display_output_config* configs, uint32 count,
 	display_mode* _mode)
 {
-	const rpi_display_shared_info& shared = *gInfo->shared;
+	rpi_display_shared_info shared;
+	status_t status = read_state(shared);
+	if (status != B_OK)
+		return status;
 	rpi_display_layout layout = {};
 	layout.version = RPI_DISPLAY_VERSION;
 
@@ -509,10 +563,10 @@ rpi_set_display_layout(const display_output_config* configs, uint32 count,
 			return B_ENTRY_NOT_FOUND;
 		const rpi_display_output& source = shared.outputs[config.id - 1];
 		rpi_display_output& output = layout.outputs[config.id - 1];
-		if ((source.flags & RPI_DISPLAY_OUTPUT_CONNECTED) == 0)
-			return B_ENTRY_NOT_FOUND;
 		if ((config.flags & B_DISPLAY_OUTPUT_ENABLED) == 0)
 			continue;
+		if ((source.flags & RPI_DISPLAY_OUTPUT_CONNECTED) == 0)
+			return B_ENTRY_NOT_FOUND;
 
 		bool mirror = (config.flags & B_DISPLAY_OUTPUT_MIRROR) != 0;
 		uint16 renderScale = config.render_scale != 0
@@ -657,6 +711,8 @@ get_accelerant_hook(uint32 feature, void* data)
 			return (void*)rpi_get_display_output_modes;
 		case B_SET_DISPLAY_LAYOUT:
 			return (void*)rpi_set_display_layout;
+		case B_SET_DISPLAY_CHANGE_PORT:
+			return (void*)rpi_set_display_change_port;
 	}
 	return NULL;
 }

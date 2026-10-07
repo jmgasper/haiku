@@ -116,6 +116,16 @@ rule UserBuildConfigRulePreImage
 	}
 
 	if $(AIROS_ROCK5) || $(AIROS_RPI4) {
+		# CI stages this architecture-neutral package with zlib, since the
+		# arm64 release package readers may not support the repository's zstd.
+		if ! [ Glob $(AIROS_CI_PACKAGES) : ca_root_certificates-*-any.hpkg ] {
+			Exit "The arm64 image requires the ca_root_certificates package." ;
+		}
+		# Keep the legacy arm64 engine's CA path pointing at the packaged
+		# trust store used by curl and current engines.
+		AddSymlinkToHaikuImage system non-packaged data ssl
+			: /boot/system/data/ssl/CARootCertificates.pem
+			: CARootCertificates.pem ;
 		# The arm64 ICU bootstrap package's data directory.
 		local environment = <airos-ci>UserSetupEnvironment ;
 		SEARCH on $(environment) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
@@ -154,10 +164,12 @@ rule UserBuildConfigRulePreImage
 		local packageSettings = <airos-rpi4>packages ;
 		SEARCH on $(packageSettings) = $(rpi) ;
 		AddFilesToHaikuImage system settings : $(packageSettings) ;
-		local localeSettings = "<airos-rpi4>Locale settings" ;
+		local localeSettings = "<airos-rpi4>Locale settings"
+			<airos-rpi4>RTC_time_settings ;
 		SEARCH on $(localeSettings) = $(rpi) ;
 		AddFilesToHaikuImage home config settings : $(localeSettings) ;
-		local bootscript = <airos-rpi4>UserBootscript ;
+		local bootscript = <airos-rpi4>UserBootscript
+			<airos-rpi4>rpi-time-sync ;
 		SEARCH on $(bootscript) = $(rpi) ;
 		AddFilesToHaikuImage home config settings boot : $(bootscript) ;
 	}
