@@ -82,3 +82,14 @@ installed app package's SHA-256 was unchanged. Evidence lives under
 `/mnt/HaikuWork/artifacts/rpi-installer/qemu/`; the filesystem and planner
 test logs are beside it. These checks used the validation image while the
 latest Summit rebuild was in progress.
+
+The merged Pi kernel also passed growth through QEMU's `raspi4b` SD
+controller: `/dev/disk/mmc/0/1` mounted at 137166323712 bytes after the SD
+flush barriers succeeded. The setup window reported 127.75 GiB and a host
+`checkfs -c` after stopping the VM reported 418 nodes with no missing,
+duplicate or reclaimable blocks (`sd-current.log`, `sd-current.png`, and
+`sd-current-checkfs.log` in the same artifact directory).
+
+The build server's `airos-rpi4` profile uses the same growable format and
+requires `rpi_installer` in `AIROS_CI_PACKAGES`. Its image pipeline selects
+this Pi-only package from the ARM64 package pool.

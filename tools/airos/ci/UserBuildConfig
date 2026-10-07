@@ -59,6 +59,7 @@ switch $(HAIKU_BUILD_PROFILE) {
 	case airos-rpi4 : {
 		AIROS_RPI4 = 1 ;
 		HAIKU_IMAGE_SIZE = $(AIROS_CI_IMAGE_SIZE:E=3584) ;
+		HAIKU_BFS_GROWABLE = 1 ;
 		HAIKU_RPI_IMAGE_NAME = airos-rpi4.img ;
 	}
 }
@@ -145,6 +146,9 @@ rule UserBuildConfigRulePreImage
 	}
 
 	if $(AIROS_RPI4) {
+		if ! [ Glob $(AIROS_CI_PACKAGES) : rpi_installer-*.hpkg ] {
+			Exit "The Pi image requires the rpi_installer package." ;
+		}
 		local rpi = [ FDirName $(HAIKU_TOP) data boot rpi ] ;
 		# Package entries the Pi must not see (the ROCK 5's MPP decoder).
 		local packageSettings = <airos-rpi4>packages ;
