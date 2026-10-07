@@ -93,3 +93,19 @@ duplicate or reclaimable blocks (`sd-current.log`, `sd-current.png`, and
 The build server's `airos-rpi4` profile uses the same growable format and
 requires `rpi_installer` in `AIROS_CI_PACKAGES`. Its image pipeline selects
 this Pi-only package from the ARM64 package pool.
+
+The final image (`505134964a`, 2026-10-07) includes the build server's fresh
+Summit `60f37cb` packages: `summit-0.1.0~git20261007.0055-1-arm64` and
+`summit_webkit-1.10.1~git20261007.0055-1-arm64`. The package hashes extracted
+from the image match the staged copies. Its installer expanded a decimal
+128 GB disk to 127727370240 filesystem bytes (118.96 GiB) and restarted
+successfully. Summit rendered its start page and a local JavaScript test.
+The final Pi SD-controller boot also displayed first-boot setup. Evidence
+is in `final-qemu/`, `final-sd.log`, `final-sd.png`, and `final-verification/`.
+
+An incremental build crossing the Pi optimization merge can retain old
+merged libc objects or a Zstd reader compiled without `ZSTD_ENABLED`.
+Rebuild the stale aggregates/readers or use a clean output directory. The
+final image was tested after rebuilding those objects; no application
+package failed to load. The compressed deliverable and source/package
+manifest are in the artifact directory's `release/` subdirectory.
