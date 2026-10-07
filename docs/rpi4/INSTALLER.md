@@ -1,19 +1,30 @@
-# First-boot storage setup
+# First-boot storage and timezone setup
 
 The `rpi4-airos` SD image includes `apps/rpi-installer` from the workspace,
 packaged as `rpi_installer` / `/boot/system/apps/RPiInstaller`. On the first
 desktop start, `data/boot/rpi/UserBootscript` launches it with `--first-boot`.
 It offers to use the entire SD card for air/OS. Keeping the current size is
-a persistent choice; closing setup or choosing Later leaves it available
-next boot. Applications → Raspberry Pi Setup can revisit the choice.
+a persistent choice. Either storage choice proceeds to **Step 2: Time zone**;
+closing an unfinished step or choosing Later leaves it available next boot.
+Applications → Raspberry Pi Setup can revisit the choice.
 
 The app identifies the partition mounted at `/boot`, validates the specific
 MBR FAT32 + BFS image layout and its growable BFS superblock, and displays
 the current and available capacities. It requires explicit confirmation
 before changing the partition table. A backup, decision and pending state
 live under `~/config/settings/rpi-installer/`. It flushes and reads back the
-new partition table, then offers a normal restart. Completion is recorded
-only after the enlarged mounted filesystem is observed on the next boot.
+new partition table, offers timezone selection, then a normal restart.
+Storage completion is recorded only after the enlarged mounted filesystem
+is observed on the next boot. A separate timezone marker allows installations
+with storage already configured to complete the new step.
+
+Version 1.1 stores the timezone in Haiku's locale settings and uses a UTC
+clock, preserving the UTC instant when a zone changes. The image launches
+`rpi-time-sync`: it seeds the missing RTC from a build timestamp or saved
+successful sync, retries NTP indefinitely with bounded attempts, and refreshes
+it hourly after success. `Time --update` now returns failure when NTP fails.
+The official CA certificate package and legacy Summit path are included, since
+a correct date cannot compensate for a missing trust store.
 
 ## Why the image has reserved metadata
 
@@ -117,3 +128,11 @@ JavaScript test. All 42 package hashes extracted from the image matched
 their expected inputs. The xz stream expands to the exact raw-image SHA-256.
 The final evidence is in `latest-qemu/`, `latest-verification/`, and the
 release manifest. The physical Pi test remains separate.
+
+The 2026-10-07 reliability candidate also passes both onboarding paths with
+Hobart selected in QEMU, restart persistence, UTC preservation, and an offline
+check of the expanded 128 GiB test disk (434 nodes, no allocation errors).
+The user's physical 128 GB card is already correctly expanded and passes its
+own pre-change BFS check (496 nodes, no allocation errors). Its boot failure
+is reproduced with NanoKVM's empty USB LUN, and resolved by leaving valid idle
+media attached. See `STATUS.md` for native clock, HTTPS and hotplug evidence.

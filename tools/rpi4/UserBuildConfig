@@ -34,6 +34,7 @@ if $(HAIKU_BUILD_PROFILE) = rpi4-airos {
 	HAIKU_IMAGE_SIZE = 3584 ;
 	HAIKU_RPI_IMAGE_NAME = airos-rpi4.img ;
 	HAIKU_BFS_GROWABLE = 1 ;
+	AddHaikuImageSystemPackages ca_root_certificates ;
 }
 DefineBuildProfile rpi4-airos : image : "haiku-rpi4-airos.image" ;
 
@@ -165,12 +166,14 @@ rule UserBuildConfigRulePreImage
 		# This is an installed system, not an installer medium: go to the
 		# desktop instead of asking "install or try". Language and keymap
 		# are in the Locale and Keymap preferences.
-		local localeSettings = "<rpi4-settings>Locale settings" ;
+		local localeSettings = "<rpi4-settings>Locale settings"
+			<rpi4-settings>RTC_time_settings ;
 		SEARCH on $(localeSettings) = [ FDirName $(HAIKU_TOP) data boot rpi ] ;
 		AddFilesToHaikuImage home config settings : $(localeSettings) ;
 
 		# no clock on the board: the time comes from the network at start
-		local bootscript = <rpi4-settings>UserBootscript ;
+		local bootscript = <rpi4-settings>UserBootscript
+			<rpi4-settings>rpi-time-sync ;
 		SEARCH on $(bootscript) = [ FDirName $(HAIKU_TOP) data boot rpi ] ;
 		AddFilesToHaikuImage home config settings boot : $(bootscript) ;
 
@@ -183,9 +186,11 @@ rule UserBuildConfigRulePreImage
 			= [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
 		AddFilesToHaikuImage home config settings boot : $(setupEnvironment) ;
 
-		local caCertificates = <airos-data>CARootCertificates.pem ;
-		SEARCH on $(caCertificates) = /mnt/HaikuWork/airos/data-arm64/ssl ;
-		AddFilesToHaikuImage system non-packaged data ssl : $(caCertificates) ;
+		# Older arm64 Summit engines use this path; curl and current engines
+		# use the canonical path provided by ca_root_certificates.
+		AddSymlinkToHaikuImage system non-packaged data ssl
+			: /boot/system/data/ssl/CARootCertificates.pem
+			: CARootCertificates.pem ;
 	}
 
 	if $(RPI4_LAB_IMAGE) = 1 {

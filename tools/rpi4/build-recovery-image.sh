@@ -27,6 +27,7 @@ PUBKEY=${RPI4_RECOVERY_PUBKEY:-/mnt/HaikuWork/nanokvm/.ssh/id_ed25519.pub}
 KVM_SSH_CONFIG=${NANOKVM_SSH_CONFIG:-/mnt/HaikuWork/nanokvm/.ssh/config}
 KVM_HOST=${NANOKVM_SSH_HOST:-nanokvm}
 KVM_IMAGE=${RPI4_RECOVERY_KVM_IMAGE:-/data/rpi4-recovery.img}
+IDLE_KVM_IMAGE=${RPI4_IDLE_KVM_IMAGE:-/data/rpi4-no-boot-media.img}
 IMAGE=${RPI4_RECOVERY_IMAGE:-$WORK/rpi4-recovery.img}
 IMAGE_MIB=${RPI4_RECOVERY_IMAGE_MIB:-384}
 HOSTNAME_PI=rpi4-recovery
@@ -83,11 +84,36 @@ kvm_attach() {
 }
 
 kvm_detach() {
+	# The Pi 4 EEPROM can get stuck probing an empty NanoKVM LUN instead of
+	# falling through to SD. Leave a small valid disk with no boot files in
+	# the drive. This also preserves the HID gadget and its open descriptors.
+	if ! kvm_ssh "test -s '$IDLE_KVM_IMAGE'"; then
+		local idle=$WORK/no-boot-media.img
+		python3 - "$idle" <<-'PY'
+		import struct, sys
+		with open(sys.argv[1], 'wb') as disk:
+		    disk.truncate(16 * 1024 * 1024)
+		    mbr = bytearray(512)
+		    mbr[446:462] = struct.pack('<B3sB3sII', 0, b'\xfe\xff\xff',
+		        6, b'\xfe\xff\xff', 2048, 30720)
+		    mbr[510:512] = b'\x55\xaa'
+		    disk.write(mbr)
+		PY
+		mformat -i "$idle@@1048576" -v RPI-IDLE ::
+		gzip -c "$idle" | kvm_ssh "gunzip -c > '$IDLE_KVM_IMAGE'; sync"
+		local expected actual
+		expected=$(sha256sum "$idle" | cut -d' ' -f1)
+		actual=$(kvm_ssh "sha256sum '$IDLE_KVM_IMAGE'" | cut -d' ' -f1)
+		[ "$actual" = "$expected" ] || { echo 'Idle disk checksum mismatch' >&2; return 1; }
+	fi
 	kvm_ssh "set -e
 		echo > $LUN/file
-		: > /boot/usb.disk0
+		echo 0 > $LUN/cdrom
+		echo 1 > $LUN/ro
+		echo '$IDLE_KVM_IMAGE' > $LUN/file
+		echo '$IDLE_KVM_IMAGE' > /boot/usb.disk0
 		sync
-		echo \"attached: '\$(cat $LUN/file)'\""
+		echo \"recovery detached; idle disk: \$(cat $LUN/file)\""
 }
 
 fetch() {	# url, output file

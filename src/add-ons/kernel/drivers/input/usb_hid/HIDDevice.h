@@ -29,6 +29,9 @@ public:
 			bool				IsOpen() const { return fOpenCount > 0; }
 			status_t			Open(ProtocolHandler *handler, uint32 flags);
 			status_t			Close(ProtocolHandler *handler);
+			void				ReleaseOpenReference();
+			bool				HasOpenReferences() const
+									{ return fOpenReferences > 0; }
 			int32				OpenCount() const { return fOpenCount; }
 
 			void				Removed();
@@ -65,6 +68,7 @@ private:
 
 			int32				fParentCookie;
 			int32				fOpenCount;
+			int32				fOpenReferences;
 			bool				fRemoved;
 
 			HIDParser			fParser;

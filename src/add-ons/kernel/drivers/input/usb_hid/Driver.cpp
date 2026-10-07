@@ -214,7 +214,7 @@ usb_hid_device_removed(void *cookie)
 		}
 
 		// this handler's device belongs to the one removed
-		if (device->IsOpen()) {
+		if (device->HasOpenReferences()) {
 			// the device and it's handlers will be deleted in the free hook
 			device->Removed();
 		} else
@@ -314,8 +314,10 @@ usb_hid_free(void *_cookie)
 	mutex_lock(&sDriverLock);
 
 	HIDDevice *device = cookie->handler->Device();
-	if (device->IsOpen()) {
-		// another handler of this device is still open so we can't free it
+	device->ReleaseOpenReference();
+	if (device->HasOpenReferences()) {
+		// Another file cookie still refers to this device. Its close hook
+		// may already have run; only free releases that reference.
 	} else if (device->IsRemoved()) {
 		// the parent device is removed already and none of its handlers are
 		// open anymore so we can free it here

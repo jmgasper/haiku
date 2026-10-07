@@ -1,6 +1,6 @@
 # Displays on the Raspberry Pi 4
 
-State 2026-10-06: both HDMI outputs are displays of one desktop, arranged
+State 2026-10-07: both HDMI outputs are displays of one desktop, arranged
 with the Screen preferences (or `screenmode`). The current lab configuration
 detects both displays at 1920x1080 and uses a 3840x1080 desktop. HDMI0 is
 visible through the KVM; HDMI1's physical picture has not been observed.
@@ -8,8 +8,8 @@ The earlier 640x480 forced-output tests below are historical.
 
 ## How it works
 
-The firmware keeps what it set up at boot: each output's video mode and the
-compositor (HVS). air/OS does not program the HDMI hardware. Instead:
+The firmware owns the compositor (HVS), output timing and PHY programming.
+air/OS reads the connection signal and sends firmware KMS requests:
 
 - `rpi_display` (`src/add-ons/kernel/drivers/graphics/rpi_display`) owns one
   frame buffer (contiguous, below 1 GB, write-combining) and asks the firmware
@@ -28,8 +28,11 @@ region, letterboxed if the shapes differ. The kernel console follows the
 frame buffer (`frame_buffer_update`); when app_server lets go, the planes are
 removed and the firmware's own frame buffer (the boot console) shows again.
 
-`config.txt` has `max_framebuffers=2` so that the firmware sets up both
-outputs.
+`config.txt` has `max_framebuffers=2` and `hdmi_force_hotplug:0=1` /
+`hdmi_force_hotplug:1=1` to initialize both firmware pipelines even when a
+monitor is absent at boot. Without that initialization, later detection and
+layout changes succeed but the newly connected output does not produce a
+picture. Real HPD, read by the driver, still controls the exposed desktop.
 
 ## Things to know about the firmware interface
 
@@ -40,10 +43,39 @@ outputs.
   firmware-KMS driver has them). Two displays using plane id 0 ends with the
   second plane on the first display.
 - The buffer address is a VideoCore bus address (physical | 0xc0000000).
-- `GET_EDID_BLOCK_DISPLAY` answers for a display without a monitor with the
-  other display's EDID; the driver drops such a copy.
-- The number of displays is what the firmware saw at boot. There is no hot
-  plug: a monitor connected later needs a restart.
+- `GET_EDID_BLOCK_DISPLAY` also takes a firmware display **id**, not a
+  framebuffer index. The 2026-10-07 candidate fixes this: index 1 had returned
+  HDMI0's EDID, and the old duplicate-dropping workaround hid HDMI1's identity.
+- The number of displays is what the firmware saw at boot; EDID responses can
+  also remain cached after unplugging. Neither is a live connection signal.
+
+## Hotplug
+
+The driver retains two stable connectors (HDMI0/ID 2 and HDMI1/ID 7), independent
+of boot-time enumeration. It reads BCM2711's `HDMI_HOTPLUG` bit every 250 ms,
+requires two matching samples, and retries an unavailable EDID after two seconds.
+The registers are read-only maps at `0xfef008a8` and `0xfef058a8`: the HDMI bases
+from Linux's `bcm2711.dtsi`, plus the VC5 register offset `0x1a8`, bit 0.
+
+On connection, checksum-validated EDID supplies a progressive detailed timing
+(up to 300 MHz); an explicitly advertised VGA mode is the fallback. The driver
+uses `SET_TIMING` (`0x00048017`) and `SET_DISPLAY_POWER` (`0x00048019`) with the
+firmware display ID. The ABI follows Raspberry Pi Linux's
+[`vc4_firmware_kms.c`](https://github.com/raspberrypi/linux/blob/rpi-5.15.y/drivers/gpu/drm/vc4/vc4_firmware_kms.c).
+On disconnection it removes that plane. It sends the existing
+`B_SET_DISPLAY_CHANGE_PORT` notification so app_server rearranges displays,
+resizes the desktop, and moves windows away from the removed screen. Queries
+use a snapshot copied under the driver lock instead of racing EDID updates.
+
+Native evidence on 2026-10-07: three HDMI0 HPD disconnect/reconnect cycles,
+triggered by the NanoKVM capture control, shrink 3840x1080 to the remaining
+1920x1080 output and restore both outputs with a visible KVM picture. A separate
+read-only probe verified HPD falls even though EDID remains available.
+A boot with HDMI0 absent was also tested: the firmware initializes it at
+640x480, the driver removes it from the desktop while HPD is low, and a later
+connection selects 1920x1080 from EDID. Fresh video frames must be captured:
+the NanoKVM stream's first frame can be stale, including a cached black frame.
+The physical HDMI1 reconnect and picture still need observation.
 
 ## Earlier checks on the board (2026-10-03)
 
@@ -71,8 +103,9 @@ the Dell monitor still needs a physical check.
 
 ## Open
 
-- No mode setting: the outputs stay at the firmware's modes (the monitors'
-  preferred modes). `SET_TIMING` (0x00048017) would be the way.
-- No hot plug, no DPMS, no hardware cursor (app_server draws the pointer),
-  no vertical retrace semaphore.
+- Hotplug mode selection supports progressive EDID detailed timings through
+  300 MHz; interlaced modes and CTA modes with no usable DTD/VGA fallback are
+  not supported. Only the lab's 1080p timings have native validation.
+- No user-selectable physical timing changes, DPMS, hardware cursor
+  (app_server draws the pointer), or vertical retrace semaphore.
 - An output cannot be given more pixels than its mode (no shrinking).

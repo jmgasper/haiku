@@ -27,12 +27,15 @@ HIDDevice::HIDDevice(usb_device device, const usb_configuration_info *config,
 	size_t interfaceIndex, int32 quirkyIndex)
 	:	fStatus(B_NO_INIT),
 		fDevice(device),
+		fInterruptPipe(0),
 		fInterfaceIndex(interfaceIndex),
+		fEndpointAddress(0),
 		fTransferScheduled(0),
 		fTransferBufferSize(0),
 		fTransferBuffer(NULL),
 		fParentCookie(-1),
 		fOpenCount(0),
+		fOpenReferences(0),
 		fRemoved(false),
 		fParser(this),
 		fProtocolHandlerCount(0),
@@ -239,6 +242,7 @@ status_t
 HIDDevice::Open(ProtocolHandler *handler, uint32 flags)
 {
 	atomic_add(&fOpenCount, 1);
+	atomic_add(&fOpenReferences, 1);
 	return B_OK;
 }
 
@@ -246,11 +250,20 @@ HIDDevice::Open(ProtocolHandler *handler, uint32 flags)
 status_t
 HIDDevice::Close(ProtocolHandler *handler)
 {
+	// The file cookie can still be in use after close (and its free hook
+	// still needs the handler). Keep its reference until usb_hid_free().
 	atomic_add(&fOpenCount, -1);
 	gUSBModule->cancel_queued_transfers(fInterruptPipe);
 		// This will wake up any listeners. Whether they should close or retry
 		// is handeled internally by the handlers.
 	return B_OK;
+}
+
+
+void
+HIDDevice::ReleaseOpenReference()
+{
+	atomic_add(&fOpenReferences, -1);
 }
 
 
@@ -277,6 +290,7 @@ HIDDevice::MaybeScheduleTransfer(HIDReport*)
 	status_t result = gUSBModule->queue_interrupt(fInterruptPipe,
 		fTransferBuffer, fTransferBufferSize, _TransferCallback, this);
 	if (result != B_OK) {
+		atomic_set(&fTransferScheduled, 0);
 		TRACE_ALWAYS("failed to schedule interrupt transfer 0x%08" B_PRIx32
 			"\n", result);
 		return result;

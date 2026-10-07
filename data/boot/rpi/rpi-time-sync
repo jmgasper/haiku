@@ -1,0 +1,38 @@
+#!/bin/sh
+# The Pi has no battery-backed RTC. Restore a conservative UTC lower bound,
+# then keep trying NTP even when the network becomes available much later.
+settings=$(finddir B_USER_SETTINGS_DIRECTORY) || exit 1
+state="$settings/rpi-time"
+mkdir -p "$state" || exit 1
+
+# Package timestamps provide a useful first-boot date. A previously synced
+# clock is a better lower bound on later boots; neither replaces NTP.
+seed=$(date -u -r /boot/system/preferences/Time +%s) || seed=0
+if [ -r "$state/last-sync" ]; then
+	read -r saved < "$state/last-sync"
+	case "$saved" in
+		''|*[!0-9]*) ;;
+		*) [ "$saved" -gt "$seed" ] 2>/dev/null && seed=$saved ;;
+	esac
+fi
+now=$(date -u +%s)
+if [ "$seed" -gt "$now" ] 2>/dev/null; then
+	date -u -s "@$seed" > /dev/null || exit 1
+fi
+
+attempt=0
+while :; do
+	# DNS and link availability can change during startup. Bound each attempt
+	# and use Time's exit status, rather than assuming an interface means NTP
+	# is reachable. Keep one diagnostic result instead of growing a log.
+	if timeout 30 /boot/system/preferences/Time --update > "$state/status" 2>&1; then
+		if date -u +%s > "$state/last-sync.new"; then
+			mv -f "$state/last-sync.new" "$state/last-sync"
+		fi
+		attempt=0
+		sleep 3600
+	else
+		attempt=$((attempt + 1))
+		if [ "$attempt" -lt 60 ]; then sleep 5; else sleep 60; fi
+	fi
+done

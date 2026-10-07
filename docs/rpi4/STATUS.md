@@ -2,9 +2,72 @@
 
 The lab board is a Raspberry Pi 4 Model B revision 1.5, 4 GB (`c03115`),
 with two HDMI displays, Ethernet, the NanoKVM's USB HID devices,
-a USB thumb drive and an 8 GB SD card. Development is on the fork's `rpi4`
-branch. Earlier bring-up notes are retained in `HISTORY-20261005.md`;
+and a USB thumb drive. The fresh-install investigation on 2026-10-07 uses
+a 128 GB SD card; the earlier performance run below used 8 GB. Current
+reliability work is on `rpi-firstboot-reliability`, based on `master`.
+Earlier bring-up notes are retained in `HISTORY-20261005.md`;
 this page supersedes their older status statements.
+
+## Fresh-install reliability investigation (2026-10-07)
+
+The reported unbootable card has an intact FAT partition and a correctly
+expanded 127,727,042,560-byte BFS volume. An allocated-data backup and its
+extent checksums are preserved before changes. `bfs_shell checkfs` found
+496 nodes and no missing, duplicate or reclaimable blocks. Its original
+system boots when the NanoKVM presents a valid nonbootable USB disk instead
+of an empty mass-storage LUN. This establishes a lab boot-device problem;
+the observed card does not show corruption from filesystem expansion.
+
+The serial cable is working: a known Linux UART message was received intact,
+followed by a complete native AirOS boot log. `serial-capture.sh` previously
+used a `pkill -f` pattern that could kill its own SSH shell before setting
+the baud rate. It now uses a bounded reader and the shared serial lock.
+
+The HTTPS failure also has a concrete certificate-store cause: the original
+image has no `CARootCertificates.pem` at either curl's canonical path or the
+legacy Summit path. Installing the official `ca_root_certificates` package
+and the compatibility symlink restores certificate-validated HTTPS. The old
+arm64 package reader cannot load the repository's zstd-compressed bundle;
+CI now stages a zlib copy. A correct clock alone did not fix this image.
+
+The candidate time/onboarding and USB HID lifetime changes build and boot in
+QEMU. Both storage choices and the Hobart timezone persist across a guest
+restart. The expanded virtual card passes an offline BFS check (434 nodes,
+no allocation errors). Choosing a zone preserves UTC; a failed actual
+`Time --update` returns status 1. Twenty keyboard and twenty tablet
+attach/remove cycles completed with working input afterward. A networked
+candidate synchronizes time automatically and Summit opens HTTPS.
+
+The native SD now runs the candidate packages (`hrev60206+731+dirty`) and
+matching loader/archive, installed in place with the old files retained for
+rollback. It reaches the timezone step, NTP reports synchronization success,
+and both curl and Summit load HTTPS with certificate validation enabled.
+Seven native USB gadget disconnect/reconnect cycles complete without a panic.
+Keyboard input works after restarting NanoKVM's HID service, whose stale Linux
+handles otherwise produce `ENXIO` before reports can reach the Pi. The KVM's
+RNDIS interface times out on reinitialization; this is not a successful USB
+network hotplug qualification. Ethernet remains available.
+
+HDMI now polls the BCM2711 HPD register, debounces edges, reads EDID using
+firmware display IDs 2 and 7, restores a supported EDID timing through firmware
+KMS, and notifies app_server through its existing display-change port. A locked
+state snapshot prevents accelerants reading a partly updated EDID. Both physical
+connectors retain stable IDs even if only one was present at boot. Three native
+HDMI0 disconnect/reconnect cycles shrink the desktop to HDMI1 and restore the
+3840x1080 layout with a visible KVM picture. A separate boot starts with HDMI0 absent;
+with both firmware pipelines initialized in `config.txt`, a later connection
+selects 1080p and produces a live picture. Without pipeline initialization it
+remains black. HDMI1's physical reconnect and picture still need observation. Firmware EDID responses alone are unsuitable
+for detection: they remain cached after HPD goes low.
+
+Evidence: `/mnt/HaikuWork/rpi4/evidence/fresh-install-20261007`, including
+`sd-allocated-manifest.json`, `bfs-check.log`, `no-boot-media-serial.log`,
+`qemu/expanded-bfs-check.log`, `qemu-final/hotplug.log`,
+`native-verify.log`, `native-summit-visible.jpg`, `native-hdmi-hotplug.log`,
+`native-final-late-hdmi.log`, `native-final-late-hdmi.jpg` and
+`native-usb-fixture-reset.log`. RPiInstaller 1.1.0 is staged in the build
+server's ARM64 package pool; its old 1.0.0 package is retained in the task
+backup directory. The complete CI image pipeline has not been run here.
 
 ## Tested image
 
@@ -41,7 +104,7 @@ Mesa and Summit builds are pinned by the scripts in `tools/rpi4`.
 | Ethernet | GENET at 1000 Mbit/s full duplex, DHCP and data transfer | One queue and packet copies; no checksum offload |
 | USB | VL805 storage and HID work after the descriptor-overfetch fix | 8 GB board DMA above 4 GB untested; no webcam connected |
 | Graphics | Native OpenGL/GLES and Summit WebGL use V3D; pixel-exact GLES and Vulkan probes | Vulkan is headless: no arm64 loader or window-system presentation |
-| Displays | Both outputs advertise 1920x1080; the desktop is 3840x1080; custom Screen preferences arrange, mirror and scale outputs | HDMI1's physical picture has not been observed; firmware scaling, no hot plug/DPMS/hardware cursor |
+| Displays | Both outputs advertise 1920x1080; the desktop is 3840x1080; custom Screen preferences arrange, mirror and scale outputs | HDMI1's physical picture has not been observed; firmware scaling; HDMI0 hotplug tested; HDMI1 physical reconnect, DPMS and hardware cursor unqualified |
 | Wi-Fi | CYW43455 scans and joins WPA2 through the custom preferences window, gets DHCP, and remembers the network; final independent traffic and reboot results below | Intermittent startup association timeout remains: Cold boots 3 and 4 fail to autojoin; dismissing the blocked supplicant dialog permits recovery; roaming and wider AP compatibility need more coverage |
 | Bluetooth/BLE | Controller, custom preferences and nearby-device scanning work; earlier LE connection/service discovery passed | Pairing and application profiles untested; UART at 115200 |
 | Media/airTime | Hardware H.264 and HEVC Main/Main10 decode; 25 HEVC fixtures and H.264 match FFmpeg; 1080p HEVC plays at 30 FPS | H.264 memory contention drops occasional frames; 4K10 remains below 30 FPS; sound has not been listened to physically |
