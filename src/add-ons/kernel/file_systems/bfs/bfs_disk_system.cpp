@@ -22,6 +22,8 @@ parse_initialize_parameters(const char* parameterString,
 
 	if (get_driver_boolean_parameter(handle, "noindex", false, true))
 		parameters.flags |= VOLUME_NO_INDICES;
+	if (get_driver_boolean_parameter(handle, "growable", false, true))
+		parameters.flags |= VOLUME_GROWABLE;
 	if (get_driver_boolean_parameter(handle, "verbose", false, true))
 		parameters.verbose = true;
 
@@ -39,6 +41,9 @@ parse_initialize_parameters(const char* parameterString,
 	}
 
 	parameters.blockSize = blockSize;
+	if ((parameters.flags & VOLUME_GROWABLE) != 0
+		&& blockSize != BFS_GROWABLE_BLOCK_SIZE)
+		return B_BAD_VALUE;
 
 	return B_OK;
 }
@@ -54,4 +59,3 @@ check_volume_name(const char* name)
 
 	return B_OK;
 }
-

@@ -266,8 +266,12 @@ if [ $isImage ]; then
 			$createImage $imageFlags "$imagePath"
 		fi
 
+		bfsInitializeParameters="block_size 2048"
+		if [ "$bfsGrowable" = 1 ]; then
+			bfsInitializeParameters="block_size 4096; growable true"
+		fi
 		$bfsShell --initialize $imageOffsetFlags "$imagePath" \
-			"$imageLabel" "block_size 2048"
+			"$imageLabel" "$bfsInitializeParameters"
 		$makebootable $imageOffsetFlags "$imagePath"
 	fi
 

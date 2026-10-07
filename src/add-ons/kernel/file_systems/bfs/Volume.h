@@ -25,6 +25,7 @@ enum volume_flags {
 
 enum volume_initialize_flags {
 	VOLUME_NO_INDICES	= 0x0001,
+	VOLUME_GROWABLE		= 0x0002,
 };
 
 typedef DoublyLinkedList<Inode> InodeList;
@@ -36,6 +37,7 @@ public:
 							~Volume();
 
 			status_t		Mount(const char* device, uint32 flags);
+			status_t		GrowIntoReservedSpace(off_t diskSize);
 			status_t		Unmount();
 			status_t		Initialize(int fd, const char* name,
 								uint32 blockSize, uint32 flags);

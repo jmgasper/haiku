@@ -7,7 +7,7 @@
 #
 #   OUTPUT_DIR  where the packages go (default /mnt/HaikuWork/airos/packages-arm64)
 #   APP         any of: airshot clipper burrow kiri lcdmonitor amp turbochook natter
-#               summit_webkit summit airpins
+#               summit_webkit summit airpins rpi_installer
 #               (default: all of them but airpins, natter last; AirPins is the
 #               Raspberry Pi 4 image's GPIO tool and is built only when named)
 #
@@ -455,6 +455,22 @@ build_airpins() {
 	finish_package airpins apps/AirPins
 }
 
+# --- Raspberry Pi first-boot setup (Pi images only) --------------------------
+build_rpi_installer() {
+	note RPiInstaller
+	snapshot rpi-installer rpi_installer
+	make -C "$SRC" -s -j"$JOBS" BUILD=build-arm64 CXX="$CXX_ARM64" \
+		HAIKU_HEADERS="$SYSROOT/boot/system/develop/headers" \
+		RC="$TOOLS/rc/rc" XRES="$TOOLS/xres" all
+	stage_begin
+	install_binary "$BUILDDIR/RPiInstaller" "$BUILDDIR/RPiInstaller.rsrc" apps/RPiInstaller
+	docs rpi_installer README.md LICENSE
+	deskbar_link apps/RPiInstaller "Raspberry Pi Setup"
+	retarget_package_info "$SRC/resources/RPiInstaller.PackageInfo" "$STAGE/.PackageInfo"
+	add_attributes "$BUILDDIR/RPiInstaller.rsrc" apps/RPiInstaller
+	finish_package rpi_installer apps/RPiInstaller
+}
+
 # --- Burrow -----------------------------------------------------------------
 # The repository's own tools/build-arm64.sh builds burrow-openvpn (OpenSSL
 # linked statically, LZO/LZ4 left out) and Burrow; it runs in the snapshot.
@@ -890,8 +906,8 @@ main() {
 	setup_dependency_farm
 	local app
 	for app in airshot clipper burrow kiri lcdmonitor amp turbochook natter summit_webkit summit \
-			airpins; do
-		[[ $app == airpins && ${#SELECTED[@]} -eq 0 ]] && continue
+			airpins rpi_installer; do
+		[[ ( $app == airpins || $app == rpi_installer ) && ${#SELECTED[@]} -eq 0 ]] && continue
 		wanted "$app" && "build_$app"
 	done
 	note summary

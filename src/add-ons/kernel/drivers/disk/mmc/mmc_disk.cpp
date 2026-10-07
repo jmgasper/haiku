@@ -618,17 +618,18 @@ mmc_block_trim(mmc_disk_driver_info* info, fs_trim_data* trimData)
 static status_t
 mmc_flush_cache(mmc_disk_driver_info* info)
 {
-	if (!is_mmc_card(info->cardType))
-		return B_NOT_SUPPORTED;
 	uint32_t response = 0;
 	status_t status;
-	if (info->cacheEnabled) {
+	if (is_mmc_card(info->cardType) && info->cacheEnabled) {
 		// MMC SWITCH: write 1 to FLUSH_CACHE, EXT_CSD byte 32.
 		status = info->mmc->execute_command(info->parent, info->parentCookie,
 			info->rca, MMC_SWITCH, 0x03200100, &response);
 		if (status != B_OK || (response & kMmcR1ErrorMask) != 0)
 			return status == B_OK ? B_IO_ERROR : status;
 	}
+	// SD writes have no enabled MMC cache to flush. CMD13 still provides a
+	// completion barrier: wait until programming is finished and the card is
+	// ready for data, just as for an MMC with its cache disabled.
 	bigtime_t deadline = system_time() + 1000000;
 	do {
 		status = info->mmc->execute_command(info->parent, info->parentCookie,

@@ -29,21 +29,26 @@ if $(HAIKU_BUILD_PROFILE) = rpi4-airos {
 	RPI4_AIROS_IMAGE = 1 ;
 	HAIKU_IMAGE_SIZE = 3584 ;
 	HAIKU_RPI_IMAGE_NAME = airos-rpi4.img ;
+	HAIKU_BFS_GROWABLE = 1 ;
 }
 DefineBuildProfile rpi4-airos : image : "haiku-rpi4-airos.image" ;
 
 # The lab overlay: files that only make sense on the lab's board. It is
 # switched on by the presence of /mnt/HaikuWork/rpi4/state/lab-image.
-RPI4_LAB_IMAGE = ;
-if [ Glob /mnt/HaikuWork/rpi4/state : lab-image ] {
-	RPI4_LAB_IMAGE = 1 ;
+# Set RPI4_LAB_IMAGE = 0 before including this file for distributable images.
+RPI4_LAB_IMAGE ?= auto ;
+if $(RPI4_LAB_IMAGE) = auto {
+	RPI4_LAB_IMAGE = ;
+	if [ Glob /mnt/HaikuWork/rpi4/state : lab-image ] {
+		RPI4_LAB_IMAGE = 1 ;
+	}
 }
 
 DeferredSubInclude HAIKU_TOP tools rpi4 ;
 
 rule UserBuildConfigRulePreImage
 {
-	if $(RPI4_LAB_IMAGE) {
+	if $(RPI4_LAB_IMAGE) = 1 {
 		AddFilesToHaikuImage home config non-packaged bin
 			: rpi4_v3d_probe rpi4_fetch rpi4_tone rpi4_vchiq_audio rpi4_hevc_decode rpi4_memprobe
 				rpi4_cores
@@ -123,8 +128,14 @@ rule UserBuildConfigRulePreImage
 		# The owner's applications and Summit: the arm64 packages of the
 		# air/OS release, with the ones rebuilt for this board in place of
 		# their namesakes (tools/rpi4/stage-packages.sh collects them).
-		local imagePackageDir = /mnt/HaikuWork/rpi4/image-packages ;
+		local imagePackageDir = $(RPI4_IMAGE_PACKAGES) ;
+		if ! $(imagePackageDir) {
+			imagePackageDir = /mnt/HaikuWork/rpi4/image-packages ;
+		}
 		local imagePackages = [ Glob $(imagePackageDir) : *.hpkg ] ;
+		if ! [ Glob $(imagePackageDir) : rpi_installer-*.hpkg ] {
+			Exit "rpi4-airos requires rpi_installer; build apps/rpi-installer first" ;
+		}
 		imagePackages = <rpi4-app-pkg>$(imagePackages:BS) ;
 		SEARCH on $(imagePackages) = $(imagePackageDir) ;
 		AddFilesToHaikuImage system packages : $(imagePackages) ;
@@ -167,7 +178,7 @@ rule UserBuildConfigRulePreImage
 		AddFilesToHaikuImage system non-packaged data ssl : $(caCertificates) ;
 	}
 
-	if $(RPI4_LAB_IMAGE) {
+	if $(RPI4_LAB_IMAGE) = 1 {
 		# A telnet login for the lab, with an account whose password hash
 		# lives outside the tree (state/lab-overlay, made once per lab).
 		local overlay = /mnt/HaikuWork/rpi4/state/lab-overlay ;
