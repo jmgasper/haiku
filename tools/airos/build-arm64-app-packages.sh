@@ -8,8 +8,8 @@
 #   OUTPUT_DIR  where the packages go (default /mnt/HaikuWork/airos/packages-arm64)
 #   APP         any of: airshot clipper burrow kiri lcdmonitor amp turbochook natter
 #               summit_webkit summit airpins rpi_installer
-#               (default: all of them but airpins, natter last; AirPins is the
-#               Raspberry Pi 4 image's GPIO tool and is built only when named)
+#               (default: all of them but airpins and rpi_installer; these
+#               Raspberry Pi utilities are built only when named)
 #
 # Environment overrides (all optional):
 #   JOBS=8                       parallel compile jobs
@@ -784,7 +784,9 @@ build_summit_webkit() {
 		cp "$header" "$STAGE/develop/headers/summit-webkit/WebKit/"
 	done
 	mkdir -p "$STAGE/documentation/packages/summit_webkit"
-	git -C "$WORK/build/summit-arm64/WebKit" diff > "$STAGE/documentation/packages/summit_webkit/arm64-changes.diff"
+	local engine_source=${SUMMIT_WEBKIT_SRC%/Source/WebKit}
+	git -C "$engine_source" diff > "$STAGE/documentation/packages/summit_webkit/arm64-changes.diff"
+	git -C "$engine_source" rev-parse HEAD > "$STAGE/documentation/packages/summit_webkit/engine-revision.txt"
 	cat > "$STAGE/.PackageInfo" <<INFO
 name			summit_webkit
 version			$SUMMIT_WEBKIT_VERSION
