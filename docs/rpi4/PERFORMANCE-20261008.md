@@ -811,3 +811,33 @@ canonical-native-private.json,canonical-native-rollback.json,
 default-verified-providers.json,default-verified-regression.txt,
 default-verified-installed-hashes.json,default-verified-health.json,
 default-boot-serial.log}` and `/mnt/HaikuWork/rpi4/cxx-runtime/manifest.json`.
+
+## Gradient endpoint hoisting: rejected after measurement
+
+The icon profile still spends time generating gradient palettes. A small
+candidate moved invariant endpoint loads/conversions and the interpolation-mode
+read outside the pixel loop. Its first build changed GCC's choice of fused
+multiply/add term. A channel with endpoints 1 and 22, denominator 6 and numerator
+1 then rounded to 19 instead of the original 18. That build was rejected before
+native use. A second candidate explicitly preserved the ARM64 fused operation.
+
+The corrected candidate matches the baseline across 114,688 native guarded
+gradient calls: both interpolation modes, 14 output lengths from zero to 1,024,
+and 4,096 deterministic cases including empty, duplicate and unsorted stops.
+All 672 icon hashes also match, with a smaller corresponding QEMU pass. Its
+11,787 exported symbols and 479 imports match the original libbe; file size is
+unchanged. These checks establish correctness for the tested cases, not a speedup.
+
+In an alternating original/candidate/candidate/original comparison, the isolated
+256-entry linear palette uses 8.4% less CPU, while the default smooth palette
+saves only 0.7%. Whole icon rendering across 14 icons and six sizes takes
+8,724.049 versus 8,775.551 mean CPU ms for 8,400 renders, about 0.6% slower.
+The first candidate run is effectively unchanged and the second is slower;
+there is no repeatable full-rendering benefit to adopt.
+
+The candidate remained in private library directories. Installed libbe stayed
+at `2febc7ad...`, all 20 health checks passed, and the source was restored.
+The rejected source, builds, rounding counterexample and measurements remain
+under `icon-gradient/`, including `fma-order.txt`, `candidate-v2.patch`,
+`native-abba-summary.json`, `*-gradient-check.txt`, `*-icons-check.txt`,
+`*-qemu.txt`, `manifest.json` and `private-health.json`.
