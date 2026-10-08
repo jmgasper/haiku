@@ -85,6 +85,29 @@ same pinned EGL/GLESv2 libraries. Native pixel and
 application measurements, including the narrow-band readback regression,
 are in `docs/rpi4/PERFORMANCE.md`.
 
+## EGL window presentation
+
+`mesa-haiku-shared-present.patch` lets eligible V3D EGL window surfaces use
+two cached linear GPU buffers as Haiku bitmaps. A completed GPU blit and CPU
+cache preparation publish a bitmap; the view must finish synchronous
+`DrawBitmap` reads before returning that bitmap through `BitmapHook` for
+reuse. Its area and GPU resource stay alive until the bitmap is retired.
+This eliminates the CPU copy from readback storage into a separate BBitmap.
+Small windows, software rendering, and failed shared allocation keep the
+copy path. `HAIKU_V3D_SHARED_PRESENT=0` selects that path explicitly.
+
+`window_probe.cpp` checks nine sizes, full bitmap/screen pixels, padded rows,
+surface lifetime, per-process CPU and distinct frame storage. Optional
+`PROBE_CYCLES`, `PROBE_FRAMES`, `PROBE_EXPECT_SHARED`, `PROBE_EXCLUSIVE`,
+`PROBE_OFFSET_X` and `PROBE_FAILURE_PREFIX` control sustained runs, exact
+path checks, GPU allocation cleanup, independent windows and failure captures.
+`PROBE_EXCLUSIVE` requires every other GPU client to be closed. Hold the
+shared hardware lock for complete native measurements; screenshots of an
+occluded window are not a valid pixel comparison. `glview_probe.cpp` checks
+normal OpenGL Kit contexts, recursive locks, alternating views and resizing.
+Native evidence and limits are in
+[`PERFORMANCE-20261008.md`](../../../docs/rpi4/PERFORMANCE-20261008.md).
+
 ## GPU-assisted readback
 
 Large, read-only RGBA8/BGRA8 (including opaque RGBX) texture maps use a

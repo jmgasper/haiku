@@ -14,8 +14,14 @@ The current native `hrev60206+750` build has a Mesa buffer-cache metadata
 fix installed and hash-verified. A bounded 1,024-buffer growth/retirement
 test reduces retained process heap from 24.2 to 2.2 MiB; repeated baseline
 and installed-candidate runs agree. Pixel, texture and window-resize checks
-pass, and alternating window throughput is unchanged at about 95 completed
-draws/s. The twelve-hour CPU, memory and graphics investigation continues;
+pass; that change alone leaves window throughput unchanged. A second installed
+Mesa change presents eligible EGL windows from shared cached GPU buffers,
+removing one full-frame CPU copy. At 1280x720 it improves completed BView
+draws from about 96 to 120 per second, reduces combined client/app_server CPU
+per frame by about 19%, and saves 3.51 MiB of frame storage. These are EGL
+window results, not monitor refresh or Summit scrolling results. Pixel,
+32-context lifetime, process-loss, OpenGL Kit and installed regression checks
+pass. The twelve-hour CPU, memory and graphics investigation continues;
 details and limits are in [PERFORMANCE-20261008.md](PERFORMANCE-20261008.md).
 The present lab boot uses Ethernet `.213`, HDMI1 at 1920x1080, and the DSI
 panel. HDMI0 is currently disconnected.

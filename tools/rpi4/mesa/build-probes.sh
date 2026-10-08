@@ -6,11 +6,13 @@ ROOT=${RPI4_MESA_ROOT:-/mnt/HaikuWork/rpi4/mesa}
 TOOLS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CXX=${RPI4_CXX:-/mnt/HaikuWork/build/arm64/cross-tools-arm64/bin/aarch64-unknown-haiku-g++}
 mkdir -p "$ROOT/probes"
-for probe in gl texture readback window cache_growth; do
+for probe in gl texture readback window cache_growth glview; do
+    libraries=(-lEGL -lGLESv2 -lbe)
+    [ "$probe" != glview ] || libraries=(-lEGL -lGL -lbe)
     "$CXX" --sysroot="$BASE/sysroot" -std=c++17 -O2 \
         -I"$BASE/libglvnd-v1.7.0/src/HGL" \
         -I"$BASE/glvnd-install/boot/system/develop/headers/os/opengl" \
         -I"$BASE/sysroot/boot/system/develop/headers/os/opengl" \
         "$TOOLS/${probe}_probe.cpp" -L"$BASE/glvnd-install/boot/system/lib" \
-        -lEGL -lGLESv2 -lbe -o "$ROOT/probes/rpi4_${probe}_probe"
+        "${libraries[@]}" -o "$ROOT/probes/rpi4_${probe}_probe"
 done

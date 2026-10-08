@@ -112,7 +112,115 @@ EGL worker) to `memcpy`, and 2.180 seconds (24.83%) to `fd_ioctl`. Its
 app_server window thread spends 11.082 sampled seconds (77.11%) in `memcpy`
 and 2.718 seconds (18.91%) in `Painter::FillRectNoClipping`. These are
 per-thread sample fractions, not percentages of total system capacity.
-The profiled run still verifies the final pixels. A caller-stack profile
-is being collected to identify copies and background clearing before
-choosing the next change; no presentation improvement is claimed yet.
-Evidence: `window-profile.txt` and `window-profile-result.json`.
+The profiled run still verifies the final pixels. The caller-stack run
+locates about half the app_server window samples in back-to-front copying,
+a quarter in bitmap drawing, and a fifth in background clearing. These are
+separate presentation stages, not duplicate invocations of one copy.
+Evidence: `window-profile.txt`, `window-profile-result.json`, and
+`window-profile-stacks.txt`.
+
+### Wider solid fills: not adopted
+
+A native comparison checks the existing four/eight-byte loops against
+unrolled GPR stores, NEON stores and aligned NEON stores on heap RAM and
+cached/uncached V3D BO mappings. All four-byte alignments, lengths from zero
+through 1,024 bytes, longer row boundaries, three colors and surrounding
+guards pass. Cached full-frame fills remain near 2.9 GB/s for all
+implementations. Wider unaligned stores regress some uncached cases.
+Small cached spans improve, but these results do not justify changing the
+shared app_server fill code. No such change was installed.
+Evidence: `fill/fill-bench.cpp`, `fill/native.txt`.
+
+### Shared GPU buffers for EGL windows
+
+`mesa-haiku-shared-present.patch` creates two cached linear staging textures
+for eligible V3D windows and imports each texture's memory as a BBitmap.
+A GPU blit writes the retired buffer, a read map waits for completion and
+invalidates CPU caches, and the view receives the complete bitmap. Its
+synchronous DrawBitmap read must finish before BitmapHook returns that
+buffer for reuse. The resource and area mappings remain alive for the
+bitmap's lifetime. Resize/destruction retire the bitmap before its area and
+resource. Small windows, software rendering and failed shared-bitmap
+creation retain the CPU-copy path. A V3D capability check excludes other
+drivers. `HAIKU_V3D_SHARED_PRESENT=0` disables the new path.
+
+This removes one full-frame CPU copy. app_server still copies the bitmap
+into its back buffer and then to the front buffer. It applies to EGL window
+surfaces and BGLView, not Summit's separate pbuffer/readback presentation.
+
+The first build was opt-in and qualified through a private vendor file.
+Its SHA-256 is
+`dcdef4352ba99a3d92240e742e90b9cf017ee79a844b6628b2f34218cc8d4d77`.
+The default-enabled build is now installed as
+`/boot/system/non-packaged/lib/libEGL_mesa.so.0`, SHA-256
+`687f349b194b788d17bb4fc12c22a335f6116e2e992decdf2e068655f7decfd3`.
+The previous cache-fixed library is verified in
+`/boot/home/performance-20261008/rollback/libEGL-cache-fixed.so.0`.
+Installation used a synced rename under the hardware lease; no reboot,
+kernel change or user-setting change was needed. The default-enabled build
+also passes the QEMU boot/GLES/window checks and private native pixel checks
+before installation.
+
+An off/on/on/off comparison under the exclusive hardware lease measures
+480 completed draws per run. Figures below average each pair; rates are
+completed BView draws per second, not physical monitor refresh.
+
+| Window | Copy draws/s | Shared draws/s | Copy client CPU ms/frame | Shared client CPU ms/frame |
+| --- | ---: | ---: | ---: | ---: |
+| 640x480 | 236.03 | 288.05 | 2.174 | 1.246 |
+| 1280x720 | 95.58 | 119.53 | 4.369 | 2.002 |
+| 1281x721 | 90.87 | 104.67 | 4.530 | 2.176 |
+| 1920x908 | 55.05 | 68.56 | 6.985 | 3.068 |
+
+At 1280x720, client plus whole-app_server CPU falls from 12.098 to
+9.847 ms/frame, about 19%. app_server's own work is essentially unchanged;
+the saved client copy explains the gain. The measurements also count V3D
+storage once at its kernel owner and normal bitmap storage at its client
+mapping, excluding duplicate GPU aliases. Their combined warm storage
+falls from 23,490,560 to 19,808,256 bytes at 1280x720, a 3,682,304-byte
+(3.51 MiB) saving. At 1920x908 the saving is 6,975,488 bytes (6.65 MiB).
+The extra retained GPU staging texture replaces two normal bitmap buffers.
+
+The candidate image boots to the QEMU desktop and passes softpipe clear,
+triangle and a 512x320 EGL window pixel test. The first QEMU window fixture
+extended below its 640x480 screen and failed screen pixels; the corrected
+in-bounds run passes, with the original result retained. QEMU does not
+exercise V3D or shared GPU storage.
+
+Native off/on checks pass nine sizes across two contexts, including odd
+widths and padded rows. A coordinated 203.5-second run checks all bitmap
+and screen pixels for 9,216 frames, 288 size cases and 32 context lifetimes.
+Every lifetime returns to zero kernel V3D buffer bytes and zero shared
+bitmap areas. The normal OpenGL Kit fixture passes four cycles, eight
+BGLView contexts, 32 frames, complete GL/screen pixels, recursive locking,
+resizing, guards and shared-area cleanup.
+
+Two concurrent 640x480 clients also render correctly. One is killed after
+three seconds; the survivor completes 4,000 frames with exact final pixels.
+A fresh context then passes. Kernel GPU bytes and shared mappings return
+to zero after the survivor and fresh context close. This is a process-loss
+check, not a GPU hang/reset test. Native allocation-failure injection remains
+untested; unsupported and disabled shared paths are exercised directly.
+
+Early long-test screen failures were caused by a separate Summit performance
+controller opening a browser over the fixture. The actual GPU bitmap passed.
+The retained `shared-failure-screen.ppm` shows the browser window, and MCP
+job history records its overlapping launch. Both local controllers now take
+`/mnt/HaikuWork/rpi4/state/hardware.lock` for each complete native run. The
+original twelve-hour lease was replaced by short leases so both tasks can
+proceed. Overlapping trials are retained but excluded from the final
+measurements above. No Summit product source changed for this coordination.
+
+Evidence: `shared-present/`, including `qemu-results.txt`,
+`shared-{off,on}-pixels.txt`, `shared-isolated-stress.txt`,
+`isolated-stress-result.json`, `shared-glview.txt`,
+`isolated-bench-summary.json`, `concurrent-result.json`, and `run-list.json`.
+
+After installation, without a vendor or feature override, nine-size EGL
+checks, the OpenGL Kit fixture, clear/triangle, 48 readback combinations and
+80 texture-ownership rounds at 1281x721 pass. A 1,500-frame 1280x720 run
+checks the shared path explicitly and finishes at 119.03 completed draws/s,
+with zero GPU buffer bytes and shared mappings after teardown. All twenty
+device health checks pass. Evidence: `default-qemu-results.txt`,
+`default-private-result.json`, `shared-installed-checks.txt`,
+`installed-result.json`, and `installed-health.json`.

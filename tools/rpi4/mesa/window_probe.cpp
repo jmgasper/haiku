@@ -4,7 +4,7 @@
  */
 // Pixel-exact native EGL window checks, including resize and bitmap retirement.
 // --benchmark W H N waits for every BView draw; its rate is completed draws per
-// second, not physical display refresh. Keep HDMI0 visible and the screen awake.
+// second, not physical display refresh. Keep the window visible and the screen awake.
 #include <Application.h>
 #include <Autolock.h>
 #include <Bitmap.h>
@@ -25,6 +25,48 @@
 static void require(bool ok, const char* what)
 {
  if (!ok) { std::fprintf(stderr, "FAIL %s (EGL %#x GL %#x)\n", what, eglGetError(), glGetError()); if(be_app)be_app->ShowCursor(); std::exit(1); }
+}
+static unsigned shared_areas()
+{
+ ssize_t cookie=0; area_info area; unsigned count=0;
+ while(get_next_area_info(B_CURRENT_TEAM,&cookie,&area)==B_OK)
+  if(!std::strcmp(area.name,"Haiku EGL bitmap"))++count;
+ return count;
+}
+static uint64 gpu_bytes()
+{
+ ssize_t cookie=0;area_info area;uint64 bytes=0;
+ while(get_next_area_info(B_SYSTEM_TEAM,&cookie,&area)==B_OK)
+  if(!std::strcmp(area.name,"v3d buffer"))bytes+=area.size;
+ return bytes;
+}
+static void memory(const char* phase)
+{
+ ssize_t cookie=0;area_info area;uint64 bitmaps=0;
+ while(get_next_area_info(B_CURRENT_TEAM,&cookie,&area)==B_OK)
+  if(!std::strcmp(area.name,"server_memory"))bitmaps+=area.ram_size;
+ // Count GPU storage at its kernel owner, not its duplicate user mappings.
+ std::printf("MEM phase=%s gpu_bytes=%llu server_bitmap_ram=%llu shared_areas=%u\n",
+  phase,(unsigned long long)gpu_bytes(),(unsigned long long)bitmaps,shared_areas());
+}
+static unsigned setting(const char* name,unsigned fallback,unsigned maximum)
+{
+ const char* text=std::getenv(name);if(!text)return fallback;
+ int value=std::atoi(text);require(value>0&&unsigned(value)<=maximum,"probe setting range");
+ return unsigned(value);
+}
+static bigtime_t cpu_time(team_id team)
+{
+ team_usage_info usage={};
+ require(get_team_usage_info(team,B_TEAM_USAGE_SELF,&usage)==B_OK,"team CPU time");
+ return usage.user_time+usage.kernel_time;
+}
+static team_id app_server_team()
+{
+ int32 cookie=0;team_info info;
+ while(get_next_team_info(&cookie,&info)==B_OK)
+  if(std::strstr(info.args,"/servers/app_server"))return info.team;
+ require(false,"app_server team");return -1;
 }
 class FrameView : public BView, public BitmapHook {
 public:
@@ -73,7 +115,20 @@ public:
     for(unsigned c=0;c<3;c++) {
      if(row[4*x+c]!=((colour&(1u<<(2-c)))?255:0)) {
       if(quiet)return false;
-      std::fprintf(stderr,"pixel frame=%u size=%ux%u x=%u y=%u channel=%u got=%u\n",frame,w,h,x,y,c,row[4*x+c]);
+      const char* dump=std::getenv("PROBE_FAILURE_PREFIX");
+      if(dump) {
+       char path[1024];std::snprintf(path,sizeof(path),"%s-%s.ppm",dump,padding?"bitmap":"screen");
+       FILE* file=std::fopen(path,"wb");
+       if(file) {
+        std::fprintf(file,"P6\n%u %u\n255\n",w,h);
+        for(unsigned yy=0;yy<h;yy++)for(unsigned xx=0;xx<w;xx++) {
+         const uint8_t* pixel=bits+size_t(yy)*bitmap->BytesPerRow()+4*xx;
+         uint8_t rgb[]={pixel[2],pixel[1],pixel[0]};std::fwrite(rgb,1,3,file);
+        }
+        std::fclose(file);
+       }
+      }
+      std::fprintf(stderr,"pixel kind=%s frame=%u size=%ux%u x=%u y=%u channel=%u got=%u\n",padding?"bitmap":"screen",frame,w,h,x,y,c,row[4*x+c]);
       require(false,"pixel colours");
      }
     }
@@ -85,7 +140,13 @@ public:
  }
  void Verify(unsigned frame,unsigned w,unsigned h,bool screen) {
   WaitDrawn();
-  { BAutolock lock(&fLock); VerifyPixels(fBitmap,frame,w,h,true); }
+  { BAutolock lock(&fLock); VerifyPixels(fBitmap,frame,w,h,true);
+    if(std::getenv("PROBE_EXPECT_SHARED")) {
+     area_info info; require(get_area_info(fBitmap->Area(),&info)==B_OK,"bitmap area");
+     bool expected=w>=128&&h>=64&&uint64_t(w)*h>=128*1024;
+     require((!std::strcmp(info.name,"Haiku EGL bitmap"))==expected,"shared/copy bitmap path");
+    }
+  }
   if(screen) {
    require(Window()->Lock(),"window lock for screen bounds");
    BRect bounds=Bounds(); ConvertToScreen(&bounds); Window()->Unlock();
@@ -111,8 +172,11 @@ struct Arguments { bool benchmark; unsigned width,height,frames; };
 static int32 run(void* opaque)
 {
  auto args=*static_cast<Arguments*>(opaque);
- for(unsigned cycle=0;cycle<(args.benchmark?1u:2u);cycle++) {
-  BWindow* window=new BWindow(BRect(0,60,63,123),"air/OS EGL window probe",B_NO_BORDER_WINDOW_LOOK,B_NORMAL_WINDOW_FEEL,B_NOT_CLOSABLE|B_NOT_MINIMIZABLE|B_NOT_ZOOMABLE);
+ uint64 baselineGPU=gpu_bytes();
+ const char* offset=std::getenv("PROBE_OFFSET_X");int x=offset?std::atoi(offset):0;
+ require(x>=0&&x<=1200,"window offset");
+ for(unsigned cycle=0;cycle<(args.benchmark?1u:setting("PROBE_CYCLES",2,64));cycle++) {
+  BWindow* window=new BWindow(BRect(x,60,x+63,123),"air/OS EGL window probe",B_NO_BORDER_WINDOW_LOOK,B_NORMAL_WINDOW_FEEL,B_NOT_CLOSABLE|B_NOT_MINIMIZABLE|B_NOT_ZOOMABLE);
   FrameView* view=new FrameView; window->AddChild(view); window->Show();
   EGLDisplay display=eglGetDisplay(EGL_DEFAULT_DISPLAY);
   require(display!=EGL_NO_DISPLAY&&eglInitialize(display,nullptr,nullptr),"display");
@@ -126,10 +190,10 @@ static int32 run(void* opaque)
   EGLSurface surface=eglCreateWindowSurface(display,config,reinterpret_cast<EGLNativeWindowType>(static_cast<BitmapHook*>(view)),nullptr);
   require(surface!=EGL_NO_SURFACE&&eglMakeCurrent(display,surface,surface,context),"window surface");
   std::printf("renderer=%s\n",glGetString(GL_RENDERER));
-  unsigned sizes[][2]={{63,65},{257,131},{1280,720},{79,47},{1920,908},{640,480}};
+  unsigned sizes[][2]={{63,65},{257,131},{1280,720},{1281,721},{79,47},{1920,908},{513,257},{1023,257},{640,480}};
   if(args.benchmark) { sizes[0][0]=args.width; sizes[0][1]=args.height; }
-  for(unsigned index=0;index<(args.benchmark?1u:6u);index++) {
-   unsigned w=sizes[index][0],h=sizes[index][1],frames=args.benchmark?args.frames:8;
+  for(unsigned index=0;index<(args.benchmark?1u:sizeof(sizes)/sizeof(sizes[0]));index++) {
+   unsigned w=sizes[index][0],h=sizes[index][1],frames=args.benchmark?args.frames:setting("PROBE_FRAMES",8,512);
    view->Resize(w,h);
    EGLint actualW=0,actualH=0;
    require(eglQuerySurface(display,surface,EGL_WIDTH,&actualW)&&eglQuerySurface(display,surface,EGL_HEIGHT,&actualH)&&actualW==int(w)&&actualH==int(h),"surface resize");
@@ -140,6 +204,9 @@ static int32 run(void* opaque)
      require(eglSwapBuffers(display,surface),"warm swap"); view->WaitDrawn();
     }
    }
+   if(args.benchmark)memory("warm");
+   team_id server=app_server_team();
+   bigtime_t clientStart=cpu_time(B_CURRENT_TEAM),serverStart=cpu_time(server);
    bigtime_t start=system_time();
    for(unsigned frame=0;frame<frames;frame++) {
     unsigned colour=frame&7;
@@ -152,12 +219,20 @@ static int32 run(void* opaque)
    }
    view->WaitDrawn();
    double seconds=(system_time()-start)/1e6;
+   bigtime_t clientCPU=cpu_time(B_CURRENT_TEAM)-clientStart;
+   bigtime_t serverCPU=cpu_time(server)-serverStart;
+   std::printf("CPU client_us=%lld app_server_us=%lld shared_areas=%u\n",(long long)clientCPU,(long long)serverCPU,shared_areas());
    view->Verify(frames-1,w,h,true);
    std::printf("PASS cycle=%u size=%ux%u frames=%u seconds=%.6f swaps_per_second=%.2f\n",cycle,w,h,frames,seconds,frames/seconds); view->Stats();
   }
   require(eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT),"unbind");
   require(eglDestroySurface(display,surface),"destroy surface"); view->Empty();
   require(eglDestroyContext(display,context)&&eglTerminate(display)&&eglReleaseThread(),"close EGL");
+  require(shared_areas()==0,"shared bitmap areas released");
+  memory("closed");
+  uint64 finalGPU=gpu_bytes();
+  std::printf("LIFETIME baseline_gpu=%llu final_gpu=%llu shared_areas=%u\n",(unsigned long long)baselineGPU,(unsigned long long)finalGPU,shared_areas());
+  if(std::getenv("PROBE_EXCLUSIVE"))require(finalGPU==baselineGPU,"GPU allocations released");
   require(window->Lock(),"close window"); window->Quit();
  }
  puts("PASS EGL window pixels, resize and retirement");
