@@ -1,10 +1,36 @@
 # Raspberry Pi performance, 8 October 2026
 
-This is a new twelve-hour performance session starting at 09:22 UTC on
-8 October (20:22 in Hobart), scheduled through 21:22 UTC. The scope is
+This twelve-hour performance session ran from 09:22 UTC on
+8 October (20:22 in Hobart) through 21:22 UTC. The scope is
 memory efficiency, CPU efficiency and GPU performance on the native Pi,
 beginning with measured, inexpensive changes. This page records results
 as they are verified; it does not replace the earlier `PERFORMANCE.md`.
+
+## Accepted results
+
+Thirteen changes were accepted after native comparisons and correctness checks.
+These are separate workloads and baselines; percentages and memory savings
+must not be added together.
+
+| Change | Measured native result |
+| --- | --- |
+| Mesa buffer-cache metadata | 22.0 MiB less retained heap in the 1,024-buffer growth test |
+| EGL shared presentation storage | 19% less combined CPU per 720p frame; 3.51 MiB less frame storage |
+| BGLView background clearing | 116 → 146 completed 720p draws/s; 22% less server CPU per frame |
+| V3D cache-walk loop | 31% less client CPU per 720p frame; 6% more completed draws/s |
+| AirPins toolbar reuse | Warm first window 301 → 263 ms |
+| Vector-icon gamma setup | 20% less CPU for 16-pixel icons; 5.8% across mixed sizes |
+| Solid scanline drawing | 8–13% less drawing CPU at 640×480 |
+| C++ runtime GNU hashes | About 4 ms less warm startup CPU; costs 64 KiB read-only mapping |
+| AirTop fixed panel geometry | 21.8% less combined CPU; costs 1.17 MiB shared bitmap storage |
+| Bitmap pool tail growth | Largest temporary-image sequence retains 64.04 rather than 85.16 MiB |
+| Bitmap reservation cleanup | Reuses virtual address space; 38.5% less CPU for 1,000 clone/release cycles |
+| AirTop fixed labels | A further 3.2% less combined panel CPU, using the same bitmap |
+| AirTop process details on demand | A further 26.9% less panel client CPU and 10.2% less combined CPU |
+
+Completed draws are not display refresh rates, and the EGL/BGLView results do
+not establish a Summit scrolling gain. Rejected experiments and fallback
+limits are retained below alongside the accepted evidence.
 
 ## Starting state
 
@@ -1262,3 +1288,28 @@ restored. Kernel, driver, Mesa and other system libraries are unchanged.
 Evidence: `airtop-process-demand/{manifest.json,candidate.patch,
 cumulative.patch,live-comparison.json,package-content-equality.json,
 gate/,ui/,install/,boot/,installed-ui/}`.
+
+## Session completion
+
+The requested twelve-hour window ran from 09:22:28 through 21:22:28 UTC on
+8 October 2026 (20:22 through 08:22 in Hobart). Final verification completed
+at 21:23:24 UTC. All thirteen accepted changes are installed.
+Five separately leased three-minute observations cover 900 CPU samples after
+the final normal boot. Every batch keeps the same AirTop panel process and
+finishes with 20/20 health checks. Mean total CPU is 1.08% of all four cores;
+this is a final-system observation, not another controlled speedup claim.
+
+The final audit verifies eleven installed/rollback file hashes, the intended
+library providers, app_server launch configuration, the current and original
+FAT boot archives, and unchanged boot configuration and command line. The
+NanoKVM recovery image retains its verified hash and the USB mass-storage
+route points to the idle non-boot image. There are no active test jobs left.
+The three preexisting DSI source edits retain their starting patch hash.
+
+The accepted implementation commits are integrated into private `master` and
+pushed with `rpi4`; AirPins source is also pushed. The final AirTop source is
+preserved by the cumulative patch and twelve-file source manifest. No full
+image containing the dirty DSI work was built or flashed in this session.
+Evidence: `final-session/{source-integration.json,observations-summary.json,
+observation-*/,start/,finish/}`; all detailed benchmark comparisons above
+remain available under the session evidence directory.
