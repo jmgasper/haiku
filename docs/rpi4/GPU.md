@@ -5,6 +5,10 @@ textures with explicit CPU/GPU ownership, GPU-assisted large readbacks,
 native EGL bitmap reuse and retained kernel hardware state. Native pixel,
 lifetime and application results are in [PERFORMANCE.md](PERFORMANCE.md).
 OpenGL/GLES and Summit WebGL use V3D; Vulkan remains headless.
+The 2026-10-08 follow-up adds bounded BO-cache metadata, shared GPU storage
+for eligible EGL window bitmaps, BGLView background-clear removal, and
+fixed bounds in the kernel's CPU cache walk. Current measurements and
+qualification are in [PERFORMANCE-20261008.md](PERFORMANCE-20261008.md).
 
 Initial bring-up, 2026-10-03: GLTeapot renders in a window at
 about 315 FPS (`evidence/teapot6.jpg`); the offscreen probe is pixel-exact
@@ -57,8 +61,11 @@ with the EGL vendor file in `/mnt/HaikuWork/rpi4/mesa/stage`; the
 `rpi4-airos` image profile installs both (plus GLTeapot and GL Info).
 `README.md` in that directory lists what the patch changes.
 
-Presentation is the ROCK 5 port's: the frame is read back and copied into the
-window's bitmap. That costs a copy per frame; it is not a scan-out path.
+Eligible EGL windows now present a cached linear GPU staging buffer as a
+BBitmap. This removes the extra CPU readback-to-bitmap copy; app_server
+still copies the bitmap into its back buffer and then to the framebuffer.
+Small or unsupported windows retain the copy path. Summit uses its separate
+pbuffer/readback path. None of these paths provides direct GPU scan-out.
 
 The probe:
 

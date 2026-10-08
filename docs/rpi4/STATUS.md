@@ -8,6 +8,101 @@ reliability fixes were merged into private `master` as `6ea9a7d410`.
 Earlier bring-up notes are retained in `HISTORY-20261005.md`;
 this page supersedes their older status statements.
 
+## Performance follow-up (2026-10-08 evening)
+
+The session started on native `hrev60206+750`. A Mesa buffer-cache metadata
+fix is installed and hash-verified. A bounded 1,024-buffer growth/retirement
+test reduces retained process heap from 24.2 to 2.2 MiB; repeated baseline
+and installed-candidate runs agree. Pixel, texture and window-resize checks
+pass; that change alone leaves window throughput unchanged. A second installed
+Mesa change presents eligible EGL windows from shared cached GPU buffers,
+removing one full-frame CPU copy. At 1280x720 it improves completed BView
+draws from about 96 to 120 per second, reduces combined client/app_server CPU
+per frame by about 19%, and saves 3.51 MiB of frame storage. These are EGL
+window results, not monitor refresh or Summit scrolling results. Pixel,
+32-context lifetime, process-loss, OpenGL Kit and installed regression checks
+pass. The Pi's BGLView library now also avoids clearing the background before
+its own complete drawing. At 1280x720, the isolated same-library comparison
+improves completed draws from 116 to 146 per second and cuts app_server CPU
+per frame by 22%. Empty views, resize gaps, software/fallback paths and 192
+context lifetimes pass; the installed default repeats 146 draws/s. This is
+an additional OpenGL Kit improvement, not a Summit scrolling result.
+The V3D driver also retains fixed cache-walk bounds in registers instead of
+reloading BO metadata per cache line. Its native profile reduces cache-walk
+CPU from 3.174 to 0.884 sampled seconds over 3,000 frames. Matched 720p
+before/after runs reduce client CPU by 31% and improve completed draws by
+6%; graphics ownership, pixels and buffer-lifetime checks pass after an
+orderly reboot. This kernel change can also affect cached texture readbacks.
+AirPins 1.0.0-2 reuses unchanged toolbar icons on window attachment and keeps
+temporary rasterization bitmaps local. Native warm first-window time falls
+from 301 to 263 ms (13%), with about 11% less sampled startup/quit CPU.
+Icon states, font-size changes and all three layouts match the baseline pixels;
+the installed package repeats a 265 ms warm median and passes health checks.
+New applications now use a libbe override that calculates the vector-icon
+gamma table once and deep-copies it for each renderer. Native rendering CPU
+falls about 20% for 16-pixel icons and 5.8% across the mixed-size fixture;
+application launch time is effectively unchanged. Concurrent rendering,
+672 pixel hashes, the editor UI and a QEMU default-library boot pass.
+The later app_server qualification reboots also load this library into
+app_server and registrar. Tracker and Deskbar retain their adjacent packaged
+libraries under Haiku's application-local search rule. App_server now batches opaque copy-mode scanline
+stores and combines exact partial-coverage color arithmetic. Four native runs
+per variant across alternating boots cut offscreen drawing CPU by 8–13% at
+640×480 and 4–8% in the larger fixture. All 192 bitmap hashes agree; exhaustive
+arithmetic, cached/uncached graphics mappings, 1,152 EGL frames and BGLView
+pixels/lifetimes pass. The packaged server remains intact behind a removable
+launch-service amendment, and the rollback boot and final 20 health checks pass.
+This is a drawing-workload gain; tiny opaque spans can cost a few extra ns and
+large uncached spans are essentially unchanged.
+An ARM64 whole-page zeroing candidate passed integrity checks but did not
+improve warmed native allocation workloads, so it was rolled back. The original
+kernel and boot archive are restored. USB recovery, kernel rollback and a
+reusable allocation benchmark are now verified; the seven installed changes
+above remain the accepted performance improvements.
+An eighth change adds GNU symbol hashes to the pinned GCC 13.3 C++ runtime.
+Same-object, alternating native runs reduce warm startup client CPU by about
+4 ms: 4.3% for StyledEdit and 2.3% for AirPins. First-window time improves by
+4–5 ms. The cost is 64 KiB of additional read-only mapped space; writable
+storage is unchanged. The original ABI, imports and feature configuration are
+preserved. Both C++ ABIs, threads, cross-library exceptions, drawing and native
+graphics pass, as do a default-runtime reboot and 20 health checks. Removing
+the non-packaged override restores the original provider, verified with both
+ABI probes. Tracker and Deskbar continue to use their adjacent packaged
+runtime; no gain is claimed for them.
+AirTop 1.2.0-2 is the ninth accepted change. It caches the DSI panel's fixed
+geometry while continuing to draw values and graphs at five frames per second.
+Matched live runs reduce its app_server CPU by 28.9% and client CPU by 9.6%
+(21.8% combined), with exactly 225 frames and 180 samples in each 45-second run.
+The cache costs 1.17 MiB of shared bitmap storage and needs no extra drawing
+window or thread. Native/QEMU pixels, 288 direct/cache comparisons, repeated
+panel restarts, the full window UI, exact package rollback and a normal native
+boot pass, including graphics and all 20 health checks. The cache
+object is freed when hidden, but its bitmap-pool space can remain reusable.
+A tenth change reuses free space at the end of a client bitmap pool when
+growing it. A repeated 1/4/16/64 MiB temporary-image sequence retains
+64.04 MiB instead of 85.16 MiB (21.12 MiB less), while gradual resizing
+retains 12.04 instead of 17.33 MiB when freeing the old bitmap first. Total
+workload CPU is essentially unchanged; smaller growth adds a few microseconds
+per allocation in the gradual case. Both original and candidate can still
+hit expensive separate-area allocation when virtual-address layout blocks
+growth. Alternating native server boots, cloned-memory/failure checks, drawing
+hashes, EGL/BGLView, AirTop rendering and all 20 health checks pass. The original
+scanline server remains available behind the removable launch amendment.
+An eleventh improvement fixes bitmap-client reservation cleanup and the
+kernel iterator that skipped the first reservation when unreserving a range.
+Cloning and releasing 1,000 areas now reuses one virtual address range instead
+of consuming roughly 125 GiB of virtual space; this is not physical RAM. The
+matched native allocator workload uses 38.5% less CPU at 1,000 cycles and 56.3%
+less at 2,000. The new default libbe and boot kernel pass isolated ownership
+and VM regressions, original-kernel and library rollbacks, QEMU, and the final
+native reboot with graphics, C++ and all 20 health checks. Serial identifies
+the boot kernel as `hrev60206+766+dirty`; the packaged kernel file and its
+metadata remain the original 750. All original boot files are preserved.
+The twelve-hour CPU, memory and graphics investigation continues;
+details and limits are in [PERFORMANCE-20261008.md](PERFORMANCE-20261008.md).
+The present lab boot uses Ethernet `.213`, HDMI1 at 1920x1080, and the DSI
+panel. HDMI0 is currently disconnected.
+
 ## DSI display panel (2026-10-08)
 
 The Waveshare 3.5" DSI LCD (E) on the DISPLAY connector works as an

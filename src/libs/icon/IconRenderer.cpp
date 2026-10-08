@@ -394,13 +394,23 @@ class HintingTransformer {
 // #pragma mark -
 
 
+static const GammaTable&
+default_gamma_table()
+{
+	// Each renderer owns its table, but the expensive transfer function only
+	// needs to be calculated once. Local-static initialization is thread-safe.
+	static const GammaTable table(2.2);
+	return table;
+}
+
+
 IconRenderer::IconRenderer(BBitmap* bitmap)
 	: fBitmap(bitmap),
 	  fBackground(NULL),
 	  fBackgroundColor(0, 0, 0, 0),
 	  fIcon(NULL),
 
-	  fGammaTable(2.2),
+	  fGammaTable(default_gamma_table()),
 
 	  fRenderingBuffer(),
 	  fPixelFormat(fRenderingBuffer),

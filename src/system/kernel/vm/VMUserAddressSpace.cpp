@@ -399,8 +399,8 @@ VMUserAddressSpace::UnreserveAddressRange(addr_t address, size_t size,
 
 	addr_t endAddress = address + size - 1;
 	for (VMUserAreaTree::Iterator it = fAreas.GetIterator(area);
-		(area = it.Next()) != NULL
-			&& area->Base() + area->Size() - 1 <= endAddress;) {
+		area != NULL && area->Base() + area->Size() - 1 <= endAddress;
+		area = it.Next()) {
 
 		if (area->id == RESERVED_AREA_ID) {
 			// remove reserved range

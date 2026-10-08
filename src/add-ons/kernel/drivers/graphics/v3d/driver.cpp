@@ -318,9 +318,13 @@ static void
 sync_buffer_cache(v3d_bo* buffer, bool forCPU)
 {
 	ThreadCPUPinner pinner(thread_get_current_thread());
-	size_t lineSize = arm64_current_data_cache_line_size();
-	for (addr_t line = (addr_t)buffer->address;
-			line < (addr_t)buffer->address + buffer->size; line += lineSize) {
+	const size_t lineSize = arm64_current_data_cache_line_size();
+	// The caller holds the device lock and a reference to this allocation.
+	// Cache-maintenance assembly clobbers memory, so retain these invariant
+	// bounds instead of reloading the BO metadata for every cache line.
+	const addr_t start = (addr_t)buffer->address;
+	const addr_t end = start + buffer->size;
+	for (addr_t line = start; line < end; line += lineSize) {
 		if (forCPU)
 			arm64_invalidate_data_cache_line_poc(line);
 		else

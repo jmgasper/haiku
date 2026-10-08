@@ -80,6 +80,18 @@ recompresses application package copies with Zstandard without changing
 their files, attributes or original release packages. Set
 `RPI4_PACKAGE_COMPRESSION=zlib` when staging for an older system.
 
+Run `tools/rpi4/build-cxx-runtime.sh` before building the full image. It stages
+the pinned GCC 13.3 C++ runtime with both SysV and GNU symbol hashes at
+`/mnt/HaikuWork/rpi4/cxx-runtime/stage/libstdc++.so.6`. The script verifies the
+installed bootstrap's feature configuration, exported and imported symbols,
+dependencies and source revision before staging, and records a manifest.
+The full image includes this library as a non-packaged override. A different
+bootstrap GCC version requires a fresh compatibility check and script update.
+`tools/rpi4/build-cxx-runtime-tests.sh` builds the two ABI probes and their
+plugins for native/QEMU validation. Run each `probe-abiN` with the absolute
+path to its matching `plugin-abiN.so`; `EXPECT_CXX_PROVIDER` checks the loaded
+runtime path and `LIBRARY_PATH` can select an isolated comparison library.
+
 The new image contains Zstandard support in the boot, kernel and user
 package readers. An in-place upgrade from an older image must first install
 a **zlib-compressed** copy of the new core package and the Zstandard runtime,

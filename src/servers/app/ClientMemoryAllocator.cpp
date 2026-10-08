@@ -234,6 +234,30 @@ ClientMemoryAllocator::_AllocateChunk(size_t size)
 	chunk_iterator iterator = fChunks.GetIterator();
 	struct chunk* chunk;
 	while ((chunk = iterator.Next()) != NULL) {
+		// Extend a free block at the end before adding a separate block. In
+		// particular, successively larger temporary bitmaps should reuse the
+		// old bitmap's space rather than grow the area by each bitmap's size.
+		struct block* tail = NULL;
+		block_iterator blockIterator = fFreeBlocks.GetIterator();
+		while (struct block* freeBlock = blockIterator.Next()) {
+			if (freeBlock->chunk == chunk
+				&& freeBlock->base + freeBlock->size == chunk->base + chunk->size) {
+				tail = freeBlock;
+				break;
+			}
+		}
+
+		if (tail != NULL) {
+			size_t growth = (size - tail->size + B_PAGE_SIZE - 1)
+				& ~(B_PAGE_SIZE - 1);
+			if (resize_area(chunk->area, chunk->size + growth) == B_OK) {
+				chunk->size += growth;
+				tail->size += growth;
+				return tail;
+			}
+			continue;
+		}
+
 		status_t status = resize_area(chunk->area, chunk->size + size);
 		if (status == B_OK)
 			break;

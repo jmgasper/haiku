@@ -3,7 +3,8 @@
 `build.sh` builds Mesa 25.3.6 with the `v3d` Gallium driver (and softpipe) for
 Haiku arm64. It sits on the ROCK 5's pinned Mesa port
 (`tools/rock5-itx/mesa`): the same sysroot, cross file, libglvnd and patched
-source, plus the V3D, shader-cache, texture-cache, GPU-readback and window-presentation patches
+source, plus the V3D, shader-cache, texture-cache, GPU-readback, window-presentation
+and buffer-cache-growth patches
 from this directory. The build script applies them to its copy of the source
 under `/mnt/HaikuWork/rpi4/mesa/mesa-25.3.6`, or checks that they are already
 applied. It reconfigures existing builds to pick up changed options.
@@ -84,6 +85,57 @@ same pinned EGL/GLESv2 libraries. Native pixel and
 application measurements, including the narrow-band readback regression,
 are in `docs/rpi4/PERFORMANCE.md`.
 
+## EGL window presentation
+
+`mesa-haiku-shared-present.patch` lets eligible V3D EGL window surfaces use
+two cached linear GPU buffers as Haiku bitmaps. A completed GPU blit and CPU
+cache preparation publish a bitmap; the view must finish synchronous
+`DrawBitmap` reads before returning that bitmap through `BitmapHook` for
+reuse. Its area and GPU resource stay alive until the bitmap is retired.
+This eliminates the CPU copy from readback storage into a separate BBitmap.
+Small windows, software rendering, and failed shared allocation keep the
+copy path. `HAIKU_V3D_SHARED_PRESENT=0` selects that path explicitly.
+
+`window_probe.cpp` checks nine sizes, full bitmap/screen pixels, padded rows,
+surface lifetime, per-process CPU and distinct frame storage. Optional
+`PROBE_CYCLES`, `PROBE_FRAMES`, `PROBE_EXPECT_SHARED`, `PROBE_EXCLUSIVE`,
+`PROBE_OFFSET_X` and `PROBE_FAILURE_PREFIX` control sustained runs, exact
+path checks, GPU allocation cleanup, independent windows and failure captures.
+`PROBE_EXCLUSIVE` requires every other GPU client to be closed. Hold the
+shared hardware lock for complete native measurements; screenshots of an
+occluded window are not a valid pixel comparison. `glview_probe.cpp` checks
+normal OpenGL Kit contexts, recursive locks, alternating views and resizing.
+Native evidence and limits are in
+[`PERFORMANCE-20261008.md`](../../../docs/rpi4/PERFORMANCE-20261008.md).
+
+## BGLView background drawing
+
+`build.sh` also runs `build-glvnd.sh`, which builds a separate Pi `libGL.so.1`
+in `/mnt/HaikuWork/rpi4/glvnd/stage`. The Pi image takes that library instead
+of the shared ROCK image extra. The standalone script can rebuild it without
+rebuilding Mesa; `RPI4_GLVND_ROOT` selects a separate build directory.
+It uses the same pinned Haiku libglvnd 1.7.0 source/sysroot, preserves the
+existing redraw-coalescing patch, and adds
+`libglvnd-haiku-view-background.patch`.
+
+BGLView already draws the current bitmap and fills every remaining updated
+pixel with LowColor. Its constructors now select a transparent view background
+so app_server does not clear those same pixels first. Applications can still
+set an explicit ViewColor. This changes OpenGL Kit views, not arbitrary EGL
+window hooks or Summit's pbuffer presentation.
+
+`glview_present_probe.cpp` checks initial empty drawing, complete visible
+pixels, shrink/grow gaps, LowColor, and shared-area retirement. Its
+`--benchmark WIDTH HEIGHT FRAMES` mode waits for each completed BGLView draw
+and reports client/app_server CPU time and the loaded GL library path.
+`PROBE_VIEW_COLOR=opaque|transparent` compares the two backgrounds on the
+same binary. `PROBE_EXPECT_TRANSPARENT=0|1` checks the actual default or
+override. `PROBE_NO_RENDERER=1`, paired with an unavailable EGL vendor,
+checks fallback background pixels and the presence of the error text.
+Use the normal OpenGL Kit fixture for alternating contexts, full GL readback
+and recursive-lock checks. Keep the native screen unobstructed and hold the
+shared hardware lease for the entire comparison.
+
 ## GPU-assisted readback
 
 Large, read-only RGBA8/BGRA8 (including opaque RGBX) texture maps use a
@@ -158,3 +210,22 @@ screen. `--benchmark WIDTH HEIGHT FRAMES` waits for each BView draw and reports
 completed draw throughput, not physical display FPS. Its area-ID count is not
 an allocation count: several BBitmaps can share an app_server area.
 This path improves native EGL windows; Summit uses a separate pbuffer path.
+
+## Buffer-cache metadata
+
+`mesa-v3d-cache-growth.patch` frees replaced size tables after repairing their
+list links, grows capacity geometrically, and skips caching a BO if growing
+the metadata fails. The cache mutex covers both growth and the lookup size
+check. This prevents incremental buffer resizing from retaining every older
+metadata table for the lifetime of the screen.
+
+`build-probes.sh` also builds `rpi4_cache_growth_probe [steps]` (default 1024).
+It checks both ends of growing GL buffers and lets cached GPU storage expire
+every 32 iterations, then reports heap and mapped-GPU residency before and
+after context destruction. A default run takes about two minutes.
+`test-cache-growth.py /path/to/mesa-25.3.6` runs the actual growth routine with
+Mesa's intrusive lists and a tracked allocator under ASan/UBSan, including
+allocation failure. `--source /path/to/old/v3d_bufmgr.c` reproduces the old
+retention failure. The host fixture covers metadata, not GPU operations.
+
+Native comparisons and qualification: `docs/rpi4/PERFORMANCE-20261008.md`.

@@ -17,6 +17,7 @@
 #define AGG_GAMMA_LUT_INCLUDED
 
 #include <math.h>
+#include <string.h>
 #include "agg_basics.h"
 
 namespace agg
@@ -74,6 +75,15 @@ namespace agg
             gamma(g);
         }
 
+        gamma_lut(const self_type& other) :
+            m_gamma(other.m_gamma),
+            m_dir_gamma(pod_allocator<HiResT>::allocate(gamma_size)),
+            m_inv_gamma(pod_allocator<LoResT>::allocate(hi_res_size))
+        {
+            memcpy(m_dir_gamma, other.m_dir_gamma, gamma_size * sizeof(HiResT));
+            memcpy(m_inv_gamma, other.m_inv_gamma, hi_res_size * sizeof(LoResT));
+        }
+
         void gamma(double g) 
         {
             m_gamma = g;
@@ -109,7 +119,6 @@ namespace agg
         }
 
     private:
-        gamma_lut(const self_type&);
         const self_type& operator = (const self_type&);
 
         double m_gamma;
