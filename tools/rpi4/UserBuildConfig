@@ -62,7 +62,7 @@ rule UserBuildConfigRulePreImage
 	if $(RPI4_LAB_IMAGE) = 1 {
 		AddFilesToHaikuImage home config non-packaged bin
 			: rpi4_v3d_probe rpi4_fetch rpi4_tone rpi4_vchiq_audio rpi4_hevc_decode rpi4_memprobe
-				rpi4_cores
+				rpi4_cores rpi4_dsi
 				rpi4_mmal_decode rpi4_gpio rpi4_swap_commit rpi4_kdl rpi4_orphan ;
 	}
 
@@ -171,6 +171,14 @@ rule UserBuildConfigRulePreImage
 		SEARCH on $(localeSettings) = [ FDirName $(HAIKU_TOP) data boot rpi ] ;
 		AddFilesToHaikuImage home config settings : $(localeSettings) ;
 
+		# the DSI panel's timings, all commented out (the Waveshare 3.5" E
+		# is built in); other panels are described there
+		local dsiSettings = <driver-settings>rpi_dsi ;
+		SEARCH on $(dsiSettings)
+			= [ FDirName $(HAIKU_TOP) data settings kernel drivers ] ;
+		AddFilesToHaikuImage home config settings kernel drivers
+			: $(dsiSettings) ;
+
 		# no clock on the board: the time comes from the network at start
 		local bootscript = <rpi4-settings>UserBootscript
 			<rpi4-settings>rpi-time-sync ;
@@ -204,6 +212,15 @@ rule UserBuildConfigRulePreImage
 			local services = <rpi4-lab>services ;
 			SEARCH on $(services) = $(overlay) ;
 			AddFilesToHaikuImage system settings network : $(services) ;
+		}
+		# The on-device MCP server (apps/airos_mcp): screenshots, syslog,
+		# commands and file transfer for the sessions that drive the board.
+		local mcpDir = /mnt/HaikuWork/apps/airos_mcp/artifacts ;
+		local mcpPackages = [ Glob $(mcpDir) : airos_mcp-*-arm64.hpkg ] ;
+		if $(mcpPackages) {
+			mcpPackages = <rpi4-mcp>$(mcpPackages[1]:BS) ;
+			SEARCH on $(mcpPackages) = $(mcpDir) ;
+			AddFilesToHaikuImage system packages : $(mcpPackages) ;
 		}
 	}
 }

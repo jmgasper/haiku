@@ -10,6 +10,7 @@ for architectureObject in [ MultiArchSubDirSetup ] {
 	on $(architectureObject) {
 		SharedLibrary [ MultiArchDefaultGristFiles libdevice.so ] :
 			A2D.cpp
+			AuxDisplay.cpp
 			D2A.cpp
 			DigitalPort.cpp
 			Joystick.cpp

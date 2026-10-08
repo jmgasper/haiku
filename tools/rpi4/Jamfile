@@ -1,6 +1,7 @@
 SubDir HAIKU_TOP tools rpi4 ;
 
 UsePrivateHeaders drivers graphics ;
+UsePrivateHeaders [ FDirName graphics rpi_dsi ] ;
 UsePrivateSystemHeaders ;
 UsePrivateHeaders interface ;
 SubDirHdrs [ FDirName $(HAIKU_TOP) src add-ons media plugins rpi_mmal ] ;
@@ -18,6 +19,7 @@ SimpleTest rpi4_cores : cores.cpp : [ TargetLibsupc++ ] [ TargetLibstdc++ ] ;
 SimpleTest rpi4_cpu_watch : cpu_watch.cpp : [ TargetLibstdc++ ] ;
 SimpleTest rpi4_screen_capture : screen_capture.cpp : be [ TargetLibsupc++ ] ;
 SimpleTest rpi4_gpio : gpio.cpp ;
+SimpleTest rpi4_dsi : dsi.cpp ;
 SimpleTest rpi4_swap_commit : swap_commit.cpp ;
 SimpleTest rpi4_kdl : kdl.cpp ;
 SimpleTest rpi4_orphan : orphan.cpp ;

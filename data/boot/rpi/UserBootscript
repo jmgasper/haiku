@@ -13,3 +13,9 @@ sh "$(finddir B_USER_SETTINGS_DIRECTORY)/boot/rpi-time-sync" \
 # a scan someone asked for, and nothing asks for one at start.
 [ -x /boot/system/bin/wifiautojoin ] \
 	&& /boot/system/bin/wifiautojoin > /dev/dprintf 2>&1 &
+
+# AirTop keeps the auxiliary display (the DSI panel) showing the CPU, the
+# network and the temperature; it does nothing where there is no panel.
+if [ -x /boot/system/apps/AirTop/AirTop ]; then
+	/boot/system/apps/AirTop/AirTop --panel > /dev/dprintf 2>&1 &
+fi
