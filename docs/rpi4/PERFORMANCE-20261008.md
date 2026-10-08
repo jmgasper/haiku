@@ -639,3 +639,86 @@ native-v2-summary.json,native-v2.txt,graphics-native-summary.json,
 graphics-native.txt,*idle-profile.txt,*boot*-drawing.json,*boot*-health.json,
 window-roster-qemu.txt,glview-roster-qemu.txt,drawing-window-qualified.txt,
 installed-health.json,installed-hashes.json,baseline/app_server}`.
+
+## Whole-page clearing: measured and rolled back
+
+The general kernel `memset` investigation above was followed by a narrower
+candidate in ARM64 `PMAPPhysicalPageMapper::MemsetPhysical`. It used `DC ZVA`
+only for one aligned, zero-filled page in the loaders' Normal Write-Back
+physical-RAM mapping. Other lengths, nonzero fills and unsupported `DCZID_EL0`
+values retained the original `memset`. Interrupts were preserved and disabled
+across the feature check and zero loop, keeping the CPU fixed without requiring
+a current thread during early boot. The implementation used no SIMD registers.
+This candidate is **not retained or installed**: the native workload did not
+show a useful gain.
+
+The initial bare `DC ZVA` loop was itself unsuitable on this Cortex-A72. A
+single hot page took about 209 ns versus 589 ns for the original kernel loop,
+but a 64 MiB working set took 2,902–3,318 ns/page versus about 1,470 ns/page.
+Ordinary GPR zero stores in the first and last cache lines, followed by `DC ZVA`
+in the middle, removed that streaming regression. The resulting candidate
+took about 214 ns for the hot page, 380–383 ns/page for a 1 MiB working set
+versus 624–626 ns originally, and about 1,469 ns/page for 64 MiB. Sequential
+and shuffled visits, forward/reverse variant order, 5,120 native guard checks
+and forced feature-fallback cases passed. Microbenchmark gains alone were
+insufficient to justify adoption.
+
+Native allocation measurements exposed a confounder: Haiku's pre-cleared
+free-page pool can make initial resident allocations much faster. One early
+64 MiB run had a 17.6 ms median, while subsequent steady-state runs took about
+58 ms. The qualified comparison first ran 64 rounds each of resident and
+demand-paged 64 MiB allocations, checking every word for zero before dirtying
+and freeing the area. Two measured 32-round runs followed that warmup on each
+boot. The following values are the median of those two run medians, in CPU ms:
+
+| Kernel boot | Resident allocation | Demand first read | Complete resident cycle | Complete demand cycle |
+| --- | ---: | ---: | ---: | ---: |
+| Original A | 58.464 | 140.288 | 158.157 | 221.396 |
+| Candidate | 58.391 | 139.775 | 157.483 | 218.310 |
+| Original B, restored | 56.673 | 139.717 | 155.521 | 218.731 |
+
+The complete cycle includes allocation, zero verification, dirtying and release.
+The candidate's allocation and first-read results fall within the original
+boots' range. Smaller 4 KiB, 16 KiB and 1 MiB runs also show no consistent
+whole-cycle advantage. The profiled 64 MiB worker takes 12.332 versus 12.312
+sampled seconds; the original kernel `memset` and candidate page-clear path
+account for 2.426 and 2.382 seconds respectively. This is an unchanged
+streaming-memory workload, despite the hot-cache microbenchmark improvement.
+
+Before native testing, the candidate kernel booted in QEMU and passed zero
+allocation checks, all 24 drawing hashes, `resize_area_tests`, `cow_bug113_test`,
+`mmap_cut_tests` and `mmap_invalid_tests`. Those bounded VM tests and all native
+zero checks also passed. The new reusable `rpi4_vm_bench` records per-phase
+wall and thread CPU time; its comment gives the required warmup sequence.
+Its own QEMU and native smoke tests pass. Very small allocations include enough
+timer/bookkeeping overhead that their microsecond differences are coarse.
+
+The existing USB recovery image was booted through NanoKVM, read the SD FAT
+read-only, and verified the original boot archive before returning to healthy
+Haiku. Its saved SSH address was stale; serial identified `.213`, the expected
+host key matched, and the corrected repeat passed. No recovery SD writes were
+needed. Each native kernel switch held the shared hardware lease, verified
+archive hashes, synced and unmounted FAT, then rebooted with serial capture.
+Only `system/kernel_arm64` differed in the candidate archive; every other
+member and both boot configuration files matched the original.
+
+The original `airos-boot.tgz`, SHA-256
+`0b5b3a793b7a2d7e3d73523d51875d4eb9727df7c628e564a37df47375d57a3d`,
+is restored. Its kernel is
+`572db7b66ae352a271941e743549a63ed290bab7b88109b3ddaddfcb526cca80`.
+The candidate archive and kernel were `57250e42...` and `6038cc97...`;
+serial identified its kernel as `hrev60206+759+dirty`. Packaged kernel files
+and `uname` metadata remained at the original revision even during that test,
+so the profiler explicitly used the matching candidate symbols. Serial and
+archive identity, rather than `uname` alone, distinguished the boots.
+Original PMAP source and local kernel code are restored; the default host
+boot archive remains original. The rejected source, binaries and full hashes
+are preserved as local evidence.
+
+Evidence: `page-clear/{native-micro-v2-summary.json,kernel-comparison-summary.json,
+warm-*-summary.json,warm-*-profile.txt,qemu-kernel.txt,qemu-vm-tests.txt,
+recovery-read-only-check.txt,*boot*-serial.log,*boot*-after-archive.json,
+candidate-manifest.json,final-native.txt,final-installed-hashes.json,
+final-health.json}`. A final graphics invocation initially used an incorrect
+private drawing-probe path; that exited 127 and is retained separately from
+the corrected passing run.

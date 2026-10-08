@@ -53,6 +53,11 @@ pixels/lifetimes pass. The packaged server remains intact behind a removable
 launch-service amendment, and the rollback boot and final 20 health checks pass.
 This is a drawing-workload gain; tiny opaque spans can cost a few extra ns and
 large uncached spans are essentially unchanged.
+An ARM64 whole-page zeroing candidate passed integrity checks but did not
+improve warmed native allocation workloads, so it was rolled back. The original
+kernel and boot archive are restored. USB recovery, kernel rollback and a
+reusable allocation benchmark are now verified; the seven installed changes
+above remain the accepted performance improvements.
 The twelve-hour CPU, memory and graphics investigation continues;
 details and limits are in [PERFORMANCE-20261008.md](PERFORMANCE-20261008.md).
 The present lab boot uses Ethernet `.213`, HDMI1 at 1920x1080, and the DSI
