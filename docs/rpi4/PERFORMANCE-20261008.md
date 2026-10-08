@@ -964,3 +964,72 @@ any request bytes. It does not retry a mutation after transmission. This is a
 controller resilience change, not a claimed native networking performance fix.
 Evidence: `airtop-font/{drawing-summary.json,*-?.txt,qemu-pass.txt,
 probes-result.json,probes-health.json,recover-jobs.json}`.
+
+## Bitmap pool growth: accepted
+
+`ClientMemoryAllocator` previously added the full requested allocation to an
+area even when a smaller free block already occupied its end. The allocator
+now extends that final free block by only the missing page-rounded bytes.
+Live blocks retain their addresses, failed growth leaves the existing block
+unchanged, and allocation falls back to other chunks as before. This reduces
+unnecessary pool growth; it does not shrink freed storage or change the policy
+of retaining partly occupied pools.
+
+Original/candidate/original/candidate native server states were compared, with
+three fresh-process runs per state and 100 allocate/fill/free cycles at each
+of 1, 4, 16 and 64 MiB. A small bitmap remains live throughout. Where the area
+can grow in place, the largest sequence retains 85.16 MiB with the original
+and 64.04 MiB with the candidate: **21.12 MiB less, or 24.8%**. The anchor area's
+resident-byte measurement shows the same reduction. These are shared pages;
+the client and server mappings must not be added together.
+
+A separate gradual-resize fixture grows 125 RGB32 bitmaps from 64×48 to
+2048×1536, for eight cycles (1,000 bitmaps, 4.35 GB written). It tests both
+freeing the old bitmap before creating its replacement and keeping the old
+bitmap until the replacement is ready:
+
+| Deletion order | Original retained mapping | Candidate retained mapping |
+| --- | ---: | ---: |
+| Free before replacement | 17.33 MiB | 12.04 MiB |
+| Free after replacement | 36.27 MiB | 34.93 MiB |
+
+This is a memory optimization. Total CPU in the gradual fixture is effectively
+flat at about 1.7 seconds. More frequent, smaller growth calls add about
+2.4 ms of server CPU per 1,000 free-before-replacement allocations; the
+standalone gradual-growth test makes 62 resize attempts instead of five.
+Thirty warm launches per variant of both AirPins and StyledEdit show no
+material startup change. Large repeated bitmap fills are also essentially
+unchanged when using an existing area.
+
+There is an existing address-layout limit: another mapping can prevent area
+expansion. Both variants hit this in one of six 64 MiB runs. Repeated creation
+of separate areas then takes about 17 seconds per 100 fills, versus 2.6 seconds
+with in-place growth. Both variants also show the slower path in QEMU. These
+runs are recorded separately, not counted as a new speedup or silently dropped.
+The optimization does not solve that fragmentation behavior.
+
+The direct allocator fixture exercises live clone growth, odd byte sizes,
+whole-chunk release, detached allocators and 30,000 mixed allocations with
+normal operation, every-other resize failure and every resize failing.
+Byte and lifetime checks pass against both source versions in QEMU and
+on the Pi. All 96 full drawing hashes across the four native states agree.
+EGL/BGLView checks, AirTop's 288 cached/direct drawing comparisons, 20 health
+checks and ten pinned installed hashes pass. The repository-built
+`rpi4_bitmap_pool_bench` repeats all three workloads in QEMU and natively.
+Its `shared` column reports whether every temporary bitmap used the anchor's
+area; use it when interpreting CPU and retention results.
+
+The installed server is 2,055,104 bytes, SHA-256
+`5905594114002e34e2384cfa1bd9e5bb540b820b18faf828387503a28b07f823`, at
+`/boot/home/performance-20261008/bitmap-pool/app_server`. The existing
+`app-server-performance` launch amendment selects it. The preceding accepted
+scanline server remains byte-for-byte intact at its original path; selecting
+that path and rebooting was verified during the comparison. The packaged
+server, original kernel, boot archive and the other accepted libraries and
+applications are unchanged. Both candidate boots pass native checks.
+
+Evidence: `bitmap-pool/{manifest.json,candidate.patch,comparison.json,
+*-pool-*.json,*-resize-*.json,allocator-*-qemu.txt,*-allocator-*.json,
+canonical-*-qemu.txt,final-*.json}`. The fixture sources, build commands and
+forced-failure harness are retained alongside those results. No memory saving
+here is added to a different workload's saving to claim a whole-system total.

@@ -78,6 +78,16 @@ window or thread. Native/QEMU pixels, 288 direct/cache comparisons, repeated
 panel restarts, the full window UI, exact package rollback and a normal native
 boot pass, including graphics and all 20 health checks. The cache
 object is freed when hidden, but its bitmap-pool space can remain reusable.
+A tenth change reuses free space at the end of a client bitmap pool when
+growing it. A repeated 1/4/16/64 MiB temporary-image sequence retains
+64.04 MiB instead of 85.16 MiB (21.12 MiB less), while gradual resizing
+retains 12.04 instead of 17.33 MiB when freeing the old bitmap first. Total
+workload CPU is essentially unchanged; smaller growth adds a few microseconds
+per allocation in the gradual case. Both original and candidate can still
+hit expensive separate-area allocation when virtual-address layout blocks
+growth. Alternating native server boots, cloned-memory/failure checks, drawing
+hashes, EGL/BGLView, AirTop rendering and all 20 health checks pass. The original
+scanline server remains available behind the removable launch amendment.
 The twelve-hour CPU, memory and graphics investigation continues;
 details and limits are in [PERFORMANCE-20261008.md](PERFORMANCE-20261008.md).
 The present lab boot uses Ethernet `.213`, HDMI1 at 1920x1080, and the DSI
