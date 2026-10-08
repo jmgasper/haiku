@@ -103,3 +103,16 @@ Evidence: `cache-growth-{before,before2,after,installed}.json`,
 `window-abba-progress.json`, `mesa-install.json`, `installed-loaded.json`,
 `qemu-full.log` and `qemu-full.png`. Native allocation-failure injection
 was not performed; that path is covered by the host fixture.
+
+## Next bottleneck: window presentation
+
+A whole-system 2 ms sampling profile of 2,000 completed 1280x720 EGL draws
+on the installed library attributes 4.778 seconds (54.43% of samples in the
+EGL worker) to `memcpy`, and 2.180 seconds (24.83%) to `fd_ioctl`. Its
+app_server window thread spends 11.082 sampled seconds (77.11%) in `memcpy`
+and 2.718 seconds (18.91%) in `Painter::FillRectNoClipping`. These are
+per-thread sample fractions, not percentages of total system capacity.
+The profiled run still verifies the final pixels. A caller-stack profile
+is being collected to identify copies and background clearing before
+choosing the next change; no presentation improvement is claimed yet.
+Evidence: `window-profile.txt` and `window-profile-result.json`.
