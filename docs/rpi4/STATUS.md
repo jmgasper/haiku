@@ -98,6 +98,12 @@ and VM regressions, original-kernel and library rollbacks, QEMU, and the final
 native reboot with graphics, C++ and all 20 health checks. Serial identifies
 the boot kernel as `hrev60206+766+dirty`; the packaged kernel file and its
 metadata remain the original 750. All original boot files are preserved.
+A twelfth improvement caches AirTop’s fixed panel titles and captions in the
+existing background bitmap. Native live ABBA uses 3.2% less combined CPU than
+the geometry-only cache, with identical cadence and mapped memory. Version
+1.2.0-3 passes pixel checks, QEMU, package rollback/reinstall and a normal native
+boot. The kernel’s loader/malloc callers also pass 50 loader cases, four-thread
+allocation checks and fork copy-on-write.
 The twelve-hour CPU, memory and graphics investigation continues;
 details and limits are in [PERFORMANCE-20261008.md](PERFORMANCE-20261008.md).
 The present lab boot uses Ethernet `.213`, HDMI1 at 1920x1080, and the DSI
