@@ -871,3 +871,75 @@ Evidence: `rect-fill/{micro-summary.json,drawing-per-boot.json,
 drawing-*-*.txt,qemu-server.txt,candidate-a-*.json,baseline-b-*.json,
 candidate.patch,manifest.json}`. The conclusion uses the full native boot
 comparison, not the faster cached-row loop alone.
+
+## AirTop fixed panel geometry
+
+AirTop repainted the full auxiliary-panel background and three rounded panel
+frames on every update. Its fixed geometry is now rendered once at the actual
+display scale, copied into a plain BBitmap, and copied back at device-pixel
+resolution before drawing each frame's text, values and graphs. It reuses the
+panel's existing drawing window during setup, so the cache requires no extra
+window or drawing thread. Sampling and five-frame-per-second presentation are
+unchanged. Failed cache creation and diagnostic skip modes use direct drawing.
+
+The source tree at `/mnt/HaikuWork/apps/AirTop` was preserved before editing.
+The installed 1.2.0-1 binary matches its local package, and a fresh baseline
+build matches all loaded ELF sections. Original/candidate comparisons therefore
+isolate the geometry cache. The accepted source is recorded in
+`tools/rpi4/airtop-panel-cache.patch` because this application directory is not
+a Git repository; `airtop-panel-cache-source.json` pins both source versions,
+toolchain and package. Applying the patch to the preserved baseline reproduces
+all 23 loaded sections of the accepted application.
+
+The deterministic native drawing comparison uses the actual renderer with only
+its header clock and uptime held constant. Four alternating runs of the final
+candidate and original, 400 frames per 640×480 scene, match all 144 bitmap
+hashes. Populated scenes use 16–19% less app_server CPU. The application test
+`make check-panel` independently compares the cached path with direct drawing
+in 288 cases: six sizes, fractional scaling, letterboxing, changing values,
+core counts, sensor presence, network labels and diagnostic modes. QEMU and
+native results agree; cache-failure fallback also matches the original.
+
+The real DSI comparison warms each variant for 125 seconds to fill its two-minute
+history, then measures 45 seconds, in original/candidate/candidate/original
+order. Every run presents exactly 225 frames, collects 180 samples and retains
+489 history entries. Mean CPU time for those 45-second intervals is:
+
+| Measured work | Original | Cached geometry | Reduction |
+| --- | ---: | ---: | ---: |
+| app_server threads serving the panel | 1,426.713 ms | 1,014.952 ms | 28.9% |
+| AirTop client, including sampling | 818.408 ms | 739.912 ms | 9.6% |
+| Combined | 2,245.120 ms | 1,754.864 ms | 21.8% |
+
+These are panel-workload CPU reductions, not percentages of total machine CPU.
+The cache adds 1,228,800 bytes of pixel storage (1.17 MiB), matching the measured
+increase in client mapped bytes. The same pages are shared with app_server.
+Stopping the panel deletes its cache object, but the shared bitmap allocator
+can retain the enlarged pool for reuse. Five start/stop cycles per variant show
+constant mapped sizes, one drawing window while active and none after stopping.
+There is no claim of immediate physical-memory return when the panel is hidden.
+
+`airtop-1.2.0-2-arm64.hpkg` is installed. Its binary is 351,408 bytes, SHA-256
+`d19a6f016c4ace1be0d67224af13e1284fb0c8bb6478fcd735ed30336b6a8e24`.
+Local package plans change only AirTop. Downgrading to the backed-up original
+package restores its exact binary hash, and reinstallation restores the tested
+candidate. All 20 health checks and the earlier eight system hashes pass.
+The full installed window renders and samples; its original settings and
+panel-only service are restored afterward. The canonical source builds the
+same application bytes. Both existing AirTop image staging locations now select
+revision 2, with their original packages preserved and the DSI image copy using
+the existing Zstandard policy.
+
+The final normal native boot loads the package in panel-only mode with exactly
+one app_server drawing thread. Its libbe and C++ providers are the accepted
+non-packaged libraries. Nine pinned binary hashes, all 24 drawing hashes,
+EGL/BGLView probes and 20 health checks pass. Serial confirms the original
+`hrev60206+750` kernel; no boot configuration or firmware was changed.
+
+Evidence: `airtop-panel/{source-manifest.json,baseline-allocated-sections.json,
+reproduction-sections.json,panel-cache-test-qemu.txt,live-v1-summary.json,
+v2/drawing-summary.json,v2/live-summary.json,v2/*-lifecycle.txt,install/,boot/,
+image-package-manifest.json}`. An earlier prototype retained an unnecessary
+offscreen window; the accepted version retains only the bitmap pixels. A UI
+query encountered a transient TCP connection timeout; repetition completed,
+with the panel and health checks restored after each attempt.

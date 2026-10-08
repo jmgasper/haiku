@@ -69,6 +69,15 @@ graphics pass, as do a default-runtime reboot and 20 health checks. Removing
 the non-packaged override restores the original provider, verified with both
 ABI probes. Tracker and Deskbar continue to use their adjacent packaged
 runtime; no gain is claimed for them.
+AirTop 1.2.0-2 is the ninth accepted change. It caches the DSI panel's fixed
+geometry while continuing to draw values and graphs at five frames per second.
+Matched live runs reduce its app_server CPU by 28.9% and client CPU by 9.6%
+(21.8% combined), with exactly 225 frames and 180 samples in each 45-second run.
+The cache costs 1.17 MiB of shared bitmap storage and needs no extra drawing
+window or thread. Native/QEMU pixels, 288 direct/cache comparisons, repeated
+panel restarts, the full window UI, exact package rollback and a normal native
+boot pass, including graphics and all 20 health checks. The cache
+object is freed when hidden, but its bitmap-pool space can remain reusable.
 The twelve-hour CPU, memory and graphics investigation continues;
 details and limits are in [PERFORMANCE-20261008.md](PERFORMANCE-20261008.md).
 The present lab boot uses Ethernet `.213`, HDMI1 at 1920x1080, and the DSI
