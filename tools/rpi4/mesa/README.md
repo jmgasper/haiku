@@ -3,7 +3,8 @@
 `build.sh` builds Mesa 25.3.6 with the `v3d` Gallium driver (and softpipe) for
 Haiku arm64. It sits on the ROCK 5's pinned Mesa port
 (`tools/rock5-itx/mesa`): the same sysroot, cross file, libglvnd and patched
-source, plus the V3D, shader-cache, texture-cache, GPU-readback and window-presentation patches
+source, plus the V3D, shader-cache, texture-cache, GPU-readback, window-presentation
+and buffer-cache-growth patches
 from this directory. The build script applies them to its copy of the source
 under `/mnt/HaikuWork/rpi4/mesa/mesa-25.3.6`, or checks that they are already
 applied. It reconfigures existing builds to pick up changed options.
@@ -158,3 +159,22 @@ screen. `--benchmark WIDTH HEIGHT FRAMES` waits for each BView draw and reports
 completed draw throughput, not physical display FPS. Its area-ID count is not
 an allocation count: several BBitmaps can share an app_server area.
 This path improves native EGL windows; Summit uses a separate pbuffer path.
+
+## Buffer-cache metadata
+
+`mesa-v3d-cache-growth.patch` frees replaced size tables after repairing their
+list links, grows capacity geometrically, and skips caching a BO if growing
+the metadata fails. The cache mutex covers both growth and the lookup size
+check. This prevents incremental buffer resizing from retaining every older
+metadata table for the lifetime of the screen.
+
+`build-probes.sh` also builds `rpi4_cache_growth_probe [steps]` (default 1024).
+It checks both ends of growing GL buffers and lets cached GPU storage expire
+every 32 iterations, then reports heap and mapped-GPU residency before and
+after context destruction. A default run takes about two minutes.
+`test-cache-growth.py /path/to/mesa-25.3.6` runs the actual growth routine with
+Mesa's intrusive lists and a tracked allocator under ASan/UBSan, including
+allocation failure. `--source /path/to/old/v3d_bufmgr.c` reproduces the old
+retention failure. The host fixture covers metadata, not GPU operations.
+
+Native comparisons and qualification: `docs/rpi4/PERFORMANCE-20261008.md`.

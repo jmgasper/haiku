@@ -8,6 +8,18 @@ reliability fixes were merged into private `master` as `6ea9a7d410`.
 Earlier bring-up notes are retained in `HISTORY-20261005.md`;
 this page supersedes their older status statements.
 
+## Performance follow-up (2026-10-08 evening)
+
+The current native `hrev60206+750` build has a Mesa buffer-cache metadata
+fix installed and hash-verified. A bounded 1,024-buffer growth/retirement
+test reduces retained process heap from 24.2 to 2.2 MiB; repeated baseline
+and installed-candidate runs agree. Pixel, texture and window-resize checks
+pass, and alternating window throughput is unchanged at about 95 completed
+draws/s. The twelve-hour CPU, memory and graphics investigation continues;
+details and limits are in [PERFORMANCE-20261008.md](PERFORMANCE-20261008.md).
+The present lab boot uses Ethernet `.213`, HDMI1 at 1920x1080, and the DSI
+panel. HDMI0 is currently disconnected.
+
 ## DSI display panel (2026-10-08)
 
 The Waveshare 3.5" DSI LCD (E) on the DISPLAY connector works as an
