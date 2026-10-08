@@ -397,3 +397,34 @@ Evidence: `cache-profile/` for the baseline symbols and profile;
 `bounded.txt`, `summary.json`, `bounded-profile.txt`, `qualification.txt`,
 `concurrent-result.json`
 and `qualified-health.json`.
+
+## Kernel memory-fill investigation
+
+A private native allocation benchmark repeatedly creates a 64 MiB area,
+checks that every word is zero, dirties it and deletes it. All 32 resident
+and 32 demand-paged rounds pass. A 1 ms kernel-inclusive profile attributes
+1.954 of the worker's 11.909 sampled seconds to kernel `memset` (16.41%).
+Median resident allocation is 59.597 ms; demand allocation plus the first
+full zero read is about 142.320 ms. These synthetic timings include page
+management costs and do not represent application launch times.
+
+The installed kernel's scalar fill uses one eight-byte store per loop.
+Its instruction words exactly match the local kernel object, although the
+complete kernel files have different hashes. The private comparison links
+that original object under a renamed symbol and adds a 64-byte C loop that
+compiles to general-register paired stores. It also tries handling exactly
+eight bytes in the aligned-word path. The candidate passes the QEMU smoke
+benchmark, 497,300 native checks (ten values, 64 alignments and guarded page
+boundaries), and 8,192 checks on write-combining/write-back GPU allocations.
+
+An original/candidate/candidate/original native comparison nearly doubles
+cached 4 KiB throughput, but eight-byte unaligned and 32-byte fills regress
+by roughly 14–35%. Eight MiB fills change little. This candidate is rejected
+as a general kernel replacement; neither the kernel source nor the running
+kernel is changed. Page clearing remains a possible narrower target, but
+the large-buffer results do not yet establish a useful allocation saving.
+Evidence: `kernel-memory/{baseline-profile.txt,baseline-summary.json,
+kernel-identity.json,installed-memset.dis,guards.txt,micro-summary.json}`.
+The first 40-second QEMU window ended before buffered benchmark output was
+saved; the 55-second rerun completed. A native launch before upload exited
+127 and is excluded; the qualified native run exits zero.
