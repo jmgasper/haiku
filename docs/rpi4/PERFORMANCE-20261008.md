@@ -1033,3 +1033,91 @@ Evidence: `bitmap-pool/{manifest.json,candidate.patch,comparison.json,
 canonical-*-qemu.txt,final-*.json}`. The fixture sources, build commands and
 forced-failure harness are retained alongside those results. No memory saving
 here is added to a different workload's saving to claim a whole-system total.
+
+## Bitmap client reservations: accepted
+
+The client bitmap allocator reserves 128 MiB of virtual address space around a
+small cloned area so the server can grow it in place. Releasing the last bitmap
+reference deleted the clone but left the unused reservation behind. Repeated
+clone/release cycles therefore accumulated reserved ranges and made subsequent
+address searches slower. This is **virtual address space**, not an equivalent
+amount of physical RAM.
+
+The library now records whether it owns a reservation and releases that range
+on the last reference, allocator destruction, or failed cloning. Read-only and
+large mappings, failed reservation attempts and unrelated adjacent reservations
+are left alone. The record still occupies 24 bytes on ARM64, and all 11,787
+exported dynamic symbol names/types remain unchanged.
+
+Testing that change exposed a second defect: the kernel's unreserve loop began
+with `Next()` on an iterator already positioned at the first matching area.
+It skipped that first area, so a library-only change could not release a lone
+reservation. The loop now processes the current area before advancing. It still
+removes only wholly contained reservations and preserves live mappings.
+`unreserve_area_tests` fails on the original kernel in QEMU and on the Pi, then
+passes on the corrected kernel. Its six cases cover a lone reservation, a
+reservation after a freed prefix, live mappings, boundaries, adjacent
+reservations and 1,000 repeated reuse cycles.
+
+Private original/candidate/candidate/original library comparisons on the
+corrected native kernel explicitly verify the loaded library path. Median
+client CPU for the same clone, reference-count and data checks is:
+
+| Clone/release cycles | Original CPU | Candidate CPU |
+| --- | ---: | ---: |
+| 100 | 3.108 ms | 2.828 ms |
+| 1,000 | 40.110 ms | 24.657 ms |
+| 2,000 | 109.887 ms | 48.059 ms |
+
+The 1,000-cycle result is about 38.5% less CPU; 2,000 cycles use about 56.3% less.
+The original advances through roughly 125 GiB of address space per 1,000 cycles,
+with occasional extra gaps from existing mappings. The candidate reuses its
+first address on every cycle. These are allocator-workload results, not a
+whole-application startup or physical-memory saving. The installed repository
+benchmark repeats 2,000 cycles in 47.1 ms of CPU with all 1,999 reuse checks
+passing. It supports exact provider and expected-reuse checks through
+`EXPECT_BE_PROVIDER` and `EXPECT_RESERVATION_REUSE`.
+
+Both original and candidate ownership fixtures pass their expected behavior
+checks in QEMU and natively: last references, destruction with live references,
+failed cloning, failed reservations, read-only/large mappings, neighboring
+reservations and growth of a shared area. Existing bounded VM tests, 48 matched
+original/candidate drawing hashes, both libraries' EGL/BGLView paths, bitmap
+resize workloads and both sets of AirTop's 288 drawing cases pass. A QEMU boot
+using the default replacement library also passes both C++ ABIs and GUI launch.
+
+The installed libbe remains at `/boot/system/non-packaged/lib/libbe.so`, now
+4,606,590 bytes with SHA-256
+`11ce36661e8e7a43b13db2844cd8381386fc9eb58d41c49b6ce2cee7b541cf9f`.
+The preceding accepted icon-gamma library is preserved as
+`/boot/home/performance-20261008/rollback/libbe-bitmap-reservation-original.so`.
+Restoring it reproduces reservation growth, and reinstalling the candidate
+restores reuse. The original packaged library remains intact.
+
+The native FAT boot archive is now SHA-256
+`a6df141897ab625d645e50761f82e2bc47c7e8aeedc6c0f3d4bb727cbe29cfef`.
+Its only changed archive member is `system/kernel_arm64`, SHA-256
+`292006d5fdd6d6a0207624388fb78ab7249e7a205ce317cddabde52e3300a2ec`.
+Serial identifies the running kernel as `hrev60206+766+dirty`; the packaged
+kernel file and package-derived system metadata still identify the original
+750 build. Use the saved matching candidate kernel for symbol lookup. The
+original FAT archive, config and command line are backed up and verified;
+booting the original archive restores the expected regression failure with
+20 health checks passing. The recovery USB image's hash is unchanged.
+
+After returning to the corrected kernel and installing the library, a final
+normal native reboot verifies both. App_server, registrar and AirTop load the
+new libbe; Tracker and Deskbar retain their adjacent packaged libraries, so the
+library cleanup improvement is not claimed for those two processes. The final
+boot passes the new regression, the canonical benchmark, four bounded VM tests,
+24 drawing hashes, 288 AirTop cases, EGL/BGLView, both C++ ABIs, StyledEdit launches,
+ten pinned installed-file hashes, FAT/archive/config checks and all 20 health
+checks. The preexisting DSI source edits remain byte-for-byte unchanged.
+
+Evidence: `bitmap-reservation/{manifest.json,kernel-manifest.json,kernel.patch,
+library.patch,old-kernel-*,kernel-original-*,edge-*-qemu.txt,private-*.json,
+native-regression-*.json,kernel-rollback-*,kernel-candidate-*,install-*.json,
+default-*-qemu.txt,canonical-qemu.txt,default-boot/}`. One boot controller was
+interrupted after the second candidate had booted; explicit recovery checks
+confirmed the serial revision, archive hash, native regression and health
+before proceeding. The final default boot completed normally.

@@ -21,6 +21,7 @@ struct area_mapping {
 	int32	reference_count;
 	area_id	server_area;
 	area_id local_area;
+	bool	reserved;
 	uint8*	local_base;
 };
 

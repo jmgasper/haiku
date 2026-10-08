@@ -10,8 +10,8 @@ this page supersedes their older status statements.
 
 ## Performance follow-up (2026-10-08 evening)
 
-The current native `hrev60206+750` build has a Mesa buffer-cache metadata
-fix installed and hash-verified. A bounded 1,024-buffer growth/retirement
+The session started on native `hrev60206+750`. A Mesa buffer-cache metadata
+fix is installed and hash-verified. A bounded 1,024-buffer growth/retirement
 test reduces retained process heap from 24.2 to 2.2 MiB; repeated baseline
 and installed-candidate runs agree. Pixel, texture and window-resize checks
 pass; that change alone leaves window throughput unchanged. A second installed
@@ -88,6 +88,16 @@ hit expensive separate-area allocation when virtual-address layout blocks
 growth. Alternating native server boots, cloned-memory/failure checks, drawing
 hashes, EGL/BGLView, AirTop rendering and all 20 health checks pass. The original
 scanline server remains available behind the removable launch amendment.
+An eleventh improvement fixes bitmap-client reservation cleanup and the
+kernel iterator that skipped the first reservation when unreserving a range.
+Cloning and releasing 1,000 areas now reuses one virtual address range instead
+of consuming roughly 125 GiB of virtual space; this is not physical RAM. The
+matched native allocator workload uses 38.5% less CPU at 1,000 cycles and 56.3%
+less at 2,000. The new default libbe and boot kernel pass isolated ownership
+and VM regressions, original-kernel and library rollbacks, QEMU, and the final
+native reboot with graphics, C++ and all 20 health checks. Serial identifies
+the boot kernel as `hrev60206+766+dirty`; the packaged kernel file and its
+metadata remain the original 750. All original boot files are preserved.
 The twelve-hour CPU, memory and graphics investigation continues;
 details and limits are in [PERFORMANCE-20261008.md](PERFORMANCE-20261008.md).
 The present lab boot uses Ethernet `.213`, HDMI1 at 1920x1080, and the DSI

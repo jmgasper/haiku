@@ -31,6 +31,20 @@ static const size_t kReserveMaxSize = 32 * 1024 * 1024;
 namespace BPrivate {
 
 
+static void
+delete_mapping(const area_mapping& mapping)
+{
+	if (mapping.local_area >= B_OK)
+		delete_area(mapping.local_area);
+#ifndef HAIKU_TARGET_PLATFORM_LIBBE_TEST
+	if (mapping.reserved) {
+		_kern_unreserve_address_range((addr_t)mapping.local_base,
+			kReservedSize);
+	}
+#endif
+}
+
+
 ServerMemoryAllocator::ServerMemoryAllocator()
 {
 }
@@ -41,7 +55,7 @@ ServerMemoryAllocator::~ServerMemoryAllocator()
 	while (!fAreas.empty()) {
 		std::map<area_id, area_mapping>::iterator it = fAreas.begin();
 		area_mapping& mapping = it->second;
-		delete_area(mapping.local_area);
+		delete_mapping(mapping);
 		fAreas.erase(it);
 	}
 }
@@ -76,10 +90,11 @@ ServerMemoryAllocator::AddArea(area_id serverArea, area_id& _area,
 		return B_NO_MEMORY;
 	}
 	mapping->reference_count = 1;
+	mapping->reserved = false;
 
 	status_t status = B_ERROR;
 	uint32 addressSpec = B_ANY_ADDRESS;
-	void* base;
+	void* base = NULL;
 #ifndef HAIKU_TARGET_PLATFORM_LIBBE_TEST
 	if (!readOnly && size < kReserveMaxSize) {
 		// Reserve 128 MB of space for the area, but only if the area
@@ -89,9 +104,13 @@ ServerMemoryAllocator::AddArea(area_id serverArea, area_id& _area,
 		status = _kern_reserve_address_range((addr_t*)&base, B_BASE_ADDRESS,
 			kReservedSize);
 		addressSpec = status == B_OK ? B_EXACT_ADDRESS : B_BASE_ADDRESS;
+		mapping->reserved = status == B_OK;
 	}
 #endif
 
+	// Keep the reservation address even if cloning fails. Deleting an area
+	// alone does not release the unused part of its reserved address range.
+	mapping->local_base = (uint8*)base;
 	mapping->local_area = clone_area(readOnly
 			? "server read-only memory" : "server_memory", &base, addressSpec,
 		B_CLONEABLE_AREA | B_READ_AREA | (readOnly ? 0 : B_WRITE_AREA),
@@ -99,6 +118,7 @@ ServerMemoryAllocator::AddArea(area_id serverArea, area_id& _area,
 	if (mapping->local_area < B_OK) {
 		status = mapping->local_area;
 
+		delete_mapping(*mapping);
 		fAreas.erase(serverArea);
 
 		return status;
@@ -121,7 +141,7 @@ ServerMemoryAllocator::RemoveArea(area_id serverArea)
 	if (it != fAreas.end()) {
 		area_mapping& mapping = it->second;
 		if (mapping.reference_count-- == 1) {
-			delete_area(mapping.local_area);
+			delete_mapping(mapping);
 			fAreas.erase(serverArea);
 		}
 	}
