@@ -77,6 +77,10 @@ and powers the domain down; the HDMI outputs are not touched at any point.
 - The HVS display list memory beyond the firmware's lists holds random data
   (never written), a good sign it is unused.
 - The AFE register `PHY_AFEC0` does not read back its bias/IDR fields.
+- A panel frame costs app_server about 7 ms of software drawing; at five
+  frames a second AirTop's panel is about one percent of the system. (A
+  first version looked ten times dearer: BApplication hands the launch's
+  own arguments to ArgvReceived, which had opened the dashboard window.)
 - The firmware reports the DSI1 power domain off at boot; nothing else
   uses it.
 - The lab's HDMI0 cable was not connected to the NanoKVM on 2026-10-08
