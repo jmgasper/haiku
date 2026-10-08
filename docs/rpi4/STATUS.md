@@ -8,6 +8,17 @@ reliability fixes were merged into private `master` as `6ea9a7d410`.
 Earlier bring-up notes are retained in `HISTORY-20261005.md`;
 this page supersedes their older status statements.
 
+## DSI display panel (2026-10-08)
+
+The Waveshare 3.5" DSI LCD (E) on the DISPLAY connector works as an
+auxiliary display: the `rpi_dsi` driver runs the DSI1 pipeline beside the
+firmware's HDMI outputs (HVS channel 2, pixel valve 1, PLLD's DSI1
+channel, the firmware power domain 19), programs draw on it with the
+Device Kit's `BAuxDisplay`, and AirTop shows its CPU, network and
+temperature panels there (`AirTop --panel`, started by the image's
+UserBootscript). `rpi_thermal` adds the SoC temperature as
+`/dev/power/rpi_thermal/0`. Touch is not read yet. Details: `DSI.md`.
+
 ## Owner-reported fresh-install issues: native verification (2026-10-08)
 
 The owner reported four problems with a fresh SD image (Summit refusing

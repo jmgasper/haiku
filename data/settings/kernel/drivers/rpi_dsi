@@ -1,0 +1,19 @@
+# Raspberry Pi 4 DSI display connector (rpi_dsi): the panel's timings.
+# Without this file the driver assumes the Waveshare 3.5" DSI LCD (E)
+# (640x480, one lane). Any plain video-mode panel that needs no commands
+# can be described here, with the numbers of its Linux overlay
+# (vc4-kms-dsi-generic): copy this file to
+# /boot/home/config/settings/kernel/drivers/rpi_dsi and restart.
+#
+#name		Waveshare 3.5" DSI LCD (E)
+#width		640
+#height		480
+#hfront		48
+#hsync		32
+#hback		80
+#vfront		3
+#vsync		4
+#vback		13
+#clock		24000		# pixel clock in kHz
+#lanes		1			# data lanes, 1 to 4 (RGB888)
+#display_list	4080	# word offset of the driver's HVS display list
