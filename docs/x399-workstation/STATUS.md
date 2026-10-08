@@ -31,6 +31,35 @@ each USB port, the serial console, and a Bluetooth device to pair with.
 
 ## Log
 
+- 2026-10-08: the runtime loader now initializes a new dynamic TLS vector at
+  the current image generation. Previously, after an image unload, a new
+  thread's second access could discard the block created by its first access,
+  losing writes. A Summit WebProcess crash reached Mesa's once trampoline
+  with a null TLS callback after the callback had been stored; the isolated
+  TLS reproducer exposes the corresponding loader defect.
+  * `src/tests/system/runtime_loader/test_tls_generation.sh` builds two TLS
+    libraries and checks 100 unload/reload rounds with eight new threads each,
+    first-write retention, per-thread isolation, retained-image state and
+    reused-slot initialization. X399 fails 1,224 of 2,000 checks before the
+    fix and passes all 2,000 after it.
+  * The local x86_64 loader build passes. An isolated QEMU overlay reproduces
+    the failure, passes with the fix, fails again after package removal, and
+    passes after reinstall and normal reboot. All 22 existing loader tests
+    pass with `/boot/system/lib` in `LIBRARY_PATH`; the C++ TLS constructor /
+    destructor fixture also passes.
+  * Installed only `runtime_loader` through the removable local package
+    `summit_runtime_loader_tls_fix-1.0-1-x86_64.hpkg`, without rebooting X399.
+    Loader SHA-256 is
+    `d634caaba16cb92f5879f54370212d372d081de48a99d7cb5cbfc4114b8425ce`.
+    Moving that package out of `/boot/system/packages` restores the original
+    packaged loader after package activation completes; rollback was tested
+    in QEMU. An automatic guard covered the native activation and recorded
+    successful verification. This does not diagnose the separate earlier
+    condition-variable invalid-opcode crash.
+  * Evidence: `/mnt/HaikuWork/apps/summit/.vm/optimization-2026-10-08/tls-generation/`.
+    Browser stress validation continues in the Summit repository. ARM64
+    hardware was not changed or tested.
+
 - 2026-10-05: scaled screenshots no longer copy the screen first. At 200%
   `DrawingEngine::ReadBitmap` still copied the drawing buffer's rectangle
   (7680x2160 for the whole desktop) into a BBitmap, averaged it with

@@ -198,9 +198,12 @@ TLSBlock::Destroy()
 
 Generation::Generation()
 	:
-	fCounter(0),
+	fCounter(TLSBlockTemplates::Get().GetGeneration(-1)),
 	fSize(0)
 {
+	// A new vector contains only blocks from the current generation. Starting
+	// at zero would discard a freshly initialized block on the next access
+	// if a TLS image had already been unloaded before this thread's first use.
 }
 
 
