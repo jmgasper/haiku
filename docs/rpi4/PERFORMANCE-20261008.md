@@ -722,3 +722,92 @@ candidate-manifest.json,final-native.txt,final-installed-hashes.json,
 final-health.json}`. A final graphics invocation initially used an incorrect
 private drawing-probe path; that exited 127 and is retained separately from
 the corrected passing run.
+
+## GNU symbol hashes in the C++ runtime
+
+Startup profiles identified remaining SysV symbol-hash work in the GCC C++
+runtime, after the earlier dual-hash change to Haiku's own libraries. The
+installed GCC 13.3 library still had only a SysV table. A rebuild adds a GNU
+table while retaining SysV compatibility. This is a loader/startup improvement;
+it does not speed up C++ code after its symbols are resolved.
+
+Two libraries were linked from exactly the same objects, differing only in
+hash style. Alternating native runs used isolated `LIBRARY_PATH` directories,
+verified the actual loaded image, and restored AirPins settings afterward.
+Each result below contains 30 warm launches per variant, from two groups of
+16 with the first launch in each group excluded. Values are median ms:
+
+| Application | Registration, SysV → both | First window, SysV → both | Client CPU, SysV → both |
+| --- | ---: | ---: | ---: |
+| StyledEdit | 38.042 → 33.583 | 99.734 → 95.345 | 90.715 → 86.836 |
+| AirPins | 42.494 → 38.464 | 261.158 → 256.625 | 171.473 → 167.521 |
+
+The isolated CPU savings are 3.879 ms (4.3%) and 3.952 ms (2.3%). An earlier
+22-launch-per-variant repetition also saves about 4 ms of first-window time.
+The installed original and rebuilt SysV runtime have comparable startup time:
+the AirPins parity comparison gives 261.420 and 260.916 ms. A separate original
+versus candidate comparison also improves, but the same-object comparison
+above isolates the hash-table effect more precisely.
+
+`rpi4_app_bench` now optionally appends `client_cpu_ms` when `APP_BENCH_CPU=1`.
+It sums the application's user and kernel CPU across its threads immediately
+after the application looper replies. Work performed by app_server and other
+teams is excluded. Without the option, the existing six-column CSV is unchanged;
+both output formats pass native and QEMU checks.
+
+The GNU hash table occupies 44,520 bytes and increases the read-only executable
+mapping by 65,536 bytes after alignment. Writable segment size is unchanged.
+The comparison library grows by 65,648 file bytes, including ELF metadata.
+This is a mapped-size cost, not a measured per-application private-RAM increase.
+
+`build-cxx-runtime.sh` pins buildtools revision
+`8375c2dbeaf109c520798cb234d57f0895463201` and GCC 13.3.0. It preserves the
+installed `c++config.h` byte-for-byte and checks all 6,003 exported/versioned
+symbol names and types, all 174 imported names and types, the SONAME and the
+sole direct `libroot.so` dependency. Linking uses the native GCC support
+archive to retain the original shared-unwinder imports. Three optional clock
+APIs exposed by newer headers remain disabled, matching the installed runtime.
+Only verified builds are published into the image stage. The image command
+dry run confirms the staged runtime is included in `system/non-packaged/lib`.
+
+The canonical build's 26 loaded ELF sections match the measured candidate's
+addresses, sizes and contents exactly; only nonloaded debug metadata differs.
+Its installed path is `/boot/system/non-packaged/lib/libstdc++.so.6`, SHA-256
+`f073678d2aa5f25c6e54fdb86e2eb89aad113c0c0a7262e20c25dfc0a2433f9c`.
+The packaged original remains
+`f3a7df4507cf976d45daa8af613958e9151a1cef5d80e492d7ea922d3796f871`, with a
+verified backup at `rollback/libstdc++-original.so.6` beneath the session's
+native evidence directory. Installation used a synced rename. Removing the
+override restored the original provider and passed both ABI probes; the
+candidate was then reinstated and the machine rebooted normally.
+
+Both old and new libstdc++ ABIs pass bounded probes covering eight threads and
+8,000 shared-ownership/string operations, condition variables, asynchronous
+exceptions, containers, locale/streams, regex, path normalization, and 128
+cross-library exception/ownership/RTTI rounds. The original, rebuilt SysV and
+dual-hash libraries all pass in QEMU and natively. The canonical default also
+passes both ABIs, all 24 drawing hashes, EGL and BGLView after reboot. The pinned
+libraries, driver, servers and kernel retain their expected checksums; the original kernel
+still boots, and all 20 health checks pass. Screenshots show the expected desktop.
+
+Provider inspection found app_server, registrar and AirTop using the override.
+Tracker and Deskbar deliberately search their executable-adjacent
+`/boot/system/lib` first, so they keep the packaged C++ runtime and libbe;
+their lookup policy is unchanged and no gain is claimed for them. An initial
+post-boot assertion incorrectly expected the override in Tracker; the corrected
+check records each actual provider. The first pre-reboot health check also
+found the idle screen blanker; it was stopped before the passing checks.
+
+The initial standalone build missed the POSIX threading header, and two early
+link attempts introduced a self-dependency or a private unwinder; those local
+candidates were rejected before native use. The first test fixture also linked
+the cross toolchain's private unwinder and failed against the original runtime.
+The reusable `build-cxx-runtime-tests.sh` explicitly uses the native shared
+unwinder, and its corrected probes pass all three runtime variants.
+
+Evidence: `cxx-hash/{startup-a-summary.json,startup-cpu-summary.json,
+canonical-allocated-sections.json,qemu-canonical.txt,native-probe.txt,
+canonical-native-private.json,canonical-native-rollback.json,
+default-verified-providers.json,default-verified-regression.txt,
+default-verified-installed-hashes.json,default-verified-health.json,
+default-boot-serial.log}` and `/mnt/HaikuWork/rpi4/cxx-runtime/manifest.json`.

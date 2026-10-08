@@ -43,8 +43,9 @@ gamma table once and deep-copies it for each renderer. Native rendering CPU
 falls about 20% for 16-pixel icons and 5.8% across the mixed-size fixture;
 application launch time is effectively unchanged. Concurrent rendering,
 672 pixel hashes, the editor UI and a QEMU default-library boot pass.
-The later app_server qualification reboots also load this library into the
-long-running desktop teams. App_server now batches opaque copy-mode scanline
+The later app_server qualification reboots also load this library into
+app_server and registrar. Tracker and Deskbar retain their adjacent packaged
+libraries under Haiku's application-local search rule. App_server now batches opaque copy-mode scanline
 stores and combines exact partial-coverage color arithmetic. Four native runs
 per variant across alternating boots cut offscreen drawing CPU by 8–13% at
 640×480 and 4–8% in the larger fixture. All 192 bitmap hashes agree; exhaustive
@@ -58,6 +59,16 @@ improve warmed native allocation workloads, so it was rolled back. The original
 kernel and boot archive are restored. USB recovery, kernel rollback and a
 reusable allocation benchmark are now verified; the seven installed changes
 above remain the accepted performance improvements.
+An eighth change adds GNU symbol hashes to the pinned GCC 13.3 C++ runtime.
+Same-object, alternating native runs reduce warm startup client CPU by about
+4 ms: 4.3% for StyledEdit and 2.3% for AirPins. First-window time improves by
+4–5 ms. The cost is 64 KiB of additional read-only mapped space; writable
+storage is unchanged. The original ABI, imports and feature configuration are
+preserved. Both C++ ABIs, threads, cross-library exceptions, drawing and native
+graphics pass, as do a default-runtime reboot and 20 health checks. Removing
+the non-packaged override restores the original provider, verified with both
+ABI probes. Tracker and Deskbar continue to use their adjacent packaged
+runtime; no gain is claimed for them.
 The twelve-hour CPU, memory and graphics investigation continues;
 details and limits are in [PERFORMANCE-20261008.md](PERFORMANCE-20261008.md).
 The present lab boot uses Ethernet `.213`, HDMI1 at 1920x1080, and the DSI

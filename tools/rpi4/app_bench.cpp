@@ -5,6 +5,8 @@
 
 // Measure a GUI application's registration, first visible window and reply
 // from its application looper. Refuse to measure/quit an already running app.
+// APP_BENCH_CPU=1 appends its accumulated user+kernel CPU through that reply.
+// This excludes app_server and other processes working on the application's behalf.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,7 +60,10 @@ main(int argc, char** argv)
 		return 1;
 	}
 
-	printf("round,registered_ms,window_ms,responsive_ms,team,application\n");
+	const char* cpuOption = getenv("APP_BENCH_CPU");
+	const bool measureCPU = cpuOption != NULL && strcmp(cpuOption, "0") != 0;
+	printf("round,registered_ms,window_ms,responsive_ms,team,application%s\n",
+		measureCPU ? ",client_cpu_ms" : "");
 	for (int round = 1; round <= atoi(argv[1]); round++) {
 		team_id team = -1;
 		bigtime_t start = system_time();
@@ -81,11 +86,17 @@ main(int argc, char** argv)
 		BMessage request(B_GET_SUPPORTED_SUITES), reply;
 		status = messenger.SendMessage(&request, &reply, 1000000, 5000000);
 		bigtime_t responsive = system_time();
+		team_usage_info usage = {};
+		if (status == B_OK && measureCPU)
+			status = get_team_usage_info(team, B_TEAM_USAGE_SELF, &usage);
 		bool success = window != 0 && status == B_OK;
 		if (success) {
-			printf("%d,%.3f,%.3f,%.3f,%" B_PRId32 ",%s\n", round,
+			printf("%d,%.3f,%.3f,%.3f,%" B_PRId32 ",%s", round,
 				(registered - start) / 1000., (window - start) / 1000.,
 				(responsive - start) / 1000., team, argv[2]);
+			if (measureCPU)
+				printf(",%.3f", (usage.user_time + usage.kernel_time) / 1000.);
+			putchar('\n');
 		} else {
 			fprintf(stderr, "no window or looper reply: window=%lld status=%s\n",
 				(long long)window, strerror(status));

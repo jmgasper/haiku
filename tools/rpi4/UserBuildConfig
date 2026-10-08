@@ -79,6 +79,12 @@ rule UserBuildConfigRulePreImage
 		SEARCH on $(libs) = [ FDirName $(extras) lib ] ;
 		AddFilesToHaikuImage system non-packaged lib : $(libs) ;
 
+		# Pinned GCC runtime with both symbol hashes; build-cxx-runtime.sh
+		# verifies its exported/imported ABI against the bootstrap package.
+		local cxxLib = <rpi4-cxx>libstdc++.so.6 ;
+		SEARCH on $(cxxLib) = /mnt/HaikuWork/rpi4/cxx-runtime/stage ;
+		AddFilesToHaikuImage system non-packaged lib : $(cxxLib) ;
+
 		# The Pi's BGLView keeps redraw coalescing and avoids clearing a
 		# background that Draw() already paints (mesa/build-glvnd.sh).
 		local glViewLib = <rpi4-glvnd>libGL.so.1 ;
