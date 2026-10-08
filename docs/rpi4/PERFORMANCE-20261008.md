@@ -943,3 +943,24 @@ image-package-manifest.json}`. An earlier prototype retained an unnecessary
 offscreen window; the accepted version retains only the bitmap pixels. A UI
 query encountered a transient TCP connection timeout; repetition completed,
 with the panel and health checks restored after each attempt.
+
+## Duplicate right-aligned font setup: not adopted
+
+AirTop's right-aligned label helper installs its font, measures the string,
+then calls a text helper that installs the same font again. A private candidate
+keeps the first setup and draws the label directly. QEMU's 36 hashes and all
+324 native hashes, including the direct-rendering fallback, match exactly.
+Eight alternating native runs use 600 frames per populated 640×480 scene.
+Combined client/server CPU improves only 0.27–0.69% in populated scenes, with
+no consistent client improvement; the empty scene is about 0.8% slower.
+This is too small to establish a useful workload improvement, so the source
+and installed 1.2.0-2 package remain unchanged.
+
+The benchmark controller encountered a TCP connect timeout during polling.
+The native job completed normally (209.8 seconds, exit 0); its recorded output
+was recovered and all 20 health checks passed. The private lab client now uses
+a bounded connection timeout and retries connection establishment before sending
+any request bytes. It does not retry a mutation after transmission. This is a
+controller resilience change, not a claimed native networking performance fix.
+Evidence: `airtop-font/{drawing-summary.json,*-?.txt,qemu-pass.txt,
+probes-result.json,probes-health.json,recover-jobs.json}`.
