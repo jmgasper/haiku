@@ -72,12 +72,18 @@ rule UserBuildConfigRulePreImage
 		# libraries the applications link against
 		local libs = <rpi4-lib>libEGL.so.1
 			<rpi4-lib>libGLESv2.so.2 <rpi4-lib>libGLdispatch.so.0
-			<rpi4-lib>libOpenGL.so.0 <rpi4-lib>libGL.so.1 <rpi4-lib>libGLU.so.1
+			<rpi4-lib>libOpenGL.so.0 <rpi4-lib>libGLU.so.1
 			<rpi4-lib>libsqlite3.so.0 <rpi4-lib>libtag.so.2
 			<rpi4-lib>libpcre2-8.so.0 <rpi4-lib>libscintilla.so
 			<rpi4-lib>liblexilla.so ;
 		SEARCH on $(libs) = [ FDirName $(extras) lib ] ;
 		AddFilesToHaikuImage system non-packaged lib : $(libs) ;
+
+		# The Pi's BGLView keeps redraw coalescing and avoids clearing a
+		# background that Draw() already paints (mesa/build-glvnd.sh).
+		local glViewLib = <rpi4-glvnd>libGL.so.1 ;
+		SEARCH on $(glViewLib) = /mnt/HaikuWork/rpi4/glvnd/stage ;
+		AddFilesToHaikuImage system non-packaged lib : $(glViewLib) ;
 
 		# OpenGL on the GPU: Mesa with the v3d driver (tools/rpi4/mesa) behind
 		# libglvnd, the kernel driver is in the haiku package. GLTeapot and

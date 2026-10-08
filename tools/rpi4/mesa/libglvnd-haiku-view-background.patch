@@ -1,0 +1,22 @@
+--- a/src/HGL/GLView.cpp
++++ b/src/HGL/GLView.cpp
+@@ -307,6 +307,9 @@
+     fClipInfo(NULL),
+     fRenderer(new Renderer{.view = this})
+ {
++    // Draw() paints the bitmap and fills every uncovered pixel with LowColor.
++    // Avoid app_server clearing the same area before each complete redraw.
++    SetViewColor(B_TRANSPARENT_COLOR);
+     if (fRenderer->Init() < B_OK) {
+         delete fRenderer;
+         fRenderer = NULL;
+@@ -326,6 +329,9 @@
+     fClipInfo(NULL),
+     fRenderer(new Renderer{.view = this})
+ {
++    // Draw() paints the bitmap and fills every uncovered pixel with LowColor.
++    // Avoid app_server clearing the same area before each complete redraw.
++    SetViewColor(B_TRANSPARENT_COLOR);
+     if (fRenderer->Init() < B_OK) {
+         delete fRenderer;
+         fRenderer = NULL;

@@ -224,3 +224,78 @@ with zero GPU buffer bytes and shared mappings after teardown. All twenty
 device health checks pass. Evidence: `default-qemu-results.txt`,
 `default-private-result.json`, `shared-installed-checks.txt`,
 `installed-result.json`, and `installed-health.json`.
+
+### BGLView redundant background clearing
+
+The OpenGL Kit's `BGLView::Draw()` paints its bitmap and fills any uncovered
+updated area with LowColor, including before the first swap and after a
+resize. Its opaque default ViewColor nevertheless made app_server clear
+the updated area first. `libglvnd-haiku-view-background.patch` sets the
+default view background to `B_TRANSPARENT_COLOR` in both constructors.
+LowColor and the existing Draw implementation stay intact. Applications
+can still set an explicit ViewColor.
+
+This is a Pi-specific libglvnd build, separate from the shared ROCK image
+extras. Reconstructing the old library from the pinned 1.7.0 snapshot plus
+the existing redraw-coalescing patch gives the exact installed baseline
+SHA-256, `282ac83b276c8019e933fd924f59f2f952f77012fe8fa3b8ebe3042d992f3fbd`.
+Both incremental and clean builds of the new patch give
+`b1aac205ad0076f4c2f30a23128b787712e8b2251dd1383245bc59633d7ee419`.
+The coalescing and bitmap-lock fixes are preserved. `build-glvnd.sh` stages
+the Pi library; the normal Mesa build invokes it and UserBuildConfig uses
+that stage for `libGL.so.1`.
+
+The initial causal comparison uses the installed baseline library with
+explicit opaque/transparent/transparent/opaque ViewColor settings, under
+the exclusive hardware lease. Each run renders 480 frames, waits for every
+draw, and checks the final complete screen image. Initial empty and
+shrink/grow background coverage also pass. Pair means:
+
+| View | Opaque draws/s | Transparent draws/s | Opaque app_server ms/frame | Transparent app_server ms/frame |
+| --- | ---: | ---: | ---: | ---: |
+| 640x480 | 276.98 | 346.06 | 2.872 | 2.162 |
+| 1280x720 | 116.34 | 145.54 | 7.887 | 6.139 |
+| 1281x721 | 102.38 | 124.33 | 8.030 | 6.238 |
+| 1856x900 | 70.25 | 87.49 | 13.241 | 10.369 |
+
+At 1280x720, app_server CPU per frame falls 22.2%; client CPU remains
+approximately 2.22 ms/frame. Combined client plus whole-app_server CPU
+falls from 10.098 to 8.362 ms/frame, about 17.2%, and completed draw rate
+rises 25.1%. Rates count completed BGLView draws, not monitor refresh.
+These measurements already include the shared GPU presentation improvement;
+they are a separate BGLView fixture and should not be directly combined
+with the preceding EGL fixture's baseline numbers. Summit's pbuffer path
+and views that already select transparent backgrounds receive no such gain.
+
+The candidate passes the same screen coverage checks with its default
+color, a missing-renderer fallback (background pixels plus visible error
+text), software rendering, an explicit opaque override, and shared GPU
+presentation disabled. The ordinary OpenGL Kit fixture passes 24 repetitions:
+192 context lifetimes, 768 fully checked GL/screen frames, recursive locking,
+resizing and guard bytes. Shared bitmap areas return to zero after every
+cycle. The candidate also boots in QEMU and passes the softpipe and
+missing-renderer checks there. QEMU supplies no V3D evidence.
+
+The new library is installed at `/boot/system/non-packaged/lib/libGL.so.1`
+with the checksum above; the verified original is retained at
+`/boot/home/performance-20261008/rollback/libGL.so.1`. Installation uses
+a synced rename under the hardware lease. Without a library override,
+the fixture reports that system library path and the transparent default,
+passes pixel/fallback/OpenGL Kit checks, and completes 2,000 1280x720 frames
+at 145.61 draws/s. app_server uses 6.131 ms/frame and the client 2.209.
+All twenty health checks pass. GLTeapot renders normally on the installed
+libraries, its native screenshot is inspected, and it closes cleanly. No
+kernel change or reboot was needed.
+
+Evidence: `glview-clear/`, including `abba.txt`, `abba-summary.json`,
+`qemu-results.txt`, `candidate-qemu-results.txt`, `candidate.txt`, `stress.txt`,
+`fresh-build.log`, `installed.txt`, `installed-result.json` and
+`installed-health.json`.
+
+A subsequent whole-system 2 ms profile of 2,500 completed BGLView frames
+attributes 13.728 of 14.472 sampled seconds (94.86%) in its app_server window
+thread to `memcpy`. Background filling is no longer a significant sampled
+cost. The rendering worker has only two memcpy samples. This identifies the remaining
+copy stages as the next presentation limit; it does not imply that 95% of
+total system CPU is used by copies. Evidence: `glview-clear/profile.txt`,
+`profile-run.txt`, `teapot.png`, `teapot-images.json` and `teapot-result.json`.

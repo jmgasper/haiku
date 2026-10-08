@@ -108,6 +108,34 @@ normal OpenGL Kit contexts, recursive locks, alternating views and resizing.
 Native evidence and limits are in
 [`PERFORMANCE-20261008.md`](../../../docs/rpi4/PERFORMANCE-20261008.md).
 
+## BGLView background drawing
+
+`build.sh` also runs `build-glvnd.sh`, which builds a separate Pi `libGL.so.1`
+in `/mnt/HaikuWork/rpi4/glvnd/stage`. The Pi image takes that library instead
+of the shared ROCK image extra. The standalone script can rebuild it without
+rebuilding Mesa; `RPI4_GLVND_ROOT` selects a separate build directory.
+It uses the same pinned Haiku libglvnd 1.7.0 source/sysroot, preserves the
+existing redraw-coalescing patch, and adds
+`libglvnd-haiku-view-background.patch`.
+
+BGLView already draws the current bitmap and fills every remaining updated
+pixel with LowColor. Its constructors now select a transparent view background
+so app_server does not clear those same pixels first. Applications can still
+set an explicit ViewColor. This changes OpenGL Kit views, not arbitrary EGL
+window hooks or Summit's pbuffer presentation.
+
+`glview_present_probe.cpp` checks initial empty drawing, complete visible
+pixels, shrink/grow gaps, LowColor, and shared-area retirement. Its
+`--benchmark WIDTH HEIGHT FRAMES` mode waits for each completed BGLView draw
+and reports client/app_server CPU time and the loaded GL library path.
+`PROBE_VIEW_COLOR=opaque|transparent` compares the two backgrounds on the
+same binary. `PROBE_EXPECT_TRANSPARENT=0|1` checks the actual default or
+override. `PROBE_NO_RENDERER=1`, paired with an unavailable EGL vendor,
+checks fallback background pixels and the presence of the error text.
+Use the normal OpenGL Kit fixture for alternating contexts, full GL readback
+and recursive-lock checks. Keep the native screen unobstructed and hold the
+shared hardware lease for the entire comparison.
+
 ## GPU-assisted readback
 
 Large, read-only RGBA8/BGRA8 (including opaque RGBX) texture maps use a

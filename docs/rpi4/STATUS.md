@@ -21,7 +21,13 @@ draws from about 96 to 120 per second, reduces combined client/app_server CPU
 per frame by about 19%, and saves 3.51 MiB of frame storage. These are EGL
 window results, not monitor refresh or Summit scrolling results. Pixel,
 32-context lifetime, process-loss, OpenGL Kit and installed regression checks
-pass. The twelve-hour CPU, memory and graphics investigation continues;
+pass. The Pi's BGLView library now also avoids clearing the background before
+its own complete drawing. At 1280x720, the isolated same-library comparison
+improves completed draws from 116 to 146 per second and cuts app_server CPU
+per frame by 22%. Empty views, resize gaps, software/fallback paths and 192
+context lifetimes pass; the installed default repeats 146 draws/s. This is
+an additional OpenGL Kit improvement, not a Summit scrolling result.
+The twelve-hour CPU, memory and graphics investigation continues;
 details and limits are in [PERFORMANCE-20261008.md](PERFORMANCE-20261008.md).
 The present lab boot uses Ethernet `.213`, HDMI1 at 1920x1080, and the DSI
 panel. HDMI0 is currently disconnected.

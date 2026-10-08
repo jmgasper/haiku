@@ -98,3 +98,7 @@ cat > "$ROOT/stage/10_mesa.json" <<'JSON'
   }
 }
 JSON
+
+# The OpenGL Kit shares this presentation path through its Pi-specific
+# BGLView library. Its stage is a separate input to the Pi image build.
+bash "$TOOLS/build-glvnd.sh"
