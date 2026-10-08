@@ -608,12 +608,9 @@ socket_acquire(net_socket* _socket)
 	// During destruction, the socket might still be accessible over its
 	// endpoint protocol. We need to make sure the endpoint cannot acquire the
 	// socket anymore -- while not obvious, the endpoint protocol is responsible
-	// for the proper locking here.
-	if (socket->CountReferences() == 0)
-		return false;
-
-	socket->AcquireReference();
-	return true;
+	// for the proper locking here. The reference test and increment must be
+	// atomic: the final release need not hold the endpoint lookup lock.
+	return socket->TryAcquireReference();
 }
 
 

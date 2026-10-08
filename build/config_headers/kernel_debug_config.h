@@ -154,6 +154,8 @@
 // Network
 
 // Enables additional assertions in the tcp add-on.
+// 1 checks queue boundaries; 2 also scans every segment after each operation.
+// The full scan is quadratic for large queues; reserve it for diagnostics.
 #define DEBUG_TCP_BUFFER_QUEUE			KDEBUG_LEVEL_2
 
 

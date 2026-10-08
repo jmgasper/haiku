@@ -8,6 +8,23 @@ reliability fixes were merged into private `master` as `6ea9a7d410`.
 Earlier bring-up notes are retained in `HISTORY-20261005.md`;
 this page supersedes their older status statements.
 
+## Follow-up USB and network investigation (2026-10-07)
+
+The owner's late-attached keyboard exposed a further xHCI cancellation race:
+the captured panic has an empty descriptor queue but a leaked pipe reference.
+A targeted sanitizer test reproduces it before the fix and passes afterward.
+QEMU hotplug and bounded native NanoKVM resets pass; the physical keyboard
+retest remains pending. See [USB-NETWORK.md](USB-NETWORK.md) for the exact scope.
+
+The first Ethernet candidate raises three LAN downloads from 667–698 to
+737–745 Mbit/s while reducing measured total CPU from 65.6% to 50.9%.
+Summit profiling also identifies a costly full TCP queue scan; its separate
+candidate retains cheap checks and a diagnostic full scan. The combined
+candidate reaches 752–764 Mbit/s at 51.4% total CPU and passes bidirectional
+SHA-256 checks and native queue tests. Summit remains slow: local browser
+transfers reproduce the problem, with profiling pointing to shared-buffer
+growth in the network process. Browser qualification is still in progress.
+
 ## Fresh-install reliability investigation (2026-10-07)
 
 The reported unbootable card has an intact FAT partition and a correctly

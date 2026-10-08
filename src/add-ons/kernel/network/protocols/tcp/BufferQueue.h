@@ -53,7 +53,7 @@ public:
 									{ return fFirstSequence + fContiguousBytes; }
 
 #if DEBUG_TCP_BUFFER_QUEUE
-			void				Verify() const;
+			void				Verify(bool full = false) const;
 			void				Dump() const;
 #endif
 

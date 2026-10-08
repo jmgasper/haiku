@@ -47,6 +47,9 @@ public:
 			void				AcquireReference()
 									{ fPointer->GetUnchecked(); }
 
+			bool				TryAcquireReference()
+									{ return fPointer->Get() != NULL; }
+
 			bool				ReleaseReference()
 									{ return fPointer->Put(); }
 

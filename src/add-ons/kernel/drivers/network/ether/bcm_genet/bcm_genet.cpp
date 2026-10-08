@@ -8,8 +8,8 @@
 
 	Like U-Boot's driver this one only uses the default queue (ring 16) in
 	each direction, with all 256 descriptors. Packets are copied to and from
-	two buffer areas that are kept out of the CPU cache, so no cache
-	maintenance is needed around DMA. The controller filters nothing
+	cacheable DMA buffers, with explicit cache maintenance on ownership changes.
+	The controller filters nothing
 	(promiscuous); the network stack sorts the packets out.
 
 	Register layout and bring-up order follow Linux' bcmgenet.c and bcmmii.c. */
@@ -145,11 +145,13 @@
 #define  DMA_EN					(1 << 0)
 #define  DMA_RING_BUF_EN_SHIFT	1
 #define DMA_SCB_BURST_SIZE		0x0c
+#define DMA_RING16_TIMEOUT		0x6c
 
 #define DMA_INDEX_MASK			0xffff
 #define BUFFER_SIZE				2048
 #define RX_OFFSET				2
 #define MAX_FRAME_SIZE			1536
+#define CACHE_LINE_SIZE			64
 
 // PHY registers (Broadcom BCM54xx)
 #define MII_BMCR				0x00
@@ -221,6 +223,34 @@ static inline void
 write32(genet_info* info, uint32 reg, uint32 value)
 {
 	*(volatile uint32*)(info->registers + reg) = value;
+}
+
+
+static void
+dma_buffer_for_cpu(const void* buffer, size_t size)
+{
+	// BCM2711 GENET does not snoop the ARM caches. RX slots are cache-line
+	// aligned and only read by the CPU, so no dirty CPU bytes can be lost.
+	addr_t end = ((addr_t)buffer + size + CACHE_LINE_SIZE - 1)
+		& ~(addr_t)(CACHE_LINE_SIZE - 1);
+	for (addr_t line = (addr_t)buffer & ~(addr_t)(CACHE_LINE_SIZE - 1);
+			line < end; line += CACHE_LINE_SIZE) {
+		asm volatile("dc ivac, %0" : : "r" (line) : "memory");
+	}
+	asm volatile("dsb sy" : : : "memory");
+}
+
+
+static void
+dma_buffer_for_device(const void* buffer, size_t size)
+{
+	addr_t end = ((addr_t)buffer + size + CACHE_LINE_SIZE - 1)
+		& ~(addr_t)(CACHE_LINE_SIZE - 1);
+	for (addr_t line = (addr_t)buffer & ~(addr_t)(CACHE_LINE_SIZE - 1);
+			line < end; line += CACHE_LINE_SIZE) {
+		asm volatile("dc cvac, %0" : : "r" (line) : "memory");
+	}
+	asm volatile("dsb sy" : : : "memory");
 }
 
 
@@ -411,6 +441,10 @@ genet_interrupt(void* data)
 
 	write32(info, INTRL2_0 + INTRL2_CPU_CLEAR, status);
 
+	// The reader drains RX with interrupts masked. TX completion interrupts
+	// are only needed when a writer runs out of descriptors.
+	write32(info, INTRL2_0 + INTRL2_CPU_MASK_SET,
+		status & (IRQ_RXDMA_DONE | IRQ_TXDMA_DONE));
 	if ((status & IRQ_RXDMA_DONE) != 0)
 		release_sem_etc(info->rxSemaphore, 1, B_DO_NOT_RESCHEDULE);
 	if ((status & IRQ_TXDMA_DONE) != 0)
@@ -508,7 +542,10 @@ genet_start(genet_info* info)
 		DESCRIPTOR_COUNT << 16 | BUFFER_SIZE);
 	write32(info, ring + RING_RX_XON_XOFF_THRESH,
 		5 << 16 | DESCRIPTOR_COUNT >> 4);
-	write32(info, ring + RING_MBUF_DONE_THRESH, 1);
+	// GENET's timer ticks every 1024 cycles of its 125 MHz clock (8.192 us).
+	// Bound a short burst's latency while batching full-rate traffic.
+	write32(info, ring + RING_MBUF_DONE_THRESH, 8);
+	write32(info, RDMA_BASE + DMA_ENGINE + DMA_RING16_TIMEOUT, 7);
 	write32(info, RDMA_BASE + DMA_ENGINE + DMA_RING_CFG, 1 << DEFAULT_RING);
 
 	// the transmit ring
@@ -523,7 +560,7 @@ genet_start(genet_info* info)
 	info->txIndex = read32(info, ring + RING_TX_CONS_INDEX) & DMA_INDEX_MASK;
 	info->txCleaned = info->txIndex;
 	write32(info, ring + RING_TX_PROD_INDEX, info->txIndex);
-	write32(info, ring + RING_MBUF_DONE_THRESH, 1);
+	write32(info, ring + RING_MBUF_DONE_THRESH, 8);
 	write32(info, ring + RING_TX_FLOW_PERIOD, 0);
 	write32(info, ring + RING_BUF_SIZE,
 		DESCRIPTOR_COUNT << 16 | BUFFER_SIZE);
@@ -540,8 +577,7 @@ genet_start(genet_info* info)
 	write32(info, UMAC_CMD, read32(info, UMAC_CMD) | CMD_TX_EN | CMD_RX_EN
 		| CMD_PROMISC | 2 << CMD_SPEED_SHIFT);
 
-	write32(info, INTRL2_0 + INTRL2_CPU_MASK_CLEAR,
-		IRQ_RXDMA_DONE | IRQ_TXDMA_DONE);
+	write32(info, INTRL2_0 + INTRL2_CPU_MASK_CLEAR, IRQ_RXDMA_DONE);
 }
 
 
@@ -556,6 +592,7 @@ genet_receive(genet_info* info, net_buffer** _buffer)
 		uint32 produced = read32(info, ring + RING_RX_PROD_INDEX)
 			& DMA_INDEX_MASK;
 		if (produced != info->rxIndex) {
+			memory_read_barrier();
 			uint32 slot = info->rxIndex % DESCRIPTOR_COUNT;
 			uint32 status = read32(info,
 				RDMA_BASE + slot * DESCRIPTOR_SIZE + DESC_LENGTH_STATUS);
@@ -567,6 +604,7 @@ genet_receive(genet_info* info, net_buffer** _buffer)
 				&& length > RX_OFFSET + ETHER_HEADER_LENGTH
 				&& length <= BUFFER_SIZE;
 			if (good) {
+				dma_buffer_for_cpu(info->buffers + slot * BUFFER_SIZE, length);
 				buffer = sBufferModule->create(0);
 				if (buffer != NULL && sBufferModule->append(buffer,
 						info->buffers + slot * BUFFER_SIZE + RX_OFFSET,
@@ -577,6 +615,7 @@ genet_receive(genet_info* info, net_buffer** _buffer)
 			}
 
 			info->rxIndex = (info->rxIndex + 1) & DMA_INDEX_MASK;
+			memory_full_barrier();
 			write32(info, ring + RING_RX_CONS_INDEX, info->rxIndex);
 
 			if (buffer != NULL) {
@@ -586,10 +625,19 @@ genet_receive(genet_info* info, net_buffer** _buffer)
 			continue;
 		}
 
-		locker.Unlock();
-
 		if (info->nonblocking)
 			return B_WOULD_BLOCK;
+
+		// Arm, then recheck: a frame can arrive after the empty-ring test
+		// while RX interrupts are still masked. Never sleep with it pending.
+		write32(info, INTRL2_0 + INTRL2_CPU_CLEAR, IRQ_RXDMA_DONE);
+		write32(info, INTRL2_0 + INTRL2_CPU_MASK_CLEAR, IRQ_RXDMA_DONE);
+		if ((read32(info, ring + RING_RX_PROD_INDEX) & DMA_INDEX_MASK)
+				!= info->rxIndex) {
+			write32(info, INTRL2_0 + INTRL2_CPU_MASK_SET, IRQ_RXDMA_DONE);
+			continue;
+		}
+		locker.Unlock();
 
 		status_t status = acquire_sem_etc(info->rxSemaphore, 1,
 			B_CAN_INTERRUPT, 0);
@@ -616,9 +664,14 @@ genet_send(genet_info* info, net_buffer* buffer)
 		if (pending < DESCRIPTOR_COUNT - 1)
 			break;
 
-		locker.Unlock();
 		if (info->nonblocking)
 			return B_WOULD_BLOCK;
+
+		write32(info, INTRL2_0 + INTRL2_CPU_MASK_CLEAR, IRQ_TXDMA_DONE);
+		consumed = read32(info, ring + RING_TX_CONS_INDEX) & DMA_INDEX_MASK;
+		if (((info->txIndex - consumed) & DMA_INDEX_MASK) < DESCRIPTOR_COUNT - 1)
+			continue;
+		locker.Unlock();
 
 		status_t status = acquire_sem_etc(info->txSemaphore, 1,
 			B_CAN_INTERRUPT | B_RELATIVE_TIMEOUT, 100000);
@@ -635,7 +688,7 @@ genet_send(genet_info* info, net_buffer* buffer)
 		memset(data + length, 0, 60 - length);
 		length = 60;
 	}
-	memory_full_barrier();
+	dma_buffer_for_device(data, length);
 
 	uint64 address = info->buffersAddress
 		+ (uint64)(DESCRIPTOR_COUNT + slot) * BUFFER_SIZE;
@@ -678,7 +731,8 @@ genet_init_device(void* _info, void** _cookie)
 		return B_NOT_SUPPORTED;
 	}
 
-	// receive and transmit buffers, out of the CPU cache
+	// Keep packet copies cacheable. Buffer boundaries are also cache-line
+	// boundaries so RX invalidation cannot discard another slot's data.
 	size_t size = 2 * DESCRIPTOR_COUNT * BUFFER_SIZE;
 	info->bufferArea = create_area("bcm_genet buffers", (void**)&info->buffers,
 		B_ANY_KERNEL_ADDRESS, size, B_CONTIGUOUS,
@@ -698,8 +752,6 @@ genet_init_device(void* _info, void** _cookie)
 		asm volatile("dc civac, %0" : : "r" (line) : "memory");
 	}
 	memory_full_barrier();
-	vm_set_area_memory_type(info->bufferArea, info->buffersAddress,
-		B_WRITE_COMBINING_MEMORY);
 
 	mutex_init(&info->rxLock, "bcm_genet rx");
 	mutex_init(&info->txLock, "bcm_genet tx");

@@ -3,8 +3,6 @@
  * Distributed under the terms of the MIT License.
  */
 
-#define DEBUG_TCP_BUFFER_QUEUE 1
-
 #include "BufferQueue.h"
 
 #include <stdio.h>
@@ -49,6 +47,7 @@ void
 add(size_t bytes, uint32 at)
 {
 	gQueue.Add(create_filled_buffer(bytes), at);
+	gQueue.Verify(true);
 }
 
 
@@ -62,6 +61,7 @@ eat(size_t bytes)
 		gBufferModule->free(buffer);
 	} else
 		printf("getting %lu bytes failed: %s\n", bytes, strerror(status));
+	gQueue.Verify(true);
 }
 
 
@@ -69,7 +69,7 @@ void
 dump(const char* text = "")
 {
 	printf("%s (available %lu at %lu)\n", text, gQueue.Available(),
-		(uint32)gQueue.FirstSequence());
+		gQueue.FirstSequence().Number());
 	gQueue.Dump();
 }
 
