@@ -1207,3 +1207,58 @@ are updated in `tools/rpi4/airtop-panel-cache.patch` and the adjacent source
 manifest. Evidence: `airtop-label-cache/{manifest.json,candidate.patch,
 drawing-comparison.json,live-comparison.json,package-content-equality.json,
 install/,boot/}`.
+
+## AirTop process details on demand: accepted
+
+The panel only needs system totals, graphs and sensors. It now skips the
+per-process team/area walk and copying when the dashboard is closed. Opening
+the dashboard enables the existing one-second process sampling; closing it
+clears stale process counters. The first process CPU reading after reopening
+starts a fresh interval. Command-line `--sample` keeps its complete process
+list. A messenger replaces the stale window pointer, and plain relaunch now
+reopens the dashboard after it has been closed.
+
+Native original/candidate/candidate/original runs each warm for 125 seconds
+and measure 60 seconds. All four produce 300 frames, 240 fresh samples and
+489 history entries, with identical 94,613,504 mapped bytes. Mean CPU is:
+
+| Work in 60 seconds | Details always collected | Details only when requested |
+| --- | ---: | ---: |
+| Client | 1,003.214 ms | 733.054 ms |
+| Client's app_server threads | 1,286.133 ms | 1,322.460 ms |
+| Combined | 2,289.347 ms | 2,055.515 ms |
+
+The panel uses 26.9% less client CPU and
+10.2% less combined CPU in this comparison.
+This is an additional saving relative to the accepted label cache, not a
+whole-system CPU percentage or a memory reduction. Live graph contents vary;
+the unchanged renderer passes all 288 cached/direct image cases.
+
+The sampler fixture passes eight disable/enable transitions, continuously
+advancing history/system totals and checking fresh process CPU intervals.
+Existing cadence tests and three packaged GUI launches pass in QEMU. Native
+private and installed packages each pass six open/activate/close cycles in the
+same panel process, with current process rows appearing on every open. The
+initial UI harness incorrectly searched truncated team arguments; its owned
+leftover process was closed, and the corrected harness uses exact application
+paths and team IDs. No overlapping performance result is accepted.
+
+AirTop `1.2.0-4` is installed. Its 351,888-byte executable is SHA-256
+`8871462589a63b3652f0ce7223a0c47f428f17476a8484a64d566577d8a539da`;
+the 133,499-byte package is
+`bb434367a90e644c947a3b2020938c14a8510f1e1eff8b351755889deb577a75`.
+The canonical build reproduces the executable, package file contents and
+modes. The tested archive is retained unchanged in both image package
+selections; the prior revision-3 packages are backed up. The cumulative source
+patch reproduces all twelve affected files exactly.
+
+Native upgrade, revision-3 rollback and revision-4 reinstall each pass exact
+binary hashes and health checks. A normal reboot verifies eleven installed
+file hashes, the accepted serial kernel revision, one panel drawing thread,
+24 drawing hashes, EGL/BGLView, VM reservation regression/reuse, the demand
+fixture and three complete command-line samples. All 20 health checks pass.
+The package's six dashboard reopen cycles then pass again with preferences
+restored. Kernel, driver, Mesa and other system libraries are unchanged.
+Evidence: `airtop-process-demand/{manifest.json,candidate.patch,
+cumulative.patch,live-comparison.json,package-content-equality.json,
+gate/,ui/,install/,boot/,installed-ui/}`.

@@ -1,8 +1,8 @@
 {
   "baseline_package": "airtop-1.2.0-1-arm64.hpkg",
-  "candidate_package": "airtop-1.2.0-3-arm64.hpkg",
+  "candidate_package": "airtop-1.2.0-4-arm64.hpkg",
   "baseline_binary_sha256": "f943349e00c0c54247de1e7ea4a257c062beb6706ca1c504cd2e5616ff52834e",
-  "candidate_binary_sha256": "814f6dc1563cb6781e831a08b278000e2c6dfdd3401d094da42144999f95c38a",
+  "candidate_binary_sha256": "8871462589a63b3652f0ce7223a0c47f428f17476a8484a64d566577d8a539da",
   "toolchain": "GCC 13.3.0",
   "files": {
     "src/AuxPanel.cpp": {
@@ -15,27 +15,51 @@
     },
     "Makefile": {
       "baseline_sha256": "6ee61ace9e1456be4fbc112f550419c30d9002e9860f8341e3de2f60e8d72739",
-      "candidate_sha256": "2fba1b6af96c75d4a50468fe1f95c06e1a64c5a31e0d25fc4aba0ebf7c9599eb"
+      "candidate_sha256": "e58aff326769c114f3fb9201b35757ab94ba3709586a02a7e76744c9763fe59c"
     },
     "README.md": {
       "baseline_sha256": "63389d51abb08a53e2d249d26bf94bcb83245c87f8c42941fafb8d24e9707366",
-      "candidate_sha256": "7a908f71313e1fa0b5aaee639820879ac6a8820b6fd0a27f00d418feea7bdf4d"
+      "candidate_sha256": "07f8a832588f75c81248478e629005bc88c7d9db96c840bdbdd006d2f663028a"
     },
     "resources/AirTop.PackageInfo": {
       "baseline_sha256": "b5f8dce29cc0d7c731941ee1a74e52fde928694a8231abbd17f7d78159c475ff",
-      "candidate_sha256": "891e35468b96ad5ff9f8c22a51abaf1c831af9acc40ce2145267e46ecacd4547"
+      "candidate_sha256": "597146d96127c5b2c3442bdb41c7afa7330123ae6f80218530b493de36a44db1"
     },
     "tests/panel_cache_test.cpp": {
       "baseline_sha256": null,
       "candidate_sha256": "d67d57a2ffd9ab75c95269b69f6df3e11a740b421a16f90294fa05803ce821e6"
+    },
+    "src/Sampler.h": {
+      "baseline_sha256": "ffd5a89788a21833790799a7be06c83dd06d98ea9dec725a50f7c8764101455c",
+      "candidate_sha256": "2815769e5bf7099f8f23300bc56c03ada61f1b8651dcf1da78055595d28d386e"
+    },
+    "src/Sampler.cpp": {
+      "baseline_sha256": "fee0708085b913651a63e055fc9bf9c1d3b7fbb229895235d5f4a263930d3941",
+      "candidate_sha256": "b8e4a82eae445d01d4c50282c8c5d8debfbb1dbbe8f18d2004ad79263c609860"
+    },
+    "src/Dashboard.h": {
+      "baseline_sha256": "2a9669fa2a769cd016d1080c3e0d0782638aebc0f2e297df9aa64f620d6c1bb2",
+      "candidate_sha256": "75d5b33c57d64f89adf42749b205e450351c9e0bab18a7752b89d687a77b6da7"
+    },
+    "src/Dashboard.cpp": {
+      "baseline_sha256": "c95b36cfee54d0926f06a503e4e9879f503d29ec80293f3905f327be7e07e347",
+      "candidate_sha256": "0661cf6bd87f653fd14807ad33c25bd74e4405e20f23d573cecf8f72b7e1840c"
+    },
+    "src/main.cpp": {
+      "baseline_sha256": "294a4a720d5db153f1db9ee69eed0592b00ad01f2e8d0e464c657179dc3bf8e2",
+      "candidate_sha256": "228ad635cc210b9f45404a764618666edc98d9ea030c0d5a9f936eb1cf1247c5"
+    },
+    "tests/process_demand_test.cpp": {
+      "baseline_sha256": null,
+      "candidate_sha256": "852043bdc3be331388ff6e2eee55a1307c66005479a6470d36a478ab4935c5c6"
     }
   },
-  "patch_sha256": "3c368883ae99de1fbf6cff093814d655534e178d99d48a2b22ac8277a8da2c32",
-  "candidate_package_sha256": "6922744bab1018a41decb930954a760b40c72172813d8b25384ab7ec89045e1f",
-  "haiku_source_commit": "97840781ee65cd1841a7c3a4c19c542e528b703a",
+  "patch_sha256": "91c751eed9acb2e084fafdb9c4757a2b6dab30468f552eda0c9185995358fe0b",
+  "candidate_package_sha256": "bb434367a90e644c947a3b2020938c14a8510f1e1eff8b351755889deb577a75",
+  "haiku_source_commit": "0b9ff72822f350846d3fb828e7bd99292eefacf1",
   "buildtools_source_commit": "8375c2dbeaf109c520798cb234d57f0895463201",
-  "test_target": "make check-panel",
+  "test_target": "make check-panel check-process-demand",
   "cache_pixel_bytes_640x480": 1228800,
-  "previous_accepted_package": "airtop-1.2.0-2-arm64.hpkg",
-  "previous_accepted_binary_sha256": "d19a6f016c4ace1be0d67224af13e1284fb0c8bb6478fcd735ed30336b6a8e24"
+  "previous_accepted_package": "airtop-1.2.0-3-arm64.hpkg",
+  "previous_accepted_binary_sha256": "814f6dc1563cb6781e831a08b278000e2c6dfdd3401d094da42144999f95c38a"
 }
