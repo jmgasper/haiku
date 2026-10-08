@@ -53,8 +53,9 @@ each USB port, the serial console, and a Bluetooth device to pair with.
     `d634caaba16cb92f5879f54370212d372d081de48a99d7cb5cbfc4114b8425ce`.
     Moving that package out of `/boot/system/packages` restores the original
     packaged loader after package activation completes; rollback was tested
-    in QEMU. An automatic guard covered the native activation and recorded
-    successful verification. This does not diagnose the separate earlier
+    in QEMU. Native activation was verified directly. The planned automatic
+    guard failed to start because of a generated-script quoting error; it
+    did not cover activation. This does not diagnose the separate earlier
     condition-variable invalid-opcode crash.
   * Evidence: `/mnt/HaikuWork/apps/summit/.vm/optimization-2026-10-08/tls-generation/`.
     Browser stress validation continues in the Summit repository. ARM64
