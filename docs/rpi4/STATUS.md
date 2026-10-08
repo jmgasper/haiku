@@ -110,8 +110,10 @@ and 10.2% less combined CPU than revision 3, at unchanged frame/sample
 cadence and mapped memory. Revision 4 preserves complete command-line samples
 and passes repeated dashboard reopen, fresh CPU intervals, QEMU, exact package
 rollback/reinstall and a normal native boot with graphics and health 20/20.
-The twelve-hour CPU, memory and graphics investigation continues;
-details and limits are in [PERFORMANCE-20261008.md](PERFORMANCE-20261008.md).
+The twelve-hour investigation is complete with thirteen accepted changes.
+Final sustained observations and the installed-state/recovery audit pass;
+all accepted source is integrated and pushed. Measured results and limits
+are in [PERFORMANCE-20261008.md](PERFORMANCE-20261008.md).
 The present lab boot uses Ethernet `.213`, HDMI1 at 1920x1080, and the DSI
 panel. HDMI0 is currently disconnected.
 
