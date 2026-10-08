@@ -1121,3 +1121,26 @@ default-*-qemu.txt,canonical-qemu.txt,default-boot/}`. One boot controller was
 interrupted after the second candidate had booted; explicit recovery checks
 confirmed the serial revision, archive hash, native regression and health
 before proceeding. The final default boot completed normally.
+
+## Cumulative native validation
+
+After the reservation fix's normal boot, three separately leased EGL lifetime
+batches verify 11,520 complete frames across 40 contexts and 360 window sizes.
+Two batches use shared presentation (9,216 frames); the third explicitly uses
+the copy fallback (2,304). Each context returns kernel-owned V3D storage to its
+starting size and leaves no shared bitmap areas. Pixels, resize callbacks and
+synchronous bitmap retirement pass throughout.
+
+A separate mixed batch passes native and software BGLView contexts, background
+and resize behavior, both bitmap resize orders (1,000 bitmaps each), eight
+concurrent icon-rendering workers, six AirPins launches and another 2,000
+reservation reuse cycles. Its icon test explicitly reports the new default
+libbe. The two resize workloads retain the expected 12.043 and 34.930 MiB,
+respectively; no cross-workload physical-memory total is inferred.
+
+All four batches pin eleven installed file hashes, now including the accepted
+AirPins binary, and finish with all 20 health checks passing. The source changes
+through `121ded7106` are merged into private integration commit `232e79e81f` and
+pushed to `origin/master` and `origin/rpi4`; AirPins commit `d732522` is also
+pushed. The three preexisting DSI edits retain their initial patch hash.
+Evidence: `cumulative/{summary.json,shared-a/,copy/,shared-b/,mixed/}`.
