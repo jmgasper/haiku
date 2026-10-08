@@ -7,7 +7,7 @@
 #
 #   OUTPUT_DIR  where the packages go (default /mnt/HaikuWork/airos/packages-arm64)
 #   APP         any of: airshot clipper burrow kiri lcdmonitor amp turbochook natter
-#               summit_webkit summit airpins rpi_installer
+#               airtop summit_webkit summit airpins rpi_installer
 #               (default: all of them but airpins and rpi_installer; these
 #               Raspberry Pi utilities are built only when named)
 #
@@ -453,6 +453,22 @@ build_airpins() {
 	retarget_package_info "$SRC/resources/AirPins.PackageInfo" "$STAGE/.PackageInfo"
 	add_attributes "$BUILDDIR/AirPins.rsrc" apps/AirPins
 	finish_package airpins apps/AirPins
+}
+
+build_airtop() {
+	note AirTop
+	snapshot AirTop airtop
+	# BAuxDisplay (the auxiliary display panel) needs the sysroot's libdevice
+	# and headers from 2026-10-08 or later
+	make -C "$SRC" -s -j"$JOBS" BUILD=build-arm64 CXX="$CXX_ARM64" \
+		RC="$TOOLS/rc/rc" XRES="$TOOLS/xres" MIMESET=true all
+	stage_begin
+	install_binary "$BUILDDIR/AirTop" "$BUILDDIR/AirTop.rsrc" apps/AirTop
+	docs airtop README.md LICENSE docs/THERMALS.md
+	deskbar_link apps/AirTop AirTop
+	retarget_package_info "$SRC/resources/AirTop.PackageInfo" "$STAGE/.PackageInfo"
+	add_attributes "$BUILDDIR/AirTop.rsrc" apps/AirTop
+	finish_package airtop apps/AirTop
 }
 
 # --- Raspberry Pi first-boot setup (Pi images only) --------------------------
@@ -907,7 +923,7 @@ main() {
 	setup_host_tools
 	setup_dependency_farm
 	local app
-	for app in airshot clipper burrow kiri lcdmonitor amp turbochook natter summit_webkit summit \
+	for app in airshot clipper burrow kiri lcdmonitor amp turbochook natter airtop summit_webkit summit \
 			airpins rpi_installer; do
 		[[ ( $app == airpins || $app == rpi_installer ) && ${#SELECTED[@]} -eq 0 ]] && continue
 		wanted "$app" && "build_$app"
