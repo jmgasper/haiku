@@ -8,6 +8,44 @@ reliability fixes were merged into private `master` as `6ea9a7d410`.
 Earlier bring-up notes are retained in `HISTORY-20261005.md`;
 this page supersedes their older status statements.
 
+## Owner-reported fresh-install issues: native verification (2026-10-08)
+
+The owner reported four problems with a fresh SD image (Summit refusing
+HTTPS with certificate errors, a panic when a USB keyboard was unplugged,
+a second HDMI monitor not detected after plugging it in, and a card that
+would not boot after a power cut following the expansion reboot). The
+fixes from 2026-10-07 were merged as `9d1bdbc8b8` and checked on the lab
+Pi from a generic (non-lab) image built from that tree, `hrev60206+741`,
+SHA-256 `682f9d5c…`, written to the 128 GB card through the recovery OS:
+
+- First boot showed Step 1; "Use entire SD card" → Step 2 → Hobart →
+  "Restart now". The restart logged `bfs: Reserved-space growth to
+  127727042560 bytes: No error`; `RPiInstaller --status` and `df` agree on
+  119 GiB and no step is offered again.
+- `rpi-time` status is "Synchronization successful" with `last-sync`
+  saved; the Deskbar clock went from 01:02 (UTC seed) to 12:03 Hobart.
+- `/boot/system/data/ssl/CARootCertificates.pem` exists; Summit loads
+  `https://www.haiku-os.org/` with the padlock.
+- Three NanoKVM HID resets (`POST /api/hid/reset`, the gadget detaches and
+  re-enumerates its keyboard, mouse, tablet, disk and RNDIS) produced three
+  `device removed` / `new device connected` pairs and no panic; all three
+  HID endpoints were still polled afterwards (`kvm-hid-probe.sh` 20/20).
+  The RNDIS function still times out on re-initialisation (known).
+- Disabling the NanoKVM's HDMI capture drops HPD: the driver logged
+  `HDMI0 disconnected`, the desktop fell back to HDMI1 alone, and
+  re-enabling logged `HDMI0 connected` with the 3840x1080 layout restored
+  and a live KVM picture. Windows that were on HDMI0 stayed on the display
+  they survived on: afterwards Terminal and Summit sat at x ≥ 1920 (HDMI1).
+- Power cut ~1 s after a running desktop, power back: the card booted
+  straight to the desktop, BFS mounted without journal complaints.
+
+Observations that are not among the four: the generic image built here
+had no `curl` (the CI package list has `airos_curl`; the local staging set
+did not), and Terminal prints `tput: unknown terminal "xterm-256color"`.
+An earlier EDID failure on HDMI0 during this session was a loose cable at
+the KVM, not the driver. Evidence: `/mnt/HaikuWork/rpi4/evidence/owner-issues-20261008`
+(serial logs per step, screenshots, image checksum).
+
 ## Follow-up USB and network investigation (2026-10-07)
 
 The owner's late-attached keyboard exposed a further xHCI cancellation race:
