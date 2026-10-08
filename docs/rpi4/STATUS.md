@@ -38,6 +38,12 @@ temporary rasterization bitmaps local. Native warm first-window time falls
 from 301 to 263 ms (13%), with about 11% less sampled startup/quit CPU.
 Icon states, font-size changes and all three layouts match the baseline pixels;
 the installed package repeats a 265 ms warm median and passes health checks.
+New applications now use a libbe override that calculates the vector-icon
+gamma table once and deep-copies it for each renderer. Native rendering CPU
+falls about 20% for 16-pixel icons and 5.8% across the mixed-size fixture;
+application launch time is effectively unchanged. Concurrent rendering,
+672 pixel hashes, the editor UI and a QEMU default-library boot pass.
+Existing teams retain their previous library mapping until restarted.
 The twelve-hour CPU, memory and graphics investigation continues;
 details and limits are in [PERFORMANCE-20261008.md](PERFORMANCE-20261008.md).
 The present lab boot uses Ethernet `.213`, HDMI1 at 1920x1080, and the DSI

@@ -486,3 +486,72 @@ Evidence is under `app-startup/`, chiefly `airpins-profile.txt` and
 `icon-reuse/{release-summary.json,cpu-summary.json,native-icon-baseline.txt,
 native-icon-candidate.txt,screen-comparison.json,installed-final.json,
 signature-launch.json,installed-health.json,image-package-manifest.json}`.
+
+## Reuse the vector-icon gamma calculation
+
+Each `IconRenderer` constructs an identical gamma-2.2 lookup table, evaluating
+512 `pow` calls even for a 16-pixel toolbar icon. A function-local constant now
+calculates that table once, with C++ thread-safe initialization. AGG's gamma
+table gains a deep-copy constructor, allowing each renderer to retain its
+original ownership, class layout and exported accessor. The table's two
+allocations remain per renderer; the immutable source retains another 512
+bytes per process after first use. This is a CPU optimization, not a heap
+reduction. No public class layout or gamma rounding formula changes.
+
+`rpi4_icon_bench` renders supplied HVIF files into local RGBA bitmaps, reports
+loaded `libbe`, per-size CPU/wall time and complete visible-pixel hashes, and
+can start up to sixteen independent rendering workers together. The native
+comparison uses fourteen icons, including StyledEdit, Terminal and
+Icon-O-Matic gradient artwork, with 100 rounds per size. Two runs per variant
+in original/candidate/candidate/original order give these mean worker CPU
+times, in milliseconds per 1,400 renders:
+
+| Icon size | Original | Candidate | Less CPU |
+| --- | ---: | ---: | ---: |
+| 16x16 | 775.620 | 617.455 | 20.4% |
+| 24x24 | 806.639 | 776.151 | 3.8% |
+| 32x32 | 883.288 | 776.970 | 12.0% |
+| 64x64 | 1132.493 | 1061.214 | 6.3% |
+| 128x128 | 1819.444 | 1693.584 | 6.9% |
+| 256x256 | 3821.026 | 3779.253 | 1.1% |
+
+The complete mixed-size workload uses 9.239 vs 8.705 CPU seconds, 5.8% less.
+A separate 1 ms profile records 265 ms in `pow` for the original renderer
+worker and no samples there for the candidate; total sampled worker CPU is
+9.341 vs 8.930 seconds. These are synthetic vector-rendering results, not
+application-wide gains. Fourteen warm AirPins launches per variant give
+264.53 vs 263.57 ms to a visible window, effectively unchanged at this scale.
+
+Eight workers starting together pass in QEMU and on the Pi. All 672 hashes
+(fourteen icons, six sizes, eight workers) exactly match the original library;
+the installed default repeats the same hashes. Host ASan/UBSan checks cover
+deep-copy independence, three table element/resolution combinations and five
+gamma values. Both libbe and Icon-O-Matic build. Native editor screenshots
+match pixel-for-pixel across the visible editor content, including its gradient
+canvas and previews; the test restores the initial settings state. A QEMU
+boot with the candidate as its default system library reaches the desktop
+and passes the concurrent rendering fixture.
+
+The installed override is `/boot/system/non-packaged/lib/libbe.so`,
+4,606,534 bytes, SHA-256
+`2febc7adce8b4b72a548963bf6e93e081fc92bd3a4f0e37ac141b3b86925dbd9`.
+The packaged 4,606,238-byte library is untouched, SHA-256
+`65e63aaad60e3013c49ea9ec9c1c84e524799fe97166554d7d90f6b5d6629d16`;
+it is also backed up as
+`/boot/home/performance-20261008/rollback/libbe-icon-gamma-original.so`.
+No native reboot was needed: new applications use the override, while
+existing teams retain their previous mapping. Removing this override under
+the hardware lease restores the packaged choice for subsequent applications.
+All twenty installed health checks pass. The native Icon-O-Matic package is
+unchanged; its rebuilt internal renderer was tested privately and will enter
+the next image build with the source change.
+
+Evidence: `icon-gamma/{native-abba-summary.json,baseline-profile.txt,
+candidate-profile.txt,baseline-native-check.txt,candidate-native-check.txt,
+system-qemu.txt,ui-pixel-comparison.json,app-abba-summary.json,
+installed-check.txt,installed-check.json,installed-health.json}`. The first
+application timing invocation used a nonexistent helper path and exited 127;
+the qualified comparison uses the existing private helper and absolute library
+paths. The startup investigation also verifies that the installed GCC 13.3
+libstdc++ has only a SysV hash table; no C++ runtime rebuild or loader change
+was attempted in this step.
