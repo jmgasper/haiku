@@ -841,3 +841,33 @@ The rejected source, builds, rounding counterexample and measurements remain
 under `icon-gradient/`, including `fma-order.txt`, `candidate-v2.patch`,
 `native-abba-summary.json`, `*-gradient-check.txt`, `*-icons-check.txt`,
 `*-qemu.txt`, `manifest.json` and `private-health.json`.
+
+## Rectangle-fill batching: rejected after native boot comparison
+
+The rectangle-fill helper writes two pixels per loop. Private eight- and
+sixteen-pixel batches pass 81,504 guarded native cases, including zero-length
+fills and page boundaries, plus 1,350 checks each on heap, write-back GPU and
+write-combining GPU mappings. An eight-pixel batch is about 26% faster for a
+cached 640-pixel row. Larger streaming fills and uncached GPU writes are
+essentially unchanged; tiny fills can cost roughly one extra ns.
+
+That microbenchmark gain does not translate into a repeatable full drawing
+benefit. The eight-pixel candidate was built into app_server, passed the QEMU
+desktop and all 24 bitmap hashes, and was compared over original/candidate/
+restored-original native boots. Each boot ran the same drawing benchmark twice,
+with 800 frames for each larger scene. Most timings overlap. The apparently
+best result, the 1281×721 recorded-picture scene, takes 11.579 / 11.050 / 11.008
+median app_server CPU ms per frame across those boots. The restored original
+therefore reproduces the apparent improvement without the code change.
+
+The original accepted scanline server at `scanline/app_server`, SHA-256
+`83f3495035ecfe79e26a1e76789c58f5a1499b5cdb4370b9cb3b0257b81cf9df`, is restored
+through the existing launch amendment. The packaged server, original kernel
+and eight accepted improvements remain intact. Native drawing and all 20
+health checks pass after rollback. The source change was removed; the
+candidate `f78b7025...` remains private evidence.
+
+Evidence: `rect-fill/{micro-summary.json,drawing-per-boot.json,
+drawing-*-*.txt,qemu-server.txt,candidate-a-*.json,baseline-b-*.json,
+candidate.patch,manifest.json}`. The conclusion uses the full native boot
+comparison, not the faster cached-row loop alone.
