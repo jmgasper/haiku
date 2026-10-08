@@ -33,6 +33,11 @@ CPU from 3.174 to 0.884 sampled seconds over 3,000 frames. Matched 720p
 before/after runs reduce client CPU by 31% and improve completed draws by
 6%; graphics ownership, pixels and buffer-lifetime checks pass after an
 orderly reboot. This kernel change can also affect cached texture readbacks.
+AirPins 1.0.0-2 reuses unchanged toolbar icons on window attachment and keeps
+temporary rasterization bitmaps local. Native warm first-window time falls
+from 301 to 263 ms (13%), with about 11% less sampled startup/quit CPU.
+Icon states, font-size changes and all three layouts match the baseline pixels;
+the installed package repeats a 265 ms warm median and passes health checks.
 The twelve-hour CPU, memory and graphics investigation continues;
 details and limits are in [PERFORMANCE-20261008.md](PERFORMANCE-20261008.md).
 The present lab boot uses Ethernet `.213`, HDMI1 at 1920x1080, and the DSI

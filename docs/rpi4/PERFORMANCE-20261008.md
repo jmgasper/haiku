@@ -428,3 +428,61 @@ kernel-identity.json,installed-memset.dis,guards.txt,micro-summary.json}`.
 The first 40-second QEMU window ended before buffered benchmark output was
 saved; the 55-second rerun completed. A native launch before upload exited
 127 and is excluded; the qualified native run exits zero.
+
+## AirPins toolbar startup work
+
+Warm application measurements put StyledEdit near 99 ms, AboutSystem near
+88 ms and AirPins near 301 ms to its first visible window. A ten-launch,
+kernel-inclusive profile shows remaining loader lookup work and app_server
+round trips. AirPins constructs every toolbar icon twice: in the button
+constructor, then again in `AttachedToWindow()`. Each call rasterizes a
+vector icon and creates the button's normal, active and disabled bitmaps.
+
+AirPins commit `d732522` remembers the rendered icon, size and colour and
+keeps the constructor's bitmaps when attachment has not changed those inputs.
+The constructor still supplies an icon for pre-attachment layout. A changed
+icon, font size or colour causes a rebuild; failed icon creation is not cached.
+The temporary rasterization/tint bitmap uses `B_BITMAP_NO_SERVER_LINK` because
+only its CPU pixels are needed. The actual button state bitmaps retain their
+server connections. This changes startup work, not GPIO ownership or polling.
+
+The release baseline is rebuilt byte for byte against the installed app:
+364,146 bytes, SHA-256
+`ff372a5241e58b323ac1b2b451d1aa7fa47e71a232efb563af5281e08d6a0f61`.
+The release's shared-unwinder link specification matters: the first isolated
+builds used the standalone helper's static unwinder. Their initial comparison
+is retained separately; the figures below use matching release link settings.
+The candidate is 364,218 bytes, SHA-256
+`bdb38b2fea16f15859a24edbc59b35862045bdde61ca181a666addbb7ae158e7`.
+
+An original/candidate/candidate/original comparison runs eight launches per
+group, omitting each group's first launch from the warm statistic. Fourteen
+launches per variant give median first-window times of **301.25 vs 262.91 ms**,
+12.7% less. Separate ten-launch profiles accumulate 2.340 vs 2.077 sampled
+seconds in the app's threads and 1.434 vs 1.274 seconds in its app_server
+threads, about 11% less CPU across those startup/quit cycles. This is sampled
+CPU, not an idle-runtime or whole-system percentage.
+
+Both builds boot and launch in QEMU. A private fixture compares 200 complete
+bitmap hashes across all ten icons, four button states, 12/18/24-point font
+sizes, reattachment and icon switching; QEMU and the Pi match exactly.
+The candidate also retains its state bitmap objects on unchanged attachment.
+Native screenshots of all three layouts are pixel-identical inside the
+application window. UI tests use simulated pins and restore saved settings.
+
+`airpins-1.0.0-2-arm64.hpkg` is installed; its application exactly matches the
+tested candidate. Eight installed launches give a 264.67 ms warm median.
+Launching by application signature resolves `/boot/system/apps/AirPins`.
+All twenty health checks pass. The old package is verified in
+`/boot/home/performance-20261008/rollback/airpins-1.0.0-1-arm64.hpkg`.
+The local source package and both image staging directories select revision 2;
+the image copies use the existing Zstandard policy. The live package retains
+the release builder's original compression: packagefs rejects replacement of
+the same version solely to change compression, leaving the verified installed
+package intact. Local installation uses `pkgman install -R` because repository
+refresh is unavailable; the reviewed plan changes only AirPins.
+
+Evidence is under `app-startup/`, chiefly `airpins-profile.txt` and
+`icon-reuse/{release-summary.json,cpu-summary.json,native-icon-baseline.txt,
+native-icon-candidate.txt,screen-comparison.json,installed-final.json,
+signature-launch.json,installed-health.json,image-package-manifest.json}`.
