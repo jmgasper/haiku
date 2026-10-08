@@ -104,6 +104,12 @@ the geometry-only cache, with identical cadence and mapped memory. Version
 1.2.0-3 passes pixel checks, QEMU, package rollback/reinstall and a normal native
 boot. The kernel’s loader/malloc callers also pass 50 loader cases, four-thread
 allocation checks and fork copy-on-write.
+A thirteenth improvement collects AirTop’s per-process details only while its
+dashboard is open. Native live ABBA uses 26.9% less panel client CPU
+and 10.2% less combined CPU than revision 3, at unchanged frame/sample
+cadence and mapped memory. Revision 4 preserves complete command-line samples
+and passes repeated dashboard reopen, fresh CPU intervals, QEMU, exact package
+rollback/reinstall and a normal native boot with graphics and health 20/20.
 The twelve-hour CPU, memory and graphics investigation continues;
 details and limits are in [PERFORMANCE-20261008.md](PERFORMANCE-20261008.md).
 The present lab boot uses Ethernet `.213`, HDMI1 at 1920x1080, and the DSI

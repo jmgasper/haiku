@@ -7,7 +7,7 @@
 +#include <cmath>
 +#include <new>
  #include <ctime>
- 
+
  using namespace Theme;
 @@ -49,6 +51,8 @@
          fDisplay.Present();
@@ -45,7 +45,7 @@
 @@ -99,6 +117,29 @@
      if (!(skip && strstr(skip, "temp"))) DrawTemperatures(BRect(403, 270, 630, 470));
  }
- 
+
 +// Cache the fixed panel frames, titles and captions. Samples, graphs and
 +// animation still render every frame; allocation failure keeps the direct path.
 +void AuxPanel::PrepareBackground() {
@@ -95,7 +95,7 @@
  #include <atomic>
  #include <thread>
 +#include <memory>
- 
+
  class BBitmap;
  class BView;
 @@ -28,6 +29,8 @@
@@ -119,7 +119,7 @@
      std::atomic<bool> fStop{false};
 --- a/Makefile
 +++ b/Makefile
-@@ -47,3 +47,8 @@
+@@ -47,3 +47,13 @@
  	$(CXX) -std=c++17 -Wall -Wextra tests/rendering_test.cpp -lbe -o $(BUILD)/rendering_test
  	$(BUILD)/rendering_test
  .PHONY: check-rendering
@@ -128,12 +128,23 @@
 +	$(CXX) $(CPPFLAGS) $(CXXFLAGS) tests/panel_cache_test.cpp $(BUILD)/AuxPanel.o $(BUILD)/Sampler.o $(BUILD)/HardwareSensors.o $(LDFLAGS) $(LDLIBS) -o $(BUILD)/panel_cache_test
 +	$(BUILD)/panel_cache_test
 +.PHONY: check-panel
++
++check-process-demand: all
++	$(CXX) $(CXXFLAGS) tests/process_demand_test.cpp $(BUILD)/Sampler.o $(BUILD)/HardwareSensors.o $(LDLIBS) -o $(BUILD)/process_demand_test
++	$(BUILD)/process_demand_test
++.PHONY: check-process-demand
 --- a/README.md
 +++ b/README.md
-@@ -47,6 +47,13 @@
+@@ -47,6 +47,19 @@
  from 2026-10-08); the panel renders at five frames a second (about one percent of a Raspberry Pi 4) into the
  display's own buffers.
- 
+
++When only the auxiliary panel is running, AirTop collects system totals and
++graph samples without collecting the dashboard’s per-process table. Opening
++the dashboard resumes process collection; closing it stops that extra work.
++A plain relaunch opens the dashboard again. `--sample` continues to include
++full process data.
++
 +The panel caches its fixed background, rounded borders, titles and captions.
 +Changing text, values and graphs still render on every frame. At 640×480 the cache holds 1,228,800
 +bytes of pixels and needs no extra drawing window or thread. Turning off the
@@ -142,14 +153,14 @@
 +and the diagnostic `AIRTOP_PANEL_SKIP` modes.
 +
  ## Controls
- 
+
  | Input | Action |
 --- a/resources/AirTop.PackageInfo
 +++ b/resources/AirTop.PackageInfo
 @@ -1,5 +1,5 @@
  name airtop
 -version 1.2.0-1
-+version 1.2.0-3
++version 1.2.0-4
  architecture arm64
  summary "AirTop system monitor"
  description "A native air/OS and Haiku system monitor with a dark, btop-inspired dashboard: CPU, memory, network, processes, volumes and thermal sensors. On a machine with an auxiliary display (the DSI panel of a Raspberry Pi) it shows the CPU graph, the network graph and the temperature there too, with or without its window (AirTop --panel)."
@@ -256,4 +267,218 @@
 +    unsetenv("AIRTOP_PANEL_SKIP");
 +    printf("PANEL_CACHE_PASS cases=%d: exact pixels, scaling, letterboxing, changing data, fallback and debug modes\n",cases);
 +    return 0;
++}
+--- a/src/Sampler.h
++++ b/src/Sampler.h
+@@ -35,10 +35,11 @@
+ };
+ class Sampler {
+ public:
+-    Sampler(); ~Sampler();
++    explicit Sampler(bool processDetails = true); ~Sampler();
+     Snapshot Sample();
+     void Start(); void Stop();
+     bool Latest(Snapshot& snapshot);
++    void SetProcessDetailsEnabled(bool enabled);
+     void SetInterval(bigtime_t interval); bigtime_t Interval() const { return fInterval.load(); }
+ private:
+     Snapshot fState;
+@@ -52,6 +53,7 @@
+     std::condition_variable fWake;
+     std::thread fThread;
+     std::atomic<bool> fStop{false}; std::atomic<bigtime_t> fInterval{250000};
++    std::atomic<bool> fProcessDetails;
+     Snapshot fPublished;
+ };
+ void PrintSnapshot(const Snapshot& snapshot);
+--- a/src/Sampler.cpp
++++ b/src/Sampler.cpp
+@@ -28,7 +28,7 @@
+     }
+     return result + '"';
+ }
+-Sampler::Sampler() {
++Sampler::Sampler(bool processDetails) : fProcessDetails(processDetails) {
+     char host[256] = {}; gethostname(host, sizeof(host) - 1); fState.host = host;
+     utsname os{}; uname(&os); fState.os = std::string(os.sysname) + " " + os.release;
+     fState.cpuName = "Processor";
+@@ -55,6 +55,9 @@
+     });
+ }
+ void Sampler::Stop() { fStop = true; fWake.notify_all(); if (fThread.joinable()) fThread.join(); }
++void Sampler::SetProcessDetailsEnabled(bool enabled) {
++    if (fProcessDetails.exchange(enabled) != enabled) fWake.notify_all();
++}
+ void Sampler::SetInterval(bigtime_t interval) { fInterval = interval; fWake.notify_all(); }
+ bool Sampler::Latest(Snapshot& snapshot) {
+     std::lock_guard<std::mutex> lock(fMutex);
+@@ -91,7 +94,12 @@
+     fState.faults = fPreviousTime ? Metrics::Rate(info.page_faults, fPreviousFaults, seconds) : 0;
+     fPreviousFaults = info.page_faults;
+     // Area enumeration and process sorting need not run at the graph cadence.
+-    if (!fProcessTime || now - fProcessTime >= 1000000) {
++    if (!fProcessDetails.load()) {
++        // The panel uses system totals; only a dashboard needs per-process areas.
++        fState.processes.clear();
++        fPreviousTeams.clear();
++        fState.processTime = fProcessTime = 0;
++    } else if (!fProcessTime || now - fProcessTime >= 1000000) {
+         double processSeconds = (now - fProcessTime) / 1000000.0;
+         std::map<team_id, std::pair<bigtime_t, bigtime_t>> previousTeams;
+         fState.processes.clear();
+--- a/src/Dashboard.h
++++ b/src/Dashboard.h
+@@ -6,7 +6,7 @@
+ #include <Window.h>
+ #include <string>
+
+-constexpr uint32 kPause = 'paus', kRefresh = 'rfre', kSpeed = 'sped', kHelp = 'help', kAuxPanel = 'auxp';
++constexpr uint32 kPause = 'paus', kRefresh = 'rfre', kSpeed = 'sped', kHelp = 'help', kAuxPanel = 'auxp', kShowMonitor = 'shwm';
+ class AuxPanel;
+ class Dashboard : public BView {
+ public:
+--- a/src/Dashboard.cpp
++++ b/src/Dashboard.cpp
+@@ -449,6 +449,7 @@
+ }
+ MonitorWindow::MonitorWindow(Sampler& sampler, AuxPanel* panel, bool quitsApp)
+     : BWindow(BRect(80, 60, 1300, 950), "AirTop", B_TITLED_WINDOW, B_ASYNCHRONOUS_CONTROLS), fSampler(sampler), fAuxPanel(panel), fQuitsApp(quitsApp) {
++    fSampler.SetProcessDetailsEnabled(true);
+     SetSizeLimits(1000, 2400, 790, 1800);
+     BMenuBar* bar = new BMenuBar(BRect(0, 0, Bounds().Width(), 20), "menu");
+     BMenu* menu = new BMenu("AirTop"); menu->AddItem(new BMenuItem("About AirTop…", new BMessage(B_ABOUT_REQUESTED))); menu->AddSeparatorItem(); menu->AddItem(new BMenuItem("Quit", new BMessage(B_QUIT_REQUESTED), 'Q')); bar->AddItem(menu);
+@@ -469,6 +470,7 @@
+     fAuxItem->SetMarked(fAuxPanel != nullptr && fAuxPanel->IsRunning());
+ }
+ bool MonitorWindow::QuitRequested() {
++    fSampler.SetProcessDetailsEnabled(false);
+     BMessage settings; settings.AddRect("frame", Frame()); settings.AddInt64("interval", fSampler.Interval());
+     BFile file(SettingsPath().Path(), B_WRITE_ONLY | B_CREATE_FILE | B_ERASE_FILE); settings.Flatten(&file);
+     if (fQuitsApp) be_app->PostMessage(B_QUIT_REQUESTED);
+@@ -495,6 +497,7 @@
+         }
+     }
+     switch (message->what) {
++        case kShowMonitor: Activate(); break;
+         case kPause: fDashboard->TogglePause(); break;
+         case kSpeed: fDashboard->CycleSpeed(); break;
+         case kHelp: case B_ABOUT_REQUESTED: fDashboard->Help(); break;
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -1,6 +1,7 @@
+ #include "Dashboard.h"
+ #include "AuxPanel.h"
+ #include <Application.h>
++#include <Messenger.h>
+ #include <cstdio>
+ #include <cstdlib>
+ #include <cstring>
+@@ -13,7 +14,7 @@
+ // window (single launch), and closing that window keeps the panel going.
+ class AirTop : public BApplication {
+ public:
+-    AirTop(bool panelOnly) : BApplication("application/x-vnd.AirOS-AirTop"), fPanelOnly(panelOnly) {}
++    AirTop(bool panelOnly) : BApplication("application/x-vnd.AirOS-AirTop"), fPanelOnly(panelOnly), fSampler(false) {}
+     ~AirTop() override { delete fPanel; fSampler.Stop(); }
+     void ReadyToRun() override {
+         fSampler.Start();
+@@ -30,12 +31,16 @@
+         ShowWindow();
+     }
+     void RefsReceived(BMessage*) override { ShowWindow(); }
++    void MessageReceived(BMessage* message) override {
++        if (message->what == B_SILENT_RELAUNCH) ShowWindow();
++        else BApplication::MessageReceived(message);
++    }
+     void ShowWindow() {
+-        if (fWindow != nullptr && fWindow->Lock()) { fWindow->Activate(); fWindow->Unlock(); return; }
+-        fWindow = new MonitorWindow(fSampler, fPanel, !fPanelOnly);
++        if (fWindow.IsValid() && fWindow.SendMessage(kShowMonitor) == B_OK) return;
++        fWindow = BMessenger(new MonitorWindow(fSampler, fPanel, !fPanelOnly));
+     }
+ private:
+-    bool fPanelOnly; Sampler fSampler; AuxPanel* fPanel = nullptr; MonitorWindow* fWindow = nullptr;
++    bool fPanelOnly; Sampler fSampler; AuxPanel* fPanel = nullptr; BMessenger fWindow;
+ };
+ static void OnSignal(int) { if (be_app) be_app->PostMessage(B_QUIT_REQUESTED); }
+ int main(int argc, char** argv) {
+--- /dev/null
++++ b/tests/process_demand_test.cpp
+@@ -0,0 +1,77 @@
++#include "../src/Sampler.h"
++#include <cstdio>
++#include <cstdlib>
++#include <unistd.h>
++
++static void require(bool value, const char* message)
++{
++    if (!value) { fprintf(stderr, "DEMAND_FAIL %s\n", message); exit(1); }
++}
++
++static const Process& self(const Snapshot& snapshot)
++{
++    for (const auto& process : snapshot.processes)
++        if (process.id == getpid()) return process;
++    require(false, "current process present");
++    return snapshot.processes.front();
++}
++
++static Snapshot wait_for(Sampler& sampler, bool details)
++{
++    Snapshot snapshot;
++    bigtime_t deadline = system_time() + 3000000;
++    while (system_time() < deadline) {
++        if (sampler.Latest(snapshot) && snapshot.valid && snapshot.cpuValid
++            && (!snapshot.processes.empty() == details)) {
++            require(!snapshot.cores.empty() && snapshot.teams > 0
++                && snapshot.totalMemory > 0, "system totals continue");
++            require((snapshot.processTime != 0) == details, "process timestamp follows demand");
++            return snapshot;
++        }
++        snooze(10000);
++    }
++    require(false, "demand transition published");
++    return snapshot;
++}
++
++int main()
++{
++    setvbuf(stdout, NULL, _IOLBF, 0);
++    Sampler defaults;
++    Snapshot initial = defaults.Sample();
++    require(initial.valid && self(initial).resident > 0, "default collection unchanged");
++    Sampler sampler(false);
++    sampler.Start();
++    std::atomic<bool> stop(false);
++    std::thread busy([&] { while (!stop.load(std::memory_order_relaxed)) {} });
++    Snapshot disabled = wait_for(sampler, false);
++    uint64 sequence = disabled.sequence;
++    double peak = 0;
++    for (int round = 0; round < 4; round++) {
++        sampler.SetProcessDetailsEnabled(true);
++        Snapshot enabled = wait_for(sampler, true);
++        require(enabled.sequence > sequence, "sampling advances on enable");
++        require(self(enabled).cpu == 0, "first CPU sample starts a fresh interval");
++        snooze(1250000);
++        Snapshot measured;
++        require(sampler.Latest(measured) && measured.processTime > enabled.processTime,
++            "process counters update while demanded");
++        peak = std::max(peak, self(measured).cpu);
++        require(self(measured).cpu > 10 && self(measured).cpu < 200,
++            "bounded load has a current CPU rate");
++        require(measured.cpuHistory.size() >= enabled.cpuHistory.size(),
++            "history continues while detailed collection is enabled");
++        sampler.SetProcessDetailsEnabled(false);
++        disabled = wait_for(sampler, false);
++        require(disabled.sequence > measured.sequence, "sampling advances on disable");
++        require(disabled.cpuHistory.size() >= measured.cpuHistory.size(),
++            "disabling details preserves history");
++        sequence = disabled.sequence;
++        printf("DEMAND round=%d samples=%llu history=%zu load_cpu=%.3f\n", round,
++            (unsigned long long)sequence, disabled.cpuHistory.size(), self(measured).cpu);
++    }
++    sampler.Stop();
++    stop = true;
++    busy.join();
++    printf("DEMAND_PASS transitions=8 default_details=1 peak_cpu=%.3f\n", peak);
 +}
