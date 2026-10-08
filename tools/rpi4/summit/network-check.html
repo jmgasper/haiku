@@ -1,0 +1,42 @@
+<!doctype html><meta charset="utf-8"><title>Summit network regression check</title>
+<style>body{font:18px sans-serif;margin:40px;background:#fff;color:#123}pre{white-space:pre-wrap}</style>
+<h1>Summit network regression check</h1><pre id="out">Starting…</pre>
+<script>
+(async()=>{
+ const run=(new URLSearchParams(location.search).get('run')||'unnamed').replace(/[^a-z0-9_-]/gi,'');
+ const report={run,agent:navigator.userAgent,performance:[],integrity:[],passed:false};
+ const out=document.querySelector('#out');let serial=0;
+ const show=()=>out.textContent=JSON.stringify(report,null,2);
+ const save=async()=>{show();await fetch('/browser-'+run+'.json',{method:'POST',body:JSON.stringify(report,null,2)});};
+ const url=bytes=>'/data?bytes='+bytes+'&run='+run+'&serial='+(serial++);
+ const check=(array,offset=0)=>{for(let i=0;i<array.length;i++)if(array[i]!==((offset+i)&255))throw Error('bad data at '+(offset+i));};
+ try {
+  for(let trial=0;trial<(new URLSearchParams(location.search).has('smoke')?0:3);trial++){
+   const bytes=64*1024*1024,start=performance.now(),wall=Date.now();
+   const response=await fetch(url(bytes));const reader=response.body.getReader();let received=0,chunks=0;
+   for(;;){const next=await reader.read();if(next.done)break;received+=next.value.byteLength;chunks++;}
+   const seconds=(performance.now()-start)/1000;
+   if(received!==bytes)throw Error('short throughput response');
+   report.performance.push({trial:trial+1,bytes:received,chunks,seconds,mbps:received*8/seconds/1e6,start:wall,end:Date.now()});await save();
+  }
+  for(const size of [0,1,255,256,257,4095,4096,4097,65535,65536,65537,1048579]){
+   const response=await fetch(url(size));const data=new Uint8Array(await response.arrayBuffer());
+   if(data.length!==size)throw Error('bad array length '+size);check(data);report.integrity.push({kind:'array',bytes:size,passed:true});
+  }
+  {const size=3*1024*1024+17,response=await fetch(url(size)),reader=response.body.getReader();let received=0;
+   for(;;){const next=await reader.read();if(next.done)break;check(next.value,received);received+=next.value.length;}
+   if(received!==size)throw Error('bad stream length');report.integrity.push({kind:'stream',bytes:size,passed:true});}
+  await Promise.all([99991,100003,262145,524287].map(async size=>{
+   const response=await fetch(url(size)),data=new Uint8Array(await response.arrayBuffer());
+   if(data.length!==size)throw Error('bad parallel length');check(data);report.integrity.push({kind:'parallel',bytes:size,passed:true});
+  }));
+  {const response=await fetch(url(16*1024*1024)),reader=response.body.getReader();let received=0;
+   while(received<131072){const next=await reader.read();if(next.done)throw Error('early end before cancel');check(next.value,received);received+=next.value.length;}
+   await reader.cancel();report.integrity.push({kind:'cancel',bytes:received,passed:true});}
+  {const response=await fetch(url(77777)),data=new Uint8Array(await response.arrayBuffer());
+   if(data.length!==77777)throw Error('bad post-cancel length');check(data);report.integrity.push({kind:'after-cancel',bytes:data.length,passed:true});}
+  report.passed=true;
+ }catch(error){report.error=String(error);}
+ await save();
+})().catch(error=>document.querySelector('#out').textContent=String(error));
+</script>

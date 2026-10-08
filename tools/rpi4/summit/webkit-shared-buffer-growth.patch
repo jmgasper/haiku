@@ -1,0 +1,34 @@
+--- a/Source/WebCore/platform/SharedBuffer.cpp
++++ b/Source/WebCore/platform/SharedBuffer.cpp
+@@ -661,11 +661,12 @@
+ void SharedBufferBuilder::append(const FragmentedSharedBuffer& data)
+ {
+     m_state = State::Stale;
+-    m_segments.appendContainerWithMapping(data.m_segments, [&](auto& element) {
+-        SharedBuffer::DataSegmentVectorEntry entry { m_size, element.segment.copyRef() };
++    // Keep geometric growth when network data arrives a few segments at a time.
++    // Reserving exactly the new size repeatedly moves the entire segment list.
++    for (auto& element : data.m_segments) {
++        m_segments.append(SharedBuffer::DataSegmentVectorEntry { m_size, element.segment.copyRef() });
+         m_size += element.segment->size();
+-        return entry;
+-    });
++    }
+     ASSERT(FragmentedSharedBuffer::internallyConsistent(m_size, m_segments));
+ }
+ 
+@@ -684,11 +685,10 @@
+ void SharedBufferBuilder::appendSpans(const Vector<std::span<const uint8_t>>& spans)
+ {
+     m_state = State::Stale;
+-    m_segments.appendContainerWithMapping(spans, [&](auto& span) {
+-        SharedBuffer::DataSegmentVectorEntry entry { m_size, DataSegment::create(span) };
++    for (auto& span : spans) {
++        m_segments.append(SharedBuffer::DataSegmentVectorEntry { m_size, DataSegment::create(span) });
+         m_size += span.size();
+-        return entry;
+-    });
++    }
+     ASSERT(FragmentedSharedBuffer::internallyConsistent(m_size, m_segments));
+ }
+ 

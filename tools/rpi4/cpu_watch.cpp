@@ -59,8 +59,9 @@ main(int argc, char** argv)
 			active += delta;
 			printf(" cpu%u=%.2f", cpu, 100.0 * delta / elapsed);
 		}
-		printf(" total=%.2f cores=%.3f\n", 100.0 * active / elapsed / system.cpu_count,
-			active / elapsed);
+		printf(" total=%.2f cores=%.3f wall_us=%lld\n",
+			100.0 * active / elapsed / system.cpu_count, active / elapsed,
+			(long long)real_time_clock_usecs());
 		auto next = Threads();
 		std::vector<Sample> busy;
 		for (const auto& item : next) {
