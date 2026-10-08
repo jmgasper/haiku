@@ -1,13 +1,13 @@
 {
   "baseline_package": "airtop-1.2.0-1-arm64.hpkg",
-  "candidate_package": "airtop-1.2.0-2-arm64.hpkg",
+  "candidate_package": "airtop-1.2.0-3-arm64.hpkg",
   "baseline_binary_sha256": "f943349e00c0c54247de1e7ea4a257c062beb6706ca1c504cd2e5616ff52834e",
-  "candidate_binary_sha256": "d19a6f016c4ace1be0d67224af13e1284fb0c8bb6478fcd735ed30336b6a8e24",
+  "candidate_binary_sha256": "814f6dc1563cb6781e831a08b278000e2c6dfdd3401d094da42144999f95c38a",
   "toolchain": "GCC 13.3.0",
   "files": {
     "src/AuxPanel.cpp": {
       "baseline_sha256": "2de52c8d4c05b700384c30db22f0e012e1829df04140af11f592ac3c00441de1",
-      "candidate_sha256": "4ca4b941246ca8ddd47ebc64c783ec93953d7af80c58886393a4eff4f6f12a73"
+      "candidate_sha256": "40faf262ad55f122e524b6938df9774e0621d760c8046dcde732031d4f7750fc"
     },
     "src/AuxPanel.h": {
       "baseline_sha256": "5bafeb43a8aa2b7d835c3ee345e11c6ac36fabc8b51a3419df7493b229eae67c",
@@ -19,21 +19,23 @@
     },
     "README.md": {
       "baseline_sha256": "63389d51abb08a53e2d249d26bf94bcb83245c87f8c42941fafb8d24e9707366",
-      "candidate_sha256": "459c87f4dcb5717ae34ecc87703573612954f3bdb16ffc9d69e5a977e904c684"
+      "candidate_sha256": "7a908f71313e1fa0b5aaee639820879ac6a8820b6fd0a27f00d418feea7bdf4d"
     },
     "resources/AirTop.PackageInfo": {
       "baseline_sha256": "b5f8dce29cc0d7c731941ee1a74e52fde928694a8231abbd17f7d78159c475ff",
-      "candidate_sha256": "277bc920870c14040c93615e82aab55c1914459e859e1cb813dea38a6b41ee6d"
+      "candidate_sha256": "891e35468b96ad5ff9f8c22a51abaf1c831af9acc40ce2145267e46ecacd4547"
     },
     "tests/panel_cache_test.cpp": {
       "baseline_sha256": null,
       "candidate_sha256": "d67d57a2ffd9ab75c95269b69f6df3e11a740b421a16f90294fa05803ce821e6"
     }
   },
-  "patch_sha256": "e6051bec9107e2741007b6e078431f2dbc40e08c829032ffcda48fba3084c081",
-  "candidate_package_sha256": "0fadc1548a160f275e5b2f6269917954eddd7a6aaac6a822438e7a7dcbe7e018",
-  "haiku_source_commit": "14ed3e6a001fee17d5ce24bd12cddbbdfd670f0e",
+  "patch_sha256": "3c368883ae99de1fbf6cff093814d655534e178d99d48a2b22ac8277a8da2c32",
+  "candidate_package_sha256": "6922744bab1018a41decb930954a760b40c72172813d8b25384ab7ec89045e1f",
+  "haiku_source_commit": "97840781ee65cd1841a7c3a4c19c542e528b703a",
   "buildtools_source_commit": "8375c2dbeaf109c520798cb234d57f0895463201",
   "test_target": "make check-panel",
-  "cache_pixel_bytes_640x480": 1228800
+  "cache_pixel_bytes_640x480": 1228800,
+  "previous_accepted_package": "airtop-1.2.0-2-arm64.hpkg",
+  "previous_accepted_binary_sha256": "d19a6f016c4ace1be0d67224af13e1284fb0c8bb6478fcd735ed30336b6a8e24"
 }

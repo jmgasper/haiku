@@ -1121,3 +1121,89 @@ default-*-qemu.txt,canonical-qemu.txt,default-boot/}`. One boot controller was
 interrupted after the second candidate had booted; explicit recovery checks
 confirmed the serial revision, archive hash, native regression and health
 before proceeding. The final default boot completed normally.
+
+## Cumulative native validation
+
+After the reservation fix's normal boot, three separately leased EGL lifetime
+batches verify 11,520 complete frames across 40 contexts and 360 window sizes.
+Two batches use shared presentation (9,216 frames); the third explicitly uses
+the copy fallback (2,304). Each context returns kernel-owned V3D storage to its
+starting size and leaves no shared bitmap areas. Pixels, resize callbacks and
+synchronous bitmap retirement pass throughout.
+
+A separate mixed batch passes native and software BGLView contexts, background
+and resize behavior, both bitmap resize orders (1,000 bitmaps each), eight
+concurrent icon-rendering workers, six AirPins launches and another 2,000
+reservation reuse cycles. Its icon test explicitly reports the new default
+libbe. The two resize workloads retain the expected 12.043 and 34.930 MiB,
+respectively; no cross-workload physical-memory total is inferred.
+
+All four batches pin eleven installed file hashes, now including the accepted
+AirPins binary, and finish with all 20 health checks passing. The source changes
+through `121ded7106` are merged into private integration commit `232e79e81f` and
+pushed to `origin/master` and `origin/rpi4`; AirPins commit `d732522` is also
+pushed. The three preexisting DSI edits retain their initial patch hash.
+Evidence: `cumulative/{summary.json,shared-a/,copy/,shared-b/,mixed/}`.
+
+
+The unreserve caller audit also covers the runtime loader and malloc page
+allocator. The existing SysV/GNU-hash loader suite passes all 50 expected
+outcomes in QEMU and natively on the corrected kernel. A bounded four-thread
+fixture exercises malloc, calloc, aligned allocations, realloc preservation,
+page-size and 2 MiB boundaries, and fork copy-on-write. QEMU verifies 985,985,338
+bytes across 2,000 threaded operations; native verifies 3,928,681,852 bytes
+across 8,000 operations, plus the child churn. Native health remains 20/20.
+The first QEMU attempt stopped before any test result while staging via archive
+extraction; staging the exact unpacked files and capturing startup output
+resolved the fixture setup. This is a correctness check, not a malloc speedup
+claim. Evidence: `reservation-callers/{loader-manifest.json,malloc-stress.cpp,
+loader-qemu.txt,malloc-qemu.txt,startup-qemu.txt,native/}`.
+
+## AirTop fixed panel labels: accepted
+
+The background cache now includes the three fixed titles and their fixed
+captions. It uses the existing bitmap; changing text, graph samples, sensor
+values and animation still render each frame. The allocation-failure and debug
+paths continue to draw everything directly.
+
+In the native original/candidate/candidate/original drawing comparison, all
+144 image hashes agree. Populated deterministic scenes use 2.2–3.0% less combined
+client/server CPU; the empty scene uses 12.4% less. The 288 cached/direct cases
+also pass natively and in QEMU at six sizes, including fractional scale and
+letterboxing, changing data, fallback and debug modes.
+
+Four live runs each warm for 125 seconds and then measure 60 seconds. Every run
+produces 300 frames, 240 fresh samples and 489 history entries. Mean CPU is:
+
+| Work in 60 seconds | Geometry-only cache | Geometry and label cache |
+| --- | ---: | ---: |
+| Client | 1,052.701 ms | 1,036.712 ms |
+| Client's app_server threads | 1,351.445 ms | 1,290.508 ms |
+| Combined | 2,404.145 ms | 2,327.220 ms |
+
+That is about 3.2% less combined CPU in this live comparison (1.5% client,
+4.5% server). Graph data varies between live runs; the deterministic fixtures
+supply the matched-content comparison. All live processes map the same
+94,613,504 bytes, and the cache remains 1,228,800 pixel bytes at 640x480.
+This modest saving is relative to the already accepted geometry cache.
+
+`airtop-1.2.0-3-arm64.hpkg` is installed, package SHA-256
+`6922744bab1018a41decb930954a760b40c72172813d8b25384ab7ec89045e1f`.
+The executable remains 351,408 bytes, now SHA-256
+`814f6dc1563cb6781e831a08b278000e2c6dfdd3401d094da42144999f95c38a`.
+The canonical rebuild matches its executable and extracted file contents,
+modes and attributes. The tested package is selected in both existing image
+package directories; their previous revision-2 archives are preserved. One
+of those older archives had different package metadata but identical accepted
+file contents, which were checked before replacement. No full image was built.
+
+The QEMU package passes three GUI launches and the 288 rendering cases.
+Native upgrade, exact revision-2 rollback and reinstall each pass file hashes,
+loaded-process and health checks. A normal native reboot then verifies all
+eleven pinned files, one AirTop drawing thread, 24 drawing hashes, EGL/BGLView,
+reservation regressions/reuse and all 20 health checks. Serial confirms the
+same accepted `hrev60206+766+dirty` kernel. The cumulative source patch and pins
+are updated in `tools/rpi4/airtop-panel-cache.patch` and the adjacent source
+manifest. Evidence: `airtop-label-cache/{manifest.json,candidate.patch,
+drawing-comparison.json,live-comparison.json,package-content-equality.json,
+install/,boot/}`.
