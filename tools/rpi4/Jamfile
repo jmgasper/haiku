@@ -25,6 +25,7 @@ SimpleTest rpi4_kdl : kdl.cpp ;
 SimpleTest rpi4_orphan : orphan.cpp ;
 SimpleTest rpi4_app_bench : app_bench.cpp : be [ TargetLibsupc++ ] ;
 SimpleTest rpi4_icon_bench : icon_bench.cpp : be [ TargetLibsupc++ ] ;
+SimpleTest rpi4_drawing_bench : drawing_bench.cpp : be [ TargetLibsupc++ ] ;
 SimpleTest rpi4_view_visibility : view_visibility.cpp : be [ TargetLibsupc++ ] ;
 SimpleTest rpi4_memory_move_probe : memory_move_probe.cpp : [ TargetLibstdc++ ] ;
 SimpleTest rpi4_memory_bench : memory_bench.cpp : [ TargetLibstdc++ ] ;

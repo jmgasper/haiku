@@ -9,6 +9,8 @@
 #ifndef DRAWING_MODE_COPY_SOLID_H
 #define DRAWING_MODE_COPY_SOLID_H
 
+#include <ByteOrder.h>
+
 #include "DrawingModeOver.h"
 
 // blend_pixel_copy_solid
@@ -38,17 +40,40 @@ blend_hline_copy_solid(int x, int y, unsigned len,
 		p8[2] = (uint8)c.r;
 		p8[3] = 255;
 		uint32* p32 = (uint32*)(buffer->row_ptr(y)) + x;
+		if (len >= 8) {
+			do {
+				p32[0] = v;
+				p32[1] = v;
+				p32[2] = v;
+				p32[3] = v;
+				p32[4] = v;
+				p32[5] = v;
+				p32[6] = v;
+				p32[7] = v;
+				p32 += 8;
+				len -= 8;
+			} while (len >= 8);
+			if (len == 0)
+				return;
+		}
 		do {
-			*p32 = v;
-			p32++;
-			x++;
+			*p32++ = v;
 		} while(--len);
 	} else {
-		uint8* p = buffer->row_ptr(y) + (x << 2);
+		uint32* p = (uint32*)(buffer->row_ptr(y)) + x;
+		const uint32 sourceRB = ((uint32(c.r) << 16) | c.b) * cover;
+		const uint32 sourceG = uint32(c.g) * cover;
+		const uint32 inverse = 256 - cover;
+		// Red and blue use separate 16-bit lanes. Each weighted sum is at
+		// most 255 * 256, so neither lane can carry into the other. Keep
+		// BLEND_OVER's division by 256 and its opaque destination alpha.
 		do {
-			BLEND_OVER(p, c.r, c.g, c.b, cover);
-			x++;
-			p += 4;
+			const uint32 destination = B_LENDIAN_TO_HOST_INT32(*p);
+			const uint32 rb = (((destination & 0x00ff00ff) * inverse
+				+ sourceRB) >> 8) & 0x00ff00ff;
+			const uint32 green = (((destination >> 8) & 255) * inverse
+				+ sourceG) & 0x0000ff00;
+			*p++ = B_HOST_TO_LENDIAN_INT32(0xff000000 | rb | green);
 		} while(--len);
 	}
 }
@@ -143,4 +168,3 @@ blend_color_hspan_copy_solid(int x, int y, unsigned len,
 }
 
 #endif // DRAWING_MODE_COPY_SOLID_H
-

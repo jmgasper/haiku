@@ -43,7 +43,16 @@ gamma table once and deep-copies it for each renderer. Native rendering CPU
 falls about 20% for 16-pixel icons and 5.8% across the mixed-size fixture;
 application launch time is effectively unchanged. Concurrent rendering,
 672 pixel hashes, the editor UI and a QEMU default-library boot pass.
-Existing teams retain their previous library mapping until restarted.
+The later app_server qualification reboots also load this library into the
+long-running desktop teams. App_server now batches opaque copy-mode scanline
+stores and combines exact partial-coverage color arithmetic. Four native runs
+per variant across alternating boots cut offscreen drawing CPU by 8–13% at
+640×480 and 4–8% in the larger fixture. All 192 bitmap hashes agree; exhaustive
+arithmetic, cached/uncached graphics mappings, 1,152 EGL frames and BGLView
+pixels/lifetimes pass. The packaged server remains intact behind a removable
+launch-service amendment, and the rollback boot and final 20 health checks pass.
+This is a drawing-workload gain; tiny opaque spans can cost a few extra ns and
+large uncached spans are essentially unchanged.
 The twelve-hour CPU, memory and graphics investigation continues;
 details and limits are in [PERFORMANCE-20261008.md](PERFORMANCE-20261008.md).
 The present lab boot uses Ethernet `.213`, HDMI1 at 1920x1080, and the DSI

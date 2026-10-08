@@ -555,3 +555,87 @@ the qualified comparison uses the existing private helper and absolute library
 paths. The startup investigation also verifies that the installed GCC 13.3
 libstdc++ has only a SysV hash table; no C++ runtime rebuild or loader change
 was attempted in this step.
+
+## Copy-mode solid scanlines
+
+A thirty-second native desktop profile identifies
+`blend_hline_copy_solid` as the largest individual cost in AirTop's offscreen
+app_server drawing thread: 320 of 977 sampled milliseconds. This is a different
+path from the shared `gfxset32` helper investigated earlier; that helper remains
+unchanged. The candidate unrolls opaque scanlines in eight-pixel blocks, with
+the original scalar tail, and combines red/blue arithmetic into separate
+16-bit lanes for partial coverage. Green is calculated separately. The weighted
+lane sums cannot exceed 255 × 256, preserving the original division by 256,
+rounding and opaque destination alpha. Explicit byte-order conversions retain
+BGRA memory order. There is no new allocation or graphics ownership change.
+
+`rpi4_drawing_bench` renders rounded panels, filled/stroked curves, fractional
+lines, ellipses, text, disjoint clipping and BPicture playback into six bitmap
+sizes. Each bitmap has a distinct window title, allowing the benchmark to
+measure its own app_server drawing thread. Four timed runs per variant are
+split across two boots each, alternating original/candidate/original/candidate.
+Each large scene has eight warmups and 800 synchronized timed frames. Medians:
+
+| Canvas | Scene | Original server ms/frame | Candidate | Reduction |
+| --- | --- | ---: | ---: | ---: |
+| 640×480 | Shapes and text | 5.047 | 4.466 | 11.5% |
+| 640×480 | Shapes | 4.679 | 4.079 | 12.8% |
+| 640×480 | Clipping | 6.670 | 6.137 | 8.0% |
+| 640×480 | Picture playback | 5.075 | 4.480 | 11.7% |
+| 1281×721 | Shapes and text | 9.194 | 8.808 | 4.2% |
+| 1281×721 | Shapes | 8.693 | 8.299 | 4.5% |
+| 1281×721 | Clipping | 11.954 | 11.354 | 5.0% |
+| 1281×721 | Picture playback | 11.998 | 11.014 | 8.2% |
+
+These are offscreen drawing CPU measurements, not monitor refresh rates or
+whole-system CPU reductions. All 192 full-bitmap hashes from the eight native
+runs agree, including the small sizes and alpha bytes. Baseline and candidate
+QEMU boots produce the same 24 hashes. Two thirty-second desktop profiles per
+variant record 977/990 ms for AirTop's original offscreen thread and 885/936 ms
+for the candidate; the scanline function accounts for 320/323 versus 225/257 ms.
+The live graph contents vary, so these profiles corroborate the hotspot reduction
+rather than replacing the deterministic fixture.
+
+The isolated native comparison passes 243,200 pixel/canary/protected-row checks
+across five implementations, all 256 coverages, five offsets and nineteen span
+lengths. A further 16,777,216 source/destination/coverage triples with three RGB
+permutations exactly match the original arithmetic. Separate GPU allocations
+pass 544 comparisons each with write-back and write-combining mappings.
+Large write-combining spans are approximately unchanged. Tiny opaque spans
+can be slower: a three-pixel call costs roughly 23–24 ns versus 13–16 ns in
+that mapping. The accepted change has a measured workload gain, not a claim
+that every span size or mapping is faster.
+
+The candidate builds as app_server and boots in QEMU before native installation.
+Its final native path is
+`/boot/home/performance-20261008/scanline/app_server`, 2,055,040 bytes, SHA-256
+`83f3495035ecfe79e26a1e76789c58f5a1499b5cdb4370b9cb3b0257b81cf9df`.
+A user launch-service amendment at
+`/boot/home/config/settings/launch/app-server-performance` selects it at boot.
+The packaged `/boot/system/servers/app_server` remains byte-for-byte intact,
+2,055,216 bytes, SHA-256
+`54137fe854cd0c04f4d0a6aa1a9426424ace2392f9133034005bc4aba08488bc`.
+Removing only that amendment under the shared hardware lease, followed by an
+orderly reboot, restores the packaged server; the rollback boot was tested.
+All three native reboots had serial capture. The final candidate boot passes
+all twenty health checks, and the core, Mesa, GL, V3D and DSI binaries are pinned.
+
+The first temporary candidate filename was `app_server-scanline`; an exact-name
+health check consequently reported the server absent despite its loaded image,
+registered application and successful drawing checks. The final path preserves
+the normal basename. Existing EGL/BGLView diagnostics also assumed a
+`/servers/app_server` path. They now resolve the registered application signature
+through BRoster. Their new lookup and software-rendered pixels pass in QEMU.
+The original failures remain in the evidence instead of being counted as passes.
+The corrected native fixture passes 1,152 EGL frames across 72 size runs,
+eight context lifetimes, complete bitmap/screen pixels and zero remaining GPU
+buffers/shared areas. BGLView passes empty drawing, 800 completed 720p draws,
+resize gaps and all final pixels, with zero retired-area leaks. Its 163.52 draws/s
+is consistent with the preceding graphics stack; no additional GL throughput
+gain is claimed. Pbuffer rendering and all 48 texture readback checks also pass.
+
+Evidence: `scanline-fill/{drawing-summary.json,drawing-native-*.txt,
+native-v2-summary.json,native-v2.txt,graphics-native-summary.json,
+graphics-native.txt,*idle-profile.txt,*boot*-drawing.json,*boot*-health.json,
+window-roster-qemu.txt,glview-roster-qemu.txt,drawing-window-qualified.txt,
+installed-health.json,installed-hashes.json,baseline/app_server}`.

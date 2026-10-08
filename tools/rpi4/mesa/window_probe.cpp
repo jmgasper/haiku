@@ -10,6 +10,7 @@
 #include <Bitmap.h>
 #include <Locker.h>
 #include <Messenger.h>
+#include <Roster.h>
 #include <Screen.h>
 #include <View.h>
 #include <Window.h>
@@ -63,10 +64,8 @@ static bigtime_t cpu_time(team_id team)
 }
 static team_id app_server_team()
 {
- int32 cookie=0;team_info info;
- while(get_next_team_info(&cookie,&info)==B_OK)
-  if(std::strstr(info.args,"/servers/app_server"))return info.team;
- require(false,"app_server team");return -1;
+ team_id team=be_roster->TeamFor("application/x-vnd.Haiku-app_server");
+ require(team>=B_OK,"app_server team");return team;
 }
 class FrameView : public BView, public BitmapHook {
 public:
