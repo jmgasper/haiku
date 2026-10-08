@@ -299,3 +299,101 @@ cost. The rendering worker has only two memcpy samples. This identifies the rema
 copy stages as the next presentation limit; it does not imply that 95% of
 total system CPU is used by copies. Evidence: `glview-clear/profile.txt`,
 `profile-run.txt`, `teapot.png`, `teapot-images.json` and `teapot-result.json`.
+
+## V3D cache-maintenance loop bounds
+
+A kernel-inclusive profile locates the next client CPU cost in
+`sync_buffer_cache()`. The normal profiler reads only the loaded kernel
+module's dynamic symbols, hiding this static function. A private copy of
+the profiler accepts an explicit symbol-file override. The installed,
+unstripped V3D file exactly matches the local build (32,035 bytes, SHA-256
+`ea99935389c9be18f943b58db5943fc6aa5ae5057b058a2d657371b7b069cfb5`),
+so its full symbol table supplies the missing names without changing the
+running driver. The diagnostic override passes a QEMU smoke check first.
+
+Over 3,000 completed 1280x720 BGLView frames, the original cache walk
+accounts for 3.174 of 6.200 sampled seconds in the rendering worker, 51.19%.
+Native disassembly shows that the inline assembly's memory clobber causes
+the compiler to reload `buffer->address` and `buffer->size`, and recompute
+the end address, after every cache-line operation. Those fields remain
+fixed while the caller holds the device mutex and an allocation reference.
+
+The driver now saves the start, end and line size in local constants before
+the walk. CPU pinning, the CTR-derived line size, `DC IVAC` for CPU reads,
+`DC CIVAC` for GPU ownership and the final full barrier are unchanged.
+The generated inner loop contains no BO metadata loads. This changes the
+CPU maintenance cost, not GPU clocks, memory types or ownership rules.
+
+`jam rpi4_cache_loop_probe` builds a reproducible native loop comparison.
+It pins its thread to CPU 0 and operates only on its own aligned memory,
+checking every byte afterwards. It compares the original loop, fixed bounds,
+and eight-line unrolling in forward/reverse order, with cold, read-warmed
+and dirty buffers from 4 KiB through 8 MiB. The user-space fixture exercises
+`DC CIVAC`; the actual driver tests below cover `DC IVAC` and GPU ownership.
+At 3,686,400 bytes, pair means of the per-run medians are:
+
+| Buffer condition | Original us | Fixed bounds us | Unrolled us |
+| --- | ---: | ---: | ---: |
+| Cold | 993 | 128 | 128 |
+| Read-warmed | 1001 | 162.5 | 163 |
+| Dirty | 994 | 129 | 128 |
+
+Unrolling adds no useful gain and was not adopted. `CACHE_BENCH_QUICK=1`
+limits the fixture to its 4 KiB case for smoke checks. The driver and probe
+build separately; no unrelated DSI source changes enter the build.
+
+The candidate is installed at
+`/boot/system/non-packaged/add-ons/kernel/drivers/graphics/v3d`, SHA-256
+`c0253ad24a7c40fb7362a94f1c4f208faa3051a11ae5f186215d5bfd80e24589`.
+The packaged original remains untouched and its verified extra backup is
+`/boot/home/performance-20261008/rollback/v3d-cache-loop`. A serial-captured,
+orderly reboot loads the candidate from its new path, confirmed by the
+kernel image list. The core remains `hrev60206+750`; Ethernet stays `.213`.
+The QEMU image also boots with the candidate staged and passes softpipe
+BGLView pixels, but does not execute V3D hardware operations.
+
+The first native screen check, started 21 seconds into the boot, passes
+GLES rendering, 48 readback combinations and the actual GPU bitmaps, then
+fails a screen pixel at x=1482 in the widest window. The notification
+server reports a window beginning at x=1483, overlapping that screen area
+including its border. This supports startup notification occlusion; the
+failed run is retained and excluded. After startup settles, the full
+nine-size, two-context bitmap/screen test passes with zero GPU buffer bytes
+and shared bitmap areas after each lifetime.
+
+Two 960-frame runs per size on the original driver precede the reboot;
+two matching runs use the candidate. Means are below. These are sequential
+before/after measurements, not an ABBA comparison across driver boots.
+
+| View | Original draws/s | Candidate draws/s | Original client ms/frame | Candidate client ms/frame |
+| --- | ---: | ---: | ---: | ---: |
+| 640x480 | 358.97 | 381.68 | 1.390 | 1.154 |
+| 1280x720 | 153.30 | 162.61 | 2.190 | 1.506 |
+| 1281x721 | 130.69 | 139.19 | 2.341 | 1.520 |
+| 1856x900 | 92.41 | 97.48 | 3.147 | 1.972 |
+
+At 1280x720, client CPU falls 31.2% and completed draw rate rises 6.1%.
+Whole-app_server CPU differs across these runs, increasing from 5.719 to
+6.173 ms/frame; the client saving must not be presented as a whole-system
+CPU percentage. Earlier profiled runs have a different baseline draw rate.
+On the candidate's matched 3,000-frame profile, the cache function falls
+to 0.884 sampled seconds, about 72% less absolute sampled time, while
+the worker total falls to 3.750 seconds. The profiler reports no dropped
+or unknown worker ticks, but sampling remains an estimate.
+
+Native qualification passes 80 texture rounds at 1281x721 (partial writes,
+repeated maps, cropped reads and PBOs), full-HD depth/triangle pixels,
+48 format/MSAA/mip/crop/padding/guard combinations, the eight-context
+OpenGL Kit fixture, cached TFU ownership checks, and 1,100 buffer-lifetime
+rounds. Client buffers return to zero while the original 4 MiB shared GPU
+page table remains. Two concurrent texture clients also pass 40 rounds
+each at 1281x721 and 1920x908, followed by another 100 clean lifetime rounds.
+All twenty device health checks pass.
+
+Evidence: `cache-profile/` for the baseline symbols and profile;
+`cache-loop/` for `user-bench.txt`, `user-bench-summary.json`, `v3d-bounded.dis`,
+`driver-qemu-results.txt`, `candidate-serial-capture.log`, `candidate-images.json`,
+`first-checks.txt`, `notification-frame.json`, `recheck.txt`, `control.txt`,
+`bounded.txt`, `summary.json`, `bounded-profile.txt`, `qualification.txt`,
+`concurrent-result.json`
+and `qualified-health.json`.

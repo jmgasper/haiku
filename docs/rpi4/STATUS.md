@@ -27,6 +27,12 @@ improves completed draws from 116 to 146 per second and cuts app_server CPU
 per frame by 22%. Empty views, resize gaps, software/fallback paths and 192
 context lifetimes pass; the installed default repeats 146 draws/s. This is
 an additional OpenGL Kit improvement, not a Summit scrolling result.
+The V3D driver also retains fixed cache-walk bounds in registers instead of
+reloading BO metadata per cache line. Its native profile reduces cache-walk
+CPU from 3.174 to 0.884 sampled seconds over 3,000 frames. Matched 720p
+before/after runs reduce client CPU by 31% and improve completed draws by
+6%; graphics ownership, pixels and buffer-lifetime checks pass after an
+orderly reboot. This kernel change can also affect cached texture readbacks.
 The twelve-hour CPU, memory and graphics investigation continues;
 details and limits are in [PERFORMANCE-20261008.md](PERFORMANCE-20261008.md).
 The present lab boot uses Ethernet `.213`, HDMI1 at 1920x1080, and the DSI
