@@ -142,7 +142,7 @@
 				     <GIC_SPI 81 IRQ_TYPE_LEVEL_HIGH>,
 				     <GIC_SPI 83 IRQ_TYPE_LEVEL_HIGH>,
 				     <GIC_SPI 85 IRQ_TYPE_LEVEL_HIGH>,
-				     <GIC_SPI 140 IRQ_TYPE_LEVEL_HIGH>;
+				     <GIC_SPI 87 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&ccu CLK_APB1>, <&osc24M>, <&rtc CLK_OSC32K>;
 			clock-names = "apb", "hosc", "losc";
 			gpio-controller;
@@ -233,7 +233,7 @@
 			compatible = "allwinner,sun60i-a733-wdt",
 					"allwinner,sun55i-a523-wdt";
 			reg = <0x2050000 0x20>;
-			interrupts = <GIC_SPI 63 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts = <GIC_SPI 106 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&osc24M>, <&rtc CLK_OSC32K>;
 			clock-names = "hosc", "losc";
 			status = "okay";
@@ -387,7 +387,7 @@
 			clock-names = "ahb", "mmc";
 			resets = <&ccu RST_BUS_MMC0>;
 			reset-names = "ahb";
-			interrupts = <GIC_SPI 40 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts = <GIC_SPI 161 IRQ_TYPE_LEVEL_HIGH>;
 			pinctrl-names = "default";
 			pinctrl-0 = <&mmc0_pins>;
 			status = "disabled";
@@ -408,7 +408,7 @@
 			clock-names = "ahb", "mmc";
 			resets = <&ccu RST_BUS_MMC1>;
 			reset-names = "ahb";
-			interrupts = <GIC_SPI 41 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts = <GIC_SPI 162 IRQ_TYPE_LEVEL_HIGH>;
 			pinctrl-names = "default";
 			pinctrl-0 = <&mmc1_pins>;
 			status = "disabled";
@@ -429,7 +429,7 @@
 			clock-names = "ahb", "mmc";
 			resets = <&ccu RST_BUS_MMC2>;
 			reset-names = "ahb";
-			interrupts = <GIC_SPI 42 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts = <GIC_SPI 163 IRQ_TYPE_LEVEL_HIGH>;
 			pinctrl-names = "default";
 			pinctrl-0 = <&mmc2_pins>;
 			status = "disabled";
@@ -446,7 +446,7 @@
 			compatible = "allwinner,sun55i-a733-musb",
 				     "allwinner,sun8i-a33-musb";
 			reg = <0x4100000 0x400>;
-			interrupts = <GIC_SPI 29 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts = <GIC_SPI 156 IRQ_TYPE_LEVEL_HIGH>;
 			interrupt-names = "mc";
 			clocks = <&ccu CLK_BUS_OTG>;
 			resets = <&ccu RST_BUS_OTG>;
@@ -481,7 +481,7 @@
 			compatible = "allwinner,sun60i-a733-ehci",
 				     "generic-ehci";
 			reg = <0x4101000 0x100>;
-			interrupts = <GIC_SPI 30 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts = <GIC_SPI 157 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&ccu CLK_BUS_OHCI0>,
 				 <&ccu CLK_BUS_EHCI0>,
 				 <&ccu CLK_USB_OHCI0>;
@@ -496,7 +496,7 @@
 			compatible = "allwinner,sun60i-a733-ohci",
 				     "generic-ohci";
 			reg = <0x4101400 0x100>;
-			interrupts = <GIC_SPI 31 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts = <GIC_SPI 158 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&ccu CLK_BUS_OHCI0>,
 				 <&ccu CLK_USB_OHCI0>;
 			resets = <&ccu RST_BUS_OHCI0>;
@@ -509,7 +509,7 @@
 			compatible = "allwinner,sun60i-a733-ehci",
 				     "generic-ehci";
 			reg = <0x4200000 0x100>;
-			interrupts = <GIC_SPI 32 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts = <GIC_SPI 159 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&ccu CLK_BUS_OHCI1>,
 				 <&ccu CLK_BUS_EHCI1>,
 				 <&ccu CLK_USB_OHCI1>;
@@ -524,7 +524,7 @@
 			compatible = "allwinner,sun60i-a733-ohci",
 				     "generic-ohci";
 			reg = <0x4200400 0x100>;
-			interrupts = <GIC_SPI 33 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts = <GIC_SPI 160 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&ccu CLK_BUS_OHCI1>,
 				 <&ccu CLK_USB_OHCI1>;
 			resets = <&ccu RST_BUS_OHCI1>;
@@ -587,13 +587,13 @@
 			reg = <0x07010320 0xc>;
 			interrupt-controller;
 			#interrupt-cells = <2>;
-			interrupts = <GIC_SPI 148 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts = <GIC_SPI 188 IRQ_TYPE_LEVEL_HIGH>;
 		};
 
 		spi0: spi@2540000 {
 			compatible = "allwinner,sun8i-h3-spi";
 			reg = <0x02540000 0x1000>;
-			interrupts = <GIC_SPI 65 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts = <GIC_SPI 24 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&ccu CLK_BUS_SPI0>, <&ccu CLK_SPI0>;
 			clock-names = "ahb", "mod";
 			pinctrl-names = "default";
@@ -608,8 +608,8 @@
 		r_pio: pinctrl@7025000 {
 			compatible = "allwinner,sun60i-a733-r-pinctrl";
 			reg = <0x7025000 0x800>;
-			interrupts = <GIC_SPI 159 IRQ_TYPE_LEVEL_HIGH>,
-				     <GIC_SPI 161 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts = <GIC_SPI 198 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 200 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&r_ccu CLK_R_APB0>,
 				 <&osc24M>,
 				 <&rtc CLK_OSC32K>;
@@ -646,7 +646,7 @@
 			compatible = "allwinner,sun60i-a733-rtc",
 				     "allwinner,sun50i-r329-rtc";
 			reg = <0x7090000 0x400>;
-			interrupts = <GIC_SPI 157 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts = <GIC_SPI 196 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&r_ccu CLK_BUS_R_RTC>,
 				 <&osc24M>,
 				 <&r_ccu CLK_R_AHB>;

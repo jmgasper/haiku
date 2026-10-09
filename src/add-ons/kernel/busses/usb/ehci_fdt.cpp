@@ -8,6 +8,7 @@
 #include <stdio.h>
 
 #include "ehci.h"
+#include "usb_fdt.h"
 
 
 extern device_manager_info* gDeviceManager;
@@ -160,10 +161,10 @@ init_fdt(device_node* node, void** cookie)
 			&& !property_has_string(ancestorFDT, ancestor, "status", "ok")) {
 			supported = false;
 		}
-		if (current != parent && ancestorFDT->get_name(ancestor)[0] != 0) {
-			ranges = ancestorFDT->get_prop(ancestor, "ranges", &length);
-			if (ranges == NULL || length != 0)
-				supported = false;
+		if (current != parent && ancestorFDT->get_name(ancestor)[0] != 0
+			&& !usb_fdt_ranges_are_identity(gDeviceManager, current,
+				ancestorFDT, ancestor)) {
+			supported = false;
 		}
 		device_node* next = gDeviceManager->get_parent_node(current);
 		gDeviceManager->put_node(current);

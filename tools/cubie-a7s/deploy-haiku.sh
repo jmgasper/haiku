@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Put a Haiku build on the Cubie A7S lab card through its Debian recovery
-# system, and have U-Boot boot it once (airos/haiku-once on the ESP).
+# system, and have the next boot start it once (airos-once on the ESP, see
+# install-lab-boot.sh).
 #
 #   deploy-haiku.sh [-n] [bfs image] [haiku_loader.efi] [device tree]
 #
@@ -26,8 +27,8 @@ DTB=${3:-$BUILD/cubie-a7s.dtb}
 if [[ -z ${3:-} ]]; then
 	"$(dirname "${BASH_SOURCE[0]}")/build-dtb.sh" "$DTB" >/dev/null
 fi
-CUBIE_STATE=${CUBIE_STATE:-/mnt/HaikuWork/cubie/state}
-SSH=(ssh -F "$CUBIE_STATE/ssh_config" cubie-recovery)
+source "$(dirname "${BASH_SOURCE[0]}")/lab-esp.sh"
+SSH=("${LAB_SSH[@]}")
 
 [[ -f $IMAGE && -f $LOADER ]] || { echo "missing $IMAGE or $LOADER" >&2; exit 1; }
 
@@ -51,22 +52,10 @@ if [[ $want != "$have" ]]; then
 fi
 
 echo "Copying the loader and the device tree to the ESP"
-"${SSH[@]}" 'set -e; mkdir -p /mnt/esp; mountpoint -q /mnt/esp || mount /dev/disk/by-partlabel/efi /mnt/esp; mkdir -p /mnt/esp/EFI/airos /mnt/esp/airos'
-put_esp() { # <local file> <path on the ESP>
-	"${SSH[@]}" "cat > '/mnt/esp/$2.new'" < "$1"
-	local want have
-	want=$(sha256sum < "$1" | cut -d' ' -f1)
-	have=$("${SSH[@]}" "sha256sum < '/mnt/esp/$2.new'" | cut -d' ' -f1)
-	if [[ $want != "$have" ]]; then
-		echo "$2 read back $have, expected $want" >&2
-		exit 1
-	fi
-	"${SSH[@]}" "mv '/mnt/esp/$2.new' '/mnt/esp/$2' && sync"
-}
-put_esp "$LOADER" EFI/airos/haiku_loader.efi
-put_esp "$DTB" airos/cubie-a7s.dtb
+lab_esp_put "$LOADER" EFI/airos/haiku_loader.efi
+lab_esp_put "$DTB" airos/cubie-a7s.dtb
 
 if (( restart )); then
 	echo "Restarting into Haiku (once)"
-	"${SSH[@]}" 'touch /mnt/esp/airos/haiku-once && sync && umount /mnt/esp; systemctl reboot' || true
+	lab_restart_once
 fi

@@ -285,6 +285,19 @@
 		mmc0 = &mmc0;
 		mmc1 = &mmc2;
 	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/* the TF-A (BL31) of Radxa's boot chains, where its own Linux
+		   device tree puts it */
+		bl31@48000000 {
+			reg = <0x0 0x48000000 0x0 0x1000000>;
+			no-map;
+		};
+	};
 };
 
 / {

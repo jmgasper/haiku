@@ -403,10 +403,14 @@ SunxiMmcBus::_ResetController()
 	_Write(REG_HWRST, 1);
 	spin(300);
 
-	// Burst 8 transfers, receive at 7 words, transmit at 8; as in Linux.
-	_Write(REG_FTRGL, 0x20070008);
-	_Write(REG_THLDC, THLDC_READ_THRESHOLD(512) | THLDC_WRITE_ENABLE
-		| THLDC_READ_ENABLE);
+	// Bursts of 8 words, receive at 7 words, transmit at 248 of the 256
+	// word FIFO: the BSP's values for this controller (SMHC v5.3).
+	_Write(REG_FTRGL, 0x200700f8);
+	// The card read threshold only. The write threshold holds a block back
+	// until that much of it is in the FIFO, which the DMA engine never fills
+	// that far: writes stalled with a data request pending. The BSP leaves
+	// it off as well.
+	_Write(REG_THLDC, THLDC_READ_THRESHOLD(512) | THLDC_READ_ENABLE);
 	_Write(REG_TMOUT, 0xffffffff);
 	_Write(REG_IMASK, 0);
 	_Write(REG_RINTR, 0xffffffff);
@@ -1124,11 +1128,27 @@ sunxi_mmc_supports_device(device_node* parent)
 		return 0.0f;
 	}
 
+	bool supported = false;
 	for (size_t i = 0; i < B_COUNT_OF(kCompatible); i++) {
 		if (strcmp(compatible, kCompatible[i]) == 0)
-			return 1.0f;
+			supported = true;
 	}
-	return 0.0f;
+	if (!supported)
+		return 0.0f;
+
+	// controllers the board does not wire up are disabled
+	fdt_device_module_info* fdt;
+	fdt_device* device;
+	if (gDeviceManager->get_driver(parent, (driver_module_info**)&fdt,
+			(void**)&device) != B_OK) {
+		return 0.0f;
+	}
+	const char* status = (const char*)fdt->get_prop(device, "status", NULL);
+	if (status != NULL && strcmp(status, "okay") != 0
+		&& strcmp(status, "ok") != 0) {
+		return 0.0f;
+	}
+	return 1.0f;
 }
 
 

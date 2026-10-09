@@ -1,15 +1,22 @@
 #!/usr/bin/env bash
-# Build the Cubie A7S lab SD card image from a Radxa A733 image:
+# Build the Cubie A7S lab SD card image from Radxa's Debian 11 A733 image
+# (radxa-a733_bullseye_cli_r6), whose boot chain (boot0, TF-A, U-Boot 2018)
+# reads every SD card; the boot loader of the newer Debian 13 images (t6,
+# mainline-style SPL) failed on the lab's cards.
 #
-#   0-16 MiB  Radxa's boot0 + FIT (ATF, SCP firmware, U-Boot 2026.04)
+#   0-16 MiB  Radxa's boot chain
 #   p1        rsetup "config" FAT partition (first-boot configuration)
-#   p2        ESP: boot.scr (lab boot selector, see lab/boot.cmd),
-#             EFI/airos/haiku_loader.efi
-#   p3        Debian recovery system (Radxa's rootfs, shrunk), ssh with the
-#             lab key, hostname cubie-recovery
+#   p2        ESP: boot.scr (lab/bsp-boot.cmd) for U-Boot 2018, which starts
+#             the air/OS U-Boot (airos/u-boot.bin) once when airos-once holds
+#             "1"; its airos/chain.scr (lab/chain.cmd) boots
+#             EFI/airos/haiku_loader.efi with airos/cubie-a7s.dtb
+#   p3        Debian recovery system (Radxa's rootfs), ssh with the lab key,
+#             hostname cubie-recovery
 #   p4        Haiku BFS
 #
 #   build-lab-image.sh <radxa image> <output image> [haiku_loader.efi] [bfs image]
+#
+# UBOOT_BIN overrides the air/OS U-Boot (default: u-boot/build.sh).
 #
 # Needs no root: partitions are edited as files with debugfs, resize2fs and
 # Haiku's fat_shell. Credentials come from $CUBIE_STATE (never committed):
@@ -40,6 +47,8 @@ sector_of() { # <image> <partition number> -> "start count"
 
 echo "Extracting partitions"
 dd if="$RADXA_IMAGE" of="$WORK/boot.bin" bs=1M count=16 status=none
+# Radxa's GPT goes; sgdisk writes a new one
+dd if=/dev/zero of="$WORK/boot.bin" bs=512 count=34 conv=notrunc status=none
 for n in 1 2 3; do
 	read -r start count < <(sector_of "$RADXA_IMAGE" $n)
 	dd if="$RADXA_IMAGE" of="$WORK/p$n.img" bs=512 skip="$start" count="$count" \
@@ -104,12 +113,19 @@ sed -i -e '/^disable_service ssh/d' -e 's/^if headless enable_service ssh/enable
 echo "rm myfs/before.txt" | "$FAT_SHELL" "$WORK/p1.img" >/dev/null
 echo "cp :$WORK/cfg/before.txt myfs/before.txt" | "$FAT_SHELL" "$WORK/p1.img" >/dev/null
 
-echo "ESP: boot selector"
-mkimage -A arm64 -O linux -T script -C none -n "air/OS lab boot selector" \
-	-d "$HERE/lab/boot.cmd" "$WORK/boot.scr" >/dev/null
+echo "ESP: lab boot chain"
+UBOOT_BIN=${UBOOT_BIN:-$("$HERE/u-boot/build.sh")}
+"$HERE/build-dtb.sh" "$WORK/cubie-a7s.dtb" >/dev/null
+for script in bsp-boot chain; do
+	mkimage -A arm64 -O linux -T script -C none -d "$HERE/lab/$script.cmd" \
+		"$WORK/$script.scr" >/dev/null
+done
 fat() { echo "$1" | "$FAT_SHELL" "$WORK/p2.img" >/dev/null; }
-fat "cp :$WORK/boot.scr myfs/boot.scr"
+fat "cp :$WORK/bsp-boot.scr myfs/boot.scr"
 fat "mkdir myfs/airos"
+fat "cp :$WORK/chain.scr myfs/airos/chain.scr"
+fat "cp :$UBOOT_BIN myfs/airos/u-boot.bin"
+fat "cp :$WORK/cubie-a7s.dtb myfs/airos/cubie-a7s.dtb"
 fat "mkdir myfs/EFI"
 fat "mkdir myfs/EFI/airos"
 if [[ -n $LOADER ]]; then
@@ -133,8 +149,8 @@ sgdisk -n 1:$p1start:+$p1count -t 1:8300 -c 1:config \
 	-n 3:$p3start:+$p3count -t 3:8300 -c 3:rootfs -A 3:set:2 \
 	-n 4:$p4start:+$p4count -t 4:42465331-3BA3-10F1-802A-4861696B7521 -c 4:haiku \
 	"$OUTPUT" >/dev/null
-# sgdisk -o rewrote the protective MBR; boot0 starts at 128 KiB, so the
-# first 16 MiB stay Radxa's apart from the GPT itself.
+# boot0 starts at 128 KiB, so the first 16 MiB stay Radxa's apart from the
+# GPT itself.
 for n in 1 2 3; do
 	start=$(eval echo \$p${n}start)
 	dd if="$WORK/p$n.img" of="$OUTPUT" bs=512 seek="$start" conv=notrunc,sparse status=none
