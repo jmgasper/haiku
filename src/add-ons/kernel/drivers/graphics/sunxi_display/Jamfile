@@ -8,4 +8,6 @@ UsePrivateHeaders [ FDirName graphics sunxi_display ] ;
 
 KernelAddon sunxi_display :
 	driver.cpp
+	twi.cpp
+	typec.cpp
 ;

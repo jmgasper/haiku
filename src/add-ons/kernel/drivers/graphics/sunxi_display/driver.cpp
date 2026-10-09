@@ -33,6 +33,9 @@
 
 #include <sunxi_display.h>
 
+#include "registers.h"
+#include "typec.h"
+
 
 #define SUNXI_DISPLAY_DRIVER_MODULE_NAME	"drivers/graphics/sunxi_display/driver_v1"
 #define SUNXI_DISPLAY_DEVICE_MODULE_NAME	"drivers/graphics/sunxi_display/device_v1"
@@ -62,6 +65,10 @@ struct display_info {
 	port_id			changePort;
 	int32			changeCode;
 	void*			notificationOwner;
+
+	sunxi::TypeCPort* typeC;
+	thread_id		pollThread;
+	int32			stopping;
 };
 
 
@@ -86,6 +93,37 @@ init_outputs(display_info* info)
 	output.edid_length = 0;
 	INFO("DP-1: no display, standing in for a %ux%u one\n",
 		output.native_width, output.native_height);
+}
+
+
+/*!	Runs the USB-C port's state machine: often while something happens
+	there, otherwise when the port controller signals (PL3, active low) and
+	now and then.
+*/
+static status_t
+poll_outputs(void* cookie)
+{
+	display_info* info = (display_info*)cookie;
+	int32 changes = info->typeC->Changes();
+	bigtime_t lastPoll = 0;
+	while (atomic_get(&info->stopping) == 0) {
+		snooze(20000);
+		bigtime_t now = system_time();
+		bool interrupt = !sunxi::r_pin_get(0, 3);
+		if (!interrupt && info->typeC->Idle() && now - lastPoll < 250000)
+			continue;
+		lastPoll = now;
+		info->typeC->Poll();
+
+		int32 current = info->typeC->Changes();
+		if (current == changes)
+			continue;
+		changes = current;
+		INFO("DP-1: %s, HPD %s\n", info->typeC->DisplayPortReady()
+				? "alt mode ready" : "no alt mode",
+			info->typeC->HotPlug() ? "high" : "low");
+	}
+	return B_OK;
 }
 
 
@@ -258,6 +296,26 @@ display_init_device(void* _info, void** _cookie)
 
 	mutex_init(&info->lock, "sunxi display");
 	info->changePort = -1;
+
+	// the USB-C port the DisplayPort output goes through
+	info->pollThread = -1;
+	info->typeC = new(std::nothrow) sunxi::TypeCPort;
+	if (info->typeC != NULL) {
+		sunxi::r_pin_set_function(0, 3, sunxi::PIN_FUNCTION_INPUT);
+		status = info->typeC->Init();
+		if (status != B_OK) {
+			ERROR("no USB-C port controller: %s\n", strerror(status));
+			delete info->typeC;
+			info->typeC = NULL;
+		}
+	}
+	if (info->typeC != NULL) {
+		info->pollThread = spawn_kernel_thread(poll_outputs,
+			"sunxi display outputs", B_NORMAL_PRIORITY, info);
+		if (info->pollThread >= 0)
+			resume_thread(info->pollThread);
+	}
+
 	*_cookie = info;
 	return B_OK;
 }
@@ -267,6 +325,12 @@ static void
 display_uninit_device(void* cookie)
 {
 	display_info* info = (display_info*)cookie;
+	atomic_set(&info->stopping, 1);
+	if (info->pollThread >= 0) {
+		status_t result;
+		wait_for_thread(info->pollThread, &result);
+	}
+	delete info->typeC;
 	mutex_destroy(&info->lock);
 	if (info->bufferArea >= 0)
 		delete_area(info->bufferArea);
