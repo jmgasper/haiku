@@ -225,14 +225,6 @@ rule UserBuildConfigRulePreImage
 			SEARCH on $(services) = $(overlay) ;
 			AddFilesToHaikuImage system settings network : $(services) ;
 		}
-		# The on-device MCP server (apps/airos_mcp): screenshots, syslog,
-		# commands and file transfer for the sessions that drive the board.
-		local mcpDir = /mnt/HaikuWork/apps/airos_mcp/artifacts ;
-		local mcpPackages = [ Glob $(mcpDir) : airos_mcp-*-arm64.hpkg ] ;
-		if $(mcpPackages) {
-			mcpPackages = <rpi4-mcp>$(mcpPackages[1]:BS) ;
-			SEARCH on $(mcpPackages) = $(mcpDir) ;
-			AddFilesToHaikuImage system packages : $(mcpPackages) ;
-		}
+		# MCP is provided by haiku.hpkg and is off until enabled in preferences.
 	}
 }
