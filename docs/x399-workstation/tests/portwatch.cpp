@@ -1,4 +1,4 @@
-// portwatch <vendor:device> <seconds>: poll every PORTSC of one xHCI
+// portwatch <vendor:device>[#n] <seconds>: poll every PORTSC of one xHCI
 // controller (read only, through /dev/misc/poke) and print each change with
 // the time it was seen, decoded: connect, enable, reset, link state, speed
 // and the change bits. Shows what a port does around a connect, a reset or a
@@ -44,11 +44,13 @@ int
 main(int argc, char** argv)
 {
 	if (argc < 3) {
-		fprintf(stderr, "usage: %s <vendor:device> <seconds>\n", argv[0]);
+		fprintf(stderr, "usage: %s <vendor:device>[#n] <seconds>\n", argv[0]);
 		return 1;
 	}
 	unsigned vendor, deviceID;
-	sscanf(argv[1], "%x:%x", &vendor, &deviceID);
+	int wanted = 0;
+	if (sscanf(argv[1], "%x:%x#%d", &vendor, &deviceID, &wanted) < 2)
+		return 1;
 	bigtime_t duration = atoi(argv[2]) * 1000000LL;
 	int fd = open("/dev/misc/poke", O_RDWR);
 	pci_info info;
@@ -58,7 +60,8 @@ main(int argc, char** argv)
 		if (ioctl(fd, POKE_GET_NTH_PCI_INFO, &args, sizeof(args)) != 0
 			|| args.status != B_OK)
 			break;
-		found = info.vendor_id == vendor && info.device_id == deviceID;
+		found = info.vendor_id == vendor && info.device_id == deviceID
+			&& wanted-- == 0;
 	}
 	if (!found)
 		return 1;

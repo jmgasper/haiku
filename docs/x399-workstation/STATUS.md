@@ -19,7 +19,7 @@ each USB port, the serial console, and a Bluetooth device to pair with.
 | SMP | all 32 hardware threads (16 cores) online | verified: `sysinfo` lists 32 CPUs |
 | NVMe | disk available and bootable | verified after multi-root PCI fix: 2 GiB raw read at 1.6 GiB/s, boot volume |
 | Ethernet | I211 up with DHCP | verified: ipro1000 link 1000BASE-T, DHCP lease, HTTP upload and SSH |
-| USB | all controllers and ports enumerate devices | all 5 xHCI controllers start and publish a root hub; the NanoKVM enumerates on the ASM2142. The individual ports need devices plugged into them |
+| USB | every port at its full speed | verified on four of the five controllers: USB 2 flash drives read at their 30-33 MB/s on the CPU's ports, the chipset's front ports and the ASM2142, and a RTL8153 gigabit adapter links at SuperSpeed on the ASM2142's USB-C port and carries 815 Mbit/s (UDP in) and 650-780 Mbit/s (out), against 81 Mbit/s before. Disks and network adapters plugged in while the system runs now attach. SuperSpeed on the CPU's and the chipset's Type-A ports is untested (no USB 3 Type-A device here). The Thunderbolt card's controller halts on its first DMA, under the BIOS too, and is set aside; the chipset's controller takes 3-4 ms per control transfer (one stage per frame), which slows enumeration and the Bluetooth firmware load but not data |
 | Audio | ALC1220 analog output, HDMI audio | verified both: two outputs, each clocking its stream at the hardware's own rate (48322 and 48321 frames a second against the 48000 asked for). The graphics card's codec needed a change to Haiku's hda driver, which discarded any codec whose converters are all digital. The monitor reports it takes stereo. What nobody here can check is whether a speaker makes a sound |
 | Graphics | GTX 1070/1080 Ti accelerated 2D/3D, 3-4 monitors | 3D verified: Vulkan on the GPU (1.4 TFLOP/s compute, 57 Gpixel/s fill) and OpenGL 4.5 through it, with frames copied straight into the screen's own frame buffer in video memory rather than sent through the host - a lit sphere at 1600x900 goes from 209 to 970 frames a second. Vertical sync works (locks to 60.0) now that the accelerant hands out a retrace semaphore. Any program gets the GPU, with nothing set in its environment. Three heads driving one spanning desktop is verified, but with the third and second forced rather than plugged in. 2D is not accelerated at all: it runs four to eight times slower than drawing in memory, which is still far more than a desktop needs at one monitor |
 | Displays | two 4K monitors usable at arm's length: per-monitor scaling, arrangement, mirroring, per-monitor maximize, hot plug | verified on the two Dell P2415Q (DisplayPort): each monitor is a region of one frame buffer that the display engine scales up to the panel, at 100 to 250 percent in steps of 25, chosen per monitor. app_server arranges the monitors (side by side, stacked, swapped, one off, or one mirroring another), remembers the arrangement per monitor identity, keeps the mouse off the parts of the desktop no monitor shows, moves windows along with their monitor, and maximizes a window to the monitor most of it is on (the classic whole-desktop maximize is a setting). Two 24-inch 4K monitors come up at 200 percent, a 3840x1080 desktop drawn at full density with no settings at all; text is sharp in the frame buffer itself. The Screen preferences show the monitors as they stand and let them be dragged into place, identified by number on each screen, and read out from their EDID. Monitors coming and going are noticed two ways, but nobody was at the machine to plug one, so that path is untested. Frame buffer and VESA hardware gets the same scaling done in software, untested here |
@@ -30,6 +30,54 @@ each USB port, the serial console, and a Bluetooth device to pair with.
 | Sleep | S3 suspend and resume | sleeps and wakes; the display comes back, but the NVMe and the network card usually do not. Paused until a serial console arrives, which is also what the one untested path in the vertical sync work needs |
 
 ## Log
+
+- 2026-10-09: USB ports at full speed (branch `x399-usb3`, from master).
+  Two USB stack bugs and two throughput limits were found with the drives
+  and the RTL8153 adapter the owner plugged in:
+  * No USB disk or network adapter plugged in after boot was ever attached.
+    The device manager lists `drivers` for such a device, and the kernel's
+    module iterator ended the whole listing at the first entry it could not
+    stat - a stale `mt7922.aside` link in
+    `~/config/non-packaged/add-ons/kernel/drivers`. At boot the listing is
+    narrowed to `drivers/disk`, which skips that entry by name, so the same
+    drives worked when present from the start. Unreadable entries are now
+    skipped (`bc0d507f5e`); the link was left in place, and a drive replugged
+    at the front was attached at once.
+  * Every SuperSpeed endpoint was configured with bursts of one packet:
+    `Pipe::InitCommon()` announced the pipe to the xhci driver before the
+    burst size from the companion descriptor was set (`232a62851a`). The
+    RTL8153's bulk endpoints now get Max Burst 3, as it declares.
+  * `usb_ecm` read one frame at a time: 81 Mbit/s whatever the port. It
+    now keeps twelve reads queued and sends without waiting (`7771ffa726`),
+    and the xhci driver takes 15 transfers per endpoint instead of 7
+    (`f6ad8e2554`): 297 Mbit/s over USB 2, 815 Mbit/s of UDP and about 500
+    of TCP received and 650-780 sent over USB 3 on the ASM2142. The
+    interrupt moderation interval was tried at 40 us instead of 125: no
+    difference in throughput or latency, so it stays.
+  * The chipset controller (1022:43ba, an ASMedia ASM1042A core) serves a
+    control endpoint once per 1 ms frame, at microframe 4: the Setup stage
+    itself waits for it, so it is not NAK handling. Transfer layout (Event
+    Data, ENT, status-only events), periodic load and ASMedia's flow control
+    register were tried at run time without effect; bulk on the same
+    controller runs at full speed. The ASM2142 is not affected (0.4 ms).
+  * The Thunderbolt card (Gigabyte GC-MAPLE RIDGE, xHCI 8086:1138) halts
+    with a Host System Error 22-50 ms after it is started, before any port
+    activity, and the BIOS leaves it the same way: its first DMA read never
+    completes. PCIe paths, ACS, AER, the IOMMU (off) and request attributes
+    were checked; its connection-manager firmware runs (FW_STS 0x800001a1).
+    The card most likely needs the Thunderbolt header this board does not
+    have; set aside at the owner's request.
+  * The NanoKVM's USB fails on every controller with two cables (the BIOS
+    cannot use it either), so it is a cable or device fault.
+  New read-only tools look at the controllers while the driver runs
+  (`evtwatch`, `evtrate`, `portwatch`, `xhcirings`, `pcitree`, ...), and
+  `usbmsbench` and `tcpbench` measure storage and network throughput
+  (`aad1786ed6`). Installed on the X399 as a repacked haiku package
+  (kernel, usb, xhci, usb_disk, usb_ecm from `x399/build/usb3-x86_64`). The
+  diagnostics build used on the way is in
+  `x399/state/usb3-lab-instrumentation.patch`. Lesson: the X399 runs a
+  master build; `x399/haiku` is still on hrev60097, and a kernel built there
+  stopped the boot.
 
 - 2026-10-09: WiFi now has a native vector application icon: three blue
   arcs and a dot, with dark outlines, highlights and a small shadow. The
