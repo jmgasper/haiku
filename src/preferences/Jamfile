@@ -11,6 +11,7 @@ SubInclude HAIKU_TOP src preferences joysticks ;
 SubInclude HAIKU_TOP src preferences keymap ;
 SubInclude HAIKU_TOP src preferences locale ;
 SubInclude HAIKU_TOP src preferences mail ;
+SubInclude HAIKU_TOP src preferences mcp ;
 SubInclude HAIKU_TOP src preferences media ;
 SubInclude HAIKU_TOP src preferences network ;
 SubInclude HAIKU_TOP src preferences notifications ;

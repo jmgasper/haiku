@@ -180,6 +180,7 @@ SYSTEM_PREFERENCES = [ FFilterByBuildFeatures
 	Input
 	Keymap
 	Locale
+	MCP
 	Network
 	WiFi
 	Notifications
@@ -208,6 +209,7 @@ rule HaikuImageGetSystemLibs
 			libdebugger.so@primary
 			libdevice.so
 			libgnu.so
+			libmedia.so
 			libnetwork.so
 			libpackage.so
 			libtextencoding.so
@@ -235,6 +237,7 @@ SYSTEM_SERVERS = [ FFilterByBuildFeatures
 	input_server
 	keystore_server
 	launch_daemon
+	mcp_server
 	mount_server
 	net_server
 	notification_server
