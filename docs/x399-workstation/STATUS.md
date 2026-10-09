@@ -31,6 +31,25 @@ each USB port, the serial console, and a Bluetooth device to pair with.
 
 ## Log
 
+- 2026-10-09: WiFi now has a native vector application icon: three blue
+  arcs and a dot, with dark outlines, highlights and a small shadow. The
+  preferences panel displays the icon beside its Wi-Fi control. WiFiStatus
+  uses matching paths for its Deskbar icon, lighting the dot and arcs from
+  inside out with the existing green/amber connection states.
+  * Targeted x86_64 and ARM64 builds pass. The ARM64 build required refreshing
+    a stale merged musl string object from before the architecture-specific
+    `memmove`/`strlen` exclusion; no source change was needed there.
+  * QEMU smoke checks cover application launch, the panel icon and the
+    no-adapter Deskbar icon. On the X399, VNC confirms the panel and green
+    Deskbar icon at 200% scaling, with Gaspers still connected at
+    `192.168.1.197`. No network settings were changed.
+  * Installed as user non-packaged WiFi/WiFiStatus overrides, with a user
+    Preferences menu link. Deskbar's loaded image path and both binary hashes
+    were checked. The panel is left open for review. Previous packaged files
+    and the replicant settings are retained in
+    `/boot/home/wifi-icon-review-20261009`; evidence and hashes are under
+    `/mnt/HaikuWork/artifacts/wifi-icon-20261009` on the build host.
+
 - 2026-10-06: fractional drawing and vector icon scaling were reviewed and
   corrected (`6a0056c5d4`, `3528aa6eb0`). The X399 now runs the clean
   **hrev60206+686** build from `3528aa6eb0`, including the concurrent fork
