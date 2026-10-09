@@ -119,9 +119,9 @@ rule UserBuildConfigRulePreImage
 			: firmware ;
 	}
 
-	# Join remembered Wi-Fi networks at start (x86_64, ROCK 5 and Cubie; the
-	# Pi has its own script that also sets the clock).
-	if $(AIROS_X86_64) || $(AIROS_ROCK5) || $(AIROS_CUBIE) {
+	# Join remembered Wi-Fi networks at start (x86_64 and ROCK 5; the Pi and
+	# the Cubie have their own scripts that also set the clock).
+	if $(AIROS_X86_64) || $(AIROS_ROCK5) {
 		local bootscript = <airos-ci>UserBootscript ;
 		SEARCH on $(bootscript) = [ FDirName $(tree) boot ] ;
 		AddFilesToHaikuImage home config settings boot : $(bootscript) ;
@@ -193,8 +193,16 @@ rule UserBuildConfigRulePreImage
 		local packageSettings = <airos-cubie>packages ;
 		SEARCH on $(packageSettings) = $(rpi) ;
 		AddFilesToHaikuImage system settings : $(packageSettings) ;
-		local localeSettings = "<airos-cubie>Locale settings" ;
+		local localeSettings = "<airos-cubie>Locale settings"
+			<airos-cubie>RTC_time_settings ;
 		SEARCH on $(localeSettings) = $(rpi) ;
 		AddFilesToHaikuImage home config settings : $(localeSettings) ;
+		# NTP (the board has no battery-backed clock) and Wi-Fi autojoin
+		local bootscript = <airos-cubie>UserBootscript ;
+		SEARCH on $(bootscript) = [ FDirName $(HAIKU_TOP) data boot cubie-a7s ] ;
+		local timeSync = <airos-cubie>rpi-time-sync ;
+		SEARCH on $(timeSync) = $(rpi) ;
+		AddFilesToHaikuImage home config settings boot : $(bootscript)
+			$(timeSync) ;
 	}
 }

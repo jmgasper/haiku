@@ -99,10 +99,17 @@ rule UserBuildConfigRulePreImage
 		SEARCH on $(localeSettings) = [ FDirName $(HAIKU_TOP) data boot rpi ] ;
 		AddFilesToHaikuImage home config settings : $(localeSettings) ;
 
-		# Wi-Fi autojoin at start; the bootstrap ICU's data directory.
+		# Time from NTP (no RTC) and Wi-Fi autojoin at start; the bootstrap
+		# ICU's data directory.
 		local bootscript = <cubie-settings>UserBootscript ;
-		SEARCH on $(bootscript) = [ FDirName $(HAIKU_TOP) tools airos ci boot ] ;
-		AddFilesToHaikuImage home config settings boot : $(bootscript) ;
+		SEARCH on $(bootscript) = [ FDirName $(HAIKU_TOP) data boot cubie-a7s ] ;
+		local timeSync = <cubie-settings>rpi-time-sync ;
+		SEARCH on $(timeSync) = [ FDirName $(HAIKU_TOP) data boot rpi ] ;
+		AddFilesToHaikuImage home config settings boot : $(bootscript)
+			$(timeSync) ;
+		local rtcSettings = <cubie-settings>RTC_time_settings ;
+		SEARCH on $(rtcSettings) = [ FDirName $(HAIKU_TOP) data boot rpi ] ;
+		AddFilesToHaikuImage home config settings : $(rtcSettings) ;
 		local environment = <cubie-settings>UserSetupEnvironment ;
 		SEARCH on $(environment) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
 		AddFilesToHaikuImage home config settings boot : $(environment) ;
