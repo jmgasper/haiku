@@ -58,8 +58,12 @@ each USB port, the serial console, and a Bluetooth device to pair with.
     control endpoint once per 1 ms frame, at microframe 4: the Setup stage
     itself waits for it, so it is not NAK handling. Transfer layout (Event
     Data, ENT, status-only events), periodic load and ASMedia's flow control
-    register were tried at run time without effect; bulk on the same
-    controller runs at full speed. The ASM2142 is not affected (0.4 ms).
+    register were tried at run time without effect; so was an Evaluate
+    Context giving EP0 another interval, average TRB length or ESIT
+    payload, which the controller ignores (as the specification lets it;
+    at address time Haiku already uses the values Linux does). Bulk on the
+    same controller runs at full speed. The ASM2142 is not affected
+    (0.4 ms).
   * The Thunderbolt card (Gigabyte GC-MAPLE RIDGE, xHCI 8086:1138) halts
     with a Host System Error 22-50 ms after it is started, before any port
     activity, and the BIOS leaves it the same way: its first DMA read never
