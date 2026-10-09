@@ -19,7 +19,7 @@ each USB port, the serial console, and a Bluetooth device to pair with.
 | SMP | all 32 hardware threads (16 cores) online | verified: `sysinfo` lists 32 CPUs |
 | NVMe | disk available and bootable | verified after multi-root PCI fix: 2 GiB raw read at 1.6 GiB/s, boot volume |
 | Ethernet | I211 up with DHCP | verified: ipro1000 link 1000BASE-T, DHCP lease, HTTP upload and SSH |
-| USB | every port at its full speed | verified on four of the five controllers: USB 2 flash drives read at their 30-33 MB/s on the CPU's ports, the chipset's front ports and the ASM2142, and a RTL8153 gigabit adapter links at SuperSpeed on the ASM2142's USB-C port and carries 815 Mbit/s (UDP in) and 650-780 Mbit/s (out), against 81 Mbit/s before. Disks and network adapters plugged in while the system runs now attach. SuperSpeed on the CPU's and the chipset's Type-A ports is untested (no USB 3 Type-A device here). The Thunderbolt card's controller halts on its first DMA, under the BIOS too, and is set aside; the chipset's controller takes 3-4 ms per control transfer (one stage per frame), which slows enumeration and the Bluetooth firmware load but not data |
+| USB | every port at its full speed | verified on four of the five controllers with real devices: a USB 3 SSD reads 281-291 MB/s and writes 312-334 MB/s at SuperSpeed on both a CPU rear port and a chipset front port (43 MB/s before), data verified; a RTL8153 gigabit adapter links at SuperSpeed on the ASM2142's USB-C port and carries 815 Mbit/s (81 before); USB 2 flash drives read their 30-36 MB/s on every controller. Disks and network adapters plugged in while the system runs now attach. Not covered: the ASM2142's USB-A port with a USB 3 device. The Thunderbolt card's controller halts on its first DMA, under the BIOS too, and is set aside; the chipset's controller takes 3-4 ms per control transfer (one stage per frame), which slows enumeration and the Bluetooth firmware load but not data |
 | Audio | ALC1220 analog output, HDMI audio | verified both: two outputs, each clocking its stream at the hardware's own rate (48322 and 48321 frames a second against the 48000 asked for). The graphics card's codec needed a change to Haiku's hda driver, which discarded any codec whose converters are all digital. The monitor reports it takes stereo. What nobody here can check is whether a speaker makes a sound |
 | Graphics | GTX 1070/1080 Ti accelerated 2D/3D, 3-4 monitors | 3D verified: Vulkan on the GPU (1.4 TFLOP/s compute, 57 Gpixel/s fill) and OpenGL 4.5 through it, with frames copied straight into the screen's own frame buffer in video memory rather than sent through the host - a lit sphere at 1600x900 goes from 209 to 970 frames a second. Vertical sync works (locks to 60.0) now that the accelerant hands out a retrace semaphore. Any program gets the GPU, with nothing set in its environment. Three heads driving one spanning desktop is verified, but with the third and second forced rather than plugged in. 2D is not accelerated at all: it runs four to eight times slower than drawing in memory, which is still far more than a desktop needs at one monitor |
 | Displays | two 4K monitors usable at arm's length: per-monitor scaling, arrangement, mirroring, per-monitor maximize, hot plug | verified on the two Dell P2415Q (DisplayPort): each monitor is a region of one frame buffer that the display engine scales up to the panel, at 100 to 250 percent in steps of 25, chosen per monitor. app_server arranges the monitors (side by side, stacked, swapped, one off, or one mirroring another), remembers the arrangement per monitor identity, keeps the mouse off the parts of the desktop no monitor shows, moves windows along with their monitor, and maximizes a window to the monitor most of it is on (the classic whole-desktop maximize is a setting). Two 24-inch 4K monitors come up at 200 percent, a 3840x1080 desktop drawn at full density with no settings at all; text is sharp in the frame buffer itself. The Screen preferences show the monitors as they stand and let them be dragged into place, identified by number on each screen, and read out from their EDID. Monitors coming and going are noticed two ways, but nobody was at the machine to plug one, so that path is untested. Frame buffer and VESA hardware gets the same scaling done in software, untested here |
@@ -69,6 +69,22 @@ each USB port, the serial console, and a Bluetooth device to pair with.
     have; set aside at the owner's request.
   * The NanoKVM's USB fails on every controller with two cables (the BIOS
     cannot use it either), so it is a cable or device fault.
+  * USB 3 disks: a 180 GB SSD (Seagate enclosure, Bulk-Only) read 43 MB/s.
+    usb_disk keeps DMA below 4 GiB (the xhci driver requires it), so on
+    this machine nearly every transfer was bounced through a 16 KiB
+    buffer, one SCSI command per 16 KiB; with 16 segments a buffer in low
+    memory made at most 64 KiB; and commands were at most 128 KiB. A DMA
+    resource with one bounce buffer now gets it as large as its largest
+    transfer (up to 1 MiB), usb_disk allows enough segments, and
+    SuperSpeed disks get 1 MiB commands, as Linux gives USB 3 disks
+    (`1c3364e981`). Larger transfers exposed an xhci bug: a physical
+    transfer over 384 KiB was laid out whole and its remainder sent again
+    after each fragment, leaving the disk waiting for data and every later
+    command timing out; TRBs could also cross 64 KiB now that bursts are
+    16 KiB (`db80e86bf8`). The SSD now does 291/334 MB/s (front, chipset)
+    and 281/312 MB/s (rear, CPU), read/write, with 256 MiB written and read
+    back identically in 1 MiB, 64 KiB and 4 KiB blocks
+    (`tests/usbdiskcheck.sh` in `/boot/home/x399-tests`).
   New read-only tools look at the controllers while the driver runs
   (`evtwatch`, `evtrate`, `portwatch`, `xhcirings`, `pcitree`, ...), and
   `usbmsbench` and `tcpbench` measure storage and network throughput
