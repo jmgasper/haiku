@@ -142,6 +142,7 @@ AddNewDriversToPackage disk virtual :
 AddNewDriversToPackage graphics :
 	rpi_display@arm64
 	rpi_dsi@arm64
+	powervr@arm64
 	sunxi_display@arm64
 	v3d@arm64
 	virtio_gpu

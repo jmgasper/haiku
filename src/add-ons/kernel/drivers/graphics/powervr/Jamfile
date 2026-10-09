@@ -1,0 +1,18 @@
+SubDir HAIKU_TOP src add-ons kernel drivers graphics powervr ;
+
+SubDirC++Flags -fno-rtti ;
+
+UsePrivateKernelHeaders ;
+UsePrivateHeaders drivers graphics ;
+UsePrivateHeaders [ FDirName graphics powervr ] ;
+
+# the display driver's R_TWI controller, for the PMIC
+local sunxiDisplay = [ FDirName $(SUBDIR) $(DOTDOT) sunxi_display ] ;
+SEARCH_SOURCE += $(sunxiDisplay) ;
+SubDirSysHdrs $(sunxiDisplay) ;
+
+KernelAddon powervr :
+	A733Power.cpp
+	driver.cpp
+	twi.cpp
+;

@@ -325,6 +325,17 @@
 
 / {
 	soc {
+		/* PowerVR BXM-4-64 MC1 (BVNC 36.56.104.183), as Radxa's BSP device
+		   tree describes it; the powervr driver handles its clocks and power
+		   domains (CCU 0xb20/0xb24, PCK-600 domains 5 and 6) itself. */
+		gpu: gpu@1800000 {
+			compatible = "allwinner,sun60i-a733-gpu", "img,img-bxm-4-64",
+				"img,img-rogue";
+			reg = <0x01800000 0x90000>;
+			interrupts = <GIC_SPI 63 IRQ_TYPE_LEVEL_HIGH>;
+			status = "okay";
+		};
+
 		/* Display engine 3.5 with its TCONs and the DisplayPort transmitter;
 		   the sunxi_display driver drives the whole chain. */
 		display-engine@5000000 {
