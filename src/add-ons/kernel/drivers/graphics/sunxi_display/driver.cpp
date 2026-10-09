@@ -11,7 +11,11 @@
 	Screens preferences work the same). While no display is attached, or the
 	output cannot show anything yet, the DisplayPort output stands in for a
 	1920x1080 display ("virtual"): the desktop then runs headless, which is
-	how the board is brought up and how it runs as a server. */
+	how the board is brought up and how it runs as a server.
+
+	The USB-C port controller (typec.h) gets the display into DisplayPort
+	mode; once it reports hot plug, the display pipe (display_pipe.h) reads
+	the sink's EDID, trains the link and shows the frame buffer. */
 
 
 #include <new>
@@ -33,6 +37,7 @@
 
 #include <sunxi_display.h>
 
+#include "display_pipe.h"
 #include "registers.h"
 #include "typec.h"
 
@@ -69,6 +74,11 @@ struct display_info {
 	sunxi::TypeCPort* typeC;
 	thread_id		pollThread;
 	int32			stopping;
+
+	sunxi::DisplayPipe* pipe;
+	int32			connectFailures;
+	bigtime_t		nextConnect;
+	bigtime_t		hotPlugLostAt;
 };
 
 
@@ -96,9 +106,126 @@ init_outputs(display_info* info)
 }
 
 
+static status_t ensure_buffer(display_info* info, size_t size);
+
+
+static void
+notify_change(display_info* info)
+{
+	if (info->changePort >= 0) {
+		write_port_etc(info->changePort, info->changeCode, NULL, 0,
+			B_RELATIVE_TIMEOUT, 0);
+	}
+}
+
+
+/*!	Where output 0 starts in the frame buffer: its region of the layout,
+	or the top left corner before there is one.
+*/
+static phys_addr_t
+scanout_address(display_info* info)
+{
+	const sunxi_display_shared_info& shared = *info->shared;
+	const sunxi_display_output& output = shared.outputs[0];
+	uint32 bytesPerRow = shared.bytes_per_row;
+	if ((output.flags & SUNXI_DISPLAY_OUTPUT_ENABLED) == 0 || bytesPerRow == 0)
+		return info->bufferAddress;
+
+	// The display engine shows the output's mode from there; keep it inside
+	// the buffer.
+	int32 x = output.x;
+	int32 y = output.y;
+	if (x + output.native_width > (int32)shared.width)
+		x = max_c(0, (int32)shared.width - output.native_width);
+	if (y + output.native_height > (int32)shared.height)
+		y = max_c(0, (int32)shared.height - output.native_height);
+	return info->bufferAddress + (phys_addr_t)y * bytesPerRow + x * 4;
+}
+
+
+static uint32
+scanout_bytes_per_row(display_info* info)
+{
+	const sunxi_display_shared_info& shared = *info->shared;
+	if (shared.bytes_per_row != 0
+		&& (shared.outputs[0].flags & SUNXI_DISPLAY_OUTPUT_ENABLED) != 0) {
+		return shared.bytes_per_row;
+	}
+	return shared.outputs[0].native_width * 4;
+}
+
+
+/*!	A display is there: read what it is, show the frame buffer on it, and
+	let app_server know.
+*/
+static void
+connect_display(display_info* info)
+{
+	uint8 edid[256];
+	uint32 edidLength = 0;
+	sunxi::display_timing timing;
+	status_t status = info->pipe->Discover(info->typeC->Flipped(), edid,
+		&edidLength, timing);
+
+	MutexLocker locker(info->lock);
+	if (status == B_OK) {
+		status = ensure_buffer(info,
+			(size_t)timing.h_display * 4 * timing.v_display);
+	}
+	if (status == B_OK) {
+		sunxi_display_output& output = info->shared->outputs[0];
+		output.native_width = timing.h_display;
+		output.native_height = timing.v_display;
+		status = info->pipe->Enable(timing, scanout_address(info),
+			scanout_bytes_per_row(info));
+	}
+	if (status != B_OK) {
+		info->connectFailures++;
+		info->nextConnect = system_time()
+			+ (info->connectFailures < 5 ? 2000000 : 30000000);
+		ERROR("DP-1: no picture (%s), trying again in %" B_PRId64 " s\n",
+			strerror(status), (info->nextConnect - system_time()) / 1000000);
+		sunxi_display_output& output = info->shared->outputs[0];
+		output.native_width = kVirtualWidth;
+		output.native_height = kVirtualHeight;
+		return;
+	}
+
+	info->connectFailures = 0;
+	sunxi_display_output& output = info->shared->outputs[0];
+	output.flags &= ~SUNXI_DISPLAY_OUTPUT_VIRTUAL;
+	output.edid_length = edidLength;
+	memcpy(output.edid, edid, edidLength);
+	INFO("DP-1: %ux%u, %" B_PRIu32 " lanes at %" B_PRIu32 " Mbit/s\n",
+		timing.h_display, timing.v_display, info->pipe->Lanes(),
+		info->pipe->LinkRate() / 100);
+	notify_change(info);
+}
+
+
+static void
+disconnect_display(display_info* info)
+{
+	MutexLocker locker(info->lock);
+	info->pipe->Disable();
+	sunxi_display_output& output = info->shared->outputs[0];
+	output.flags |= SUNXI_DISPLAY_OUTPUT_VIRTUAL;
+	output.native_width = kVirtualWidth;
+	output.native_height = kVirtualHeight;
+	output.edid_length = 0;
+	info->connectFailures = 0;
+	info->nextConnect = 0;
+	INFO("DP-1: display gone, standing in for a %ux%u one\n",
+		output.native_width, output.native_height);
+	notify_change(info);
+}
+
+
 /*!	Runs the USB-C port's state machine: often while something happens
 	there, otherwise when the port controller signals (PL3, active low) and
-	now and then.
+	now and then. Connects and disconnects the display as hot plug says;
+	adapters drop HPD now and then while they have no picture, so a drop
+	only counts after a second.
 */
 static status_t
 poll_outputs(void* cookie)
@@ -116,12 +243,27 @@ poll_outputs(void* cookie)
 		info->typeC->Poll();
 
 		int32 current = info->typeC->Changes();
-		if (current == changes)
+		if (current != changes) {
+			changes = current;
+			INFO("DP-1: %s, HPD %s\n", info->typeC->DisplayPortReady()
+					? "alt mode ready" : "no alt mode",
+				info->typeC->HotPlug() ? "high" : "low");
+		}
+
+		if (info->pipe == NULL)
 			continue;
-		changes = current;
-		INFO("DP-1: %s, HPD %s\n", info->typeC->DisplayPortReady()
-				? "alt mode ready" : "no alt mode",
-			info->typeC->HotPlug() ? "high" : "low");
+		bool present = info->typeC->DisplayPortReady()
+			&& info->typeC->HotPlug();
+		if (present)
+			info->hotPlugLostAt = 0;
+		else if (info->hotPlugLostAt == 0)
+			info->hotPlugLostAt = now;
+
+		if (info->pipe->Enabled()) {
+			if (!present && now - info->hotPlugLostAt > 1000000)
+				disconnect_display(info);
+		} else if (present && now >= info->nextConnect)
+			connect_display(info);
 	}
 	return B_OK;
 }
@@ -245,6 +387,11 @@ set_layout(display_info* info, const sunxi_display_layout& layout)
 	shared.height = layout.height;
 	shared.bytes_per_row = bytesPerRow;
 
+	if (info->pipe != NULL && info->pipe->Enabled()) {
+		info->pipe->SetScanout(scanout_address(info),
+			scanout_bytes_per_row(info));
+	}
+
 	// the kernel's console and debugger follow
 	frame_buffer_update((addr_t)info->buffer, layout.width, layout.height, 32,
 		bytesPerRow);
@@ -297,6 +444,18 @@ display_init_device(void* _info, void** _cookie)
 	mutex_init(&info->lock, "sunxi display");
 	info->changePort = -1;
 
+	// the path from the display engine to the USB-C port
+	info->pipe = new(std::nothrow) sunxi::DisplayPipe;
+	if (info->pipe != NULL) {
+		status = info->pipe->Init();
+		if (status != B_OK) {
+			ERROR("the display path does not come up: %s\n",
+				strerror(status));
+			delete info->pipe;
+			info->pipe = NULL;
+		}
+	}
+
 	// the USB-C port the DisplayPort output goes through
 	info->pollThread = -1;
 	info->typeC = new(std::nothrow) sunxi::TypeCPort;
@@ -331,6 +490,9 @@ display_uninit_device(void* cookie)
 		wait_for_thread(info->pollThread, &result);
 	}
 	delete info->typeC;
+	if (info->pipe != NULL)
+		info->pipe->Disable();
+	delete info->pipe;
 	mutex_destroy(&info->lock);
 	if (info->bufferArea >= 0)
 		delete_area(info->bufferArea);

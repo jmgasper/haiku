@@ -18,3 +18,7 @@ Changes to the U-Boot files:
   which work; Ethernet, the UARTs in use and the I2C controllers already
   matched.
 - `reserved-memory` for the BSP TF-A (BL31) at 0x48000000, 16 MiB.
+- CPU top speeds (`clock-frequency`, from the BSP's cpufreq) and the
+  Cortex-A76 compatible of cpu6 and cpu7.
+- Always-on regulators for the AIC8800 Wi-Fi/Bluetooth module (R_PIO PM0
+  and PM1), switched by the sunxi_regulator driver.

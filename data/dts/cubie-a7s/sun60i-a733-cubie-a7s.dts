@@ -286,6 +286,29 @@
 		mmc1 = &mmc2;
 	};
 
+	/* The AIC8800 Wi-Fi/Bluetooth module (USB, behind the CH334F hub):
+	   power and chip enable, always on as in Radxa's BSP device tree. */
+	reg_wifi_power: regulator-wifi-power {
+		compatible = "regulator-fixed";
+		regulator-name = "wifi-power-en";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&r_pio 1 0 GPIO_ACTIVE_HIGH>;	/* PM0 */
+		enable-active-high;
+		regulator-always-on;
+	};
+
+	reg_wifi_chip: regulator-wifi-chip {
+		compatible = "regulator-fixed";
+		regulator-name = "wifi-chip-en";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&r_pio 1 1 GPIO_ACTIVE_HIGH>;	/* PM1 */
+		enable-active-high;
+		regulator-always-on;
+		vin-supply = <&reg_wifi_power>;
+	};
+
 	reserved-memory {
 		#address-cells = <2>;
 		#size-cells = <2>;
@@ -311,3 +334,15 @@
 		};
 	};
 };
+
+/* The cores' top speeds, as Radxa's BSP runs them (cpufreq: 1794 MHz for the
+   Cortex-A55s, 2002 MHz for the Cortex-A76s); About and sysinfo show them. */
+&cpu0 { clock-frequency = <1794000000>; };
+&cpu1 { clock-frequency = <1794000000>; };
+&cpu2 { clock-frequency = <1794000000>; };
+&cpu3 { clock-frequency = <1794000000>; };
+&cpu4 { clock-frequency = <1794000000>; };
+&cpu5 { clock-frequency = <1794000000>; };
+/* the U-Boot tree calls the two big cores Cortex-A55s too */
+&cpu6 { compatible = "arm,cortex-a76"; clock-frequency = <2002000000>; };
+&cpu7 { compatible = "arm,cortex-a76"; clock-frequency = <2002000000>; };
