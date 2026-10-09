@@ -1,10 +1,12 @@
 # air/OS for the Radxa Cubie A7S (Allwinner A733, arm64). Include this file
 # from the build directory's UserBuildConfig.
 #
-#	jam -q @minimum-cubie		the small bring-up image (haiku-cubie-minimum.image)
+#	jam -q @minimum-cubie	the small bring-up image (haiku-cubie-minimum.image)
+#	jam -q @cubie-airos		the full air/OS system (haiku-cubie-airos.image)
 #
-# The image is a bare BFS volume; tools/cubie-a7s/build-lab-image.sh puts it
-# on the lab card, with the EFI loader on the ESP.
+# The images are bare BFS volumes: tools/cubie-a7s/build-sd-image.sh makes an
+# SD card image of one (boot loader, ESP, BFS), deploy-haiku.sh puts one on
+# the lab card.
 
 HAIKU_IMAGE_LABEL = airOS ;
 
@@ -12,6 +14,19 @@ if $(HAIKU_BUILD_PROFILE) = minimum-cubie {
 	HAIKU_IMAGE_SIZE = 900 ;
 }
 DefineBuildProfile minimum-cubie : image : "haiku-cubie-minimum.image" ;
+
+# The full air/OS system: the regular image definition (every application,
+# preference and demo) plus the owner's applications, Summit, airTime and the
+# libraries and firmware Haiku has no arm64 packages for; the same inputs as
+# the Pi 4's air/OS image (tools/rpi4/UserBuildConfig).
+CUBIE_AIROS_IMAGE = ;
+if $(HAIKU_BUILD_PROFILE) = cubie-airos {
+	CUBIE_AIROS_IMAGE = 1 ;
+	HAIKU_IMAGE_SIZE = 3584 ;
+	HAIKU_BFS_GROWABLE = 1 ;
+	AddHaikuImageSystemPackages ca_root_certificates ;
+}
+DefineBuildProfile cubie-airos : image : "haiku-cubie-airos.image" ;
 
 # The lab overlay: files that only make sense on the lab's board. It is
 # switched on by the presence of /mnt/HaikuWork/cubie/state/lab-image.
@@ -26,6 +41,73 @@ if $(CUBIE_LAB_IMAGE) = auto {
 
 rule UserBuildConfigRulePreImage
 {
+	if $(CUBIE_AIROS_IMAGE) {
+		local extras = /mnt/HaikuWork/rock5-image-extras ;
+
+		# libraries the applications link against
+		local libs = <cubie-lib>libsqlite3.so.0 <cubie-lib>libtag.so.2
+			<cubie-lib>libpcre2-8.so.0 <cubie-lib>libscintilla.so
+			<cubie-lib>liblexilla.so ;
+		SEARCH on $(libs) = [ FDirName $(extras) lib ] ;
+		AddFilesToHaikuImage system non-packaged lib : $(libs) ;
+
+		# Wi-Fi and Bluetooth firmware, wpa_supplicant, FFmpeg
+		local packages
+			= <cubie-pkg>intel_wifi_firmwares-2025_02_11-1-any.hpkg
+			<cubie-pkg>ralink_wifi_firmwares-2023_08_04-1-any.hpkg
+			<cubie-pkg>realtek_wifi_firmwares-2019_01_02-1-any.hpkg
+			<cubie-pkg>intel_bluetooth_firmwares-20240318-1-any.hpkg
+			<cubie-pkg>mediatek_bluetooth_firmwares-20240318-1-any.hpkg
+			<cubie-pkg>realtek_bluetooth_firmwares-20240318-1-any.hpkg
+			<cubie-pkg>rock5_ffmpeg-6.1.6-2-arm64.hpkg
+			<cubie-pkg>wpa_supplicant-2.11.haiku.1-1-arm64.hpkg ;
+		SEARCH on $(packages) = [ FDirName $(extras) packages ] ;
+		AddFilesToHaikuImage system packages : $(packages) ;
+
+		# ...without the ROCK 5's hardware decoder in rock5_ffmpeg, which
+		# takes H.264 from FFmpeg and then fails (same file as the Pi's).
+		local packageSettings = <cubie-settings>packages ;
+		SEARCH on $(packageSettings) = [ FDirName $(HAIKU_TOP) data boot rpi ] ;
+		AddFilesToHaikuImage system settings : $(packageSettings) ;
+
+		# The owner's applications and Summit (arm64 packages, staged in
+		# CUBIE_IMAGE_PACKAGES) and airTime.
+		local imagePackageDir = $(CUBIE_IMAGE_PACKAGES) ;
+		if ! $(imagePackageDir) {
+			imagePackageDir = /mnt/HaikuWork/cubie/image-packages ;
+		}
+		local imagePackages = [ Glob $(imagePackageDir) : *.hpkg ] ;
+		imagePackages = <cubie-app-pkg>$(imagePackages:BS) ;
+		SEARCH on $(imagePackages) = $(imagePackageDir) ;
+		AddFilesToHaikuImage system packages : $(imagePackages) ;
+		local airTime = <airtime-pkg>airtime-1.0.0-14-arm64.hpkg ;
+		SEARCH on $(airTime) = /mnt/HaikuWork/apps/airTime/artifacts ;
+		AddFilesToHaikuImage system packages : $(airTime) ;
+
+		# TLS for curl and Summit
+		local airosLibDir = /mnt/HaikuWork/airos/lib-arm64 ;
+		local airosLibs = [ Glob $(airosLibDir) : *.so* ] ;
+		airosLibs = <airos-lib>$(airosLibs:BS) ;
+		SEARCH on $(airosLibs) = $(airosLibDir) ;
+		AddFilesToHaikuImage system non-packaged lib : $(airosLibs) ;
+		AddSymlinkToHaikuImage system non-packaged data ssl
+			: /boot/system/data/ssl/CARootCertificates.pem
+			: CARootCertificates.pem ;
+
+		# An installed system, not an installer medium: to the desktop.
+		local localeSettings = "<cubie-settings>Locale settings" ;
+		SEARCH on $(localeSettings) = [ FDirName $(HAIKU_TOP) data boot rpi ] ;
+		AddFilesToHaikuImage home config settings : $(localeSettings) ;
+
+		# Wi-Fi autojoin at start; the bootstrap ICU's data directory.
+		local bootscript = <cubie-settings>UserBootscript ;
+		SEARCH on $(bootscript) = [ FDirName $(HAIKU_TOP) tools airos ci boot ] ;
+		AddFilesToHaikuImage home config settings boot : $(bootscript) ;
+		local environment = <cubie-settings>UserSetupEnvironment ;
+		SEARCH on $(environment) = [ FDirName $(HAIKU_TOP) tools rock5-itx ] ;
+		AddFilesToHaikuImage home config settings boot : $(environment) ;
+	}
+
 	if $(CUBIE_LAB_IMAGE) = 1 {
 		# A telnet login for the lab, with an account whose password hash
 		# lives outside the tree (state/lab-overlay, made once per lab).
