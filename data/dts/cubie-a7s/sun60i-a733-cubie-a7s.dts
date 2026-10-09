@@ -286,3 +286,15 @@
 		mmc1 = &mmc2;
 	};
 };
+
+/ {
+	soc {
+		/* Display engine 3.5 with its TCONs and the DisplayPort transmitter;
+		   the sunxi_display driver drives the whole chain. */
+		display-engine@5000000 {
+			compatible = "allwinner,sun60i-a733-display-engine";
+			reg = <0x05000000 0x400000>;
+			status = "okay";
+		};
+	};
+};

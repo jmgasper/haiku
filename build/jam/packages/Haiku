@@ -142,6 +142,7 @@ AddNewDriversToPackage disk virtual :
 AddNewDriversToPackage graphics :
 	rpi_display@arm64
 	rpi_dsi@arm64
+	sunxi_display@arm64
 	v3d@arm64
 	virtio_gpu
 	;
@@ -413,6 +414,8 @@ AddFilesToPackage add-ons accelerants :
 if $(TARGET_ARCH) = arm64 {
 	# the Raspberry Pi 4's HDMI outputs
 	AddFilesToPackage add-ons accelerants : rpi_display.accelerant ;
+	# the Allwinner A733's display outputs (Radxa Cubie A7S)
+	AddFilesToPackage add-ons accelerants : sunxi_display.accelerant ;
 }
 AddFilesToPackage add-ons locale catalogs :
 	$(SYSTEM_ADD_ONS_LOCALE_CATALOGS) ;

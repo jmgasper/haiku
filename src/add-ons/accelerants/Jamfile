@@ -15,6 +15,7 @@ SubInclude HAIKU_TOP src add-ons accelerants radeon_hd ;
 SubInclude HAIKU_TOP src add-ons accelerants rk3588_display ;
 SubInclude HAIKU_TOP src add-ons accelerants rpi_display ;
 SubInclude HAIKU_TOP src add-ons accelerants s3 ;
+SubInclude HAIKU_TOP src add-ons accelerants sunxi_display ;
 SubInclude HAIKU_TOP src add-ons accelerants vesa ;
 SubInclude HAIKU_TOP src add-ons accelerants via ;
 SubInclude HAIKU_TOP src add-ons accelerants virtio ;
