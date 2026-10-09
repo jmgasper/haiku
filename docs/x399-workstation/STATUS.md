@@ -161,6 +161,69 @@ each USB port, the serial console, and a Bluetooth device to pair with.
     the pinned source/compiler/artifact manifest are outside the repository
     under `/mnt/HaikuWork/artifacts/fractional-scaling`.
 
+- 2026-10-08: synchronize the runtime loader's TLS template registry. A
+  Summit startup crash showed a new IPC thread copying a corrupted TLS
+  template while another thread loaded Mesa. `Register()` could reallocate
+  the vector without synchronizing with `CreateBlock()` on other threads.
+  The new recursive lock covers template reads, mutation, and initialization
+  copies. Existing per-thread blocks keep their lock-free fast path; the
+  generation uses an atomic acquire read, and the lock is reset after fork.
+  * `test_tls_templates.sh` loads 256 TLS libraries while 12 workers create
+    576 fresh threads accessing a 1 MiB TLS template. Libraries stay loaded
+    until all workers finish. The original native loader passes 26 rounds
+    then reports two bad initializations; the candidate passes 100 rounds,
+    **57,600 checks**, with no crash or debugger event.
+  * Local x86_64 build, 100 QEMU rounds before and after a normal reboot,
+    22 standard loader tests, 2,000 TLS generation checks, and C++ TLS
+    construction/destruction pass. ARM64 loader deployment is untested.
+  * The automatic rollback guard was verified in QEMU: prior fix -> candidate
+    -> prior fix, followed by restoration of the original VM loader. Merely
+    copying two versions into the packages directory prompts for an upgrade;
+    the qualified procedure removes one, verifies the resulting loader hash,
+    then installs the next. The guard preloads the old package and restores
+    it with Python file operations, without launching another program.
+  * X399 now uses `summit_runtime_loader_tls_fix-1.1-1-x86_64.hpkg`, SHA-256
+    `25a64a61e4d68879ff1d821b96c0d61fcba4b7cecd1bebef0614cbfcff91adc4`.
+    Active loader SHA-256 is
+    `c9c57eae848f9b860ffffdd0b600631da181825c87a24d5fc8b40a6eaffd9d4c`.
+    Native activation and all tests above pass; the guard reports `verified`.
+    No native reboot occurred. The previous package is preserved in
+    `/boot/home/summit/bench/perf12h-tls-concurrency/baseline-disabled.hpkg`.
+    All 100 subsequent Summit startup/local-page/normal-quit cycles pass,
+    with no crash events or leftover helpers. The engine rebuild was active
+    during these correctness tests; this is not a performance claim.
+  * Evidence: `/mnt/HaikuWork/apps/summit/.vm/performance-12h-20261008/tls-concurrency/`.
+
+- 2026-10-08: the runtime loader now initializes a new dynamic TLS vector at
+  the current image generation. Previously, after an image unload, a new
+  thread's second access could discard the block created by its first access,
+  losing writes. A Summit WebProcess crash reached Mesa's once trampoline
+  with a null TLS callback after the callback had been stored; the isolated
+  TLS reproducer exposes the corresponding loader defect.
+  * `src/tests/system/runtime_loader/test_tls_generation.sh` builds two TLS
+    libraries and checks 100 unload/reload rounds with eight new threads each,
+    first-write retention, per-thread isolation, retained-image state and
+    reused-slot initialization. X399 fails 1,224 of 2,000 checks before the
+    fix and passes all 2,000 after it.
+  * The local x86_64 loader build passes. An isolated QEMU overlay reproduces
+    the failure, passes with the fix, fails again after package removal, and
+    passes after reinstall and normal reboot. All 22 existing loader tests
+    pass with `/boot/system/lib` in `LIBRARY_PATH`; the C++ TLS constructor /
+    destructor fixture also passes.
+  * Installed only `runtime_loader` through the removable local package
+    `summit_runtime_loader_tls_fix-1.0-1-x86_64.hpkg`, without rebooting X399.
+    Loader SHA-256 is
+    `d634caaba16cb92f5879f54370212d372d081de48a99d7cb5cbfc4114b8425ce`.
+    Moving that package out of `/boot/system/packages` restores the original
+    packaged loader after package activation completes; rollback was tested
+    in QEMU. Native activation was verified directly. The planned automatic
+    guard failed to start because of a generated-script quoting error; it
+    did not cover activation. This does not diagnose the separate earlier
+    condition-variable invalid-opcode crash.
+  * Evidence: `/mnt/HaikuWork/apps/summit/.vm/optimization-2026-10-08/tls-generation/`.
+    Browser stress validation continues in the Summit repository. ARM64
+    hardware was not changed or tested.
+
 - 2026-10-05: scaled screenshots no longer copy the screen first. At 200%
   `DrawingEngine::ReadBitmap` still copied the drawing buffer's rectangle
   (7680x2160 for the whole desktop) into a BBitmap, averaged it with
