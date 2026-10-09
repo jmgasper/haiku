@@ -110,6 +110,15 @@ It uses stateless JSON responses and returns 405 for the optional SSE stream.
   disabled state survived another reboot. A failed settings save rolled back the
   listener and withheld connection details.
 - JSON regression tests passed on the host and in Haiku x86_64.
+- The x86_64, ARM64 and Pi images built from merge commit `418ca98031`
+  passed the [image CI run](https://github.com/jmgasper/haiku/actions/runs/37872317743).
+  The x86_64 and ARM64 gates booted QEMU; the Pi gate checked the SD layout and
+  boot files, without claiming a native Pi boot.
+- Each CI image's compressed and uncompressed checksums were verified against
+  its manifest. Direct extraction confirmed the server, preference app, menu
+  link and launch service, with no shipped MCP settings or legacy `airos_mcp`
+  package. The server and preference binaries in all three images exactly match
+  the corresponding locally tested x86_64 or ARM64 binaries.
 
 Local build logs, private QEMU fixtures, screenshots and test output are retained
 under `/mnt/HaikuWork/artifacts/mcp-service-20261009` and the adjacent
