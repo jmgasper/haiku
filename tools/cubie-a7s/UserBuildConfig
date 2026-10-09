@@ -1,0 +1,3 @@
+# air/OS for the Radxa Cubie A7S (Allwinner A733, arm64). Include this file
+# from the build directory's UserBuildConfig.
+HAIKU_IMAGE_LABEL = airOS ;
