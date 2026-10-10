@@ -193,4 +193,62 @@ ParseAtomVramReservation(const void* data, size_t size,
 	return true;
 }
 
+bool
+ParseAtomRenderInfo(const void* data, size_t size, AtomRenderInfo& info)
+{
+	info = {};
+	if (data == NULL || size < 0x4a)
+		return false;
+	const uint8_t* p = (const uint8_t*)data;
+	if (p[0] != 0x55 || p[1] != 0xaa)
+		return false;
+	size_t rom = ReadLE16(p + 0x48);
+	if (!TableFits(p, size, rom, 36)
+		|| (memcmp(p + rom + 4, "ATOM", 4) != 0
+			&& memcmp(p + rom + 4, "MOTA", 4) != 0))
+		return false;
+	size_t master = ReadLE16(p + rom + 32);
+	if (!TableFits(p, size, master, 4 + 15 * 2))
+		return false;
+	// ATOM data entries 14 (GFX_Info) and 4 (FirmwareInfo). GFX 2.1 and
+	// 2.3 share these first twelve bytes; only 2.2 FirmwareInfo is supported.
+	size_t gfx = ReadLE16(p + master + 4 + 14 * 2);
+	size_t firmware = ReadLE16(p + master + 4 + 4 * 2);
+	if (!TableFits(p, size, gfx, 12) || p[gfx + 2] != 2
+		|| (p[gfx + 3] != 1 && p[gfx + 3] != 3)
+		|| (p[gfx + 3] == 3 && !TableFits(p, size, gfx, 24))
+		|| !TableFits(p, size, firmware, 108)
+		|| p[firmware + 2] != 2 || p[firmware + 3] != 2)
+		return false;
+	AtomRenderInfo value = {};
+	value.gfxMajor = p[gfx + 5];
+	value.gfxMinor = p[gfx + 4];
+	value.shaderEngines = p[gfx + 6];
+	value.tilePipes = p[gfx + 7];
+	value.cuPerArray = p[gfx + 8];
+	value.shaderArraysPerEngine = p[gfx + 9];
+	value.backendsPerEngine = p[gfx + 10];
+	value.tccBlocks = p[gfx + 11];
+	uint32_t engine = ReadLE32(p + firmware + 8);
+	uint32_t memory = ReadLE32(p + firmware + 12);
+	uint32_t reference = ReadLE16(p + firmware + 82);
+	// These bounds protect all later bank selection, shifts and output arrays.
+	if (value.gfxMajor != 8 || value.gfxMinor > 1
+		|| value.shaderEngines == 0 || value.shaderEngines > 4
+		|| value.shaderArraysPerEngine == 0 || value.shaderArraysPerEngine > 2
+		|| value.cuPerArray == 0 || value.cuPerArray > 16
+		|| value.backendsPerEngine == 0 || value.backendsPerEngine > 8
+		|| value.backendsPerEngine % value.shaderArraysPerEngine != 0
+		|| value.tilePipes == 0 || value.tilePipes > 16
+		|| value.tccBlocks == 0 || value.tccBlocks > 16
+		|| engine == 0 || engine > 1000000 || memory == 0 || memory > 1000000
+		|| reference == 0 || reference > 100000)
+		return false;
+	value.defaultEngineKHz = engine * 10;
+	value.defaultMemoryKHz = memory * 10;
+	value.referenceKHz = reference * 10;
+	info = value;
+	return true;
+}
+
 } // namespace amdgpu

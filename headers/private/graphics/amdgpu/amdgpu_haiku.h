@@ -43,7 +43,8 @@ enum {
 	AMDGPU_VM_UNMAP,
 	AMDGPU_VM_TEST,
 	AMDGPU_GFX_SUBMIT,
-	AMDGPU_IRQ_INFO
+	AMDGPU_IRQ_INFO,
+	AMDGPU_RENDER_INFO
 };
 
 // One GPU virtual address space per open client. Mappings retain their BO
@@ -108,6 +109,33 @@ struct amdgpu_irq_info {
 	uint32 first_eop[2][4];
 	int32 status;
 	uint32 reserved;
+};
+
+// Starts the installed graphics engine, then returns a bounded snapshot for
+// the native Mesa backend. flags/reserved must be zero. No caller-selected
+// register access is accepted. Bank/SMC selectors are restored after reads;
+// timestamp capture is serialized with submissions. Clock defaults are ROM
+// boot defaults, not measured clocks or DPM maxima. All sizes are bytes.
+enum { AMDGPU_RENDER_ROOT_SUBMIT = 1, AMDGPU_RENDER_SYNC_SUBMIT = 2 };
+struct amdgpu_render_info {
+	uint32 version, size, flags, reserved;
+	uint32 capabilities, gfx_major, gfx_minor, chip_revision;
+	uint32 shader_engines, shader_arrays_per_engine, cu_per_array, backends_per_engine;
+	uint32 tile_pipes, tcc_blocks, active_cus, enabled_backends;
+	uint32 cu_mask[4][2], cu_disable[4][2], cu_user_disable[4][2];
+	uint32 rb_disable[4][2], rb_user_disable[4][2];
+	uint32 raster_config[4][2], raster_config_1[4][2];
+	uint32 gb_addr_config, tile_mode[32], macrotile_mode[16];
+	uint32 mc_arb_ramcfg, mc_shared_chmap, mc_seq_misc0;
+	uint32 vram_bus_width, vram_type; // MC_SEQ_MISC0 MT encoding, not DRM's enum
+	uint32 default_engine_khz, default_memory_khz, reference_khz, timestamp_khz;
+	uint32 firmware_version[5], firmware_feature[5]; // CE, PFP, ME, RLC, MEC
+	uint32 grbm_index_before, grbm_index_after;
+	uint64 gpu_timestamp, started_us, finished_us;
+	uint64 total_vram, visible_vram, total_gart, address_start, address_end;
+	uint64 max_buffer_bytes, max_mapping_bytes, max_mapped_bytes;
+	uint32 max_mappings, max_vm_clients, page_size, max_ib_bytes;
+	uint32 ib_address_alignment, ib_size_alignment, max_buffers, reserved_out;
 };
 
 // Read-only DCE 11.2 observation, available without starting any GPU engine.

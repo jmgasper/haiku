@@ -16,6 +16,7 @@ struct GfxEngine {
 	bool attempted, ready, faulted, vmEnabled, mecStarted;
 	pci_module_info* pci;
 	GpuInterrupts interrupts;
+	uint32 firmwareVersion[5], firmwareFeature[5];
 	status_t InitializeVM(const amdgpu_info& info,
 		const amdgpu::AtomVramReservation& reservation, const Gart& gart);
 	status_t Initialize(volatile uint32* r, const amdgpu_info& info,
@@ -31,6 +32,7 @@ struct GfxEngine {
 	status_t ExecuteIB(uint64 directory, uint64 address, uint32 dwords,
 		Gart& gart, amdgpu_vm_test& result);
 	void Snapshot(amdgpu_gfx_test& result);
+	status_t RenderInfo(const amdgpu::AtomRenderInfo& rom, amdgpu_render_info& result);
 	void DumpExecutionState(const char* point);
 	void Halt();
 	void Uninitialize();

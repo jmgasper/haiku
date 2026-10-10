@@ -11,7 +11,7 @@ void amdgpu_client_free(AmdgpuClient* client);
 bool amdgpu_device_active();
 status_t amdgpu_device_start(volatile uint32* regs, const amdgpu_info& info,
 	const amdgpu::FirmwareView& firmware, const amdgpu::AtomVramReservation& reservation,
-	bool uvdClocksQualified, pci_module_info* pci);
+	bool uvdClocksQualified, pci_module_info* pci, const amdgpu::AtomRenderInfo& renderInfo);
 status_t amdgpu_client_control(AmdgpuClient* client, uint32 op, void* data, size_t length,
 	status_t (*initialize)());
 status_t amdgpu_device_uvd_test(const amdgpu::FirmwareView& firmware,

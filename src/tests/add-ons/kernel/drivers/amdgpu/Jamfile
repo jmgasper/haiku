@@ -11,6 +11,7 @@ SimpleTest amdgpu_startup : amdgpu_startup.cpp ;
 SimpleTest amdgpu_gfx : amdgpu_gfx.cpp ;
 SimpleTest amdgpu_vm : amdgpu_vm.cpp : [ TargetLibstdc++ ] ;
 SimpleTest amdgpu_irq : amdgpu_irq.cpp ;
+SimpleTest amdgpu_render : amdgpu_render.cpp ;
 SimpleTest amdgpu_irq_fault : amdgpu_irq_fault.cpp ;
 SimpleTest amdgpu_uvd : amdgpu_uvd.cpp ;
 
@@ -19,6 +20,8 @@ SubDirHdrs $(driver) ;
 SEARCH_SOURCE += $(driver) ;
 SimpleTest amdgpu_submit : amdgpu_submit.cpp : [ TargetLibstdc++ ] ;
 SimpleTest mec_firmware_test : mec_firmware_test.cpp Firmware.cpp
+	: [ TargetLibstdc++ ] ;
+SimpleTest atom_render_test : atom_render_test.cpp Firmware.cpp
 	: [ TargetLibstdc++ ] ;
 SimpleTest vram_allocator_test : vram_allocator_test.cpp VramAllocator.cpp
 	: [ TargetLibstdc++ ] ;

@@ -16,4 +16,6 @@ status_t amdgpu_smc_load_gfx(volatile uint32* regs,
 void amdgpu_smc_dump_uvd_clocks(volatile uint32* regs);
 status_t amdgpu_smc_set_uvd_clocks(volatile uint32* regs);
 bool amdgpu_smc_ready(volatile uint32* regs);
+// Caller serializes with all other SMC operations; no clock is changed.
+uint32 amdgpu_smc_timestamp_khz(volatile uint32* regs, uint32 referenceKHz);
 #endif

@@ -481,8 +481,91 @@ GfxEngine::Initialize(volatile uint32* r, const amdgpu_info& info,
 			Snapshot(result);
 			return irqStatus;
 		}
+		for (uint32 i = 0; i < 4; i++) {
+			firmwareVersion[i] = firmware[i].version;
+			firmwareFeature[i] = firmware[i].featureVersion;
+		}
+		firmwareVersion[4] = mec != NULL ? mec->program.version : 0;
+		firmwareFeature[4] = mec != NULL ? mec->program.featureVersion : 0;
 		ready = true;
 	}
+	return B_OK;
+}
+
+status_t
+GfxEngine::RenderInfo(const amdgpu::AtomRenderInfo& rom, amdgpu_render_info& result)
+{
+	if (!ready || faulted || !mecStarted)
+		return B_DEV_NOT_READY;
+	if (rom.gfxMajor != 8 || rom.shaderEngines == 0)
+		return B_NOT_SUPPORTED;
+	result = {};
+	result.version = AMDGPU_HAIKU_ABI_VERSION;
+	result.size = sizeof(result);
+	result.started_us = system_time();
+	result.gfx_major = rom.gfxMajor;
+	result.gfx_minor = rom.gfxMinor;
+	result.shader_engines = rom.shaderEngines;
+	result.shader_arrays_per_engine = rom.shaderArraysPerEngine;
+	result.cu_per_array = rom.cuPerArray;
+	result.backends_per_engine = rom.backendsPerEngine;
+	result.tile_pipes = rom.tilePipes;
+	result.tcc_blocks = rom.tccBlocks;
+	result.default_engine_khz = rom.defaultEngineKHz;
+	result.default_memory_khz = rom.defaultMemoryKHz;
+	result.reference_khz = rom.referenceKHz;
+	result.timestamp_khz = amdgpu_smc_timestamp_khz(regs, rom.referenceKHz);
+	result.chip_revision = regs[0xfc3] >> 28;
+	result.gb_addr_config = regs[0x263e];
+	for (uint32 i = 0; i < 32; i++) result.tile_mode[i] = regs[0x2644 + i];
+	for (uint32 i = 0; i < 16; i++) result.macrotile_mode[i] = regs[0x2664 + i];
+	result.mc_arb_ramcfg = regs[0x9d8];
+	result.mc_shared_chmap = regs[0x801];
+	result.mc_seq_misc0 = regs[0xa80];
+	result.vram_type = result.mc_seq_misc0 >> 28;
+	const uint32 channels[] = {1, 2, 4, 8, 3, 6, 10, 12, 16};
+	uint32 channel = (result.mc_shared_chmap >> 12) & 15;
+	if (channel < sizeof(channels) / sizeof(channels[0]))
+		result.vram_bus_width = channels[channel]
+			* ((result.mc_arb_ramcfg & 0x100) != 0 ? 64 : 32);
+	for (uint32 i = 0; i < 5; i++) {
+		result.firmware_version[i] = firmwareVersion[i];
+		result.firmware_feature[i] = firmwareFeature[i];
+	}
+	// Only known SE/SH banks from the validated ATOM table. The device mutex
+	// and idle queues exclude command processors and other selector users.
+	uint32 index = regs[0xc200];
+	result.grbm_index_before = index;
+	uint32 rbWidth = rom.backendsPerEngine / rom.shaderArraysPerEngine;
+	for (uint32 se = 0; se < rom.shaderEngines; se++) {
+		for (uint32 sa = 0; sa < rom.shaderArraysPerEngine; sa++) {
+			regs[0xc200] = (se << 16) | (sa << 8) | (1u << 30);
+			(void)regs[0xc200];
+			result.cu_disable[se][sa] = regs[0x226f];
+			result.cu_user_disable[se][sa] = regs[0x2270];
+			uint32 mask = ~((result.cu_disable[se][sa]
+				| result.cu_user_disable[se][sa]) >> 16) & ((1u << rom.cuPerArray) - 1);
+			result.cu_mask[se][sa] = mask;
+			while (mask != 0) { result.active_cus++; mask &= mask - 1; }
+			result.rb_disable[se][sa] = regs[0x263d];
+			result.rb_user_disable[se][sa] = regs[0x26df];
+			mask = ~((result.rb_disable[se][sa] | result.rb_user_disable[se][sa]) >> 16)
+				& ((1u << rbWidth) - 1);
+			result.enabled_backends |= mask << ((se * rom.shaderArraysPerEngine + sa) * rbWidth);
+			result.raster_config[se][sa] = regs[0xa0d4];
+			result.raster_config_1[se][sa] = regs[0xa0d5];
+		}
+	}
+	regs[0xc200] = index;
+	result.grbm_index_after = regs[0xc200];
+	// RLC atomically latches both halves; do not combine live counter reads.
+	regs[0xec26] = 1;
+	result.gpu_timestamp = regs[0xec24];
+	result.gpu_timestamp |= (uint64)regs[0xec25] << 32;
+	result.finished_us = system_time();
+	if (result.grbm_index_after != index || result.active_cus == 0
+		|| result.enabled_backends == 0 || result.vram_bus_width == 0)
+		return B_BAD_DATA;
 	return B_OK;
 }
 
