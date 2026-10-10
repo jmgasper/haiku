@@ -74,8 +74,13 @@ DeviceManager::MessageReceived(BMessage* msg)
 						&& ref.set_name(name) == B_OK) {
 						BPath path(&ref);
 						BAutolock locker(fLock);
-						if (path.InitCheck() == B_OK)
-							fDevices.Remove(path.Path());
+						if (path.InitCheck() == B_OK
+							&& fDevices.Remove(path.Path())) {
+							// the server lets go of the radio it opened there
+							BMessage removed(BT_MSG_REMOVE_DEVICE);
+							removed.AddString("name", path.Path());
+							be_app_messenger.SendMessage(&removed);
+						}
 					}
 				}
 				break;

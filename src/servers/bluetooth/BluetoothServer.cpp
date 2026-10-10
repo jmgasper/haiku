@@ -188,6 +188,8 @@ void BluetoothServer::MessageReceived(BMessage* message)
 
 			if (lDeviceImpl->GetID() >= 0) {
 				fLocalDevicesList.AddItem(lDeviceImpl);
+				fDevicePaths.RemoveName(str.String());
+				fDevicePaths.AddInt32(str.String(), lDeviceImpl->GetID());
 
 				TRACE_BT("LocalDevice %s id=%" B_PRId32 " added\n", str.String(),
 					lDeviceImpl->GetID());
@@ -204,7 +206,19 @@ void BluetoothServer::MessageReceived(BMessage* message)
 
 		case BT_MSG_REMOVE_DEVICE:
 		{
-			LocalDeviceImpl* lDeviceImpl = LocateDelegateFromMessage(message);
+			// by its hci_id, or by the path it was opened from when its node
+			// went away (a radio unplugged, or restarted by its driver)
+			LocalDeviceImpl* lDeviceImpl = NULL;
+			const char* path;
+			int32 id;
+			if (message->FindString("name", &path) == B_OK) {
+				if (fDevicePaths.FindInt32(path, &id) == B_OK) {
+					fDevicePaths.RemoveName(path);
+					lDeviceImpl = LocateLocalDeviceImpl(id);
+					LogStartup("%s went away (hci %" B_PRId32 ")", path, id);
+				}
+			} else
+				lDeviceImpl = LocateDelegateFromMessage(message);
 			if (lDeviceImpl != NULL) {
 				fLocalDevicesList.RemoveItem(lDeviceImpl);
 				delete lDeviceImpl;
