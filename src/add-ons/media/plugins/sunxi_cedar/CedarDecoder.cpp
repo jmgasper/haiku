@@ -691,6 +691,12 @@ CedarDecoder::_PutH264(const uint8* nal, size_t size, int64 pts)
 		case 5:		// of an IDR picture
 			return _H264Slice(nal, size, pts);
 
+		case 2:		// a slice in data partitions (Extended profile)
+		case 3:
+		case 4:
+			return _Fail(B_NOT_SUPPORTED, "the engine does not do this stream: "
+				"data partitioning");
+
 		case 7:		// sequence parameter set
 		case 8:		// picture parameter set
 		{

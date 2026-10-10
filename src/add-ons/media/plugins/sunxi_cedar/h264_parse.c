@@ -437,6 +437,9 @@ h264_parse_slice(H264State *st, BitReader *br, H264Slice *sh, char *err)
 	if (sps->chromaFormatIdc != 1 || sps->bitDepthLuma != 8
 		|| sps->bitDepthChroma != 8)
 		ERR(-2, "only 4:2:0 8-bit");
+	/* the engine has no SP and SI slices (Extended profile switching) */
+	if (sh->sliceType == 3 || sh->sliceType == 4)
+		ERR(-2, "SP and SI slices");
 
 	sh->frameNum = br_u(br, sps->log2MaxFrameNum);
 	if (!sps->frameMbsOnly) {
