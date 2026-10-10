@@ -215,6 +215,48 @@ static const struct generic_ioctl {
 };
 
 
+/* #pragma mark - statistics */
+
+
+/*	Per ioctl number: calls, time spent in the handler (waits included),
+	the longest call. Logged with the driver's dump, to tell what a frame
+	costs in the kernel; lockless and approximate under concurrency. */
+static struct {
+	int64		count;
+	int64		time;
+	int64		max_time;
+	const char*	name;
+} sIoctlStats[256];
+
+
+static void
+count_ioctl(u32 nr, const char* name, bigtime_t elapsed)
+{
+	nr &= 0xff;
+	sIoctlStats[nr].name = name;
+	atomic_add64(&sIoctlStats[nr].count, 1);
+	atomic_add64(&sIoctlStats[nr].time, elapsed);
+	if (elapsed > atomic_get64(&sIoctlStats[nr].max_time))
+		atomic_set64(&sIoctlStats[nr].max_time, elapsed);
+}
+
+
+void
+pvr_haiku_ioctl_stats_dump(void)
+{
+	for (size_t i = 0; i < ARRAY_SIZE(sIoctlStats); i++) {
+		int64 count = atomic_get64(&sIoctlStats[i].count);
+		if (count == 0)
+			continue;
+		int64 time = atomic_get64(&sIoctlStats[i].time);
+		TRACE("dump: ioctl %s: %" B_PRId64 " calls, %" B_PRId64 " us, %"
+			B_PRId64 " us each, longest %" B_PRId64 " us\n",
+			sIoctlStats[i].name, count, time, time / count,
+			atomic_get64(&sIoctlStats[i].max_time));
+	}
+}
+
+
 /* #pragma mark - files */
 
 
@@ -322,11 +364,13 @@ pvr_haiku_file_ioctl(struct pvr_haiku_file* file, uint32 nr,
 		error = -EFAULT;
 	else {
 		memset((u8*)data + inSize, 0, kernelSize - inSize);
+		bigtime_t start = system_time();
 		if (desc != NULL) {
 			error = desc->func(from_pvr_device(file->pvr_dev), data,
 				&file->drm_file);
 		} else
 			error = generic->function(file, data);
+		count_ioctl(nr, name, system_time() - start);
 		if (copy_to_user(buffer, data, outSize) != 0)
 			error = -EFAULT;
 	}

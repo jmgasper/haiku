@@ -1333,6 +1333,11 @@ dump_objects(struct pvr_device* pvr_dev)
 		fwObjects,
 		xa_count(&pvr_dev->ctx_ids), xa_count(&pvr_dev->job_ids),
 		xa_count(&pvr_dev->free_list_ids), queues, pending, queued);
+	uint64 made, madeBytes;
+	lx_memory_totals(&made, &madeBytes);
+	TRACE("dump: since boot: %llu buffers made (%llu KiB)\n",
+		(unsigned long long)made, (unsigned long long)(madeBytes / 1024));
+	pvr_haiku_ioctl_stats_dump();
 }
 
 

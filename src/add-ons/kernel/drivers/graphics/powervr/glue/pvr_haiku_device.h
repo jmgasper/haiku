@@ -83,6 +83,9 @@ int		pvr_haiku_kccb_execute(struct pvr_device* pvr_dev,
 void	pvr_haiku_fw_boot_failed(struct pvr_device* pvr_dev);
 void	pvr_haiku_force_reset(struct pvr_device* pvr_dev, const char* why);
 
+/* pvr_haiku_drm.c: per ioctl calls and time, into the syslog */
+void	pvr_haiku_ioctl_stats_dump(void);
+
 /* pvr_haiku_gem.c */
 struct pvr_gem_object*	pvr_haiku_gem_object_import(
 							struct pvr_device* pvr_dev, const void* address,

@@ -82,6 +82,8 @@ status_t	lx_wait_queue_sleep_interruptible(wait_queue_head_t* queue,
    of team memory exist. */
 void	lx_memory_stats(uint32* buffers, uint64* bufferBytes, uint32* pages,
 			uint32* vmaps, uint32* imports);
+/* How many GPU buffers were made since boot, and their bytes. */
+void	lx_memory_totals(uint64* buffers, uint64* bytes);
 
 /* Whether all of [address, address + size) is userland memory. */
 bool	lx_access_ok(const void* address, unsigned long size);

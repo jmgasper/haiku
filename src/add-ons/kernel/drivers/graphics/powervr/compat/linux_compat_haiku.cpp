@@ -194,6 +194,17 @@ static int64 sBufferBytes;
 static int32 sPageCount;
 static int32 sVmapCount;
 static int32 sImportCount;
+// since boot
+static int64 sBuffersMade;
+static int64 sBufferBytesMade;
+
+
+void
+lx_memory_totals(uint64* _buffers, uint64* _bytes)
+{
+	*_buffers = (uint64)atomic_get64(&sBuffersMade);
+	*_bytes = (uint64)atomic_get64(&sBufferBytesMade);
+}
 
 
 void
@@ -327,6 +338,8 @@ lx_dma_buffer_alloc(struct lx_dma_buffer* buffer, size_t size,
 	buffer->runs = runs;
 	atomic_add(&sBufferCount, 1);
 	atomic_add64(&sBufferBytes, (int64)size);
+	atomic_add64(&sBuffersMade, 1);
+	atomic_add64(&sBufferBytesMade, (int64)size);
 	return 0;
 }
 
