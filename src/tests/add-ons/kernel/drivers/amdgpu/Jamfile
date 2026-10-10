@@ -2,6 +2,7 @@ SubDir HAIKU_TOP src tests add-ons kernel drivers amdgpu ;
 
 UsePrivateHeaders [ FDirName graphics amdgpu ] ;
 SimpleTest amdgpu_probe : amdgpu_probe.cpp ;
+SimpleTest amdgpu_display : amdgpu_display.cpp ;
 SimpleTest amdgpu_sdma : amdgpu_sdma.cpp ;
 SimpleTest amdgpu_smc : amdgpu_smc.cpp ;
 SimpleTest amdgpu_buffers : amdgpu_buffers.cpp ;
