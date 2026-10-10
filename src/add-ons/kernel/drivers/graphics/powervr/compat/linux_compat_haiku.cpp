@@ -85,13 +85,32 @@ lx_status(int error)
 
 
 area_id
-lx_area_clone_to_user(area_id source, void** _address, bool exact)
+lx_area_clone_to_user(area_id source, void** _address, bool exact,
+	bool cached)
 {
 	if (exact && !IS_USER_ADDRESS(*_address))
 		return B_BAD_ADDRESS;
-	return vm_clone_area(team_get_current_team_id(), "powervr buffer",
+	area_id area = vm_clone_area(team_get_current_team_id(), "powervr buffer",
 		_address, exact ? B_EXACT_ADDRESS : B_RANDOMIZED_ANY_ADDRESS,
 		B_READ_AREA | B_WRITE_AREA, REGION_NO_PRIVATE_MAP, source, true);
+	if (area < 0 || !cached)
+		return area;
+
+	// The kernel's own mapping stays Normal-NC; it is not used for the
+	// buffer's contents after its creation.
+	physical_entry entry;
+	status_t status = get_memory_map(*_address, B_PAGE_SIZE, &entry, 1);
+	if (status == B_OK) {
+		status = vm_set_area_memory_type(area, entry.address,
+			B_WRITE_BACK_MEMORY);
+	}
+	if (status != B_OK) {
+		TRACE("no cached clone of area %" B_PRId32 ": %s\n", source,
+			strerror(status));
+		vm_delete_area(team_get_current_team_id(), area, true);
+		return status;
+	}
+	return area;
 }
 
 

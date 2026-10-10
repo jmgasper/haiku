@@ -62,12 +62,23 @@
 	(the GPU is not cache coherent). With address 0 the clone goes anywhere,
 	otherwise exactly there (B_EXACT_ADDRESS, for placed maps). Only buffers
 	created with DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS can be mapped. Unmap
-	with delete_area(area). */
+	with delete_area(area).
+
+	With PVR_HAIKU_MAP_BO_CACHED the clone is cached (write-back) instead,
+	for fast CPU reads of what the GPU wrote; the caller keeps it coherent
+	itself: "dc cvac" over what the CPU wrote before the GPU reads it, "dc
+	civac" over what it will read after the GPU wrote it (both allowed in
+	userland). A caller that passes the old, shorter structure gets a
+	write-combined clone. */
+#define PVR_HAIKU_MAP_BO_CACHED		0x1u
+
 struct pvr_haiku_map_bo {
 	uint32	handle;					// in: buffer handle
 	int32	area;					// out: the clone's area
 	uint64	address;				// in: placement or 0; out: address
 	uint64	size;					// out
+	uint32	flags;					// in: PVR_HAIKU_MAP_BO_*
+	uint32	reserved;
 };
 
 

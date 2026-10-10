@@ -103,6 +103,8 @@ static int
 map_bo_ioctl(struct pvr_haiku_file* file, void* data)
 {
 	struct pvr_haiku_map_bo* args = (struct pvr_haiku_map_bo*)data;
+	if ((args->flags & ~PVR_HAIKU_MAP_BO_CACHED) != 0 || args->reserved != 0)
+		return -EINVAL;
 	struct pvr_gem_object* pvr_obj = pvr_gem_object_from_handle(
 		to_pvr_file(&file->drm_file), args->handle);
 	if (pvr_obj == NULL)
@@ -114,7 +116,7 @@ map_bo_ioctl(struct pvr_haiku_file* file, void* data)
 	else {
 		void* address = (void*)(uintptr_t)args->address;
 		area_id area = lx_area_clone_to_user(pvr_obj->buffer.area, &address,
-			args->address != 0);
+			args->address != 0, (args->flags & PVR_HAIKU_MAP_BO_CACHED) != 0);
 		if (area < 0) {
 			TRACE("MAP_BO: handle %u (%zu KiB) not mapped: %s\n",
 				args->handle, pvr_gem_object_size(pvr_obj) / 1024,

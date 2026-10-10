@@ -56,10 +56,10 @@ struct device;
 status_t	lx_status(int error);
 
 /*	Clones a kernel area into the calling team, readable and writable,
-	with the source's memory type (write-combined); at *_address exactly
-	when \a exact, anywhere otherwise. */
+	with the source's memory type (write-combined) or, when \a cached,
+	write-back; at *_address exactly when \a exact, anywhere otherwise. */
 area_id		lx_area_clone_to_user(area_id source, void** _address,
-				bool exact);
+				bool exact, bool cached);
 
 
 /* Wait queues: a generation count and a ConditionVariable in the storage. */
