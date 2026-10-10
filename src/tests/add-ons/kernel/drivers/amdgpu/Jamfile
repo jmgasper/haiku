@@ -13,6 +13,8 @@ local driver = [ FDirName $(HAIKU_TOP) src add-ons kernel drivers graphics amdgp
 SubDirHdrs $(driver) ;
 SEARCH_SOURCE += $(driver) ;
 SimpleTest uvd_hevc_test : uvd_hevc_test.cpp UvdHevc.cpp : [ TargetLibstdc++ ] ;
+SimpleTest uvd_h264_test : uvd_h264_test.cpp UvdH264.cpp Firmware.cpp
+	: [ TargetLibstdc++ ] ;
 SimpleTest amdgpu_video : amdgpu_video.cpp : [ TargetLibstdc++ ] ;
 local video = [ FDirName $(HAIKU_TOP) src add-ons media plugins ] ;
 SubDirHdrs $(video)/amduvd ;

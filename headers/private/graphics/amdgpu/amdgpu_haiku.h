@@ -7,6 +7,7 @@
 
 #include <Drivers.h>
 #include <amdgpu_video.h>
+#include <amdgpu_hevc.h>
 
 // Native bring-up interface. This is not the Linux DRM ABI. Keep it separate
 // from the eventual Mesa command-submission interface.
@@ -31,7 +32,9 @@ enum {
 	AMDGPU_UVD_TEST,
 	AMDGPU_VIDEO_CREATE,
 	AMDGPU_VIDEO_DECODE,
-	AMDGPU_VIDEO_DESTROY
+	AMDGPU_VIDEO_DESTROY,
+	AMDGPU_HEVC_CREATE,
+	AMDGPU_HEVC_DECODE
 };
 
 #define AMDGPU_ROM_SIZE (256 * 1024)

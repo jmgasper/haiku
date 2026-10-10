@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 // Metadata for the owned UVD HEVC path. No addresses or firmware commands.
-// The HEVC ioctl and Media Kit capability are not exposed until integration.
+// One session per open file, owned by the calling team, as with H.264.
 struct amdgpu_hevc_config {
 	uint32_t width, height;
 	uint32_t profile; // 1 Main, 2 Main 10
@@ -43,4 +43,22 @@ struct amdgpu_hevc_picture {
 	uint8_t scaling16x16[6][64], scaling32x32[2][64];
 	uint8_t dc16x16[6], dc32x32[2];
 };
+
+enum { AMDGPU_VIDEO_NV12 = 0x4e563132, AMDGPU_VIDEO_P010 = 0x50303130 };
+struct amdgpu_hevc_create {
+	uint32_t version, size;
+	amdgpu_hevc_config config;
+	uint64_t handle;
+	uint32_t pitch, output_height, output_bytes, pixel_format;
+	uint64_t allocated_bytes;
+};
+struct amdgpu_hevc_decode {
+	uint32_t version, size;
+	uint64_t handle, bitstream, output;
+	uint32_t bitstream_bytes, output_capacity;
+	amdgpu_hevc_picture picture;
+	uint32_t sequence, fence, rptr, wptr;
+	uint32_t guard_mismatches, vm_fault_status, vm_fault_address, feedback[8];
+};
+// Both codecs use amdgpu_video_destroy and AMDGPU_VIDEO_DESTROY.
 #endif

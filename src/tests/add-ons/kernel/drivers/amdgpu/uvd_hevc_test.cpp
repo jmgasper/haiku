@@ -127,6 +127,28 @@ static void Oracle(const uint8_t* message, const amdgpu_hevc_config& c,
 
 int main()
 {
+	// Exercise the session policy used before every firmware submission.
+	// Failed admission must not publish a slot; dropped references cannot return.
+	auto state = Picture();
+	state.nal_type = 19;
+	memset(state.reference_slot, 0x7f, sizeof(state.reference_slot));
+	uint32_t next = 0xdeadbeef;
+	CHECK(amdgpu::UvdHevcNextReferences(state, 0, true, next) && next == 1);
+	state.nal_type = 1; state.current_slot = 1; state.reference_slot[0] = 0;
+	CHECK(!amdgpu::UvdHevcNextReferences(state, 0, false, next) && next == 1);
+	CHECK(amdgpu::UvdHevcNextReferences(state, 1, false, next) && next == 3);
+	CHECK(!amdgpu::UvdHevcNextReferences(state, 1, true, next) && next == 3);
+	state.nal_type = 21;
+	CHECK(!amdgpu::UvdHevcNextReferences(state, 1, true, next));
+	state.current_slot = 15; state.reference_slot[0] = 1;
+	CHECK(amdgpu::UvdHevcNextReferences(state, 3, false, next) && next == 0x8002);
+	state.current_slot = 2; state.reference_slot[0] = 0;
+	CHECK(!amdgpu::UvdHevcNextReferences(state, next, false, next) && next == 0x8002);
+	for (uint8_t bad : {uint8_t(16), uint8_t(32), uint8_t(255)}) {
+		state.reference_slot[0] = bad;
+		CHECK(!amdgpu::UvdHevcNextReferences(state, 0xffff, false, next));
+	}
+	puts("PASS: session references require completed retained slots and first-picture random access");
 	amdgpu_hevc_config c = {1920, 1080, 1, 8, 6, 6, {0, 0}};
 	amdgpu_hevc_picture p = Picture();
 	amdgpu::UvdHevcLayout l;

@@ -49,6 +49,7 @@ bool UvdH264Size(const amdgpu_h264_config& c, UvdH264Layout& l)
 	l.dpbBytes = Align(c.width * c.height * 3 / 2, 1024) * frames;
 	l.contextBytes = Align(mbs * 192, 256) * frames;
 	l.pitch = Align(c.width, 256);
+	l.outputHeight = c.height;
 	l.outputBytes = l.pitch * c.height * 3 / 2;
 	l.message = 0;
 	l.feedback = 4096;

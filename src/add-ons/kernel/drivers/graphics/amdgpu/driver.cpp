@@ -254,7 +254,7 @@ static status_t
 device_control(void* cookie, uint32 op, void* buffer, size_t length)
 {
 	if ((op >= AMDGPU_CREATE_BUFFER && op <= AMDGPU_GART_INFO)
-		|| (op >= AMDGPU_VIDEO_CREATE && op <= AMDGPU_VIDEO_DESTROY))
+		|| (op >= AMDGPU_VIDEO_CREATE && op <= AMDGPU_HEVC_DECODE))
 		return amdgpu_client_control((AmdgpuClient*)cookie, op, buffer, length,
 			start_installed_device);
 	if (op == AMDGPU_UVD_TEST) {

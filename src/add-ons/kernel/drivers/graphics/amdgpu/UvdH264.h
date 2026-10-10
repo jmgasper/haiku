@@ -3,16 +3,12 @@
 #define AMDGPU_UVD_H264_H
 #include <amdgpu_video.h>
 #include <stddef.h>
+#include "UvdLayout.h"
 
 namespace amdgpu {
 // Firmware layout from Mesa ac_uvd_dec.h and radeonsi/radeon_uvd.c (MIT).
 // All extents/offsets are derived from checked metadata, never client addresses.
-struct UvdH264Layout {
-	uint32_t bytes, pitch, outputBytes, dpbBytes, contextBytes;
-	uint32_t message, feedback, scaling, session, bitstream, dpb, context, target;
-	uint32_t guards[4];
-};
-const size_t kUvdMessageBytes = 3556;
+typedef UvdVideoLayout UvdH264Layout;
 bool UvdH264Size(const amdgpu_h264_config& config, UvdH264Layout& layout);
 bool UvdH264Validate(const amdgpu_h264_config& config,
 	const amdgpu_h264_picture& picture, uint32_t bitstreamBytes);

@@ -3,9 +3,15 @@
 #define AMDGPU_UVD_H
 #include "Sdma.h"
 #include "UvdH264.h"
+#include "UvdHevc.h"
 struct UvdSession {
-	amdgpu_h264_config config;
-	amdgpu::UvdH264Layout layout;
+	union {
+		amdgpu_h264_config config;
+		amdgpu_hevc_config hevcConfig;
+	};
+	amdgpu::UvdVideoLayout layout;
+	bool hevc;
+	uint32 hevcReferenceSlots;
 	volatile uint32* cpu;
 	uint64 offset, gpu;
 	area_id area;
@@ -30,7 +36,7 @@ struct UvdEngine {
 		const amdgpu::AtomVramReservation& reservation, bool clocksQualified,
 		const amdgpu::FirmwareView& firmware, amdgpu_uvd_test& result);
 	status_t Session(UvdSession& session, uint32 type,
-		const amdgpu_h264_picture* picture, const void* bitstream, uint32 bytes,
+		const void* picture, const void* bitstream, uint32 bytes,
 		SdmaEngine& dma, amdgpu_uvd_test& result);
 	status_t Test(volatile uint32* r, const amdgpu_info& info,
 		const amdgpu::AtomVramReservation& reservation, bool clocksQualified,

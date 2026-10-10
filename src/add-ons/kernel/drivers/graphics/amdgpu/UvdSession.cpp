@@ -16,18 +16,31 @@ static void Copy(volatile uint32* memory, uint32 offset, const uint8* data, uint
 }
 
 status_t
-UvdEngine::Session(UvdSession& s, uint32 type, const amdgpu_h264_picture* picture,
+UvdEngine::Session(UvdSession& s, uint32 type, const void* picture,
 	const void* bitstream, uint32 bytes, SdmaEngine& dma, amdgpu_uvd_test& result)
 {
 	if (!ready || faulted) return B_DEV_NOT_READY;
 	if (type > 2 || (type == 0) == s.created) return B_BAD_VALUE;
-	if (type == 1 && (picture == NULL || bitstream == NULL || !s.readbackBound
-		|| !amdgpu::UvdH264Validate(s.config, *picture, bytes)
-		|| !amdgpu::UvdH264Bitstream((const uint8*)bitstream, bytes,
-			(picture->flags & AMDGPU_H264_IDR) != 0)
-		|| (s.frames == 0 && (picture->flags & AMDGPU_H264_IDR) == 0)))
-		return B_BAD_VALUE;
-	if (s.frames == UINT32_MAX) return B_BAD_VALUE;
+	const auto* avc = static_cast<const amdgpu_h264_picture*>(picture);
+	const auto* hevc = static_cast<const amdgpu_hevc_picture*>(picture);
+	uint32 hevcNextSlots = 0;
+	if (type == 1) {
+		if (picture == NULL || bitstream == NULL || !s.readbackBound || s.frames == UINT32_MAX)
+			return B_BAD_VALUE;
+		if (s.hevc) {
+			if (!amdgpu::UvdHevcValidate(s.hevcConfig, *hevc, bytes)
+				|| !amdgpu::UvdHevcBitstream((const uint8*)bitstream, bytes, hevc->nal_type))
+				return B_BAD_VALUE;
+			// A private DPB slot must have completed in this session before
+			// it can be referenced. First-picture random access has no DPB.
+			if (!amdgpu::UvdHevcNextReferences(*hevc, s.hevcReferenceSlots,
+				s.frames == 0, hevcNextSlots))
+				return B_BAD_VALUE;
+		} else if (!amdgpu::UvdH264Validate(s.config, *avc, bytes)
+			|| !amdgpu::UvdH264Bitstream((const uint8*)bitstream, bytes, (avc->flags & AMDGPU_H264_IDR) != 0)
+			|| (s.frames == 0 && (avc->flags & AMDGPU_H264_IDR) == 0))
+			return B_BAD_VALUE;
+	}
 	const auto& l = s.layout;
 	bigtime_t timing[6]; timing[0] = system_time();
 	if (type == 1) {
@@ -40,7 +53,11 @@ UvdEngine::Session(UvdSession& s, uint32 type, const amdgpu_h264_picture* pictur
 	}
 	timing[1] = system_time();
 	uint8 message[amdgpu::kUvdMessageBytes];
-	amdgpu::UvdH264Message(message, type, s.handle, s.config, l, picture, bytes, s.frames + 1);
+	if (s.hevc) {
+		if (!amdgpu::UvdHevcMessage(message, type, s.handle, s.hevcConfig, hevc, bytes, s.frames + 1))
+			return B_BAD_VALUE;
+	} else
+		amdgpu::UvdH264Message(message, type, s.handle, s.config, l, avc, bytes, s.frames + 1);
 	Copy(s.cpu, l.message, message, sizeof(message));
 	if (type == 0) {
 		for (uint32 offset : l.guards)
@@ -52,8 +69,14 @@ UvdEngine::Session(UvdSession& s, uint32 type, const amdgpu_h264_picture* pictur
 		Copy(s.cpu, l.bitstream, (const uint8*)bitstream, bytes);
 		for (uint32 i = (bytes + 3) / 4; i < ((bytes + 127) & ~127u) / 4; i++)
 			s.cpu[l.bitstream / 4 + i] = 0;
-		Copy(s.cpu, l.scaling, &picture->scaling4x4[0][0], 96);
-		Copy(s.cpu, l.scaling + 96, &picture->scaling8x8[0][0], 128);
+		if (s.hevc) {
+			uint8 scaling[amdgpu::kUvdHevcScalingBytes];
+			amdgpu::UvdHevcScaling(scaling, *hevc);
+			Copy(s.cpu, l.scaling, scaling, sizeof(scaling));
+		} else {
+			Copy(s.cpu, l.scaling, &avc->scaling4x4[0][0], 96);
+			Copy(s.cpu, l.scaling + 96, &avc->scaling8x8[0][0], 128);
+		}
 	}
 	volatile uint32* ib = memory + ((3 << 20) + 0x11000) / 4;
 	uint32 count = 0;
@@ -98,13 +121,15 @@ UvdEngine::Session(UvdSession& s, uint32 type, const amdgpu_h264_picture* pictur
 			for (uint32 i = 0; i < 8; i++) result.feedback[i] = s.cpu[l.feedback / 4 + i];
 			result.checked_bytes = l.outputBytes;
 			s.frames++;
+			if (s.hevc) s.hevcReferenceSlots = hevcNextSlots;
 			for (unsigned i = 0; i < 5; i++) s.timingTotal[i] += timing[i + 1] - timing[i];
 		} else {
 			s.created = type == 0;
 			if (type == 2 && s.frames != 0) {
 				dprintf("amdgpu: UVD session %u %ux%u %u frames mean us clear %lld "
 					"upload %lld submit %lld readback %lld guards %lld\n",
-					(unsigned)s.handle, (unsigned)s.config.width, (unsigned)s.config.height,
+					(unsigned)s.handle, (unsigned)(s.hevc ? s.hevcConfig.width : s.config.width),
+					(unsigned)(s.hevc ? s.hevcConfig.height : s.config.height),
 					(unsigned)s.frames, (long long)(s.timingTotal[0] / s.frames),
 					(long long)(s.timingTotal[1] / s.frames), (long long)(s.timingTotal[2] / s.frames),
 					(long long)(s.timingTotal[3] / s.frames), (long long)(s.timingTotal[4] / s.frames));

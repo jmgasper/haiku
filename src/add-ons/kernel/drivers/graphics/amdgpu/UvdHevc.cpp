@@ -146,7 +146,23 @@ bool UvdHevcValidate(const amdgpu_hevc_config& c, const amdgpu_hevc_picture& p,
 		}
 	}
 	if (!(p.sps_flags & (1 << 5)) && p.lt_current[0] != 0xff) return false;
-	if ((p.nal_type == 19 || p.nal_type == 20) && references != 0) return false;
+	if (p.nal_type >= 16 && p.nal_type <= 20 && references != 0) return false;
+	return true;
+}
+
+bool UvdHevcNextReferences(const amdgpu_hevc_picture& p,
+	uint32_t completedSlots, bool firstPicture, uint32_t& nextSlots)
+{
+	if (!IsVcl(p.nal_type) || p.current_slot >= 16) return false;
+	uint32_t references = 0;
+	for (uint8_t slot : p.reference_slot) {
+		if (slot == 0x7f) continue;
+		if (slot >= 16 || slot == p.current_slot || (references & (1u << slot))) return false;
+		references |= 1u << slot;
+	}
+	if ((references & ~completedSlots) != 0
+		|| (firstPicture && (p.nal_type < 16 || p.nal_type > 21 || references))) return false;
+	nextSlots = references | (1u << p.current_slot);
 	return true;
 }
 
