@@ -110,9 +110,21 @@ UvdEngine::Session(UvdSession& s, uint32 type, const void* picture,
 	}
 	timing[4] = system_time();
 	if (status == B_OK) {
-		for (uint32 offset : l.guards)
-			for (uint32 i = 0; i < 1024; i++)
-				result.guard_mismatches += s.cpu[offset / 4 + i] != 0xabcddcba;
+		for (uint32 guard = 0; guard < 4; guard++) {
+			uint32 mismatches = 0, first = 0, firstValue = 0;
+			uint32 offset = l.guards[guard];
+			for (uint32 i = 0; i < 1024; i++) {
+				uint32 value = s.cpu[offset / 4 + i];
+				if (value == 0xabcddcba) continue;
+				if (mismatches++ == 0) { first = i; firstValue = value; }
+			}
+			result.guard_mismatches += mismatches;
+			if (mismatches != 0)
+				dprintf("amdgpu: UVD session %u guard %u offset 0x%x "
+					"words %u first +0x%x value 0x%x\n", (unsigned)s.handle,
+					(unsigned)guard, (unsigned)offset, (unsigned)mismatches,
+					(unsigned)(first * 4), (unsigned)firstValue);
+		}
 		if (result.guard_mismatches != 0) status = B_BAD_DATA;
 	}
 	timing[5] = system_time();

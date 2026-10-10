@@ -44,6 +44,12 @@ static amdgpu_hevc_picture Picture()
 	return p;
 }
 
+static uint32_t Get32(const uint8_t* bytes, size_t offset)
+{
+	return uint32_t(bytes[offset]) | (uint32_t(bytes[offset + 1]) << 8)
+		| (uint32_t(bytes[offset + 2]) << 16) | (uint32_t(bytes[offset + 3]) << 24);
+}
+
 static void Guards(const uint8_t* bytes, size_t payload)
 {
 	for (unsigned i = 0; i < 32; i++) CHECK(bytes[i] == 0xa5 && bytes[32 + payload + i] == 0xa5);
@@ -80,8 +86,11 @@ static void Oracle(const uint8_t* message, const amdgpu_hevc_config& c,
 	d.dpb_size = c.profile == 1 ? 53268480 : 79902720;
 	d.dpb_reserved = c.profile == 1 ? 3101008 : 2287104;
 	d.db_pitch = 1920; d.bsd_size = 1408;
-	d.dt_pitch = c.profile == 1 ? 2048 : 3840;
-	d.dt_chroma_top_offset = d.dt_chroma_bottom_offset = d.dt_pitch * 1088;
+	// si_uvd_set_dt_surfaces: surface pitch is in samples, while
+	// texture_offset() supplies byte offsets for the planes.
+	d.dt_pitch = c.profile == 1 ? 2048 : 1920;
+	d.dt_chroma_top_offset = d.dt_chroma_bottom_offset
+		= (c.profile == 1 ? 2048 : 3840) * 1088;
 	d.dt_wa_chroma_top_offset = d.dt_pitch / 2; d.extension_support = 1;
 	auto& h = d.codec.h265;
 	h.sps_info_flags = p.sps_flags; h.pps_info_flags = p.pps_flags;
@@ -168,6 +177,9 @@ int main()
 	CHECK(l.pitch == 3840 && l.outputHeight == 1088 && l.outputBytes == 6266880);
 	CHECK(l.dpbBytes == 79902720 && l.contextBytes == 2287104);
 	CHECK(amdgpu::UvdHevcMessage(message + 32, 1, 19, c, &p, 1321, 7));
+	CHECK(Get32(message + 32, 0x70) == 1920); // P010 sample stride, not 3840 bytes.
+	CHECK(Get32(message + 32, 0x88) == 3840 * 1088); // UV byte offset.
+	CHECK(Get32(message + 32, 0x98) == 960);
 	Guards(message, amdgpu::kUvdMessageBytes);
 #ifdef AMDGPU_MESA_UVD_ORACLE
 	Oracle(message + 32, c, p);

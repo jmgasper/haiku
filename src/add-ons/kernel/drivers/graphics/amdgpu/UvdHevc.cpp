@@ -204,9 +204,13 @@ bool UvdHevcMessage(uint8_t* msg, uint32_t type, uint32_t handle,
 	Put(msg, 0x18, c.width); Put(msg, 0x1c, c.height);
 	Put(msg, 0x24, l.dpbBytes); Put(msg, 0x2c, l.contextBytes);
 	Put(msg, 0x34, Align(c.width, 16)); Put(msg, 0x58, Align(bytes, 128));
-	Put(msg, 0x70, l.pitch);
+	// Mesa si_uvd_set_dt_surfaces uses nblk_x * blk_w: samples, not
+	// bytes. P010 stores each sample in two bytes; plane offsets remain
+	// byte addresses. Supplying the byte stride doubles firmware row steps.
+	uint32_t targetPitch = l.pitch / (c.profile == 2 ? 2 : 1);
+	Put(msg, 0x70, targetPitch);
 	Put(msg, 0x88, l.pitch * l.outputHeight); Put(msg, 0x8c, l.pitch * l.outputHeight);
-	Put(msg, 0x98, l.pitch / 2);
+	Put(msg, 0x98, targetPitch / 2);
 	uint8_t* h = msg + 0xe0;
 	Put(h, 0, p->sps_flags); Put(h, 4, p->pps_flags);
 	h[8] = 1; h[9] = h[10] = c.bit_depth - 8; h[11] = p->log2_max_poc_lsb_minus4;
