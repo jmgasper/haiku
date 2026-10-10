@@ -504,6 +504,14 @@ Stream::SetGlobalFormat(multi_format_info* Format)
 	usb_audio_sampling_freq freq = _ASFormatDescriptor::GetSamFreq(samplingRate);
 	uint8 address = fAlternates[fActiveAlternate]->Endpoint()->fEndpointAddress;
 
+	// Only an endpoint with a sampling frequency control takes the request
+	// (bmAttributes D0, USB Audio 1.0 §4.6.1.2); others stall it, and the
+	// format change itself has worked.
+	if ((fAlternates[fActiveAlternate]->Endpoint()->fCSAttributes & 0x01) == 0) {
+		TRACE(INF, "ep %#x has no sampling frequency control\n", address);
+		return B_OK;
+	}
+
 	status = gUSBModule->send_request(fDevice->fDevice,
 		USB_REQTYPE_CLASS | USB_REQTYPE_ENDPOINT_OUT,
 		USB_AUDIO_SET_CUR, USB_AUDIO_SAMPLING_FREQ_CONTROL << 8,
