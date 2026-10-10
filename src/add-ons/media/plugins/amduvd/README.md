@@ -54,8 +54,12 @@ reset and MMCO 5. These pass under host ASan/UBSan and in Haiku QEMU.
 stream tests; their `.frames` records contain the full coded surface rather
 than Media Kit output. See `docs/x399-workstation/WX5100.md` for evidence.
 
-Current performance is not qualified for playback. The kernel uses slow
-per-word CPU accesses to clear/read back VRAM, and the interleaved 48-picture
-320x240 plus 24-picture 1080p test took 20.12 seconds including output writes.
-A DMA path to cached RAM, sustained performance, broader format/error
-qualification, airTime/Summit integration, HEVC and final packaging remain.
+The kernel now clears VRAM and copies completed pictures to private cached
+RAM through SDMA, with snooped GART mappings, RAM/VRAM guards, fenced engine
+serialization and close-time reclamation. The same native 252-picture test
+still matches every pixel and PTS; full coded-surface/padding checks pass too.
+The interleaved 48-picture 320x240 plus 24-picture 1080p stage improved from
+20.12 to 4.01 seconds including output writes (3.79 seconds to `/dev/null`).
+This is a bounded regression measurement, not playback qualification. Further
+profiling, sustained performance, broader format/error qualification,
+airTime/Summit integration, HEVC and final packaging remain.

@@ -103,6 +103,9 @@ int main(int argc, char** argv)
 	auto info = Request<amdgpu_memory_info>();
 	Require(ioctl(a, AMDGPU_MEMORY_INFO, &info, sizeof(info)) == 0 && info.client_bytes == 0
 		&& info.allocated_bytes == 0 && !info.faulted, "all private video memory reclaimed");
+	auto ram = Request<amdgpu_gart_info>();
+	Require(ioctl(a, AMDGPU_GART_INFO, &ram, sizeof(ram)) == 0 && ram.client_bytes == 0
+		&& ram.allocated_bytes == 0 && !(ram.vm_fault_status & 0xff), "private readback RAM reclaimed");
 	c = Create(a); destroy.handle = c.handle;
 	Require(ioctl(a, AMDGPU_VIDEO_DESTROY, &destroy, sizeof(destroy)) == 0, "reopen session");
 	// Exercise the global firmware-handle limit with independent file owners.
@@ -120,6 +123,8 @@ int main(int argc, char** argv)
 	for (unsigned i = 33; i > 0; i--) close(owners[i - 1]);
 	Require(ioctl(a, AMDGPU_MEMORY_INFO, &info, sizeof(info)) == 0
 		&& info.allocated_bytes == 0 && !info.faulted, "all 32 sessions reclaimed");
+	Require(ioctl(a, AMDGPU_GART_INFO, &ram, sizeof(ram)) == 0 && ram.client_bytes == 0
+		&& ram.allocated_bytes == 0 && !(ram.vm_fault_status & 0xff), "all 32 RAM mappings reclaimed");
 	puts("PASS: 32 simultaneous private sessions, excess session rejected, ring wrap and close cleanup");
 	close(a);
 	puts("PASS: automatic UVD, private sessions, validation, alternating decode, destroy/close/reuse");

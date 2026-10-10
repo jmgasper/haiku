@@ -296,7 +296,7 @@ ReleaseVideo(AmdgpuClient* client)
 	if (s->created && sFault == B_OK) {
 		amdgpu_uvd_test result = {};
 		status_t status = WaitDmaIdle();
-		if (status == B_OK) status = sUvd.Session(*s, 2, NULL, NULL, 0, NULL, result);
+		if (status == B_OK) status = sUvd.Session(*s, 2, NULL, NULL, 0, sEngine, result);
 		if (status != B_OK) {
 			sFault = status;
 			sUvd.faulted = true;
@@ -304,6 +304,18 @@ ReleaseVideo(AmdgpuClient* client)
 		}
 	}
 	delete_area(s->area);
+	if (s->readbackBytes != 0) {
+		if (s->readbackBound && sFault == B_OK) {
+			status_t status = sGart.Unbind(s->readbackOffset, s->readbackBytes);
+			if (status != B_OK) sFault = status;
+		}
+		// Retain wired RAM and its GART extent when late writes are possible.
+		if (sFault == B_OK) {
+			if (s->readbackArea >= 0) delete_area(s->readbackArea);
+			sGartAllocator.Free(s->readbackOffset, s->readbackBytes);
+		}
+		client->systemBytes -= s->readbackBytes;
+	}
 	// A failed engine may still hold addresses. Keep its VRAM quarantined.
 	if (sFault == B_OK) sAllocator.Free(s->offset, s->layout.bytes);
 	client->bytes -= s->layout.bytes;
@@ -326,6 +338,7 @@ VideoControl(AmdgpuClient* client, uint32 op, void* data, size_t length)
 		if (sNextVideoHandle == 0 || sVideoSessions >= 32) return B_NO_MEMORY;
 		UvdSession* s = (UvdSession*)calloc(1, sizeof(UvdSession));
 		if (s == NULL) return B_NO_MEMORY;
+		s->readbackArea = -1;
 		s->config = request.config; s->layout = layout;
 		if (!sAllocator.Allocate(layout.bytes, 4096, sInfo.bar_size[0], s->offset)) {
 			free(s); return B_NO_MEMORY;
@@ -339,16 +352,44 @@ VideoControl(AmdgpuClient* client, uint32 op, void* data, size_t length)
 		s->gpu = sInfo.vram_gpu_base + s->offset;
 		s->handle = sNextVideoHandle++;
 		client->video = s; client->bytes += layout.bytes; sVideoSessions++;
-		for (uint32 i = 0; i < layout.bytes / 4; i++) s->cpu[i] = 0;
 		status = WaitDmaIdle();
 		amdgpu_uvd_test result = {};
+		if (status == B_OK) {
+			uint64 bytes = ((layout.outputBytes + 4095ULL) & ~4095ULL) + 8192;
+			if (!sGartAllocator.Allocate(bytes, 4096, Gart::kSize, s->readbackOffset))
+				status = B_NO_MEMORY;
+			else {
+				s->readbackBytes = bytes; client->systemBytes += bytes;
+				virtual_address_restrictions va = {};
+				physical_address_restrictions pa = {};
+				s->readbackArea = create_area_etc(B_SYSTEM_TEAM, "amdgpu private video readback",
+					bytes, B_FULL_LOCK, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
+					0, 0, &va, &pa, &s->readback);
+				status = s->readbackArea < 0 ? s->readbackArea : B_OK;
+				if (status == B_OK) {
+					memset(s->readback, 0x7d, bytes);
+					status = sGart.Bind(s->readbackOffset, bytes, s->readback);
+					if (status == B_TIMED_OUT) sFault = status;
+					s->readbackBound = status == B_OK;
+					s->readbackGpu = Gart::kBase + s->readbackOffset;
+				}
+			}
+		}
+		// The engine and its worker are idle, and sMutex prevents new jobs
+		// from being queued until the private fill/decode/readback completes.
+		for (uint64 offset = 0; status == B_OK && offset < layout.bytes;) {
+			uint64 bytes = min_c(layout.bytes - offset, 64ULL << 20);
+			status = sEngine.Execute(AMDGPU_DMA_FILL, 0, s->gpu + offset, bytes, 0);
+			if (status != B_OK) sFault = status;
+			offset += bytes;
+		}
 		if (status == B_OK && !sUvd.ready) {
 			InstalledFirmware firmware;
 			status = firmware.LoadUvd();
 			if (status == B_OK)
 				status = sUvd.Initialize(sEngine.regs, sInfo, sReservation, firmware.view, result);
 		}
-		if (status == B_OK) status = sUvd.Session(*s, 0, NULL, NULL, 0, NULL, result);
+		if (status == B_OK) status = sUvd.Session(*s, 0, NULL, NULL, 0, sEngine, result);
 		if (sUvd.faulted && sFault == B_OK) sFault = status;
 		if (status == B_OK) {
 			request.handle = s->handle; request.pitch = layout.pitch;
@@ -376,23 +417,23 @@ VideoControl(AmdgpuClient* client, uint32 op, void* data, size_t length)
 		return B_BAD_VALUE;
 	if (sFault != B_OK) return B_DEV_NOT_READY;
 	void* input = malloc(request.bitstream_bytes);
-	void* output = malloc(s->layout.outputBytes);
-	status = input == NULL || output == NULL ? B_NO_MEMORY
+	status = input == NULL ? B_NO_MEMORY
 		: user_memcpy(input, (void*)(addr_t)request.bitstream, request.bitstream_bytes);
 	amdgpu_uvd_test result = {};
 	if (status == B_OK) status = WaitDmaIdle();
 	if (status == B_OK)
-		status = sUvd.Session(*s, 1, &request.picture, input, request.bitstream_bytes, output, result);
+		status = sUvd.Session(*s, 1, &request.picture, input, request.bitstream_bytes, sEngine, result);
 	if (sUvd.faulted && sFault == B_OK) sFault = status;
 	if (status == B_OK)
-		status = user_memcpy((void*)(addr_t)request.output, output, s->layout.outputBytes);
+		status = user_memcpy((void*)(addr_t)request.output, (uint8*)s->readback + 4096,
+			s->layout.outputBytes);
 	request.sequence = result.sequence; request.fence = result.fence;
 	request.rptr = result.rptr; request.wptr = result.wptr;
 	request.guard_mismatches = result.guard_mismatches;
 	request.vm_fault_status = result.vm_fault_status; request.vm_fault_address = result.vm_fault_address;
 	memcpy(request.feedback, result.feedback, sizeof(request.feedback));
 	status_t copied = user_memcpy(data, &request, sizeof(request));
-	free(input); free(output);
+	free(input);
 	return status != B_OK ? status : copied;
 }
 

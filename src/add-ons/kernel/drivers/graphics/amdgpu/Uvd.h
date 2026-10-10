@@ -9,6 +9,12 @@ struct UvdSession {
 	volatile uint32* cpu;
 	uint64 offset, gpu;
 	area_id area;
+	// Kernel-only cached RAM, mapped through snooped GART PTEs for SDMA
+	// readback. Never cloned into userspace; quarantined on engine failure.
+	void* readback;
+	area_id readbackArea;
+	uint64 readbackOffset, readbackBytes, readbackGpu;
+	bool readbackBound;
 	uint32 handle, frames;
 	bool created;
 };
@@ -24,7 +30,7 @@ struct UvdEngine {
 		const amdgpu::FirmwareView& firmware, amdgpu_uvd_test& result);
 	status_t Session(UvdSession& session, uint32 type,
 		const amdgpu_h264_picture* picture, const void* bitstream, uint32 bytes,
-		void* output, amdgpu_uvd_test& result);
+		SdmaEngine& dma, amdgpu_uvd_test& result);
 	status_t Test(volatile uint32* r, const amdgpu_info& info,
 		const amdgpu::AtomVramReservation& reservation,
 		const amdgpu::FirmwareView& firmware, amdgpu_uvd_test& result, void* output);
