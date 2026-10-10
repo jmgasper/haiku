@@ -18,6 +18,7 @@
 #include "Sdma.h"
 #include "Smu.h"
 #include "Device.h"
+#include "FirmwareLoader.h"
 
 // Polaris 10 register indices, from AMD's MIT-licensed register headers:
 // Linux drivers/gpu/drm/amd/include/asic_reg/{bif/bif_5_0_d.h,
@@ -58,6 +59,8 @@ static area_id sRegisterArea = -1;
 static volatile uint32* sRegisters;
 static mutex sLock = MUTEX_INITIALIZER("amdgpu");
 static uint32 sOpenCount;
+static bool sStartupAttempted;
+static status_t sStartupStatus = B_DEV_NOT_READY;
 static const char* sDeviceNames[] = { AMDGPU_DEVICE_NAME, NULL };
 
 int32 api_version = B_CUR_DRIVER_API_VERSION;
@@ -196,10 +199,62 @@ device_free(void* cookie)
 
 
 static status_t
+start_installed_device()
+{
+	mutex_lock(&sLock);
+	if (amdgpu_device_active() || sStartupAttempted) {
+		status_t status = amdgpu_device_active() ? B_OK : sStartupStatus;
+		mutex_unlock(&sLock);
+		return status;
+	}
+	InstalledFirmware smc, sdma;
+	status_t status = smc.Load("polaris10_smc.bin", true);
+	if (status == B_OK)
+		status = sdma.Load("polaris10_sdma.bin", false);
+	// Automatic startup uses the versions qualified on this exact board.
+	if (status == B_OK && (smc.view.version != 0x171a00
+		|| sdma.view.version != 58 || sdma.view.featureVersion != 31))
+		status = B_BAD_DATA;
+	void* rom = status == B_OK ? malloc(AMDGPU_ROM_SIZE) : NULL;
+	if (status == B_OK && rom == NULL)
+		status = B_NO_MEMORY;
+	bool writable = false;
+	if (status == B_OK) {
+		status = set_area_protection(sRegisterArea, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA);
+		writable = status == B_OK;
+	}
+	amdgpu::AtomVramReservation reservation;
+	if (status == B_OK)
+		status = amdgpu_read_rom(sDevice, sRegisters, rom, AMDGPU_ROM_SIZE);
+	if (status == B_OK && !amdgpu::ParseAtomVramReservation(rom, AMDGPU_ROM_SIZE, reservation))
+		status = B_BAD_DATA;
+	if (status == B_OK) {
+		// Missing/malformed files can be repaired and retried. Once hardware
+		// startup begins, retain its failure until reload/cold-boot preflight.
+		sStartupAttempted = true;
+		if (!amdgpu_smc_ready(sRegisters)) {
+			amdgpu_smc_bootstrap result = {};
+			status = amdgpu_smc_bootstrap_firmware(sRegisters, smc.view, result);
+		}
+		if (status == B_OK)
+			status = amdgpu_device_start(sRegisters, sInfo, sdma.view, reservation);
+		sStartupStatus = status;
+		dprintf("amdgpu: automatic client startup status %#x\n", (unsigned)status);
+	}
+	if (writable && status != B_OK)
+		set_area_protection(sRegisterArea, B_KERNEL_READ_AREA);
+	free(rom);
+	mutex_unlock(&sLock);
+	return status;
+}
+
+
+static status_t
 device_control(void* cookie, uint32 op, void* buffer, size_t length)
 {
 	if (op >= AMDGPU_CREATE_BUFFER && op <= AMDGPU_GART_INFO)
-		return amdgpu_client_control((AmdgpuClient*)cookie, op, buffer, length);
+		return amdgpu_client_control((AmdgpuClient*)cookie, op, buffer, length,
+			start_installed_device);
 	if (op == AMDGPU_GFX_TEST) {
 		if (geteuid() != 0)
 			return B_NOT_ALLOWED;

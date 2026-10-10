@@ -5,6 +5,7 @@ SimpleTest amdgpu_probe : amdgpu_probe.cpp ;
 SimpleTest amdgpu_sdma : amdgpu_sdma.cpp ;
 SimpleTest amdgpu_smc : amdgpu_smc.cpp ;
 SimpleTest amdgpu_buffers : amdgpu_buffers.cpp ;
+SimpleTest amdgpu_startup : amdgpu_startup.cpp ;
 SimpleTest amdgpu_gfx : amdgpu_gfx.cpp ;
 
 local driver = [ FDirName $(HAIKU_TOP) src add-ons kernel drivers graphics amdgpu ] ;

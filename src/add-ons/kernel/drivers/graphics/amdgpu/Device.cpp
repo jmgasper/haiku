@@ -493,8 +493,41 @@ Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 }
 
 status_t
-amdgpu_client_control(AmdgpuClient* client, uint32 op, void* data, size_t length)
+amdgpu_client_control(AmdgpuClient* client, uint32 op, void* data, size_t length,
+	status_t (*initialize)())
 {
+	if (client->team != team_get_current_team_id()
+		|| (client->flags & O_ACCMODE) != O_RDWR)
+		return B_NOT_ALLOWED;
+	mutex_lock(&sMutex);
+	bool needsStart = !sActive;
+	mutex_unlock(&sMutex);
+	if (needsStart) {
+		// Validate the triggering request before loading firmware or touching
+		// engines. Close/free/map/submit cannot initialize an absent device.
+		status_t status;
+		if (op == AMDGPU_MEMORY_INFO) {
+			amdgpu_memory_info request;
+			status = ReadRequest(request, data, length);
+		} else if (op == AMDGPU_GART_INFO) {
+			amdgpu_gart_info request;
+			status = ReadRequest(request, data, length);
+		} else if (op == AMDGPU_CREATE_BUFFER || op == AMDGPU_CREATE_SYSTEM_BUFFER) {
+			amdgpu_buffer request;
+			status = ReadRequest(request, data, length);
+			if (status == B_OK && (request.reserved != 0 || request.bytes == 0
+				|| request.bytes > (64ULL << 20)))
+				status = B_BAD_VALUE;
+		} else
+			return B_DEV_NOT_READY;
+		if (status != B_OK)
+			return status;
+		// Driver startup acquires sLock before sMutex. Do not hold sMutex
+		// here: concurrent first clients serialize in that startup callback.
+		status = initialize();
+		if (status != B_OK)
+			return status;
+	}
 	mutex_lock(&sMutex);
 	status_t status = Control(client, op, data, length);
 	mutex_unlock(&sMutex);

@@ -153,19 +153,35 @@ ConcurrentClient(void* data)
 	return 0;
 }
 
+struct StartupBarrier {
+	sem_id ready, go;
+};
+
+static int32
+FirstClient(void* argument)
+{
+	StartupBarrier* barrier = (StartupBarrier*)argument;
+	int fd = Open();
+	Require(release_sem(barrier->ready) == B_OK, "first client ready");
+	Require(acquire_sem(barrier->go) == B_OK, "first client barrier");
+	Require(Info(fd).allocated_bytes == 0, "first client starts a healthy empty device");
+	close(fd);
+	return 0;
+}
+
 int
 main(int argc, char** argv)
 {
 	setvbuf(stdout, NULL, _IOLBF, 0);
 	if (argc < 2 || argc > 4) {
-		fprintf(stderr, "usage: amdgpu_buffers firmware | --reuse [--system] [--unprivileged]\n");
+		fprintf(stderr, "usage: amdgpu_buffers firmware | --reuse | --auto [--system] [--unprivileged]\n");
 		return 2;
 	}
 	for (int i = 2; i < argc; i++) {
 		if (strcmp(argv[i], "--system") == 0)
 			sSystemBuffers = true;
 		else {
-			Require(strcmp(argv[1], "--reuse") == 0
+			Require((strcmp(argv[1], "--reuse") == 0 || strcmp(argv[1], "--auto") == 0)
 				&& strcmp(argv[i], "--unprivileged") == 0, "unprivileged usage");
 			Require(setuid(65534) == 0 && geteuid() == 65534, "drop root privileges");
 		}
@@ -173,7 +189,7 @@ main(int argc, char** argv)
 	printf("Testing %s buffers, effective UID %u\n",
 		sSystemBuffers ? "system RAM" : "VRAM", (unsigned)geteuid());
 	int fd = Open();
-	if (strcmp(argv[1], "--reuse") != 0) {
+	if (strcmp(argv[1], "--reuse") != 0 && strcmp(argv[1], "--auto") != 0) {
 		FILE* file = fopen(argv[1], "rb");
 		Require(file != NULL, "open firmware");
 		Require(fseek(file, 0, SEEK_END) == 0, "firmware seek");
@@ -193,6 +209,25 @@ main(int argc, char** argv)
 			"unprivileged firmware startup denied");
 		Require(ioctl(fd, AMDGPU_GFX_TEST, NULL, 0) == -1 && errno == B_NOT_ALLOWED,
 			"unprivileged GFX startup denied");
+	}
+	if (strcmp(argv[1], "--auto") == 0) {
+		StartupBarrier barrier = {create_sem(0, "startup ready"), create_sem(0, "startup go")};
+		Require(barrier.ready >= 0 && barrier.go >= 0, "create startup barriers");
+		thread_id threads[4];
+		for (thread_id& thread : threads) {
+			thread = spawn_thread(FirstClient, "first GPU client", B_NORMAL_PRIORITY, &barrier);
+			Require(thread >= 0 && resume_thread(thread) == B_OK, "start first GPU client");
+		}
+		for (unsigned i = 0; i < 4; i++)
+			Require(acquire_sem(barrier.ready) == B_OK, "all first clients ready");
+		Require(release_sem_etc(barrier.go, 4, 0) == B_OK, "release first clients together");
+		for (thread_id thread : threads) {
+			status_t result;
+			Require(wait_for_thread(thread, &result) == B_OK && result == B_OK, "join first client");
+		}
+		delete_sem(barrier.ready);
+		delete_sem(barrier.go);
+		puts("PASS: four simultaneous first clients use installed firmware without privileged startup");
 	}
 	Require(Info(fd).allocated_bytes == 0, "initial allocation accounting");
 	const uint64 bytes = 8ULL << 20;
