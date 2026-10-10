@@ -16,42 +16,6 @@ const volatile void* volatile lx_mmio_trace_base;
 u64 lx_dma_mask = DMA_BIT_MASK(32);
 
 
-status_t
-lx_status(int error)
-{
-	switch (error) {
-		case 0:
-			return B_OK;
-		case -ENOMEM:
-			return B_NO_MEMORY;
-		case -ETIMEDOUT:
-			return B_TIMED_OUT;
-		case -EINVAL:
-			return B_BAD_VALUE;
-		case -EIO:
-			return B_IO_ERROR;
-		case -EBUSY:
-			return B_BUSY;
-		case -ENODEV:
-			return B_DEV_NOT_READY;
-		case -ENOENT:
-			return B_ENTRY_NOT_FOUND;
-		case -ENOSPC:
-			return B_DEVICE_FULL;
-		case -EFAULT:
-			return B_BAD_ADDRESS;
-		case -EPERM:
-			return B_NOT_ALLOWED;
-		case -E2BIG:
-		case -ERANGE:
-		case -EOVERFLOW:
-			return B_RESULT_NOT_REPRESENTABLE;
-		default:
-			return error < 0 ? B_ERROR : B_OK;
-	}
-}
-
-
 /* #pragma mark - printing */
 
 
@@ -245,6 +209,40 @@ drm_mm_remove_node(struct drm_mm_node* node)
 /* #pragma mark - dma_fence */
 
 
+wait_queue_head_t lx_fence_queue;
+
+static spinlock sFenceLock = B_SPINLOCK_INITIALIZER;
+static struct dma_fence sStubFence;
+
+
+static const char*
+lx_fence_driver_name(struct dma_fence* fence)
+{
+	(void)fence;
+	return "powervr";
+}
+
+
+static const struct dma_fence_ops sStubFenceOps = {
+	.get_driver_name = lx_fence_driver_name,
+	.get_timeline_name = lx_fence_driver_name,
+};
+
+
+void
+lx_dma_fence_init_globals(void)
+{
+	static bool sInitialized = false;
+	if (sInitialized)
+		return;
+	sInitialized = true;
+
+	init_waitqueue_head(&lx_fence_queue);
+	dma_fence_init(&sStubFence, &sStubFenceOps, NULL, 0, 0);
+	dma_fence_signal(&sStubFence);
+}
+
+
 u64
 dma_fence_context_alloc(unsigned int count)
 {
@@ -262,6 +260,9 @@ dma_fence_init(struct dma_fence* fence, const struct dma_fence_ops* ops,
 	fence->context = context;
 	fence->seqno = seqno;
 	fence->flags = 0;
+	fence->error = 0;
+	fence->timestamp = 0;
+	INIT_LIST_HEAD(&fence->cb_list);
 	kref_init(&fence->refcount);
 }
 
@@ -277,6 +278,8 @@ static void
 dma_fence_release(struct kref* kref)
 {
 	struct dma_fence* fence = container_of(kref, struct dma_fence, refcount);
+	if (WARN_ON(fence == &sStubFence))
+		return;
 	if (fence->ops != NULL && fence->ops->release != NULL)
 		fence->ops->release(fence);
 	else
@@ -292,16 +295,233 @@ dma_fence_put(struct dma_fence* fence)
 }
 
 
+static cpu_status
+fence_lock(void)
+{
+	cpu_status state = disable_interrupts();
+	acquire_spinlock(&sFenceLock);
+	return state;
+}
+
+
+static void
+fence_unlock(cpu_status state)
+{
+	release_spinlock(&sFenceLock);
+	restore_interrupts(state);
+}
+
+
+bool
+dma_fence_is_signaled(struct dma_fence* fence)
+{
+	return (__atomic_load_n(&fence->flags, __ATOMIC_ACQUIRE)
+		& (1UL << DMA_FENCE_FLAG_SIGNALED_BIT)) != 0;
+}
+
+
+/*!	Marks the fence signaled, then runs its callbacks and wakes every fence
+	waiter; -EINVAL if it was signaled before.
+*/
 int
 dma_fence_signal(struct dma_fence* fence)
 {
 	if (fence == NULL)
 		return -EINVAL;
-	if (__atomic_fetch_or(&fence->flags, 1UL << DMA_FENCE_FLAG_SIGNALED_BIT,
-			__ATOMIC_SEQ_CST) & (1UL << DMA_FENCE_FLAG_SIGNALED_BIT)) {
+
+	struct list_head callbacks;
+	INIT_LIST_HEAD(&callbacks);
+
+	cpu_status state = fence_lock();
+	if (dma_fence_is_signaled(fence)) {
+		fence_unlock(state);
 		return -EINVAL;
 	}
+	fence->timestamp = system_time();
+	__atomic_fetch_or(&fence->flags, 1UL << DMA_FENCE_FLAG_SIGNALED_BIT,
+		__ATOMIC_RELEASE);
+	list_splice_init(&fence->cb_list, &callbacks);
+	fence_unlock(state);
+
+	struct dma_fence_cb* cb;
+	struct dma_fence_cb* next;
+	list_for_each_entry_safe(cb, next, &callbacks, node) {
+		INIT_LIST_HEAD(&cb->node);
+		cb->func(fence, cb);
+	}
+
+	wake_up_all(&lx_fence_queue);
 	return 0;
+}
+
+
+int
+dma_fence_add_callback(struct dma_fence* fence, struct dma_fence_cb* cb,
+	dma_fence_func_t func)
+{
+	cpu_status state = fence_lock();
+	if (dma_fence_is_signaled(fence)) {
+		fence_unlock(state);
+		INIT_LIST_HEAD(&cb->node);
+		return -ENOENT;
+	}
+	cb->func = func;
+	list_add_tail(&cb->node, &fence->cb_list);
+	fence_unlock(state);
+	return 0;
+}
+
+
+bool
+dma_fence_remove_callback(struct dma_fence* fence, struct dma_fence_cb* cb)
+{
+	cpu_status state = fence_lock();
+	bool removed = !dma_fence_is_signaled(fence) && !list_empty(&cb->node);
+	if (removed)
+		list_del_init(&cb->node);
+	fence_unlock(state);
+	return removed;
+}
+
+
+int
+lx_dma_fence_wait(struct dma_fence* fence, bool interruptible,
+	bigtime_t deadline)
+{
+	for (;;) {
+		int32 generation = lx_wait_queue_generation(&lx_fence_queue);
+		if (dma_fence_is_signaled(fence))
+			return 0;
+		if (system_time() >= deadline)
+			return -ETIME;
+		if (!interruptible) {
+			lx_wait_queue_sleep(&lx_fence_queue, generation, deadline);
+			continue;
+		}
+		if (lx_wait_queue_sleep_interruptible(&lx_fence_queue, generation,
+				deadline) == B_INTERRUPTED) {
+			return -EINTR;
+		}
+	}
+}
+
+
+/*!	Linux's dma_fence_wait_timeout(): the jiffies left (at least 1) once
+	signaled, 0 on timeout, -EINTR when interrupted.
+*/
+long
+dma_fence_wait_timeout(struct dma_fence* fence, bool interruptible,
+	long timeout)
+{
+	bigtime_t deadline = timeout == MAX_SCHEDULE_TIMEOUT ? B_INFINITE_TIMEOUT
+		: system_time() + (bigtime_t)jiffies_to_usecs(timeout);
+	int error = lx_dma_fence_wait(fence, interruptible, deadline);
+	if (error == -ETIME)
+		return 0;
+	if (error != 0)
+		return error;
+	if (timeout == MAX_SCHEDULE_TIMEOUT)
+		return timeout;
+	long left = (long)((deadline - system_time()) / (1000000 / HZ));
+	return left < 1 ? 1 : left;
+}
+
+
+struct dma_fence*
+dma_fence_get_stub(void)
+{
+	return dma_fence_get(&sStubFence);
+}
+
+
+/* #pragma mark - lx_dma_fence_all */
+
+
+struct lx_fence_all;
+
+struct lx_fence_all_part {
+	struct dma_fence_cb		cb;
+	struct dma_fence*		fence;
+	struct lx_fence_all*	all;
+};
+
+struct lx_fence_all {
+	struct dma_fence			base;
+	atomic_t					pending;
+	u32							count;
+	struct lx_fence_all_part	parts[];
+};
+
+
+static void
+lx_fence_all_release(struct dma_fence* fence)
+{
+	struct lx_fence_all* all = container_of(fence, struct lx_fence_all, base);
+	for (u32 i = 0; i < all->count; i++)
+		dma_fence_put(all->parts[i].fence);
+	free(all);
+}
+
+
+static const struct dma_fence_ops sFenceAllOps = {
+	.get_driver_name = lx_fence_driver_name,
+	.get_timeline_name = lx_fence_driver_name,
+	.release = lx_fence_all_release,
+};
+
+
+static void
+lx_fence_all_part_done(struct lx_fence_all* all, struct dma_fence* fence)
+{
+	if (fence->error != 0 && all->base.error == 0)
+		all->base.error = fence->error;
+	if (atomic_dec_return(&all->pending) == 0) {
+		dma_fence_signal(&all->base);
+		dma_fence_put(&all->base);
+			// the reference the pending parts held
+	}
+}
+
+
+static void
+lx_fence_all_callback(struct dma_fence* fence, struct dma_fence_cb* cb)
+{
+	struct lx_fence_all_part* part
+		= container_of(cb, struct lx_fence_all_part, cb);
+	lx_fence_all_part_done(part->all, fence);
+}
+
+
+struct dma_fence*
+lx_dma_fence_all(struct dma_fence** fences, u32 count)
+{
+	struct lx_fence_all* all = (struct lx_fence_all*)calloc(1,
+		sizeof(*all) + count * sizeof(all->parts[0]));
+	if (all == NULL) {
+		for (u32 i = 0; i < count; i++)
+			dma_fence_put(fences[i]);
+		return NULL;
+	}
+
+	dma_fence_init(&all->base, &sFenceAllOps, NULL,
+		dma_fence_context_alloc(1), 1);
+	all->count = count;
+	atomic_set(&all->pending, (int)count + 1);
+	kref_get(&all->base.refcount);
+		// for the pending parts, dropped when the last one is done
+	for (u32 i = 0; i < count; i++) {
+		all->parts[i].fence = fences[i];
+		all->parts[i].all = all;
+	}
+	for (u32 i = 0; i < count; i++) {
+		if (dma_fence_add_callback(fences[i], &all->parts[i].cb,
+				lx_fence_all_callback) != 0) {
+			lx_fence_all_part_done(all, fences[i]);
+		}
+	}
+	// the "+ 1": no signal before every callback is in place
+	lx_fence_all_part_done(all, &sStubFence);
+	return &all->base;
 }
 
 
@@ -528,4 +748,228 @@ int
 param_get_hexint(char* buffer, const struct kernel_param* parameter)
 {
 	return sprintf(buffer, "%#08x\n", *(unsigned int*)parameter->arg);
+}
+
+
+/* #pragma mark - user memory */
+
+
+unsigned long
+clear_user(void __user* to, unsigned long size)
+{
+	static const u8 kZeroes[64];
+	unsigned long done = 0;
+	if (!lx_access_ok(to, size))
+		return size;
+	while (done < size) {
+		unsigned long chunk = min_t(unsigned long, size - done,
+			sizeof(kZeroes));
+		if (user_memcpy((u8 __user*)to + done, kZeroes, chunk) != B_OK)
+			return size - done;
+		done += chunk;
+	}
+	return 0;
+}
+
+
+/*!	Linux's rule for extensible structures: a shorter user structure is
+	zero-extended, a longer one is accepted only if its extra bytes are 0.
+*/
+int
+copy_struct_from_user(void* to, size_t size, const void __user* from,
+	size_t userSize)
+{
+	if (!lx_access_ok(from, userSize))
+		return -EFAULT;
+	if (userSize < size) {
+		memset((u8*)to + userSize, 0, size - userSize);
+	} else if (userSize > size) {
+		u8 extra[64];
+		for (size_t offset = size; offset < userSize;) {
+			size_t chunk = min_t(size_t, userSize - offset, sizeof(extra));
+			if (user_memcpy(extra, (const u8 __user*)from + offset, chunk)
+					!= B_OK) {
+				return -EFAULT;
+			}
+			if (!mem_is_zero(extra, chunk))
+				return -E2BIG;
+			offset += chunk;
+		}
+	}
+	if (user_memcpy(to, from, min(size, userSize)) != B_OK)
+		return -EFAULT;
+	return 0;
+}
+
+
+void*
+memdup_user(const void __user* from, size_t size)
+{
+	if (!lx_access_ok(from, size))
+		return ERR_PTR(-EFAULT);
+	void* copy = kmalloc(size, GFP_KERNEL);
+	if (copy == NULL)
+		return ERR_PTR(-ENOMEM);
+	if (user_memcpy(copy, from, size) != B_OK) {
+		kfree(copy);
+		return ERR_PTR(-EFAULT);
+	}
+	return copy;
+}
+
+
+struct drm_gem_object*
+drm_gem_shmem_prime_import_sg_table(struct drm_device* dev,
+	struct dma_buf_attachment* attachment, struct sg_table* table)
+{
+	(void)dev;
+	(void)attachment;
+	(void)table;
+	return ERR_PTR(-ENODEV);
+}
+
+
+/* #pragma mark - xarray */
+
+
+void
+xa_init_flags(struct xarray* xa, unsigned int flags)
+{
+	memset(xa, 0, sizeof(*xa));
+	recursive_lock_init(&xa->lock, "powervr xarray");
+	xa->base = (flags & XA_FLAGS_ALLOC1) != 0 ? 1 : 0;
+	xa->initialized = true;
+}
+
+
+void
+xa_destroy(struct xarray* xa)
+{
+	if (!xa->initialized)
+		return;
+	free(xa->entries);
+	recursive_lock_destroy(&xa->lock);
+	memset(xa, 0, sizeof(*xa));
+}
+
+
+void
+xa_lock(struct xarray* xa)
+{
+	recursive_lock_lock(&xa->lock);
+}
+
+
+void
+xa_unlock(struct xarray* xa)
+{
+	recursive_lock_unlock(&xa->lock);
+}
+
+
+static int
+xa_reserve_index(struct xarray* xa, unsigned long index)
+{
+	if (index < xa->capacity)
+		return 0;
+	u32 capacity = max(xa->capacity * 2, 16u);
+	while (capacity <= index)
+		capacity *= 2;
+	void** entries = (void**)realloc(xa->entries, capacity * sizeof(void*));
+	if (entries == NULL)
+		return -ENOMEM;
+	memset(entries + xa->capacity, 0,
+		(capacity - xa->capacity) * sizeof(void*));
+	xa->entries = entries;
+	xa->capacity = capacity;
+	return 0;
+}
+
+
+int
+xa_alloc(struct xarray* xa, u32* _id, void* entry, struct xa_limit limit,
+	gfp_t flags)
+{
+	(void)flags;
+	if (entry == NULL)
+		return -EINVAL;
+
+	xa_lock(xa);
+	u32 index = max(limit.min, xa->base);
+	while (index < xa->capacity && xa->entries[index] != NULL)
+		index++;
+	// IDs are kept dense: anything near 2^32 entries is out of reach anyway
+	int error = index > limit.max || index >= (1u << 24)
+		? -EBUSY : xa_reserve_index(xa, index);
+	if (error == 0) {
+		xa->entries[index] = entry;
+		*_id = index;
+	}
+	xa_unlock(xa);
+	return error;
+}
+
+
+void*
+xa_store(struct xarray* xa, unsigned long index, void* entry, gfp_t flags)
+{
+	(void)flags;
+	xa_lock(xa);
+	void* old = NULL;
+	if (index >= (1u << 24) || xa_reserve_index(xa, index) != 0) {
+		xa_unlock(xa);
+		return ERR_PTR(-ENOMEM);
+	}
+	old = xa->entries[index];
+	xa->entries[index] = entry;
+	xa_unlock(xa);
+	return old;
+}
+
+
+void*
+xa_load(struct xarray* xa, unsigned long index)
+{
+	xa_lock(xa);
+	void* entry = index < xa->capacity ? xa->entries[index] : NULL;
+	xa_unlock(xa);
+	return entry;
+}
+
+
+void*
+xa_erase(struct xarray* xa, unsigned long index)
+{
+	xa_lock(xa);
+	void* entry = NULL;
+	if (index < xa->capacity) {
+		entry = xa->entries[index];
+		xa->entries[index] = NULL;
+	}
+	xa_unlock(xa);
+	return entry;
+}
+
+
+bool
+xa_empty(struct xarray* xa)
+{
+	unsigned long index = 0;
+	return lx_xa_find(xa, &index) == NULL;
+}
+
+
+/*!	The first entry at or after \a index; \a index is set to it. */
+void*
+lx_xa_find(struct xarray* xa, unsigned long* index)
+{
+	xa_lock(xa);
+	void* entry = NULL;
+	for (; *index < xa->capacity; (*index)++) {
+		entry = xa->entries[*index];
+		if (entry != NULL)
+			break;
+	}
+	xa_unlock(xa);
+	return entry;
 }

@@ -4,19 +4,17 @@
  */
 
 
-/*	Functions the reused files refer to for cases this GPU never reaches
-	yet: the META and RISC-V firmware processors (the BXM-4-64 runs its
-	firmware on MIPS; pvr_fw_meta.c and pvr_fw_riscv.c map their code
-	through a kernel GPU VM context, which a MIPS core does not have), the
-	kernel VM context's page table root, and the free-list requests of the
-	firmware, which come with render jobs (M4). Each says so if it runs. */
+/*	Functions the reused files refer to for cases this GPU never reaches:
+	the META and RISC-V firmware processors (the BXM-4-64 runs its firmware
+	on MIPS; pvr_fw_meta.c and pvr_fw_riscv.c map their code through a
+	kernel GPU VM context, which a MIPS core does not have), and the DRM
+	core's debugfs. Each says so if it runs. */
 
 
 #include "pvr_device.h"
-#include "pvr_free_list.h"
+#include "pvr_debugfs.h"
 #include "pvr_fw.h"
 #include "pvr_fw_meta.h"
-#include "pvr_vm.h"
 
 
 static int
@@ -48,31 +46,11 @@ pvr_meta_cr_read32(struct pvr_device* pvr_dev, u32 reg_addr,
 }
 
 
-dma_addr_t
-pvr_vm_get_page_table_root_addr(struct pvr_vm_context* vm_ctx)
-{
-	// only rogue_bif_init() asks, and only for META and RISC-V
-	(void)vm_ctx;
-	lx_log(LX_LOG_ERROR, "no kernel VM context before M3");
-	return 0;
-}
-
-
+/*	The DRM core calls this for the device's debugfs directory, which Haiku
+	does not have; the driver reads what it needs (the firmware trace)
+	through lx_debugfs_dump() instead. */
 void
-pvr_free_list_process_grow_req(struct pvr_device* pvr_dev,
-	struct rogue_fwif_fwccb_cmd_freelist_gs_data* req)
+pvr_debugfs_init(struct drm_minor* minor)
 {
-	(void)req;
-	drm_warn(from_pvr_device(pvr_dev), "FWCCB: free list grow request"
-		" without free lists, ignored\n");
-}
-
-
-void
-pvr_free_list_process_reconstruct_req(struct pvr_device* pvr_dev,
-	struct rogue_fwif_fwccb_cmd_freelists_reconstruction_data* req)
-{
-	(void)req;
-	drm_warn(from_pvr_device(pvr_dev), "FWCCB: free list reconstruction"
-		" request without free lists, ignored\n");
+	(void)minor;
 }

@@ -180,7 +180,7 @@ rule UserBuildConfigRulePreImage
 		# lab tools, and the driver settings that let cubie_reg at the
 		# display registers
 		AddFilesToHaikuImage system non-packaged bin : cubie_reg cubie_fetch
-			pvrinfo ;
+			pvrinfo pvrtest ;
 		local labSettings = <cubie-lab>sunxi_display ;
 		SEARCH on $(labSettings) = [ FDirName $(HAIKU_TOP) tools cubie-a7s lab ] ;
 		AddFilesToHaikuImage home config settings kernel drivers
