@@ -90,6 +90,7 @@ rule UserBuildConfigRulePreImage
 	SEARCH on $(aicFirmware) = $(aicFirmwareDir) ;
 	AddFilesToHaikuImage system non-packaged data firmware aic8800wifi
 		: $(aicFirmware) ;
+	AddDriversToHaikuImage net : aic8800wifi ;
 
 	if $(CUBIE_AIROS_IMAGE) {
 		local extras = /mnt/HaikuWork/rock5-image-extras ;
@@ -198,7 +199,7 @@ rule UserBuildConfigRulePreImage
 		# display registers
 		AddFilesToHaikuImage system non-packaged bin : cubie_reg cubie_fetch
 			pvrinfo aicload ;
-		local labSettings = <cubie-lab>sunxi_display ;
+		local labSettings = <cubie-lab>sunxi_display <cubie-lab>aic8800wifi ;
 		SEARCH on $(labSettings) = [ FDirName $(HAIKU_TOP) tools cubie-a7s lab ] ;
 		AddFilesToHaikuImage home config settings kernel drivers
 			: $(labSettings) ;
