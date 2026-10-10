@@ -8,9 +8,16 @@
 
 /*	The PowerVR (Imagination Rogue) driver's interface to userland: Linux's
 	pvr_drm.h and drm.h structures, unchanged, behind Haiku ioctl op codes
-	PVR_HAIKU_OP(nr), nr being the Linux DRM ioctl number (driver ioctls
-	0x40-0x4d, generic DRM ioctls keep theirs). The length argument of
-	ioctl() is the structure's size. Haiku-only ops use nr 0xe0-0xef. */
+	PVR_HAIKU_OP(nr), nr being the Linux DRM ioctl number: the driver's own
+	ioctls are 0x40-0x4d (DRM_COMMAND_BASE + DRM_PVR_*), the generic DRM
+	ioctls keep theirs. The length argument of ioctl() is the size of the
+	structure the request names (IOCPARM_LEN() of the Linux request code).
+	As with drm_ioctl(), that many bytes are copied in, zero-extended to the
+	driver's structure, and copied back out. Haiku-only ops use nr
+	0xe0-0xef.
+
+	A libdrm stand-in therefore needs no table:
+		ioctl(fd, PVR_HAIKU_OP(request & 0xff), arg, IOCPARM_LEN(request)) */
 
 
 #include <SupportDefs.h>
@@ -25,9 +32,43 @@
 #define PVR_HAIKU_OP_NR(op)			((op) & 0xffu)
 #define PVR_HAIKU_IS_OP(op)			(((op) & 0xffffff00u) == PVR_HAIKU_OP_BASE)
 
-#define PVR_HAIKU_NR_STAGE			0xef	// bring-up state
+// generic DRM ioctls the driver answers (drm.h numbers and structures)
+#define PVR_HAIKU_NR_VERSION				0x00	// struct drm_version
+#define PVR_HAIKU_NR_GEM_CLOSE				0x09	// struct drm_gem_close
+#define PVR_HAIKU_NR_GET_CAP				0x0c	// struct drm_get_cap
+#define PVR_HAIKU_NR_SYNCOBJ_CREATE			0xbf
+#define PVR_HAIKU_NR_SYNCOBJ_DESTROY		0xc0
+#define PVR_HAIKU_NR_SYNCOBJ_WAIT			0xc3
+#define PVR_HAIKU_NR_SYNCOBJ_RESET			0xc4
+#define PVR_HAIKU_NR_SYNCOBJ_SIGNAL			0xc5
+#define PVR_HAIKU_NR_SYNCOBJ_TIMELINE_WAIT	0xca
+#define PVR_HAIKU_NR_SYNCOBJ_QUERY			0xcb
+#define PVR_HAIKU_NR_SYNCOBJ_TRANSFER		0xcc
+#define PVR_HAIKU_NR_SYNCOBJ_TIMELINE_SIGNAL 0xcd
 
-#define PVR_HAIKU_ABI_VERSION		2
+// the driver's own (pvr_drm.h)
+#define PVR_HAIKU_NR_PVR_FIRST				0x40	// DRM_IOCTL_PVR_DEV_QUERY
+#define PVR_HAIKU_NR_PVR_LAST				0x4d	// DRM_IOCTL_PVR_SUBMIT_JOBS
+
+// Haiku-only
+#define PVR_HAIKU_NR_MAP_BO			0xe0	// struct pvr_haiku_map_bo
+#define PVR_HAIKU_NR_STAGE			0xef	// struct pvr_haiku_stage
+
+#define PVR_HAIKU_ABI_VERSION		3
+
+
+/*	PVR_HAIKU_OP(PVR_HAIKU_NR_MAP_BO) replaces GET_BO_MMAP_OFFSET + mmap():
+	the buffer's kernel area is cloned into the calling team, write-combined
+	(the GPU is not cache coherent). With address 0 the clone goes anywhere,
+	otherwise exactly there (B_EXACT_ADDRESS, for placed maps). Only buffers
+	created with DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS can be mapped. Unmap
+	with delete_area(area). */
+struct pvr_haiku_map_bo {
+	uint32	handle;					// in: buffer handle
+	int32	area;					// out: the clone's area
+	uint64	address;				// in: placement or 0; out: address
+	uint64	size;					// out
+};
 
 
 // stage

@@ -45,6 +45,7 @@ struct pvr_gem_object {
 	struct drm_gem_object	base;
 	u64						flags;
 	struct lx_dma_buffer	buffer;
+	struct sg_table			sgt;		/* the buffer's runs, built once */
 };
 
 #define gem_from_pvr_gem(pvr_obj)	(&(pvr_obj)->base)
@@ -54,6 +55,18 @@ struct pvr_gem_object {
 
 struct pvr_gem_object*	pvr_gem_object_create(struct pvr_device* pvr_dev,
 							size_t size, u64 flags);
+struct drm_gem_object*	pvr_gem_create_object(struct drm_device* drm_dev,
+							size_t size);
+
+/* Handles: the handle owns the reference the caller had. */
+int		pvr_gem_object_into_handle(struct pvr_gem_object* pvr_obj,
+			struct pvr_file* pvr_file, u32* handle);
+struct pvr_gem_object*	pvr_gem_object_from_handle(struct pvr_file* pvr_file,
+							u32 handle);
+int		pvr_gem_handle_delete(struct pvr_file* pvr_file, u32 handle);
+
+struct sg_table*	pvr_gem_object_get_pages_sgt(
+						struct pvr_gem_object* pvr_obj);
 
 void*	pvr_gem_object_vmap(struct pvr_gem_object* pvr_obj);
 void	pvr_gem_object_vunmap(struct pvr_gem_object* pvr_obj);
@@ -68,6 +81,35 @@ static __always_inline size_t
 pvr_gem_object_size(struct pvr_gem_object* pvr_obj)
 {
 	return gem_from_pvr_gem(pvr_obj)->size;
+}
+
+
+/* The GEM core functions the reused files call. */
+static __always_inline void
+drm_gem_object_put(struct drm_gem_object* gem_obj)
+{
+	pvr_gem_object_put(gem_to_pvr_gem(gem_obj));
+}
+
+static __always_inline struct sg_table*
+drm_gem_shmem_get_pages_sgt(struct drm_gem_object* gem_obj)
+{
+	return pvr_gem_object_get_pages_sgt(gem_to_pvr_gem(gem_obj));
+}
+
+/*	No mmap() of the device on Haiku (MAP_BO clones the buffer's area):
+	the "offset" GET_BO_MMAP_OFFSET reports only names the buffer. */
+static __always_inline int
+drm_gem_create_mmap_offset(struct drm_gem_object* gem_obj)
+{
+	(void)gem_obj;
+	return 0;
+}
+
+static __always_inline u64
+drm_vma_node_offset_addr(struct drm_vma_offset_node* node)
+{
+	return node->offset;
 }
 
 

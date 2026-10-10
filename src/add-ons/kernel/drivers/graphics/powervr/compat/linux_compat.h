@@ -35,6 +35,7 @@
 #include <SupportDefs.h>
 #include <lock.h>
 
+#include <limits.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -51,10 +52,12 @@
 
 #undef EPERM
 #undef ENOENT
+#undef EINTR
 #undef EIO
 #undef E2BIG
 #undef EAGAIN
 #undef ENOMEM
+#undef EACCES
 #undef EFAULT
 #undef EBUSY
 #undef EEXIST
@@ -62,28 +65,39 @@
 #undef EINVAL
 #undef ENOSPC
 #undef ERANGE
+#undef EDEADLK
+#undef ENOSYS
+#undef ETIME
 #undef EOVERFLOW
+#undef EOPNOTSUPP
 #undef ETIMEDOUT
+#undef ECANCELED
 
-#define EPERM		1
+#define EPERM		LX_EPERM
 #define ENOENT		LX_ENOENT
+#define EINTR		LX_EINTR
 #define EIO			LX_EIO
 #define E2BIG		LX_E2BIG
-#define EAGAIN		11
+#define EAGAIN		LX_EAGAIN
 #define ENOMEM		LX_ENOMEM
-#define EFAULT		14
-#define EBUSY		16
-#define EEXIST		17
-#define ENODEV		19
+#define EACCES		LX_EACCES
+#define EFAULT		LX_EFAULT
+#define EBUSY		LX_EBUSY
+#define EEXIST		LX_EEXIST
+#define ENODEV		LX_ENODEV
 #define EINVAL		LX_EINVAL
-#define ENOSPC		28
+#define ENOSPC		LX_ENOSPC
 #define ERANGE		LX_ERANGE
-#define EOVERFLOW	75
-#define ETIMEDOUT	110
+#define EDEADLK		LX_EDEADLK
+#define ENOSYS		LX_ENOSYS
+#define ETIME		LX_ETIME
+#define EOVERFLOW	LX_EOVERFLOW
+#define EOPNOTSUPP	LX_EOPNOTSUPP
+#define ETIMEDOUT	LX_ETIMEDOUT
+#define ECANCELED	LX_ECANCELED
+#define ENOTSUPP	LX_ENOTSUPP
 
 #define MAX_ERRNO	4095
-
-status_t lx_status(int error);
 
 static inline void*
 ERR_PTR(long error)
@@ -107,6 +121,18 @@ static inline bool
 IS_ERR_OR_NULL(const void* pointer)
 {
 	return pointer == NULL || IS_ERR(pointer);
+}
+
+static inline int
+PTR_ERR_OR_ZERO(const void* pointer)
+{
+	return IS_ERR(pointer) ? (int)PTR_ERR(pointer) : 0;
+}
+
+static inline void*
+ERR_CAST(const void* pointer)
+{
+	return (void*)pointer;
 }
 
 
@@ -162,6 +188,7 @@ typedef s64				ktime_t;
 #define __packed			__attribute__((packed))
 #define __always_inline		inline __attribute__((always_inline))
 #define __maybe_unused		__attribute__((unused))
+#define __always_unused		__attribute__((unused))
 #define __must_check		__attribute__((warn_unused_result))
 #define __iomem
 #define __user
@@ -181,6 +208,7 @@ typedef s64				ktime_t;
 	container_of(pointer, type, member)
 
 #define sizeof_field(type, member)	sizeof((((type*)0)->member))
+#define typeof_member(type, member)	__typeof__(((type*)0)->member)
 #define flex_array_size(pointer, member, count) \
 	((count) * sizeof(*(pointer)->member))
 #define ARRAY_SIZE(array)			(sizeof(array) / sizeof((array)[0]))
@@ -218,6 +246,9 @@ typedef s64				ktime_t;
 #define _BITULL(x)		(1ULL << (x))
 #define BIT(nr)			(1UL << (nr))
 #define BIT_ULL(nr)		(1ULL << (nr))
+#define BIT_MASK(nr)	(1UL << ((nr) % BITS_PER_LONG))
+#define lower_32_bits(n)	((u32)((n) & 0xffffffff))
+#define upper_32_bits(n)	((u32)(((n) >> 16) >> 16))
 #define GENMASK(high, low) \
 	(((~0UL) - (1UL << (low)) + 1) & (~0UL >> (BITS_PER_LONG - 1 - (high))))
 #define GENMASK_ULL(high, low) \
@@ -231,6 +262,12 @@ typedef s64				ktime_t;
 	(((__typeof__(mask))(value) << __builtin_ctzll(mask)) & (mask))
 
 #define __ffs(x)		((unsigned long)__builtin_ctzl(x))
+
+static inline int
+fls(unsigned int x)
+{
+	return x != 0 ? 32 - __builtin_clz(x) : 0;
+}
 
 #define SZ_1K		0x00000400
 #define SZ_4K		0x00001000
@@ -254,6 +291,8 @@ typedef s64				ktime_t;
 #define SZ_1G		0x40000000
 #define SZ_2G		0x80000000ULL
 #define SZ_4G		0x100000000ULL
+#define SZ_16G		0x400000000ULL
+#define SZ_128G		0x2000000000ULL
 #define SZ_1T		0x10000000000ULL
 
 #undef min
@@ -355,6 +394,7 @@ lx_jiffies(void)
 }
 
 #define jiffies					lx_jiffies()
+#define MAX_SCHEDULE_TIMEOUT	LONG_MAX
 #define time_after(a, b)		((long)((b) - (a)) < 0)
 #define time_before(a, b)		time_after(b, a)
 #define msecs_to_jiffies(ms)	((unsigned long)(ms) * HZ / 1000)
@@ -433,6 +473,7 @@ enum {
 };
 
 struct drm_device;
+struct drm_file;
 
 void lx_log(int level, const char* format, ...)
 	__attribute__((format(printf, 2, 3)));
@@ -528,8 +569,27 @@ kfree(const void* pointer)
 	free((void*)pointer);
 }
 
+static inline void*
+kvmalloc_array(size_t count, size_t size, gfp_t flags)
+{
+	if (size != 0 && count > SIZE_MAX / size)
+		return NULL;
+	return kmalloc(count * size, flags);
+}
+
+#define kvfree(pointer)		kfree(pointer)
+
 #define kzalloc_obj(object, ...) \
 	((__typeof__(object)*)kzalloc(sizeof(object), GFP_KERNEL))
+#define kvmalloc_objs(object, count, ...) \
+	((__typeof__(object)*)kvmalloc_array((count), sizeof(object), \
+		GFP_KERNEL))
+
+/* overflow.h; the sizes here are small, no saturation needed */
+#define struct_size(pointer, member, count) \
+	(sizeof(*(pointer)) + sizeof(*(pointer)->member) * (size_t)(count))
+#define struct_size_t(type, member, count) \
+	struct_size((type*)NULL, member, count)
 
 static inline bool
 mem_is_zero(const void* memory, size_t size)
@@ -592,6 +652,8 @@ lx_atomic_xchg(atomic_t* atomic, int value)
 #define atomic_set(atomic, value)	lx_atomic_set(atomic, value)
 #define atomic_add(value, atomic) \
 	((void)lx_atomic_add_return(value, atomic))
+#define atomic_sub(value, atomic) \
+	((void)lx_atomic_add_return(-(value), atomic))
 #define atomic_inc(atomic)			((void)lx_atomic_add_return(1, atomic))
 #define atomic_dec(atomic)			((void)lx_atomic_add_return(-1, atomic))
 #define atomic_inc_return(atomic)	lx_atomic_add_return(1, atomic)
@@ -706,11 +768,52 @@ list_empty(const struct list_head* head)
 	return head->next == head;
 }
 
+static inline void
+list_move_tail(struct list_head* entry, struct list_head* head)
+{
+	list_del(entry);
+	list_add_tail(entry, head);
+}
+
+static inline void
+list_move(struct list_head* entry, struct list_head* head)
+{
+	list_del(entry);
+	list_add(entry, head);
+}
+
+/* Moves all of \a list to the front of \a head; \a list ends up empty. */
+static inline void
+list_splice_init(struct list_head* list, struct list_head* head)
+{
+	if (list_empty(list))
+		return;
+	struct list_head* first = list->next;
+	struct list_head* last = list->prev;
+	struct list_head* at = head->next;
+	first->prev = head;
+	head->next = first;
+	last->next = at;
+	at->prev = last;
+	INIT_LIST_HEAD(list);
+}
+
+#define LIST_HEAD_INIT(name)	{ &(name), &(name) }
+#define LIST_HEAD(name)			struct list_head name = LIST_HEAD_INIT(name)
+
 #define list_entry(pointer, type, member)	container_of(pointer, type, member)
 #define list_first_entry(head, type, member) \
 	list_entry((head)->next, type, member)
+#define list_last_entry(head, type, member) \
+	list_entry((head)->prev, type, member)
+#define list_first_entry_or_null(head, type, member) \
+	(list_empty(head) ? NULL : list_first_entry(head, type, member))
 #define list_next_entry(entry, member) \
 	list_entry((entry)->member.next, __typeof__(*(entry)), member)
+#define list_entry_is_head(entry, head, member) (&(entry)->member == (head))
+#define list_for_each_safe(position, next_, head) \
+	for (position = (head)->next, next_ = position->next; \
+		position != (head); position = next_, next_ = position->next)
 #define list_for_each(position, head) \
 	for (position = (head)->next; position != (head); \
 		position = position->next)
@@ -728,30 +831,30 @@ list_empty(const struct list_head* head)
 /* #pragma mark - locks */
 
 
-/*	Haiku's spinlocks need interrupts off, as Linux's spin_lock_irqsave()
-	has them; the plain variants do the same. */
+/*	spinlock_t is a Haiku mutex. Linux code never sleeps under a spinlock,
+	so a mutex keeps every lock order it has; and unlike a Haiku spinlock
+	it leaves interrupts on, so what Linux allows under one (kfree(),
+	signaling fences, whose callbacks free and wake) works here too. None
+	is taken in interrupt context: the hard interrupt handler is native and
+	takes no lock. */
 typedef struct {
-	spinlock	lock;
-	cpu_status	state;
+	mutex	lock;
 } spinlock_t;
 
+/* (mutex_init) is Haiku's, not the one-argument macro below */
 #define spin_lock_init(spinlock_) \
-	do { B_INITIALIZE_SPINLOCK(&(spinlock_)->lock); } while (0)
+	do { (mutex_init)(&(spinlock_)->lock, "powervr spinlock"); } while (0)
 
 static inline void
 spin_lock(spinlock_t* lock)
 {
-	cpu_status state = disable_interrupts();
-	acquire_spinlock(&lock->lock);
-	lock->state = state;
+	mutex_lock(&lock->lock);
 }
 
 static inline void
 spin_unlock(spinlock_t* lock)
 {
-	cpu_status state = lock->state;
-	release_spinlock(&lock->lock);
-	restore_interrupts(state);
+	mutex_unlock(&lock->lock);
 }
 
 #define spin_lock_irqsave(lock, flags) \
@@ -841,10 +944,30 @@ struct drm_device {
 struct drm_file;
 
 /* What the reused files use of a GEM object; pvr_gem.h embeds it. */
+struct drm_vma_offset_node {
+	u64	offset;
+};
+
+/* A buffer's fences by use; linux_compat_sched.h has the functions. */
+struct dma_resv {
+	struct mutex		lock;
+	struct list_head	fences;
+};
+
 struct drm_gem_object {
-	struct drm_device*	dev;
-	size_t				size;
-	struct kref			refcount;
+	struct drm_device*			dev;
+	size_t						size;
+	struct kref					refcount;
+	struct drm_vma_offset_node	vma_node;
+	struct dma_resv*			resv;
+	struct dma_resv				_resv;
+};
+
+/* The open file a DRM ioctl comes from (the driver's per-open state hangs
+   off driver_priv; glue/pvr_haiku_drm.c owns the rest). */
+struct drm_file {
+	void*	driver_priv;
+	u64		client_id;
 };
 
 void lx_drm_dev_init(struct drm_device* drm, struct device* device);
@@ -908,20 +1031,259 @@ pm_runtime_mark_last_busy(struct device* device)
 	(void)device;
 }
 
-/* Only the structures pvr_device.h embeds; nothing uses them in M2. */
+/*	xarray: an ID-allocating map (no RCU): a growable array of entries under
+	a recursive lock, which xa_lock()/xa_unlock() take as well, so callers
+	that hold it across xa_load() + kref_get() are covered. Not for
+	interrupt context. */
 struct xarray {
-	spinlock_t		xa_lock;
-	void*			head;
+	recursive_lock	lock;
+	void**			entries;
+	u32				capacity;
+	u32				base;		/* lowest ID xa_alloc() hands out */
+	bool			initialized;
+};
+
+struct xa_limit {
+	u32	min;
+	u32	max;
+};
+
+#define XA_FLAGS_ALLOC		0x1u
+#define XA_FLAGS_ALLOC1		0x2u
+#define XA_LIMIT(low, high) \
+	((struct xa_limit){ .min = (low), .max = (high) })
+#define xa_limit_32b		XA_LIMIT(0, U32_MAX)
+
+void xa_init_flags(struct xarray* xa, unsigned int flags);
+void xa_destroy(struct xarray* xa);
+int xa_alloc(struct xarray* xa, u32* _id, void* entry, struct xa_limit limit,
+	gfp_t flags);
+void* xa_load(struct xarray* xa, unsigned long index);
+void* xa_erase(struct xarray* xa, unsigned long index);
+void* xa_store(struct xarray* xa, unsigned long index, void* entry,
+	gfp_t flags);
+bool xa_empty(struct xarray* xa);
+void* lx_xa_find(struct xarray* xa, unsigned long* index);
+void xa_lock(struct xarray* xa);
+void xa_unlock(struct xarray* xa);
+
+#define xa_init(xa)		xa_init_flags(xa, 0)
+#define xa_for_each(xa, index, entry) \
+	for ((index) = 0; ((entry) = lx_xa_find((xa), &(index))) != NULL; \
+		(index)++)
+
+
+
+/* #pragma mark - ioctls and user memory */
+
+
+/* Linux's ioctl request encoding (the kernel's tables use it). */
+#undef _IOC
+#undef _IO
+#undef _IOR
+#undef _IOW
+#undef _IOWR
+#define _IOC_NONE		0u
+#define _IOC_WRITE		1u
+#define _IOC_READ		2u
+#define _IOC(dir, type, nr, size) \
+	((u32)(((dir) << 30) | ((size) << 16) | ((type) << 8) | (nr)))
+#define _IOC_DIR(request)	(((request) >> 30) & 0x3u)
+#define _IOC_NR(request)	((request) & 0xffu)
+#define _IOC_SIZE(request)	(((request) >> 16) & 0x3fffu)
+#define _IO(type, nr)			_IOC(_IOC_NONE, (type), (nr), 0)
+#define _IOR(type, nr, t)		_IOC(_IOC_READ, (type), (nr), sizeof(t))
+#define _IOW(type, nr, t)		_IOC(_IOC_WRITE, (type), (nr), sizeof(t))
+#define _IOWR(type, nr, t)		_IOC(_IOC_READ | _IOC_WRITE, (type), (nr), \
+	sizeof(t))
+
+#define DRM_IOCTL_BASE			'd'
+#define DRM_IOR(nr, type)		_IOR(DRM_IOCTL_BASE, nr, type)
+#define DRM_IOW(nr, type)		_IOW(DRM_IOCTL_BASE, nr, type)
+#define DRM_IOWR(nr, type)		_IOWR(DRM_IOCTL_BASE, nr, type)
+#define DRM_IOCTL_NR(request)	_IOC_NR(request)
+
+#define u64_to_user_ptr(x)		((void __user*)(uintptr_t)(x))
+
+#define access_ok(address, size)	lx_access_ok((address), (size))
+
+/* Pointers from userland may only point there (as with Linux's checks). */
+static inline unsigned long
+copy_from_user(void* to, const void __user* from, unsigned long size)
+{
+	if (!lx_access_ok(from, size))
+		return size;
+	return user_memcpy(to, from, size) == B_OK ? 0 : size;
+}
+
+static inline unsigned long
+copy_to_user(void __user* to, const void* from, unsigned long size)
+{
+	if (!lx_access_ok(to, size))
+		return size;
+	return user_memcpy(to, from, size) == B_OK ? 0 : size;
+}
+
+unsigned long clear_user(void __user* to, unsigned long size);
+int copy_struct_from_user(void* to, size_t size, const void __user* from,
+	size_t userSize);
+void* memdup_user(const void __user* from, size_t size);
+
+/* Root stands in for CAP_SYS_NICE (context priorities above normal). */
+#define CAP_SYS_NICE	23
+#define capable(capability)	(geteuid() == 0)
+uid_t geteuid(void);
+
+#define in_interrupt()		0
+
+/* The calling team (the argument, "current", is never evaluated). */
+#define task_tgid_nr(task)	((int)getpid())
+pid_t getpid(void);
+
+
+/* #pragma mark - the DRM driver description */
+
+
+#define DRIVER_GEM				0x1u
+#define DRIVER_RENDER			0x8u
+#define DRIVER_SYNCOBJ			0x20u
+#define DRIVER_SYNCOBJ_TIMELINE	0x40u
+
+#define DRM_RENDER_ALLOW		0x20u
+
+typedef int drm_ioctl_t(struct drm_device* dev, void* data,
+	struct drm_file* file);
+
+struct drm_ioctl_desc {
+	unsigned int	cmd;
 	unsigned int	flags;
+	drm_ioctl_t*	func;
+	const char*		name;
 };
 
-struct work_struct {
-	void	(*func)(struct work_struct* work);
+#define DRM_IOCTL_DEF_DRV(ioctl, function, flags_) \
+	[DRM_IOCTL_NR(DRM_IOCTL_##ioctl) - DRM_COMMAND_BASE] = { \
+		.cmd = DRM_IOCTL_##ioctl, \
+		.flags = (flags_), \
+		.func = (function), \
+		.name = #ioctl \
+	}
+
+struct drm_minor;
+struct sg_table;
+struct dma_buf_attachment;
+
+struct drm_driver {
+	u32							driver_features;
+	int							(*open)(struct drm_device* dev,
+									struct drm_file* file);
+	void						(*postclose)(struct drm_device* dev,
+									struct drm_file* file);
+	const struct drm_ioctl_desc* ioctls;
+	int							num_ioctls;
+	const struct file_operations* fops;
+	void						(*debugfs_init)(struct drm_minor* minor);
+	const char*					name;
+	const char*					desc;
+	int							major;
+	int							minor;
+	int							patchlevel;
+	struct drm_gem_object*		(*gem_prime_import_sg_table)(
+									struct drm_device* dev,
+									struct dma_buf_attachment* attachment,
+									struct sg_table* table);
+	struct drm_gem_object*		(*gem_create_object)(struct drm_device* dev,
+									size_t size);
 };
 
-struct delayed_work {
-	struct work_struct	work;
+#define DEFINE_DRM_GEM_FOPS(name_) \
+	static const struct file_operations name_ = { .owner = THIS_MODULE }
+
+struct drm_gem_object* drm_gem_shmem_prime_import_sg_table(
+	struct drm_device* dev, struct dma_buf_attachment* attachment,
+	struct sg_table* table);
+
+static inline bool
+drm_is_current_master(struct drm_file* file)
+{
+	(void)file;
+	return false;
+}
+
+static inline int
+drm_dev_register(struct drm_device* dev, unsigned long flags)
+{
+	(void)dev;
+	(void)flags;
+	return -ENODEV;
+}
+
+/* The platform-driver half of pvr_drv.c is not used on Haiku (PvrDevice
+   probes and powers the GPU); these let it compile, and as nothing refers
+   to pvr_driver any more, the compiler drops it and the probe code. */
+struct platform_device {
+	struct device	dev;
 };
+
+struct of_device_id {
+	char		compatible[128];
+	const void*	data;
+};
+
+struct dev_pm_ops {
+	int	(*runtime_suspend)(struct device* dev);
+	int	(*runtime_resume)(struct device* dev);
+	int	(*runtime_idle)(struct device* dev);
+};
+
+#define RUNTIME_PM_OPS(suspend_, resume_, idle_) \
+	.runtime_suspend = (suspend_), .runtime_resume = (resume_), \
+	.runtime_idle = (idle_),
+
+struct device_driver {
+	const char*					name;
+	const struct dev_pm_ops*	pm;
+	const struct of_device_id*	of_match_table;
+};
+
+struct platform_driver {
+	int					(*probe)(struct platform_device* device);
+	void				(*remove)(struct platform_device* device);
+	struct device_driver driver;
+};
+
+#define module_platform_driver(driver_) \
+	static inline const void* lx_unused_##driver_(void) \
+		{ return &(driver_); }
+#define MODULE_DEVICE_TABLE(type_, name_) \
+	static inline const void* lx_unused_table_##name_(void) \
+		{ return &(name_); }
+#define MODULE_AUTHOR(text_)		_Static_assert(1, text_)
+#define MODULE_DESCRIPTION(text_)	_Static_assert(1, text_)
+#define MODULE_LICENSE(text_)		_Static_assert(1, text_)
+#define MODULE_IMPORT_NS(text_)		_Static_assert(1, text_)
+#define MODULE_FIRMWARE(text_)		_Static_assert(1, text_)
+
+#define platform_get_drvdata(device)		((void*)NULL)
+#define platform_set_drvdata(device, data)	do { (void)(data); } while (0)
+#define devm_drm_dev_alloc(parent, driver, type, member) \
+	((type*)ERR_PTR(-ENODEV))
+#define pm_runtime_set_autosuspend_delay(device, delay) do { } while (0)
+#define pm_runtime_use_autosuspend(device)	do { } while (0)
+
+static inline int
+devm_pm_runtime_enable(struct device* device)
+{
+	(void)device;
+	return 0;
+}
+
+static inline int
+pm_runtime_suspend(struct device* device)
+{
+	(void)device;
+	return 0;
+}
 
 
 /* #pragma mark - DMA, pages and areas */
@@ -960,6 +1322,96 @@ dma_mapping_error(struct device* device, dma_addr_t address)
 
 /*	Buffers are struct lx_dma_buffer (lx_dma_buffer_alloc()), single pages
 	struct page (alloc_page(), dma_map_page(), vmap()): see lx_haiku.h. */
+
+/*	Scatterlists are arrays of physical runs here (lx_dma_buffer's), DMA
+	address = physical address. */
+struct scatterlist {
+	dma_addr_t		dma_address;
+	unsigned int	dma_length;
+};
+
+struct sg_table {
+	struct scatterlist*	sgl;
+	unsigned int		nents;
+	unsigned int		orig_nents;
+};
+
+#define sg_dma_address(sg)	((sg)->dma_address)
+#define sg_dma_len(sg)		((sg)->dma_length)
+#define for_each_sgtable_dma_sg(table, sg, i) \
+	for ((i) = 0, (sg) = (table)->sgl; (i) < (int)(table)->nents; \
+		(i)++, (sg)++)
+
+/* Page iteration over a table (pvr_free_list.c). */
+struct sg_dma_page_iter {
+	const struct sg_table*	table;
+	unsigned int			entry;
+	unsigned long			offset;		/* within the entry */
+	bool					started;
+};
+
+static inline bool
+lx_sg_dma_page_next(struct sg_dma_page_iter* iterator)
+{
+	if (iterator->started)
+		iterator->offset += PAGE_SIZE;
+	iterator->started = true;
+	while (iterator->entry < iterator->table->nents
+		&& iterator->offset
+			>= iterator->table->sgl[iterator->entry].dma_length) {
+		iterator->offset -= iterator->table->sgl[iterator->entry].dma_length;
+		iterator->entry++;
+	}
+	return iterator->entry < iterator->table->nents;
+}
+
+#define for_each_sgtable_dma_page(table, iterator, start_) \
+	for (*(iterator) = (struct sg_dma_page_iter){ (table), 0, \
+			(unsigned long)(start_) << PAGE_SHIFT, false }; \
+		lx_sg_dma_page_next(iterator); )
+#define sg_page_iter_dma_address(iterator) \
+	((iterator)->table->sgl[(iterator)->entry].dma_address \
+		+ (iterator)->offset)
+
+enum dev_dma_attr {
+	DEV_DMA_NOT_SUPPORTED,
+	DEV_DMA_NON_COHERENT,
+	DEV_DMA_COHERENT
+};
+
+static inline enum dev_dma_attr
+device_get_dma_attr(struct device* device)
+{
+	(void)device;
+	return DEV_DMA_NON_COHERENT;
+}
+
+/*	The GPU sees only Normal-NC memory, so syncing is ordering: what the CPU
+	wrote is visible to the device once a DSB has completed. */
+static inline void
+dma_sync_single_for_device(struct device* device, dma_addr_t address,
+	size_t size, enum dma_data_direction direction)
+{
+	(void)device;
+	(void)address;
+	(void)size;
+	(void)direction;
+	wmb();
+}
+
+static inline void
+dma_sync_sg_for_device(struct device* device, struct scatterlist* sg,
+	int count, enum dma_data_direction direction)
+{
+	(void)device;
+	(void)sg;
+	(void)count;
+	(void)direction;
+	wmb();
+}
+
+#define kmemleak_alloc(pointer, size, count, flags)	do { } while (0)
+#define kmemleak_free(pointer)						do { } while (0)
 
 #define PAGE_KERNEL					((pgprot_t){ 0 })
 #define pgprot_writecombine(prot) \
@@ -1053,11 +1505,25 @@ drm_mm_node_allocated(const struct drm_mm_node* node)
 /* #pragma mark - dma_fence */
 
 
-/*	Only what pvr_ccb.c's KCCB slot reservation needs to compile and keep
-	its reference counting; nobody waits on these fences before M3, which
-	replaces this with the driver's own fences. */
+/*	Fences: signaled once, with an optional error, and callbacks. One
+	global lock covers every fence's state (the lock passed to
+	dma_fence_init() is not used), and every signal wakes lx_fence_queue,
+	where everything that waits on fences (dma_fence_wait_timeout(), the
+	sync object waits) re-checks. Unlike Linux, callbacks run after the
+	lock is released, so they may signal other fences; but a
+	dma_fence_remove_callback() that returns false does not mean the
+	callback has finished. */
 
 struct dma_fence;
+struct dma_fence_cb;
+
+typedef void (*dma_fence_func_t)(struct dma_fence* fence,
+	struct dma_fence_cb* cb);
+
+struct dma_fence_cb {
+	struct list_head	node;
+	dma_fence_func_t	func;
+};
 
 struct dma_fence_ops {
 	const char*	(*get_driver_name)(struct dma_fence* fence);
@@ -1072,9 +1538,16 @@ struct dma_fence {
 	u64							seqno;
 	struct kref					refcount;
 	unsigned long				flags;
+	int							error;
+	bigtime_t					timestamp;	/* when signaled */
+	struct list_head			cb_list;
 };
 
 #define DMA_FENCE_FLAG_SIGNALED_BIT	0
+
+extern wait_queue_head_t lx_fence_queue;
+
+void lx_dma_fence_init_globals(void);
 
 u64 dma_fence_context_alloc(unsigned int count);
 void dma_fence_init(struct dma_fence* fence, const struct dma_fence_ops* ops,
@@ -1082,6 +1555,27 @@ void dma_fence_init(struct dma_fence* fence, const struct dma_fence_ops* ops,
 void dma_fence_put(struct dma_fence* fence);
 int dma_fence_signal(struct dma_fence* fence);
 void dma_fence_free(struct dma_fence* fence);
+bool dma_fence_is_signaled(struct dma_fence* fence);
+int dma_fence_add_callback(struct dma_fence* fence, struct dma_fence_cb* cb,
+	dma_fence_func_t func);
+bool dma_fence_remove_callback(struct dma_fence* fence,
+	struct dma_fence_cb* cb);
+long dma_fence_wait_timeout(struct dma_fence* fence, bool interruptible,
+	long timeout);
+
+/*	A new reference to an always signaled fence (Linux's
+	dma_fence_get_stub()). */
+struct dma_fence* dma_fence_get_stub(void);
+
+/*	A new fence that signals once all \a count fences have (with the first
+	error among them); takes over the caller's references to them. NULL
+	if there is no memory. */
+struct dma_fence* lx_dma_fence_all(struct dma_fence** fences, u32 count);
+
+/*	Waits until \a fence signals, \a deadline (system_time()) passes or,
+	when \a interruptible, a signal arrives: 0, -ETIME or -EINTR. */
+int lx_dma_fence_wait(struct dma_fence* fence, bool interruptible,
+	bigtime_t deadline);
 
 static inline struct dma_fence*
 dma_fence_get(struct dma_fence* fence)
@@ -1089,6 +1583,21 @@ dma_fence_get(struct dma_fence* fence)
 	if (fence != NULL)
 		kref_get(&fence->refcount);
 	return fence;
+}
+
+static inline void
+dma_fence_set_error(struct dma_fence* fence, int error)
+{
+	fence->error = error;
+}
+
+/* 1 when signaled without error, the error, or 0 while pending. */
+static inline int
+dma_fence_get_status(struct dma_fence* fence)
+{
+	if (!dma_fence_is_signaled(fence))
+		return 0;
+	return fence->error != 0 ? fence->error : 1;
 }
 
 
@@ -1190,6 +1699,9 @@ int param_get_hexint(char* buffer, const struct kernel_param* parameter);
 #define MODULE_PARM_DESC(name_, text_)		_Static_assert(1, text_)
 
 int kstrtouint(const char* text, unsigned int base, unsigned int* _value);
+
+
+#include "linux_compat_sched.h"
 
 
 #endif	/* POWERVR_LINUX_COMPAT_H */

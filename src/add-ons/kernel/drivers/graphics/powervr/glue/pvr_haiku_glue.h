@@ -20,6 +20,7 @@ extern "C" {
 
 
 struct pvr_device;
+struct pvr_haiku_file;
 
 
 typedef struct pvr_haiku_platform {
@@ -79,6 +80,13 @@ void				pvr_haiku_firmware_state_get(struct pvr_device* device,
 // interrupts: the hard handler acknowledges, the thread does the work
 bool				pvr_haiku_interrupt(struct pvr_device* device);
 void				pvr_haiku_interrupt_work(struct pvr_device* device);
+
+// the opens of the device and their DRM ioctls (pvr_haiku_drm.c)
+status_t			pvr_haiku_file_open(struct pvr_device* device,
+						struct pvr_haiku_file** _file);
+void				pvr_haiku_file_close(struct pvr_haiku_file* file);
+status_t			pvr_haiku_file_ioctl(struct pvr_haiku_file* file,
+						uint32 nr, void* buffer, size_t length);
 
 
 #ifdef __cplusplus

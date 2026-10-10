@@ -7,10 +7,41 @@ UsePrivateHeaders [ FDirName graphics powervr ] ;
 SimpleTest cubie_reg : reg.cpp ;
 SimpleTest pvrinfo : pvrinfo.cpp ;
 
+# the powervr driver's DRM interface without Mesa: its pvr_drm.h, with the
+# few Linux headers it needs from pvr_uapi/
+ObjectSysHdrs [ FGristFiles pvrtest$(SUFOBJ) ] :
+	[ FDirName $(SUBDIR) pvr_uapi ]
+	[ FDirName $(HAIKU_TOP) src add-ons kernel drivers graphics powervr
+		upstream ] ;
+SimpleTest pvrtest : pvrtest.cpp ;
+
 # the Pi lab's file fetch: a file from a TCP port of the lab host
 # (tools/rpi4/push.py serves it)
 SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) tools rpi4 ] ;
 SimpleTest cubie_fetch : fetch.cpp : network ;
+
+# the sunxi_cedar media add-on's decoder on its own, for the video engine's
+# tests: per-picture hashes against FFmpeg's (evidence/video/proto/vectors)
+UsePrivateHeaders drivers shared ;
+SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) src add-ons media plugins
+	sunxi_cedar ] ;
+SubDirHdrs [ FDirName $(HAIKU_TOP) src add-ons media plugins sunxi_cedar ] ;
+SimpleTest cedar_decode :
+	cedar_decode.cpp
+	bits.c
+	h264_parse.c
+	hevc_parse.c
+	CedarDecoder.cpp
+	CedarEngine.cpp
+	VeDevice.cpp
+	: be shared [ TargetLibstdc++ ] [ TargetLibsupc++ ]
+;
+
+# a file's first video track through the Media Kit, as MediaPlayer decodes it
+SimpleTest media_probe : media_probe.cpp : be media [ TargetLibsupc++ ] ;
+
+# how busy the processors and some teams are, for the decoders' cost
+SimpleTest cpu_usage : cpu_usage.cpp ;
 
 # the AIC8800 Wi-Fi/Bluetooth module's firmware loader from userland, with
 # the driver's loader core

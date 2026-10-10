@@ -385,14 +385,20 @@ DisplayPipe::_SetPixelClock(uint32 kHz)
 		// what Linux uses: VCO 2376 MHz, / 8 = 297 MHz, / 2
 		n = 99; d4 = 8; m = 2; p = 1;
 	} else {
-		for (uint32 tryP = 1; tryP <= 32 && n == 0; tryP++) {
-			for (uint32 tryM = 1; tryM <= 32 && n == 0; tryM++) {
-				for (uint32 tryD4 = 1; tryD4 <= 8 && n == 0; tryD4++) {
-					uint64 product = (uint64)kHz * tryD4 * tryM * tryP;
-					if (product % 24000 != 0)
+		// the closest clock, within 0.5 % (the DisplayPort stream's M/N
+		// values are measured, so the display sees the clock as it is)
+		uint64 bestError = (uint64)kHz * 5 / 1000 + 1;
+		for (uint32 tryP = 1; tryP <= 32; tryP++) {
+			for (uint32 tryM = 1; tryM <= 32; tryM++) {
+				for (uint32 tryD4 = 1; tryD4 <= 8; tryD4++) {
+					uint64 divider = (uint64)tryD4 * tryM * tryP;
+					uint64 tryN = ((uint64)kHz * divider + 12000) / 24000;
+					if (tryN < 53 || tryN > 105)
 						continue;
-					uint64 tryN = product / 24000;
-					if (tryN >= 53 && tryN <= 105) {
+					uint64 actual = tryN * 24000 / divider;
+					uint64 error = actual > kHz ? actual - kHz : kHz - actual;
+					if (error < bestError) {
+						bestError = error;
 						n = tryN; d4 = tryD4; m = tryM; p = tryP;
 					}
 				}
@@ -1422,6 +1428,40 @@ DisplayPipe::DumpState(const char* when)
 		_Read(kPlaneScaler + 0x88), _Read(kPlaneScaler + 0x8c),
 		_Read(kBlender0), _Read(kBlender0 + 0x080), _Read(kBlender0 + 0x008),
 		_Read(kDeTop + 0x104), _Read(kTconTv1 + 0x0fc));
+}
+
+
+bool
+DisplayPipe::LinkOk()
+{
+	if (!fEnabled)
+		return false;
+	uint8 status[3];
+	if (_DpcdRead(0x202, status, 3) != B_OK)
+		return false;
+	for (uint32 lane = 0; lane < fLanes; lane++) {
+		uint8 bits = (status[lane / 2] >> ((lane & 1) * 4)) & 0x7;
+		if (bits != 0x7)
+			return false;
+	}
+	return (status[2] & 0x1) != 0;
+}
+
+
+uint32
+DisplayPipe::MaxPixelClock() const
+{
+	uint32 lanes = fDpcd[2] & 0x1f;
+	if (lanes >= 4)
+		lanes = 4;
+	else if (lanes >= 2)
+		lanes = 2;
+	else
+		lanes = 1;
+	uint32 rate = fDpcd[1] >= 0x0a ? 270000 : 162000;
+	// a lane carries rate x 10 kbit/s, 8 of every 10 bits are payload, 24
+	// bits a pixel
+	return lanes * rate / 3;
 }
 
 

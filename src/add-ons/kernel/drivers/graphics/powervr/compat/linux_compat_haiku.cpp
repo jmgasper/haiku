@@ -21,6 +21,7 @@
 #include <new>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 #include <FindDirectory.h>
@@ -28,6 +29,8 @@
 
 #include <arch/arm64/cache_poc.h>
 #include <condition_variable.h>
+#include <kernel.h>
+#include <team.h>
 #include <util/iovec_support.h>
 #include <vm/vm.h>
 
@@ -42,6 +45,53 @@ static_assert(sizeof(ConditionVariable)
 	"wait_queue_head_t has no room for a ConditionVariable");
 static_assert(alignof(ConditionVariable) <= alignof(unsigned long long),
 	"wait_queue_head_t storage is not aligned enough");
+
+
+//	#pragma mark - errors and areas
+
+
+status_t
+lx_status(int error)
+{
+	switch (-error) {
+		case 0:				return B_OK;
+		case LX_EPERM:		return EPERM;
+		case LX_ENOENT:		return ENOENT;
+		case LX_EINTR:		return EINTR;
+		case LX_EIO:		return EIO;
+		case LX_E2BIG:		return E2BIG;
+		case LX_EAGAIN:		return EAGAIN;
+		case LX_ENOMEM:		return ENOMEM;
+		case LX_EACCES:		return EACCES;
+		case LX_EFAULT:		return EFAULT;
+		case LX_EBUSY:		return EBUSY;
+		case LX_EEXIST:		return EEXIST;
+		case LX_ENODEV:		return ENODEV;
+		case LX_EINVAL:		return EINVAL;
+		case LX_ENOSPC:		return ENOSPC;
+		case LX_ERANGE:		return ERANGE;
+		case LX_EDEADLK:	return EDEADLK;
+		case LX_ENOSYS:		return ENOSYS;
+		case LX_ETIME:		return ETIME;
+		case LX_EOVERFLOW:	return EOVERFLOW;
+		case LX_EOPNOTSUPP:
+		case LX_ENOTSUPP:	return EOPNOTSUPP;
+		case LX_ETIMEDOUT:	return ETIMEDOUT;
+		case LX_ECANCELED:	return ECANCELED;
+		default:			return error < 0 ? B_ERROR : B_OK;
+	}
+}
+
+
+area_id
+lx_area_clone_to_user(area_id source, void** _address, bool exact)
+{
+	if (exact && !IS_USER_ADDRESS(*_address))
+		return B_BAD_ADDRESS;
+	return vm_clone_area(team_get_current_team_id(), "powervr buffer",
+		_address, exact ? B_EXACT_ADDRESS : B_RANDOMIZED_ANY_ADDRESS,
+		B_READ_AREA | B_WRITE_AREA, REGION_NO_PRIVATE_MAP, source, true);
+}
 
 
 //	#pragma mark - wait queues
@@ -91,6 +141,27 @@ lx_wait_queue_sleep(wait_queue_head_t* queue, int32 generation,
 	if (atomic_get(&queue->generation) != generation)
 		return;
 	entry.Wait(B_ABSOLUTE_TIMEOUT, deadline);
+}
+
+
+status_t
+lx_wait_queue_sleep_interruptible(wait_queue_head_t* queue, int32 generation,
+	bigtime_t deadline)
+{
+	ConditionVariableEntry entry;
+	queue_variable(queue)->Add(&entry);
+	if (atomic_get(&queue->generation) != generation)
+		return B_OK;
+	status_t status = entry.Wait(B_ABSOLUTE_TIMEOUT | B_CAN_INTERRUPT,
+		deadline);
+	return status == B_INTERRUPTED ? B_INTERRUPTED : B_OK;
+}
+
+
+bool
+lx_access_ok(const void* address, unsigned long size)
+{
+	return size == 0 || is_user_address_range(address, size);
 }
 
 

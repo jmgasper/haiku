@@ -115,9 +115,14 @@ rule UserBuildConfigRulePreImage
 		SEARCH on $(glViewLib) = /mnt/HaikuWork/rpi4/glvnd/stage ;
 		AddFilesToHaikuImage system non-packaged lib : $(glViewLib) ;
 
-		# OpenGL in software until the PowerVR driver runs: the Pi's Mesa
-		# (tools/rpi4/mesa) finds no V3D here and falls back to softpipe.
+		# OpenGL: Mesa 26.2.4 (tools/cubie-a7s/mesa) once built, zink on the
+		# PowerVR Vulkan driver and softpipe without it; otherwise the Pi's
+		# Mesa (tools/rpi4/mesa), which finds no V3D here and falls back to
+		# softpipe.
 		local mesaStage = /mnt/HaikuWork/rpi4/mesa/stage ;
+		if [ Glob /mnt/HaikuWork/cubie/mesa/out : libEGL_mesa.so.0 ] {
+			mesaStage = /mnt/HaikuWork/cubie/mesa/out ;
+		}
 		local mesaLib = <cubie-mesa>libEGL_mesa.so.0 ;
 		SEARCH on $(mesaLib) = $(mesaStage) ;
 		AddFilesToHaikuImage system non-packaged lib : $(mesaLib) ;
@@ -159,9 +164,20 @@ rule UserBuildConfigRulePreImage
 		imagePackages = <cubie-app-pkg>$(imagePackages:BS) ;
 		SEARCH on $(imagePackages) = $(imagePackageDir) ;
 		AddFilesToHaikuImage system packages : $(imagePackages) ;
-		local airTime = <airtime-pkg>airtime-1.0.0-14-arm64.hpkg ;
+		local airTime = <airtime-pkg>airtime-1.0.0-15-arm64.hpkg ;
 		SEARCH on $(airTime) = /mnt/HaikuWork/apps/airTime/artifacts ;
 		AddFilesToHaikuImage system packages : $(airTime) ;
+
+		# The video engine's add-on before FFmpeg's in the Media Kit's
+		# lookup, so that MediaPlayer and every BMediaFile user decode H.264
+		# and HEVC on the engine. The Media Kit searches the add-on
+		# directories in order (system/non-packaged before system) and in one
+		# directory takes the first add-on registered for a format, which is
+		# FFmpeg's (rock5_ffmpeg's entries come first). The add-on registers
+		# its formats only where the engine is, and hands a stream the engine
+		# does not decode to FFmpeg's decoder itself.
+		AddSymlinkToHaikuImage system non-packaged add-ons media plugins
+			: /boot/system/add-ons/media/plugins/sunxi_cedar : sunxi_cedar ;
 
 		# TLS for curl and Summit
 		local airosLibDir = /mnt/HaikuWork/airos/lib-arm64 ;
@@ -198,10 +214,31 @@ rule UserBuildConfigRulePreImage
 		# lab tools, and the driver settings that let cubie_reg at the
 		# display registers
 		AddFilesToHaikuImage system non-packaged bin : cubie_reg cubie_fetch
-			pvrinfo aicload ;
+			pvrinfo pvrtest cedar_decode media_probe cpu_usage aicload ;
 		if $(CUBIE_AIROS_IMAGE) {
 			# a Bluetooth diagnostic the regular image leaves out
 			AddFilesToHaikuImage system non-packaged bin : bt_dev_info ;
+		}
+
+		# The video engine's test streams and FFmpeg's hashes of them
+		# (evidence/video/proto/mkvectors.sh; not in git), for cedar_decode.
+		local cedarVectorDir = /mnt/HaikuWork/cubie/evidence/video/proto/vectors ;
+		local cedarVectors = [ Glob $(cedarVectorDir) : *.264 *.265
+			*.framemd5 ] ;
+		if $(cedarVectors) {
+			cedarVectors = <cedar-vector>$(cedarVectors:BS) ;
+			SEARCH on $(cedarVectors) = $(cedarVectorDir) ;
+			AddFilesToHaikuImage system non-packaged data cedar-vectors
+				: $(cedarVectors) ;
+		}
+
+		# Films for the players' tests (not in git), when the build
+		# directory's UserBuildConfig names a directory of them.
+		if $(CUBIE_LAB_MEDIA) {
+			local labMedia = [ Glob $(CUBIE_LAB_MEDIA) : *.mp4 *.mkv *.webm ] ;
+			labMedia = <cubie-lab-media>$(labMedia:BS) ;
+			SEARCH on $(labMedia) = $(CUBIE_LAB_MEDIA) ;
+			AddFilesToHaikuImage home media : $(labMedia) ;
 		}
 		local labSettings = <cubie-lab>sunxi_display <cubie-lab>aic8800wifi ;
 		SEARCH on $(labSettings) = [ FDirName $(HAIKU_TOP) tools cubie-a7s lab ] ;
@@ -215,6 +252,29 @@ rule UserBuildConfigRulePreImage
 		SEARCH on $(gpuSettings) = [ FDirName $(HAIKU_TOP) tools cubie-a7s lab ] ;
 		AddFilesToHaikuImage home config settings kernel drivers
 			: $(gpuSettings) ;
+
+		# Mesa's PowerVR Vulkan driver and its tests, once
+		# tools/cubie-a7s/mesa/build.sh has built them (lab only: Mesa does
+		# not list this core as conformant).
+		local mesaOut = /mnt/HaikuWork/cubie/mesa/out ;
+		if [ Glob $(mesaOut) : libvulkan_powervr_mesa.so ] {
+			local vulkanDriver = <cubie-mesa>libvulkan_powervr_mesa.so ;
+			SEARCH on $(vulkanDriver) = $(mesaOut) ;
+			AddFilesToHaikuImage system non-packaged lib : $(vulkanDriver) ;
+			# zink's libvulkan.so.1: the driver, without a loader
+			local vulkanShim = <cubie-mesa>libvulkan.so.1 ;
+			SEARCH on $(vulkanShim) = $(mesaOut) ;
+			AddFilesToHaikuImage system non-packaged lib : $(vulkanShim) ;
+			local test ;
+			for test in pvr_vkprobe pvr_vkfill pvr_vkfence pvr_vktriangle
+					pvr_glprobe {
+				if [ Glob $(mesaOut) : $(test) ] {
+					local testFile = <cubie-mesa>$(test) ;
+					SEARCH on $(testFile) = $(mesaOut) ;
+					AddFilesToHaikuImage system non-packaged bin : $(testFile) ;
+				}
+			}
+		}
 
 		# A telnet login for the lab, with an account whose password hash
 		# lives outside the tree (state/lab-overlay, made once per lab).

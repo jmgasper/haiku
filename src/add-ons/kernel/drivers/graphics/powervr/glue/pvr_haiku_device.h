@@ -52,12 +52,33 @@ to_haiku_device(struct pvr_device* pvr_dev)
 }
 
 
+/*	One open of the device: the DRM file (its driver_priv is upstream's
+	struct pvr_file), the buffer handles and the sync objects. */
+struct pvr_haiku_file {
+	struct drm_file			drm_file;
+	struct pvr_device*		pvr_dev;
+	team_id					team;
+	struct xarray			bo_handles;
+	struct xarray			syncobjs;
+};
+
+static inline struct pvr_haiku_file*
+to_haiku_file(struct pvr_file* pvr_file)
+{
+	return container_of(from_pvr_file(pvr_file), struct pvr_haiku_file,
+		drm_file);
+}
+
+
 /* pvr_haiku_device.c */
 int		pvr_haiku_kccb_execute(struct pvr_device* pvr_dev,
 			struct rogue_fwif_kccb_cmd* command, const char* what,
 			bool answers, u32* _return);
 void	pvr_haiku_fw_boot_failed(struct pvr_device* pvr_dev);
 void	pvr_haiku_force_reset(struct pvr_device* pvr_dev, const char* why);
+
+/* pvr_haiku_drv.c: pvr_drv.c's driver description (ioctls, open) */
+const struct drm_driver*	pvr_haiku_drm_driver(void);
 
 /* pvr_haiku_power.c */
 int		pvr_haiku_power_off(struct pvr_device* pvr_dev);
