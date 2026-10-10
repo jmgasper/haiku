@@ -197,6 +197,38 @@ static void Reject(int fd, amdgpu_gfx_submit r, status_t status)
 	Require(ioctl(fd, AMDGPU_GFX_SUBMIT, &r, sizeof(r)) == -1 && errno == status,
 		"invalid user submission rejected before hardware");
 }
+static std::vector<uint32> DiagnosticSnapshot(Client& c)
+{
+	std::vector<uint32> ib;
+	for (uint32 i = 0; i < 4096; i += 8) {
+		uint64 destination = kData + 32768 + i;
+		ib.push_back(Packet(0x40, 4));
+		ib.push_back(1 | 5 << 8 | 1 << 16 | 1 << 20); // confirmed 64-bit memory copy
+		ib.push_back(0x1000 + i); ib.push_back(0);
+		ib.push_back(destination); ib.push_back(destination >> 32);
+	}
+	Require((ib.size() & 255) == 0, "snapshot IB alignment");
+	Upload(c, c.ib, ib);
+	auto r = SubmitRequest(); r.dwords = ib.size();
+	Require(ioctl(c.fd, AMDGPU_GFX_SUBMIT, &r, sizeof(r)) == 0 && r.status == B_OK
+		&& r.completion != 0 && r.vm_fault_status[0] == 0 && r.vm_fault_status[1] == 0
+		&& r.rptr == r.wptr, "read own diagnostic command page");
+	if (c.data.address == 0) Copy(c.fd, c.data.handle, c.staging.handle);
+	volatile uint32* words = (volatile uint32*)(addr_t)(c.data.address ? c.data.address : c.staging.address);
+	std::vector<uint32> snapshot(1024);
+	for (uint32 i = 0; i < 1024; i++) snapshot[i] = c.expected[32768 / 4 + i] = words[32768 / 4 + i];
+	Check(c); // The rest of the data and every guard must remain intact.
+	return snapshot;
+}
+static void DiagnosticWrite(Client& c, uint32 seed)
+{
+	auto r = Request<amdgpu_vm_test>(); r.address = kData + 4092; r.value = seed;
+	Require(ioctl(c.fd, AMDGPU_VM_TEST, &r, sizeof(r)) == 0 && r.status == B_OK
+		&& r.completion != 0 && r.vm_fault_status[0] == 0 && r.vm_fault_status[1] == 0
+		&& r.rptr == r.wptr, "execute private diagnostic command page");
+	for (uint32 i = 0; i < 1024; i++) c.expected[4092 / 4 + i] = seed ^ (i * 0x10204081u);
+	Check(c);
+}
 int main(int argc, char** argv)
 {
 	setvbuf(stdout, NULL, _IOLBF, 0);
@@ -206,7 +238,9 @@ int main(int argc, char** argv)
 		puts("PASS: no-device user submission handling"); return 0;
 	}
 	bool draw = argc == 2 && strcmp(argv[1], "--draw") == 0;
-	Require((argc == 1 || draw) && geteuid() == 0 && monitor >= 0, "usage: amdgpu_submit [--draw] (root)");
+	bool privateCommands = argc == 2 && strcmp(argv[1], "--private-commands") == 0;
+	Require((argc == 1 || draw || privateCommands) && geteuid() == 0 && monitor >= 0,
+		"usage: amdgpu_submit [--draw|--private-commands] (root)");
 	uint64 vram = Allocated(monitor, false), ram = Allocated(monitor, true);
 	Client clients[4];
 	for (uint32 i = 0; i < 4; i++) {
@@ -251,7 +285,23 @@ int main(int argc, char** argv)
 	int childStatus; Require(waitpid(child, &childStatus, 0) == child && childStatus == 0, "ownership/privilege rejection");
 	puts("PASS: ABI, range, execute permission, team ownership and root restriction");
 	uint64 last = 0;
-	for (uint32 round = 0; round < (draw ? 4u : 8u); round++) {
+	if (privateCommands) {
+		std::vector<uint32> zero(1024);
+		for (Client& c : clients)
+			Require(DiagnosticSnapshot(c) == zero, "fresh private commands are zero");
+		DiagnosticWrite(clients[0], 0xabcdef98);
+		auto first = DiagnosticSnapshot(clients[0]);
+		Require(first != zero, "first client's command page contains its job");
+		DiagnosticWrite(clients[1], 0x98765432);
+		auto second = DiagnosticSnapshot(clients[1]);
+		Require(second != zero && second != first, "clients own distinct diagnostic commands");
+		Require(DiagnosticSnapshot(clients[0]) == first, "other client's diagnostic leaves first page unchanged");
+		Require(DiagnosticSnapshot(clients[2]) == zero && DiagnosticSnapshot(clients[3]) == zero,
+			"unused private command pages stay zero");
+		for (Client& c : clients) Check(c);
+		puts("PASS: all 4096 diagnostic command bytes are private per client, initially zero and unchanged by other clients");
+	}
+	for (uint32 round = 0; !privateCommands && round < (draw ? 4u : 8u); round++) {
 		for (uint32 i = 0; i < 4; i++) {
 			Client& c = clients[i];
 			uint32 seed = 0x5100aabb ^ round * 0x123 ^ i * 0x102030;
@@ -271,8 +321,10 @@ int main(int argc, char** argv)
 			for (Client& other : clients) Check(other);
 		}
 	}
-	puts(draw ? "PASS: 16 user raster submissions, four VMs, VRAM/RAM/device-only shaders and targets, exact triangle pixels and complete guards"
-		: "PASS: 32 user PM4/shader submissions, shader replacement, 64-KiB IB tails, high VAs, cross-4-GiB stores, four VMs and complete data/guards");
+	if (!privateCommands) {
+		puts(draw ? "PASS: 16 user raster submissions, four VMs, VRAM/RAM/device-only shaders and targets, exact triangle pixels and complete guards"
+			: "PASS: 32 user PM4/shader submissions, shader replacement, 64-KiB IB tails, high VAs, cross-4-GiB stores, four VMs and complete data/guards");
+	}
 	for (Client& c : clients) {
 		close(c.fd);
 		for (const amdgpu_buffer* b : {&c.ib, &c.shader, &c.data, &c.staging}) {

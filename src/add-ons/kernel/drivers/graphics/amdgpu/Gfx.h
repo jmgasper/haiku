@@ -24,7 +24,7 @@ struct GfxEngine {
 		const amdgpu::FirmwareView firmware[4], SdmaEngine& sdma, Gart& gart,
 		amdgpu_gfx_test& result, const amdgpu::MecFirmwareView* mec);
 	status_t ExecuteVM(uint64 directory, uint64 destination, uint32 value,
-		Gart& gart, amdgpu_vm_test& result);
+		volatile uint32* commands, Gart& gart, amdgpu_vm_test& result);
 	status_t ExecuteIB(uint64 directory, uint64 address, uint32 dwords,
 		Gart& gart, amdgpu_vm_test& result);
 	void Snapshot(amdgpu_gfx_test& result);
