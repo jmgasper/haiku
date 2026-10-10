@@ -11,3 +11,9 @@ SimpleTest amduvd_plugin_test : amduvd_plugin_test.cpp
 SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) src add-ons media plugins nvdec ] ;
 SimpleTest h264_stream_state_test : h264_stream_state_test.cpp H264Stream.cpp h264_parse.c
 	: [ TargetLibstdc++ ] ;
+
+local driver = [ FDirName $(HAIKU_TOP) src add-ons kernel drivers graphics amdgpu ] ;
+SubDirHdrs $(driver) ;
+SEARCH_SOURCE += $(driver) ;
+SimpleTest hevc_stream_test : hevc_stream_test.cpp HevcStream.cpp hevc_parse.c h264_parse.c UvdHevc.cpp
+	: [ TargetLibstdc++ ] ;
