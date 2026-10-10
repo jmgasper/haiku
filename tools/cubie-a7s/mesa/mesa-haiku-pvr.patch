@@ -37,7 +37,7 @@ it).
                                     it as a platform device with a render node
                                     only; driver build hash from the version and
                                     the loaded library file's size and mtime
-                                    (dladdr + stat; compile time if that
+                                    (dladdr + stat; the version alone if that
                                     fails): no build-id note at run time
   pvr_physical_device.c             VK_EXT_physical_device_drm: render 0:0, no
                                     primary node (stat() of a NULL path is
@@ -47,6 +47,10 @@ it).
                                     asserted disk_cache != NULL and so aborted
                                     every vkDestroyInstance in a build with
                                     assertions (debugoptimized)
+  pvr_arch_job_transfer.c           pvr_queue_transfer()'s submission
+                                    (some 380 KiB: the prepare array) on the
+                                    heap, not the submitting thread's stack
+                                    (256 KiB by default on Haiku)
   winsys/powervr/pvr_drm_bo.c       CPU maps through PVR_HAIKU_NR_MAP_BO (a
                                     clone of the buffer's area; placed maps
                                     free the reservation and pass the address),
@@ -662,6 +666,89 @@ diff -ruN a/include/xf86drm.h b/include/xf86drm.h
 +#endif /* HAIKU_PVR_XF86DRM_H */
 +
 +#endif /* __HAIKU__ */
+diff -ruN a/src/imagination/vulkan/pvr_arch_job_transfer.c b/src/imagination/vulkan/pvr_arch_job_transfer.c
+--- a/src/imagination/vulkan/pvr_arch_job_transfer.c
++++ b/src/imagination/vulkan/pvr_arch_job_transfer.c
+@@ -5952,10 +5952,21 @@
+ {
+    struct pvr_transfer_prep_data *prep_data = NULL;
+    struct pvr_transfer_prep_data *prev_prep_data;
+-   struct pvr_transfer_submit submit = { 0U };
++   struct pvr_transfer_submit *submit;
+    bool finished = false;
+    uint32_t pass = 0U;
+-   VkResult result;
++   VkResult result = VK_SUCCESS;
++
++   /* (air/OS) On the heap: the prepare array makes it some 380 KiB, more
++    * than a whole thread stack on Haiku (256 KiB by default), and this runs
++    * on whichever thread submits.
++    */
++   submit = vk_zalloc(&ctx->device->vk.alloc,
++                      sizeof(*submit),
++                      8,
++                      VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
++   if (!submit)
++      return vk_error(ctx->device, VK_ERROR_OUT_OF_HOST_MEMORY);
+ 
+    /* Transfer queue might decide to do a blit in multiple passes. When the
+     * prepare doesn't set the finished flag this code will keep calling the
+@@ -5979,14 +5990,16 @@
+ 
+    while (!finished) {
+       prev_prep_data = prep_data;
+-      prep_data = &submit.prep_array[submit.prep_count++];
++      prep_data = &submit->prep_array[submit->prep_count++];
+ 
+       /* Clear down the memory before we write to this prep. */
+       memset(prep_data, 0U, sizeof(*prep_data));
+ 
+       if (pass == 0U) {
+-         if (!pvr_3d_validate_addr(transfer_cmd))
+-            return vk_error(ctx->device, VK_ERROR_FEATURE_NOT_PRESENT);
++         if (!pvr_3d_validate_addr(transfer_cmd)) {
++            result = vk_error(ctx->device, VK_ERROR_FEATURE_NOT_PRESENT);
++            goto out;
++         }
+       } else {
+          /* Transfer queue workarounds could use more than one pass with 3D
+           * path.
+@@ -6002,26 +6015,28 @@
+             pvr_3d_copy_blit(ctx, transfer_cmd, prep_data, pass, &finished);
+       }
+       if (result != VK_SUCCESS)
+-         return result;
++         goto out;
+ 
+       /* Submit if we have finished the blit or if we are out of prepares. */
+-      if (finished || submit.prep_count == ARRAY_SIZE(submit.prep_array)) {
++      if (finished || submit->prep_count == ARRAY_SIZE(submit->prep_array)) {
+          result = pvr_submit_transfer(ctx,
+-                                      &submit,
++                                      submit,
+                                       wait,
+                                       finished ? signal_sync : NULL);
+          if (result != VK_SUCCESS)
+-            return result;
++            goto out;
+ 
+          /* Check if we need to reset prep_count. */
+-         if (submit.prep_count == ARRAY_SIZE(submit.prep_array))
+-            submit.prep_count = 0U;
++         if (submit->prep_count == ARRAY_SIZE(submit->prep_array))
++            submit->prep_count = 0U;
+       }
+ 
+       pass++;
+    }
+ 
+-   return VK_SUCCESS;
++out:
++   vk_free(&ctx->device->vk.alloc, submit);
++   return result;
+ }
+ 
+ VkResult pvr_arch_transfer_job_submit(struct pvr_transfer_ctx *ctx,
 diff -ruN a/src/imagination/vulkan/pvr_instance.c b/src/imagination/vulkan/pvr_instance.c
 --- a/src/imagination/vulkan/pvr_instance.c
 +++ b/src/imagination/vulkan/pvr_instance.c
@@ -774,7 +861,7 @@ diff -ruN a/src/imagination/vulkan/pvr_instance.c b/src/imagination/vulkan/pvr_i
  static bool pvr_drm_device_is_compatible_display(drmDevicePtr drm_dev)
  {
     uint64_t has_dumb_buffer = 0;
-@@ -297,10 +370,36 @@
+@@ -297,10 +370,37 @@
  out:
     return result;
  }
@@ -786,9 +873,9 @@ diff -ruN a/src/imagination/vulkan/pvr_instance.c b/src/imagination/vulkan/pvr_i
 +#ifdef __HAIKU__
 +   /* No build-id note can be found at run time (no dl_iterate_phdr()).
 +    * What identifies this build is the library file this code was loaded
-+    * from (size and modification time), or failing that the moment this
-+    * file was compiled. It feeds the pipeline cache UUID and the disk
-+    * cache key.
++    * from (size and modification time). It feeds the pipeline cache UUID
++    * and the disk cache key. (Not the compile time: the binary stays
++    * reproducible.)
 +    */
 +   char build[256];
 +   Dl_info dl_info;
@@ -800,8 +887,9 @@ diff -ruN a/src/imagination/vulkan/pvr_instance.c b/src/imagination/vulkan/pvr_i
 +               PACKAGE_VERSION, MESA_GIT_SHA1, (long long)st.st_size,
 +               (long long)st.st_mtime);
 +   } else {
-+      snprintf(build, sizeof(build), "powervr %s%s built %s %s",
-+               PACKAGE_VERSION, MESA_GIT_SHA1, __DATE__, __TIME__);
++      mesa_logw("No library file for the build hash: the version only.");
++      snprintf(build, sizeof(build), "powervr %s%s", PACKAGE_VERSION,
++               MESA_GIT_SHA1);
 +   }
 +
 +   STATIC_ASSERT(sizeof(instance->driver_build_sha) == BLAKE3_KEY_LEN);
@@ -811,7 +899,7 @@ diff -ruN a/src/imagination/vulkan/pvr_instance.c b/src/imagination/vulkan/pvr_i
     const struct build_id_note *note;
     unsigned build_id_len;
  
-@@ -320,6 +419,7 @@
+@@ -320,6 +420,7 @@
     copy_build_id_to_sha1(instance->driver_build_sha, note);
  
     return true;
