@@ -119,6 +119,11 @@ void BluetoothServer::ArgvReceived(int32 argc, char **argv)
 void BluetoothServer::ReadyToRun(void)
 {
 	LogStartup("looking for radios");
+	// The device manager's looper has to run for the node monitor to tell
+	// it about radios that appear later (a controller whose firmware is
+	// loaded while the server starts, a dongle plugged in); without it only
+	// what is there at this point was ever found.
+	fDeviceManager->LoadState();
 	fDeviceManager->StartMonitoringDevice("bluetooth/h2");
 	fDeviceManager->StartMonitoringDevice("bluetooth/h3");
 	fDeviceManager->StartMonitoringDevice("bluetooth/h4");

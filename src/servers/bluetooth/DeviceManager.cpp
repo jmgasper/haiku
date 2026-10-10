@@ -65,6 +65,18 @@ DeviceManager::MessageReceived(BMessage* msg)
 				{
 					TRACE_BT("Something removed from the bus ...\n");
 
+					// it may come back under the same name
+					entry_ref ref;
+					const char* name;
+					if (msg->FindInt32("device", &ref.device) == B_OK
+						&& msg->FindInt64("directory", &ref.directory) == B_OK
+						&& msg->FindString("name", &name) == B_OK
+						&& ref.set_name(name) == B_OK) {
+						BPath path(&ref);
+						BAutolock locker(fLock);
+						if (path.InitCheck() == B_OK)
+							fDevices.Remove(path.Path());
+					}
 				}
 				break;
 				case B_STAT_CHANGED:
@@ -152,6 +164,13 @@ DeviceManager::AddDevice(entry_ref* ref)
 	BPath path(ref);
 	if (path.InitCheck() != B_OK)
 		return path.InitCheck();
+
+	{
+		BAutolock locker(fLock);
+		if (fDevices.HasString(path.Path()))
+			return B_OK;
+		fDevices.Add(path.Path());
+	}
 
 	BMessage* message = new(std::nothrow) BMessage(BT_MSG_ADD_DEVICE);
 	if (message == NULL)
