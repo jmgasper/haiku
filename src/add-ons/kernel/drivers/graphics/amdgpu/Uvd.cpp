@@ -55,10 +55,15 @@ UvdEngine::Snapshot(amdgpu_uvd_test& result)
 		result.vm_fault_status = regs[0x537];
 		result.vm_fault_address = regs[0x53f];
 	}
-	dprintf("amdgpu: UVD stage %u status %#x power %#x ring %#x ptr %u/%u VM %#x page %#x\n",
-		(unsigned)result.stage, (unsigned)result.uvd_status, (unsigned)result.power_status,
-		(unsigned)result.ring_control, (unsigned)result.rptr, (unsigned)result.wptr,
-		(unsigned)result.vm_fault_status, (unsigned)result.vm_fault_address);
+	// Keep setup and failures visible, but do not print on every completed
+	// picture. Debug output can synchronously draw through the framebuffer.
+	if (result.stage != 5 || result.fence != result.sequence || result.rptr != result.wptr
+		|| (result.vm_fault_status & 0xff) != 0) {
+		dprintf("amdgpu: UVD stage %u status %#x power %#x ring %#x ptr %u/%u VM %#x page %#x\n",
+			(unsigned)result.stage, (unsigned)result.uvd_status, (unsigned)result.power_status,
+			(unsigned)result.ring_control, (unsigned)result.rptr, (unsigned)result.wptr,
+			(unsigned)result.vm_fault_status, (unsigned)result.vm_fault_address);
+	}
 }
 
 status_t

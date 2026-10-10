@@ -29,6 +29,7 @@ UvdEngine::Session(UvdSession& s, uint32 type, const amdgpu_h264_picture* pictur
 		return B_BAD_VALUE;
 	if (s.frames == UINT32_MAX) return B_BAD_VALUE;
 	const auto& l = s.layout;
+	bigtime_t timing[6]; timing[0] = system_time();
 	if (type == 1) {
 		status_t status = dma.Execute(AMDGPU_DMA_FILL, 0, s.gpu + l.target,
 			l.outputBytes, 0);
@@ -37,6 +38,7 @@ UvdEngine::Session(UvdSession& s, uint32 type, const amdgpu_h264_picture* pictur
 		// visible to the independent pixel comparison. Guard pages stay fixed.
 		memset((uint8*)s.readback + 4096, (s.frames & 1) ? 0x5a : 0xa5, l.outputBytes);
 	}
+	timing[1] = system_time();
 	uint8 message[amdgpu::kUvdMessageBytes];
 	amdgpu::UvdH264Message(message, type, s.handle, s.config, l, picture, bytes, s.frames + 1);
 	Copy(s.cpu, l.message, message, sizeof(message));
@@ -69,7 +71,9 @@ UvdEngine::Session(UvdSession& s, uint32 type, const amdgpu_h264_picture* pictur
 	}
 	while ((count & 15) != 0) ib[count++] = 0x80000000;
 	result.stage = type == 0 ? 4 : type == 1 ? 5 : 6;
+	timing[2] = system_time();
 	status_t status = Submit(count, result);
+	timing[3] = system_time();
 	if (status == B_OK && type == 1) {
 		status = dma.Execute(AMDGPU_DMA_COPY, s.gpu + l.target,
 			s.readbackGpu + 4096, l.outputBytes, 0);
@@ -81,19 +85,35 @@ UvdEngine::Session(UvdSession& s, uint32 type, const amdgpu_h264_picture* pictur
 				result.guard_mismatches += ram[i] != 0x7d;
 		}
 	}
+	timing[4] = system_time();
 	if (status == B_OK) {
 		for (uint32 offset : l.guards)
 			for (uint32 i = 0; i < 1024; i++)
 				result.guard_mismatches += s.cpu[offset / 4 + i] != 0xabcddcba;
 		if (result.guard_mismatches != 0) status = B_BAD_DATA;
 	}
+	timing[5] = system_time();
 	if (status == B_OK) {
 		if (type == 1) {
 			for (uint32 i = 0; i < 8; i++) result.feedback[i] = s.cpu[l.feedback / 4 + i];
 			result.checked_bytes = l.outputBytes;
 			s.frames++;
-		} else s.created = type == 0;
+			for (unsigned i = 0; i < 5; i++) s.timingTotal[i] += timing[i + 1] - timing[i];
+		} else {
+			s.created = type == 0;
+			if (type == 2 && s.frames != 0) {
+				dprintf("amdgpu: UVD session %u %ux%u %u frames mean us clear %lld "
+					"upload %lld submit %lld readback %lld guards %lld\n",
+					(unsigned)s.handle, (unsigned)s.config.width, (unsigned)s.config.height,
+					(unsigned)s.frames, (long long)(s.timingTotal[0] / s.frames),
+					(long long)(s.timingTotal[1] / s.frames), (long long)(s.timingTotal[2] / s.frames),
+					(long long)(s.timingTotal[3] / s.frames), (long long)(s.timingTotal[4] / s.frames));
+			}
+		}
 	} else {
+		if (result.guard_mismatches != 0)
+			dprintf("amdgpu: UVD session %u guard failures %u\n", (unsigned)s.handle,
+				(unsigned)result.guard_mismatches);
 		faulted = true;
 		Stop();
 	}

@@ -16,6 +16,7 @@ struct UvdSession {
 	uint64 readbackOffset, readbackBytes, readbackGpu;
 	bool readbackBound;
 	uint32 handle, frames;
+	bigtime_t timingTotal[5];
 	bool created;
 };
 struct UvdEngine {
