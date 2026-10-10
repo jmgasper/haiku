@@ -74,6 +74,24 @@ rule UserBuildConfigRulePreImage
 		AddPackageFilesToHaikuImage system packages : $(zstdPackage) ;
 	}
 
+	# The AIC8800D80 Wi-Fi/Bluetooth module's firmware, unchanged, with
+	# AICSemi's licence (tools/cubie-a7s/stage-aic8800-firmware.sh). The
+	# aic8800wifi driver loads it; Bluetooth comes up with it.
+	local aicFirmwareDir = $(CUBIE_AIC8800_FIRMWARE) ;
+	if ! $(aicFirmwareDir) {
+		aicFirmwareDir = /mnt/HaikuWork/cubie/firmware/aic8800wifi ;
+	}
+	local aicFirmware = <cubie-aic>fw_patch_table_8800d80_u02.bin
+		<cubie-aic>fw_adid_8800d80_u02.bin <cubie-aic>fw_patch_8800d80_u02.bin
+		<cubie-aic>fw_patch_8800d80_u02_ext0.bin
+		<cubie-aic>fmacfw_8800d80_u02.bin <cubie-aic>fmacfw_8800d80_h_u02.bin
+		<cubie-aic>aic_userconfig_8800d80.txt <cubie-aic>LICENSE.aic
+		<cubie-aic>PROVENANCE ;
+	SEARCH on $(aicFirmware) = $(aicFirmwareDir) ;
+	AddFilesToHaikuImage system non-packaged data firmware aic8800wifi
+		: $(aicFirmware) ;
+	AddDriversToHaikuImage net : aic8800wifi ;
+
 	if $(CUBIE_AIROS_IMAGE) {
 		local extras = /mnt/HaikuWork/rock5-image-extras ;
 
@@ -196,7 +214,11 @@ rule UserBuildConfigRulePreImage
 		# lab tools, and the driver settings that let cubie_reg at the
 		# display registers
 		AddFilesToHaikuImage system non-packaged bin : cubie_reg cubie_fetch
-			pvrinfo pvrtest cedar_decode media_probe cpu_usage ;
+			pvrinfo pvrtest cedar_decode media_probe cpu_usage aicload ;
+		if $(CUBIE_AIROS_IMAGE) {
+			# a Bluetooth diagnostic the regular image leaves out
+			AddFilesToHaikuImage system non-packaged bin : bt_dev_info ;
+		}
 
 		# The video engine's test streams and FFmpeg's hashes of them
 		# (evidence/video/proto/mkvectors.sh; not in git), for cedar_decode.
@@ -218,7 +240,7 @@ rule UserBuildConfigRulePreImage
 			SEARCH on $(labMedia) = $(CUBIE_LAB_MEDIA) ;
 			AddFilesToHaikuImage home media : $(labMedia) ;
 		}
-		local labSettings = <cubie-lab>sunxi_display ;
+		local labSettings = <cubie-lab>sunxi_display <cubie-lab>aic8800wifi ;
 		SEARCH on $(labSettings) = [ FDirName $(HAIKU_TOP) tools cubie-a7s lab ] ;
 		AddFilesToHaikuImage home config settings kernel drivers
 			: $(labSettings) ;

@@ -86,6 +86,8 @@ private:
 
 
 	LocalDevicesList   	fLocalDevicesList;
+	BMessage			fDevicePaths;
+		// the hci_id of each radio opened, by its path
 	WatchersList		fWatchersList;
 
 
