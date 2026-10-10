@@ -53,7 +53,7 @@ fi
 start=$(($(wc -l < "$LOG") + 1))
 "$HERE/deploy-haiku.sh" "$IMAGE" | tail -1
 deadline=$((SECONDS + WAIT))
-end='DP-1: [0-9]+x[0-9]+,|no picture|Kernel Debugging Land|booting Debian'
+end='DP-1: [0-9]+x[0-9]+[ ,]|no picture|Kernel Debugging Land|booting Debian'
 until tail -n +"$start" "$LOG" | grep -a -q -E "$end"; do
 	if (( SECONDS > deadline )); then
 		echo "(no end marker within $WAIT s)"

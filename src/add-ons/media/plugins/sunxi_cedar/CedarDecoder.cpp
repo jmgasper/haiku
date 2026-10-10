@@ -309,7 +309,6 @@ CedarDecoder::CopyPlanes(const Picture& picture, uint8* target, uint32 stride,
 	if (frame.bitDepth > 8) {
 		// P010: the eight bit picture's samples, with their low two bits
 		fDevice.SyncForCpu(frame.picture, 0, frame.picture.size);
-		uint32 alignedHeight = (uint32)(frame.lumaSize / frame.stride);
 		const uint8* twoBit = frame.picture.address + frame.twoBitOffset;
 		for (uint32 row = 0; row < frame.height; row++) {
 			uint32 y = frame.cropTop + row;
@@ -318,8 +317,7 @@ CedarDecoder::CopyPlanes(const Picture& picture, uint8* target, uint32 stride,
 				frame.width, (uint16*)(target + (size_t)row * stride));
 		}
 		const uint8* chroma = frame.picture.address + frame.lumaSize;
-		const uint8* twoBitChroma = twoBit
-			+ (size_t)frame.twoBitStride * alignedHeight;
+		const uint8* twoBitChroma = frame.picture.address + frame.twoBitChroma;
 		uint8* chromaTarget = target + (size_t)stride * frame.height;
 		for (uint32 row = 0; row < (frame.height + 1) / 2; row++) {
 			uint32 y = frame.cropTop / 2 + row;
@@ -657,6 +655,7 @@ CedarDecoder::_NewFrame(uint32 width, uint32 height, uint32 cropLeft,
 	frame.height = height;
 	frame.bitDepth = bitDepth;
 	frame.twoBitOffset = fEngine.TwoBitOffset();
+	frame.twoBitChroma = fEngine.TwoBitChroma();
 	frame.twoBitStride = fEngine.TwoBitStride();
 	fCurrent = index;
 	fFirstSlice = true;
@@ -691,6 +690,12 @@ CedarDecoder::_PutH264(const uint8* nal, size_t size, int64 pts)
 		case 1:		// a slice
 		case 5:		// of an IDR picture
 			return _H264Slice(nal, size, pts);
+
+		case 2:		// a slice in data partitions (Extended profile)
+		case 3:
+		case 4:
+			return _Fail(B_NOT_SUPPORTED, "the engine does not do this stream: "
+				"data partitioning");
 
 		case 7:		// sequence parameter set
 		case 8:		// picture parameter set
