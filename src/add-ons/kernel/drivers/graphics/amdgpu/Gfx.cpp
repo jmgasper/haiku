@@ -76,6 +76,9 @@ static const uint64 kMemoryVA = 0x100000;
 static const uint32 kControlOffset = Gart::kCommandBytes - 4096;
 static const uint64 kControlGPU = Gart::kBase + kControlOffset;
 static const uint64 kControlVA = kCommandVA + kControlOffset - 65536;
+// Match Linux gfx_v8_0: 1024 DWORDs per job, two hardware submissions.
+static const uint32 kRingDwords = 2048;
+static const uint32 kRingMask = kRingDwords - 1;
 static const uint32 kDirectSequences = 16;
 static const uint32 kShaderSequences = 16;
 static const uint32 kDrawSequences = 4;
@@ -261,7 +264,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			memory[0x41000 / 4 + i] = kTriangleVS[i];
 		for (uint32 i = 0; i < sizeof(kColorPS) / sizeof(uint32); i++)
 			memory[0x42000 / 4 + i] = kColorPS[i];
-		for (uint32 i = 0; i < 0x4000; i++)
+		for (uint32 i = 0; i < kRingDwords; i++)
 			ring[i] = (i & 1) == 0 ? Packet(0x10, 0) : 0;
 		result.stage = 2;
 		Snapshot(result);
@@ -311,7 +314,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		Snapshot(result);
 		r[0x21c1] = 0;
 		r[0x3051] = 0; // ring VMID0
-		const uint32 control = 13 | 11 << 8 | 3 << 15 | 1 << 22;
+		const uint32 control = 10 | 8 << 8 | 3 << 15 | 1 << 22;
 		r[0x3041] = control | 0x80000000;
 		r[0x3045] = 0;
 		r[0x3043] = (uint32)(kControlGPU + 0x10);
@@ -356,6 +359,43 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		ring[wptr++] = 3;
 		ring[wptr++] = 0x8000;
 		ring[wptr++] = 0x8000;
+		// Retire startup separately so its clear-state packets cannot fill
+		// the smaller ring together with the first 1024-word data test.
+		volatile uint32* startupMarker = gart.commandMemory
+			+ (kControlOffset + 0x500) / 4;
+		ring[wptr++] = Packet(0x42, 0); // PFP_SYNC_ME
+		ring[wptr++] = 0;
+		ring[wptr++] = Packet(0x37, 3);
+		ring[wptr++] = 5 << 8 | 1 << 20;
+		ring[wptr++] = (uint32)(kControlGPU + 0x500);
+		ring[wptr++] = (kControlGPU + 0x500) >> 32;
+		ring[wptr++] = 0x43535031;
+		uint32 startupPadding = (-wptr) & 255;
+		if (startupPadding == 1)
+			startupPadding += 256;
+		if (startupPadding != 0) {
+			ring[wptr++] = Packet(0x10, startupPadding - 2);
+			for (uint32 i = 1; i < startupPadding; i++)
+				ring[wptr++] = 0;
+		}
+		__sync_synchronize();
+		r[0x1520] = 1;
+		(void)r[0x1520];
+		r[0x3045] = wptr;
+		bigtime_t startupDeadline = system_time() + 500000;
+		while ((*startupMarker != 0x43535031 || r[0x21c0] != wptr)
+			&& system_time() < startupDeadline)
+			snooze(50);
+		dprintf("amdgpu: GFX startup marker %#x ring %u/%u VM %#x/%#x\n",
+			(unsigned)*startupMarker, (unsigned)r[0x21c0], (unsigned)wptr,
+			(unsigned)r[0x536], (unsigned)r[0x537]);
+		if (*startupMarker != 0x43535031 || r[0x21c0] != wptr
+			|| ((r[0x536] | r[0x537]) & 0xff) != 0) {
+			faulted = true;
+			r[0x21b6] |= kHalt;
+			Snapshot(result);
+			return B_DEV_NOT_READY;
+		}
 		ready = true;
 	}
 	result.stage = 4;
@@ -420,7 +460,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		for (uint32 i = 1; i < padding; i++)
 			ib[n++] = 0;
 	}
-	auto emit = [&](uint32 word) { ring[wptr++ & 0x3fff] = word; };
+	auto emit = [&](uint32 word) { ring[wptr++ & kRingMask] = word; };
 	auto snapshotVM = [&](uint32 slot) {
 		for (uint32 context = 0; context < 2; context++) {
 			uint32 offset = 0x100 + (slot * 2 + context) * 4;
@@ -668,10 +708,10 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			ib[0x8000 / 4 + 3] = 0;
 			ib[0x8000 / 4 + 4] = sequence;
 		}
-		ring[wptr++ & 0x3fff] = Packet(0x3f, 2);
-		ring[wptr++ & 0x3fff] = (uint32)address;
-		ring[wptr++ & 0x3fff] = address >> 32;
-		ring[wptr++ & 0x3fff] = length | 1 << 24; // private VMID1
+		ring[wptr++ & kRingMask] = Packet(0x3f, 2);
+		ring[wptr++ & kRingMask] = (uint32)address;
+		ring[wptr++ & kRingMask] = address >> 32;
+		ring[wptr++ & kRingMask] = length | 1 << 24; // private VMID1
 	}
 	if (cpRead) {
 		const uint64 source = (readCase & 4) != 0
@@ -701,7 +741,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		emit(value == 0 ? sequence - 1 : sequence);
 		emit(0);
 	}
-	ring[conditionOffset & 0x3fff] = wptr - conditionOffset - 1;
+	ring[conditionOffset & kRingMask] = wptr - conditionOffset - 1;
 	padding = (-wptr) & 255;
 	if (padding == 1)
 		padding += 256;
@@ -711,10 +751,10 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			emit(0);
 	}
 	__sync_synchronize();
-	(void)ring[(wptr - 1) & 0x3fff];
+	(void)ring[(wptr - 1) & kRingMask];
 	r[0x1520] = 1;
 	(void)r[0x1520];
-	r[0x3045] = wptr & 0x3fff;
+	r[0x3045] = wptr & kRingMask;
 	(void)r[0x3045];
 	if (privateShader) {
 		bigtime_t gateDeadline = system_time() + 500000;
@@ -750,7 +790,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	}
 	bigtime_t deadline = system_time() + 500000;
 	while ((control[0x0 / 4] != sequence || control[0x4 / 4] != sequence
-		|| r[0x21c0] != (wptr & 0x3fff)) && system_time() < deadline)
+		|| r[0x21c0] != (wptr & kRingMask)) && system_time() < deadline)
 		snooze(50);
 	__sync_synchronize();
 	if (ceIB) {
@@ -778,7 +818,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		}
 	}
 	status_t status = control[0x0 / 4] == sequence
-		&& control[0x4 / 4] == sequence && r[0x21c0] == (wptr & 0x3fff)
+		&& control[0x4 / 4] == sequence && r[0x21c0] == (wptr & kRingMask)
 		? B_OK : B_TIMED_OUT;
 	if (status == B_OK) {
 		// The completion page is snooped RAM. Invalidate HDP only after GPU
