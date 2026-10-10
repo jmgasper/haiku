@@ -152,6 +152,8 @@ GfxEngine::DumpExecutionState(const char* point)
 	// Defined GFX8 address/state registers only; no indexed read ports.
 	const uint32 registers[] = {
 		0x3038, 0x30b9, 0x30ba, 0x30bb, 0x21b9,
+		0x3060, 0x30b2, 0x3061, 0x3062, 0x3063, 0x3064,
+		0x3065, 0x30b3, 0x3066, 0x3067, 0x3068, 0x3069,
 		0x219c, 0x219d, 0x219e, 0x219f, 0x21a0, 0x21a1, 0x21a2, 0x21a4,
 		0xc069, 0xc06a, 0xc06d, 0xc06e, 0xc078, 0xc080, 0xc081,
 		0xc082, 0xc083, 0xc084, 0xc077, 0xc085, 0xc086, 0xc087,
@@ -347,7 +349,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	const bool shader = (!direct && sequence <= shaderEnd) || vmShader;
 	const bool draw = sequence > shaderEnd && sequence <= drawEnd;
 	const bool minimalIB = sequence == vmShaderEnd + 1;
-	if (minimalIB)
+	if (minimalIB || privateShader)
 		DumpExecutionState("before IB");
 	uint64 destination = direct || shader || draw || minimalIB ? gpu : kMemoryVA;
 	uint64 markerAddress = privateShader ? kControlVA
@@ -435,6 +437,23 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			else
 				emit(word);
 		};
+		if (privateShader) {
+			control[0x80 / 4] = control[0x84 / 4] = 0;
+			emitShader(Packet(0x37, 3));
+			emitShader(5 << 8 | 1 << 20);
+			emitShader(kControlVA + 0x84);
+			emitShader(0);
+			emitShader(sequence);
+			emitShader(Packet(0x42, 0));
+			emitShader(0);
+			emitShader(Packet(0x3c, 5)); // PFP waits for CPU's first release
+			emitShader(5 | 1 << 4 | 1 << 8); // memory >= 1
+			emitShader(kControlVA + 0x80);
+			emitShader(0);
+			emitShader(1);
+			emitShader(0xffffffff);
+			emitShader(0x20);
+		}
 		const uint64 shaderBase = privateShader ? kMemoryVA : gpu;
 		dprintf("amdgpu: compute seq %u VMID %u code %#" B_PRIx64
 			" output %#" B_PRIx64 "\n", (unsigned)sequence,
@@ -476,6 +495,17 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		for (uint32 i = 1028; i < 1033; i++)
 			emitShader(ib[i]);
 		if (privateShader) {
+			// Hold PFP inside the IB after its shader and confirmed marker.
+			// The CPU samples both fault contexts before allowing IB return.
+			emitShader(Packet(0x42, 0)); // PFP_SYNC_ME
+			emitShader(0);
+			emitShader(Packet(0x3c, 5)); // WAIT_REG_MEM, memory, PFP, >= 2
+			emitShader(5 | 1 << 4 | 1 << 8);
+			emitShader(kControlVA + 0x80);
+			emitShader(0);
+			emitShader(2);
+			emitShader(0xffffffff);
+			emitShader(0x20);
 			uint32 pad = (-shaderLength) & 255;
 			if (pad == 1)
 				pad += 256;
@@ -612,6 +642,35 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	(void)r[0x1520];
 	r[0x3045] = wptr & 0x3fff;
 	(void)r[0x3045];
+	if (privateShader) {
+		bigtime_t gateDeadline = system_time() + 500000;
+		while (control[0x84 / 4] != sequence && system_time() < gateDeadline)
+			snooze(50);
+		snooze(1000);
+		dprintf("amdgpu: GFX IB entry seq %u marker %u VM %#x/%#x"
+			" pages %#x/%#x IB remaining %u ring %u/%u\n",
+			(unsigned)sequence, (unsigned)control[0x84 / 4], (unsigned)r[0x536],
+			(unsigned)r[0x537], (unsigned)r[0x53e], (unsigned)r[0x53f],
+			(unsigned)r[0xc0ce], (unsigned)r[0x21c0], (unsigned)r[0x3045]);
+		control[0x80 / 4] = 1;
+		__sync_synchronize();
+		r[0x1520] = 1;
+		(void)r[0x1520];
+		gateDeadline = system_time() + 500000;
+		while (control[0] != sequence && system_time() < gateDeadline)
+			snooze(50);
+		snooze(1000);
+		dprintf("amdgpu: GFX inside IB seq %u marker %u VM %#x/%#x"
+			" pages %#x/%#x IB remaining %u ring %u/%u\n",
+			(unsigned)sequence, (unsigned)control[0], (unsigned)r[0x536],
+			(unsigned)r[0x537], (unsigned)r[0x53e], (unsigned)r[0x53f],
+			(unsigned)r[0xc0ce], (unsigned)r[0x21c0], (unsigned)r[0x3045]);
+		// Always release the private wait, including a missing-marker case.
+		control[0x80 / 4] = 2;
+		__sync_synchronize();
+		r[0x1520] = 1;
+		(void)r[0x1520];
+	}
 	bigtime_t deadline = system_time() + 500000;
 	while ((control[0x0 / 4] != sequence || control[0x4 / 4] != sequence
 		|| r[0x21c0] != (wptr & 0x3fff)) && system_time() < deadline)
