@@ -22,7 +22,7 @@ Put32(std::vector<uint8_t>& p, size_t offset, uint32_t value)
 int
 main(int argc, char** argv)
 {
-	assert(argc == 2);
+	assert(argc == 3);
 	FILE* file = fopen(argv[1], "rb");
 	assert(file != NULL);
 	assert(fseek(file, 0, SEEK_END) == 0);
@@ -77,5 +77,33 @@ main(int argc, char** argv)
 		Put16(bad, field, 0xffff);
 		assert(!amdgpu::ParseAtomVramReservation(bad.data(), bad.size(), reservation));
 	}
-	puts("PASS: firmware and ATOM bounds, identity, alignment and 64-bit reservation");
+	file = fopen(argv[2], "rb");
+	assert(file != NULL);
+	assert(fseek(file, 0, SEEK_END) == 0);
+	size = ftell(file);
+	assert(size >= 36 && size <= 0x20100);
+	rewind(file);
+	std::vector<uint8_t> smc(size);
+	assert(fread(smc.data(), 1, size, file) == (size_t)size);
+	fclose(file);
+	assert(amdgpu::ParseSmcFirmware(smc.data(), smc.size(), view));
+	printf("SMC firmware version %#x, %u bytes\n", view.version, view.codeSize);
+	for (size_t n = 0; n < smc.size(); n++)
+		assert(!amdgpu::ParseSmcFirmware(smc.data(), n, view));
+	unaligned.resize(smc.size() + 1);
+	memcpy(unaligned.data() + 1, smc.data(), smc.size());
+	assert(amdgpu::ParseSmcFirmware(unaligned.data() + 1, size, view));
+	for (size_t field : {size_t(0), size_t(4), size_t(20), size_t(24), size_t(32)}) {
+		auto bad = smc;
+		Put32(bad, field, 0xfffffffc);
+		assert(!amdgpu::ParseSmcFirmware(bad.data(), bad.size(), view));
+	}
+	for (size_t field : {size_t(8), size_t(10), size_t(12), size_t(14)}) {
+		auto bad = smc;
+		Put16(bad, field, 0xffff);
+		assert(!amdgpu::ParseSmcFirmware(bad.data(), bad.size(), view));
+	}
+	assert(!amdgpu::ParseSmcFirmware(firmware.data(), firmware.size(), view));
+	assert(!amdgpu::ParseSdmaFirmware(smc.data(), smc.size(), view));
+	puts("PASS: SDMA/SMC/ATOM bounds, identity, alignment and 64-bit reservation");
 }

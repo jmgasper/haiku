@@ -3,6 +3,7 @@ SubDir HAIKU_TOP src tests add-ons kernel drivers amdgpu ;
 UsePrivateHeaders [ FDirName graphics amdgpu ] ;
 SimpleTest amdgpu_probe : amdgpu_probe.cpp ;
 SimpleTest amdgpu_sdma : amdgpu_sdma.cpp ;
+SimpleTest amdgpu_smc : amdgpu_smc.cpp ;
 
 local driver = [ FDirName $(HAIKU_TOP) src add-ons kernel drivers graphics amdgpu ] ;
 SubDirHdrs $(driver) ;

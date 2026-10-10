@@ -22,21 +22,49 @@
  */
 
 // Bounded Polaris SDMA3 test, adapted from Linux sdma_v3_0.c (ring setup,
-// packets, golden settings) and its pre-4.20 direct microcode loader. Register
+// packets, golden settings) and the protected SMU microcode loader. Register
 // indices are dwords (oss_3_0_d.h). No interrupts, user command buffers, GART
 // or power/clock policy are enabled by this first execution test.
 #include "Sdma.h"
+#include "Smu.h"
 #include <KernelExport.h>
 #include <stdlib.h>
 
 static bool sQuarantined;
 static const uint64 kScratchOffset = 32 * 1024 * 1024;
 static const uint32 kScratchSize = 1024 * 1024;
+// The following 2 MiB belongs to the SMU until a cold boot. Future general
+// allocations must preserve this reservation, including after closing a fd.
+static const uint32 kReservedSize = 3 * 1024 * 1024;
 static const uint32 kPatternSize = 64 * 1024;
 static const uint32 kSource = 0x10000;
 static const uint32 kCopy = 0x30000;
 static const uint32 kFill = 0x50000;
 static const uint32 kFence = 0x1000;
+
+static void
+LogDiagnostics(volatile uint32* r)
+{
+	const uint32 direct[] = {0x819, 0x80d, 0x80e, 0x80f, 0x500, 0x501,
+		0x502, 0x504, 0x536, 0x538, 0x53e, 0x3400, 0x340d, 0x340e, 0x3423};
+	for (uint32 index : direct)
+		dprintf("amdgpu: execution reg[%04x] = %08x\n", (unsigned)index,
+			(unsigned)r[index]);
+	uint32 oldIndex = r[0x1ac];
+	uint32 oldAccess = r[0x92];
+	r[0x92] = oldAccess & ~0x800u; // disable index 11 auto-increment
+	const uint32 indirect[] = {0x80000004, 0x80000370, 0xe00030a4,
+		0xe0003088, 0x3f000, 0x20030};
+	for (uint32 index : indirect) {
+		r[0x1ac] = index;
+		dprintf("amdgpu: SMC[%08x] = %08x\n", (unsigned)index,
+			(unsigned)r[0x1ad]);
+	}
+	r[0x1ac] = oldIndex;
+	r[0x92] = oldAccess;
+	(void)r[0x92];
+}
+
 
 static bool
 Overlaps(uint64 start, uint64 size, uint64 other, uint64 otherSize)
@@ -50,15 +78,15 @@ static bool
 ScratchIsSafe(volatile uint32* r, const amdgpu_info& info,
 	const amdgpu::AtomVramReservation& reservation)
 {
-	if (info.bar_size[0] < kScratchOffset + kScratchSize
+	if (info.bar_size[0] < kScratchOffset + kReservedSize
 		|| info.vram_size < info.bar_size[0]
 		|| info.boot_framebuffer < info.bar_address[0]
 		|| info.boot_framebuffer - info.bar_address[0] >= info.bar_size[0]
 		|| info.boot_framebuffer_size == 0 || reservation.start > info.vram_size
 		|| reservation.size > info.vram_size - reservation.start)
 		return false;
-	if (Overlaps(kScratchOffset, kScratchSize, reservation.start, reservation.size)
-		|| Overlaps(kScratchOffset, kScratchSize,
+	if (Overlaps(kScratchOffset, kReservedSize, reservation.start, reservation.size)
+		|| Overlaps(kScratchOffset, kReservedSize,
 			info.boot_framebuffer - info.bar_address[0], info.boot_framebuffer_size))
 		return false;
 	// Firmware may put driver scratch immediately before its own reservation,
@@ -66,7 +94,7 @@ ScratchIsSafe(volatile uint32* r, const amdgpu_info& info,
 	uint64 scratchEnd = reservation.start != 0
 		? reservation.start : info.bar_size[0];
 	if (reservation.driverScratchSize > scratchEnd
-		|| Overlaps(kScratchOffset, kScratchSize,
+		|| Overlaps(kScratchOffset, kReservedSize,
 			scratchEnd - reservation.driverScratchSize, reservation.driverScratchSize))
 		return false;
 	const uint32 heads[] = {0x1a00, 0x1c00, 0x1e00, 0x4000, 0x4200, 0x4400};
@@ -85,7 +113,7 @@ ScratchIsSafe(volatile uint32* r, const amdgpu_info& info,
 			return false;
 		if ((r[base + 0x66] & 1) != 0) {
 			uint64 cursor = (uint64)r[base + 0x69] << 32 | (r[base + 0x67] & ~0xffu);
-			if (Overlaps(info.vram_gpu_base + kScratchOffset, kScratchSize,
+			if (Overlaps(info.vram_gpu_base + kScratchOffset, kReservedSize,
 					cursor, 128 * 128 * 4))
 				return false;
 		}
@@ -106,16 +134,19 @@ amdgpu_sdma_test(volatile uint32* r, const amdgpu_info& info,
 		(unsigned)r[0x3412], (unsigned)r[0x3480], (unsigned)r[0x3500],
 		(unsigned)r[0x3580]);
 	// Never take a ring away from another driver or a running firmware job.
-	if ((r[0x3412] & 1) == 0 || (r[0x3480] & 1) != 0
+	// A failed test leaves RB_CNTL configured even after disabling its ring.
+	// Reject that state even if the driver has since been unloaded/reloaded.
+	if ((r[0x3412] & 1) == 0 || r[0x3480] != 0
 		|| (r[0x3500] & 1) != 0 || (r[0x3580] & 1) != 0
 		|| !ScratchIsSafe(r, info, reservation))
 		return B_NOT_ALLOWED;
+	LogDiagnostics(r);
 	uint32* backup = (uint32*)malloc(kScratchSize);
 	if (backup == NULL)
 		return B_NO_MEMORY;
 	volatile uint32* vram = NULL;
 	area_id area = map_physical_memory("amdgpu SDMA scratch",
-		info.bar_address[0] + kScratchOffset, kScratchSize, B_ANY_KERNEL_ADDRESS,
+		info.bar_address[0] + kScratchOffset, kReservedSize, B_ANY_KERNEL_ADDRESS,
 		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, (void**)&vram);
 	if (area < 0) {
 		free(backup);
@@ -146,12 +177,31 @@ amdgpu_sdma_test(volatile uint32* r, const amdgpu_info& info,
 	for (uint32 i = 0; i < B_COUNT_OF(savedRegs); i++)
 		saved[i] = r[savedRegs[i]];
 	saved[0] = oldSelect;
-	// Halted firmware load; no engine other than SDMA0 is touched.
+	// The UEFI framebuffer does not establish the system aperture used by
+	// SDMA VMID 0. Match gmc_v8_0_mc_program()/gart_enable(): physical VRAM
+	// inside this aperture bypasses translation; no system RAM or page tables
+	// are exposed by this test. Leave VM_CONTEXT0 disabled. Retain the
+	// aperture afterwards because the SMU owns its workspace until a cold boot.
+	r[0x80d] = info.vram_gpu_base >> 12;
+	r[0x80e] = (info.vram_gpu_base + info.vram_size - 1) >> 12;
+	r[0x80f] = (gpu + 0x2f0000) >> 12; // reserved default page, never system RAM
+	r[0x819] = (r[0x819] & ~0x7bu) | 0x5b;
+	(void)r[0x819];
+	// The SMU authenticates and loads SDMA0; direct UCODE_DATA writes cannot
+	// start the protected Polaris micro-engine. No other engine is loaded.
 	r[0x3404] &= ~(0x40000u | 1u); // no auto context switch or trap interrupt
-	r[0x3400] = 0;
-	for (uint32 i = 0; i < firmware.codeSize; i += 4)
-		r[0x3401] = amdgpu::ReadLE32(firmware.code + i);
-	r[0x3400] = firmware.version;
+	status_t load = amdgpu_smc_load_sdma(r, firmware,
+		vram + kScratchSize / 4, gpu + kScratchSize);
+	if (load != B_OK) {
+		// A timed-out controller may still reference its VRAM. Do not restore
+		// the aperture or reuse this reservation. Mark it across driver reloads.
+		sQuarantined = true;
+		r[0x3480] = 10 << 1;
+		result.halted = r[0x3412] & 1;
+		delete_area(area);
+		free(backup);
+		return load;
+	}
 	result.stage = 3;
 	r[0x3405] = (r[0x3405] & ~0xfc910007u) | 0x00810007;
 	r[0x3403] &= ~0xff000fffu; // Polaris golden clock control, ungated
@@ -187,7 +237,7 @@ amdgpu_sdma_test(volatile uint32* r, const amdgpu_info& info,
 	vram[n++] = (gpu + kSource) >> 32;
 	vram[n++] = (uint32)(gpu + kCopy);
 	vram[n++] = (gpu + kCopy) >> 32;
-	vram[n++] = 11;
+	vram[n++] = 11 | (2u << 30); // FILL_SIZE=2: repeat a 32-bit value
 	vram[n++] = (uint32)(gpu + kFill);
 	vram[n++] = (gpu + kFill) >> 32;
 	vram[n++] = 0x71a4c93e;
@@ -200,6 +250,8 @@ amdgpu_sdma_test(volatile uint32* r, const amdgpu_info& info,
 		vram[n++] = 0;
 	__sync_synchronize();
 	(void)vram[n - 1]; // drain PCI writes before publishing the command ring
+	r[0x1520] = 1; // vi_flush_hdp: publish CPU writes to the GPU
+	(void)r[0x1520];
 	r[0x3480] |= 1;
 	r[0x3412] &= ~1u;
 	bigtime_t start = system_time();
@@ -213,6 +265,7 @@ amdgpu_sdma_test(volatile uint32* r, const amdgpu_info& info,
 	result.rptr = r[0x3483];
 	result.wptr = r[0x3484];
 	result.engine_status = r[0x340d];
+	LogDiagnostics(r);
 	status_t status = result.fence == 0xdeadbeef ? B_OK : B_TIMED_OUT;
 	// Wait for trailing NOPs, disable the ring, and halt before releasing any
 	// scratch. If it will not become idle, quarantine until a real reboot.
@@ -239,7 +292,12 @@ amdgpu_sdma_test(volatile uint32* r, const amdgpu_info& info,
 					expected = 0x3ca50000u ^ ((i - kCopy / 4) * 0x10204081u);
 				else if (byte >= kFill && byte < kFill + kPatternSize)
 					expected = 0x71a4c93e;
-				result.mismatches += vram[i] != expected;
+				if (vram[i] != expected) {
+					if (result.mismatches < 8)
+						dprintf("amdgpu: mismatch +%#x got %#x expected %#x\n",
+							(unsigned)byte, (unsigned)vram[i], (unsigned)expected);
+					result.mismatches++;
+				}
 				result.checked_bytes += 4;
 			}
 			if (result.mismatches != 0)

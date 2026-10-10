@@ -8,6 +8,30 @@
 namespace amdgpu {
 
 bool
+ParseSmcFirmware(const void* data, size_t size, FirmwareView& view)
+{
+	view = {};
+	if (data == NULL || size < 36 || size > 0x20100)
+		return false;
+	const uint8_t* p = (const uint8_t*)data;
+	uint32_t headerSize = ReadLE32(p + 4);
+	uint32_t codeSize = ReadLE32(p + 20);
+	uint32_t offset = ReadLE32(p + 24);
+	if (ReadLE32(p) != size || ReadLE16(p + 8) != 1
+		|| ReadLE16(p + 10) != 0 || ReadLE16(p + 12) != 7
+		|| ReadLE16(p + 14) != 2 || headerSize < 36 || headerSize > size
+		|| offset < headerSize || offset > size || (offset & 3) != 0
+		|| codeSize < 256 || codeSize > 0x20000 || (codeSize & 3) != 0
+		|| codeSize > size - offset || ReadLE32(p + 32) != 0x20000)
+		return false;
+	view.code = p + offset;
+	view.codeSize = codeSize;
+	view.version = ReadLE32(p + 16);
+	return true;
+}
+
+
+bool
 ParseSdmaFirmware(const void* data, size_t size, FirmwareView& view)
 {
 	view = {};

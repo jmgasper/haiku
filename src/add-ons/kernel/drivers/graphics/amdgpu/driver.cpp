@@ -16,6 +16,7 @@
 #include <amdgpu_haiku.h>
 #include "Rom.h"
 #include "Sdma.h"
+#include "Smu.h"
 
 // Polaris 10 register indices, from AMD's MIT-licensed register headers:
 // Linux drivers/gpu/drm/amd/include/asic_reg/{bif/bif_5_0_d.h,
@@ -190,6 +191,44 @@ device_free(void* cookie)
 static status_t
 device_control(void* cookie, uint32 op, void* buffer, size_t length)
 {
+	if (op == AMDGPU_SMC_BOOTSTRAP) {
+		if (geteuid() != 0)
+			return B_NOT_ALLOWED;
+		if (length != sizeof(amdgpu_smc_bootstrap))
+			return B_BAD_VALUE;
+		amdgpu_smc_bootstrap request;
+		if (user_memcpy(&request, buffer, sizeof(request)) != B_OK)
+			return B_BAD_ADDRESS;
+		if (request.version != AMDGPU_HAIKU_ABI_VERSION
+			|| request.size != sizeof(request) || request.reserved != 0
+			|| request.firmware_size < 36 || request.firmware_size > 0x20100)
+			return B_BAD_VALUE;
+		void* firmware = malloc(request.firmware_size);
+		if (firmware == NULL)
+			return B_NO_MEMORY;
+		status_t status = user_memcpy(firmware, (void*)(addr_t)request.firmware,
+			request.firmware_size);
+		amdgpu::FirmwareView view;
+		if (status == B_OK
+			&& !amdgpu::ParseSmcFirmware(firmware, request.firmware_size, view))
+			status = B_BAD_DATA;
+		amdgpu_smc_bootstrap result = {};
+		result.version = AMDGPU_HAIKU_ABI_VERSION;
+		result.size = sizeof(result);
+		if (status == B_OK) {
+			mutex_lock(&sLock);
+			status = set_area_protection(sRegisterArea,
+				B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA);
+			if (status == B_OK) {
+				status = amdgpu_smc_bootstrap_firmware(sRegisters, view, result);
+				set_area_protection(sRegisterArea, B_KERNEL_READ_AREA);
+			}
+			mutex_unlock(&sLock);
+		}
+		free(firmware);
+		result.status = status;
+		return user_memcpy(buffer, &result, sizeof(result));
+	}
 	if (op == AMDGPU_SDMA_TEST) {
 		if (geteuid() != 0)
 			return B_NOT_ALLOWED;

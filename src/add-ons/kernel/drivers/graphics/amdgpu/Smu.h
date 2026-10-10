@@ -1,0 +1,13 @@
+/* Copyright 2026, air/OS. Distributed under the terms of the MIT License. */
+#ifndef AMDGPU_SMU_H
+#define AMDGPU_SMU_H
+#include <amdgpu_haiku.h>
+#include "Firmware.h"
+
+status_t amdgpu_smc_bootstrap_firmware(volatile uint32* regs,
+	const amdgpu::FirmwareView& firmware, amdgpu_smc_bootstrap& result);
+// workspace is a permanently reserved 2 MiB VRAM region: 1 MiB SMU scratch,
+// followed by TOC and firmware staging. Retain it until a cold boot.
+status_t amdgpu_smc_load_sdma(volatile uint32* regs,
+	const amdgpu::FirmwareView& firmware, volatile uint32* workspace, uint64 gpu);
+#endif

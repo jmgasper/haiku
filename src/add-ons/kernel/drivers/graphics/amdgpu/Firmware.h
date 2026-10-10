@@ -33,6 +33,7 @@ struct AtomVramReservation {
 };
 
 bool ParseSdmaFirmware(const void* data, size_t size, FirmwareView& view);
+bool ParseSmcFirmware(const void* data, size_t size, FirmwareView& view);
 bool ParseAtomVramReservation(const void* data, size_t size,
 	AtomVramReservation& reservation);
 

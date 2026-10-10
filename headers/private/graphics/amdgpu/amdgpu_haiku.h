@@ -15,7 +15,8 @@
 enum {
 	AMDGPU_GET_INFO = B_DEVICE_OP_CODES_END + 1,
 	AMDGPU_READ_ROM,
-	AMDGPU_SDMA_TEST
+	AMDGPU_SDMA_TEST,
+	AMDGPU_SMC_BOOTSTRAP
 };
 
 #define AMDGPU_ROM_SIZE (256 * 1024)
@@ -47,6 +48,26 @@ struct amdgpu_sdma_test_result {
 	uint32 engine_status;
 	uint32 halted;
 	uint64 elapsed_us;
+};
+
+// Protected-mode SMU startup for the measured Polaris 10 hard-key board.
+// This starts signed controller firmware; it does not enable DPM or engines.
+struct amdgpu_smc_bootstrap {
+	uint32 version;
+	uint32 size;
+	uint64 firmware;
+	uint32 firmware_size;
+	uint32 reserved;
+	int32 status;
+	uint32 stage;
+	uint32 firmware_version;
+	uint32 clock;
+	uint32 pc;
+	uint32 security;
+	uint32 smu_status;
+	uint32 response;
+	uint32 soft_registers;
+	uint32 reserved_out;
 };
 
 struct amdgpu_register_value {
