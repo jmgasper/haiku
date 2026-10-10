@@ -327,7 +327,7 @@ h264ParseSps(const uint8_t *rbsp, size_t size, H264Sps *sps)
 			sps->offsetForRefFrame[i] = h264SE(&br);
 	}
 	sps->maxNumRefFrames = readUnsigned(&br, 16);
-	h264Bit(&br);				/* gaps_in_frame_num_allowed_flag */
+	sps->gapsInFrameNumAllowed = h264Bit(&br);
 	// This decoder's parser supports coded dimensions through 8192 pixels.
 	// Keep downstream pitch, cropping and macroblock arithmetic bounded.
 	sps->picWidthInMbs = readUnsigned(&br, 511) + 1;

@@ -54,6 +54,7 @@ typedef struct {
 	int		numRefFramesInPocCycle;
 	int		offsetForRefFrame[256];
 	int		maxNumRefFrames;
+	int		gapsInFrameNumAllowed;
 	int		picWidthInMbs;
 	int		picHeightInMapUnits;
 	int		frameMbsOnly;
