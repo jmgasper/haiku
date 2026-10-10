@@ -24,6 +24,7 @@
 // Polaris10 CP setup and golden values: Linux 6.18.52 gfx_v8_0.c (MIT).
 #include "Gfx.h"
 #include "GpuPageTable.h"
+#include "PolarisTiling.h"
 #include "Smu.h"
 #include <KernelExport.h>
 
@@ -314,6 +315,31 @@ GfxEngine::Initialize(volatile uint32* r, const amdgpu_info& info,
 		}
 		for (const auto& value : kGolden)
 			r[value[0]] = (r[value[0]] & ~value[1]) | value[2];
+		// Firmware leaves a display-oriented table that is not necessarily a
+		// valid graphics layout. Match Polaris10's constants initialization
+		// before CP starts; Mesa/addrlib must see the actual programmed table.
+		// MACROTILE_MODE7 is reserved and intentionally not written by Linux.
+		for (uint32 i = 0; i < 32; i++)
+			r[0x2644 + i] = kPolaris10TileMode[i];
+		for (uint32 i = 0; i < 16; i++) {
+			if (i != 7)
+				r[0x2664 + i] = kPolaris10MacrotileMode[i];
+		}
+		for (uint32 i = 0; i < 48; i++) {
+			if (i == 39)
+				continue;
+			uint32 expected = i < 32 ? kPolaris10TileMode[i]
+				: kPolaris10MacrotileMode[i - 32];
+			uint32 actual = r[0x2644 + i];
+			if (actual != expected) {
+				dprintf("amdgpu: GFX tiling register %#x got %#x expected %#x\n",
+					(unsigned)(0x2644 + i), (unsigned)actual, (unsigned)expected);
+				faulted = true;
+				Snapshot(result);
+				return B_BAD_DATA;
+			}
+		}
+		dprintf("amdgpu: GFX Polaris tiling initialized, 47 registers verified\n");
 		r[0x2000] = (r[0x2000] & ~0xffu) | 0xff; // GRBM read timeout
 		// The TC path used by indirect fetches needs the CP/shader memory
 		// configuration from gfx_v8_0_constants_init, even before shaders.
