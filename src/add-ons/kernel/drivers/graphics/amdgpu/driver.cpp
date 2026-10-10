@@ -237,7 +237,8 @@ start_installed_device()
 			status = amdgpu_smc_bootstrap_firmware(sRegisters, smc.view, result);
 		}
 		if (status == B_OK)
-			status = amdgpu_device_start(sRegisters, sInfo, sdma.view, reservation);
+			status = amdgpu_device_start(sRegisters, sInfo, sdma.view, reservation,
+				amdgpu::IsQualifiedUvdClockRom(rom, AMDGPU_ROM_SIZE));
 		sStartupStatus = status;
 		dprintf("amdgpu: automatic client startup status %#x\n", (unsigned)status);
 	}
@@ -370,7 +371,8 @@ device_control(void* cookie, uint32 op, void* buffer, size_t length)
 					if (status == B_OK && !amdgpu::ParseAtomVramReservation(rom, AMDGPU_ROM_SIZE, reservation))
 						status = B_BAD_DATA;
 					if (status == B_OK)
-						status = amdgpu_device_start(sRegisters, sInfo, view, reservation);
+						status = amdgpu_device_start(sRegisters, sInfo, view, reservation,
+							amdgpu::IsQualifiedUvdClockRom(rom, AMDGPU_ROM_SIZE));
 					if (status != B_OK)
 						set_area_protection(sRegisterArea, B_KERNEL_READ_AREA);
 				}

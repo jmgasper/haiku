@@ -70,9 +70,12 @@ status_t
 UvdEngine::Start(const amdgpu::FirmwareView& firmware)
 {
 	auto write = [&](uint32 reg, uint32 value) { regs[reg] = value; (void)regs[reg]; };
-	// Preserve the SMC's current VCLK/DCLK configuration on this first
-	// bring-up path. Report it; do not invent PLL/divider values without ATOM.
+	// Initialize the board-qualified ATOM divider requests before UVD starts.
+	// Initialize() has checked the PCI identity and complete ROM digest.
 	amdgpu_smc_dump_uvd_clocks(regs);
+	status_t clockStatus = amdgpu_smc_set_uvd_clocks(regs);
+	if (clockStatus != B_OK)
+		return clockStatus;
 	write(mmUVD_POWER_STATUS, UVD_POWER_STATUS__UVD_PG_EN_MASK);
 	write(mmUVD_POWER_STATUS, regs[mmUVD_POWER_STATUS] & ~UVD_POWER_STATUS__UVD_PG_MODE_MASK);
 	// Disable main gates while the VCPU is brought up. SUVD sub-block gate
@@ -151,6 +154,7 @@ UvdEngine::Start(const amdgpu::FirmwareView& firmware)
 	write(mmUVD_RBC_RB_WPTR, 0);
 	wptr = 0;
 	write(mmUVD_RBC_RB_CNTL, control & ~UVD_RBC_RB_CNTL__RB_NO_FETCH_MASK);
+	amdgpu_smc_dump_uvd_clocks(regs);
 	return B_OK;
 }
 
@@ -195,7 +199,7 @@ UvdEngine::Submit(uint32 words, amdgpu_uvd_test& result)
 
 status_t
 UvdEngine::Initialize(volatile uint32* r, const amdgpu_info& info,
-	const amdgpu::AtomVramReservation& reservation,
+	const amdgpu::AtomVramReservation& reservation, bool clocksQualified,
 	const amdgpu::FirmwareView& firmware, amdgpu_uvd_test& result)
 {
 	regs = r;
@@ -206,6 +210,10 @@ UvdEngine::Initialize(volatile uint32* r, const amdgpu_info& info,
 		return B_DEV_NOT_READY;
 	status_t status = B_OK;
 	if (!ready) {
+		if (!clocksQualified || info.vendor != 0x1002 || info.device != 0x67c7
+			|| info.subsystem_vendor != 0x1028 || info.subsystem_device != 0x0b0d
+			|| info.revision != 0 || firmware.version != 0x01008210)
+			return B_NOT_SUPPORTED;
 		const uint64 offset = 44ULL << 20;
 		uint32 end = ((firmware.codeSize + 8 + 4095) & ~4095u)
 			+ 256 * 1024 + 200 * 1024 + 50 * 1024 * 40;
@@ -246,10 +254,10 @@ UvdEngine::Initialize(volatile uint32* r, const amdgpu_info& info,
 
 status_t
 UvdEngine::Test(volatile uint32* r, const amdgpu_info& info,
-	const amdgpu::AtomVramReservation& reservation,
+	const amdgpu::AtomVramReservation& reservation, bool clocksQualified,
 	const amdgpu::FirmwareView& firmware, amdgpu_uvd_test& result, void* output)
 {
-	status_t status = Initialize(r, info, reservation, firmware, result);
+	status_t status = Initialize(r, info, reservation, clocksQualified, firmware, result);
 	if (status == B_OK) {
 		for (uint32 i = kMessage / 4; i < kBytes / 4; i++)
 			memory[i] = 0;

@@ -19,3 +19,9 @@ SEARCH_SOURCE += $(video)/amduvd $(video)/nvdec ;
 SimpleTest amdgpu_video_stream : amdgpu_video_stream.cpp H264Stream.cpp h264_parse.c UvdH264.cpp
 	: [ TargetLibstdc++ ] ;
 SimpleTest amdgpu_rom : amdgpu_rom.cpp Firmware.cpp ;
+
+UsePrivateHeaders libroot ;
+SimpleTest amdgpu_uvd_clocks : amdgpu_uvd_clocks.cpp UvdClock.cpp SHA256.cpp
+	: [ TargetLibstdc++ ] ;
+SEARCH on [ FGristFiles SHA256.cpp ]
+	= [ FDirName $(HAIKU_TOP) src system libroot posix crypt ] ;

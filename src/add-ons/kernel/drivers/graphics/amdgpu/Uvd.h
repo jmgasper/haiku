@@ -27,13 +27,13 @@ struct UvdEngine {
 	uint32 wptr, sequence;
 	bool attempted, ready, faulted;
 	status_t Initialize(volatile uint32* r, const amdgpu_info& info,
-		const amdgpu::AtomVramReservation& reservation,
+		const amdgpu::AtomVramReservation& reservation, bool clocksQualified,
 		const amdgpu::FirmwareView& firmware, amdgpu_uvd_test& result);
 	status_t Session(UvdSession& session, uint32 type,
 		const amdgpu_h264_picture* picture, const void* bitstream, uint32 bytes,
 		SdmaEngine& dma, amdgpu_uvd_test& result);
 	status_t Test(volatile uint32* r, const amdgpu_info& info,
-		const amdgpu::AtomVramReservation& reservation,
+		const amdgpu::AtomVramReservation& reservation, bool clocksQualified,
 		const amdgpu::FirmwareView& firmware, amdgpu_uvd_test& result, void* output);
 	status_t Start(const amdgpu::FirmwareView& firmware);
 	status_t Submit(uint32 words, amdgpu_uvd_test& result);

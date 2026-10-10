@@ -38,6 +38,8 @@ bool ParseSdmaFirmware(const void* data, size_t size, FirmwareView& view);
 bool ParseSmcFirmware(const void* data, size_t size, FirmwareView& view);
 bool ParseAtomVramReservation(const void* data, size_t size,
 	AtomVramReservation& reservation);
+// Fixed UVD clock policy is qualified only against this board's complete ROM.
+bool IsQualifiedUvdClockRom(const void* data, size_t size);
 
 } // namespace amdgpu
 #endif

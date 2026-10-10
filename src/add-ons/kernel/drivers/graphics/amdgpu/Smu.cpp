@@ -23,7 +23,7 @@
 
 // Protected Polaris startup from Linux polaris10_smumgr.c / smu7_smumgr.c.
 // Only the measured hard-key, protected-mode board is admitted. All waits
-// have deadlines; no DPM tables, voltage, fan, or clock policy are installed.
+// have deadlines. No DPM tables, voltage or fan policy are installed.
 #include "Smu.h"
 #include <KernelExport.h>
 
@@ -312,4 +312,37 @@ amdgpu_smc_dump_uvd_clocks(volatile uint32* regs)
 	for (uint32 address : addresses)
 		dprintf("amdgpu: UVD clock register %#x = %#x\n", (unsigned)address,
 			(unsigned)smc.Read(address));
+}
+
+status_t
+amdgpu_smc_set_uvd_clocks(volatile uint32* regs)
+{
+	SmcAccess smc(regs);
+	// UvdEngine admits only the qualified board/ROM/firmware. Its ATOM 1.6
+	// ComputeMemoryEnginePLL table returns DID 0x64 for 10000 (100 MHz).
+	// Use Linux vi_set_uvd_clock's dGPU divider update/status handshake;
+	// 100 MHz is uvd_v6_0_hw_init's initial request. No PLL/voltage changes.
+	if (smc.Read(0xc05000a4) != 0xf || smc.Read(0xc050009c) != 0xf
+		|| smc.Read(0xc0500118) != 0 || smc.Read(0xc05001c8) != 0)
+		return B_NOT_ALLOWED;
+	const uint32 controls[] = {0xc05000a4, 0xc050009c};
+	// Then request Linux's non-DPM playback clocks (533/400 MHz). The ROM
+	// returns 0x1c (rounded to 514.28 MHz) and 0x24 for those requests.
+	const uint32 dividers[2][2] = {{0x64, 0x64}, {0x1c, 0x24}};
+	for (unsigned step = 0; step < 2; step++) {
+		for (unsigned i = 0; i < 2; i++) {
+			uint32 control = controls[i];
+			uint32 value = (smc.Read(control) & ~0x17fu) | dividers[step][i];
+			smc.Write(control, value);
+			if (!smc.Wait(control + 4, 1, 1))
+				return B_TIMED_OUT;
+			uint32 actual = smc.Read(control);
+			dprintf("amdgpu: UVD clock request step %u register %#x wanted %#x read %#x\n",
+				step, (unsigned)control, (unsigned)value, (unsigned)actual);
+			if (actual != value)
+				return B_BAD_DATA;
+		}
+	}
+	dprintf("amdgpu: UVD clock dividers applied: startup 0x64/0x64, playback 0x1c/0x24\n");
+	return B_OK;
 }

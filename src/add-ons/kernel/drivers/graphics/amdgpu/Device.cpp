@@ -49,6 +49,7 @@ static Gart sGart = {};
 static GfxEngine sGfx = {};
 static UvdEngine sUvd = {};
 static amdgpu::AtomVramReservation sReservation;
+static bool sUvdClocksQualified;
 static SdmaEngine sEngine = {};
 static amdgpu_info sInfo;
 static bool sActive, sStopping;
@@ -185,7 +186,8 @@ amdgpu_device_active()
 
 static status_t
 Start(volatile uint32* regs, const amdgpu_info& info,
-	const amdgpu::FirmwareView& firmware, const amdgpu::AtomVramReservation& reservation)
+	const amdgpu::FirmwareView& firmware, const amdgpu::AtomVramReservation& reservation,
+	bool uvdClocksQualified)
 {
 	if (sActive)
 		return B_BUSY;
@@ -237,6 +239,7 @@ Start(volatile uint32* regs, const amdgpu_info& info,
 	}
 	sInfo = info;
 	sReservation = reservation;
+	sUvdClocksQualified = uvdClocksQualified;
 	sFault = B_OK;
 	sStopping = false;
 	sCompleted.Init(&sCompleted, "amdgpu fence");
@@ -258,10 +261,11 @@ Start(volatile uint32* regs, const amdgpu_info& info,
 
 status_t
 amdgpu_device_start(volatile uint32* regs, const amdgpu_info& info,
-	const amdgpu::FirmwareView& firmware, const amdgpu::AtomVramReservation& reservation)
+	const amdgpu::FirmwareView& firmware, const amdgpu::AtomVramReservation& reservation,
+	bool uvdClocksQualified)
 {
 	mutex_lock(&sMutex);
-	status_t status = Start(regs, info, firmware, reservation);
+	status_t status = Start(regs, info, firmware, reservation, uvdClocksQualified);
 	mutex_unlock(&sMutex);
 	return status;
 }
@@ -387,7 +391,8 @@ VideoControl(AmdgpuClient* client, uint32 op, void* data, size_t length)
 			InstalledFirmware firmware;
 			status = firmware.LoadUvd();
 			if (status == B_OK)
-				status = sUvd.Initialize(sEngine.regs, sInfo, sReservation, firmware.view, result);
+				status = sUvd.Initialize(sEngine.regs, sInfo, sReservation,
+					sUvdClocksQualified, firmware.view, result);
 		}
 		if (status == B_OK) status = sUvd.Session(*s, 0, NULL, NULL, 0, sEngine, result);
 		if (sUvd.faulted && sFault == B_OK) sFault = status;
@@ -736,7 +741,7 @@ amdgpu_device_uvd_test(const amdgpu::FirmwareView& firmware,
 {
 	mutex_lock(&sMutex);
 	status_t status = !sActive || sFault != B_OK ? B_DEV_NOT_READY
-		: sPending != 0 ? B_BUSY : sUvd.Test(sEngine.regs, sInfo, sReservation,
+		: sPending != 0 ? B_BUSY : sUvd.Test(sEngine.regs, sInfo, sReservation, sUvdClocksQualified,
 			firmware, result, output);
 	if (sUvd.faulted && sFault == B_OK)
 		sFault = status;
