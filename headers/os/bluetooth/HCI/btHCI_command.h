@@ -23,6 +23,7 @@ struct hci_command_header {
 
 #define OGF_LE_CONTROL				0x08
 #define OCF_LE_SET_EVENT_MASK			0x0001
+#define OCF_LE_READ_BUFFER_SIZE		0x0002
 #define OCF_LE_SET_SCAN_PARAMETERS	0x000b
 #define OCF_LE_SET_SCAN_ENABLE		0x000c
 #define OCF_LE_CREATE_CONN			0x000d

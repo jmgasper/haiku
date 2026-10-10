@@ -130,6 +130,9 @@ struct bluetooth_device : DoublyLinkedListLinkImpl<bluetooth_device> {
 	bt_hci_device_information*	info;
 	bt_hci_transport_hooks*		hooks;
 	uint16						mtu;
+		// ACL data packet length of the controller, from Read Buffer Size
+	uint16						leMtu;
+		// the same for LE links; 0 when they share the ACL buffers
 
 };
 #else

@@ -94,6 +94,51 @@ PostTransportPacket(hci_id hid, bt_packet_t type, void* data, size_t count)
 }
 
 
+/*!	Picks up what the stack below L2CAP needs to know from events on their
+	way to the bluetooth_server: the controller's ACL packet sizes.
+*/
+static void
+SnoopEvent(bluetooth_device* device, const void* data, size_t size)
+{
+	const uint8* event = (const uint8*)data;
+	if (size < HCI_EVENT_HDR_SIZE || size < (size_t)HCI_EVENT_HDR_SIZE + event[1])
+		return;
+
+	if (event[0] != HCI_EVENT_CMD_COMPLETE || event[1] < 4)
+		return;
+
+	// Command Complete: ncmd, opcode, then the command's return parameters
+	// (Core Vol 4 Part E 7.7.14), which start with a status.
+	const uint16 opcode = event[3] | (event[4] << 8);
+	const uint8* result = event + 5;
+	const size_t resultSize = event[1] - 3;
+	if (result[0] != 0)
+		return;
+
+	if (opcode == PACK_OPCODE(OGF_INFORMATIONAL_PARAM, OCF_READ_BUFFER_SIZE)
+		&& resultSize >= 8) {
+		// Read Buffer Size (7.4.5): ACL data packet length, SCO length,
+		// ACL and SCO packet counts.
+		const uint16 aclMtu = result[1] | (result[2] << 8);
+		if (aclMtu >= 27 && aclMtu != device->mtu) {
+			dprintf("bluetooth: hci %" B_PRId32 " ACL packets up to %u "
+				"bytes\n", device->index, aclMtu);
+			device->mtu = aclMtu;
+		}
+	} else if (opcode == PACK_OPCODE(OGF_LE_CONTROL, OCF_LE_READ_BUFFER_SIZE)
+		&& resultSize >= 4) {
+		// LE Read Buffer Size (7.8.2): a length of 0 means LE links use the
+		// ACL buffers.
+		const uint16 leMtu = result[1] | (result[2] << 8);
+		if (leMtu != device->leMtu) {
+			dprintf("bluetooth: hci %" B_PRId32 " LE packets up to %u "
+				"bytes\n", device->index, leMtu);
+			device->leMtu = leMtu;
+		}
+	}
+}
+
+
 status_t
 Assemble(bluetooth_device* bluetoothDevice, bt_packet_t type, void* data,
 	size_t count)
@@ -117,6 +162,8 @@ Assemble(bluetooth_device* bluetoothDevice, bt_packet_t type, void* data,
 						if (count >= bluetoothDevice->fExpectedPacketSize[type]) {
 							// the whole packet is here so it can be already posted.
 							TRACE("%s: EVENT posted in HCI\n", __func__);
+							SnoopEvent(bluetoothDevice, data,
+								bluetoothDevice->fExpectedPacketSize[type]);
 							btCoreData->PostEvent(bluetoothDevice, data,
 								bluetoothDevice->fExpectedPacketSize[type]);
 
@@ -255,7 +302,9 @@ RegisterDriver(bt_hci_transport_hooks* hooks, bluetooth_device** _device)
 	device->hooks = hooks;
 	device->supportedPacketTypes = (HCI_DM1 | HCI_DH1 | HCI_HV1);
 	device->linkMode = (HCI_LM_ACCEPT);
-	device->mtu = L2CAP_MTU_MINIMUM; // TODO: ensure specs min value
+	device->mtu = L2CAP_MTU_MINIMUM;
+		// until the bluetooth_server's Read Buffer Size tells the real one
+	device->leMtu = 0;
 
 	MutexLocker _(&sListLock);
 
@@ -341,17 +390,21 @@ PostACL(hci_id hciId, net_buffer* buffer)
 	// Vol 4 Part E 5.4.2); controllers may drop them. Start LE PDUs with the
 	// non-flushable boundary flag instead.
 	HciConnection* connection = btCoreData->ConnectionByHandle(handle, hciId);
-	if (connection != NULL && connection->isLE)
+	uint16 mtu = device->mtu;
+	if (connection != NULL && connection->isLE) {
 		flag = HCI_ACL_PACKET_START_NON_FLUSHABLE;
+		if (device->leMtu != 0)
+			mtu = device->leMtu;
+	}
 
 	// TODO: ATOMIC! any other thread should stop here
 	do {
 		// Divide packet if big enough
 		curr_frame = next_frame;
 
-		if (curr_frame->size > device->mtu) {
+		if (curr_frame->size > mtu) {
 			next_frame = curr_frame;
-			curr_frame = gBufferModule->split(next_frame, device->mtu);
+			curr_frame = gBufferModule->split(next_frame, mtu);
 			if (curr_frame == NULL)
 				return B_NO_MEMORY;
 		} else {

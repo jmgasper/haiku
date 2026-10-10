@@ -97,13 +97,11 @@ LocalDeviceImpl::StartPairingSetup()
 {
 	if (fPairSetupState != PAIR_SETUP_IDLE)
 		return B_BUSY;
-	const uint8 eventMask[8] = {
-		0xff, 0xff, 0xfb, 0xff, 0x07, 0xf8, 0xbf, 0x3d
-	};
-	fPairSetupState = PAIR_SETUP_EVENT_MASK;
+	// The kernel picks the controller's ACL packet sizes out of these
+	// answers; L2CAP fragments and paces its data with them.
+	fPairSetupState = PAIR_SETUP_BUFFER_SIZE;
 	status_t result = _SendLECommand(
-		PACK_OPCODE(OGF_CONTROL_BASEBAND, OCF_SET_EVENT_MASK),
-		eventMask, sizeof(eventMask));
+		PACK_OPCODE(OGF_INFORMATIONAL_PARAM, OCF_READ_BUFFER_SIZE), NULL, 0);
 	if (result != B_OK)
 		fPairSetupState = PAIR_SETUP_IDLE;
 	return result;
@@ -116,9 +114,26 @@ LocalDeviceImpl::HandlePairSetupCommandComplete(struct hci_event_header* event)
 	if (fPairSetupState == PAIR_SETUP_IDLE || event->elen < 4)
 		return;
 	const uint8* response = (const uint8*)(event + 1);
+	// Command Complete carries ncmd, opcode, status; a controller that does
+	// not know a command may refuse it in a Command Status instead: status,
+	// ncmd, opcode.
 	uint16 opcode = response[1] | (response[2] << 8);
+	uint8 status = response[3];
+	if (event->ecode == HCI_EVENT_CMD_STATUS) {
+		opcode = response[2] | (response[3] << 8);
+		status = response[0];
+		if (status == 0)
+			return;
+	}
 	uint16 expected = 0;
 	switch (fPairSetupState) {
+		case PAIR_SETUP_BUFFER_SIZE:
+			expected = PACK_OPCODE(OGF_INFORMATIONAL_PARAM,
+				OCF_READ_BUFFER_SIZE);
+			break;
+		case PAIR_SETUP_LE_BUFFER_SIZE:
+			expected = PACK_OPCODE(OGF_LE_CONTROL, OCF_LE_READ_BUFFER_SIZE);
+			break;
 		case PAIR_SETUP_EVENT_MASK:
 			expected = PACK_OPCODE(OGF_CONTROL_BASEBAND, OCF_SET_EVENT_MASK);
 			break;
@@ -139,16 +154,32 @@ LocalDeviceImpl::HandlePairSetupCommandComplete(struct hci_event_header* event)
 	}
 	if (opcode != expected)
 		return;
-	if (response[3] != 0) {
+	// A controller without LE, or an old one, may not know the buffer size
+	// commands; carry on without them.
+	if (status != 0 && fPairSetupState != PAIR_SETUP_BUFFER_SIZE
+		&& fPairSetupState != PAIR_SETUP_LE_BUFFER_SIZE) {
 		printf("Bluetooth pairing setup opcode %#x failed: %#x\n",
-			opcode, response[3]);
+			opcode, status);
 		fPairSetupState = PAIR_SETUP_IDLE;
 		return;
 	}
 	const uint8 enabled = 1;
 	const uint8 leHost[2] = { 1, 1 };
+	const uint8 eventMask[8] = {
+		0xff, 0xff, 0xfb, 0xff, 0x07, 0xf8, 0xbf, 0x3d
+	};
 	status_t result = B_OK;
 	switch (fPairSetupState) {
+		case PAIR_SETUP_BUFFER_SIZE:
+			fPairSetupState = PAIR_SETUP_LE_BUFFER_SIZE;
+			result = _SendLECommand(PACK_OPCODE(OGF_LE_CONTROL,
+				OCF_LE_READ_BUFFER_SIZE), NULL, 0);
+			break;
+		case PAIR_SETUP_LE_BUFFER_SIZE:
+			fPairSetupState = PAIR_SETUP_EVENT_MASK;
+			result = _SendLECommand(PACK_OPCODE(OGF_CONTROL_BASEBAND,
+				OCF_SET_EVENT_MASK), eventMask, sizeof(eventMask));
+			break;
 		case PAIR_SETUP_EVENT_MASK:
 			fPairSetupState = PAIR_SETUP_SSP;
 			result = _SendLECommand(PACK_OPCODE(OGF_CONTROL_BASEBAND,
@@ -334,6 +365,7 @@ LocalDeviceImpl::HandleUnexpectedEvent(struct hci_event_header* event)
 			break;
 
 		case HCI_EVENT_CMD_STATUS:
+			HandlePairSetupCommandComplete(event);
 			HandleLECommandStatus(event);
 			break;
 
