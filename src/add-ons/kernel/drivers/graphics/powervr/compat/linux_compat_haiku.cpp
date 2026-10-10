@@ -32,6 +32,8 @@
 #include <kernel.h>
 #include <team.h>
 #include <util/iovec_support.h>
+#include <vm/VMArea.h>
+#include <vm/VMCache.h>
 #include <vm/vm.h>
 #include <vm/vm_page.h>
 
@@ -404,6 +406,43 @@ make_runs(struct lx_dma_buffer* buffer, physical_entry* entries,
 }
 
 
+/*!	The physical pages of [offset, offset + size) of a wired area (B_FULL_LOCK,
+	B_CONTIGUOUS, B_ALREADY_WIRED), from its cache: lock_memory_etc() leaves
+	those alone, and a clone of one is not mapped in until it is touched, so
+	get_memory_map_etc() would find nothing there (and panic). B_BAD_TYPE for
+	other areas; B_BAD_ADDRESS when a page is not in the area's own cache.
+*/
+static status_t
+wired_area_memory_map(area_id id, size_t offset, size_t size,
+	physical_entry* entries, uint32* _count)
+{
+	VMArea* area = VMAreas::Lookup(id);
+	if (area == NULL)
+		return B_BAD_VALUE;
+	if (area->wiring != B_FULL_LOCK && area->wiring != B_CONTIGUOUS
+		&& area->wiring != B_ALREADY_WIRED) {
+		return B_BAD_TYPE;
+	}
+
+	uint32 count = 0;
+	VMCache* cache = vm_area_get_locked_cache(area);
+	for (size_t done = 0; done < size; done += B_PAGE_SIZE) {
+		vm_page* page = cache->LookupPage(area->cache_offset + offset + done);
+		if (page == NULL || count >= *_count) {
+			vm_area_put_locked_cache(cache);
+			return B_BAD_ADDRESS;
+		}
+		entries[count].address
+			= (phys_addr_t)page->physical_page_number * B_PAGE_SIZE;
+		entries[count].size = B_PAGE_SIZE;
+		count++;
+	}
+	vm_area_put_locked_cache(cache);
+	*_count = count;
+	return B_OK;
+}
+
+
 int
 lx_dma_buffer_import(struct lx_dma_buffer* buffer, const void* address,
 	size_t size)
@@ -449,13 +488,24 @@ lx_dma_buffer_import(struct lx_dma_buffer* buffer, const void* address,
 	physical_entry* entries
 		= (physical_entry*)malloc(pageCount * sizeof(physical_entry));
 	uint32 entryCount = pageCount;
-	if (entries == NULL
-		|| get_memory_map_etc(B_SYSTEM_TEAM, kernelAddress, size, entries,
-			&entryCount) != B_OK) {
+	status = entries != NULL ? B_OK : B_NO_MEMORY;
+	if (status == B_OK) {
+		status = wired_area_memory_map(area, offset, size, entries,
+			&entryCount);
+	}
+	if (status == B_BAD_TYPE) {
+		// lock_memory_etc() mapped it in: the translation map knows
+		entryCount = pageCount;
+		status = get_memory_map_etc(B_SYSTEM_TEAM, kernelAddress, size,
+			entries, &entryCount);
+	}
+	if (status != B_OK) {
+		TRACE("import: no memory map of area %" B_PRId32 ": %s\n", source,
+			strerror(status));
 		free(entries);
 		unlock_memory_etc(B_SYSTEM_TEAM, kernelAddress, size, 0);
 		delete_area(area);
-		return -LX_ENOMEM;
+		return status == B_NO_MEMORY ? -LX_ENOMEM : -LX_EFAULT;
 	}
 	int error = make_runs(buffer, entries, entryCount, "import");
 	if (error != 0) {

@@ -545,6 +545,43 @@ test_import()
 		delete_area(readOnly);
 	}
 
+	// wired areas, and an untouched clone of one (as the display's frame
+	// buffer is handed out): not mapped in until touched
+	static const struct {
+		uint32		lock;
+		const char*	name;
+	} kWired[] = {
+		{ B_CONTIGUOUS, "B_CONTIGUOUS" },
+		{ B_FULL_LOCK, "B_FULL_LOCK" },
+	};
+	for (size_t i = 0; i < sizeof(kWired) / sizeof(kWired[0]); i++) {
+		void* wiredAddress = NULL;
+		area_id wired = create_area("pvrtest wired", &wiredAddress,
+			B_ANY_ADDRESS, size, kWired[i].lock, B_READ_AREA | B_WRITE_AREA);
+		if (wired < 0)
+			continue;
+		void* cloneAddress = NULL;
+		area_id clone = clone_area("pvrtest wired clone", &cloneAddress,
+			B_ANY_ADDRESS, B_READ_AREA | B_WRITE_AREA, wired);
+		char what[64];
+		uint32 wiredHandle;
+		snprintf(what, sizeof(what), "IMPORT_HOST %s", kWired[i].name);
+		error = import_host(wiredAddress, size, 0, &wiredHandle);
+		check(error == 0, what, error != 0 ? strerror(error) : NULL);
+		if (error == 0)
+			close_bo(wiredHandle);
+		if (clone >= 0) {
+			snprintf(what, sizeof(what), "IMPORT_HOST untouched clone of %s",
+				kWired[i].name);
+			error = import_host(cloneAddress, size, 0, &wiredHandle);
+			check(error == 0, what, error != 0 ? strerror(error) : NULL);
+			if (error == 0)
+				close_bo(wiredHandle);
+			delete_area(clone);
+		}
+		delete_area(wired);
+	}
+
 	// in a GPU VM like any buffer
 	drm_pvr_ioctl_create_vm_context_args vm = {};
 	error = pvr_ioctl(PVR_NR(CREATE_VM_CONTEXT), &vm);
