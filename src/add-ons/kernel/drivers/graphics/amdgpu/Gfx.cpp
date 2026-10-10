@@ -420,6 +420,12 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	const bool ceIB = sequence == ceEnd;
 	const bool vmShader = sequence > ceEnd && sequence <= vmShaderEnd;
 	const bool privateShader = vmShader && ((sequence - ceEnd) & 1) != 0;
+	if (privateShader) {
+		// The previous submission has retired. Remove its stale packets so
+		// the entry checkpoint cannot prefetch an old outer-ring postlude.
+		for (uint32 i = 0; i < kRingDwords; i++)
+			ring[i] = (i & 1) == 0 ? Packet(0x10, 0) : 0;
+	}
 	const bool shader = (!direct && sequence <= shaderEnd) || vmShader;
 	const bool draw = sequence > shaderEnd && sequence <= drawEnd;
 	const bool minimalIB = sequence == vmShaderEnd + 1;
@@ -741,38 +747,48 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		emit((uint32)(kControlGPU + 0x300));
 		emit((kControlGPU + 0x300) >> 32);
 	}
-	snapshotVM(1);
-	emit(Packet(0x37, 3)); // PFP invalidates HDP after the command stream
-	emit(1 << 30 | 1 << 20);
-	emit(0xbcc);
-	emit(0);
-	emit(1);
-	// VI requires a dummy EOP followed by the real event. This fence is
-	// outside the IB and covers its return plus cache writeback/invalidation.
 	control[0x4 / 4] = 0;
-	for (uint32 value = 0; value < 2; value++) {
-		emit(Packet(0x47, 4));
-		emit(0x14 | 5 << 8 | 1 << 15 | 1 << 16 | 1 << 17);
-		emit((uint32)(kControlGPU + 0x04));
-		emit((kControlGPU + 0x04) >> 32 | 1 << 29);
-		emit(value == 0 ? sequence - 1 : sequence);
+	auto emitPostlude = [&]() {
+		snapshotVM(1);
+		emit(Packet(0x37, 3)); // PFP invalidates HDP after the command stream
+		emit(1 << 30 | 1 << 20);
+		emit(0xbcc);
 		emit(0);
-	}
-	ring[conditionOffset & kRingMask] = wptr - conditionOffset - 1;
-	padding = (-wptr) & 255;
-	if (padding == 1)
-		padding += 256;
-	if (padding != 0) {
-		emit(Packet(0x10, padding - 2));
-		for (uint32 i = 1; i < padding; i++)
+		emit(1);
+		// VI requires a dummy EOP followed by the real event. This fence is
+		// outside the IB and covers its return plus cache visibility.
+		for (uint32 value = 0; value < 2; value++) {
+			emit(Packet(0x47, 4));
+			emit(0x14 | 5 << 8 | 1 << 15 | 1 << 16 | 1 << 17);
+			emit((uint32)(kControlGPU + 0x04));
+			emit((kControlGPU + 0x04) >> 32 | 1 << 29);
+			emit(value == 0 ? sequence - 1 : sequence);
 			emit(0);
-	}
-	__sync_synchronize();
-	(void)ring[(wptr - 1) & kRingMask];
-	r[0x1520] = 1;
-	(void)r[0x1520];
-	r[0x3045] = wptr & kRingMask;
-	(void)r[0x3045];
+		}
+	};
+	auto submit = [&]() {
+		uint32 pad = (-wptr) & 255;
+		if (pad == 1)
+			pad += 256;
+		if (pad != 0) {
+			emit(Packet(0x10, pad - 2));
+			for (uint32 i = 1; i < pad; i++)
+				emit(0);
+		}
+		__sync_synchronize();
+		(void)ring[(wptr - 1) & kRingMask];
+		r[0x1520] = 1;
+		(void)r[0x1520];
+		r[0x3045] = wptr & kRingMask;
+		(void)r[0x3045];
+	};
+	// Withhold even the bytes of the postlude until both IB checkpoints.
+	// The first submission ends with NOPs, and its condition covers only
+	// that first batch. The separately submitted postlude is unconditional.
+	if (!privateShader)
+		emitPostlude();
+	ring[conditionOffset & kRingMask] = wptr - conditionOffset - 1;
+	submit();
 	if (privateShader) {
 		bigtime_t gateDeadline = system_time() + 500000;
 		while (control[0x84 / 4] != sequence && system_time() < gateDeadline)
@@ -799,6 +815,10 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			(unsigned)r[0x537], (unsigned)r[0x53e], (unsigned)r[0x53f],
 			(unsigned)r[0xc0ce], (unsigned)r[0x21c0], (unsigned)r[0x3045]);
 		DumpExecutionState("IB tail gate");
+		dprintf("amdgpu: GFX deferred postlude seq %u begins at ring %u\n",
+			(unsigned)sequence, (unsigned)(wptr & kRingMask));
+		emitPostlude();
+		submit();
 		// Always release the private wait, including a missing-marker case.
 		control[0x80 / 4] = 2;
 		__sync_synchronize();
