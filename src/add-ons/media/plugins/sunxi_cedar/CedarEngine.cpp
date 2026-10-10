@@ -275,11 +275,16 @@ CedarEngine::_H264SramBytes(uint32 wordOffset, const uint8* data,
 
 static void
 h264_frame_entry(uint32* entry, const CedarFrame& frame, size_t lumaSize,
-	size_t mvcolSize, int32 topPoc, int32 bottomPoc)
+	size_t mvcolSize, int32 topPoc, int32 bottomPoc, bool longTerm)
 {
 	entry[0] = (uint32)topPoc;
 	entry[1] = (uint32)bottomPoc;
-	entry[2] = 0 << 8;		// a frame: neither field nor MBAFF
+	// [9:8] 0: a frame, neither field nor MBAFF; [1:0] and [5:4] the top
+	// and bottom field's reference type, 0 short-term and 1 long-term (2 is
+	// what Allwinner's own decoder gives a non-reference picture). Spatial
+	// direct prediction needs it: a long-term RefPicList1[0] has no
+	// colZeroFlag (FRExt_MMCO4_Sony_B picture 21).
+	entry[2] = longTerm ? 0x11 : 0;
 	entry[3] = frame.picture.bus;
 	entry[4] = frame.picture.bus + (uint32)lumaSize;
 	entry[5] = frame.mvcol.bus;
@@ -328,10 +333,10 @@ CedarEngine::DecodeH264Slice(const H264State& state, const H264Slice& slice,
 		if (frame->position < 1 || frame->position >= H264_FRAME_SLOTS)
 			continue;
 		h264_frame_entry(&list[frame->position * 8], *frame, fLumaSize,
-			fMvcolSize, ref.topPoc, ref.bottomPoc);
+			fMvcolSize, ref.topPoc, ref.bottomPoc, ref.ref == 2);
 	}
 	h264_frame_entry(&list[current.position * 8], current, fLumaSize,
-		fMvcolSize, state.curTopPoc, state.curBottomPoc);
+		fMvcolSize, state.curTopPoc, state.curBottomPoc, false);
 	_H264Sram(H264_SRAM_FRAMES, list, H264_FRAME_SLOTS * 8);
 	fDevice.Write(H264_OUTPUT_FRAME_IDX, current.position);
 
