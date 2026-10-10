@@ -332,7 +332,10 @@ lx_dma_buffer_alloc(struct lx_dma_buffer* buffer, size_t size,
 void
 lx_dma_buffer_free(struct lx_dma_buffer* buffer)
 {
-	if (buffer->area >= 0) {
+	if (buffer->area >= 0 && buffer->imported) {
+		unlock_memory_etc(B_SYSTEM_TEAM, buffer->address, buffer->size, 0);
+		delete_area(buffer->area);
+	} else if (buffer->area >= 0) {
 		delete_area(buffer->area);
 		atomic_add(&sBufferCount, -1);
 		atomic_add64(&sBufferBytes, -(int64)buffer->size);
@@ -340,6 +343,116 @@ lx_dma_buffer_free(struct lx_dma_buffer* buffer)
 	free(buffer->runs);
 	memset(buffer, 0, sizeof(*buffer));
 	buffer->area = -1;
+}
+
+
+/*!	Merges a memory map's entries into runs, checks that the GPU reaches
+	them; frees \a entries.
+*/
+static int
+make_runs(struct lx_dma_buffer* buffer, physical_entry* entries,
+	uint32 entryCount, const char* name)
+{
+	struct lx_dma_run* runs
+		= (struct lx_dma_run*)malloc(entryCount * sizeof(struct lx_dma_run));
+	if (runs == NULL) {
+		free(entries);
+		return -LX_ENOMEM;
+	}
+	uint32 runCount = 0;
+	for (uint32 i = 0; i < entryCount; i++) {
+		if (entries[i].size == 0)
+			break;
+		if (runCount > 0 && runs[runCount - 1].address
+				+ runs[runCount - 1].size == entries[i].address) {
+			runs[runCount - 1].size += entries[i].size;
+			continue;
+		}
+		runs[runCount].address = entries[i].address;
+		runs[runCount].size = entries[i].size;
+		runCount++;
+	}
+	free(entries);
+
+	for (uint32 i = 0; i < runCount; i++) {
+		if (runs[i].address + runs[i].size - 1 > dma_limit()) {
+			TRACE("%s: page at %#llx is beyond the GPU's reach (%#llx)\n",
+				name, (unsigned long long)runs[i].address, lx_dma_mask);
+			free(runs);
+			return -LX_ERANGE;
+		}
+	}
+	buffer->run_count = runCount;
+	buffer->runs = runs;
+	return 0;
+}
+
+
+int
+lx_dma_buffer_import(struct lx_dma_buffer* buffer, const void* address,
+	size_t size)
+{
+	memset(buffer, 0, sizeof(*buffer));
+	buffer->area = -1;
+	if (size == 0 || ((addr_t)address | size) % B_PAGE_SIZE != 0
+		|| !is_user_address_range(address, size)) {
+		return -LX_EINVAL;
+	}
+
+	area_id source = area_for(const_cast<void*>(address));
+	area_info info;
+	if (source < 0 || get_area_info(source, &info) != B_OK)
+		return -LX_EFAULT;
+	size_t offset = (addr_t)address - (addr_t)info.address;
+	if (offset + size > info.size)
+		return -LX_EINVAL;
+		// one area only
+	if ((info.protection & (B_READ_AREA | B_WRITE_AREA))
+			!= (B_READ_AREA | B_WRITE_AREA)) {
+		// the GPU may write it
+		return -LX_EACCES;
+	}
+
+	void* base = NULL;
+	area_id area = vm_clone_area(B_SYSTEM_TEAM, "powervr import", &base,
+		B_ANY_KERNEL_ADDRESS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
+		REGION_NO_PRIVATE_MAP, source, true);
+	if (area < 0) {
+		TRACE("import: no kernel clone of area %" B_PRId32 ": %s\n", source,
+			strerror(area));
+		return -LX_EFAULT;
+	}
+	void* kernelAddress = (uint8*)base + offset;
+	status_t status = lock_memory_etc(B_SYSTEM_TEAM, kernelAddress, size, 0);
+	if (status != B_OK) {
+		delete_area(area);
+		return -LX_ENOMEM;
+	}
+
+	uint32 pageCount = size / B_PAGE_SIZE;
+	physical_entry* entries
+		= (physical_entry*)malloc(pageCount * sizeof(physical_entry));
+	uint32 entryCount = pageCount;
+	if (entries == NULL
+		|| get_memory_map_etc(B_SYSTEM_TEAM, kernelAddress, size, entries,
+			&entryCount) != B_OK) {
+		free(entries);
+		unlock_memory_etc(B_SYSTEM_TEAM, kernelAddress, size, 0);
+		delete_area(area);
+		return -LX_ENOMEM;
+	}
+	int error = make_runs(buffer, entries, entryCount, "import");
+	if (error != 0) {
+		unlock_memory_etc(B_SYSTEM_TEAM, kernelAddress, size, 0);
+		delete_area(area);
+		return error;
+	}
+
+	buffer->area = area;
+	buffer->address = kernelAddress;
+	buffer->size = size;
+	buffer->imported = true;
+	return 0;
 }
 
 

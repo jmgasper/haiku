@@ -52,6 +52,7 @@
 
 // Haiku-only
 #define PVR_HAIKU_NR_MAP_BO			0xe0	// struct pvr_haiku_map_bo
+#define PVR_HAIKU_NR_IMPORT_HOST	0xe1	// struct pvr_haiku_import_host
 #define PVR_HAIKU_NR_STAGE			0xef	// struct pvr_haiku_stage
 
 #define PVR_HAIKU_ABI_VERSION		3
@@ -78,6 +79,25 @@ struct pvr_haiku_map_bo {
 	uint64	address;				// in: placement or 0; out: address
 	uint64	size;					// out
 	uint32	flags;					// in: PVR_HAIKU_MAP_BO_*
+	uint32	reserved;
+};
+
+
+/*	PVR_HAIKU_OP(PVR_HAIKU_NR_IMPORT_HOST) makes a buffer object of the
+	caller's own memory (VK_EXT_external_memory_host), such as another
+	team's bitmap area cloned into it: [address, address + size) must be
+	page aligned and lie within one area the caller can read and write.
+	The pages stay locked, and the memory alive, until the handle is
+	closed (GEM_CLOSE) and the GPU is done with it. The object cannot be
+	mapped with MAP_BO; the caller already has it, cached as it is, and
+	keeps it coherent as described for PVR_HAIKU_MAP_BO_CACHED. Only
+	DRM_PVR_BO_BYPASS_DEVICE_CACHE is allowed in flags. Drivers without it
+	answer B_DEV_INVALID_IOCTL. */
+struct pvr_haiku_import_host {
+	uint64	address;				// in
+	uint64	size;					// in
+	uint64	flags;					// in: DRM_PVR_BO_*
+	uint32	handle;					// out: buffer handle
 	uint32	reserved;
 };
 

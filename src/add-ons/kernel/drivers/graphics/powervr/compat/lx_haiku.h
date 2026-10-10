@@ -103,11 +103,18 @@ struct lx_dma_buffer {
 	size_t				size;
 	uint32				run_count;
 	struct lx_dma_run*	runs;
+	bool				imported;	/* a locked view of a team's memory */
 };
 
 int		lx_dma_buffer_alloc(struct lx_dma_buffer* buffer, size_t size,
 			const char* name);
 void	lx_dma_buffer_free(struct lx_dma_buffer* buffer);
+/*	[address, address + size) of the calling team as a buffer: the area
+	holding it is cloned into the kernel (so the pages outlive the team's
+	mapping) and the range locked until lx_dma_buffer_free(). Page aligned;
+	the GPU must reach every page. */
+int		lx_dma_buffer_import(struct lx_dma_buffer* buffer, const void* address,
+			size_t size);
 int		lx_dma_buffer_address(const struct lx_dma_buffer* buffer,
 			size_t offset, unsigned long long* _address);
 

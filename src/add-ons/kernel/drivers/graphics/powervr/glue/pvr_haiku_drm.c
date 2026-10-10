@@ -133,6 +133,32 @@ map_bo_ioctl(struct pvr_haiku_file* file, void* data)
 }
 
 
+/*!	PVR_HAIKU_NR_IMPORT_HOST: a buffer object over the caller's memory. */
+static int
+import_host_ioctl(struct pvr_haiku_file* file, void* data)
+{
+	struct pvr_haiku_import_host* args = (struct pvr_haiku_import_host*)data;
+	if (args->reserved != 0 || args->size > SIZE_MAX)
+		return -EINVAL;
+
+	struct pvr_file* pvr_file = to_pvr_file(&file->drm_file);
+	struct pvr_gem_object* pvr_obj = pvr_haiku_gem_object_import(
+		pvr_file->pvr_dev, (const void*)(uintptr_t)args->address,
+		(size_t)args->size, args->flags);
+	if (IS_ERR(pvr_obj)) {
+		TRACE("IMPORT_HOST: %#" B_PRIx64 ", %" B_PRIu64 " KiB not imported:"
+			" %d\n", args->address, args->size / 1024, (int)PTR_ERR(pvr_obj));
+		return PTR_ERR(pvr_obj);
+	}
+
+	// as pvr_ioctl_create_bo(): the handle holds the only reference
+	int error = pvr_gem_object_into_handle(pvr_obj, pvr_file, &args->handle);
+	if (error != 0)
+		pvr_gem_object_put(pvr_obj);
+	return error;
+}
+
+
 #define SYNCOBJ_FUNCTION(function_, type_) \
 	static int \
 	syncobj_##function_(struct pvr_haiku_file* file, void* data) \
@@ -184,6 +210,8 @@ static const struct generic_ioctl {
 		timeline_signal),
 	GENERIC_IOCTL(PVR_HAIKU_NR_MAP_BO, _IOC_READ | _IOC_WRITE,
 		struct pvr_haiku_map_bo, map_bo_ioctl),
+	GENERIC_IOCTL(PVR_HAIKU_NR_IMPORT_HOST, _IOC_READ | _IOC_WRITE,
+		struct pvr_haiku_import_host, import_host_ioctl),
 };
 
 

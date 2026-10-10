@@ -474,6 +474,106 @@ test_buffers()
 }
 
 
+static int
+import_host(const void* address, uint64 size, uint64 flags, uint32* _handle)
+{
+	pvr_haiku_import_host args = {};
+	args.address = (addr_t)address;
+	args.size = size;
+	args.flags = flags;
+	int error = pvr_ioctl(PVR_HAIKU_NR_IMPORT_HOST, &args);
+	*_handle = error == 0 ? args.handle : 0;
+	return error;
+}
+
+
+/*!	IMPORT_HOST: the team's own memory as a buffer object. Whether the GPU
+	really reads and writes it is up to the Vulkan tests.
+*/
+static void
+test_import()
+{
+	const uint64 size = 64 * 1024;
+	void* address = NULL;
+	area_id area = create_area("pvrtest host memory", &address,
+		B_ANY_ADDRESS, size, B_NO_LOCK, B_READ_AREA | B_WRITE_AREA);
+	if (area < 0) {
+		check(false, "create_area", strerror(area));
+		return;
+	}
+	uint32* words = (uint32*)address;
+	for (uint32 i = 0; i < size / 4; i++)
+		words[i] = 0xa5000000 | i;
+
+	uint32 handle;
+	int error = import_host(address, size, 0, &handle);
+	check(error == 0 && handle != 0, "IMPORT_HOST 64 KiB",
+		error != 0 ? strerror(error) : NULL);
+	if (handle == 0) {
+		delete_area(area);
+		return;
+	}
+
+	pvr_haiku_map_bo map = {};
+	map.handle = handle;
+	check_error(pvr_ioctl(PVR_HAIKU_NR_MAP_BO, &map), EACCES,
+		"MAP_BO of an imported buffer");
+
+	uint32 part;
+	error = import_host((uint8*)address + 16 * 1024, 32 * 1024,
+		DRM_PVR_BO_BYPASS_DEVICE_CACHE, &part);
+	check(error == 0, "IMPORT_HOST part of an area, bypassing the SLC",
+		error != 0 ? strerror(error) : NULL);
+
+	uint32 bad;
+	check_error(import_host((uint8*)address + 100, B_PAGE_SIZE, 0, &bad),
+		EINVAL, "IMPORT_HOST unaligned");
+	check_error(import_host(address, size + B_PAGE_SIZE, 0, &bad), EINVAL,
+		"IMPORT_HOST past the area's end");
+	check_error(import_host(address, size,
+		DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS, &bad), EINVAL,
+		"IMPORT_HOST with CPU access");
+	check_error(import_host((void*)(addr_t)0xffff000000000000ull,
+		B_PAGE_SIZE, 0, &bad), EINVAL, "IMPORT_HOST of a kernel address");
+
+	void* readOnlyAddress = NULL;
+	area_id readOnly = create_area("pvrtest read-only", &readOnlyAddress,
+		B_ANY_ADDRESS, B_PAGE_SIZE, B_NO_LOCK, B_READ_AREA);
+	if (readOnly >= 0) {
+		check_error(import_host(readOnlyAddress, B_PAGE_SIZE, 0, &bad),
+			EACCES, "IMPORT_HOST of a read-only area");
+		delete_area(readOnly);
+	}
+
+	// in a GPU VM like any buffer
+	drm_pvr_ioctl_create_vm_context_args vm = {};
+	error = pvr_ioctl(PVR_NR(CREATE_VM_CONTEXT), &vm);
+	if (error == 0 && sHeapCount > 0) {
+		drm_pvr_ioctl_vm_map_args vmMap = {};
+		vmMap.vm_context_handle = vm.handle;
+		vmMap.device_addr = sHeaps[DRM_PVR_HEAP_GENERAL].base;
+		vmMap.handle = handle;
+		vmMap.size = size;
+		error = pvr_ioctl(PVR_NR(VM_MAP), &vmMap);
+		check(error == 0, "VM_MAP an imported buffer",
+			error != 0 ? strerror(error) : NULL);
+		// left mapped for DESTROY_VM_CONTEXT
+	}
+	if (vm.handle != 0) {
+		drm_pvr_ioctl_destroy_vm_context_args destroy = {};
+		destroy.handle = vm.handle;
+		check(pvr_ioctl(PVR_NR(DESTROY_VM_CONTEXT), &destroy) == 0,
+			"DESTROY_VM_CONTEXT with an imported buffer");
+	}
+
+	// the object keeps the memory after the team lets go of it
+	delete_area(area);
+	if (part != 0)
+		close_bo(part);
+	close_bo(handle);
+}
+
+
 //	#pragma mark - sync objects
 
 
@@ -682,6 +782,7 @@ main(int argc, char** argv)
 	test_generic();
 	test_dev_query();
 	test_buffers();
+	test_import();
 	test_syncobjs();
 
 	close(sFD);
