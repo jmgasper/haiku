@@ -50,6 +50,8 @@ pvr_gem_object_create(struct pvr_device* pvr_dev, size_t size, u64 flags)
 
 	object->base.dev = from_pvr_device(pvr_dev);
 	object->base.size = object->buffer.size;
+	object->base.resv = &object->base._resv;
+	dma_resv_init(&object->base._resv);
 	object->base.vma_node.offset
 		= (u64)atomic_add64(&sNextOffset, 1) << PAGE_SHIFT;
 	kref_init(&object->base.refcount);
@@ -66,6 +68,8 @@ pvr_gem_object_release(struct kref* kref)
 	struct pvr_gem_object* object = container_of(kref, struct pvr_gem_object,
 		base.refcount);
 	struct pvr_device* pvr_dev = to_pvr_device(object->base.dev);
+
+	dma_resv_fini(&object->base._resv);
 
 	if (to_haiku_device(pvr_dev)->keep_memory) {
 		// The GPU may still read or write it: leave it to the next boot.

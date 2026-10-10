@@ -44,7 +44,7 @@ struct syncobj_point {
 	struct dma_fence*	fence;
 };
 
-struct pvr_haiku_syncobj {
+struct drm_syncobj {
 	struct kref			refcount;
 	bool				attached;	/* has a fence (Linux: ->fence set) */
 	u64					completed;
@@ -65,7 +65,7 @@ static mutex sSyncLock = MUTEX_INITIALIZER("powervr syncobjs");
 
 
 static void
-drop_points(struct pvr_haiku_syncobj* syncobj)
+drop_points(struct drm_syncobj* syncobj)
 {
 	struct syncobj_point* entry;
 	struct syncobj_point* next;
@@ -81,7 +81,7 @@ drop_points(struct pvr_haiku_syncobj* syncobj)
 	"completed" past them.
 */
 static void
-collect(struct pvr_haiku_syncobj* syncobj)
+collect(struct drm_syncobj* syncobj)
 {
 	while (!list_empty(&syncobj->points)) {
 		struct syncobj_point* entry = list_first_entry(&syncobj->points,
@@ -98,7 +98,7 @@ collect(struct pvr_haiku_syncobj* syncobj)
 
 
 static u64
-last_point(struct pvr_haiku_syncobj* syncobj)
+last_point(struct drm_syncobj* syncobj)
 {
 	if (list_empty(&syncobj->points))
 		return syncobj->completed;
@@ -109,7 +109,7 @@ last_point(struct pvr_haiku_syncobj* syncobj)
 
 
 static enum syncobj_state
-state_of(struct pvr_haiku_syncobj* syncobj, u64 point)
+state_of(struct drm_syncobj* syncobj, u64 point)
 {
 	collect(syncobj);
 	if (!syncobj->attached)
@@ -127,7 +127,7 @@ state_of(struct pvr_haiku_syncobj* syncobj, u64 point)
 	only one; the timeline starts over.
 */
 static int
-replace_fence(struct pvr_haiku_syncobj* syncobj, struct dma_fence* fence)
+replace_fence(struct drm_syncobj* syncobj, struct dma_fence* fence)
 {
 	struct syncobj_point* entry = NULL;
 	if (fence != NULL) {
@@ -153,7 +153,7 @@ replace_fence(struct pvr_haiku_syncobj* syncobj, struct dma_fence* fence)
 	does this).
 */
 static int
-add_point(struct pvr_haiku_syncobj* syncobj, u64 point,
+add_point(struct drm_syncobj* syncobj, u64 point,
 	struct dma_fence* fence)
 {
 	struct syncobj_point* entry
@@ -188,7 +188,7 @@ add_point(struct pvr_haiku_syncobj* syncobj, u64 point,
 	\a point. NULL if there is none yet.
 */
 static struct dma_fence*
-fence_for(struct pvr_haiku_syncobj* syncobj, u64 point, int* _error)
+fence_for(struct drm_syncobj* syncobj, u64 point, int* _error)
 {
 	*_error = 0;
 	enum syncobj_state state = state_of(syncobj, point);
@@ -233,11 +233,11 @@ fence_for(struct pvr_haiku_syncobj* syncobj, u64 point, int* _error)
 /* #pragma mark - objects and handles */
 
 
-static struct pvr_haiku_syncobj*
+static struct drm_syncobj*
 syncobj_create(void)
 {
-	struct pvr_haiku_syncobj* syncobj
-		= (struct pvr_haiku_syncobj*)kzalloc(sizeof(*syncobj), GFP_KERNEL);
+	struct drm_syncobj* syncobj
+		= (struct drm_syncobj*)kzalloc(sizeof(*syncobj), GFP_KERNEL);
 	if (syncobj == NULL)
 		return NULL;
 	kref_init(&syncobj->refcount);
@@ -249,8 +249,8 @@ syncobj_create(void)
 static void
 syncobj_release(struct kref* kref)
 {
-	struct pvr_haiku_syncobj* syncobj
-		= container_of(kref, struct pvr_haiku_syncobj, refcount);
+	struct drm_syncobj* syncobj
+		= container_of(kref, struct drm_syncobj, refcount);
 	mutex_lock(&sSyncLock);
 	drop_points(syncobj);
 	mutex_unlock(&sSyncLock);
@@ -259,19 +259,19 @@ syncobj_release(struct kref* kref)
 
 
 static void
-syncobj_put(struct pvr_haiku_syncobj* syncobj)
+syncobj_put(struct drm_syncobj* syncobj)
 {
 	if (syncobj != NULL)
 		kref_put(&syncobj->refcount, syncobj_release);
 }
 
 
-static struct pvr_haiku_syncobj*
+static struct drm_syncobj*
 syncobj_lookup(struct pvr_haiku_file* file, u32 handle)
 {
 	xa_lock(&file->syncobjs);
-	struct pvr_haiku_syncobj* syncobj
-		= (struct pvr_haiku_syncobj*)xa_load(&file->syncobjs, handle);
+	struct drm_syncobj* syncobj
+		= (struct drm_syncobj*)xa_load(&file->syncobjs, handle);
 	if (syncobj != NULL)
 		kref_get(&syncobj->refcount);
 	xa_unlock(&file->syncobjs);
@@ -280,7 +280,7 @@ syncobj_lookup(struct pvr_haiku_file* file, u32 handle)
 
 
 static void
-put_syncobjs(struct pvr_haiku_syncobj** syncobjs, u32 count)
+put_syncobjs(struct drm_syncobj** syncobjs, u32 count)
 {
 	for (u32 i = 0; i < count; i++)
 		syncobj_put(syncobjs[i]);
@@ -293,14 +293,14 @@ put_syncobjs(struct pvr_haiku_syncobj** syncobjs, u32 count)
 */
 static int
 lookup_array(struct pvr_haiku_file* file, u64 userHandles, u64 userPoints,
-	u32 count, struct pvr_haiku_syncobj*** _syncobjs, u64** _points)
+	u32 count, struct drm_syncobj*** _syncobjs, u64** _points)
 {
 	if (count == 0 || count > MAX_SYNCOBJ_HANDLES)
 		return -EINVAL;
 
 	u32* handles = (u32*)kcalloc(count, sizeof(u32), GFP_KERNEL);
 	u64* points = NULL;
-	struct pvr_haiku_syncobj** syncobjs = (struct pvr_haiku_syncobj**)
+	struct drm_syncobj** syncobjs = (struct drm_syncobj**)
 		kcalloc(count, sizeof(*syncobjs), GFP_KERNEL);
 	if (_points != NULL)
 		points = (u64*)kcalloc(count, sizeof(u64), GFP_KERNEL);
@@ -351,7 +351,7 @@ void
 pvr_haiku_syncobjs_fini(struct pvr_haiku_file* file)
 {
 	unsigned long handle;
-	struct pvr_haiku_syncobj* syncobj;
+	struct drm_syncobj* syncobj;
 	xa_for_each(&file->syncobjs, handle, syncobj) {
 		xa_erase(&file->syncobjs, handle);
 		syncobj_put(syncobj);
@@ -376,7 +376,7 @@ deadline_for(s64 timeoutNanoseconds)
 
 
 static int
-wait_array(struct pvr_haiku_syncobj** syncobjs, const u64* points,
+wait_array(struct drm_syncobj** syncobjs, const u64* points,
 	u32 count, u32 flags, s64 timeoutNanoseconds, u32* _firstSignaled)
 {
 	const bool all = (flags & DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL) != 0;
@@ -440,7 +440,7 @@ pvr_haiku_syncobj_wait(struct pvr_haiku_file* file,
 		return -EINVAL;
 	}
 
-	struct pvr_haiku_syncobj** syncobjs;
+	struct drm_syncobj** syncobjs;
 	int error = lookup_array(file, args->handles, 0, args->count_handles,
 		&syncobjs, NULL);
 	if (error != 0)
@@ -463,7 +463,7 @@ pvr_haiku_syncobj_timeline_wait(struct pvr_haiku_file* file,
 	if ((args->flags & ~VALID_WAIT_FLAGS) != 0)
 		return -EINVAL;
 
-	struct pvr_haiku_syncobj** syncobjs;
+	struct drm_syncobj** syncobjs;
 	u64* points;
 	int error = lookup_array(file, args->handles, args->points,
 		args->count_handles, &syncobjs, &points);
@@ -491,7 +491,7 @@ pvr_haiku_syncobj_create(struct pvr_haiku_file* file,
 	if ((args->flags & ~DRM_SYNCOBJ_CREATE_SIGNALED) != 0)
 		return -EINVAL;
 
-	struct pvr_haiku_syncobj* syncobj = syncobj_create();
+	struct drm_syncobj* syncobj = syncobj_create();
 	if (syncobj == NULL)
 		return -ENOMEM;
 	if ((args->flags & DRM_SYNCOBJ_CREATE_SIGNALED) != 0) {
@@ -524,7 +524,7 @@ pvr_haiku_syncobj_destroy(struct pvr_haiku_file* file,
 {
 	if (args->pad != 0)
 		return -EINVAL;
-	struct pvr_haiku_syncobj* syncobj = (struct pvr_haiku_syncobj*)
+	struct drm_syncobj* syncobj = (struct drm_syncobj*)
 		xa_erase(&file->syncobjs, args->handle);
 	if (syncobj == NULL)
 		return -EINVAL;
@@ -541,7 +541,7 @@ static int
 set_array(struct pvr_haiku_file* file, u64 userHandles, u64 userPoints,
 	u32 count, struct dma_fence* fence)
 {
-	struct pvr_haiku_syncobj** syncobjs;
+	struct drm_syncobj** syncobjs;
 	u64* points = NULL;
 	int error = lookup_array(file, userHandles, userPoints, count,
 		&syncobjs, userPoints != 0 ? &points : NULL);
@@ -608,7 +608,7 @@ pvr_haiku_syncobj_query(struct pvr_haiku_file* file,
 	if ((args->flags & ~DRM_SYNCOBJ_QUERY_FLAGS_LAST_SUBMITTED) != 0)
 		return -EINVAL;
 
-	struct pvr_haiku_syncobj** syncobjs;
+	struct drm_syncobj** syncobjs;
 	int error = lookup_array(file, args->handles, 0, args->count_handles,
 		&syncobjs, NULL);
 	if (error != 0)
@@ -642,7 +642,7 @@ pvr_haiku_syncobj_query(struct pvr_haiku_file* file,
 	waits up to 10 s for a fence to be submitted when \a flags say so.
 */
 static int
-find_fence(struct pvr_haiku_syncobj* syncobj, u64 point, u32 flags,
+find_fence(struct drm_syncobj* syncobj, u64 point, u32 flags,
 	struct dma_fence** _fence)
 {
 	bigtime_t deadline = system_time() + FIND_FENCE_SUBMIT_TIMEOUT;
@@ -679,8 +679,8 @@ pvr_haiku_syncobj_transfer(struct pvr_haiku_file* file,
 		return -EINVAL;
 	}
 
-	struct pvr_haiku_syncobj* source = syncobj_lookup(file, args->src_handle);
-	struct pvr_haiku_syncobj* target = syncobj_lookup(file, args->dst_handle);
+	struct drm_syncobj* source = syncobj_lookup(file, args->src_handle);
+	struct drm_syncobj* target = syncobj_lookup(file, args->dst_handle);
 	int error = source == NULL || target == NULL ? -ENOENT : 0;
 
 	struct dma_fence* fence = NULL;
@@ -703,34 +703,61 @@ pvr_haiku_syncobj_transfer(struct pvr_haiku_file* file,
 }
 
 
-/* #pragma mark - for job submission */
+/* #pragma mark - for job submission (drm_syncobj.h, pvr_sync.c) */
+
+
+struct drm_syncobj*
+drm_syncobj_find(struct drm_file* drmFile, u32 handle)
+{
+	return syncobj_lookup(container_of(drmFile, struct pvr_haiku_file,
+		drm_file), handle);
+}
+
+
+void
+drm_syncobj_put(struct drm_syncobj* syncobj)
+{
+	syncobj_put(syncobj);
+}
 
 
 int
-pvr_haiku_syncobj_find_fence(struct pvr_haiku_file* file, u32 handle,
-	u64 point, struct dma_fence** _fence)
+drm_syncobj_find_fence(struct drm_file* drmFile, u32 handle, u64 point,
+	u64 flags, struct dma_fence** _fence)
 {
-	struct pvr_haiku_syncobj* syncobj = syncobj_lookup(file, handle);
+	struct drm_syncobj* syncobj = drm_syncobj_find(drmFile, handle);
 	if (syncobj == NULL)
 		return -ENOENT;
-	int error = find_fence(syncobj, point, 0, _fence);
+	int error = find_fence(syncobj, point, (u32)flags, _fence);
 	syncobj_put(syncobj);
 	return error;
 }
 
 
-int
-pvr_haiku_syncobj_add_fence(struct pvr_haiku_file* file, u32 handle,
-	u64 point, struct dma_fence* fence)
+void
+drm_syncobj_add_point(struct drm_syncobj* syncobj,
+	struct dma_fence_chain* chain, struct dma_fence* fence, u64 point)
 {
-	struct pvr_haiku_syncobj* syncobj = syncobj_lookup(file, handle);
-	if (syncobj == NULL)
-		return -ENOENT;
+	dma_fence_chain_free(chain);
 	mutex_lock(&sSyncLock);
-	int error = point != 0 ? add_point(syncobj, point, fence)
-		: replace_fence(syncobj, fence);
+	int error = add_point(syncobj, point, fence);
 	mutex_unlock(&sSyncLock);
+	if (error != 0) {
+		// Linux cannot fail here (the chain node was allocated before)
+		lx_log(LX_LOG_ERROR, "sync object point %llu lost: %d",
+			(unsigned long long)point, error);
+	}
 	wake_up_all(&lx_fence_queue);
-	syncobj_put(syncobj);
-	return error;
+}
+
+
+void
+drm_syncobj_replace_fence(struct drm_syncobj* syncobj, struct dma_fence* fence)
+{
+	mutex_lock(&sSyncLock);
+	int error = replace_fence(syncobj, fence);
+	mutex_unlock(&sSyncLock);
+	if (error != 0)
+		lx_log(LX_LOG_ERROR, "sync object fence lost: %d", error);
+	wake_up_all(&lx_fence_queue);
 }
