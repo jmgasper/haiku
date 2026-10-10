@@ -62,6 +62,8 @@ typedef struct {
 	int		direct8x8Inference;
 	int		cropLeft, cropRight, cropTop, cropBottom;
 	bool		hasVui;
+	int		fullRange;
+	int		matrixCoefficients;	/* 2: unspecified */
 	bool		hasReorderFrames;
 	int		maxNumReorderFrames;
 	int		maxDecFrameBuffering;

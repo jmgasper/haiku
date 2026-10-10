@@ -7,7 +7,8 @@
 
 H264Stream::H264Stream()
 	: config(), picture(), poc(0), sequence(0), cropLeft(0), cropTop(0), width(0),
-	  height(0), reorderLimit(0), fSets(), fSlice()
+	  height(0), reorderLimit(0), discardPrior(false), fullRange(false),
+	  matrixCoefficients(2), fSets(), fSlice()
 {
 	Reset();
 }
@@ -142,6 +143,10 @@ bool H264Stream::Prepare(const uint8_t* data, size_t bytes)
 	height = config.height - cropTop - sps.cropBottom * 2;
 	if (width <= 0 || height <= 0) return Fail("invalid frame cropping");
 	reorderLimit = sps.hasReorderFrames ? sps.maxNumReorderFrames : h264MaxDpbFrames(&sps);
+	if (reorderLimit < 0 || reorderLimit > 16) return Fail("unsupported reorder limit");
+	fullRange = sps.fullRange != 0;
+	matrixCoefficients = sps.matrixCoefficients;
+	discardPrior = fSlice.idr && fSlice.noOutputOfPriorPics;
 	if (fSlice.idr) {
 		std::vector<uint8_t> saved;
 		saved.swap(bitstream);
@@ -167,6 +172,15 @@ bool H264Stream::Prepare(const uint8_t* data, size_t bytes)
 	memcpy(picture.scaling4x4, pps.scaling4x4, sizeof(picture.scaling4x4));
 	memcpy(picture.scaling8x8, pps.scaling8x8, sizeof(picture.scaling8x8));
 	if (!PictureOrder(sps)) return false;
+	// MMCO 5 starts a new output epoch and renumbers this picture to zero.
+	// Keep the original POCs in the firmware descriptor; Commit applies the
+	// same renumbering to the retained reference and the next picture's state.
+	for (int i = 0; i < fSlice.mmcoCount; i++) {
+		if (fSlice.mmco[i].op != 5) continue;
+		if (sequence == UINT32_MAX) return Fail("coded sequence counter exhausted");
+		sequence++; poc = 0;
+		break;
+	}
 	unsigned index = 0;
 	int maxFrame = 1 << (sps.log2MaxFrameNumMinus4 + 4);
 	for (auto& ref : fRefs) {

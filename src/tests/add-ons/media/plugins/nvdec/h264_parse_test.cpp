@@ -88,6 +88,18 @@ static void Regressions()
 	Bits s = Sps(), p = Pps();
 	Require(h264ParseSps(s.bytes.data(), s.bytes.size(), &sps), "baseline SPS");
 	Require(sps.picWidthInMbs == 40 && sps.picHeightInMapUnits == 30, "SPS dimensions");
+	Require(sps.matrixCoefficients == 2 && sps.fullRange == 0, "unspecified VUI colour defaults");
+	Bits colour;
+	colour.Put(66, 8).Put(0, 8).Put(30, 8).UE(0);
+	colour.UE(0).UE(0).UE(0).UE(2).Put(0);
+	colour.UE(39).UE(29).Put(1).Put(1).Put(0).Put(1); // VUI present
+	colour.Put(0).Put(0).Put(1).Put(5, 3).Put(1).Put(1);
+	colour.Put(1, 8).Put(14, 8).Put(6, 8); // primaries, transfer, matrix
+	colour.Put(0).Put(0).Put(0).Put(0).Put(0).Put(0).Stop();
+	H264Sps colourSps;
+	Require(h264ParseSps(colour.bytes.data(), colour.bytes.size(), &colourSps)
+		&& colourSps.fullRange == 1 && colourSps.matrixCoefficients == 6,
+		"retain full range and matrix independently of primaries/transfer");
 	sets.sps[0] = sps;
 	Require(h264ParsePps(p.bytes.data(), p.bytes.size(), &sets, &pps), "baseline PPS");
 	sets.pps[0] = pps;

@@ -226,7 +226,7 @@ skipHrd(H264Bits *br)
 	h264Bits(br, 5);		/* time_offset_length */
 }
 
-/* Annex E. Only the bounds on reordering are wanted; the rest is skipped. */
+/* Annex E. Retain output colour interpretation and reordering bounds. */
 static void
 parseVui(H264Bits *br, H264Sps *sps)
 {
@@ -242,11 +242,11 @@ parseVui(H264Bits *br, H264Sps *sps)
 		h264Bit(br);
 	if (h264Bit(br)) {			/* video_signal_type_present_flag */
 		h264Bits(br, 3);
-		h264Bit(br);
+		sps->fullRange = h264Bit(br);
 		if (h264Bit(br)) {		/* colour_description_present_flag */
 			h264Bits(br, 8);
 			h264Bits(br, 8);
-			h264Bits(br, 8);
+			sps->matrixCoefficients = h264Bits(br, 8);
 		}
 	}
 	if (h264Bit(br)) {			/* chroma_loc_info_present_flag */
@@ -285,6 +285,7 @@ h264ParseSps(const uint8_t *rbsp, size_t size, H264Sps *sps)
 	H264Bits br;
 	h264BitsInit(&br, rbsp, size);
 	memset(sps, 0, sizeof(*sps));
+	sps->matrixCoefficients = 2;
 	setFlatScaling(sps->scaling4x4, sps->scaling8x8);
 
 	sps->profileIdc = h264Bits(&br, 8);

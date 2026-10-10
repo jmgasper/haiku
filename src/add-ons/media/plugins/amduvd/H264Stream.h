@@ -21,6 +21,8 @@ public:
 	int32_t poc;
 	uint32_t sequence;
 	int cropLeft, cropTop, width, height, reorderLimit;
+	bool discardPrior, fullRange;
+	int matrixCoefficients;
 private:
 	struct Reference {
 		bool used, longTerm;
