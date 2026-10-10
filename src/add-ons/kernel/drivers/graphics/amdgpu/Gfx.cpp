@@ -62,6 +62,22 @@ static const uint32 kHalt = 0x15000000;
 static const uint64 kCommandVA = 0x10000;
 static const uint64 kMemoryVA = 0x100000;
 static const uint32 kDirectSequences = 16;
+static const uint32 kShaderSequences = 16;
+// gfx803, assembled with LLVM 18. s[0:1] is the output address, s2 the seed,
+// s3 the workgroup X ID, and v0 the local thread X ID. No scratch or LDS.
+static const uint32 kFillShader[] = {
+	0xd1c30000, 0x04018003, // v_mad_u32_u24 v0, s3, 64, v0
+	0x24040082,             // v_lshlrev_b32 v2, 2, v0
+	0x32040400,             // v_add_u32 v2, vcc, s0, v2
+	0x7e060201,             // v_mov_b32 v3, s1
+	0xd11c6a03, 0x01a90103, // v_addc_u32 v3, vcc, v3, 0, vcc
+	0xbe8400ff, 0x10204081, // s_mov_b32 s4, 0x10204081
+	0xd2850004, 0x00000900, // v_mul_lo_u32 v4, v0, s4
+	0x2a080802,             // v_xor_b32 v4, s2, v4
+	0xdc710000, 0x00000402, // flat_store_dword v[2:3], v4 glc
+	0xbf8c0f70,             // s_waitcnt vmcnt(0)
+	0xbf810000,             // s_endpgm
+};
 static uint32 Packet(uint32 op, uint32 count) { return 0xc0000000 | count << 16 | op << 8; }
 
 status_t
@@ -187,6 +203,8 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		wptr = sequence = 0;
 		for (uint32 i = 0; i < (1 << 20) / 4; i++)
 			memory[i] = 0;
+		for (uint32 i = 0; i < sizeof(kFillShader) / sizeof(uint32); i++)
+			memory[0x40000 / 4 + i] = kFillShader[i];
 		for (uint32 i = 0; i < 0x4000; i++)
 			ring[i] = (i & 1) == 0 ? Packet(0x10, 0) : 0;
 		result.stage = 2;
@@ -286,8 +304,9 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		sequence++;
 	result.sequence = sequence;
 	const bool direct = sequence <= kDirectSequences;
-	const bool minimalIB = sequence == kDirectSequences + 1;
-	uint64 destination = direct || minimalIB ? gpu : kMemoryVA;
+	const bool shader = !direct && sequence <= kDirectSequences + kShaderSequences;
+	const bool minimalIB = sequence == kDirectSequences + kShaderSequences + 1;
+	uint64 destination = direct || shader || minimalIB ? gpu : kMemoryVA;
 	for (uint32 i = 0; i < 3072; i++)
 		data[(int32)i - 1024] = 0xabcddcba;
 	ib[n++] = Packet(0x37, 1026); // WRITE_DATA, 1024 payload DWORDs
@@ -314,6 +333,18 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			ib[n++] = 0;
 	}
 	auto emit = [&](uint32 word) { ring[wptr++ & 0x3fff] = word; };
+	auto snapshotVM = [&](uint32 slot) {
+		for (uint32 context = 0; context < 2; context++) {
+			uint32 offset = 0x30100 + (slot * 2 + context) * 4;
+			memory[offset / 4] = 0xffffffff;
+			emit(Packet(0x40, 4)); // COPY_DATA: register to confirmed memory
+			emit(5 << 8 | 1 << 20);
+			emit(0x536 + context);
+			emit(0);
+			emit((uint32)(gpu + offset));
+			emit((gpu + offset) >> 32);
+		}
+	};
 	// Invalidate caches after CPU updates and synchronize PFP before IB reads.
 	// gfx_v8_0_emit_mem_sync uses this full-range VI cache operation.
 	emit(Packet(0x43, 3));
@@ -323,6 +354,61 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	emit(10);
 	emit(Packet(0x42, 0)); // PFP_SYNC_ME
 	emit(0);
+	// Match amdgpu_ib_schedule's kernel-job wrapper on GFX8. The private
+	// condition is always true; no client can modify it or these packets.
+	memory[0x30040 / 4] = 1;
+	emit(Packet(0x22, 3)); // COND_EXEC
+	emit((uint32)(gpu + 0x30040));
+	emit((gpu + 0x30040) >> 32);
+	emit(0);
+	uint32 conditionOffset = wptr;
+	emit(0); // patch the number of following DWORDs after the EOP fence
+	emit(Packet(0x3c, 5)); // PFP HDP write/wait/write handshake
+	emit(1 << 6 | 3 | 1 << 8);
+	emit(0x1537);
+	emit(0x1538);
+	emit(1);
+	emit(1);
+	emit(0x20);
+	snapshotVM(0);
+	if (shader) {
+		auto setShader = [&](uint32 reg, uint32 value) {
+			emit(Packet(0x76, 1) | 2); // SET_SH_REG, compute shader type
+			emit(reg - 0x2c00);
+			emit(value);
+		};
+		setShader(0x2e04, 0); // COMPUTE_START_X/Y/Z
+		setShader(0x2e05, 0);
+		setShader(0x2e06, 0);
+		setShader(0x2e07, 64); // NUM_THREAD_X/Y/Z
+		setShader(0x2e08, 1);
+		setShader(0x2e09, 1);
+		setShader(0x2e0c, (gpu + 0x40000) >> 8);
+		setShader(0x2e0d, (gpu + 0x40000) >> 40);
+		setShader(0x2e12, 1 | 1 << 6 | 0xc0 << 12); // 8 VGPR, 16 SGPR
+		setShader(0x2e13, 3 << 1 | 1 << 7); // 3 user SGPRs + group X
+		setShader(0x2e14, 0); // direct kernel dispatch uses VMID0
+		setShader(0x2e15, 0); // RESOURCE_LIMITS: one group per CU, no wave limit
+		setShader(0x2e16, 0xffffffff); // STATIC_THREAD_MGMT_SE0/1
+		setShader(0x2e17, 0xffffffff);
+		setShader(0x2e18, 0); // no scratch ring
+		setShader(0x2e19, 0xffffffff); // STATIC_THREAD_MGMT_SE2/3
+		setShader(0x2e1a, 0xffffffff);
+		setShader(0x2e40, (uint32)(gpu + 0x20000));
+		setShader(0x2e41, (gpu + 0x20000) >> 32);
+		setShader(0x2e42, 0x71324589 ^ sequence);
+		emit(Packet(0x15, 3) | 2); // DISPATCH_DIRECT: 16 groups x 64 threads
+		emit(16);
+		emit(1);
+		emit(1);
+		emit(1 | 1 << 2); // COMPUTE_SHADER_EN, FORCE_START_AT_000
+		emit(Packet(0x46, 0));
+		emit(7 | 4 << 8); // CS_PARTIAL_FLUSH before the completion marker
+		// Only the shader writes the payload. The CP writes its marker after
+		// all waves finish; EOP below makes their stores visible to the CPU.
+		for (uint32 i = 1028; i < 1033; i++)
+			emit(ib[i]);
+	}
 	if (direct || minimalIB) {
 		// The minimal IB obtains its completion marker exclusively from the
 		// private VM's five-DWORD IB. Only its bulk payload runs directly.
@@ -332,7 +418,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	}
 	// First exercise direct ring packets, then the indirect-buffer fetch path.
 	// Both streams and all addresses are private to the kernel.
-	if (!direct) {
+	if (!direct && !shader) {
 		uint64 address = kCommandVA;
 		uint32 length = n;
 		if (minimalIB) {
@@ -351,6 +437,12 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		ring[wptr++ & 0x3fff] = address >> 32;
 		ring[wptr++ & 0x3fff] = length | 1 << 24; // private VMID1
 	}
+	snapshotVM(1);
+	emit(Packet(0x37, 3)); // PFP invalidates HDP after the command stream
+	emit(1 << 30 | 1 << 20);
+	emit(0xbcc);
+	emit(0);
+	emit(1);
 	// VI requires a dummy EOP followed by the real event. This fence is
 	// outside the IB and covers its return plus cache writeback/invalidation.
 	memory[0x30004 / 4] = 0;
@@ -362,6 +454,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		emit(value == 0 ? sequence - 1 : sequence);
 		emit(0);
 	}
+	ring[conditionOffset & 0x3fff] = wptr - conditionOffset - 1;
 	padding = (-wptr) & 255;
 	if (padding == 1)
 		padding += 256;
@@ -396,10 +489,15 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			status = B_BAD_DATA;
 	}
 	Snapshot(result);
+	dprintf("amdgpu: GFX VM checkpoints seq %u before %#x/%#x after %#x/%#x\n",
+		(unsigned)sequence, (unsigned)memory[0x30100 / 4],
+		(unsigned)memory[0x30104 / 4], (unsigned)memory[0x30108 / 4],
+		(unsigned)memory[0x3010c / 4]);
 	if (status != B_OK) {
 		const uint32 registers[] = {0x208d, 0x21c2, 0x3043, 0x3044, 0x3046,
 			0x3047, 0x3061, 0x3066, 0x230a, 0x230b, 0x230c, 0x230d,
-			0x500, 0x501, 0x502, 0x578, 0x504, 0x50c, 0x54f, 0x546};
+			0x500, 0x501, 0x502, 0x578, 0x504, 0x50c, 0x54f, 0x546,
+			0x3051, 0x2e0c, 0x2e0d, 0x2e12, 0x2e13, 0x2e14, 0x2e15};
 		for (uint32 index : registers)
 			dprintf("amdgpu: GFX fault register %#x = %#x\n", (unsigned)index, (unsigned)r[index]);
 		faulted = true;

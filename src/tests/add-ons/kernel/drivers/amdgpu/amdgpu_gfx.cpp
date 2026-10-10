@@ -58,7 +58,7 @@ int main(int argc, char** argv)
 		images[i][12] = saved;
 	}
 	puts("PASS: invalid GFX firmware requests rejected before hardware writes");
-	for (unsigned round = 0; round < 32; round++) {
+	for (unsigned round = 0; round < 48; round++) {
 		auto result = request;
 		Require(ioctl(fd, AMDGPU_GFX_TEST, &result, sizeof(result)) == 0, "GFX ioctl");
 		printf("GFX stage %u status %#x (%s) seq %u, checked %u, mismatches %u\n",
@@ -72,15 +72,17 @@ int main(int argc, char** argv)
 		gart.version = AMDGPU_HAIKU_ABI_VERSION;
 		gart.size = sizeof(gart);
 		Require(ioctl(fd, AMDGPU_GART_INFO, &gart, sizeof(gart)) == 0, "VM fault query");
-		printf("VM fault status %#x, GPU page %#x, client %#x\n",
-			(unsigned)result.vm_fault_status, (unsigned)result.vm_fault_address,
+		printf("VM fault status %#x, VMID %u, GPU page %#x, client %#x\n",
+			(unsigned)result.vm_fault_status,
+			(unsigned)((result.vm_fault_status >> 25) & 15),
+			(unsigned)result.vm_fault_address,
 			(unsigned)result.vm_fault_client);
 		Require(result.status == B_OK && result.stage == 5 && result.checked_bytes == 12288
-			&& result.mismatches == 0, "GFX indirect memory writes and guards");
+			&& result.mismatches == 0, "GFX execution, data, guards and VM faults");
 	}
 	close(fd);
 	for (uint8* image : images)
 		free(image);
-	puts("PASS: 32 GFX8 submissions including repeated direct and indirect buffers, complete data/guard checks");
+	puts("PASS: 48 GFX8 submissions including direct writes, compute shaders and indirect buffers, complete data/guard checks");
 	return 0;
 }
