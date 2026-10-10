@@ -50,6 +50,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", type=Path)
     parser.add_argument("--decoded", type=Path)
+    parser.add_argument("--linear-output", type=Path)
     args = parser.parse_args()
     fixture = (Path(__file__).resolve().parents[5]
                / "add-ons/kernel/drivers/graphics/amdgpu/UvdFixture.h").read_text()
@@ -63,7 +64,11 @@ def main():
     assert struct.unpack_from("<9I", avc) == (
         2, 30, 0x85, 0x88, 0x01000001, 0x00020300, 2, 0, 0)
     assert struct.unpack_from("<2I", message, 0x18) == (864, 480)
-    assert struct.unpack_from("<I", message, 0x70)[0] == 1024
+    assert struct.unpack_from("<8I", message, 0x70) == (
+        1024, 0, 0, 1, 0, 0x3c000, 0x78000, 0x96000)
+    # dt_field_mode=1: separate top/bottom field surfaces, as in Mesa
+    # r600_uvd.c/ruvd_set_dt_surfaces. This describes output storage even
+    # though the coded H.264 picture has frame_mbs_only_flag=1.
     assert avc[36:36 + 224] == bytes([16]) * 224  # flat scaling lists
     sps = Bits().u(100, 8).u(0, 8).u(30, 8).ue(0)  # High, level 3.0, SPS 0
     sps.ue(1).ue(0).ue(0).u(0, 1).u(0, 1)  # 4:2:0, 8-bit, no scaling matrix
@@ -87,14 +92,19 @@ def main():
         actual = args.decoded.read_bytes()
         assert len(actual) == 1024 * 480 * 3 // 2
         active_errors = padding_errors = 0
-        for row in range(480 * 3 // 2):
-            active_errors += sum(a != b for a, b in zip(
-                actual[row * 1024:row * 1024 + 864], expected[row * 864:(row + 1) * 864]))
-            padding_errors += sum(value != 0 for value in actual[row * 1024 + 864:(row + 1) * 1024])
+        linear = bytearray()
+        for top, bottom, rows in ((0, 0x3c000, 480), (0x78000, 0x96000, 240)):
+            for row in range(rows):
+                offset = (bottom if row & 1 else top) + (row // 2) * 1024
+                linear.extend(actual[offset:offset + 864])
+                padding_errors += sum(value != 0 for value in actual[offset + 864:offset + 1024])
+        active_errors = sum(a != b for a, b in zip(linear, expected))
         print("Compared 622080 active bytes and 115200 padding bytes:",
               active_errors, "pixel mismatches,", padding_errors, "padding mismatches")
         assert active_errors == padding_errors == 0
         print("PASS: every decoded NV12 byte matches independent software reference and zero padding")
+        if args.linear_output:
+            args.linear_output.write_bytes(linear)
 
 
 if __name__ == "__main__":
