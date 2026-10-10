@@ -312,6 +312,16 @@ PvrDevice::_InterruptThread(void* data)
 //	#pragma mark - STAGE
 
 
+/*!	The device for the DRM files of the opens, while the firmware runs,
+	otherwise NULL (only STAGE then).
+*/
+struct pvr_device*
+PvrDevice::Device() const
+{
+	return fStage == PVR_HAIKU_STAGE_FIRMWARE ? fDevice : NULL;
+}
+
+
 status_t
 PvrDevice::Stage(pvr_haiku_stage& stage)
 {

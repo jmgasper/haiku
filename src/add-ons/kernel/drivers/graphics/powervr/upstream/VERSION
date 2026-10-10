@@ -18,12 +18,13 @@ Post-6.18 fixes in this tree that the reused files carry:
                 polls; this core has LAYOUT_MARS)
   62a6f98cda4e  Skip 2nd thread DM association for non META Firmware
                 (pvr_fw_startstop.c)
-and, in files not reused yet (pvr_mmu.c, pvr_power.c, pvr_queue.c):
+and, in pvr_mmu.c (reused since M3) and files not reused (pvr_power.c,
+pvr_queue.c):
   0a8224058a58  Fix page count for page table for map() interface
   7b824c293a6b  Propagate map failures correctly from pvr_mmu_map_sgl()
   a55c2a5c8d68  Fix deadlock in soft reset sequence
 
-Files (47 + uapi/drm/pvr_drm.h):
+Files (61 + uapi/drm/pvr_drm.h):
 
   generated hardware and firmware interface definitions (H)
     pvr_rogue_cr_defs.h pvr_rogue_cr_defs_client.h pvr_rogue_defs.h
@@ -41,8 +42,14 @@ Files (47 + uapi/drm/pvr_drm.h):
     pvr_fw_trace.h pvr_device_info.c pvr_vm_mips.c pvr_vm_mips.h
     pvr_dump.c pvr_dump.h
 
-  headers of files not reused (yet), for their declarations and
-  structures
+  the userland interface (M3): ioctls, GPU page tables, contexts and
+  their client CCBs, free lists, HWRT data sets, state streams
+    pvr_drv.c (built through glue/pvr_haiku_drv.c) pvr_mmu.c pvr_context.c
+    pvr_context.h pvr_cccb.c pvr_cccb.h pvr_free_list.c pvr_free_list.h
+    pvr_hwrt.c pvr_hwrt.h pvr_stream.c pvr_stream_defs.c pvr_stream_defs.h
+    pvr_debugfs.h
+
+  headers of files not reused, for their declarations and structures
     pvr_device.h pvr_drv.h pvr_fw_meta.h pvr_mmu.h pvr_power.h pvr_stream.h
     pvr_vm.h
 

@@ -17,12 +17,30 @@
 #include <SupportDefs.h>
 
 
+/* Linux error numbers (asm-generic/errno-base.h, errno.h). */
+#define LX_EPERM		1
 #define LX_ENOENT		2
+#define LX_EINTR		4
 #define LX_EIO			5
 #define LX_E2BIG		7
+#define LX_EAGAIN		11
 #define LX_ENOMEM		12
+#define LX_EACCES		13
+#define LX_EFAULT		14
+#define LX_EBUSY		16
+#define LX_EEXIST		17
+#define LX_ENODEV		19
 #define LX_EINVAL		22
+#define LX_ENOSPC		28
 #define LX_ERANGE		34
+#define LX_EDEADLK		35
+#define LX_ENOSYS		38
+#define LX_ETIME		62
+#define LX_EOVERFLOW	75
+#define LX_EOPNOTSUPP	95
+#define LX_ETIMEDOUT	110
+#define LX_ECANCELED	125
+#define LX_ENOTSUPP		524
 
 
 #ifdef __cplusplus
@@ -31,6 +49,17 @@ extern "C" {
 
 
 struct device;
+
+
+/*	A negative Linux error code as the Haiku status that means the same:
+	what userland gets as errno (Mesa checks for ETIME and friends). */
+status_t	lx_status(int error);
+
+/*	Clones a kernel area into the calling team, readable and writable,
+	with the source's memory type (write-combined); at *_address exactly
+	when \a exact, anywhere otherwise. */
+area_id		lx_area_clone_to_user(area_id source, void** _address,
+				bool exact);
 
 
 /* Wait queues: a generation count and a ConditionVariable in the storage. */
@@ -44,6 +73,13 @@ void	wake_up_all(wait_queue_head_t* queue);
 int32	lx_wait_queue_generation(wait_queue_head_t* queue);
 void	lx_wait_queue_sleep(wait_queue_head_t* queue, int32 generation,
 			bigtime_t deadline);
+/*	The same, but a signal ends the wait too: B_INTERRUPTED then, B_OK
+	otherwise (woken or past the deadline). For waits userland asked for. */
+status_t	lx_wait_queue_sleep_interruptible(wait_queue_head_t* queue,
+				int32 generation, bigtime_t deadline);
+
+/* Whether all of [address, address + size) is userland memory. */
+bool	lx_access_ok(const void* address, unsigned long size);
 
 
 /* The highest physical address + 1 mask the GPU can reach (dma_set_mask). */

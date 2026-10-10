@@ -6,7 +6,9 @@
 /*	Imagination PowerVR Rogue GPUs: the BXM-4-64 MC1 of the Allwinner A733
 	(Radxa Cubie A7S). Bring-up stage 1: the GPU powered and identified;
 	stage 2: the firmware booted on the GPU's MIPS core and answering
-	(PvrDevice, behind the driver settings).
+	(PvrDevice, behind the driver settings); stage 3: the DRM interface
+	Mesa's PowerVR Vulkan driver uses, on the opens of the device
+	(pvr_haiku.h, glue/pvr_haiku_drm.c).
 
 	The plan (lab evidence/gpu/DESIGN.md): a native driver that reuses the
 	hardware and firmware code of Linux's drm/imagination (upstream/, built
@@ -56,11 +58,34 @@ powervr_init_device(void* driverCookie, void** _deviceCookie)
 }
 
 
+/*	One open: the DRM file behind the ioctls, when the firmware runs (an
+	open before that, or without it, can only ask for the STAGE). */
+struct powervr_cookie {
+	powervr_info*			info;
+	struct pvr_haiku_file*	file;
+};
+
+
 static status_t
 powervr_open(void* deviceCookie, const char* path, int openMode,
 	void** _cookie)
 {
-	*_cookie = deviceCookie;
+	powervr_info* info = (powervr_info*)deviceCookie;
+	powervr_cookie* cookie
+		= (powervr_cookie*)calloc(1, sizeof(powervr_cookie));
+	if (cookie == NULL)
+		return B_NO_MEMORY;
+	cookie->info = info;
+
+	struct pvr_device* device = info->device->Device();
+	if (device != NULL) {
+		status_t status = pvr_haiku_file_open(device, &cookie->file);
+		if (status != B_OK) {
+			free(cookie);
+			return status;
+		}
+	}
+	*_cookie = cookie;
 	return B_OK;
 }
 
@@ -73,36 +98,51 @@ powervr_close(void* cookie)
 
 
 static status_t
-powervr_free(void* cookie)
+powervr_free(void* _cookie)
 {
+	powervr_cookie* cookie = (powervr_cookie*)_cookie;
+	if (cookie->file != NULL)
+		pvr_haiku_file_close(cookie->file);
+	free(cookie);
 	return B_OK;
 }
 
 
 static status_t
-powervr_control(void* cookie, uint32 op, void* buffer, size_t length)
+powervr_stage(powervr_info* info, void* buffer, size_t length)
 {
-	powervr_info* info = (powervr_info*)cookie;
-
-	if (op == PVR_HAIKU_OP(PVR_HAIKU_NR_STAGE)) {
-		pvr_haiku_stage stage;
-		if (length != sizeof(stage))
-			return B_BAD_VALUE;
-		if (!IS_USER_ADDRESS(buffer)
-			|| user_memcpy(&stage, buffer, sizeof(stage)) != B_OK) {
-			return B_BAD_ADDRESS;
-		}
-		if (stage.version != PVR_HAIKU_ABI_VERSION)
-			return B_BAD_VALUE;
-		status_t status = info->device->Stage(stage);
-		if (status != B_OK)
-			return status;
-		return user_memcpy(buffer, &stage, sizeof(stage));
+	pvr_haiku_stage stage;
+	if (length != sizeof(stage))
+		return B_BAD_VALUE;
+	if (!IS_USER_ADDRESS(buffer)
+		|| user_memcpy(&stage, buffer, sizeof(stage)) != B_OK) {
+		return B_BAD_ADDRESS;
 	}
+	if (stage.version != PVR_HAIKU_ABI_VERSION)
+		return B_BAD_VALUE;
+	status_t status = info->device->Stage(stage);
+	if (status != B_OK)
+		return status;
+	return user_memcpy(buffer, &stage, sizeof(stage));
+}
+
+
+static status_t
+powervr_control(void* _cookie, uint32 op, void* buffer, size_t length)
+{
+	powervr_cookie* cookie = (powervr_cookie*)_cookie;
 
 	// Not a display driver: app_server asks every device under graphics/
 	// for an accelerant and has to be turned away.
-	return B_DEV_INVALID_IOCTL;
+	if (!PVR_HAIKU_IS_OP(op))
+		return B_DEV_INVALID_IOCTL;
+
+	uint32 nr = PVR_HAIKU_OP_NR(op);
+	if (nr == PVR_HAIKU_NR_STAGE)
+		return powervr_stage(cookie->info, buffer, length);
+	if (cookie->file == NULL)
+		return B_NO_INIT;
+	return pvr_haiku_file_ioctl(cookie->file, nr, buffer, length);
 }
 
 

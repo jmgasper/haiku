@@ -31,6 +31,8 @@ public:
 
 			status_t			Stage(pvr_haiku_stage& stage);
 
+			struct pvr_device*	Device() const;
+
 private:
 			void				_ReadSettings();
 			void				_StartFirmware();

@@ -1,0 +1,1312 @@
+air/OS (Haiku arm64): Mesa 26.2.4's PowerVR Vulkan driver on the native
+"powervr" kernel driver (/dev/graphics/powervr/0, Cubie A7S BXM-4-64 MC1).
+
+The kernel takes Linux's drm.h / pvr_drm.h structures unchanged behind op
+codes PVR_HAIKU_OP(nr) (headers/private/graphics/powervr/pvr_haiku.h in the
+air/OS tree, put on the include path by build.sh, not copied). All changes are
+#ifdef __HAIKU__ or Haiku-only meson except two in pvr_physical_device.c, a
+NULL check and an assert fix; a Linux build of this tree is otherwise
+unchanged (build.sh builds the host tools and the drm-shim smoke test from
+it).
+
+  include/drm-uapi/drm.h            BSD ioctl encoding from <bsd/sys/ioccom.h>
+  include/drm-uapi/pvr_drm.h        no <linux/const.h>, <linux/types.h>: _BITULL
+  include/xf86drm.h                 libdrm stand-in (Haiku only, #include_next
+                                    elsewhere): drmIoctl() -> ioctl(fd,
+                                    PVR_HAIKU_OP(req & 0xff), arg,
+                                    IOCPARM_LEN(req)), retried on EINTR/EAGAIN;
+                                    drmGetVersion/FreeVersion/GetCap/DropMaster;
+                                    drmSyncobj* (create, destroy, wait, reset,
+                                    signal, timeline signal/wait, query,
+                                    transfer) as libdrm, but -1 + errno on
+                                    failure and ETIME for every timeout; PRIME
+                                    and syncobj/sync-file fds fail with
+                                    EOPNOTSUPP until pvr_haiku.h names their
+                                    ops; drmDevice types, an empty
+                                    drmGetDevices2(); static asserts that the
+                                    op numbers and sizes match pvr_haiku.h
+  src/util/u_sync_provider_haiku.c  the Vulkan runtime's syncobj provider on
+  src/util/u_sync_provider.h          those wrappers, timelines when the kernel
+  src/util/meson.build                answers DRM_CAP_SYNCOBJ_TIMELINE
+  src/vulkan/runtime/meson.build    build vk_drm_syncobj.c without libdrm
+  src/vulkan/runtime/vk_image.[ch]  keep drm_format_mod (pvr_image.c and
+                                    EXT_image_drm_format_modifier use it)
+  pvr_instance.c                    no device list: open HAIKU_PVR_DEVICE or
+                                    /dev/graphics/powervr/0, accept it if
+                                    DRM_IOCTL_VERSION says "powervr", describe
+                                    it as a platform device with a render node
+                                    only; driver build hash from the version and
+                                    the loaded library file's size and mtime
+                                    (dladdr + stat; compile time if that
+                                    fails): no build-id note at run time
+  pvr_physical_device.c             VK_EXT_physical_device_drm: render 0:0, no
+                                    primary node (stat() of a NULL path is
+                                    skipped); and an upstream bug (also in
+                                    main): without the shader cache,
+                                    pvr_physical_device_free_pipeline_cache()
+                                    asserted disk_cache != NULL and so aborted
+                                    every vkDestroyInstance in a build with
+                                    assertions (debugoptimized)
+  winsys/powervr/pvr_drm_bo.c       CPU maps through PVR_HAIKU_NR_MAP_BO (a
+                                    clone of the buffer's area; placed maps
+                                    free the reservation and pass the address),
+                                    unmapped with delete_area(); "reserve"
+                                    unmaps leave a PROT_NONE mapping
+
+Not changed: the heap size (util/os_misc.c: sysconf(_SC_PHYS_PAGES), which
+Haiku's libroot answers from get_system_info()); the conformance gate
+(PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1); bxm-4-64.h (26.2.4's is identical to
+Mesa main's, gs_rta_support off and usc_alu_roundingmode_rne on); mutexes
+(every mutex in src/imagination is initialized explicitly).
+
+diff -ruN a/include/drm-uapi/drm.h b/include/drm-uapi/drm.h
+--- a/include/drm-uapi/drm.h
++++ b/include/drm-uapi/drm.h
+@@ -47,6 +47,8 @@
+ #include <sys/types.h>
+ #if defined(__GNU__)
+ #include <sys/ioctl.h>
++#elif defined(__HAIKU__)
++#include <bsd/sys/ioccom.h>
+ #else
+ #include <sys/ioccom.h>
+ #endif
+diff -ruN a/include/drm-uapi/pvr_drm.h b/include/drm-uapi/pvr_drm.h
+--- a/include/drm-uapi/pvr_drm.h
++++ b/include/drm-uapi/pvr_drm.h
+@@ -6,8 +6,16 @@
+ 
+ #include "drm.h"
+ 
++#if defined(__HAIKU__)
++/* air/OS (Haiku): drm.h has the __u32 types; this is all of linux/const.h
++ * that is used here */
++#ifndef _BITULL
++#define _BITULL(x) (1ULL << (x))
++#endif
++#else
+ #include <linux/const.h>
+ #include <linux/types.h>
++#endif
+ 
+ #if defined(__cplusplus)
+ extern "C" {
+diff -ruN a/include/xf86drm.h b/include/xf86drm.h
+--- a/include/xf86drm.h
++++ b/include/xf86drm.h
+@@ -0,0 +1,567 @@
++/*
++ * Copyright 2026, air/OS. All rights reserved.
++ * SPDX-License-Identifier: MIT
++ */
++
++/* air/OS (Haiku): the part of libdrm that Mesa's PowerVR Vulkan driver uses,
++ * on top of the native "powervr" kernel driver (/dev/graphics/powervr/0).
++ *
++ * The kernel takes Linux's drm.h and pvr_drm.h structures unchanged. Its
++ * contract is headers/private/graphics/powervr/pvr_haiku.h in the air/OS
++ * tree: a request goes out as op code PVR_HAIKU_OP(nr), nr being the Linux
++ * DRM ioctl number (the request's low 8 bits), with the length of the
++ * structure the request encodes (IOCPARM_LEN). So this needs no table.
++ *
++ * Semantics follow libdrm 2.4.123, with two deliberate differences:
++ *  - every function returns 0 on success and -1 with errno set on failure
++ *    (libdrm's waits return -errno, which is positive on Haiku);
++ *  - a syncobj wait that runs out of time fails with errno ETIME, whatever
++ *    timeout code the kernel used (B_TIMED_OUT, B_WOULD_BLOCK), and is not
++ *    retried on EAGAIN (which is B_WOULD_BLOCK on Haiku).
++ * Syncobj wait timeouts are absolute CLOCK_MONOTONIC nanoseconds, as on
++ * Linux (on Haiku that is system_time() * 1000); INT64_MAX waits for good.
++ *
++ * There is no device list (drmGetDevices2() finds nothing; pvr_instance.c
++ * opens the node itself), no display device, and no file descriptors for
++ * buffers or sync objects yet: the PRIME and syncobj fd functions fail with
++ * EOPNOTSUPP unless pvr_haiku.h names an op for them.
++ */
++#ifndef __HAIKU__
++/* everywhere else (the host tools' build, for one): the real libdrm */
++#include_next <xf86drm.h>
++#else
++
++#ifndef HAIKU_PVR_XF86DRM_H
++#define HAIKU_PVR_XF86DRM_H
++
++#include <errno.h>
++#include <fcntl.h>
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++
++#include "drm-uapi/drm.h"
++#include "drm-uapi/pvr_drm.h"
++
++/* from the air/OS tree, by path (the build adds its directory) */
++#include <pvr_haiku.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* The kernel's op numbers are Linux's; the length is the request's size. */
++#ifndef __cplusplus
++#define HAIKU_PVR_CHECK_REQUEST(request, nr, type)                            \
++   _Static_assert(((request) & 0xff) == (nr), #request " number");            \
++   _Static_assert(IOCPARM_LEN(request) == sizeof(type), #request " size")
++HAIKU_PVR_CHECK_REQUEST(DRM_IOCTL_VERSION, PVR_HAIKU_NR_VERSION,
++                        struct drm_version);
++HAIKU_PVR_CHECK_REQUEST(DRM_IOCTL_GEM_CLOSE, PVR_HAIKU_NR_GEM_CLOSE,
++                        struct drm_gem_close);
++HAIKU_PVR_CHECK_REQUEST(DRM_IOCTL_GET_CAP, PVR_HAIKU_NR_GET_CAP,
++                        struct drm_get_cap);
++HAIKU_PVR_CHECK_REQUEST(DRM_IOCTL_SYNCOBJ_CREATE, PVR_HAIKU_NR_SYNCOBJ_CREATE,
++                        struct drm_syncobj_create);
++HAIKU_PVR_CHECK_REQUEST(DRM_IOCTL_SYNCOBJ_DESTROY,
++                        PVR_HAIKU_NR_SYNCOBJ_DESTROY,
++                        struct drm_syncobj_destroy);
++HAIKU_PVR_CHECK_REQUEST(DRM_IOCTL_SYNCOBJ_WAIT, PVR_HAIKU_NR_SYNCOBJ_WAIT,
++                        struct drm_syncobj_wait);
++HAIKU_PVR_CHECK_REQUEST(DRM_IOCTL_SYNCOBJ_RESET, PVR_HAIKU_NR_SYNCOBJ_RESET,
++                        struct drm_syncobj_array);
++HAIKU_PVR_CHECK_REQUEST(DRM_IOCTL_SYNCOBJ_SIGNAL, PVR_HAIKU_NR_SYNCOBJ_SIGNAL,
++                        struct drm_syncobj_array);
++HAIKU_PVR_CHECK_REQUEST(DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT,
++                        PVR_HAIKU_NR_SYNCOBJ_TIMELINE_WAIT,
++                        struct drm_syncobj_timeline_wait);
++HAIKU_PVR_CHECK_REQUEST(DRM_IOCTL_SYNCOBJ_QUERY, PVR_HAIKU_NR_SYNCOBJ_QUERY,
++                        struct drm_syncobj_timeline_array);
++HAIKU_PVR_CHECK_REQUEST(DRM_IOCTL_SYNCOBJ_TRANSFER,
++                        PVR_HAIKU_NR_SYNCOBJ_TRANSFER,
++                        struct drm_syncobj_transfer);
++HAIKU_PVR_CHECK_REQUEST(DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL,
++                        PVR_HAIKU_NR_SYNCOBJ_TIMELINE_SIGNAL,
++                        struct drm_syncobj_timeline_array);
++HAIKU_PVR_CHECK_REQUEST(DRM_IOCTL_PVR_DEV_QUERY, PVR_HAIKU_NR_PVR_FIRST,
++                        struct drm_pvr_ioctl_dev_query_args);
++HAIKU_PVR_CHECK_REQUEST(DRM_IOCTL_PVR_SUBMIT_JOBS, PVR_HAIKU_NR_PVR_LAST,
++                        struct drm_pvr_ioctl_submit_jobs_args);
++#undef HAIKU_PVR_CHECK_REQUEST
++#endif
++
++static inline int
++drmIoctl(int fd, unsigned long request, void *arg)
++{
++   int ret;
++
++   do {
++      ret = ioctl(fd, PVR_HAIKU_OP(request & 0xff), arg,
++                  (size_t)IOCPARM_LEN(request));
++   } while (ret == -1 && (errno == EINTR || errno == EAGAIN));
++
++   return ret;
++}
++
++/* A syncobj wait: restarted after a signal (the timeout is absolute), never
++ * spun on EAGAIN, and any way of running out of time reads ETIME. */
++static inline int
++haiku_pvr_wait_ioctl(int fd, unsigned long request, void *arg)
++{
++   int ret;
++
++   do {
++      ret = ioctl(fd, PVR_HAIKU_OP(request & 0xff), arg,
++                  (size_t)IOCPARM_LEN(request));
++   } while (ret == -1 && errno == EINTR);
++
++   if (ret == -1 && (errno == ETIMEDOUT || errno == EWOULDBLOCK))
++      errno = ETIME;
++
++   return ret == 0 ? 0 : -1;
++}
++
++static inline int
++haiku_pvr_unsupported(void)
++{
++   errno = EOPNOTSUPP;
++   return -1;
++}
++
++static inline void
++drmFree(void *pt)
++{
++   free(pt);
++}
++
++/* -- version, capabilities, master ------------------------------------- */
++
++typedef struct _drmVersion {
++   int version_major;
++   int version_minor;
++   int version_patchlevel;
++   int name_len;
++   char *name;
++   int date_len;
++   char *date;
++   int desc_len;
++   char *desc;
++} drmVersion, *drmVersionPtr;
++
++static inline void
++drmFreeVersion(drmVersionPtr version)
++{
++   if (version == NULL)
++      return;
++
++   free(version->name);
++   free(version->date);
++   free(version->desc);
++   free(version);
++}
++
++/* Two calls, as libdrm: the lengths, then the strings. */
++static inline drmVersionPtr
++drmGetVersion(int fd)
++{
++   struct drm_version request;
++   drmVersionPtr version;
++
++   memset(&request, 0, sizeof(request));
++   if (drmIoctl(fd, DRM_IOCTL_VERSION, &request) != 0)
++      return NULL;
++
++   version = (drmVersionPtr)calloc(1, sizeof(*version));
++   if (version == NULL)
++      return NULL;
++
++   version->name = (char *)calloc(1, request.name_len + 1);
++   version->date = (char *)calloc(1, request.date_len + 1);
++   version->desc = (char *)calloc(1, request.desc_len + 1);
++   if (version->name == NULL || version->date == NULL ||
++       version->desc == NULL) {
++      drmFreeVersion(version);
++      return NULL;
++   }
++
++   request.name = version->name;
++   request.date = version->date;
++   request.desc = version->desc;
++   if (drmIoctl(fd, DRM_IOCTL_VERSION, &request) != 0) {
++      drmFreeVersion(version);
++      return NULL;
++   }
++
++   version->version_major = request.version_major;
++   version->version_minor = request.version_minor;
++   version->version_patchlevel = request.version_patchlevel;
++   version->name_len = (int)request.name_len;
++   version->date_len = (int)request.date_len;
++   version->desc_len = (int)request.desc_len;
++   return version;
++}
++
++static inline int
++drmGetCap(int fd, uint64_t capability, uint64_t *value)
++{
++   struct drm_get_cap request;
++
++   memset(&request, 0, sizeof(request));
++   request.capability = capability;
++   if (drmIoctl(fd, DRM_IOCTL_GET_CAP, &request) != 0)
++      return -1;
++
++   *value = request.value;
++   return 0;
++}
++
++/* there is no display device and so no master */
++static inline int
++drmDropMaster(int fd)
++{
++   (void)fd;
++   return 0;
++}
++
++/* -- devices --------------------------------------------------------------- */
++
++#define DRM_NODE_PRIMARY 0
++#define DRM_NODE_CONTROL 1
++#define DRM_NODE_RENDER  2
++#define DRM_NODE_MAX     3
++
++#define DRM_BUS_PCI      0
++#define DRM_BUS_USB      1
++#define DRM_BUS_PLATFORM 2
++#define DRM_BUS_HOST1X   3
++
++typedef struct _drmPlatformBusInfo {
++   char fullname[512];
++} drmPlatformBusInfo, *drmPlatformBusInfoPtr;
++
++typedef struct _drmPlatformDeviceInfo {
++   char **compatible; /* NULL terminated list of compatible strings */
++} drmPlatformDeviceInfo, *drmPlatformDeviceInfoPtr;
++
++/* libdrm's layout; only platform devices exist here */
++typedef struct _drmDevice {
++   char **nodes; /* DRM_NODE_MAX sized array */
++   int available_nodes; /* DRM_NODE_* bitmask */
++   int bustype;
++   union {
++      void *pci;
++      void *usb;
++      drmPlatformBusInfoPtr platform;
++      void *host1x;
++   } businfo;
++   union {
++      void *pci;
++      void *usb;
++      drmPlatformDeviceInfoPtr platform;
++      void *host1x;
++   } deviceinfo;
++} drmDevice, *drmDevicePtr;
++
++/* No device list: the PowerVR device is opened by path (pvr_instance.c). */
++static inline int
++drmGetDevices2(uint32_t flags, drmDevicePtr devices[], int max_devices)
++{
++   (void)flags; (void)devices; (void)max_devices;
++   return 0;
++}
++
++static inline int
++drmGetDevice2(int fd, uint32_t flags, drmDevicePtr *device)
++{
++   (void)fd; (void)flags; (void)device;
++   errno = ENODEV;
++   return -1;
++}
++
++static inline void
++drmFreeDevice(drmDevicePtr *device)
++{
++   (void)device;
++}
++
++static inline void
++drmFreeDevices(drmDevicePtr devices[], int count)
++{
++   (void)devices; (void)count;
++}
++
++/* -- PRIME (buffer file descriptors) --------------------------------------- */
++
++static inline int
++drmPrimeHandleToFD(int fd, uint32_t handle, uint32_t flags, int *prime_fd)
++{
++#ifdef PVR_HAIKU_NR_PRIME_HANDLE_TO_FD
++   struct drm_prime_handle request;
++
++   memset(&request, 0, sizeof(request));
++   request.handle = handle;
++   request.flags = flags;
++   request.fd = -1;
++   if (drmIoctl(fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &request) != 0)
++      return -1;
++
++   *prime_fd = request.fd;
++   return 0;
++#else
++   (void)fd; (void)handle; (void)flags; (void)prime_fd;
++   return haiku_pvr_unsupported();
++#endif
++}
++
++static inline int
++drmPrimeFDToHandle(int fd, int prime_fd, uint32_t *handle)
++{
++#ifdef PVR_HAIKU_NR_PRIME_FD_TO_HANDLE
++   struct drm_prime_handle request;
++
++   memset(&request, 0, sizeof(request));
++   request.fd = prime_fd;
++   if (drmIoctl(fd, DRM_IOCTL_PRIME_FD_TO_HANDLE, &request) != 0)
++      return -1;
++
++   *handle = request.handle;
++   return 0;
++#else
++   (void)fd; (void)prime_fd; (void)handle;
++   return haiku_pvr_unsupported();
++#endif
++}
++
++/* -- sync objects ---------------------------------------------------------- */
++
++static inline int
++drmSyncobjCreate(int fd, uint32_t flags, uint32_t *handle)
++{
++   struct drm_syncobj_create request;
++
++   memset(&request, 0, sizeof(request));
++   request.flags = flags;
++   if (drmIoctl(fd, DRM_IOCTL_SYNCOBJ_CREATE, &request) != 0)
++      return -1;
++
++   *handle = request.handle;
++   return 0;
++}
++
++static inline int
++drmSyncobjDestroy(int fd, uint32_t handle)
++{
++   struct drm_syncobj_destroy request;
++
++   memset(&request, 0, sizeof(request));
++   request.handle = handle;
++   return drmIoctl(fd, DRM_IOCTL_SYNCOBJ_DESTROY, &request) == 0 ? 0 : -1;
++}
++
++static inline int
++drmSyncobjHandleToFD(int fd, uint32_t handle, int *obj_fd)
++{
++#ifdef PVR_HAIKU_NR_SYNCOBJ_HANDLE_TO_FD
++   struct drm_syncobj_handle request;
++
++   memset(&request, 0, sizeof(request));
++   request.handle = handle;
++   request.fd = -1;
++   if (drmIoctl(fd, DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, &request) != 0)
++      return -1;
++
++   *obj_fd = request.fd;
++   return 0;
++#else
++   (void)fd; (void)handle; (void)obj_fd;
++   return haiku_pvr_unsupported();
++#endif
++}
++
++static inline int
++drmSyncobjFDToHandle(int fd, int obj_fd, uint32_t *handle)
++{
++#ifdef PVR_HAIKU_NR_SYNCOBJ_FD_TO_HANDLE
++   struct drm_syncobj_handle request;
++
++   memset(&request, 0, sizeof(request));
++   request.fd = obj_fd;
++   if (drmIoctl(fd, DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE, &request) != 0)
++      return -1;
++
++   *handle = request.handle;
++   return 0;
++#else
++   (void)fd; (void)obj_fd; (void)handle;
++   return haiku_pvr_unsupported();
++#endif
++}
++
++static inline int
++drmSyncobjImportSyncFile(int fd, uint32_t handle, int sync_file_fd)
++{
++#ifdef PVR_HAIKU_NR_SYNCOBJ_FD_TO_HANDLE
++   struct drm_syncobj_handle request;
++
++   memset(&request, 0, sizeof(request));
++   request.fd = sync_file_fd;
++   request.handle = handle;
++   request.flags = DRM_SYNCOBJ_FD_TO_HANDLE_FLAGS_IMPORT_SYNC_FILE;
++   return drmIoctl(fd, DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE, &request) == 0 ? 0 : -1;
++#else
++   (void)fd; (void)handle; (void)sync_file_fd;
++   return haiku_pvr_unsupported();
++#endif
++}
++
++static inline int
++drmSyncobjExportSyncFile(int fd, uint32_t handle, int *sync_file_fd)
++{
++#ifdef PVR_HAIKU_NR_SYNCOBJ_HANDLE_TO_FD
++   struct drm_syncobj_handle request;
++
++   memset(&request, 0, sizeof(request));
++   request.fd = -1;
++   request.handle = handle;
++   request.flags = DRM_SYNCOBJ_HANDLE_TO_FD_FLAGS_EXPORT_SYNC_FILE;
++   if (drmIoctl(fd, DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, &request) != 0)
++      return -1;
++
++   *sync_file_fd = request.fd;
++   return 0;
++#else
++   (void)fd; (void)handle; (void)sync_file_fd;
++   return haiku_pvr_unsupported();
++#endif
++}
++
++/* flags: DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL, _WAIT_FOR_SUBMIT */
++static inline int
++drmSyncobjWait(int fd, uint32_t *handles, unsigned num_handles,
++               int64_t timeout_nsec, unsigned flags, uint32_t *first_signaled)
++{
++   struct drm_syncobj_wait request;
++
++   memset(&request, 0, sizeof(request));
++   request.handles = (uintptr_t)handles;
++   request.timeout_nsec = timeout_nsec;
++   request.count_handles = num_handles;
++   request.flags = flags;
++   if (haiku_pvr_wait_ioctl(fd, DRM_IOCTL_SYNCOBJ_WAIT, &request) != 0)
++      return -1;
++
++   if (first_signaled != NULL)
++      *first_signaled = request.first_signaled;
++   return 0;
++}
++
++static inline int
++drmSyncobjReset(int fd, const uint32_t *handles, uint32_t handle_count)
++{
++   struct drm_syncobj_array request;
++
++   memset(&request, 0, sizeof(request));
++   request.handles = (uintptr_t)handles;
++   request.count_handles = handle_count;
++   return drmIoctl(fd, DRM_IOCTL_SYNCOBJ_RESET, &request) == 0 ? 0 : -1;
++}
++
++static inline int
++drmSyncobjSignal(int fd, const uint32_t *handles, uint32_t handle_count)
++{
++   struct drm_syncobj_array request;
++
++   memset(&request, 0, sizeof(request));
++   request.handles = (uintptr_t)handles;
++   request.count_handles = handle_count;
++   return drmIoctl(fd, DRM_IOCTL_SYNCOBJ_SIGNAL, &request) == 0 ? 0 : -1;
++}
++
++static inline int
++drmSyncobjTimelineSignal(int fd, const uint32_t *handles, uint64_t *points,
++                         uint32_t handle_count)
++{
++   struct drm_syncobj_timeline_array request;
++
++   memset(&request, 0, sizeof(request));
++   request.handles = (uintptr_t)handles;
++   request.points = (uintptr_t)points;
++   request.count_handles = handle_count;
++   return drmIoctl(fd, DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL, &request) == 0
++      ? 0 : -1;
++}
++
++/* flags: also DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE (until the point has a
++ * fence, not until it signals) */
++static inline int
++drmSyncobjTimelineWait(int fd, uint32_t *handles, uint64_t *points,
++                       unsigned num_handles, int64_t timeout_nsec,
++                       unsigned flags, uint32_t *first_signaled)
++{
++   struct drm_syncobj_timeline_wait request;
++
++   memset(&request, 0, sizeof(request));
++   request.handles = (uintptr_t)handles;
++   request.points = (uintptr_t)points;
++   request.timeout_nsec = timeout_nsec;
++   request.count_handles = num_handles;
++   request.flags = flags;
++   if (haiku_pvr_wait_ioctl(fd, DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT,
++                            &request) != 0) {
++      return -1;
++   }
++
++   if (first_signaled != NULL)
++      *first_signaled = request.first_signaled;
++   return 0;
++}
++
++/* flags: DRM_SYNCOBJ_QUERY_FLAGS_LAST_SUBMITTED */
++static inline int
++drmSyncobjQuery2(int fd, uint32_t *handles, uint64_t *points,
++                 uint32_t handle_count, uint32_t flags)
++{
++   struct drm_syncobj_timeline_array request;
++
++   memset(&request, 0, sizeof(request));
++   request.handles = (uintptr_t)handles;
++   request.points = (uintptr_t)points;
++   request.count_handles = handle_count;
++   request.flags = flags;
++   return drmIoctl(fd, DRM_IOCTL_SYNCOBJ_QUERY, &request) == 0 ? 0 : -1;
++}
++
++static inline int
++drmSyncobjQuery(int fd, uint32_t *handles, uint64_t *points,
++                uint32_t handle_count)
++{
++   return drmSyncobjQuery2(fd, handles, points, handle_count, 0);
++}
++
++/* point 0 is the binary payload; the null job moves fences between
++ * timeline points with this */
++static inline int
++drmSyncobjTransfer(int fd, uint32_t dst_handle, uint64_t dst_point,
++                   uint32_t src_handle, uint64_t src_point, uint32_t flags)
++{
++   struct drm_syncobj_transfer request;
++
++   memset(&request, 0, sizeof(request));
++   request.src_handle = src_handle;
++   request.dst_handle = dst_handle;
++   request.src_point = src_point;
++   request.dst_point = dst_point;
++   request.flags = flags;
++   return drmIoctl(fd, DRM_IOCTL_SYNCOBJ_TRANSFER, &request) == 0 ? 0 : -1;
++}
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* HAIKU_PVR_XF86DRM_H */
++
++#endif /* __HAIKU__ */
+diff -ruN a/src/imagination/vulkan/pvr_instance.c b/src/imagination/vulkan/pvr_instance.c
+--- a/src/imagination/vulkan/pvr_instance.c
++++ b/src/imagination/vulkan/pvr_instance.c
+@@ -14,7 +14,9 @@
+ 
+ #include <fcntl.h>
+ #include <xf86drm.h>
++#ifndef __HAIKU__
+ #include <xf86drmMode.h>
++#endif
+ 
+ #include "vk_alloc.h"
+ #include "vk_log.h"
+@@ -23,6 +25,14 @@
+ 
+ #include "util/build_id.h"
+ #include "util/os_misc.h"
++#ifdef __HAIKU__
++#include <dlfcn.h>
++#include <stdio.h>
++#include <sys/stat.h>
++
++#include "git_sha1.h"
++#include "util/mesa-blake3.h"
++#endif
+ #include "pvr_drirc.h"
+ 
+ #include "pvr_debug.h"
+@@ -65,6 +75,7 @@
+    .EXT_swapchain_colorspace = PVR_USE_WSI_PLATFORM,
+ };
+ 
++#ifndef __HAIKU__
+ static VkResult pvr_get_drm_devices(void *const obj,
+                                     drmDevicePtr *const devices,
+                                     const int max_devices,
+@@ -84,6 +95,7 @@
+ 
+    return VK_SUCCESS;
+ }
++#endif /* !__HAIKU__ */
+ 
+ static bool
+ pvr_drm_device_is_compatible(drmDevicePtr drm_dev)
+@@ -121,6 +133,67 @@
+    return is_pvr;
+ }
+ 
++#ifdef __HAIKU__
++/* air/OS (Haiku): there is no DRM device list and no display device. The
++ * render device is the native "powervr" driver's node, HAIKU_PVR_DEVICE or
++ * /dev/graphics/powervr/0 (pvr_haiku.h), and it is the one if its
++ * DRM_IOCTL_VERSION name is "powervr". It is described to the rest of the
++ * driver as a platform device with only a render node.
++ */
++static VkResult
++pvr_physical_device_enumerate(struct vk_instance *const vk_instance)
++{
++   struct pvr_instance *const instance =
++      container_of(vk_instance, struct pvr_instance, vk);
++   static char *compatible[] = { (char *)"img,img-rogue", NULL };
++   drmPlatformDeviceInfo platform_info = { .compatible = compatible };
++   char *nodes[DRM_NODE_MAX] = { NULL };
++   drmDevice render_device = {
++      .nodes = nodes,
++      .available_nodes = BITFIELD_BIT(DRM_NODE_RENDER),
++      .bustype = DRM_BUS_PLATFORM,
++      .deviceinfo.platform = &platform_info,
++   };
++   struct pvr_physical_device *pdevice;
++   const char *path;
++   VkResult result;
++
++   path = os_get_option(PVR_HAIKU_DEVICE_ENV);
++   if (path == NULL || path[0] == '\0')
++      path = PVR_HAIKU_DEVICE_PATH;
++   nodes[DRM_NODE_RENDER] = (char *)path;
++
++   if (access(path, F_OK) != 0) {
++      mesa_logd("No PowerVR render device at %s.", path);
++      return VK_SUCCESS;
++   }
++
++   if (!pvr_drm_device_is_compatible(&render_device))
++      return VK_SUCCESS;
++
++   mesa_logd("Found compatible render device '%s'.", path);
++
++   pdevice = vk_alloc(&vk_instance->alloc,
++                      sizeof(*pdevice),
++                      8,
++                      VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
++   if (!pdevice)
++      return vk_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
++
++   result = pvr_physical_device_init(pdevice, instance, &render_device, NULL);
++   if (result != VK_SUCCESS) {
++      vk_free(&vk_instance->alloc, pdevice);
++      return result == VK_ERROR_INCOMPATIBLE_DRIVER ? VK_SUCCESS : result;
++   }
++
++   if (PVR_IS_DEBUG_SET(INFO))
++      pvr_physical_device_dump_info(pdevice, NULL, compatible);
++
++   list_add(&pdevice->vk.link, &vk_instance->physical_devices.list);
++
++   return VK_SUCCESS;
++}
++#else /* !__HAIKU__ */
+ static bool pvr_drm_device_is_compatible_display(drmDevicePtr drm_dev)
+ {
+    uint64_t has_dumb_buffer = 0;
+@@ -297,10 +370,36 @@
+ out:
+    return result;
+ }
++#endif /* !__HAIKU__ */
+ 
+ static bool
+ pvr_get_driver_build_sha(struct pvr_instance *instance)
+ {
++#ifdef __HAIKU__
++   /* No build-id note can be found at run time (no dl_iterate_phdr()).
++    * What identifies this build is the library file this code was loaded
++    * from (size and modification time), or failing that the moment this
++    * file was compiled. It feeds the pipeline cache UUID and the disk
++    * cache key.
++    */
++   char build[256];
++   Dl_info dl_info;
++   struct stat st;
++
++   if (dladdr((void *)pvr_get_driver_build_sha, &dl_info) &&
++       dl_info.dli_fname != NULL && stat(dl_info.dli_fname, &st) == 0) {
++      snprintf(build, sizeof(build), "powervr %s%s file %lld %lld",
++               PACKAGE_VERSION, MESA_GIT_SHA1, (long long)st.st_size,
++               (long long)st.st_mtime);
++   } else {
++      snprintf(build, sizeof(build), "powervr %s%s built %s %s",
++               PACKAGE_VERSION, MESA_GIT_SHA1, __DATE__, __TIME__);
++   }
++
++   STATIC_ASSERT(sizeof(instance->driver_build_sha) == BLAKE3_KEY_LEN);
++   _mesa_blake3_compute(build, strlen(build), instance->driver_build_sha);
++   return true;
++#else
+    const struct build_id_note *note;
+    unsigned build_id_len;
+ 
+@@ -320,6 +419,7 @@
+    copy_build_id_to_sha1(instance->driver_build_sha, note);
+ 
+    return true;
++#endif /* !__HAIKU__ */
+ }
+ 
+ static void pvr_init_dri_options(struct pvr_instance *instance)
+diff -ruN a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
+--- a/src/imagination/vulkan/pvr_physical_device.c
++++ b/src/imagination/vulkan/pvr_physical_device.c
+@@ -12,7 +12,15 @@
+ 
+ #include "pvr_physical_device.h"
+ 
++#ifdef __HAIKU__
++/* Haiku's device nodes have no major and minor numbers:
++ * VK_EXT_physical_device_drm reports render node 0:0 and no primary node.
++ */
++#define major(devid) ((void)(devid), 0)
++#define minor(devid) ((void)(devid), 0)
++#else
+ #include <sys/sysmacros.h>
++#endif
+ 
+ #include "git_sha1.h"
+ 
+@@ -115,7 +123,9 @@
+    disk_cache_destroy(pdevice->vk.disk_cache);
+    pdevice->vk.disk_cache = NULL;
+ #else
+-   assert(pdevice->vk.disk_cache);
++   /* (upstream asserts the opposite, which aborts every build without the
++    * shader cache at vkDestroyInstance) */
++   assert(!pdevice->vk.disk_cache);
+ #endif /* ENABLE_SHADER_CACHE */
+ }
+ 
+@@ -1118,7 +1128,8 @@
+    primary_path = drm_render_device->nodes[DRM_NODE_PRIMARY];
+    pdevice->has_primary = false;
+    pdevice->primary_devid = 0;
+-   if (!stat(primary_path, &primary_stat)) {
++   /* (Haiku: a render node only) */
++   if (primary_path && !stat(primary_path, &primary_stat)) {
+       pdevice->has_primary = true;
+       pdevice->primary_devid = primary_stat.st_rdev;
+    }
+diff -ruN a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c
+@@ -31,6 +31,9 @@
+ #include <vulkan/vulkan.h>
+ #include <unistd.h>
+ #include <xf86drm.h>
++#ifdef __HAIKU__
++#include <OS.h>
++#endif
+ 
+ #include "drm-uapi/pvr_drm.h"
+ #include "pvr_drm.h"
+@@ -83,6 +86,7 @@
+                      "Failed to destroy gem bo");
+ }
+ 
++#ifndef __HAIKU__
+ static VkResult pvr_drm_get_bo_mmap_offset(struct pvr_drm_winsys *drm_ws,
+                                            uint32_t handle,
+                                            uint64_t *const offset_out)
+@@ -103,6 +107,114 @@
+ 
+    return VK_SUCCESS;
+ }
++#else /* __HAIKU__ */
++/* air/OS (Haiku): there is no mmap() of the render device. PVR_HAIKU_NR_MAP_BO
++ * clones the buffer's kernel area into this team (write-combined, like a
++ * Linux mapping of a buffer on a non-coherent GPU) and returns where; the
++ * clone is unmapped with delete_area(). Only buffers created with
++ * DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS (PVR_WINSYS_BO_FLAG_CPU_ACCESS) can
++ * be mapped.
++ *
++ * A placed map (VK_EXT_map_memory_placed) passes the address: the range is
++ * the application's reservation, which is freed so that the clone can take
++ * exactly its place (B_EXACT_ADDRESS); if that fails, the reservation is
++ * put back.
++ */
++static VkResult pvr_drm_haiku_map_bo(struct pvr_drm_winsys *drm_ws,
++                                     uint32_t handle,
++                                     void *addr,
++                                     uint64_t size,
++                                     void **const map_out)
++{
++   struct pvr_haiku_map_bo args = {
++      .handle = handle,
++      .area = -1,
++      .address = (uint64_t)(uintptr_t)addr,
++   };
++   int ret;
++   int err;
++
++   if (addr)
++      munmap(addr, size);
++
++   do {
++      ret = ioctl(drm_ws->base.render_fd,
++                  PVR_HAIKU_OP(PVR_HAIKU_NR_MAP_BO),
++                  &args,
++                  sizeof(args));
++   } while (ret == -1 && errno == EINTR);
++
++   if (ret == 0 && (args.area < 0 || args.size < size ||
++                    (addr && args.address != (uint64_t)(uintptr_t)addr))) {
++      if (args.area >= 0)
++         delete_area(args.area);
++      ret = -1;
++      errno = B_BAD_DATA;
++   }
++
++   if (ret != 0) {
++      err = errno;
++      if (addr) {
++         mmap(addr,
++              size,
++              PROT_NONE,
++              MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
++              -1,
++              0);
++      }
++
++      return vk_errorf(NULL,
++                       VK_ERROR_MEMORY_MAP_FAILED,
++                       "PVR_HAIKU_NR_MAP_BO of handle %u failed (%s)",
++                       handle,
++                       strerror(err));
++   }
++
++   *map_out = (void *)(uintptr_t)args.address;
++
++   return VK_SUCCESS;
++}
++
++static VkResult pvr_drm_haiku_unmap_bo(void *map, uint64_t size, bool reserve)
++{
++   area_id area = area_for(map);
++   status_t status;
++
++   if (area < 0) {
++      return vk_errorf(NULL,
++                       VK_ERROR_UNKNOWN,
++                       "no area at %p (%s)",
++                       map,
++                       strerror(area));
++   }
++
++   status = delete_area(area);
++   if (status != B_OK) {
++      return vk_errorf(NULL,
++                       VK_ERROR_UNKNOWN,
++                       "delete_area failed (%s)",
++                       strerror(status));
++   }
++
++   /* VK_EXT_map_memory_placed's memoryUnmapReserve: keep the range */
++   if (reserve) {
++      void *ret = mmap(map,
++                       size,
++                       PROT_NONE,
++                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
++                       -1,
++                       0);
++      if (ret == MAP_FAILED) {
++         return vk_errorf(NULL,
++                          VK_ERROR_UNKNOWN,
++                          "mmap(reserve) failed (%s)",
++                          strerror(errno));
++      }
++   }
++
++   return VK_SUCCESS;
++}
++#endif /* __HAIKU__ */
+ 
+ static void pvr_drm_buffer_acquire(struct pvr_drm_winsys_bo *drm_bo)
+ {
+@@ -309,6 +421,12 @@
+ 
+    assert(!bo->map);
+ 
++#ifdef __HAIKU__
++   (void)offset;
++   result = pvr_drm_haiku_map_bo(drm_ws, drm_bo->handle, addr, bo->size, &map);
++   if (result != VK_SUCCESS)
++      goto err_out;
++#else
+    result = pvr_drm_get_bo_mmap_offset(drm_ws, drm_bo->handle, &offset);
+    if (result != VK_SUCCESS)
+       goto err_out;
+@@ -322,6 +440,7 @@
+                      &map);
+    if (result != VK_SUCCESS)
+       goto err_out;
++#endif
+ 
+    VG(VALGRIND_MALLOCLIKE_BLOCK(map, bo->size, 0, true));
+ 
+@@ -341,7 +460,11 @@
+ 
+    assert(bo->map);
+ 
++#ifdef __HAIKU__
++   result = pvr_drm_haiku_unmap_bo(bo->map, bo->size, reserve);
++#else
+    result = pvr_munmap(bo->map, bo->size, reserve);
++#endif
+ 
+    VG(VALGRIND_FREELIKE_BLOCK(bo->map, 0));
+ 
+diff -ruN a/src/util/meson.build b/src/util/meson.build
+--- a/src/util/meson.build
++++ b/src/util/meson.build
+@@ -317,6 +317,9 @@
+ if dep_libdrm.found()
+   files_mesa_util += files('u_sync_provider.c', 'u_sync_provider.h')
+   deps_for_libmesa_util += dep_libdrm
++elif host_machine.system() == 'haiku'
++  # sync objects of the PowerVR render device, through include/xf86drm.h
++  files_mesa_util += files('u_sync_provider_haiku.c', 'u_sync_provider.h')
+ endif
+ 
+ if with_platform_android
+diff -ruN a/src/util/u_sync_provider.h b/src/util/u_sync_provider.h
+--- a/src/util/u_sync_provider.h
++++ b/src/util/u_sync_provider.h
+@@ -37,7 +37,8 @@
+    struct util_sync_provider * (*clone)(struct util_sync_provider *p);
+ };
+ 
+-#if HAVE_LIBDRM
++#if HAVE_LIBDRM || defined(__HAIKU__)
++/* on Haiku: u_sync_provider_haiku.c */
+ struct util_sync_provider * util_sync_provider_drm(int drm_fd);
+ #else
+ static inline struct util_sync_provider *
+diff -ruN a/src/util/u_sync_provider_haiku.c b/src/util/u_sync_provider_haiku.c
+--- a/src/util/u_sync_provider_haiku.c
++++ b/src/util/u_sync_provider_haiku.c
+@@ -0,0 +1,197 @@
++/*
++ * Copyright 2026 air/OS
++ * SPDX-License-Identifier: MIT
++ */
++
++/* DRM sync objects on air/OS (Haiku), for the PowerVR render device
++ * (/dev/graphics/powervr/0).
++ *
++ * The kernel driver implements Linux's syncobj ioctls with Linux's
++ * structures behind the op codes of pvr_haiku.h (PVR_HAIKU_NR_SYNCOBJ_*):
++ * binary and timeline sync objects, WAIT_ALL / WAIT_FOR_SUBMIT /
++ * WAIT_AVAILABLE, reset, signal, timeline signal and wait, query and
++ * transfer between points. include/xf86drm.h (the libdrm stand-in) carries
++ * each request; this is the provider Mesa's Vulkan runtime reaches them
++ * through (vk_drm_syncobj.c, vk_device_set_drm_fd()).
++ *
++ * Timelines are offered when the kernel answers DRM_CAP_SYNCOBJ_TIMELINE.
++ * There are no file descriptors for sync objects or sync files yet: those
++ * entries fail with EOPNOTSUPP (see xf86drm.h).
++ *
++ * Every entry returns 0 or -1 with errno set; a timed out wait has errno
++ * ETIME, which is what vk_drm_syncobj.c looks for.
++ */
++
++#include "u_sync_provider.h"
++
++#include <errno.h>
++#include <stdlib.h>
++
++#include <xf86drm.h>
++
++struct haiku_sync_provider {
++   struct util_sync_provider base;
++   int fd;
++};
++
++static int
++haiku_fd(struct util_sync_provider *p)
++{
++   return ((struct haiku_sync_provider *)p)->fd;
++}
++
++/* PVR_HAIKU_NR_SYNCOBJ_CREATE; flags: DRM_SYNCOBJ_CREATE_SIGNALED */
++static int
++haiku_create(struct util_sync_provider *p, uint32_t flags, uint32_t *handle)
++{
++   return drmSyncobjCreate(haiku_fd(p), flags, handle);
++}
++
++/* PVR_HAIKU_NR_SYNCOBJ_DESTROY */
++static int
++haiku_destroy(struct util_sync_provider *p, uint32_t handle)
++{
++   return drmSyncobjDestroy(haiku_fd(p), handle);
++}
++
++static int
++haiku_handle_to_fd(struct util_sync_provider *p, uint32_t handle,
++                   int *out_obj_fd)
++{
++   return drmSyncobjHandleToFD(haiku_fd(p), handle, out_obj_fd);
++}
++
++static int
++haiku_fd_to_handle(struct util_sync_provider *p, int obj_fd,
++                   uint32_t *handle)
++{
++   return drmSyncobjFDToHandle(haiku_fd(p), obj_fd, handle);
++}
++
++static int
++haiku_import_sync_file(struct util_sync_provider *p, uint32_t handle,
++                       int sync_file_fd)
++{
++   return drmSyncobjImportSyncFile(haiku_fd(p), handle, sync_file_fd);
++}
++
++static int
++haiku_export_sync_file(struct util_sync_provider *p, uint32_t handle,
++                       int *out_sync_file_fd)
++{
++   return drmSyncobjExportSyncFile(haiku_fd(p), handle, out_sync_file_fd);
++}
++
++/* PVR_HAIKU_NR_SYNCOBJ_WAIT; timeout_nsec is absolute (CLOCK_MONOTONIC);
++ * flags: DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL, _WAIT_FOR_SUBMIT */
++static int
++haiku_wait(struct util_sync_provider *p, uint32_t *handles,
++           unsigned num_handles, int64_t timeout_nsec, unsigned flags,
++           uint32_t *first_signaled)
++{
++   return drmSyncobjWait(haiku_fd(p), handles, num_handles, timeout_nsec,
++                         flags, first_signaled);
++}
++
++/* PVR_HAIKU_NR_SYNCOBJ_RESET */
++static int
++haiku_reset(struct util_sync_provider *p, const uint32_t *handles,
++            uint32_t handle_count)
++{
++   return drmSyncobjReset(haiku_fd(p), handles, handle_count);
++}
++
++/* PVR_HAIKU_NR_SYNCOBJ_SIGNAL */
++static int
++haiku_signal(struct util_sync_provider *p, const uint32_t *handles,
++             uint32_t handle_count)
++{
++   return drmSyncobjSignal(haiku_fd(p), handles, handle_count);
++}
++
++/* PVR_HAIKU_NR_SYNCOBJ_TIMELINE_SIGNAL */
++static int
++haiku_timeline_signal(struct util_sync_provider *p, const uint32_t *handles,
++                      uint64_t *points, uint32_t handle_count)
++{
++   return drmSyncobjTimelineSignal(haiku_fd(p), handles, points,
++                                   handle_count);
++}
++
++/* PVR_HAIKU_NR_SYNCOBJ_TIMELINE_WAIT; flags as haiku_wait() plus
++ * DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE (vkWaitSemaphores for "pending",
++ * and the runtime's wait-before-signal check) */
++static int
++haiku_timeline_wait(struct util_sync_provider *p, uint32_t *handles,
++                    uint64_t *points, unsigned num_handles,
++                    int64_t timeout_nsec, unsigned flags,
++                    uint32_t *first_signaled)
++{
++   return drmSyncobjTimelineWait(haiku_fd(p), handles, points, num_handles,
++                                 timeout_nsec, flags, first_signaled);
++}
++
++/* PVR_HAIKU_NR_SYNCOBJ_QUERY; flags: DRM_SYNCOBJ_QUERY_FLAGS_LAST_SUBMITTED */
++static int
++haiku_query(struct util_sync_provider *p, uint32_t *handles, uint64_t *points,
++            uint32_t handle_count, uint32_t flags)
++{
++   return drmSyncobjQuery2(haiku_fd(p), handles, points, handle_count, flags);
++}
++
++/* PVR_HAIKU_NR_SYNCOBJ_TRANSFER */
++static int
++haiku_transfer(struct util_sync_provider *p, uint32_t dst_handle,
++               uint64_t dst_point, uint32_t src_handle, uint64_t src_point,
++               uint32_t flags)
++{
++   return drmSyncobjTransfer(haiku_fd(p), dst_handle, dst_point, src_handle,
++                             src_point, flags);
++}
++
++static void
++haiku_finalize(struct util_sync_provider *p)
++{
++   free(p);
++}
++
++static struct util_sync_provider *
++haiku_clone(struct util_sync_provider *p)
++{
++   return util_sync_provider_drm(haiku_fd(p));
++}
++
++struct util_sync_provider *
++util_sync_provider_drm(int drm_fd)
++{
++   struct haiku_sync_provider *provider = calloc(1, sizeof(*provider));
++   if (provider == NULL)
++      return NULL;
++
++   provider->fd = drm_fd;
++   provider->base = (struct util_sync_provider) {
++      .create = haiku_create,
++      .destroy = haiku_destroy,
++      .handle_to_fd = haiku_handle_to_fd,
++      .fd_to_handle = haiku_fd_to_handle,
++      .import_sync_file = haiku_import_sync_file,
++      .export_sync_file = haiku_export_sync_file,
++      .wait = haiku_wait,
++      .reset = haiku_reset,
++      .signal = haiku_signal,
++      .query = haiku_query,
++      .transfer = haiku_transfer,
++      .finalize = haiku_finalize,
++      .clone = haiku_clone,
++   };
++
++   /* PVR_HAIKU_NR_GET_CAP */
++   uint64_t timelines = 0;
++   if (drmGetCap(drm_fd, DRM_CAP_SYNCOBJ_TIMELINE, &timelines) == 0 &&
++       timelines != 0) {
++      provider->base.timeline_signal = haiku_timeline_signal;
++      provider->base.timeline_wait = haiku_timeline_wait;
++   }
++
++   return &provider->base;
++}
+diff -ruN a/src/vulkan/runtime/meson.build b/src/vulkan/runtime/meson.build
+--- a/src/vulkan/runtime/meson.build
++++ b/src/vulkan/runtime/meson.build
+@@ -57,6 +57,9 @@
+ if dep_libdrm.found()
+   vulkan_lite_runtime_files += files('vk_drm_syncobj.c')
+   vulkan_lite_runtime_deps += dep_libdrm
++elif host_machine.system() == 'haiku'
++  # on src/util/u_sync_provider_haiku.c
++  vulkan_lite_runtime_files += files('vk_drm_syncobj.c')
+ endif
+ 
+ if with_platform_android
+diff -ruN a/src/vulkan/runtime/vk_image.c b/src/vulkan/runtime/vk_image.c
+--- a/src/vulkan/runtime/vk_image.c
++++ b/src/vulkan/runtime/vk_image.c
+@@ -23,7 +23,7 @@
+ 
+ #include "vk_image.h"
+ 
+-#if DETECT_OS_LINUX || DETECT_OS_BSD
++#if DETECT_OS_LINUX || DETECT_OS_BSD || DETECT_OS_HAIKU
+ #include <drm-uapi/drm_fourcc.h>
+ #endif
+ 
+@@ -105,7 +105,7 @@
+       vk_find_struct_const(pCreateInfo->pNext, WSI_IMAGE_CREATE_INFO_MESA);
+    image->wsi_legacy_scanout = wsi_info && wsi_info->scanout;
+ 
+-#if DETECT_OS_LINUX || DETECT_OS_BSD
++#if DETECT_OS_LINUX || DETECT_OS_BSD || DETECT_OS_HAIKU
+    image->drm_format_mod = ((1ULL << 56) - 1) /* DRM_FORMAT_MOD_INVALID */;
+ #endif
+ 
+@@ -185,7 +185,7 @@
+    vk_object_free(device, alloc, image);
+ }
+ 
+-#if DETECT_OS_LINUX || DETECT_OS_BSD
++#if DETECT_OS_LINUX || DETECT_OS_BSD || DETECT_OS_HAIKU
+ VKAPI_ATTR VkResult VKAPI_CALL
+ vk_common_GetImageDrmFormatModifierPropertiesEXT(UNUSED VkDevice device,
+                                                  VkImage _image,
+diff -ruN a/src/vulkan/runtime/vk_image.h b/src/vulkan/runtime/vk_image.h
+--- a/src/vulkan/runtime/vk_image.h
++++ b/src/vulkan/runtime/vk_image.h
+@@ -77,7 +77,7 @@
+    /* wsi_image_create_info::scanout */
+    bool wsi_legacy_scanout;
+ 
+-#if DETECT_OS_LINUX || DETECT_OS_BSD
++#if DETECT_OS_LINUX || DETECT_OS_BSD || DETECT_OS_HAIKU
+    /* VK_EXT_drm_format_modifier
+     *
+     * Initialized by vk_image_create/init() to DRM_FORMAT_MOD_INVALID.  It's

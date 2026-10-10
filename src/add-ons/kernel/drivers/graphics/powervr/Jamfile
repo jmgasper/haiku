@@ -37,19 +37,30 @@ KernelAddon powervr :
 
 	# glue/
 	pvr_haiku_device.c
+	pvr_haiku_drm.c
+	pvr_haiku_drv.c		# includes upstream/pvr_drv.c
 	pvr_haiku_gem.c
-	pvr_haiku_mmu.c
 	pvr_haiku_power.c
+	pvr_haiku_queue.c
 	pvr_haiku_stubs.c
+	pvr_haiku_sync.c
+	pvr_haiku_vm.c
 
 	# upstream/
 	pvr_ccb.c
+	pvr_cccb.c
+	pvr_context.c
 	pvr_device_info.c
 	pvr_dump.c
+	pvr_free_list.c
 	pvr_fw.c
 	pvr_fw_mips.c
 	pvr_fw_startstop.c
 	pvr_fw_trace.c
 	pvr_fw_util.c
+	pvr_hwrt.c
+	pvr_mmu.c
+	pvr_stream.c
+	pvr_stream_defs.c
 	pvr_vm_mips.c
 ;
