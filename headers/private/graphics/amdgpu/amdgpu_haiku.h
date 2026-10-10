@@ -42,7 +42,8 @@ enum {
 	AMDGPU_VM_MAP,
 	AMDGPU_VM_UNMAP,
 	AMDGPU_VM_TEST,
-	AMDGPU_GFX_SUBMIT
+	AMDGPU_GFX_SUBMIT,
+	AMDGPU_IRQ_INFO
 };
 
 // One GPU virtual address space per open client. Mappings retain their BO
@@ -91,6 +92,20 @@ struct amdgpu_gfx_submit {
 	uint32 dwords, flags;
 	uint64 completion, elapsed_us;
 	uint32 vm_fault_status[2], rptr, wptr;
+	int32 status;
+	uint32 reserved;
+};
+
+// Read-only observation after client engine startup; this does not initialize
+// graphics or alter interrupt routing. reserved must be zero. No DMA address
+// or writable ring mapping is exposed. Counts cover this device's lifetime.
+struct amdgpu_irq_info {
+	uint32 version, size;
+	uint32 enabled, msi, vector, ring_bytes;
+	uint64 interrupts, vectors, eop_events, completed_fences, vm_faults, privileged_faults;
+	uint64 unknown, overflows, waits;
+	uint32 rptr, wptr, last[4];
+	uint32 first_eop[2][4];
 	int32 status;
 	uint32 reserved;
 };
