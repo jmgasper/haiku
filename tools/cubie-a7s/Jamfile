@@ -4,3 +4,11 @@ UsePrivateHeaders [ FDirName graphics sunxi_display ] ;
 
 # lab programs for the Radxa Cubie A7S port
 SimpleTest cubie_reg : reg.cpp ;
+
+# the AIC8800 Wi-Fi/Bluetooth module's firmware loader from userland, with
+# the driver's loader core
+local aicHost = [ FDirName $(HAIKU_TOP) src add-ons kernel drivers network
+	wlan aic8800wifi host ] ;
+SEARCH_SOURCE += $(aicHost) ;
+SubDirHdrs $(aicHost) ;
+SimpleTest aicload : aicload.cpp aic_loader.c : libdevice.so ;

@@ -56,6 +56,23 @@ rule UserBuildConfigRulePreImage
 		AddPackageFilesToHaikuImage system packages : $(zstdPackage) ;
 	}
 
+	# The AIC8800D80 Wi-Fi/Bluetooth module's firmware, unchanged, with
+	# AICSemi's licence (tools/cubie-a7s/stage-aic8800-firmware.sh). The
+	# aic8800wifi driver loads it; Bluetooth comes up with it.
+	local aicFirmwareDir = $(CUBIE_AIC8800_FIRMWARE) ;
+	if ! $(aicFirmwareDir) {
+		aicFirmwareDir = /mnt/HaikuWork/cubie/firmware/aic8800wifi ;
+	}
+	local aicFirmware = <cubie-aic>fw_patch_table_8800d80_u02.bin
+		<cubie-aic>fw_adid_8800d80_u02.bin <cubie-aic>fw_patch_8800d80_u02.bin
+		<cubie-aic>fw_patch_8800d80_u02_ext0.bin
+		<cubie-aic>fmacfw_8800d80_u02.bin <cubie-aic>fmacfw_8800d80_h_u02.bin
+		<cubie-aic>aic_userconfig_8800d80.txt <cubie-aic>LICENSE.aic
+		<cubie-aic>PROVENANCE ;
+	SEARCH on $(aicFirmware) = $(aicFirmwareDir) ;
+	AddFilesToHaikuImage system non-packaged data firmware aic8800wifi
+		: $(aicFirmware) ;
+
 	if $(CUBIE_AIROS_IMAGE) {
 		local extras = /mnt/HaikuWork/rock5-image-extras ;
 
@@ -161,7 +178,7 @@ rule UserBuildConfigRulePreImage
 	if $(CUBIE_LAB_IMAGE) = 1 {
 		# lab tools, and the driver settings that let cubie_reg at the
 		# display registers
-		AddFilesToHaikuImage system non-packaged bin : cubie_reg ;
+		AddFilesToHaikuImage system non-packaged bin : cubie_reg aicload ;
 		local labSettings = <cubie-lab>sunxi_display ;
 		SEARCH on $(labSettings) = [ FDirName $(HAIKU_TOP) tools cubie-a7s lab ] ;
 		AddFilesToHaikuImage home config settings kernel drivers
