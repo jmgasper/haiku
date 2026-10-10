@@ -115,6 +115,8 @@ private:
 	uint32 access;
 };
 
+
+
 static status_t
 Start(SmcAccess& smc, const amdgpu::FirmwareView& firmware,
 	amdgpu_smc_bootstrap& result)
@@ -371,4 +373,15 @@ amdgpu_smc_set_uvd_clocks(volatile uint32* regs)
 	}
 	dprintf("amdgpu: UVD clock dividers applied: startup 0x64/0x64, playback 0x1c/0x24\n");
 	return B_OK;
+}
+
+uint32
+amdgpu_smc_timestamp_khz(volatile uint32* regs, uint32 referenceKHz)
+{
+	SmcAccess smc(regs);
+	// VI's XCLK source (Linux vi_get_xclk). Reading through SmcAccess
+	// restores the original indirect index and auto-increment control.
+	if ((smc.Read(0xc05001a4) & 0x100) != 0)
+		return 10000;
+	return (smc.Read(0xc05001a0) & 2) != 0 ? referenceKHz / 4 : referenceKHz;
 }

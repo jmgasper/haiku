@@ -38,6 +38,13 @@ struct AtomVramReservation {
 	uint32_t driverScratchSize;
 };
 
+struct AtomRenderInfo {
+	uint32_t gfxMajor, gfxMinor;
+	uint32_t shaderEngines, shaderArraysPerEngine, cuPerArray;
+	uint32_t backendsPerEngine, tilePipes, tccBlocks;
+	uint32_t defaultEngineKHz, defaultMemoryKHz, referenceKHz;
+};
+
 bool ParseUvdFirmware(const void* data, size_t size, FirmwareView& view);
 bool ParseGfxFirmware(const void* data, size_t size, bool rlc, FirmwareView& view);
 bool ParseMecFirmware(const void* data, size_t size, MecFirmwareView& view);
@@ -45,6 +52,7 @@ bool ParseSdmaFirmware(const void* data, size_t size, FirmwareView& view);
 bool ParseSmcFirmware(const void* data, size_t size, FirmwareView& view);
 bool ParseAtomVramReservation(const void* data, size_t size,
 	AtomVramReservation& reservation);
+bool ParseAtomRenderInfo(const void* data, size_t size, AtomRenderInfo& info);
 // Fixed UVD clock policy is qualified only against this board's complete ROM.
 bool IsQualifiedUvdClockRom(const void* data, size_t size);
 

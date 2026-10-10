@@ -66,6 +66,11 @@ static Gart sGart = {};
 static GfxEngine sGfx = {};
 static UvdEngine sUvd = {};
 static amdgpu::AtomVramReservation sReservation;
+static amdgpu::AtomRenderInfo sRenderInfo;
+static const uint64 kMaxBufferBytes = 64ULL << 20;
+static const uint64 kMaxMappedBytes = 16ULL << 30;
+static const uint32 kMaxMappings = 1024, kMaxVMClients = 32, kMaxBuffers = 256;
+static const uint32 kMaxIbBytes = 65536, kIbAddressAlignment = 256, kIbSizeAlignment = 1024;
 static bool sUvdClocksQualified;
 static SdmaEngine sEngine = {};
 static amdgpu_info sInfo;
@@ -297,11 +302,14 @@ Start(volatile uint32* regs, const amdgpu_info& info,
 status_t
 amdgpu_device_start(volatile uint32* regs, const amdgpu_info& info,
 	const amdgpu::FirmwareView& firmware, const amdgpu::AtomVramReservation& reservation,
-	bool uvdClocksQualified, pci_module_info* pci)
+	bool uvdClocksQualified, pci_module_info* pci, const amdgpu::AtomRenderInfo& renderInfo)
 {
 	mutex_lock(&sMutex);
 	status_t status = Start(regs, info, firmware, reservation, uvdClocksQualified);
-	if (status == B_OK) sGfx.pci = pci;
+	if (status == B_OK) {
+		sGfx.pci = pci;
+		sRenderInfo = renderInfo;
+	}
 	mutex_unlock(&sMutex);
 	return status;
 }
@@ -583,7 +591,7 @@ CreateVM(AmdgpuClient* client)
 {
 	if (client->vm != NULL)
 		return B_OK;
-	if (sVMCount >= 32)
+	if (sVMCount >= kMaxVMClients)
 		return B_NO_MEMORY;
 	ClientVM* vm = (ClientVM*)calloc(1, sizeof(ClientVM));
 	if (vm == NULL)
@@ -666,8 +674,9 @@ VMControl(AmdgpuClient* client, uint32 op, void* data, size_t length)
 		status_t status = ReadRequest(request, data, length);
 		if (status != B_OK) return status;
 		if (request.flags != 0 || request.reserved != 0
-			|| (request.address & 255) != 0 || (request.dwords & 255) != 0
-			|| request.dwords == 0 || request.dwords > 16384)
+			|| (request.address & (kIbAddressAlignment - 1)) != 0
+			|| (request.dwords & (kIbSizeAlignment / 4 - 1)) != 0
+			|| request.dwords == 0 || request.dwords > kMaxIbBytes / 4)
 			return B_BAD_VALUE;
 		VmBinding* binding = vm->bindings;
 		while (binding != NULL) {
@@ -732,7 +741,7 @@ VMControl(AmdgpuClient* client, uint32 op, void* data, size_t length)
 	status_t status = ReadRequest(request, data, length);
 	if (status != B_OK) return status;
 	if (request.reserved != 0 || request.address < 65536
-		|| request.bytes == 0 || request.bytes > (64ULL << 20)
+		|| request.bytes == 0 || request.bytes > kMaxBufferBytes
 		|| ((request.address | request.bytes | request.buffer_offset) & 4095) != 0
 		|| request.address >= GpuPageTable::kSize
 		|| request.bytes > GpuPageTable::kSize - request.address)
@@ -760,7 +769,7 @@ VMControl(AmdgpuClient* client, uint32 op, void* data, size_t length)
 		|| ((request.permissions & AMDGPU_VM_EXECUTE) != 0
 			&& (request.permissions & AMDGPU_VM_READ) == 0))
 		return B_BAD_VALUE;
-	if (vm->mappings >= 1024 || vm->bytes > (16ULL << 30) - request.bytes)
+	if (vm->mappings >= kMaxMappings || vm->bytes > kMaxMappedBytes - request.bytes)
 		return B_NO_MEMORY;
 	VmBinding* binding = (VmBinding*)malloc(sizeof(VmBinding));
 	uint32 pages = request.bytes / 4096;
@@ -808,6 +817,33 @@ Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 		if (status != B_OK) return status;
 		if (info.reserved != 0) return B_BAD_VALUE;
 		sGfx.interrupts.Snapshot(info);
+		return user_memcpy(data, &info, sizeof(info));
+	}
+	if (op == AMDGPU_RENDER_INFO) {
+		amdgpu_render_info info;
+		status_t status = ReadRequest(info, data, length);
+		if (status != B_OK) return status;
+		if (info.flags != 0 || info.reserved != 0) return B_BAD_VALUE;
+		if (sRenderInfo.gfxMajor == 0) return B_NOT_SUPPORTED;
+		status = WaitDmaIdle();
+		if (status == B_OK) status = StartGraphics();
+		if (status == B_OK) status = sGfx.RenderInfo(sRenderInfo, info);
+		if (status != B_OK) return status;
+		info.capabilities = AMDGPU_RENDER_ROOT_SUBMIT | AMDGPU_RENDER_SYNC_SUBMIT;
+		info.total_vram = sInfo.vram_size;
+		info.visible_vram = sInfo.bar_size[0];
+		info.total_gart = Gart::kSize;
+		info.address_start = 65536;
+		info.address_end = GpuPageTable::kSize;
+		info.max_buffer_bytes = info.max_mapping_bytes = kMaxBufferBytes;
+		info.max_mapped_bytes = kMaxMappedBytes;
+		info.max_mappings = kMaxMappings;
+		info.max_vm_clients = kMaxVMClients;
+		info.max_buffers = kMaxBuffers;
+		info.page_size = 4096;
+		info.max_ib_bytes = kMaxIbBytes;
+		info.ib_address_alignment = kIbAddressAlignment;
+		info.ib_size_alignment = kIbSizeAlignment;
 		return user_memcpy(data, &info, sizeof(info));
 	}
 	if (op >= AMDGPU_VM_INFO && op <= AMDGPU_GFX_SUBMIT) {
@@ -883,7 +919,7 @@ Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 		if (sFault != B_OK)
 			return B_DEV_NOT_READY;
 		if ((c.operation != AMDGPU_DMA_COPY && c.operation != AMDGPU_DMA_FILL)
-			|| c.bytes == 0 || c.bytes > (64ULL << 20)
+			|| c.bytes == 0 || c.bytes > kMaxBufferBytes
 			|| ((c.source_offset | c.destination_offset | c.bytes) & 3) != 0)
 			return B_BAD_VALUE;
 		Buffer* dst = Lookup(client, c.destination);
@@ -944,7 +980,7 @@ Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 		|| op == AMDGPU_CREATE_DEVICE_BUFFER) {
 		if (sFault != B_OK)
 			return B_DEV_NOT_READY;
-		if (request.bytes == 0 || request.bytes > (64ULL << 20))
+		if (request.bytes == 0 || request.bytes > kMaxBufferBytes)
 			return B_BAD_VALUE;
 		const bool deviceOnly = op == AMDGPU_CREATE_DEVICE_BUFFER;
 		if (deviceOnly) {
@@ -954,7 +990,7 @@ Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 			if (status != B_OK)
 				return status;
 		}
-		if (client->bufferCount >= 256 || sNextHandle == 0)
+		if (client->bufferCount >= kMaxBuffers || sNextHandle == 0)
 			return B_NO_MEMORY;
 		Buffer* bo = (Buffer*)calloc(1, sizeof(Buffer));
 		if (bo == NULL)
@@ -1082,7 +1118,12 @@ amdgpu_client_control(AmdgpuClient* client, uint32 op, void* data, size_t length
 		// Validate the triggering request before loading firmware or touching
 		// engines. Close/free/map/submit cannot initialize an absent device.
 		status_t status;
-		if (op == AMDGPU_VM_INFO) {
+		if (op == AMDGPU_RENDER_INFO) {
+			amdgpu_render_info request;
+			status = ReadRequest(request, data, length);
+			if (status == B_OK && (request.flags != 0 || request.reserved != 0))
+				status = B_BAD_VALUE;
+		} else if (op == AMDGPU_VM_INFO) {
 			amdgpu_vm_info request;
 			status = ReadRequest(request, data, length);
 			if (status == B_OK && (request.reserved[0] != 0 || request.reserved[1] != 0))
@@ -1098,7 +1139,7 @@ amdgpu_client_control(AmdgpuClient* client, uint32 op, void* data, size_t length
 			amdgpu_buffer request;
 			status = ReadRequest(request, data, length);
 			if (status == B_OK && (request.reserved != 0 || request.bytes == 0
-				|| request.bytes > (64ULL << 20)))
+				|| request.bytes > kMaxBufferBytes))
 				status = B_BAD_VALUE;
 		} else if (op == AMDGPU_VIDEO_CREATE) {
 			amdgpu_video_create request;

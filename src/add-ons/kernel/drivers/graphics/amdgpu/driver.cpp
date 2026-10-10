@@ -224,10 +224,13 @@ start_installed_device()
 		writable = status == B_OK;
 	}
 	amdgpu::AtomVramReservation reservation;
+	amdgpu::AtomRenderInfo renderInfo = {};
 	if (status == B_OK)
 		status = amdgpu_read_rom(sDevice, sRegisters, rom, AMDGPU_ROM_SIZE);
 	if (status == B_OK && !amdgpu::ParseAtomVramReservation(rom, AMDGPU_ROM_SIZE, reservation))
 		status = B_BAD_DATA;
+	if (status == B_OK)
+		amdgpu::ParseAtomRenderInfo(rom, AMDGPU_ROM_SIZE, renderInfo);
 	if (status == B_OK) {
 		// Missing/malformed files can be repaired and retried. Once hardware
 		// startup begins, retain its failure until reload/cold-boot preflight.
@@ -238,7 +241,7 @@ start_installed_device()
 		}
 		if (status == B_OK)
 			status = amdgpu_device_start(sRegisters, sInfo, sdma.view, reservation,
-				amdgpu::IsQualifiedUvdClockRom(rom, AMDGPU_ROM_SIZE), sPCI);
+				amdgpu::IsQualifiedUvdClockRom(rom, AMDGPU_ROM_SIZE), sPCI, renderInfo);
 		sStartupStatus = status;
 		dprintf("amdgpu: automatic client startup status %#x\n", (unsigned)status);
 	}
@@ -256,7 +259,7 @@ device_control(void* cookie, uint32 op, void* buffer, size_t length)
 	if ((op >= AMDGPU_CREATE_BUFFER && op <= AMDGPU_GART_INFO)
 		|| (op >= AMDGPU_VIDEO_CREATE && op <= AMDGPU_HEVC_DECODE)
 		|| op == AMDGPU_CREATE_DEVICE_BUFFER
-		|| (op >= AMDGPU_VM_INFO && op <= AMDGPU_IRQ_INFO))
+		|| (op >= AMDGPU_VM_INFO && op <= AMDGPU_RENDER_INFO))
 	{
 		// Raw PM4/shader privilege isolation and fault recovery remain under
 		// qualification. Bounded VM_TEST continues to accept ordinary clients.
@@ -440,12 +443,15 @@ device_control(void* cookie, uint32 op, void* buffer, size_t length)
 				status = set_area_protection(sRegisterArea, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA);
 				if (status == B_OK) {
 					amdgpu::AtomVramReservation reservation;
+					amdgpu::AtomRenderInfo renderInfo = {};
 					status = amdgpu_read_rom(sDevice, sRegisters, rom, AMDGPU_ROM_SIZE);
 					if (status == B_OK && !amdgpu::ParseAtomVramReservation(rom, AMDGPU_ROM_SIZE, reservation))
 						status = B_BAD_DATA;
 					if (status == B_OK)
+						amdgpu::ParseAtomRenderInfo(rom, AMDGPU_ROM_SIZE, renderInfo);
+					if (status == B_OK)
 						status = amdgpu_device_start(sRegisters, sInfo, view, reservation,
-							amdgpu::IsQualifiedUvdClockRom(rom, AMDGPU_ROM_SIZE), sPCI);
+							amdgpu::IsQualifiedUvdClockRom(rom, AMDGPU_ROM_SIZE), sPCI, renderInfo);
 					if (status != B_OK)
 						set_area_protection(sRegisterArea, B_KERNEL_READ_AREA);
 				}
