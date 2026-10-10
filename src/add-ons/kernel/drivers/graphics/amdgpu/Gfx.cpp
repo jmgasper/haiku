@@ -374,6 +374,20 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	const bool shader = (!direct && sequence <= shaderEnd) || vmShader;
 	const bool draw = sequence > shaderEnd && sequence <= drawEnd;
 	const bool minimalIB = sequence == vmShaderEnd + 1;
+	// Separate CP memory reads from the first IB transition. The last eight
+	// direct submissions cover ME/PFP, SRC_MEM/TC_L2, and VRAM/snooped RAM.
+	// All addresses remain inside the diagnostic's private allocations.
+	const bool cpRead = direct && sequence > kDirectSequences - 8;
+	const uint32 readCase = cpRead ? sequence - (kDirectSequences - 7) : 0;
+	const uint32 readExpected[2] = {0xa1324bf7u ^ sequence,
+		0x591e8307u ^ sequence};
+	if (cpRead) {
+		for (uint32 i = 0; i < 2; i++) {
+			memory[0x43000 / 4 + i] = readExpected[i];
+			control[0x200 / 4 + i] = readExpected[i];
+			control[0x300 / 4 + i] = 0;
+		}
+	}
 	if (minimalIB || privateShader)
 		DumpExecutionState("before IB");
 	uint64 destination = direct || shader || draw || minimalIB ? gpu : kMemoryVA;
@@ -635,6 +649,17 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		ring[wptr++ & 0x3fff] = address >> 32;
 		ring[wptr++ & 0x3fff] = length | 1 << 24; // private VMID1
 	}
+	if (cpRead) {
+		const uint64 source = (readCase & 4) != 0
+			? kControlGPU + 0x200 : gpu + 0x43000;
+		emit(Packet(0x40, 4)); // COPY_DATA, two confirmed DWORDs to snooped RAM
+		emit(((readCase & 1) != 0 ? 2 : 1) | 5 << 8 | 1 << 16
+			| 1 << 20 | ((readCase & 2) != 0 ? 1u << 30 : 0));
+		emit((uint32)source);
+		emit(source >> 32);
+		emit((uint32)(kControlGPU + 0x300));
+		emit((kControlGPU + 0x300) >> 32);
+	}
 	snapshotVM(1);
 	emit(Packet(0x37, 3)); // PFP invalidates HDP after the command stream
 	emit(1 << 30 | 1 << 20);
@@ -704,6 +729,20 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		|| r[0x21c0] != (wptr & 0x3fff)) && system_time() < deadline)
 		snooze(50);
 	__sync_synchronize();
+	if (cpRead) {
+		dprintf("amdgpu: GFX CP read case %u seq %u %s %s %s got %#x/%#x"
+			" expected %#x/%#x VM %#x/%#x\n", (unsigned)readCase,
+			(unsigned)sequence, (readCase & 4) != 0 ? "RAM" : "VRAM",
+			(readCase & 2) != 0 ? "PFP" : "ME",
+			(readCase & 1) != 0 ? "TC_L2" : "SRC_MEM",
+			(unsigned)control[0x300 / 4], (unsigned)control[0x300 / 4 + 1],
+			(unsigned)readExpected[0], (unsigned)readExpected[1],
+			(unsigned)r[0x536], (unsigned)r[0x537]);
+		for (uint32 i = 0; i < 2; i++) {
+			if (control[0x300 / 4 + i] != readExpected[i])
+				result.mismatches++;
+		}
+	}
 	status_t status = control[0x0 / 4] == sequence
 		&& control[0x4 / 4] == sequence && r[0x21c0] == (wptr & 0x3fff)
 		? B_OK : B_TIMED_OUT;
