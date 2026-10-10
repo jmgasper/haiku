@@ -119,6 +119,11 @@ void BluetoothServer::ArgvReceived(int32 argc, char **argv)
 void BluetoothServer::ReadyToRun(void)
 {
 	LogStartup("looking for radios");
+	// The device manager's looper has to run for the node monitor to tell
+	// it about radios that appear later (a controller whose firmware is
+	// loaded while the server starts, a dongle plugged in); without it only
+	// what is there at this point was ever found.
+	fDeviceManager->LoadState();
 	fDeviceManager->StartMonitoringDevice("bluetooth/h2");
 	fDeviceManager->StartMonitoringDevice("bluetooth/h3");
 	fDeviceManager->StartMonitoringDevice("bluetooth/h4");
@@ -183,6 +188,8 @@ void BluetoothServer::MessageReceived(BMessage* message)
 
 			if (lDeviceImpl->GetID() >= 0) {
 				fLocalDevicesList.AddItem(lDeviceImpl);
+				fDevicePaths.RemoveName(str.String());
+				fDevicePaths.AddInt32(str.String(), lDeviceImpl->GetID());
 
 				TRACE_BT("LocalDevice %s id=%" B_PRId32 " added\n", str.String(),
 					lDeviceImpl->GetID());
@@ -199,7 +206,19 @@ void BluetoothServer::MessageReceived(BMessage* message)
 
 		case BT_MSG_REMOVE_DEVICE:
 		{
-			LocalDeviceImpl* lDeviceImpl = LocateDelegateFromMessage(message);
+			// by its hci_id, or by the path it was opened from when its node
+			// went away (a radio unplugged, or restarted by its driver)
+			LocalDeviceImpl* lDeviceImpl = NULL;
+			const char* path;
+			int32 id;
+			if (message->FindString("name", &path) == B_OK) {
+				if (fDevicePaths.FindInt32(path, &id) == B_OK) {
+					fDevicePaths.RemoveName(path);
+					lDeviceImpl = LocateLocalDeviceImpl(id);
+					LogStartup("%s went away (hci %" B_PRId32 ")", path, id);
+				}
+			} else
+				lDeviceImpl = LocateDelegateFromMessage(message);
 			if (lDeviceImpl != NULL) {
 				fLocalDevicesList.RemoveItem(lDeviceImpl);
 				delete lDeviceImpl;
