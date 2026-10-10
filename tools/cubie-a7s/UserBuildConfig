@@ -10,6 +10,11 @@
 
 HAIKU_IMAGE_LABEL = airOS ;
 
+# Zstandard for arm64 (built by tools/rpi4/build-zstd.sh): the boot loader,
+# packagefs and the package kit read zstd packages, which the applications'
+# packages are; without it they do not mount.
+HAIKU_ARM64_ZSTD_PACKAGES_DIR ?= /mnt/HaikuWork/rpi4/zstd/packages ;
+
 if $(HAIKU_BUILD_PROFILE) = minimum-cubie {
 	HAIKU_IMAGE_SIZE = 900 ;
 }
@@ -45,15 +50,48 @@ if $(CUBIE_LAB_IMAGE) = 1 {
 
 rule UserBuildConfigRulePreImage
 {
+	if $(HAIKU_ARM64_ZSTD_PACKAGES_DIR) {
+		local zstdPackage = <cubie-zstd>zstd-1.5.7-1-arm64.hpkg ;
+		SEARCH on $(zstdPackage) = $(HAIKU_ARM64_ZSTD_PACKAGES_DIR) ;
+		AddPackageFilesToHaikuImage system packages : $(zstdPackage) ;
+	}
+
 	if $(CUBIE_AIROS_IMAGE) {
 		local extras = /mnt/HaikuWork/rock5-image-extras ;
 
-		# libraries the applications link against
-		local libs = <cubie-lib>libsqlite3.so.0 <cubie-lib>libtag.so.2
+		# libraries the applications link against (Summit's WebKit needs
+		# libglvnd's EGL and GLES even without a GPU)
+		local libs = <cubie-lib>libEGL.so.1
+			<cubie-lib>libGLESv2.so.2 <cubie-lib>libGLdispatch.so.0
+			<cubie-lib>libOpenGL.so.0 <cubie-lib>libGLU.so.1
+			<cubie-lib>libsqlite3.so.0 <cubie-lib>libtag.so.2
 			<cubie-lib>libpcre2-8.so.0 <cubie-lib>libscintilla.so
 			<cubie-lib>liblexilla.so ;
 		SEARCH on $(libs) = [ FDirName $(extras) lib ] ;
 		AddFilesToHaikuImage system non-packaged lib : $(libs) ;
+
+		# The Pi's pinned GCC runtime with both symbol hashes
+		# (tools/rpi4/build-cxx-runtime.sh) and its BGLView (libGL).
+		local cxxLib = <cubie-cxx>libstdc++.so.6 ;
+		SEARCH on $(cxxLib) = /mnt/HaikuWork/rpi4/cxx-runtime/stage ;
+		AddFilesToHaikuImage system non-packaged lib : $(cxxLib) ;
+		local glViewLib = <cubie-glvnd>libGL.so.1 ;
+		SEARCH on $(glViewLib) = /mnt/HaikuWork/rpi4/glvnd/stage ;
+		AddFilesToHaikuImage system non-packaged lib : $(glViewLib) ;
+
+		# OpenGL in software until the PowerVR driver runs: the Pi's Mesa
+		# (tools/rpi4/mesa) finds no V3D here and falls back to softpipe.
+		local mesaStage = /mnt/HaikuWork/rpi4/mesa/stage ;
+		local mesaLib = <cubie-mesa>libEGL_mesa.so.0 ;
+		SEARCH on $(mesaLib) = $(mesaStage) ;
+		AddFilesToHaikuImage system non-packaged lib : $(mesaLib) ;
+		local vendorFile = <cubie-mesa>10_mesa.json ;
+		SEARCH on $(vendorFile) = $(mesaStage) ;
+		AddFilesToHaikuImage system non-packaged add-ons opengl egl_vendor.d
+			: $(vendorFile) ;
+		local glDemos = <cubie-gl>GLTeapot ;
+		SEARCH on $(glDemos) = [ FDirName $(extras) apps ] ;
+		AddFilesToHaikuImage system non-packaged demos : $(glDemos) ;
 
 		# Wi-Fi and Bluetooth firmware, wpa_supplicant, FFmpeg
 		local packages
@@ -63,6 +101,7 @@ rule UserBuildConfigRulePreImage
 			<cubie-pkg>intel_bluetooth_firmwares-20240318-1-any.hpkg
 			<cubie-pkg>mediatek_bluetooth_firmwares-20240318-1-any.hpkg
 			<cubie-pkg>realtek_bluetooth_firmwares-20240318-1-any.hpkg
+			<cubie-pkg>rock5_glinfo-1.0.0-1-arm64.hpkg
 			<cubie-pkg>rock5_ffmpeg-6.1.6-2-arm64.hpkg
 			<cubie-pkg>wpa_supplicant-2.11.haiku.1-1-arm64.hpkg ;
 		SEARCH on $(packages) = [ FDirName $(extras) packages ] ;
