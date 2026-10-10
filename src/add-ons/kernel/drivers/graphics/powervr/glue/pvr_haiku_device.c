@@ -309,6 +309,8 @@ pvr_haiku_device_delete(struct pvr_device* pvr_dev)
 	lx_drm_dev_release(&pvr_dev->base);
 	rw_lock_destroy(&pvr_dev->reset_sem.lock);
 	kfree(device);
+	// page-table pages waiting for reuse; none of them is in use
+	lx_free_pages_flush();
 }
 
 

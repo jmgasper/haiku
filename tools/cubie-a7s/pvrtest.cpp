@@ -795,14 +795,92 @@ test_syncobjs()
 }
 
 
+//	#pragma mark - buffer costs
+
+
+/*!	--bench: the average cost of each step of a buffer's life, as Mesa
+	goes through it (CREATE_BO, VM_MAP, MAP_BO, unmap, VM_UNMAP,
+	GEM_CLOSE), for a few sizes.
+*/
+static void
+bench_buffers()
+{
+	drm_pvr_ioctl_create_vm_context_args vm = {};
+	if (pvr_ioctl(PVR_NR(CREATE_VM_CONTEXT), &vm) != 0 || sHeapCount == 0) {
+		printf("bench: no VM context\n");
+		return;
+	}
+	static const uint64 kSizes[] = { 4096, 65536, 1024 * 1024 };
+	const int kRounds = 100;
+	for (size_t s = 0; s < sizeof(kSizes) / sizeof(kSizes[0]); s++) {
+		bigtime_t times[6] = {};
+		for (int round = 0; round < kRounds; round++) {
+			bigtime_t start = system_time();
+			int error;
+			uint32 handle = create_bo(kSizes[s],
+				DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS, &error);
+			bigtime_t t1 = system_time();
+			if (handle == 0) {
+				printf("bench: CREATE_BO: %s\n", strerror(error));
+				return;
+			}
+			drm_pvr_ioctl_vm_map_args vmMap = {};
+			vmMap.vm_context_handle = vm.handle;
+			vmMap.device_addr = sHeaps[DRM_PVR_HEAP_GENERAL].base;
+			vmMap.handle = handle;
+			vmMap.size = kSizes[s];
+			pvr_ioctl(PVR_NR(VM_MAP), &vmMap);
+			bigtime_t t2 = system_time();
+			pvr_haiku_map_bo map = {};
+			map.handle = handle;
+			pvr_ioctl(PVR_HAIKU_NR_MAP_BO, &map);
+			bigtime_t t3 = system_time();
+			if (map.area >= 0)
+				delete_area(map.area);
+			bigtime_t t4 = system_time();
+			drm_pvr_ioctl_vm_unmap_args vmUnmap = {};
+			vmUnmap.vm_context_handle = vm.handle;
+			vmUnmap.device_addr = vmMap.device_addr;
+			vmUnmap.size = kSizes[s];
+			pvr_ioctl(PVR_NR(VM_UNMAP), &vmUnmap);
+			bigtime_t t5 = system_time();
+			drm_gem_close close = {};
+			close.handle = handle;
+			pvr_ioctl(PVR_HAIKU_NR_GEM_CLOSE, &close);
+			bigtime_t t6 = system_time();
+			times[0] += t1 - start;
+			times[1] += t2 - t1;
+			times[2] += t3 - t2;
+			times[3] += t4 - t3;
+			times[4] += t5 - t4;
+			times[5] += t6 - t5;
+		}
+		printf("bench %4llu KiB: CREATE_BO %lld us, VM_MAP %lld, MAP_BO %lld,"
+			" unmap %lld, VM_UNMAP %lld, GEM_CLOSE %lld; total %lld us\n",
+			(unsigned long long)kSizes[s] / 1024,
+			(long long)times[0] / kRounds, (long long)times[1] / kRounds,
+			(long long)times[2] / kRounds, (long long)times[3] / kRounds,
+			(long long)times[4] / kRounds, (long long)times[5] / kRounds,
+			(long long)(times[0] + times[1] + times[2] + times[3] + times[4]
+				+ times[5]) / kRounds);
+	}
+	drm_pvr_ioctl_destroy_vm_context_args destroy = {};
+	destroy.handle = vm.handle;
+	pvr_ioctl(PVR_NR(DESTROY_VM_CONTEXT), &destroy);
+}
+
+
 int
 main(int argc, char** argv)
 {
+	bool bench = false;
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "-v") == 0)
 			sVerbose = true;
+		else if (strcmp(argv[i], "--bench") == 0)
+			bench = true;
 		else {
-			fprintf(stderr, "usage: %s [-v]\n", argv[0]);
+			fprintf(stderr, "usage: %s [-v] [--bench]\n", argv[0]);
 			return 2;
 		}
 	}
@@ -814,6 +892,13 @@ main(int argc, char** argv)
 	if (sFD < 0) {
 		fprintf(stderr, "%s: %s\n", path, strerror(errno));
 		return 1;
+	}
+
+	if (bench) {
+		test_dev_query();
+		bench_buffers();
+		close(sFD);
+		return 0;
 	}
 
 	test_generic();

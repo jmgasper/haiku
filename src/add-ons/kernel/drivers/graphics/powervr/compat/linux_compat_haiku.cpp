@@ -320,7 +320,8 @@ lx_dma_buffer_alloc(struct lx_dma_buffer* buffer, size_t size,
 		}
 	}
 
-	memset(address, 0, size);
+	// B_FULL_LOCK pages come cleared (no CREATE_AREA_DONT_CLEAR), maybe
+	// only into the cache: push that out before the mapping goes Normal-NC.
 	clean_invalidate(address, size);
 	status = vm_set_area_memory_type(area, runs[0].address,
 		B_WRITE_COMBINING_MEMORY);
@@ -545,12 +546,37 @@ lx_dma_buffer_address(const struct lx_dma_buffer* buffer, size_t offset,
 
 /*	One page: its own 4 KiB area (the cacheable kernel mapping, used only to
 	zero and clean it) and its physical address. vmap() maps pages again,
-	Normal-NC, for the code that writes them. */
+	Normal-NC, for the code that writes them; a single page's Normal-NC
+	mapping (page tables) is made once and kept with the page.
+
+	Page tables come and go with every GPU mapping, so freed pages wait on
+	a free list for the next alloc_page() instead of costing two areas each
+	time. */
 struct page {
 	area_id			area;
 	void*			address;
 	phys_addr_t		physical;
+	area_id			wc_area;	// the kept single-page vmap(), or -1
+	void*			wc_address;
+	struct page*	next_free;
 };
+
+static const char* const kPageWCName = "powervr page wc";
+static const int32 kMaxFreePages = 1024;	// 4 MiB
+
+static mutex sFreePagesLock = MUTEX_INITIALIZER("powervr free pages");
+static struct page* sFreePages;
+static int32 sFreePageCount;
+
+
+static void
+destroy_page(struct page* page)
+{
+	if (page->wc_area >= 0)
+		delete_area(page->wc_area);
+	delete_area(page->area);
+	free(page);
+}
 
 
 struct page*
@@ -558,14 +584,31 @@ alloc_page(unsigned int flags)
 {
 	(void)flags;
 		// always zeroed, as with __GFP_ZERO
-	struct page* page = (struct page*)calloc(1, sizeof(struct page));
+
+	mutex_lock(&sFreePagesLock);
+	struct page* page = sFreePages;
+	if (page != NULL) {
+		sFreePages = page->next_free;
+		sFreePageCount--;
+	}
+	mutex_unlock(&sFreePagesLock);
+
+	if (page != NULL) {
+		page->next_free = NULL;
+		memset(page->address, 0, B_PAGE_SIZE);
+		clean_invalidate(page->address, B_PAGE_SIZE);
+		atomic_add(&sPageCount, 1);
+		return page;
+	}
+
+	page = (struct page*)calloc(1, sizeof(struct page));
 	if (page == NULL)
 		return NULL;
+	page->wc_area = -1;
 
 	// When the GPU reaches all of memory, a plain locked page will do: a
 	// physically restricted run (vm_page_allocate_page_run()) searches the
-	// page array, which grows slow as memory fragments, and page tables
-	// come and go with every GPU mapping.
+	// page array, which grows slow as memory fragments.
 	virtual_address_restrictions virtualRestrictions = {};
 	virtualRestrictions.address_specification = B_ANY_KERNEL_ADDRESS;
 	physical_address_restrictions physicalRestrictions = {};
@@ -590,7 +633,8 @@ alloc_page(unsigned int flags)
 		return NULL;
 	}
 	page->physical = entry.address;
-	memset(page->address, 0, B_PAGE_SIZE);
+	// The allocator cleared it (no CREATE_AREA_DONT_CLEAR), possibly into
+	// the cache only.
 	clean_invalidate(page->address, B_PAGE_SIZE);
 	atomic_add(&sPageCount, 1);
 	return page;
@@ -602,9 +646,37 @@ __free_page(struct page* page)
 {
 	if (page == NULL)
 		return;
-	delete_area(page->area);
-	free(page);
 	atomic_add(&sPageCount, -1);
+
+	mutex_lock(&sFreePagesLock);
+	if (sFreePageCount < kMaxFreePages) {
+		page->next_free = sFreePages;
+		sFreePages = page;
+		sFreePageCount++;
+		page = NULL;
+	}
+	mutex_unlock(&sFreePagesLock);
+
+	if (page != NULL)
+		destroy_page(page);
+}
+
+
+/*!	Gives the free pages back to the system (driver unload). */
+void
+lx_free_pages_flush(void)
+{
+	mutex_lock(&sFreePagesLock);
+	struct page* page = sFreePages;
+	sFreePages = NULL;
+	sFreePageCount = 0;
+	mutex_unlock(&sFreePagesLock);
+
+	while (page != NULL) {
+		struct page* next = page->next_free;
+		destroy_page(page);
+		page = next;
+	}
 }
 
 
@@ -645,6 +717,25 @@ vmap(struct page** pages, unsigned int count, unsigned long flags,
 		return NULL;
 
 	bool writeCombine = (protection.value & LX_PGPROT_WRITECOMBINE) != 0;
+	if (count == 1 && writeCombine) {
+		// a page table: its mapping is kept with the page (vunmap() leaves
+		// it), so a page from the free list costs no area at all
+		struct page* page = pages[0];
+		if (page->wc_area < 0) {
+			clean_invalidate(page->address, B_PAGE_SIZE);
+			page->wc_area = map_physical_memory(kPageWCName, page->physical,
+				B_PAGE_SIZE, B_ANY_KERNEL_ADDRESS | B_WRITE_COMBINING_MEMORY,
+				B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, &page->wc_address);
+			if (page->wc_area < 0) {
+				TRACE("vmap of a page failed: %s\n",
+					strerror(page->wc_area));
+				return NULL;
+			}
+		}
+		atomic_add(&sVmapCount, 1);
+		return page->wc_address;
+	}
+
 	bool contiguous = true;
 	for (unsigned int i = 0; i < count; i++) {
 		clean_invalidate(pages[i]->address, B_PAGE_SIZE);
@@ -699,7 +790,16 @@ vunmap(const void* address)
 	if (address == NULL)
 		return;
 	area_id area = area_for(const_cast<void*>(address));
-	if (area >= 0 && delete_area(area) == B_OK)
+	if (area < 0)
+		return;
+	area_info info;
+	if (get_area_info(area, &info) == B_OK
+		&& strcmp(info.name, kPageWCName) == 0) {
+		// kept with its page (vmap())
+		atomic_add(&sVmapCount, -1);
+		return;
+	}
+	if (delete_area(area) == B_OK)
 		atomic_add(&sVmapCount, -1);
 }
 

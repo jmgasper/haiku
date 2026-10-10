@@ -140,6 +140,7 @@ typedef struct {
 
 struct page*		alloc_page(unsigned int flags);
 void				__free_page(struct page* page);
+void				lx_free_pages_flush(void);
 unsigned long long	dma_map_page(struct device* device, struct page* page,
 						size_t offset, size_t size,
 						enum dma_data_direction direction);
