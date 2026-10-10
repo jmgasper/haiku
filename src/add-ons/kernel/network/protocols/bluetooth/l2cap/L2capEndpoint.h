@@ -68,6 +68,8 @@ private:
 	}
 
 			status_t	_WaitForStateChange(bigtime_t absoluteTimeout);
+			bool		_DropCommandIdent();
+			void		_ExpireCommand();
 
 	static	void		_SendTimer(net_timer* timer, void* _endpoint);
 			void		_SendQueued();
@@ -103,6 +105,8 @@ private:
 	bool			fFixedChannel;
 	L2capEndpoint*	fNextFixed;
 	status_t		fConnectError;
+	uint8			fCommandIdent;
+	bigtime_t		fCommandDeadline;
 
 	net_fifo		fReceiveQueue, fSendQueue;
 	net_timer		fSendTimer;
