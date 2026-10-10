@@ -297,7 +297,18 @@ void
 amdgpu_smc_dump_uvd_clocks(volatile uint32* regs)
 {
 	SmcAccess smc(regs);
-	const uint32 addresses[] = {0xc050009c, 0xc05000a0, 0xc05000a4, 0xc05000a8};
+	// Linux smu_7_1_3_d.h: dividers alone do not establish the clock rate
+	// when the DFS clock is bypassed. Capture the inherited source state too.
+	const uint32 addresses[] = {
+		0xc050009c, 0xc05000a0, 0xc05000a4, 0xc05000a8,
+		0xc0500118, // GCK_DFS_BYPASS_CNTL
+		0xc0500140, 0xc0500144, 0xc0500148, 0xc050014c,
+		0xc0500150, 0xc0500154, 0xc0500158, 0xc050015c,
+		0xc0500160, // SPLL_CNTL_MODE
+		0xc05001a0, 0xc05001a4, // CG_CLKPIN_CNTL / _2
+		0xc05001c8, // GCK_ADFS_CLK_BYPASS_CNTL1
+		0xc0200000 // GENERAL_PWRMGT
+	};
 	for (uint32 address : addresses)
 		dprintf("amdgpu: UVD clock register %#x = %#x\n", (unsigned)address,
 			(unsigned)smc.Read(address));
