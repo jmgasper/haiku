@@ -41,7 +41,7 @@ static void Test(const char* path)
 	auto stream = new HevcStream();
 	uint32_t slots = 0;
 	unsigned frames = 0, skipped = 0;
-	std::vector<int32_t> order;
+	std::vector<std::pair<uint32_t, int32_t>> order;
 	std::vector<uint8_t> firstSlices;
 	for (const auto& unit : units) {
 		if (!stream->Prepare(unit.data(), unit.size())) {
@@ -59,16 +59,22 @@ static void Test(const char* path)
 			CHECK(amdgpu::UvdHevcMessage(message, 1, 1, stream->config, &stream->picture, stream->bitstream.size(), frames + 1));
 			printf("frame %u epoch %u POC %d slot %u refs %04x depth %u\n",
 				frames, stream->sequence, stream->poc, stream->picture.current_slot, slots, stream->config.bit_depth);
-			order.push_back(stream->poc);
+			order.emplace_back(stream->sequence, stream->poc);
 			frames++;
 		}
 		CHECK(!stream->Prepare(unit.data(), unit.size())); // pending submission cannot be overwritten
 		CHECK(stream->Commit());
 		CHECK(!stream->Commit());
 	}
-	// The fixture is one coded sequence whose displayed POCs are contiguous.
+	// Closed-GOP fixtures start each output epoch at zero, including after
+	// IDR resets and POC-LSB wrap within a long sequence.
 	std::sort(order.begin(), order.end());
-	for (size_t i = 0; i < order.size(); i++) CHECK(order[i] == (int32_t)i);
+	uint32_t epoch = 0;
+	int32_t expectedPoc = 0;
+	for (const auto& entry : order) {
+		if (entry.first != epoch) { CHECK(entry.first == epoch + 1); epoch = entry.first; expectedPoc = 0; }
+		CHECK(entry.second == expectedPoc++);
+	}
 	stream->Reset();
 	CHECK(stream->Prepare(units[0].data(), units[0].size()));
 	CHECK(stream->picture.current_slot == 0 && stream->poc == 0);
