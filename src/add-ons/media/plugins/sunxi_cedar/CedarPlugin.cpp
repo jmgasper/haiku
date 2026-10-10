@@ -22,7 +22,10 @@
 	- 'I420': line_count rows of luma bytes_per_row apart, then a plane of Cb
 	  and one of Cr, half as many rows of half the length, or
 	- 'NV12': as I420, but with Cb and Cr in pairs in one plane, or
-	- B_YCbCr422 or B_RGB32, for MediaPlayer and the other Media Kit users.
+	- 'P010' (ten bit streams): as NV12 with sixteen bit samples, the value
+	  in the upper ten bits, or
+	- B_YCbCr422 or B_RGB32, for MediaPlayer and the other Media Kit users
+	  (ten bit pictures by their eight most significant bits).
 
 	A negative time_to_decode in Decode()'s media_decode_info is, negated,
 	the time before which the caller will drop the pictures anyway (it is
@@ -55,6 +58,7 @@ static const uint32 kCodecHEVC = 173;
 
 static const color_space kColorSpaceNV12 = (color_space)0x4e563132;	// 'NV12'
 static const color_space kColorSpaceI420 = (color_space)0x49343230;	// 'I420'
+static const color_space kColorSpaceP010 = (color_space)0x50303130;	// 'P010'
 
 static const uint32 kMaxSize = 4096;
 
@@ -350,9 +354,11 @@ SunxiCedarDecoder::_EngineDecodes(BString& reason) const
 			const HevcSps& sps = state->sps[i];
 			if (!sps.valid)
 				continue;
-			if (sps.chromaFormatIdc != 1 || sps.bitDepthLuma != 8
-				|| sps.bitDepthChroma != 8) {
-				reason = "the engine decodes HEVC Main (eight bit 4:2:0) only";
+			if (sps.chromaFormatIdc != 1
+				|| (sps.bitDepthLuma != 8 && sps.bitDepthLuma != 10)
+				|| sps.bitDepthChroma != sps.bitDepthLuma) {
+				reason = "the engine decodes HEVC Main and Main 10 (4:2:0) "
+					"only";
 				decodes = false;
 			} else if ((uint32)sps.width > kMaxSize
 				|| (uint32)sps.height > kMaxSize) {
@@ -505,6 +511,8 @@ SunxiCedarDecoder::_Stride() const
 		return (fWidth * 2 + 3) & ~3u;
 	if (fOutputSpace == B_RGB32)
 		return fWidth * 4;
+	if (fOutputSpace == kColorSpaceP010)
+		return ((fWidth + 15) & ~15u) * 2;
 	return (fWidth + 15) & ~15u;
 }
 
@@ -537,13 +545,20 @@ SunxiCedarDecoder::NegotiateOutputFormat(media_format* format)
 	fRecording = false;
 	fRecorded.clear();
 
-	color_space space = format->type == B_MEDIA_RAW_VIDEO
-		? format->u.raw_video.display.format : B_NO_COLOR_SPACE;
-	if (space != kColorSpaceNV12 && space != kColorSpaceI420
-		&& space != B_RGB32) {
-		// what MediaPlayer asks for first, and its overlay takes
-		space = B_YCbCr422;
-	}
+	// (MediaPlayer leaves the format's type unset and only names the colour
+	// space)
+	color_space space = format->u.raw_video.display.format;
+	bool tenBit = fPicture.bitDepth > 8;
+	if (space == kColorSpaceNV12 || space == kColorSpaceI420) {
+		// ten bit pictures go out as P010 or packed, eight bit ones not as
+		// P010
+		if (tenBit)
+			return B_MEDIA_BAD_FORMAT;
+	} else if (space == kColorSpaceP010) {
+		if (!tenBit)
+			return B_MEDIA_BAD_FORMAT;
+	} else if (space != B_YCbCr422)
+		space = B_RGB32;
 	fOutputSpace = space;
 	fWidth = fPicture.width;
 	fHeight = fPicture.height;
@@ -713,9 +728,10 @@ SunxiCedarDecoder::Decode(void* buffer, int64* frameCount,
 	bool skip = info != NULL && info->time_to_decode < 0
 		&& fPicture.pts < -info->time_to_decode;
 	if (!skip) {
-		if (fOutputSpace == kColorSpaceNV12 || fOutputSpace == kColorSpaceI420) {
+		if (fOutputSpace == kColorSpaceNV12 || fOutputSpace == kColorSpaceI420
+			|| fOutputSpace == kColorSpaceP010) {
 			fDecoder->CopyPlanes(fPicture, (uint8*)buffer, stride,
-				fOutputSpace == kColorSpaceNV12);
+				fOutputSpace != kColorSpaceI420);
 		} else
 			fDecoder->CopyPacked(fPicture, (uint8*)buffer, stride, fOutputSpace);
 	}
@@ -725,6 +741,7 @@ SunxiCedarDecoder::Decode(void* buffer, int64* frameCount,
 	header->start_time = fPicture.pts;
 	header->size_used = fOutputSpace == kColorSpaceNV12
 			|| fOutputSpace == kColorSpaceI420
+			|| fOutputSpace == kColorSpaceP010
 		? (size_t)stride * (fHeight + (fHeight + 1) / 2)
 		: (size_t)stride * fHeight;
 	header->u.raw_video.display_line_width = fWidth;

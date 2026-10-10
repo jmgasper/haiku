@@ -556,6 +556,66 @@ h264_parse_slice(H264State *st, BitReader *br, H264Slice *sh, char *err)
 // #pragma mark - POC, 8.2.1
 
 
+static int free_slot(H264State *st);
+
+
+/* 8.2.5.3 for a frame with frame_num \a frameNum: the oldest short-term
+   reference goes when the references are as many as the SPS allows. */
+static void
+sliding_window(H264State *st, const H264Sps *sps, int frameNum, int maxFrameNum)
+{
+	int numShort = 0, numLong = 0, oldest = -1, oldestWrap = 0;
+	for (int i = 0; i < H264_MAX_REFS; i++) {
+		if (st->refs[i].ref == 1) {
+			int wrap = st->refs[i].frameNum > frameNum
+				? st->refs[i].frameNum - maxFrameNum : st->refs[i].frameNum;
+			numShort++;
+			if (oldest < 0 || wrap < oldestWrap) {
+				oldest = i;
+				oldestWrap = wrap;
+			}
+		} else if (st->refs[i].ref == 2)
+			numLong++;
+	}
+	int max = sps->maxNumRefFrames > 0 ? sps->maxNumRefFrames : 1;
+	if (numShort + numLong >= max && numShort > 0)
+		st->refs[oldest].ref = 0;
+}
+
+
+/* 8.2.5.2: the frame_num values a stream skipped become "non-existing"
+   short-term references, marked as decoded frames would be. */
+static void
+fill_frame_num_gap(H264State *st, const H264Slice *sh, const H264Sps *sps,
+	int maxFrameNum)
+{
+	if (sh->idr)
+		return;
+	int unused = (st->prevRefFrameNum + 1) % maxFrameNum;
+	if (sh->frameNum == st->prevRefFrameNum || sh->frameNum == unused)
+		return;
+	for (int n = 0; unused != sh->frameNum && n < maxFrameNum; n++) {
+		sliding_window(st, sps, unused, maxFrameNum);
+		int slot = free_slot(st);
+		if (slot < 0)
+			break;
+		H264Ref *r = &st->refs[slot];
+		memset(r, 0, sizeof(*r));
+		r->ref = 1;
+		r->frameNum = unused;
+		r->frameNumWrap = unused;
+		r->frame = -1;
+		r->nonExisting = 1;
+		/* for POC types 1 and 2 they count as decoded frames */
+		if (st->prevFrameNum > unused)
+			st->prevFrameNumOffset += maxFrameNum;
+		st->prevFrameNum = unused;
+		st->prevRefFrameNum = unused;
+		unused = (unused + 1) % maxFrameNum;
+	}
+}
+
+
 void
 h264_start_picture(H264State *st, const H264Slice *sh)
 {
@@ -567,7 +627,9 @@ h264_start_picture(H264State *st, const H264Slice *sh)
 		/* 8.2.5.1: an IDR empties the reference list */
 		for (int i = 0; i < H264_MAX_REFS; i++)
 			st->refs[i].ref = 0;
-	}
+		st->prevRefFrameNum = 0;
+	} else
+		fill_frame_num_gap(st, sh, sps, maxFrameNum);
 
 	if (sps->pocType == 0) {
 		if (sh->idr) {
@@ -879,20 +941,7 @@ h264_finish_picture(H264State *st, const H264Slice *sh, int frame)
 			}
 		} else {
 			/* 8.2.5.3 sliding window */
-			int numShort = 0, numLong = 0, oldest = -1;
-			for (int i = 0; i < H264_MAX_REFS; i++) {
-				if (st->refs[i].ref == 1) {
-					numShort++;
-					if (oldest < 0 || st->refs[i].frameNumWrap
-							< st->refs[oldest].frameNumWrap)
-						oldest = i;
-				} else if (st->refs[i].ref == 2) {
-					numLong++;
-				}
-			}
-			int max = sps->maxNumRefFrames > 0 ? sps->maxNumRefFrames : 1;
-			if (numShort + numLong >= max && numShort > 0)
-				st->refs[oldest].ref = 0;
+			sliding_window(st, sps, sh->frameNum, 1 << sps->log2MaxFrameNum);
 		}
 		if (!markedLong) {
 			slot = free_slot(st);
@@ -906,6 +955,7 @@ h264_finish_picture(H264State *st, const H264Slice *sh, int frame)
 		r->topPoc = st->curTopPoc;
 		r->bottomPoc = st->curBottomPoc;
 		r->frame = frame;
+		r->nonExisting = 0;
 		if (mmco5) {
 			int temp = st->curPoc;
 			r->topPoc -= temp;
@@ -929,6 +979,8 @@ h264_finish_picture(H264State *st, const H264Slice *sh, int frame)
 		st->prevFrameNumOffset = mmco5 ? 0 : st->curFrameNumOffset;
 	}
 	st->prevFrameNum = mmco5 ? 0 : sh->frameNum;
+	if (sh->nalRefIdc != 0)
+		st->prevRefFrameNum = mmco5 ? 0 : sh->frameNum;
 	st->curHadMmco5 = mmco5;
 	(void)maxFrameNum;
 	return slot;

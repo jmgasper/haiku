@@ -76,17 +76,26 @@ public:
 
 			/*!	The picture as planes: luma, then either Cb and Cr planes of
 				half the stride (\a interleaved false) or one of pairs
-				(NV12). \a stride is in bytes; the chroma follows the last
-				luma row. */
+				(NV12); ten bit pictures always as P010 (sixteen bit
+				samples, the value in the upper ten bits, chroma in pairs),
+				put together from the engine's eight bit picture and its
+				two-bit planes.
+				\a stride is in bytes; the chroma follows the last luma
+				row. */
 			void				CopyPlanes(const Picture& picture,
 									uint8* target, uint32 stride,
 									bool interleaved);
 			/*!	The picture as Haiku's B_YCbCr422 (Y0 Cb Y1 Cr) or B_RGB32
 				(BT.601 below 720 rows, else BT.709; studio range), for the
-				Media Kit's users. */
+				Media Kit's users; ten bit pictures by their eight most
+				significant bits. */
 			void				CopyPacked(const Picture& picture,
 									uint8* target, uint32 stride,
 									color_space space);
+			/*!	A ten bit picture's low two bits as the engine left them
+				(for finding out their layout); returns their size. */
+			size_t				CopyTwoBit(const Picture& picture,
+									uint8* target, size_t size);
 
 			const char*			Error() const { return fError.String(); }
 			uint32				PicturesDecoded() const { return fDecoded; }

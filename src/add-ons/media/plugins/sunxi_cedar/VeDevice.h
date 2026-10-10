@@ -54,6 +54,11 @@ public:
 			status_t			Run(uint32 triggerRegister,
 									uint32 triggerValue,
 									uint32 statusRegister, uint32& status);
+			//!	The slices that follow belong to the same picture: no other
+			//	program's go in between until EndPicture().
+			void				SetInPicture(bool inPicture)
+									{ fInPicture = inPicture; }
+			void				EndPicture();
 
 			const sunxi_ve_info& Info() const { return fInfo; }
 			bigtime_t			EngineTime() const { return fEngineTime; }
@@ -65,6 +70,7 @@ private:
 			std::vector<sunxi_ve_op> fOps;
 			bigtime_t			fEngineTime;
 			uint32				fSlices;
+			bool				fInPicture;
 };
 
 

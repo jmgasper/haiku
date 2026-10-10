@@ -16,7 +16,8 @@ VeDevice::VeDevice()
 	:
 	fDevice(-1),
 	fEngineTime(0),
-	fSlices(0)
+	fSlices(0),
+	fInPicture(false)
 {
 	memset(&fInfo, 0, sizeof(fInfo));
 }
@@ -138,6 +139,14 @@ VeDevice::WriteBack(uint32 offset)
 }
 
 
+void
+VeDevice::EndPicture()
+{
+	if (fDevice >= 0)
+		ioctl(fDevice, SUNXI_VE_END_PICTURE, NULL, 0);
+}
+
+
 status_t
 VeDevice::Run(uint32 triggerRegister, uint32 triggerValue,
 	uint32 statusRegister, uint32& status)
@@ -149,6 +158,7 @@ VeDevice::Run(uint32 triggerRegister, uint32 triggerValue,
 	request.trigger_register = triggerRegister;
 	request.trigger_value = triggerValue;
 	request.status_register = statusRegister;
+	request.flags = fInPicture ? SUNXI_VE_RUN_PICTURE : 0;
 	status_t result = B_OK;
 	if (ioctl(fDevice, SUNXI_VE_RUN, &request, sizeof(request)) != 0)
 		result = errno;

@@ -12,11 +12,16 @@
 		stream
 
 	-c	compares with the "<picture> <md5>" lines of a file (vecheck's and
-		the vectors' .framemd5) and says PASS or FAIL
+		the vectors' .framemd5; ten bit pictures are hashed as P010, so
+		.p010.framemd5) and says PASS or FAIL
 	-m	"<picture> <md5>" for every picture
 	-n	no copying out (the engine's speed alone)
 	-o	the pictures as yuv420p to a file
-	-r	decodes the stream that many times (for timing) */
+	-r	decodes the stream that many times (for timing)
+	-2	the low two bits of ten bit pictures, as the engine left them, to a
+		file
+	-p	hashes the pictures as the Media Kit gets them: 422 (B_YCbCr422) or
+		rgb32 (B_RGB32) */
 
 
 #include <errno.h>
@@ -49,6 +54,8 @@ struct Output {
 	bool		printMd5;
 	bool		copy;
 	FILE*		file;
+	FILE*		twoBitFile;
+	color_space	packed;
 	uint8*		buffer;
 	size_t		bufferSize;
 	uint32		pictures;
@@ -122,14 +129,27 @@ take_pictures(CedarDecoder& decoder, Output& output)
 		if (output.copy) {
 			uint32 width = picture.width;
 			uint32 height = picture.height;
-			size_t size = (size_t)width * height
-				+ 2 * (size_t)(width / 2) * (height / 2);
+			// yuv420p, or p010le for ten bits (what FFmpeg hashes), or what
+			// the Media Kit gets
+			bool tenBit = picture.bitDepth > 8;
+			uint32 stride = tenBit ? width * 2 : width;
+			size_t size = tenBit
+				? (size_t)stride * height + (size_t)stride * ((height + 1) / 2)
+				: (size_t)width * height + 2 * (size_t)(width / 2) * (height / 2);
+			if (output.packed != B_NO_COLOR_SPACE) {
+				stride = output.packed == B_RGB32 ? width * 4 : width * 2;
+				size = (size_t)stride * height;
+			}
 			if (size > output.bufferSize) {
 				free(output.buffer);
 				output.buffer = (uint8*)malloc(size);
 				output.bufferSize = size;
 			}
-			decoder.CopyPlanes(picture, output.buffer, width, false);
+			if (output.packed != B_NO_COLOR_SPACE) {
+				decoder.CopyPacked(picture, output.buffer, stride,
+					output.packed);
+			} else
+				decoder.CopyPlanes(picture, output.buffer, stride, tenBit);
 			if (output.file != NULL)
 				fwrite(output.buffer, 1, size, output.file);
 			if (output.printMd5 || output.expected != NULL) {
@@ -158,6 +178,12 @@ take_pictures(CedarDecoder& decoder, Output& output)
 				}
 			}
 		}
+		if (output.twoBitFile != NULL) {
+			uint8* twoBit = (uint8*)malloc(64 << 20);
+			size_t size = decoder.CopyTwoBit(picture, twoBit, 64 << 20);
+			fwrite(twoBit, 1, size, output.twoBitFile);
+			free(twoBit);
+		}
 		decoder.ReleasePicture(picture);
 		output.pictures++;
 	}
@@ -174,8 +200,15 @@ main(int argc, char** argv)
 	const char* expectedPath = NULL;
 
 	int option;
-	while ((option = getopt(argc, argv, "c:mno:r:")) != -1) {
+	while ((option = getopt(argc, argv, "2:c:mno:p:r:")) != -1) {
 		switch (option) {
+			case 'p':
+				output.packed = strcmp(optarg, "rgb32") == 0
+					? B_RGB32 : B_YCbCr422;
+				break;
+			case '2':
+				output.twoBitFile = fopen(optarg, "wb");
+				break;
 			case 'c':
 				expectedPath = optarg;
 				break;
@@ -262,6 +295,8 @@ main(int argc, char** argv)
 	bigtime_t cpu = thread.user_time + thread.kernel_time - cpuStart;
 	if (output.file != NULL)
 		fclose(output.file);
+	if (output.twoBitFile != NULL)
+		fclose(output.twoBitFile);
 
 	fprintf(stderr, "cedar_decode: %" B_PRIu32 " pictures (%" B_PRIu32
 		" corrupt), %" B_PRIu32 " slices in %.3f s: %.1f pictures/s; engine"

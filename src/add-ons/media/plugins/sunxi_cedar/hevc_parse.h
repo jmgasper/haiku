@@ -11,7 +11,7 @@
 	Section numbers: ITU-T H.265 (V8, 08/2021).
 
 	Not handled (reported as unsupported): other than 4:2:0, more than 10
-	bit, dependent slice segments, range and SCC extensions. */
+	bit, range and SCC extensions. */
 
 #include <stdint.h>
 
@@ -147,6 +147,9 @@ typedef struct {
 	/* the RPS names a picture that is not there (after a broken stream);
 	   the lists are made of what there is */
 	int	missingReference;
+	/* the last independent slice segment: a dependent one takes its header */
+	HevcSlice lastIndependent;
+	int	haveIndependent;
 } HevcState;
 
 void hevc_init(HevcState *st);

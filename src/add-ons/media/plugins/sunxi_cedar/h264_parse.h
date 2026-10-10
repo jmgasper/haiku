@@ -11,7 +11,9 @@
 	and the prediction weights. Section numbers: ITU-T H.264 (08/2021).
 
 	Not handled (reported as unsupported): field and MBAFF pictures, slice
-	groups, frame_num gaps, other than 4:2:0 8 bit. */
+	groups, other than 4:2:0 8 bit. Gaps in frame_num get "non-existing"
+	reference frames (frame -1), which a conforming stream never predicts
+	from. */
 
 #include <stdint.h>
 
@@ -116,7 +118,8 @@ typedef struct {
 	int	ref;			/* 0 none, 1 short term, 2 long term */
 	int	frameNum, frameNumWrap, longTermFrameIdx;
 	int	topPoc, bottomPoc, poc;
-	int	frame;			/* the caller's picture */
+	int	frame;			/* the caller's picture, -1 for none */
+	int	nonExisting;		/* inferred for a gap in frame_num (8.2.5.2) */
 } H264Ref;
 
 typedef struct {
@@ -126,6 +129,7 @@ typedef struct {
 	/* POC state, 8.2.1 */
 	int	prevPocMsb, prevPocLsb;
 	int	prevFrameNumOffset, prevFrameNum;
+	int	prevRefFrameNum;	/* 7.4.3, for gaps in frame_num */
 
 	/* current picture */
 	int	curFrameNumOffset, curPocMsb;
@@ -150,7 +154,8 @@ int h264_parse_slice(H264State *st, BitReader *br, H264Slice *sh, char *err);
    (7.4.1.2.4). */
 int h264_new_picture(const H264Slice *previous, const H264Slice *slice);
 
-/* Picture-level steps, in order, for the first slice of every picture. */
+/* Picture-level steps, in order, for the first slice of every picture
+   (frame_num gaps are filled here). */
 void h264_start_picture(H264State *st, const H264Slice *sh);
 /* Final reference lists for one slice; entries are indices into st->refs,
    -1 for "no reference picture". */

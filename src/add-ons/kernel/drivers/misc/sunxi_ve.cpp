@@ -39,6 +39,8 @@
 
 #include <sunxi_ve.h>
 
+#include "sunxi_ve_check.h"
+
 
 //#define TRACE_VE
 #ifdef TRACE_VE
@@ -153,6 +155,9 @@ static mutex sOpenLock = MUTEX_INITIALIZER("sunxi_ve open");
 static sem_id sDoneSem = -1;
 static int32 sOpenCount;
 static volatile bool sPowered;
+static ve_client* sLastClient;		// whose slice the engine ran last
+static ve_client* sHolder;			// in the middle of a picture
+static bigtime_t sHoldUntil;
 static bool sIdentified;
 static uint32 sDecoderIp, sEncoderIp, sVersion;
 
@@ -380,13 +385,12 @@ power_down()
 }
 
 
-/*!	After a slice that did not end: the decoder's reset, then what the
-	reset clears again.
+/*!	After a slice that did not end, and before another program's: the
+	decoder's reset, then what the reset clears again.
 */
 static void
 reset_engine()
 {
-	ERROR("resetting the engine\n");
 	set_powered(false);
 	clear_bits(sCcu, CCU_VE_BUS, 1u << 18);
 	spin(10);
@@ -549,24 +553,6 @@ sync_buffer(ve_client* client, const sunxi_ve_sync& request)
 //	#pragma mark - slices
 
 
-/*!	Registers the program may write: the decoder's window except what
-	powers, resets and routes the engine, which is the driver's.
-*/
-static bool
-writable_register(uint32 offset)
-{
-	if (offset >= SUNXI_VE_REGISTER_WINDOW || (offset & 3) != 0)
-		return false;
-	switch (offset) {
-		case 0x004:		// reset
-		case 0x05c:		// VCU configuration
-		case VE_TOP_RESET:
-			return false;
-	}
-	return true;
-}
-
-
 static status_t
 run_slice(ve_client* client, sunxi_ve_run& request, const sunxi_ve_op* ops)
 {
@@ -574,25 +560,55 @@ run_slice(ve_client* client, sunxi_ve_run& request, const sunxi_ve_op* ops)
 		&& request.status_register == H264_STATUS;
 	bool hevc = request.trigger_register == HEVC_TRIGGER
 		&& request.status_register == HEVC_STATUS;
-	if (!h264 && !hevc)
+	if ((!h264 && !hevc) || request.trigger_value != 8)
 		return B_BAD_VALUE;
-	for (uint32 i = 0; i < request.count; i++) {
-		if (!writable_register(ops[i].reg)
-			|| (ops[i].type != SUNXI_VE_OP_WRITE
-				&& ops[i].type != SUNXI_VE_OP_POLL_CLEAR
-				&& ops[i].type != SUNXI_VE_OP_WRITE_BACK)) {
-			return B_BAD_VALUE;
-		}
-	}
 
+	// the client's buffers stay while it is busy (SUNXI_VE_FREE refuses)
+	ve_range ranges[SUNXI_VE_MAX_BUFFERS];
+	uint32 rangeCount = 0;
 	MutexLocker clientLocker(client->lock);
 	client->busy++;
+	for (uint32 i = 0; i < SUNXI_VE_MAX_BUFFERS; i++) {
+		const ve_buffer& buffer = client->buffers[i];
+		if (buffer.area < 0)
+			continue;
+		ranges[rangeCount].start = (uint32)(buffer.physical - sAddressOffset);
+		ranges[rangeCount].end = ranges[rangeCount].start + (uint32)buffer.size;
+		rangeCount++;
+	}
 	clientLocker.Unlock();
 
+	ve_check check = { ranges, rangeCount, NULL, 0 };
+	if (!ve_check_ops(check, ops, request.count, hevc)) {
+		ERROR("slice refused: %s (op %" B_PRIu32 ")\n", check.problem,
+			check.index);
+		clientLocker.Lock();
+		client->busy--;
+		return B_NOT_ALLOWED;
+	}
+
+	// another program's picture goes first
 	MutexLocker locker(sEngineLock);
+	while (sHolder != NULL && sHolder != client
+		&& system_time() < sHoldUntil) {
+		locker.Unlock();
+		snooze(500);
+		locker.Lock();
+	}
+	if (sHolder != client)
+		sHolder = NULL;
+
 	status_t status = B_OK;
 	if (!sPowered || !engine_clocked())
 		status = B_NOT_ALLOWED;
+
+	// the engine's state of the last program's slice is not this one's
+	if (status == B_OK && sLastClient != NULL && sLastClient != client) {
+		reset_engine();
+		if (!sPowered)
+			status = B_NOT_ALLOWED;
+	}
+	sLastClient = client;
 
 	// an interrupt nobody waited for
 	while (acquire_sem_etc(sDoneSem, 1, B_RELATIVE_TIMEOUT, 0) == B_OK) {
@@ -634,8 +650,15 @@ run_slice(ve_client* client, sunxi_ve_run& request, const sunxi_ve_op* ops)
 				request.status);
 		}
 	}
-	if (status == B_TIMED_OUT)
+	if (status == B_TIMED_OUT) {
+		ERROR("resetting the engine\n");
 		reset_engine();
+	}
+	if (status == B_OK && (request.flags & SUNXI_VE_RUN_PICTURE) != 0) {
+		sHolder = client;
+		sHoldUntil = system_time() + 100000;
+	} else if (sHolder == client)
+		sHolder = NULL;
 	locker.Unlock();
 
 	clientLocker.Lock();
@@ -782,6 +805,10 @@ ve_free(void* cookie)
 		snooze(10000);
 	}
 	mutex_lock(&sEngineLock);
+	if (sHolder == client)
+		sHolder = NULL;
+	if (sLastClient == client)
+		sLastClient = NULL;
 	mutex_unlock(&sEngineLock);
 
 	for (uint32 i = 0; i < SUNXI_VE_MAX_BUFFERS; i++)
@@ -859,6 +886,14 @@ ve_control(void* cookie, uint32 op, void* buffer, size_t length)
 				return B_BAD_ADDRESS;
 			}
 			return sync_buffer(client, request);
+		}
+
+		case SUNXI_VE_END_PICTURE:
+		{
+			MutexLocker locker(sEngineLock);
+			if (sHolder == client)
+				sHolder = NULL;
+			return B_OK;
 		}
 
 		case SUNXI_VE_RUN:

@@ -32,9 +32,13 @@ CedarEngine::CedarEngine(VeDevice& device)
 	fChromaSize(0),
 	fFrameSize(0),
 	fMvcolSize(0),
+	fBitDepth(8),
+	fTwoBitStride(0),
+	fTwoBitOffset(0),
 	fDdr128(getenv("CEDAR_DDR128") != NULL),
 	fEntryPointsPlus1(getenv("CEDAR_EP_PLUS1") != NULL)
 {
+
 	fError[0] = '\0';
 }
 
@@ -69,10 +73,12 @@ CedarEngine::Matches(uint32 width, uint32 height, size_t mvcolSize) const
 
 status_t
 CedarEngine::_Configure(uint32 width, uint32 height, size_t mvcolSize,
-	int codec)
+	int codec, uint32 bitDepth)
 {
-	if (fCodec == codec && Matches(width, height, mvcolSize))
+	if (fCodec == codec && fBitDepth == bitDepth
+		&& Matches(width, height, mvcolSize)) {
 		return B_OK;
+	}
 	Unconfigure();
 
 	fWidth = width;
@@ -83,6 +89,19 @@ CedarEngine::_Configure(uint32 width, uint32 height, size_t mvcolSize,
 	fChromaSize = fLumaSize / 2;
 	fFrameSize = fLumaSize + fChromaSize;
 	fMvcolSize = mvcolSize;
+	fBitDepth = bitDepth;
+	if (bitDepth > 8) {
+		// the low two bits of every sample behind the picture, at a 1 KiB
+		// boundary (the engine's secondary output would make P010 on the
+		// H616, but on the A733 it stops the engine)
+		fTwoBitStride = align(width / 4, 32);
+		fTwoBitOffset = align(fFrameSize, 1024);
+		fFrameSize = fTwoBitOffset
+			+ (size_t)fTwoBitStride * fAlignedHeight * 3 / 2;
+	} else {
+		fTwoBitStride = 0;
+		fTwoBitOffset = 0;
+	}
 
 	status_t status = fDevice.Allocate(fBitstream, 1024 * 1024);
 	if (status != B_OK)
@@ -130,7 +149,7 @@ CedarEngine::ConfigureH264(const H264Sps& sps)
 		field *= 2;
 	if (!sps.frameMbsOnly)
 		field *= 2;
-	return _Configure(width, height, field * 2, CEDAR_MODE_H264);
+	return _Configure(width, height, field * 2, CEDAR_MODE_H264, 8);
 }
 
 
@@ -138,7 +157,8 @@ status_t
 CedarEngine::ConfigureHevc(const HevcSps& sps)
 {
 	size_t mvcol = (size_t)sps.widthCtbs * sps.heightCtbs * 160 + 1024;
-	return _Configure(sps.width, sps.height, mvcol, CEDAR_MODE_HEVC);
+	return _Configure(sps.width, sps.height, mvcol, CEDAR_MODE_HEVC,
+		sps.bitDepthLuma);
 }
 
 
@@ -302,7 +322,7 @@ CedarEngine::DecodeH264Slice(const H264State& state, const H264Slice& slice,
 	memset(list, 0, sizeof(list));
 	for (int i = 0; i < H264_MAX_REFS; i++) {
 		const H264Ref& ref = state.refs[i];
-		if (ref.ref == 0)
+		if (ref.ref == 0 || ref.frame < 0)
 			continue;
 		const CedarFrame* frame = frames[ref.frame];
 		if (frame->position < 1 || frame->position >= H264_FRAME_SLOTS)
@@ -722,6 +742,8 @@ CedarEngine::DecodeHevcSlice(const HevcState& state, const HevcSlice& slice,
 		reg |= 1u << 7;
 	if (slice.temporalMvp)
 		reg |= 1u << 6;
+	if (slice.dependentSliceSegment)
+		reg |= 1u << 1;
 	if (slice.firstSliceSegmentInPic)
 		reg |= 1u << 0;
 	fDevice.Write(HEVC_SLICE0, reg);
@@ -787,6 +809,12 @@ CedarEngine::DecodeHevcSlice(const HevcState& state, const HevcSlice& slice,
 			_HevcWeights(slice, 1);
 	}
 
-	fDevice.Write(HEVC_CTRL, HEVC_IRQ_MASK);
+	if (fBitDepth > 8) {
+		// the low two bits behind the picture
+		fDevice.Write(HEVC_OFFSET_FIRST_OUT, (uint32)fTwoBitOffset);
+		fDevice.Write(HEVC_10BIT_CONFIG, fTwoBitStride & 0x7ff);
+	}
+	uint32 control = HEVC_IRQ_MASK;
+	fDevice.Write(HEVC_CTRL, control);
 	return _Run(HEVC_TRIGGER, HEVC_STATUS, "HEVC slice");
 }

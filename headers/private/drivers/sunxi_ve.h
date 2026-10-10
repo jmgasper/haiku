@@ -40,7 +40,8 @@ enum {
 	SUNXI_VE_ALLOCATE,
 	SUNXI_VE_FREE,
 	SUNXI_VE_SYNC,
-	SUNXI_VE_RUN
+	SUNXI_VE_RUN,
+	SUNXI_VE_END_PICTURE	// no argument: see SUNXI_VE_RUN_PICTURE
 };
 
 struct sunxi_ve_info {
@@ -84,13 +85,22 @@ struct sunxi_ve_op {
 /*	A slice: the writes, then trigger_value to trigger_register, which starts
 	the engine. On its interrupt the driver reads status_register, clears it
 	(writing 7, the engines' write-one-to-clear done/error/request bits) and
-	returns it. */
+	returns it.
+
+	The engine keeps state from one slice to the next. The driver resets it
+	when another file descriptor's slice comes, and with
+	SUNXI_VE_RUN_PICTURE a program keeps the engine to itself until it says
+	SUNXI_VE_END_PICTURE (or for a tenth of a second at most), so that the
+	slices of one picture are not interleaved with another program's. */
+#define SUNXI_VE_RUN_PICTURE	1
+
 struct sunxi_ve_run {
 	const sunxi_ve_op* ops;
 	uint32	count;
 	uint16	trigger_register;
 	uint16	status_register;
 	uint32	trigger_value;
+	uint32	flags;
 	uint32	status;			// out
 	uint32	engine_time;	// out: microseconds from trigger to interrupt
 };

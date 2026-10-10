@@ -493,8 +493,22 @@ hevc_parse_slice(HevcState *st, BitReader *br, const Rbsp *rbsp, HevcSlice *sh,
 		sh->segmentAddress = br_u(br,
 			ceil_log2(sps->widthCtbs * sps->heightCtbs));
 	}
-	if (sh->dependentSliceSegment)
-		ERR(-2, "dependent slice segments");
+	if (sh->dependentSliceSegment) {
+		/* 7.4.7.1: the header is the last independent segment's, but for
+		   where this one starts and its entry points */
+		if (!st->haveIndependent)
+			ERR(-1, "dependent slice segment without its slice");
+		HevcSlice own = *sh;
+		*sh = st->lastIndependent;
+		sh->nalType = own.nalType;
+		sh->temporalId = own.temporalId;
+		sh->firstSliceSegmentInPic = 0;
+		sh->noOutputOfPriorPics = own.noOutputOfPriorPics;
+		sh->dependentSliceSegment = 1;
+		sh->segmentAddress = own.segmentAddress;
+		sh->numEntryPoints = 0;
+		goto entry_points;
+	}
 
 	br_skip(br, pps->numExtraSliceHeaderBits);
 	sh->sliceType = br_ue(br);
@@ -623,6 +637,7 @@ hevc_parse_slice(HevcState *st, BitReader *br, const Rbsp *rbsp, HevcSlice *sh,
 		&& (sh->saoLuma || sh->saoChroma || !sh->deblockingDisabled))
 		sh->loopFilterAcrossSlices = br_flag(br);
 
+entry_points:
 	if (pps->tilesEnabled || pps->entropyCodingSync) {
 		sh->numEntryPoints = br_ue(br);
 		if (sh->numEntryPoints > HEVC_MAX_ENTRY)
@@ -649,6 +664,10 @@ hevc_parse_slice(HevcState *st, BitReader *br, const Rbsp *rbsp, HevcSlice *sh,
 		ERR(-1, "slice header truncated");
 	sh->dataOffset = (int)(br_pos(br) / 8);
 	sh->dataOffsetRaw = (int)rbsp_to_raw(rbsp, sh->dataOffset);
+	if (!sh->dependentSliceSegment) {
+		st->lastIndependent = *sh;
+		st->haveIndependent = 1;
+	}
 	return 0;
 }
 

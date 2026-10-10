@@ -145,6 +145,17 @@ rule UserBuildConfigRulePreImage
 		SEARCH on $(airTime) = /mnt/HaikuWork/apps/airTime/artifacts ;
 		AddFilesToHaikuImage system packages : $(airTime) ;
 
+		# The video engine's add-on before FFmpeg's in the Media Kit's
+		# lookup, so that MediaPlayer and every BMediaFile user decode H.264
+		# and HEVC on the engine. The Media Kit searches the add-on
+		# directories in order (system/non-packaged before system) and in one
+		# directory takes the first add-on registered for a format, which is
+		# FFmpeg's (rock5_ffmpeg's entries come first). The add-on registers
+		# its formats only where the engine is, and hands a stream the engine
+		# does not decode to FFmpeg's decoder itself.
+		AddSymlinkToHaikuImage system non-packaged add-ons media plugins
+			: /boot/system/add-ons/media/plugins/sunxi_cedar : sunxi_cedar ;
+
 		# TLS for curl and Summit
 		local airosLibDir = /mnt/HaikuWork/airos/lib-arm64 ;
 		local airosLibs = [ Glob $(airosLibDir) : *.so* ] ;

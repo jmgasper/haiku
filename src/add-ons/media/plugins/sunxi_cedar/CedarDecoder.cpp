@@ -23,6 +23,9 @@
 #include "CedarRegisters.h"
 
 
+// CEDAR_NO_NEON: the plain C loops, to compare with
+static const bool sNoNeon = getenv("CEDAR_NO_NEON") != NULL;
+
 //#define TRACE_CEDAR
 #ifdef TRACE_CEDAR
 #	define TRACE(x...) fprintf(stderr, "sunxi_cedar: " x)
@@ -88,6 +91,8 @@ CedarDecoder::Open(BString* _error)
 	status_t status = fDevice.Open(_error);
 	if (status != B_OK)
 		return status;
+	// a picture's slices go one after the other (see _FinishPicture())
+	fDevice.SetInPicture(true);
 
 	if (fCodec == H264) {
 		fH264 = new(std::nothrow) H264State;
@@ -177,6 +182,7 @@ CedarDecoder::Drain()
 void
 CedarDecoder::Reset()
 {
+	fDevice.EndPicture();
 	fOutput.clear();
 	for (CedarFrame* frame : fFrames) {
 		frame->current = frame->waiting = frame->ready = frame->held = false;
@@ -233,12 +239,53 @@ CedarDecoder::ReleasePicture(const Picture& picture)
 }
 
 
+/*!	\a count samples from \a first on of a row as P010: the eight most
+	significant bits from the engine's picture, the low two from its two-bit
+	row (four samples to a byte, the first in the lowest bits).
+*/
+static void
+merge_ten_bit(const uint8* row, const uint8* twoBit, uint32 first,
+	uint32 count, uint16* target)
+{
+	uint32 i = 0;
+#if defined(__ARM_NEON)
+	if ((first & 3) == 0 && !sNoNeon) {
+		static const uint8 kIndex[16]
+			= { 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3 };
+		static const int8 kShift[16]
+			= { 0, -2, -4, -6, 0, -2, -4, -6, 0, -2, -4, -6, 0, -2, -4, -6 };
+		uint8x16_t index = vld1q_u8(kIndex);
+		int8x16_t shift = vld1q_s8(kShift);
+		uint8x16_t three = vdupq_n_u8(3);
+		for (; i + 16 <= count; i += 16) {
+			uint8x16_t high = vld1q_u8(row + first + i);
+			uint32 packed;
+			memcpy(&packed, twoBit + (first + i) / 4, 4);
+			uint8x16_t low = vqtbl1q_u8(
+				vreinterpretq_u8_u32(vdupq_n_u32(packed)), index);
+			low = vandq_u8(vshlq_u8(low, shift), three);
+			vst1q_u16(target + i, vorrq_u16(vshll_n_u8(vget_low_u8(high), 8),
+				vshll_n_u8(vget_low_u8(low), 6)));
+			vst1q_u16(target + i + 8, vorrq_u16(
+				vshll_n_u8(vget_high_u8(high), 8),
+				vshll_n_u8(vget_high_u8(low), 6)));
+		}
+	}
+#endif
+	for (; i < count; i++) {
+		uint32 x = first + i;
+		uint32 low = (twoBit[x / 4] >> ((x % 4) * 2)) & 3;
+		target[i] = (uint16)((((uint32)row[x] << 2) | low) << 6);
+	}
+}
+
+
 static void
 split_chroma(const uint8* source, uint8* cb, uint8* cr, uint32 count)
 {
 	uint32 i = 0;
 #if defined(__ARM_NEON)
-	for (; i + 16 <= count; i += 16) {
+	for (; i + 16 <= count && !sNoNeon; i += 16) {
 		uint8x16x2_t pairs = vld2q_u8(source + 2 * i);
 		vst1q_u8(cb + i, pairs.val[0]);
 		vst1q_u8(cr + i, pairs.val[1]);
@@ -258,6 +305,31 @@ CedarDecoder::CopyPlanes(const Picture& picture, uint8* target, uint32 stride,
 	if (picture.frame < 0 || (size_t)picture.frame >= fFrames.size())
 		return;
 	const CedarFrame& frame = *fFrames[picture.frame];
+
+	if (frame.bitDepth > 8) {
+		// P010: the eight bit picture's samples, with their low two bits
+		fDevice.SyncForCpu(frame.picture, 0, frame.picture.size);
+		uint32 alignedHeight = (uint32)(frame.lumaSize / frame.stride);
+		const uint8* twoBit = frame.picture.address + frame.twoBitOffset;
+		for (uint32 row = 0; row < frame.height; row++) {
+			uint32 y = frame.cropTop + row;
+			merge_ten_bit(frame.picture.address + (size_t)y * frame.stride,
+				twoBit + (size_t)y * frame.twoBitStride, frame.cropLeft,
+				frame.width, (uint16*)(target + (size_t)row * stride));
+		}
+		const uint8* chroma = frame.picture.address + frame.lumaSize;
+		const uint8* twoBitChroma = twoBit
+			+ (size_t)frame.twoBitStride * alignedHeight;
+		uint8* chromaTarget = target + (size_t)stride * frame.height;
+		for (uint32 row = 0; row < (frame.height + 1) / 2; row++) {
+			uint32 y = frame.cropTop / 2 + row;
+			merge_ten_bit(chroma + (size_t)y * frame.stride,
+				twoBitChroma + (size_t)y * frame.twoBitStride,
+				frame.cropLeft & ~1u, ((frame.width + 1) / 2) * 2,
+				(uint16*)(chromaTarget + (size_t)row * stride));
+		}
+		return;
+	}
 
 	// what the engine wrote is in memory, the cache may have older lines
 	fDevice.SyncForCpu(frame.picture, 0, frame.lumaSize + frame.lumaSize / 2);
@@ -299,7 +371,7 @@ pack_ycbcr422(const uint8* luma, const uint8* chroma, uint8* target,
 {
 	uint32 i = 0;
 #if defined(__ARM_NEON)
-	for (; i + 16 <= pairs; i += 16) {
+	for (; i + 16 <= pairs && !sNoNeon; i += 16) {
 		uint8x16x2_t y = vld2q_u8(luma + 2 * i);
 		uint8x16x2_t c = vld2q_u8(chroma + 2 * i);
 		uint8x16x4_t out;
@@ -326,21 +398,55 @@ clamp_sample(int32 value)
 }
 
 
-/*!	One row of 4:2:0 as B_RGB32 (B, G, R, A in memory), studio range, with
-	the matrix's coefficients in 1/8192.
+/*!	One row of 4:2:0 as B_RGB32 (B, G, R, A in memory), studio range. The
+	matrix is the luma scale and the chroma terms (Cr to R, Cb to G, Cr to
+	G, Cb to B) in 1/64.
 */
 static void
 pack_rgb32(const uint8* luma, const uint8* chroma, uint8* target,
-	uint32 width, const int32* matrix)
+	uint32 width, const int16* matrix)
 {
-	for (uint32 x = 0; x < width; x++) {
-		int32 y = ((int32)luma[x] - 16) * 9539;		// 255/219
+	uint32 x = 0;
+#if defined(__ARM_NEON)
+	int16x8_t sixteen = vdupq_n_s16(16);
+	int16x8_t half = vdupq_n_s16(128);
+	uint8x8_t opaque = vdup_n_u8(255);
+	for (; x + 16 <= width && !sNoNeon; x += 16) {
+		uint8x16_t y = vld1q_u8(luma + x);
+		uint8x8x2_t c = vld2_u8(chroma + x);
+		int16x8_t cb = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(c.val[0])),
+			half);
+		int16x8_t cr = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(c.val[1])),
+			half);
+		int16x8_t r = vmulq_n_s16(cr, matrix[1]);
+		int16x8_t g = vaddq_s16(vmulq_n_s16(cb, matrix[2]),
+			vmulq_n_s16(cr, matrix[3]));
+		int16x8_t b = vmulq_n_s16(cb, matrix[4]);
+		// each chroma sample for two luma samples
+		int16x8x2_t rr = vzipq_s16(r, r);
+		int16x8x2_t gg = vzipq_s16(g, g);
+		int16x8x2_t bb = vzipq_s16(b, b);
+		for (int h = 0; h < 2; h++) {
+			uint8x8_t yHalf = h == 0 ? vget_low_u8(y) : vget_high_u8(y);
+			int16x8_t yy = vmulq_n_s16(vsubq_s16(
+				vreinterpretq_s16_u16(vmovl_u8(yHalf)), sixteen), matrix[0]);
+			uint8x8x4_t pixels;
+			pixels.val[0] = vqrshrun_n_s16(vqaddq_s16(yy, bb.val[h]), 6);
+			pixels.val[1] = vqrshrun_n_s16(vqsubq_s16(yy, gg.val[h]), 6);
+			pixels.val[2] = vqrshrun_n_s16(vqaddq_s16(yy, rr.val[h]), 6);
+			pixels.val[3] = opaque;
+			vst4_u8(target + 4 * (x + 8 * h), pixels);
+		}
+	}
+#endif
+	for (; x < width; x++) {
+		int32 y = ((int32)luma[x] - 16) * matrix[0];
 		int32 cb = (int32)chroma[x & ~1u] - 128;
 		int32 cr = (int32)chroma[(x & ~1u) + 1] - 128;
-		target[4 * x + 2] = clamp_sample((y + matrix[0] * cr + 4096) >> 13);
-		target[4 * x + 1] = clamp_sample((y - matrix[1] * cb - matrix[2] * cr
-			+ 4096) >> 13);
-		target[4 * x] = clamp_sample((y + matrix[3] * cb + 4096) >> 13);
+		target[4 * x + 2] = clamp_sample((y + matrix[1] * cr + 32) >> 6);
+		target[4 * x + 1] = clamp_sample((y - matrix[2] * cb - matrix[3] * cr
+			+ 32) >> 6);
+		target[4 * x] = clamp_sample((y + matrix[4] * cb + 32) >> 6);
 		target[4 * x + 3] = 255;
 	}
 }
@@ -355,10 +461,11 @@ CedarDecoder::CopyPacked(const Picture& picture, uint8* target, uint32 stride,
 	const CedarFrame& frame = *fFrames[picture.frame];
 	fDevice.SyncForCpu(frame.picture, 0, frame.lumaSize + frame.lumaSize / 2);
 
-	// Cr to R, Cb to G, Cr to G, Cb to B, studio range chroma (255/224)
-	static const int32 kBt601[] = { 13074, 3209, 6660, 16525 };
-	static const int32 kBt709[] = { 14686, 1747, 4365, 17304 };
-	const int32* matrix = frame.height >= 720 ? kBt709 : kBt601;
+	// luma scale (255/219), then Cr to R, Cb to G, Cr to G, Cb to B with
+	// studio range chroma (255/224), all in 1/64
+	static const int16 kBt601[] = { 75, 102, 25, 52, 129 };
+	static const int16 kBt709[] = { 75, 115, 14, 34, 135 };
+	const int16* matrix = frame.height >= 720 ? kBt709 : kBt601;
 
 	const uint8* luma = frame.picture.address
 		+ (size_t)frame.cropTop * frame.stride + frame.cropLeft;
@@ -373,6 +480,23 @@ CedarDecoder::CopyPacked(const Picture& picture, uint8* target, uint32 stride,
 		else
 			pack_rgb32(lumaRow, chromaRow, targetRow, frame.width, matrix);
 	}
+}
+
+
+size_t
+CedarDecoder::CopyTwoBit(const Picture& picture, uint8* target, size_t size)
+{
+	if (picture.frame < 0 || (size_t)picture.frame >= fFrames.size())
+		return 0;
+	const CedarFrame& frame = *fFrames[picture.frame];
+	if (frame.bitDepth <= 8)
+		return 0;
+	size_t available = frame.picture.size - frame.twoBitOffset;
+	if (size > available)
+		size = available;
+	fDevice.SyncForCpu(frame.picture, frame.twoBitOffset, size);
+	memcpy(target, frame.picture.address + frame.twoBitOffset, size);
+	return size;
 }
 
 
@@ -532,6 +656,8 @@ CedarDecoder::_NewFrame(uint32 width, uint32 height, uint32 cropLeft,
 	frame.width = width;
 	frame.height = height;
 	frame.bitDepth = bitDepth;
+	frame.twoBitOffset = fEngine.TwoBitOffset();
+	frame.twoBitStride = fEngine.TwoBitStride();
 	fCurrent = index;
 	fFirstSlice = true;
 	return B_OK;
@@ -546,6 +672,8 @@ CedarDecoder::_FinishPicture()
 			_FinishH264Picture();
 		else
 			_FinishHevcPicture();
+		// other programs' slices may come again
+		fDevice.EndPicture();
 	}
 	fCurrent = -1;
 	fSkipping = false;
@@ -648,17 +776,25 @@ CedarDecoder::_H264Slice(const uint8* nal, size_t size, int64 pts)
 	if (predicted) {
 		int standIn = -1;
 		for (int i = 0; i < H264_MAX_REFS && standIn < 0; i++) {
-			if (fH264->refs[i].ref != 0
-				&& fFrames[fH264->refs[i].frame]->position > 0) {
+			const H264Ref& ref = fH264->refs[i];
+			if (ref.ref != 0 && ref.frame >= 0
+				&& fFrames[ref.frame]->position > 0) {
 				standIn = i;
 			}
 		}
 		for (int l = 0; l < 2; l++) {
 			int* list = l == 0 ? list0 : list1;
 			for (int i = 0; i < slice.numRefIdxActive[l] && i < 32; i++) {
-				if (list[i] >= 0
-					&& fFrames[fH264->refs[list[i]].frame]->position > 0) {
-					continue;
+				if (list[i] >= 0) {
+					const H264Ref& ref = fH264->refs[list[i]];
+					if (ref.frame >= 0 && fFrames[ref.frame]->position > 0)
+						continue;
+					// a frame of a frame_num gap is in the list but never
+					// predicted from in a conforming stream
+					if (ref.nonExisting) {
+						list[i] = standIn;
+						continue;
+					}
 				}
 				list[i] = standIn;
 				current.corrupt = true;
@@ -688,7 +824,7 @@ CedarDecoder::_FreeH264Position() const
 {
 	bool used[H264_FRAME_SLOTS] = {};
 	for (int i = 0; i < H264_MAX_REFS; i++) {
-		if (fH264->refs[i].ref == 0)
+		if (fH264->refs[i].ref == 0 || fH264->refs[i].frame < 0)
 			continue;
 		int32 position = fFrames[fH264->refs[i].frame]->position;
 		if (position > 0 && position < H264_FRAME_SLOTS)
@@ -955,9 +1091,10 @@ CedarDecoder::_StartHevcPicture(const HevcSlice& slice, int64 pts)
 	}
 	fAwaitRandomAccess = false;
 
-	if (sps.bitDepthLuma != 8 || sps.bitDepthChroma != 8) {
-		return _Fail(B_NOT_SUPPORTED, "%d bit HEVC is not supported yet",
-			sps.bitDepthLuma);
+	if ((sps.bitDepthLuma != 8 && sps.bitDepthLuma != 10)
+		|| sps.bitDepthChroma != sps.bitDepthLuma) {
+		return _Fail(B_NOT_SUPPORTED, "the engine decodes eight and ten bit "
+			"HEVC, this is %d/%d bit", sps.bitDepthLuma, sps.bitDepthChroma);
 	}
 	if ((uint32)sps.width > kMaxSize || (uint32)sps.height > kMaxSize) {
 		return _Fail(B_NOT_SUPPORTED, "the engine decodes up to %" B_PRIu32
@@ -970,7 +1107,8 @@ CedarDecoder::_StartHevcPicture(const HevcSlice& slice, int64 pts)
 	bool noRaslOutput = randomAccess && (hevc_is_idr(type) || type <= 18
 		|| fHevc->firstPicture);
 	if (noRaslOutput) {
-		if (slice.noOutputOfPriorPics)
+		// a CRA picture there drops them whatever its flag says
+		if (slice.noOutputOfPriorPics || type == 21)
 			_DropWaiting();
 		else
 			_BumpAll();

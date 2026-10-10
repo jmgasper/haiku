@@ -34,11 +34,18 @@ struct CedarFrame {
 	uint32		width;		// what is to be shown
 	uint32		height;
 	uint32		bitDepth;
+	// ten bits: the low two bits of every sample, behind the eight bit
+	// picture; four samples to a byte, the lowest first, a row of luma
+	// samples twoBitStride bytes long, then the chroma rows (Cb and Cr in
+	// pairs) the same way
+	size_t		twoBitOffset;
+	uint32		twoBitStride;
 
 	CedarFrame() : position(-1), poc(0), pts(0), current(false),
 		waiting(false), ready(false), held(false), corrupt(false),
 		latency(0), stride(0), lumaSize(0), cropLeft(0), cropTop(0),
-		width(0), height(0), bitDepth(8) {}
+		width(0), height(0), bitDepth(8), twoBitOffset(0), twoBitStride(0)
+		{}
 };
 
 
@@ -82,6 +89,9 @@ public:
 			size_t				LumaSize() const { return fLumaSize; }
 			size_t				FrameSize() const { return fFrameSize; }
 			size_t				MvcolSize() const { return fMvcolSize; }
+			uint32				BitDepth() const { return fBitDepth; }
+			size_t				TwoBitOffset() const { return fTwoBitOffset; }
+			uint32				TwoBitStride() const { return fTwoBitStride; }
 			bool				Matches(uint32 width, uint32 height,
 									size_t mvcolSize) const;
 
@@ -89,7 +99,8 @@ public:
 
 private:
 			status_t			_Configure(uint32 width, uint32 height,
-									size_t mvcolSize, int codec);
+									size_t mvcolSize, int codec,
+									uint32 bitDepth);
 			status_t			_LoadBitstream(const uint8* nal, size_t size);
 			void				_SetOutputFormat();
 			uint32				_Mode(uint32 engine) const;
@@ -121,6 +132,11 @@ private:
 			size_t				fChromaSize;
 			size_t				fFrameSize;
 			size_t				fMvcolSize;
+			uint32				fBitDepth;
+			// ten bits: the low two bits of every sample after the eight
+			// bit picture (which holds the eight most significant ones)
+			uint32				fTwoBitStride;
+			size_t				fTwoBitOffset;
 
 			VeBuffer			fBitstream;
 			// H.264
