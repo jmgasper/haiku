@@ -8,11 +8,11 @@ The NVIDIA results below describe the previous card. AMD desktop output still
 uses the firmware framebuffer. SDMA and the full 61-submission bounded GFX diagnostic pass, including
 indirect buffers, compute, rasterization and VM switches with zero VM faults
 and data mismatches when the matching MEC firmware is loaded. Separate
-client GPU address spaces pass 917 native shader dispatches across two boots,
-same-address isolation, concurrent clients and complete memory reclamation.
-Root-only userspace command/shader submission also passes 96 compute jobs
-and 32 raster jobs across two boots, including device-only VRAM, changed
-shader instructions and exact triangle pixels. Unprivileged general
+client GPU address spaces pass same-address isolation, concurrent clients,
+private diagnostic command pages and complete memory reclamation.
+Root-only userspace compute and raster submission also pass on cold boots,
+including device-only VRAM, changed shader instructions and exact triangle
+pixels. Unprivileged general
 graphics submission, Mesa and native display remain unfinished. AMD UVD H.264 plays three minutes of 1080p30/AAC with zero drops
 in private airTime and Summit builds. HEVC Main/Main 10 has independent native
 pixel/format/lifecycle verification; both private applications also pass
