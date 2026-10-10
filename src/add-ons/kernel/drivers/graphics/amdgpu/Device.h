@@ -16,6 +16,6 @@ status_t amdgpu_client_control(AmdgpuClient* client, uint32 op, void* data, size
 status_t amdgpu_device_uvd_test(const amdgpu::FirmwareView& firmware,
 	amdgpu_uvd_test& result, void* output);
 status_t amdgpu_device_gfx_test(const amdgpu::FirmwareView firmware[4],
-	amdgpu_gfx_test& result);
+	amdgpu_gfx_test& result, const amdgpu::MecFirmwareView* mec = NULL);
 void amdgpu_device_stop();
 #endif

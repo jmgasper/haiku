@@ -35,7 +35,39 @@ enum {
 	AMDGPU_VIDEO_DESTROY,
 	AMDGPU_HEVC_CREATE,
 	AMDGPU_HEVC_DECODE,
-	AMDGPU_CREATE_DEVICE_BUFFER
+	AMDGPU_CREATE_DEVICE_BUFFER,
+	AMDGPU_DISPLAY_SNAPSHOT,
+	AMDGPU_GFX_MEC_TEST
+};
+
+// Read-only DCE 11.2 observation, available without starting any GPU engine.
+// Register reads are sequential, not an atomic modeset or vblank snapshot.
+// No MMIO address, display ownership or modesetting capability is exposed.
+enum {
+	AMDGPU_DCE_CRTC_CONTROL, AMDGPU_DCE_CRTC_STATUS,
+	AMDGPU_DCE_POSITION, AMDGPU_DCE_FRAME_COUNT,
+	AMDGPU_DCE_H_TOTAL, AMDGPU_DCE_H_BLANK, AMDGPU_DCE_H_SYNC,
+	AMDGPU_DCE_V_TOTAL, AMDGPU_DCE_V_BLANK, AMDGPU_DCE_V_SYNC,
+	AMDGPU_DCE_GRPH_ENABLE, AMDGPU_DCE_GRPH_CONTROL, AMDGPU_DCE_PITCH,
+	AMDGPU_DCE_PRIMARY_LOW, AMDGPU_DCE_PRIMARY_HIGH,
+	AMDGPU_DCE_SECONDARY_LOW, AMDGPU_DCE_SECONDARY_HIGH,
+	AMDGPU_DCE_VIEWPORT_START, AMDGPU_DCE_VIEWPORT_SIZE,
+	AMDGPU_DCE_CURSOR_CONTROL, AMDGPU_DCE_CURSOR_LOW,
+	AMDGPU_DCE_CURSOR_HIGH, AMDGPU_DCE_CURSOR_SIZE,
+	AMDGPU_DCE_CURSOR_POSITION, AMDGPU_DCE_CURSOR_HOTSPOT,
+	AMDGPU_DCE_REGISTER_COUNT
+};
+#define AMDGPU_DCE_HEAD_COUNT 6
+struct amdgpu_display_head {
+	uint32 register_base; // dword index for identifying this head
+	uint32 registers[AMDGPU_DCE_REGISTER_COUNT];
+};
+struct amdgpu_display_snapshot {
+	uint32 version, size;
+	uint32 head_count, reserved; // reserved must be zero
+	int64 started_us, finished_us; // kernel monotonic time around the reads
+	amdgpu_display_head heads[AMDGPU_DCE_HEAD_COUNT];
+	uint32 hpd_status[AMDGPU_DCE_HEAD_COUNT]; // HPD0..5; no connector mapping implied
 };
 
 #define AMDGPU_ROM_SIZE (256 * 1024)
@@ -99,6 +131,16 @@ struct amdgpu_gfx_test {
 	uint32 stage, sequence, checked_bytes, mismatches;
 	uint32 cp_control, ring_control, rptr, wptr, grbm_status, rlc_status;
 	uint32 vm_fault_status, vm_fault_address, vm_fault_client;
+};
+
+// Optional root-only diagnostic: also authenticate/start MEC firmware with
+// every compute queue inactive. No userspace queue or shader is accepted.
+// gfx.size describes this complete structure for AMDGPU_GFX_MEC_TEST.
+struct amdgpu_gfx_mec_test {
+	amdgpu_gfx_test gfx;
+	uint64 mec_firmware;
+	uint32 mec_firmware_size;
+	uint32 reserved;
 };
 
 // Root-only UVD6 bring-up with one fixed H.264 picture. All messages,

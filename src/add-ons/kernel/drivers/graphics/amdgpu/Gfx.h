@@ -9,15 +9,16 @@ struct GfxEngine {
 	area_id area, vmArea;
 	uint64 gpu;
 	uint32 wptr, sequence;
-	bool attempted, ready, faulted, vmEnabled;
+	bool attempted, ready, faulted, vmEnabled, mecStarted;
 	status_t InitializeVM(const amdgpu_info& info,
 		const amdgpu::AtomVramReservation& reservation, const Gart& gart);
 	status_t Test(volatile uint32* r, const amdgpu_info& info,
 		const amdgpu::AtomVramReservation& reservation,
 		const amdgpu::FirmwareView firmware[4], SdmaEngine& sdma, Gart& gart,
-		amdgpu_gfx_test& result);
+		amdgpu_gfx_test& result, const amdgpu::MecFirmwareView* mec);
 	void Snapshot(amdgpu_gfx_test& result);
 	void DumpExecutionState(const char* point);
+	void Halt();
 	void Uninitialize();
 };
 #endif

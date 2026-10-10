@@ -258,6 +258,45 @@ device_control(void* cookie, uint32 op, void* buffer, size_t length)
 		|| op == AMDGPU_CREATE_DEVICE_BUFFER)
 		return amdgpu_client_control((AmdgpuClient*)cookie, op, buffer, length,
 			start_installed_device);
+	if (op == AMDGPU_DISPLAY_SNAPSHOT) {
+		if (length != sizeof(amdgpu_display_snapshot))
+			return B_BAD_VALUE;
+		uint32 header[4];
+		if (user_memcpy(header, buffer, sizeof(header)) != B_OK)
+			return B_BAD_ADDRESS;
+		if (header[0] != AMDGPU_HAIKU_ABI_VERSION
+			|| header[1] != sizeof(amdgpu_display_snapshot) || header[3] != 0)
+			return B_BAD_VALUE;
+		// DCE 11.2 direct status/configuration registers. Reading these does
+		// not acknowledge interrupts or alter the firmware's display state.
+		static const uint32 bases[] = {0x1a00, 0x1c00, 0x1e00,
+			0x4000, 0x4200, 0x4400};
+		static const uint32 offsets[] = {
+			0x19c, 0x1a3, 0x1a4, 0x1a6,
+			0x180, 0x181, 0x182, 0x187, 0x18d, 0x18e,
+			0x0, 0x1, 0x6, 0x4, 0x7, 0x5, 0x8,
+			0x15c, 0x15d, 0x66, 0x67, 0x69, 0x68, 0x6a, 0x6b
+		};
+		static_assert(B_COUNT_OF(bases) == AMDGPU_DCE_HEAD_COUNT,
+			"display head count");
+		static_assert(B_COUNT_OF(offsets) == AMDGPU_DCE_REGISTER_COUNT,
+			"display register count");
+		amdgpu_display_snapshot result = {};
+		result.version = AMDGPU_HAIKU_ABI_VERSION;
+		result.size = sizeof(result);
+		result.head_count = AMDGPU_DCE_HEAD_COUNT;
+		mutex_lock(&sLock);
+		result.started_us = system_time();
+		for (uint32 head = 0; head < AMDGPU_DCE_HEAD_COUNT; head++) {
+			result.heads[head].register_base = bases[head];
+			for (uint32 reg = 0; reg < AMDGPU_DCE_REGISTER_COUNT; reg++)
+				result.heads[head].registers[reg] = sRegisters[bases[head] + offsets[reg]];
+			result.hpd_status[head] = sRegisters[0x1898 + head * 8];
+		}
+		result.finished_us = system_time();
+		mutex_unlock(&sLock);
+		return user_memcpy(buffer, &result, sizeof(result));
+	}
 	if (op == AMDGPU_UVD_TEST) {
 		if (geteuid() != 0)
 			return B_NOT_ALLOWED;
@@ -297,21 +336,28 @@ device_control(void* cookie, uint32 op, void* buffer, size_t length)
 		result.status = status;
 		return user_memcpy(buffer, &result, sizeof(result));
 	}
-	if (op == AMDGPU_GFX_TEST) {
+	if (op == AMDGPU_GFX_TEST || op == AMDGPU_GFX_MEC_TEST) {
 		if (geteuid() != 0)
 			return B_NOT_ALLOWED;
-		if (length != sizeof(amdgpu_gfx_test))
+		bool withMec = op == AMDGPU_GFX_MEC_TEST;
+		size_t requiredSize = withMec ? sizeof(amdgpu_gfx_mec_test)
+			: sizeof(amdgpu_gfx_test);
+		if (length != requiredSize)
 			return B_BAD_VALUE;
-		amdgpu_gfx_test request;
-		if (user_memcpy(&request, buffer, sizeof(request)) != B_OK)
+		amdgpu_gfx_mec_test extendedRequest = {};
+		if (user_memcpy(&extendedRequest, buffer, requiredSize) != B_OK)
 			return B_BAD_ADDRESS;
-		if (request.version != AMDGPU_HAIKU_ABI_VERSION || request.size != sizeof(request))
+		const amdgpu_gfx_test& request = extendedRequest.gfx;
+		if (request.version != AMDGPU_HAIKU_ABI_VERSION || request.size != requiredSize
+			|| extendedRequest.reserved != 0)
 			return B_BAD_VALUE;
-		amdgpu_gfx_test result = {};
+		amdgpu_gfx_mec_test extendedResult = {};
+		amdgpu_gfx_test& result = extendedResult.gfx;
 		result.version = AMDGPU_HAIKU_ABI_VERSION;
-		result.size = sizeof(result);
-		void* images[4] = {};
+		result.size = requiredSize;
+		void* images[5] = {};
 		amdgpu::FirmwareView firmware[4];
+		amdgpu::MecFirmwareView mec = {};
 		status_t status = B_OK;
 		for (uint32 i = 0; i < 4 && status == B_OK; i++) {
 			uint32 size = request.firmware_size[i];
@@ -328,15 +374,34 @@ device_control(void* cookie, uint32 op, void* buffer, size_t length)
 			if (status == B_OK && !amdgpu::ParseGfxFirmware(images[i], size, i == 3, firmware[i]))
 				status = B_BAD_DATA;
 		}
+		if (withMec && status == B_OK) {
+			uint32 size = extendedRequest.mec_firmware_size;
+			if (size < 44 || size > 320 * 1024)
+				status = B_BAD_VALUE;
+			else {
+				images[4] = malloc(size);
+				status = images[4] == NULL ? B_NO_MEMORY
+					: user_memcpy(images[4],
+						(void*)(addr_t)extendedRequest.mec_firmware, size);
+				if (status == B_OK && !amdgpu::ParseMecFirmware(images[4], size, mec))
+					status = B_BAD_DATA;
+			}
+			if (status == B_OK) {
+				for (uint32 i = 0; i < 3; i++) {
+					if (firmware[i].featureVersion != mec.program.featureVersion)
+						status = B_BAD_DATA;
+				}
+			}
+		}
 		if (status == B_OK) {
 			mutex_lock(&sLock);
-			status = amdgpu_device_gfx_test(firmware, result);
+			status = amdgpu_device_gfx_test(firmware, result, withMec ? &mec : NULL);
 			mutex_unlock(&sLock);
 		}
 		for (void* image : images)
 			free(image);
 		result.status = status;
-		return user_memcpy(buffer, &result, sizeof(result));
+		return user_memcpy(buffer, &extendedResult, requiredSize);
 	}
 	if (op == AMDGPU_START_DMA) {
 		if (geteuid() != 0)

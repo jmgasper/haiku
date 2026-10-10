@@ -76,10 +76,18 @@ static const uint64 kMemoryVA = 0x100000;
 static const uint32 kControlOffset = Gart::kCommandBytes - 4096;
 static const uint64 kControlGPU = Gart::kBase + kControlOffset;
 static const uint64 kControlVA = kCommandVA + kControlOffset - 65536;
+// Match Linux gfx_v8_0: 1024 DWORDs per job, two hardware submissions.
+static const uint32 kRingDwords = 2048;
+static const uint32 kRingMask = kRingDwords - 1;
 static const uint32 kDirectSequences = 16;
 static const uint32 kShaderSequences = 16;
 static const uint32 kDrawSequences = 4;
 static const uint32 kVMShaderSequences = 8;
+// A long DE IB separates the entry gate from its tail. Inspect the remaining
+// fetch count at that gate instead of assuming the tail is still unfetched.
+// Stop before the separate CE IB at
+// command VA + 0xc000; the control page is further away at VA + 0xf000.
+static const uint32 kShaderIBDwords = 0xc000 / 4;
 // gfx803, assembled with LLVM 18. s[0:1] is the output address, s2 the seed,
 // s3 the workgroup X ID, and v0 the local thread X ID. No scratch or LDS.
 static const uint32 kFillShader[] = {
@@ -163,7 +171,8 @@ GfxEngine::DumpExecutionState(const char* point)
 		0x3038, 0x30b9, 0x30ba, 0x30bb, 0x21b9,
 		0x3060, 0x30b2, 0x3061, 0x3062, 0x3063, 0x3064,
 		0x3065, 0x30b3, 0x3066, 0x3067, 0x3068, 0x3069,
-		0x219c, 0x219d, 0x219e, 0x219f, 0x21a0, 0x21a1, 0x21a2, 0x21a4,
+		0x219c, 0x219d, 0x219e, 0x219f, 0x21a0, 0x21a1, 0x21a2, 0x21a3,
+		0x21a4,
 		0xc069, 0xc06a, 0xc06d, 0xc06e, 0xc078, 0xc080, 0xc081,
 		0xc082, 0xc083, 0xc084, 0xc077, 0xc085, 0xc086, 0xc087,
 		0xc088, 0xc089, 0xc08a, 0xc0f0, 0xc0f1, 0xc0f2, 0xc0f3,
@@ -178,6 +187,8 @@ GfxEngine::DumpExecutionState(const char* point)
 		0xc098, 0xc099, 0xc09a,
 		0xc0c3, 0xc0c4, 0xc0c5, 0xc0c6, 0xc0c7, 0xc0c8,
 		0xc0c9, 0xc0ca, 0xc0cb,
+		0xc094, 0xc095, 0xc096, 0xc097, // DE preamble bounds
+		0x21bc, 0x21bd, 0x21d5, 0x21d6, // ROQ/MEQ thresholds
 	};
 	for (uint32 index : registers)
 		dprintf("amdgpu: GFX %s register %#x = %#x\n", point,
@@ -218,7 +229,7 @@ status_t
 GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	const amdgpu::AtomVramReservation& reservation,
 	const amdgpu::FirmwareView firmware[4], SdmaEngine& sdma, Gart& gart,
-	amdgpu_gfx_test& result)
+	amdgpu_gfx_test& result, const amdgpu::MecFirmwareView* mec)
 {
 	regs = r;
 	volatile uint32* control = gart.commandMemory + kControlOffset / 4;
@@ -226,6 +237,8 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	result.stage = 1;
 	if (faulted || (attempted && !ready))
 		return B_DEV_NOT_READY;
+	if (ready && mecStarted != (mec != NULL))
+		return B_NOT_ALLOWED;
 	if (!ready) {
 		// BIOS leaves a placeholder base, even with RB_BUFSZ=0. Ownership
 		// requires all three processors halted and an empty unconfigured ring.
@@ -237,6 +250,28 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			|| r[0x21c0] != 0 || r[0x3045] != 0
 			|| !amdgpu_vram_range_is_safe(r, info, reservation, 40ULL << 20, 1ULL << 20))
 			return B_NOT_ALLOWED;
+		if (mec != NULL) {
+			// Do not take over a firmware/foreign compute queue. No HQD or
+			// queue address is programmed by this diagnostic; MEC stays idle.
+			if ((r[0x208d] & 0x50000000) != 0x50000000)
+				return B_NOT_ALLOWED;
+			uint32 select = r[0x391];
+			bool inactive = true;
+			for (uint32 me = 1; me <= 2; me++) {
+				for (uint32 pipe = 0; pipe < 4; pipe++) {
+					for (uint32 queue = 0; queue < 8; queue++) {
+						r[0x391] = me << 2 | pipe | queue << 8;
+						if ((r[0x3247] & 1) != 0)
+							inactive = false;
+					}
+				}
+			}
+			r[0x391] = select;
+			(void)r[0x391];
+			if (!inactive)
+				return B_NOT_ALLOWED;
+			dprintf("amdgpu: GFX MEC preflight: both halted, 64 HQDs inactive\n");
+		}
 		area = map_physical_memory("amdgpu GFX kernel ring", info.bar_address[0] + (40ULL << 20),
 			1 << 20, B_ANY_KERNEL_ADDRESS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
 			(void**)&memory);
@@ -261,7 +296,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			memory[0x41000 / 4 + i] = kTriangleVS[i];
 		for (uint32 i = 0; i < sizeof(kColorPS) / sizeof(uint32); i++)
 			memory[0x42000 / 4 + i] = kColorPS[i];
-		for (uint32 i = 0; i < 0x4000; i++)
+		for (uint32 i = 0; i < kRingDwords; i++)
 			ring[i] = (i & 1) == 0 ? Packet(0x10, 0) : 0;
 		result.stage = 2;
 		Snapshot(result);
@@ -288,10 +323,18 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		r[0x230b] = 1;
 		r[0x230c] = 0;
 		r[0x391] = select;
+		mecStarted = mec != NULL;
+		if (mecStarted) {
+			// No MEC interrupts until the IH path exists. All pipes/queues
+			// are exclusively ours and inactive, as checked above.
+			for (uint32 index = 0x3085; index <= 0x308c; index++)
+				r[index] = 0;
+		}
 		status = amdgpu_smc_load_gfx(r, firmware,
-			sdma.memory + (1 << 20) / 4, sdma.gpu + (1 << 20));
+			sdma.memory + (1 << 20) / 4, sdma.gpu + (1 << 20), mec);
 		if (status != B_OK) {
 			faulted = true;
+			Halt();
 			Snapshot(result);
 			return status;
 		}
@@ -311,7 +354,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		Snapshot(result);
 		r[0x21c1] = 0;
 		r[0x3051] = 0; // ring VMID0
-		const uint32 control = 13 | 11 << 8 | 3 << 15 | 1 << 22;
+		const uint32 control = 10 | 8 << 8 | 3 << 15 | 1 << 22;
 		r[0x3041] = control | 0x80000000;
 		r[0x3045] = 0;
 		r[0x3043] = (uint32)(kControlGPU + 0x10);
@@ -330,6 +373,40 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		(void)r[0x21b6];
 		snooze(50);
 		Snapshot(result);
+		// Establish whether the loaded CP can execute a basic memory write
+		// before the much longer clear-state stream. Use only the reserved
+		// snooped control page; no shader/context state is needed here.
+		volatile uint32* basicMarker = gart.commandMemory
+			+ (kControlOffset + 0x504) / 4;
+		ring[wptr++] = Packet(0x37, 3);
+		ring[wptr++] = 5 << 8 | 1 << 20;
+		ring[wptr++] = (uint32)(kControlGPU + 0x504);
+		ring[wptr++] = (kControlGPU + 0x504) >> 32;
+		ring[wptr++] = 0x43504231;
+		ring[wptr++] = Packet(0x42, 0); // PFP_SYNC_ME
+		ring[wptr++] = 0;
+		ring[wptr++] = Packet(0x10, 247); // pad this first batch to 256 DWORDs
+		while (wptr < 256)
+			ring[wptr++] = 0;
+		__sync_synchronize();
+		r[0x1520] = 1;
+		(void)r[0x1520];
+		r[0x3045] = wptr;
+		bigtime_t basicDeadline = system_time() + 500000;
+		while ((*basicMarker != 0x43504231 || r[0x21c0] != wptr)
+			&& system_time() < basicDeadline)
+			snooze(50);
+		dprintf("amdgpu: GFX basic startup marker %#x ring %u/%u VM %#x/%#x\n",
+			(unsigned)*basicMarker, (unsigned)r[0x21c0], (unsigned)wptr,
+			(unsigned)r[0x536], (unsigned)r[0x537]);
+		if (*basicMarker != 0x43504231 || r[0x21c0] != wptr
+			|| ((r[0x536] | r[0x537]) & 0xff) != 0) {
+			DumpExecutionState("basic startup stalled");
+			faulted = true;
+			Halt();
+			Snapshot(result);
+			return B_DEV_NOT_READY;
+		}
 		// Match the VI CP startup sequence before submitting any IB: disable
 		// inherited shadow loads, define the hardware's full clear state,
 		// select the Polaris raster layout, and initialize CE partitions.
@@ -356,6 +433,44 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		ring[wptr++] = 3;
 		ring[wptr++] = 0x8000;
 		ring[wptr++] = 0x8000;
+		// Retire startup separately so its clear-state packets cannot fill
+		// the smaller ring together with the first 1024-word data test.
+		volatile uint32* startupMarker = gart.commandMemory
+			+ (kControlOffset + 0x500) / 4;
+		ring[wptr++] = Packet(0x42, 0); // PFP_SYNC_ME
+		ring[wptr++] = 0;
+		ring[wptr++] = Packet(0x37, 3);
+		ring[wptr++] = 5 << 8 | 1 << 20;
+		ring[wptr++] = (uint32)(kControlGPU + 0x500);
+		ring[wptr++] = (kControlGPU + 0x500) >> 32;
+		ring[wptr++] = 0x43535031;
+		uint32 startupPadding = (-wptr) & 255;
+		if (startupPadding == 1)
+			startupPadding += 256;
+		if (startupPadding != 0) {
+			ring[wptr++] = Packet(0x10, startupPadding - 2);
+			for (uint32 i = 1; i < startupPadding; i++)
+				ring[wptr++] = 0;
+		}
+		__sync_synchronize();
+		r[0x1520] = 1;
+		(void)r[0x1520];
+		r[0x3045] = wptr;
+		bigtime_t startupDeadline = system_time() + 500000;
+		while ((*startupMarker != 0x43535031 || r[0x21c0] != wptr)
+			&& system_time() < startupDeadline)
+			snooze(50);
+		dprintf("amdgpu: GFX startup marker %#x ring %u/%u VM %#x/%#x\n",
+			(unsigned)*startupMarker, (unsigned)r[0x21c0], (unsigned)wptr,
+			(unsigned)r[0x536], (unsigned)r[0x537]);
+		if (*startupMarker != 0x43535031 || r[0x21c0] != wptr
+			|| ((r[0x536] | r[0x537]) & 0xff) != 0) {
+			DumpExecutionState("clear-state startup stalled");
+			faulted = true;
+			Halt();
+			Snapshot(result);
+			return B_DEV_NOT_READY;
+		}
 		ready = true;
 	}
 	result.stage = 4;
@@ -367,10 +482,18 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	result.sequence = sequence;
 	const uint32 shaderEnd = kDirectSequences + kShaderSequences;
 	const uint32 drawEnd = shaderEnd + kDrawSequences;
-	const uint32 vmShaderEnd = drawEnd + kVMShaderSequences;
+	const uint32 ceEnd = drawEnd + 1;
+	const uint32 vmShaderEnd = ceEnd + kVMShaderSequences;
 	const bool direct = sequence <= kDirectSequences;
-	const bool vmShader = sequence > drawEnd && sequence <= vmShaderEnd;
-	const bool privateShader = vmShader && (sequence & 1) != 0;
+	const bool ceIB = sequence == ceEnd;
+	const bool vmShader = sequence > ceEnd && sequence <= vmShaderEnd;
+	const bool privateShader = vmShader && ((sequence - ceEnd) & 1) != 0;
+	if (privateShader) {
+		// The previous submission has retired. Remove its stale packets so
+		// the entry checkpoint cannot prefetch an old outer-ring postlude.
+		for (uint32 i = 0; i < kRingDwords; i++)
+			ring[i] = (i & 1) == 0 ? Packet(0x10, 0) : 0;
+	}
 	const bool shader = (!direct && sequence <= shaderEnd) || vmShader;
 	const bool draw = sequence > shaderEnd && sequence <= drawEnd;
 	const bool minimalIB = sequence == vmShaderEnd + 1;
@@ -388,11 +511,11 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			control[0x300 / 4 + i] = 0;
 		}
 	}
-	if (minimalIB || privateShader)
+	if (minimalIB || privateShader || ceIB)
 		DumpExecutionState("before IB");
-	uint64 destination = direct || shader || draw || minimalIB ? gpu : kMemoryVA;
+	uint64 destination = direct || shader || draw || minimalIB || ceIB ? gpu : kMemoryVA;
 	uint64 markerAddress = privateShader ? kControlVA
-		: (direct || shader || draw || minimalIB ? kControlGPU : kControlVA);
+		: (direct || shader || draw || minimalIB || ceIB ? kControlGPU : kControlVA);
 	for (uint32 i = 0; i < 3072; i++)
 		data[(int32)i - 1024] = 0xabcddcba;
 	ib[n++] = Packet(0x37, 1026); // WRITE_DATA, 1024 payload DWORDs
@@ -418,7 +541,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		for (uint32 i = 1; i < padding; i++)
 			ib[n++] = 0;
 	}
-	auto emit = [&](uint32 word) { ring[wptr++ & 0x3fff] = word; };
+	auto emit = [&](uint32 word) { ring[wptr++ & kRingMask] = word; };
 	auto snapshotVM = [&](uint32 slot) {
 		for (uint32 context = 0; context < 2; context++) {
 			uint32 offset = 0x100 + (slot * 2 + context) * 4;
@@ -468,7 +591,10 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	if (shader) {
 		// VMID belongs to the IB execution context. A SET_SH_REG of
 		// COMPUTE_VMID in the kernel ring cannot select a client VM.
-		volatile uint32* shaderCommands = ib + 0x8000 / 4;
+		// Preserve the marker packet before reusing the bulk-data IB for the
+		// longer shader stream. Its NOP runway overwrites the old packet.
+		const uint32 marker[] = {ib[1028], ib[1029], ib[1030], ib[1031], ib[1032]};
+		volatile uint32* shaderCommands = ib;
 		uint32 shaderLength = 0;
 		auto emitShader = [&](uint32 word) {
 			if (privateShader)
@@ -492,6 +618,13 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			emitShader(1);
 			emitShader(0xffffffff);
 			emitShader(0x20);
+			// Use separate two-DWORD NOPs so this is a stream of packets,
+			// not a single large NOP whose payload could simply be skipped.
+			// The entry gate plus its packets occupy an even DWORD count.
+			while (shaderLength < kShaderIBDwords - 256) {
+				emitShader(Packet(0x10, 0));
+				emitShader(0);
+			}
 		}
 		const uint64 shaderBase = privateShader ? kMemoryVA : gpu;
 		dprintf("amdgpu: compute seq %u VMID %u code %#" B_PRIx64
@@ -531,8 +664,8 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		emitShader(7 | 4 << 8); // CS_PARTIAL_FLUSH before the completion marker
 		// Only the shader writes the payload. The CP writes its marker after
 		// all waves finish; EOP below makes their stores visible to the CPU.
-		for (uint32 i = 1028; i < 1033; i++)
-			emitShader(ib[i]);
+		for (uint32 word : marker)
+			emitShader(word);
 		if (privateShader) {
 			// Hold PFP inside the IB after its shader and confirmed marker.
 			// The CPU samples both fault contexts before allowing IB return.
@@ -557,7 +690,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			emit(0x80000000);
 			emit(0x80000000);
 			emit(Packet(0x3f, 2));
-			emit(kCommandVA + 0x8000);
+			emit(kCommandVA);
 			emit(0);
 			emit(shaderLength | 1 << 24);
 		}
@@ -616,7 +749,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			emit(ib[i]);
 	}
 
-	if (direct || minimalIB) {
+	if (direct || minimalIB || ceIB) {
 		// The minimal IB obtains its completion marker exclusively from the
 		// private VM's five-DWORD IB. Only its bulk payload runs directly.
 		uint32 directLength = minimalIB ? 1028 : n;
@@ -625,7 +758,29 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	}
 	// First exercise direct ring packets, then the indirect-buffer fetch path.
 	// Both streams and all addresses are private to the kernel.
-	if (!direct && !shader && !draw) {
+	if (ceIB) {
+		// libdrm basic_tests.c's CE counter handshake, with the DE wait in
+		// the direct ring. This isolates CE indirect fetch before the first
+		// DE indirect fetch. Only our existing private VM1 command RAM is used.
+		volatile uint32* commands = ib + 0xc000 / 4;
+		control[0x400 / 4] = 0;
+		commands[0] = Packet(0x89, 0); // SET_CE_DE_COUNTERS
+		commands[1] = 0;
+		commands[2] = Packet(0x37, 3); // CE confirmed write, private VM1
+		commands[3] = 2u << 30 | 5 << 8 | 1 << 20;
+		commands[4] = kControlVA + 0x400;
+		commands[5] = 0;
+		commands[6] = 0xcea00000 ^ sequence;
+		commands[7] = Packet(0x84, 0); // INCREMENT_CE_COUNTER
+		commands[8] = 1;
+		emit(Packet(0x33, 2)); // INDIRECT_BUFFER_CONST
+		emit(kCommandVA + 0xc000);
+		emit(0);
+		emit(9 | 1 << 24);
+		emit(Packet(0x86, 0)); // WAIT_ON_CE_COUNTER
+		emit(1);
+	}
+	if (!direct && !shader && !draw && !ceIB) {
 		// Explicitly disable inherited register loads/shadowing outside the
 		// clear-state preamble before entering a private indirect buffer.
 		emit(Packet(0x28, 1));
@@ -644,10 +799,10 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			ib[0x8000 / 4 + 3] = 0;
 			ib[0x8000 / 4 + 4] = sequence;
 		}
-		ring[wptr++ & 0x3fff] = Packet(0x3f, 2);
-		ring[wptr++ & 0x3fff] = (uint32)address;
-		ring[wptr++ & 0x3fff] = address >> 32;
-		ring[wptr++ & 0x3fff] = length | 1 << 24; // private VMID1
+		ring[wptr++ & kRingMask] = Packet(0x3f, 2);
+		ring[wptr++ & kRingMask] = (uint32)address;
+		ring[wptr++ & kRingMask] = address >> 32;
+		ring[wptr++ & kRingMask] = length | 1 << 24; // private VMID1
 	}
 	if (cpRead) {
 		const uint64 source = (readCase & 4) != 0
@@ -660,38 +815,48 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		emit((uint32)(kControlGPU + 0x300));
 		emit((kControlGPU + 0x300) >> 32);
 	}
-	snapshotVM(1);
-	emit(Packet(0x37, 3)); // PFP invalidates HDP after the command stream
-	emit(1 << 30 | 1 << 20);
-	emit(0xbcc);
-	emit(0);
-	emit(1);
-	// VI requires a dummy EOP followed by the real event. This fence is
-	// outside the IB and covers its return plus cache writeback/invalidation.
 	control[0x4 / 4] = 0;
-	for (uint32 value = 0; value < 2; value++) {
-		emit(Packet(0x47, 4));
-		emit(0x14 | 5 << 8 | 1 << 15 | 1 << 16 | 1 << 17);
-		emit((uint32)(kControlGPU + 0x04));
-		emit((kControlGPU + 0x04) >> 32 | 1 << 29);
-		emit(value == 0 ? sequence - 1 : sequence);
+	auto emitPostlude = [&]() {
+		snapshotVM(1);
+		emit(Packet(0x37, 3)); // PFP invalidates HDP after the command stream
+		emit(1 << 30 | 1 << 20);
+		emit(0xbcc);
 		emit(0);
-	}
-	ring[conditionOffset & 0x3fff] = wptr - conditionOffset - 1;
-	padding = (-wptr) & 255;
-	if (padding == 1)
-		padding += 256;
-	if (padding != 0) {
-		emit(Packet(0x10, padding - 2));
-		for (uint32 i = 1; i < padding; i++)
+		emit(1);
+		// VI requires a dummy EOP followed by the real event. This fence is
+		// outside the IB and covers its return plus cache visibility.
+		for (uint32 value = 0; value < 2; value++) {
+			emit(Packet(0x47, 4));
+			emit(0x14 | 5 << 8 | 1 << 15 | 1 << 16 | 1 << 17);
+			emit((uint32)(kControlGPU + 0x04));
+			emit((kControlGPU + 0x04) >> 32 | 1 << 29);
+			emit(value == 0 ? sequence - 1 : sequence);
 			emit(0);
-	}
-	__sync_synchronize();
-	(void)ring[(wptr - 1) & 0x3fff];
-	r[0x1520] = 1;
-	(void)r[0x1520];
-	r[0x3045] = wptr & 0x3fff;
-	(void)r[0x3045];
+		}
+	};
+	auto submit = [&]() {
+		uint32 pad = (-wptr) & 255;
+		if (pad == 1)
+			pad += 256;
+		if (pad != 0) {
+			emit(Packet(0x10, pad - 2));
+			for (uint32 i = 1; i < pad; i++)
+				emit(0);
+		}
+		__sync_synchronize();
+		(void)ring[(wptr - 1) & kRingMask];
+		r[0x1520] = 1;
+		(void)r[0x1520];
+		r[0x3045] = wptr & kRingMask;
+		(void)r[0x3045];
+	};
+	// Withhold even the bytes of the postlude until both IB checkpoints.
+	// The first submission ends with NOPs, and its condition covers only
+	// that first batch. The separately submitted postlude is unconditional.
+	if (!privateShader)
+		emitPostlude();
+	ring[conditionOffset & kRingMask] = wptr - conditionOffset - 1;
+	submit();
 	if (privateShader) {
 		bigtime_t gateDeadline = system_time() + 500000;
 		while (control[0x84 / 4] != sequence && system_time() < gateDeadline)
@@ -718,6 +883,10 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			(unsigned)r[0x537], (unsigned)r[0x53e], (unsigned)r[0x53f],
 			(unsigned)r[0xc0ce], (unsigned)r[0x21c0], (unsigned)r[0x3045]);
 		DumpExecutionState("IB tail gate");
+		dprintf("amdgpu: GFX deferred postlude seq %u begins at ring %u\n",
+			(unsigned)sequence, (unsigned)(wptr & kRingMask));
+		emitPostlude();
+		submit();
 		// Always release the private wait, including a missing-marker case.
 		control[0x80 / 4] = 2;
 		__sync_synchronize();
@@ -726,9 +895,19 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	}
 	bigtime_t deadline = system_time() + 500000;
 	while ((control[0x0 / 4] != sequence || control[0x4 / 4] != sequence
-		|| r[0x21c0] != (wptr & 0x3fff)) && system_time() < deadline)
+		|| r[0x21c0] != (wptr & kRingMask)) && system_time() < deadline)
 		snooze(50);
 	__sync_synchronize();
+	if (ceIB) {
+		dprintf("amdgpu: GFX CE indirect seq %u marker %#x counter %u VM %#x/%#x\n",
+			(unsigned)sequence, (unsigned)control[0x400 / 4],
+			(unsigned)r[0xc09a], (unsigned)r[0x536],
+			(unsigned)r[0x537]);
+		// The CE-only marker proves execution. The counter register's value
+		// after the handshake is diagnostic, not a completion contract.
+		if (control[0x400 / 4] != (0xcea00000 ^ sequence))
+			result.mismatches++;
+	}
 	if (cpRead) {
 		dprintf("amdgpu: GFX CP read case %u seq %u %s %s %s got %#x/%#x"
 			" expected %#x/%#x VM %#x/%#x\n", (unsigned)readCase,
@@ -744,7 +923,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		}
 	}
 	status_t status = control[0x0 / 4] == sequence
-		&& control[0x4 / 4] == sequence && r[0x21c0] == (wptr & 0x3fff)
+		&& control[0x4 / 4] == sequence && r[0x21c0] == (wptr & kRingMask)
 		? B_OK : B_TIMED_OUT;
 	if (status == B_OK) {
 		// The completion page is snooped RAM. Invalidate HDP only after GPU
@@ -789,8 +968,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		for (uint32 index : registers)
 			dprintf("amdgpu: GFX fault register %#x = %#x\n", (unsigned)index, (unsigned)r[index]);
 		faulted = true;
-		r[0x21b6] |= kHalt;
-		(void)r[0x21b6];
+		Halt();
 	} else
 		result.stage = 5;
 	dprintf("amdgpu: GFX stage %u status %#x seq %u ring %u/%u GRBM %#x RLC %#x\n",
@@ -801,12 +979,22 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 }
 
 void
+GfxEngine::Halt()
+{
+	regs[0x21b6] |= kHalt;
+	if (mecStarted) {
+		regs[0x208d] |= 0x50000000;
+		(void)regs[0x208d];
+	}
+	(void)regs[0x21b6];
+}
+
+void
 GfxEngine::Uninitialize()
 {
 	if (!attempted)
 		return;
-	regs[0x21b6] |= kHalt;
-	(void)regs[0x21b6];
+	Halt();
 	regs[0xec00] &= ~1u;
 	if (vmEnabled) {
 		regs[0x505] &= ~1u;
