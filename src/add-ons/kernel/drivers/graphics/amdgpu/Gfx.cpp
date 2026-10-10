@@ -632,14 +632,20 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		// the direct ring. This isolates CE indirect fetch before the first
 		// DE indirect fetch. Only our existing private VM1 command RAM is used.
 		volatile uint32* commands = ib + 0xc000 / 4;
+		control[0x400 / 4] = 0;
 		commands[0] = Packet(0x89, 0); // SET_CE_DE_COUNTERS
 		commands[1] = 0;
-		commands[2] = Packet(0x84, 0); // INCREMENT_CE_COUNTER
-		commands[3] = 1;
+		commands[2] = Packet(0x37, 3); // CE confirmed write, private VM1
+		commands[3] = 2u << 30 | 5 << 8 | 1 << 20;
+		commands[4] = kControlVA + 0x400;
+		commands[5] = 0;
+		commands[6] = 0xcea00000 ^ sequence;
+		commands[7] = Packet(0x84, 0); // INCREMENT_CE_COUNTER
+		commands[8] = 1;
 		emit(Packet(0x33, 2)); // INDIRECT_BUFFER_CONST
 		emit(kCommandVA + 0xc000);
 		emit(0);
-		emit(4 | 1 << 24);
+		emit(9 | 1 << 24);
 		emit(Packet(0x86, 0)); // WAIT_ON_CE_COUNTER
 		emit(1);
 	}
@@ -748,10 +754,13 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		snooze(50);
 	__sync_synchronize();
 	if (ceIB) {
-		dprintf("amdgpu: GFX CE indirect seq %u counter %u VM %#x/%#x\n",
-			(unsigned)sequence, (unsigned)r[0xc09a], (unsigned)r[0x536],
+		dprintf("amdgpu: GFX CE indirect seq %u marker %#x counter %u VM %#x/%#x\n",
+			(unsigned)sequence, (unsigned)control[0x400 / 4],
+			(unsigned)r[0xc09a], (unsigned)r[0x536],
 			(unsigned)r[0x537]);
-		if (r[0xc09a] != 1)
+		// The CE-only marker proves execution. The counter register's value
+		// after the handshake is diagnostic, not a completion contract.
+		if (control[0x400 / 4] != (0xcea00000 ^ sequence))
 			result.mismatches++;
 	}
 	if (cpRead) {
