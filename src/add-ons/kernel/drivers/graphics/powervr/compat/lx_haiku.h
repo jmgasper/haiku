@@ -78,9 +78,10 @@ void	lx_wait_queue_sleep(wait_queue_head_t* queue, int32 generation,
 status_t	lx_wait_queue_sleep_interruptible(wait_queue_head_t* queue,
 				int32 generation, bigtime_t deadline);
 
-/* How many GPU buffers (and their bytes), single pages and vmaps exist. */
+/* How many GPU buffers (and their bytes), single pages, vmaps and imports
+   of team memory exist. */
 void	lx_memory_stats(uint32* buffers, uint64* bufferBytes, uint32* pages,
-			uint32* vmaps);
+			uint32* vmaps, uint32* imports);
 
 /* Whether all of [address, address + size) is userland memory. */
 bool	lx_access_ok(const void* address, unsigned long size);

@@ -193,12 +193,14 @@ static int32 sBufferCount;
 static int64 sBufferBytes;
 static int32 sPageCount;
 static int32 sVmapCount;
+static int32 sImportCount;
 
 
 void
 lx_memory_stats(uint32* _buffers, uint64* _bufferBytes, uint32* _pages,
-	uint32* _vmaps)
+	uint32* _vmaps, uint32* _imports)
 {
+	*_imports = (uint32)atomic_get(&sImportCount);
 	*_buffers = (uint32)atomic_get(&sBufferCount);
 	*_bufferBytes = (uint64)atomic_get64(&sBufferBytes);
 	*_pages = (uint32)atomic_get(&sPageCount);
@@ -335,6 +337,7 @@ lx_dma_buffer_free(struct lx_dma_buffer* buffer)
 	if (buffer->area >= 0 && buffer->imported) {
 		unlock_memory_etc(B_SYSTEM_TEAM, buffer->address, buffer->size, 0);
 		delete_area(buffer->area);
+		atomic_add(&sImportCount, -1);
 	} else if (buffer->area >= 0) {
 		delete_area(buffer->area);
 		atomic_add(&sBufferCount, -1);
@@ -452,6 +455,7 @@ lx_dma_buffer_import(struct lx_dma_buffer* buffer, const void* address,
 	buffer->address = kernelAddress;
 	buffer->size = size;
 	buffer->imported = true;
+	atomic_add(&sImportCount, 1);
 	return 0;
 }
 

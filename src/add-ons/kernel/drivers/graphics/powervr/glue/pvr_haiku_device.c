@@ -1289,9 +1289,9 @@ xa_count(struct xarray* xa)
 static void
 dump_objects(struct pvr_device* pvr_dev)
 {
-	uint32 buffers, pages, vmaps;
+	uint32 buffers, pages, vmaps, imports;
 	uint64 bufferBytes;
-	lx_memory_stats(&buffers, &bufferBytes, &pages, &vmaps);
+	lx_memory_stats(&buffers, &bufferBytes, &pages, &vmaps, &imports);
 
 	u32 fwObjects = 0;
 	struct list_head* position;
@@ -1326,10 +1326,11 @@ dump_objects(struct pvr_device* pvr_dev)
 	}
 	mutex_unlock(&pvr_dev->queues.lock);
 
-	TRACE("dump: objects: %u buffers (%llu KiB), %u pages, %u vmaps, %u"
-		" firmware objects, %u contexts, %u jobs, %u free lists; %u queues"
-		" with %u jobs on the GPU and %u queued\n", buffers,
-		(unsigned long long)(bufferBytes / 1024), pages, vmaps, fwObjects,
+	TRACE("dump: objects: %u buffers (%llu KiB), %u imports, %u pages, %u"
+		" vmaps, %u firmware objects, %u contexts, %u jobs, %u free lists;"
+		" %u queues with %u jobs on the GPU and %u queued\n", buffers,
+		(unsigned long long)(bufferBytes / 1024), imports, pages, vmaps,
+		fwObjects,
 		xa_count(&pvr_dev->ctx_ids), xa_count(&pvr_dev->job_ids),
 		xa_count(&pvr_dev->free_list_ids), queues, pending, queued);
 }
