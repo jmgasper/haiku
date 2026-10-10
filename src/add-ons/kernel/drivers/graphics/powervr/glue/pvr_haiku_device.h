@@ -97,6 +97,7 @@ const struct drm_driver*	pvr_haiku_drm_driver(void);
 /* pvr_haiku_power.c */
 int		pvr_haiku_power_off(struct pvr_device* pvr_dev);
 void	pvr_haiku_power_init(struct pvr_device* pvr_dev);
+void	pvr_haiku_job_times_dump(void);
 
 
 #endif	/* POWERVR_HAIKU_DEVICE_H */

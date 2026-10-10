@@ -1340,6 +1340,7 @@ dump_objects(struct pvr_device* pvr_dev)
 	TRACE("dump: since boot: %llu buffers made (%llu KiB)\n",
 		(unsigned long long)made, (unsigned long long)(madeBytes / 1024));
 	pvr_haiku_ioctl_stats_dump();
+	pvr_haiku_job_times_dump();
 }
 
 
