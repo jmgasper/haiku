@@ -58,6 +58,7 @@ private:
 			BluetoothAudioNode*	fNode;
 			media_node			fPreviousOutput;
 			bool				fStarted;
+			bool				fPinned;
 };
 
 

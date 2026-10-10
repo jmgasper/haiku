@@ -20,6 +20,7 @@
 #include <bluetooth/bdaddrUtils.h>
 
 #include <A2dpSource.h>
+#include <DormantNodeManager.h>
 
 #include "BluetoothAudioNode.h"
 
@@ -114,7 +115,8 @@ BluetoothAudioAddOn::BluetoothAudioAddOn(image_id image)
 	fWatcher(NULL),
 	fNode(NULL),
 	fPreviousOutput(media_node::null),
-	fStarted(false)
+	fStarted(false),
+	fPinned(false)
 {
 	memset(&fSink, 0, sizeof(fSink));
 	BluetoothAudioNode::GetFormat(fFormat);
@@ -269,6 +271,14 @@ BluetoothAudioAddOn::_RestoreOutput()
 int32
 BluetoothAudioAddOn::CountFlavors()
 {
+	// Without a speaker we have no flavor and no node, and the media
+	// add-on server would unload us; keep a reference to ourselves, so that
+	// we are still here to notice when one is chosen.
+	if (!fPinned && AddonID() > 0 && gDormantNodeManager != NULL) {
+		fPinned = true;
+		gDormantNodeManager->GetAddOn(AddonID());
+	}
+
 	BAutolock _(fLock);
 	return fHasSink ? 1 : 0;
 }

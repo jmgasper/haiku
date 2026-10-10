@@ -1,6 +1,6 @@
 SubDir HAIKU_TOP src add-ons media media-add-ons bluetooth_audio ;
 
-UsePrivateHeaders bluetooth ;
+UsePrivateHeaders bluetooth media ;
 
 local architectureObject ;
 for architectureObject in [ MultiArchSubDirSetup ] {
