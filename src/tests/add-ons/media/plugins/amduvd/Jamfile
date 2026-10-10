@@ -17,3 +17,5 @@ SubDirHdrs $(driver) ;
 SEARCH_SOURCE += $(driver) ;
 SimpleTest hevc_stream_test : hevc_stream_test.cpp HevcStream.cpp hevc_parse.c h264_parse.c UvdHevc.cpp
 	: [ TargetLibstdc++ ] ;
+SimpleTest hevc_packet_test : hevc_packet_test.cpp HevcPacket.cpp HevcStream.cpp hevc_parse.c h264_parse.c
+	: [ TargetLibstdc++ ] ;

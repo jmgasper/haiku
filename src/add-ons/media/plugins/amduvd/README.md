@@ -5,8 +5,9 @@ WX5100 H.264 interface. It registers no formats with the Media Kit because
 that lookup has no software fallback. An application loads `amduvd`, calls
 `instantiate_plugin()` and `DecoderPlugin::NewDecoder(0)`, and retains its
 software decoder when setup or decoding fails. Other decoder indices are
-rejected. Application selection and release-image installation remain to be
-implemented; the native tests load the add-on from a private lab directory.
+rejected. airTime and Summit now select it explicitly; full Summit browser
+qualification and release-image installation remain pending. Native tests
+and applications currently use the private lab build.
 
 The input is progressive eight-bit 4:2:0 Baseline/Main/High H.264, one complete
 access unit per chunk. Both Annex B and MP4/Matroska AVC configuration and
@@ -22,7 +23,8 @@ order. `Commit` updates references after hardware completion. This is
 metadata handling, not entropy decoding. `Reset` discards reference state
 and retains parameter sets. IDR and MMCO 5 begin separate output epochs;
 MMCO 5 retains the original firmware POC and renumbers output/reference POC.
-MMCO 5 is covered by metadata tests, not a native conformance bitstream.
+The native 12-picture Baseline/POC-2 P-picture MMCO-5 fixture matches FFmpeg;
+other POC modes and B-picture MMCO-5 cases remain unqualified.
 
 `H264Output` holds at most 17 CPU pictures and emits them by output epoch
 and POC, retaining each input timestamp exactly (including zero). It uses
@@ -60,6 +62,18 @@ serialization and close-time reclamation. The same native 252-picture test
 still matches every pixel and PTS; full coded-surface/padding checks pass too.
 The interleaved 48-picture 320x240 plus 24-picture 1080p stage improved from
 20.12 to 4.01 seconds including output writes (3.79 seconds to `/dev/null`).
-This is a bounded regression measurement, not playback qualification. Further
-profiling, sustained performance, broader format/error qualification,
-airTime/Summit integration, HEVC and final packaging remain.
+This is a bounded regression measurement. Subsequent qualified ROM clock
+requests allow the native three-minute 1080p30 airTime test to keep all
+5,400 pictures on hardware, with 5,400 shown and no drops. Full Summit
+browser/MSE qualification, broader format/error coverage and final packaging
+remain; focused Summit file-decoder tests already pass.
+
+The HEVC path is preparation and is not exposed by this addon yet.
+`HevcStream` prepares Main/Main-10 UVD metadata, POC and retained references;
+`HevcPacket` accepts hvcC configuration and length-prefixed packets, orders
+parameter-set arrays for parsing and bounds expansion to 4 MiB. A failed
+configuration disables packet conversion until reconfigured. Main and Main
+10 fixtures pass parser, metadata, slot and packet-equivalence tests under
+ASan/UBSan and in QEMU. `amdgpu_hevc_stream` and `hevc_stream.py` prepare
+native NV12/P010 qualification, which has not run. These CPU checks do not
+establish HEVC hardware decoding or Main-10 output quality.
