@@ -845,6 +845,16 @@ sched_run_job(struct drm_gpu_scheduler* sched, struct drm_sched_entity* entity,
 	if (entity->guilty != NULL && atomic_read(entity->guilty) != 0)
 		dma_fence_set_error(&s_fence->finished, -ECANCELED);
 
+	// A job of a guilty entity is not handed on: after a reset its context
+	// (client CCB, firmware context) starts over and what was queued for
+	// it before is not trusted (Linux leaves this to the driver's
+	// run_job(), which pvr_queue.c does not check).
+	if (s_fence->finished.error != 0) {
+		dma_fence_signal(&s_fence->scheduled);
+		sched_job_done(job, s_fence->finished.error);
+		return;
+	}
+
 	// drm_sched_fence_scheduled(): the hardware fence is in place before
 	// "scheduled" signals, since a job of another queue waiting for that
 	// then waits for the hardware fence in the firmware

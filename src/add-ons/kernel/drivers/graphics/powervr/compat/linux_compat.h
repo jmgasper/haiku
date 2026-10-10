@@ -581,9 +581,9 @@ kvmalloc_array(size_t count, size_t size, gfp_t flags)
 
 #define kzalloc_obj(object, ...) \
 	((__typeof__(object)*)kzalloc(sizeof(object), GFP_KERNEL))
-#define kvmalloc_objs(object, count, ...) \
-	((__typeof__(object)*)kvmalloc_array((count), sizeof(object), \
-		GFP_KERNEL))
+/* the flags count: pvr_job.c asks for __GFP_ZERO */
+#define kvmalloc_objs(object, count, flags) \
+	((__typeof__(object)*)kvmalloc_array((count), sizeof(object), (flags)))
 
 /* overflow.h; the sizes here are small, no saturation needed */
 #define struct_size(pointer, member, count) \
