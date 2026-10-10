@@ -30,6 +30,7 @@ struct GpuInterrupts {
 	status_t Initialize(volatile uint32* r, const amdgpu_info& info, pci_module_info* module);
 	void Uninitialize();
 	status_t Error() { return atomic_get(&error); }
+	void RecordError(status_t status) { atomic_test_and_set(&error, status, B_OK); }
 	uint64 Ticket(volatile uint32* completion, uint32 sequence);
 	status_t Wait(uint64 ticket, bigtime_t deadline);
 	void Snapshot(amdgpu_irq_info& result);

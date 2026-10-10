@@ -84,7 +84,11 @@ GpuInterrupts::Initialize(volatile uint32* r, const amdgpu_info& info, pci_modul
 	r[0xe32] = r[0xe33] = 0;
 	r[0xe42] &= ~0x10000000u; // MMIO RPTR; no doorbell allocation
 	__sync_synchronize();
+	cpu_status previous = disable_interrupts();
+	acquire_spinlock(&lock);
 	enabled = true;
+	release_spinlock(&lock);
+	restore_interrupts(previous);
 	r[0xe30] = control | 0x20001;
 	(void)r[0xe30];
 	r[0x306a] |= kCPInterrupts;
@@ -108,16 +112,17 @@ GpuInterrupts::Handle(void* cookie)
 	uint32 raw = irq.memory[kRingBytes / 4];
 	__sync_synchronize();
 	uint32 wptr = raw & kMask;
-	if (wptr == irq.rptr && (raw & 1) == 0) {
+	// WPTR overflow is bit 0; CNTL's write-one overflow-clear is bit 31.
+	bool invalid = (raw & 1) != 0 || (wptr & 15) != 0 || (raw & 0x3fffc) > kMask;
+	if (!invalid && wptr == irq.rptr) {
 		release_spinlock(&irq.lock);
 		return B_UNHANDLED_INTERRUPT;
 	}
 	irq.stats.interrupts++;
 	bool wake = false;
-	// WPTR overflow is bit 0; CNTL's write-one overflow-clear is bit 31.
-	if ((raw & 1) != 0 || (wptr & 15) != 0 || (raw & 0x3fffc) > kMask) {
+	if (invalid) {
 		irq.stats.overflows++;
-		atomic_set(&irq.error, B_BAD_DATA);
+		irq.RecordError(B_BAD_DATA);
 		irq.regs[0xe30] &= ~0x20001u;
 		wake = true;
 	} else {
@@ -144,16 +149,16 @@ GpuInterrupts::Handle(void* cookie)
 				}
 			} else if (source == 146 || source == 147) {
 				irq.stats.vm_faults++;
-				atomic_set(&irq.error, B_BAD_DATA); wake = true;
+				irq.RecordError(B_BAD_DATA); wake = true;
 			} else if (source == 184 || source == 185) {
 				irq.stats.privileged_faults++;
-				atomic_set(&irq.error, B_NOT_ALLOWED); wake = true;
+				irq.RecordError(B_NOT_ALLOWED); wake = true;
 			} else {
 				irq.stats.unknown++;
 				// Other CP error sources must not look like successful work.
 				if (source == 180 || source == 183 || source == 186
 					|| (source >= 192 && source <= 197)) {
-					atomic_set(&irq.error, B_BAD_DATA); wake = true;
+					irq.RecordError(B_BAD_DATA); wake = true;
 				}
 			}
 			irq.rptr = (irq.rptr + 16) & kMask;
