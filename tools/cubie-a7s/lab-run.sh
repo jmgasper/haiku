@@ -54,4 +54,11 @@ until tail -n +"$start" "$LOG" | grep -a -q -E "$end"; do
 	sleep 3
 done
 sleep 5
+# the powervr firmware stage can end after the picture: wait for its summary
+done_gpu='powervr: (.*firmware stage (passed|FAILED|off)|disabled by)|Kernel Debugging Land'
+deadline=$((SECONDS + 60))
+until tail -n +"$start" "$LOG" | grep -a -q -E "$done_gpu"; do
+	(( SECONDS < deadline )) || break
+	sleep 2
+done
 tail -n +"$start" "$LOG" | cut -c14- | grep -a -E "$PATTERN" || true

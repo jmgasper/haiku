@@ -1,0 +1,66 @@
+/*
+ * Copyright 2026, air/OS. All rights reserved.
+ * Distributed under the terms of the MIT License.
+ */
+#ifndef POWERVR_HAIKU_DEVICE_H
+#define POWERVR_HAIKU_DEVICE_H
+
+
+/*	The Haiku side of a PowerVR device, around drm/imagination's struct
+	pvr_device; shared by the native C files in glue/. */
+
+
+#include "pvr_device.h"
+#include "pvr_haiku_glue.h"
+
+
+struct rogue_fwif_kccb_cmd;
+
+
+struct pvr_haiku_device {
+	struct pvr_device		pvr;
+
+	struct device			device;
+	struct resource			registers;
+	struct clk				core_clock;
+	size_t					register_size;
+
+	/*	Set once the GPU may have been left running on firmware memory: the
+		memory is then kept, never freed, until the next boot. */
+	bool					keep_memory;
+	bool					firmware_loaded;
+	bool					reset_released;		/* the MIPS left reset */
+	bigtime_t				reset_release_time;
+	bool					failed_start;	/* in pvr_haiku_fw_boot_failed() */
+
+	atomic_t				irq_count;
+	atomic_t				irq_spurious;
+
+	u32						health_checks;
+	u32						health_check_failures;
+	u32						last_kccb_return;
+	status_t				firmware_status;
+	bigtime_t				boot_time;
+	u32						trace_lines;
+};
+
+
+static inline struct pvr_haiku_device*
+to_haiku_device(struct pvr_device* pvr_dev)
+{
+	return container_of(pvr_dev, struct pvr_haiku_device, pvr);
+}
+
+
+/* pvr_haiku_device.c */
+int		pvr_haiku_kccb_execute(struct pvr_device* pvr_dev,
+			struct rogue_fwif_kccb_cmd* command, const char* what,
+			bool answers, u32* _return);
+void	pvr_haiku_fw_boot_failed(struct pvr_device* pvr_dev);
+void	pvr_haiku_force_reset(struct pvr_device* pvr_dev, const char* why);
+
+/* pvr_haiku_power.c */
+int		pvr_haiku_power_off(struct pvr_device* pvr_dev);
+
+
+#endif	/* POWERVR_HAIKU_DEVICE_H */
