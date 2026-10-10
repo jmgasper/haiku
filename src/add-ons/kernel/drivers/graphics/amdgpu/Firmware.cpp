@@ -98,6 +98,30 @@ ParseGfxFirmware(const void* data, size_t size, bool rlc, FirmwareView& view)
 }
 
 
+bool
+ParseUvdFirmware(const void* data, size_t size, FirmwareView& view)
+{
+	view = {};
+	if (data == NULL || size < 32 || size > 1024 * 1024)
+		return false;
+	const uint8_t* p = (const uint8_t*)data;
+	uint32_t header = ReadLE32(p + 4), bytes = ReadLE32(p + 20);
+	uint32_t offset = ReadLE32(p + 24);
+	// Polaris10's UVD 6.3 image uses the common 1.0 container. Preserve the
+	// complete code, including the VCPU's embedded authentication material.
+	if (ReadLE32(p) != size || ReadLE16(p + 8) != 1 || ReadLE16(p + 10) != 0
+		|| ReadLE16(p + 12) != 6 || ReadLE16(p + 14) != 3
+		|| header < 32 || header > size || offset < header || offset > size
+		|| (offset & 3) != 0 || bytes < 256 || (bytes & 3) != 0
+		|| bytes > size - offset)
+		return false;
+	view.code = p + offset;
+	view.codeSize = bytes;
+	view.version = ReadLE32(p + 16);
+	return true;
+}
+
+
 static bool
 TableFits(const uint8_t* p, size_t size, size_t offset, size_t minimum)
 {

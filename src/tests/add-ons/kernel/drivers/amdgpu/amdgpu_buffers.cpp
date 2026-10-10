@@ -209,6 +209,8 @@ main(int argc, char** argv)
 			"unprivileged firmware startup denied");
 		Require(ioctl(fd, AMDGPU_GFX_TEST, NULL, 0) == -1 && errno == B_NOT_ALLOWED,
 			"unprivileged GFX startup denied");
+		Require(ioctl(fd, AMDGPU_UVD_TEST, NULL, 0) == -1 && errno == B_NOT_ALLOWED,
+			"unprivileged UVD startup denied");
 	}
 	if (strcmp(argv[1], "--auto") == 0) {
 		StartupBarrier barrier = {create_sem(0, "startup ready"), create_sem(0, "startup go")};

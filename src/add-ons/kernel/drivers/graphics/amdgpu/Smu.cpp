@@ -292,3 +292,13 @@ amdgpu_smc_load_gfx(volatile uint32* regs, const amdgpu::FirmwareView firmware[4
 		smc.Write(0xc05000dc, (smc.Read(0xc05000dc) & ~0x7fu) | 0x18);
 	return status;
 }
+
+void
+amdgpu_smc_dump_uvd_clocks(volatile uint32* regs)
+{
+	SmcAccess smc(regs);
+	const uint32 addresses[] = {0xc050009c, 0xc05000a0, 0xc05000a4, 0xc05000a8};
+	for (uint32 address : addresses)
+		dprintf("amdgpu: UVD clock register %#x = %#x\n", (unsigned)address,
+			(unsigned)smc.Read(address));
+}

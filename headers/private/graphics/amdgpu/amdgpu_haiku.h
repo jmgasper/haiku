@@ -26,7 +26,8 @@ enum {
 	AMDGPU_MEMORY_INFO,
 	AMDGPU_CREATE_SYSTEM_BUFFER,
 	AMDGPU_GART_INFO,
-	AMDGPU_GFX_TEST
+	AMDGPU_GFX_TEST,
+	AMDGPU_UVD_TEST
 };
 
 #define AMDGPU_ROM_SIZE (256 * 1024)
@@ -90,6 +91,22 @@ struct amdgpu_gfx_test {
 	uint32 stage, sequence, checked_bytes, mismatches;
 	uint32 cp_control, ring_control, rptr, wptr, grbm_status, rlc_status;
 	uint32 vm_fault_status, vm_fault_address, vm_fault_client;
+};
+
+// Root-only UVD6 bring-up with one fixed H.264 picture. All messages,
+// bitstream data and GPU addresses are kernel-owned. Output is a copy only.
+#define AMDGPU_UVD_TEST_OUTPUT_BYTES 737280
+struct amdgpu_uvd_test {
+	uint32 version, size;
+	uint64 firmware;
+	uint32 firmware_size, output_capacity;
+	uint64 output;
+	int32 status;
+	uint32 stage, sequence, firmware_version;
+	uint32 uvd_status, power_status, ring_control, rptr, wptr, context, fence;
+	uint32 vm_fault_status, vm_fault_address;
+	uint32 checked_bytes, guard_mismatches, checksum;
+	uint32 feedback[8];
 };
 
 struct amdgpu_dma_init {

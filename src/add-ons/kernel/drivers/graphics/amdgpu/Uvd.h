@@ -1,0 +1,21 @@
+/* Copyright 2026, air/OS. Distributed under the terms of the MIT License. */
+#ifndef AMDGPU_UVD_H
+#define AMDGPU_UVD_H
+#include "Sdma.h"
+struct UvdEngine {
+	volatile uint32* regs;
+	volatile uint32* memory;
+	area_id area;
+	uint64 gpu;
+	uint32 wptr, sequence;
+	bool attempted, ready, faulted;
+	status_t Test(volatile uint32* r, const amdgpu_info& info,
+		const amdgpu::AtomVramReservation& reservation,
+		const amdgpu::FirmwareView& firmware, amdgpu_uvd_test& result, void* output);
+	status_t Start(const amdgpu::FirmwareView& firmware);
+	status_t Submit(uint32 words, amdgpu_uvd_test& result);
+	void Snapshot(amdgpu_uvd_test& result);
+	void Stop();
+	void Uninitialize();
+};
+#endif

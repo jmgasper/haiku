@@ -12,5 +12,6 @@ status_t amdgpu_smc_load_sdma(volatile uint32* regs,
 	const amdgpu::FirmwareView& firmware, volatile uint32* workspace, uint64 gpu);
 status_t amdgpu_smc_load_gfx(volatile uint32* regs,
 	const amdgpu::FirmwareView firmware[4], volatile uint32* workspace, uint64 gpu);
+void amdgpu_smc_dump_uvd_clocks(volatile uint32* regs);
 bool amdgpu_smc_ready(volatile uint32* regs);
 #endif

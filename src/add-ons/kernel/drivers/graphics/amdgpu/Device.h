@@ -12,6 +12,8 @@ status_t amdgpu_device_start(volatile uint32* regs, const amdgpu_info& info,
 	const amdgpu::FirmwareView& firmware, const amdgpu::AtomVramReservation& reservation);
 status_t amdgpu_client_control(AmdgpuClient* client, uint32 op, void* data, size_t length,
 	status_t (*initialize)());
+status_t amdgpu_device_uvd_test(const amdgpu::FirmwareView& firmware,
+	amdgpu_uvd_test& result, void* output);
 status_t amdgpu_device_gfx_test(const amdgpu::FirmwareView firmware[4],
 	amdgpu_gfx_test& result);
 void amdgpu_device_stop();

@@ -255,6 +255,45 @@ device_control(void* cookie, uint32 op, void* buffer, size_t length)
 	if (op >= AMDGPU_CREATE_BUFFER && op <= AMDGPU_GART_INFO)
 		return amdgpu_client_control((AmdgpuClient*)cookie, op, buffer, length,
 			start_installed_device);
+	if (op == AMDGPU_UVD_TEST) {
+		if (geteuid() != 0)
+			return B_NOT_ALLOWED;
+		if (length != sizeof(amdgpu_uvd_test))
+			return B_BAD_VALUE;
+		amdgpu_uvd_test request;
+		if (user_memcpy(&request, buffer, sizeof(request)) != B_OK)
+			return B_BAD_ADDRESS;
+		if (request.version != AMDGPU_HAIKU_ABI_VERSION || request.size != sizeof(request)
+			|| request.firmware_size < 32 || request.firmware_size > 1024 * 1024
+			|| request.output == 0 || request.output_capacity != AMDGPU_UVD_TEST_OUTPUT_BYTES)
+			return B_BAD_VALUE;
+		amdgpu_uvd_test result = {};
+		result.version = AMDGPU_HAIKU_ABI_VERSION;
+		result.size = sizeof(result);
+		void* image = malloc(request.firmware_size);
+		void* output = malloc(AMDGPU_UVD_TEST_OUTPUT_BYTES);
+		status_t status = image == NULL || output == NULL ? B_NO_MEMORY
+			: user_memcpy(image, (void*)(addr_t)request.firmware, request.firmware_size);
+		amdgpu::FirmwareView firmware;
+		if (status == B_OK && (!amdgpu::ParseUvdFirmware(image, request.firmware_size, firmware)
+			|| firmware.version != 0x01008210))
+			status = B_BAD_DATA;
+		if (status == B_OK) {
+			mutex_lock(&sLock);
+			status = amdgpu_device_uvd_test(firmware, result, output);
+			mutex_unlock(&sLock);
+			if (result.checked_bytes == AMDGPU_UVD_TEST_OUTPUT_BYTES) {
+				status_t copied = user_memcpy((void*)(addr_t)request.output, output,
+					AMDGPU_UVD_TEST_OUTPUT_BYTES);
+				if (status == B_OK)
+					status = copied;
+			}
+		}
+		free(image);
+		free(output);
+		result.status = status;
+		return user_memcpy(buffer, &result, sizeof(result));
+	}
 	if (op == AMDGPU_GFX_TEST) {
 		if (geteuid() != 0)
 			return B_NOT_ALLOWED;

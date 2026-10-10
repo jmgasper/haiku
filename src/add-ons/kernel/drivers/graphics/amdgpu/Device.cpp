@@ -3,6 +3,7 @@
 #include "Sdma.h"
 #include "Gart.h"
 #include "Gfx.h"
+#include "Uvd.h"
 #include "VramAllocator.h"
 #include <KernelExport.h>
 #include <condition_variable.h>
@@ -43,6 +44,7 @@ static VramAllocator sAllocator = {};
 static VramAllocator sGartAllocator = {};
 static Gart sGart = {};
 static GfxEngine sGfx = {};
+static UvdEngine sUvd = {};
 static amdgpu::AtomVramReservation sReservation;
 static SdmaEngine sEngine = {};
 static amdgpu_info sInfo;
@@ -547,6 +549,20 @@ amdgpu_device_gfx_test(const amdgpu::FirmwareView firmware[4], amdgpu_gfx_test& 
 	return status;
 }
 
+status_t
+amdgpu_device_uvd_test(const amdgpu::FirmwareView& firmware,
+	amdgpu_uvd_test& result, void* output)
+{
+	mutex_lock(&sMutex);
+	status_t status = !sActive || sFault != B_OK ? B_DEV_NOT_READY
+		: sPending != 0 ? B_BUSY : sUvd.Test(sEngine.regs, sInfo, sReservation,
+			firmware, result, output);
+	if (sUvd.faulted && sFault == B_OK)
+		sFault = status;
+	mutex_unlock(&sMutex);
+	return status;
+}
+
 void
 amdgpu_device_stop()
 {
@@ -560,6 +576,7 @@ amdgpu_device_stop()
 	wait_for_thread(sWorker, &result);
 	delete_sem(sJobs);
 	sJobs = sWorker = -1;
+	sUvd.Uninitialize();
 	sGfx.Uninitialize();
 	sEngine.Uninitialize();
 	sGart.Uninitialize(sFault != B_OK);
