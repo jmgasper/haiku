@@ -77,7 +77,7 @@ PutBuffer(Buffer* bo)
 		if (status != B_OK)
 			sFault = status;
 	}
-	if (!bo->system || (!bo->poisoned && sFault == B_OK))
+	if (bo->area >= 0 && (!bo->system || (!bo->poisoned && sFault == B_OK)))
 		delete_area(bo->area);
 	if (!bo->poisoned && sFault == B_OK) {
 		VramAllocator& allocator = bo->system ? sGartAllocator : sAllocator;
@@ -170,7 +170,7 @@ amdgpu_client_free(AmdgpuClient* client)
 	while (client->buffers != NULL) {
 		Buffer* bo = client->buffers;
 		client->buffers = bo->next;
-		if (vm_change_clones_to_null_areas(bo->area) != B_OK)
+		if (bo->area >= 0 && vm_change_clones_to_null_areas(bo->area) != B_OK)
 			bo->poisoned = true;
 		PutBuffer(bo);
 	}
@@ -613,6 +613,7 @@ Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 		return B_OK;
 	}
 	if (op != AMDGPU_CREATE_BUFFER && op != AMDGPU_CREATE_SYSTEM_BUFFER
+		&& op != AMDGPU_CREATE_DEVICE_BUFFER
 		&& op != AMDGPU_MAP_BUFFER && op != AMDGPU_FREE_BUFFER)
 		return B_DEV_INVALID_IOCTL;
 	amdgpu_buffer request;
@@ -621,11 +622,20 @@ Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 		return status;
 	if (request.reserved != 0)
 		return B_BAD_VALUE;
-	if (op == AMDGPU_CREATE_BUFFER || op == AMDGPU_CREATE_SYSTEM_BUFFER) {
+	if (op == AMDGPU_CREATE_BUFFER || op == AMDGPU_CREATE_SYSTEM_BUFFER
+		|| op == AMDGPU_CREATE_DEVICE_BUFFER) {
 		if (sFault != B_OK)
 			return B_DEV_NOT_READY;
 		if (request.bytes == 0 || request.bytes > (64ULL << 20))
 			return B_BAD_VALUE;
+		const bool deviceOnly = op == AMDGPU_CREATE_DEVICE_BUFFER;
+		if (deviceOnly) {
+			// Initialization uses the same SDMA engine as queued client jobs.
+			// Drain first; the reacquired sMutex excludes further submissions.
+			status = WaitDmaIdle();
+			if (status != B_OK)
+				return status;
+		}
 		if (client->bufferCount >= 256 || sNextHandle == 0)
 			return B_NO_MEMORY;
 		Buffer* bo = (Buffer*)calloc(1, sizeof(Buffer));
@@ -633,13 +643,27 @@ Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 			return B_NO_MEMORY;
 		bo->bytes = (request.bytes + 4095) & ~4095ULL;
 		bo->system = op == AMDGPU_CREATE_SYSTEM_BUFFER;
+		bo->area = -1;
 		VramAllocator& allocator = bo->system ? sGartAllocator : sAllocator;
-		uint64 limit = bo->system ? Gart::kSize : sInfo.bar_size[0];
-		if (!allocator.Allocate(bo->bytes, 4096, limit, bo->offset)) {
+		uint64 limit = bo->system ? Gart::kSize
+			: (deviceOnly ? sInfo.vram_size : sInfo.bar_size[0]);
+		if (!allocator.Allocate(bo->bytes, 4096, limit, bo->offset,
+				deviceOnly ? sInfo.bar_size[0] : 0)) {
 			free(bo);
 			return B_NO_MEMORY;
 		}
-		if (bo->system) {
+		bo->references = 1;
+		bo->gpu = (bo->system ? Gart::kBase : sInfo.vram_gpu_base) + bo->offset;
+		if (deviceOnly) {
+			status = sEngine.Execute(AMDGPU_DMA_FILL, 0, bo->gpu, bo->bytes, 0);
+			if (status != B_OK) {
+				// Never publish or recycle an allocation with uncertain writes.
+				sFault = status;
+				bo->poisoned = true;
+				PutBuffer(bo);
+				return status;
+			}
+		} else if (bo->system) {
 			virtual_address_restrictions va = {};
 			physical_address_restrictions pa = {};
 			bo->area = create_area_etc(B_SYSTEM_TEAM, "amdgpu client RAM", bo->bytes,
@@ -650,18 +674,18 @@ Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 				bo->bytes, B_ANY_KERNEL_ADDRESS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
 				(void**)&bo->cpu);
 		}
-		if (bo->area < 0) {
+		if (!deviceOnly && bo->area < 0) {
 			status = bo->area;
 			allocator.Free(bo->offset, bo->bytes);
 			free(bo);
 			return status;
 		}
-		for (uint64 i = 0; i < bo->bytes / 4; i++)
-			bo->cpu[i] = 0;
-		__sync_synchronize();
-		(void)bo->cpu[bo->bytes / 4 - 1];
-		bo->references = 1;
-		bo->gpu = (bo->system ? Gart::kBase : sInfo.vram_gpu_base) + bo->offset;
+		if (!deviceOnly) {
+			for (uint64 i = 0; i < bo->bytes / 4; i++)
+				bo->cpu[i] = 0;
+			__sync_synchronize();
+			(void)bo->cpu[bo->bytes / 4 - 1];
+		}
 		if (bo->system) {
 			status = sGart.Bind(bo->offset, bo->bytes, (const void*)bo->cpu);
 			if (status != B_OK) {
@@ -695,6 +719,8 @@ Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 	if (bo == NULL)
 		return B_BAD_VALUE;
 	if (op == AMDGPU_MAP_BUFFER) {
+		if (bo->area < 0)
+			return B_NOT_ALLOWED;
 		void* address = NULL;
 		area_id area = vm_clone_area(client->team, "amdgpu buffer", &address,
 			B_ANY_ADDRESS, B_READ_AREA | B_WRITE_AREA, 0, bo->area, true);
@@ -708,7 +734,7 @@ Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 			vm_delete_area(client->team, area, true);
 		return status;
 	}
-	status = vm_change_clones_to_null_areas(bo->area);
+	status = bo->area >= 0 ? vm_change_clones_to_null_areas(bo->area) : B_OK;
 	if (status != B_OK)
 		return status;
 	Buffer** link = &client->buffers;
@@ -744,7 +770,8 @@ amdgpu_client_control(AmdgpuClient* client, uint32 op, void* data, size_t length
 		} else if (op == AMDGPU_GART_INFO) {
 			amdgpu_gart_info request;
 			status = ReadRequest(request, data, length);
-		} else if (op == AMDGPU_CREATE_BUFFER || op == AMDGPU_CREATE_SYSTEM_BUFFER) {
+		} else if (op == AMDGPU_CREATE_BUFFER || op == AMDGPU_CREATE_SYSTEM_BUFFER
+			|| op == AMDGPU_CREATE_DEVICE_BUFFER) {
 			amdgpu_buffer request;
 			status = ReadRequest(request, data, length);
 			if (status == B_OK && (request.reserved != 0 || request.bytes == 0

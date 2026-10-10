@@ -5,6 +5,7 @@ SimpleTest amdgpu_probe : amdgpu_probe.cpp ;
 SimpleTest amdgpu_sdma : amdgpu_sdma.cpp ;
 SimpleTest amdgpu_smc : amdgpu_smc.cpp ;
 SimpleTest amdgpu_buffers : amdgpu_buffers.cpp ;
+SimpleTest amdgpu_device_buffers : amdgpu_device_buffers.cpp : [ TargetLibstdc++ ] ;
 SimpleTest amdgpu_startup : amdgpu_startup.cpp ;
 SimpleTest amdgpu_gfx : amdgpu_gfx.cpp ;
 SimpleTest amdgpu_uvd : amdgpu_uvd.cpp ;
@@ -12,6 +13,8 @@ SimpleTest amdgpu_uvd : amdgpu_uvd.cpp ;
 local driver = [ FDirName $(HAIKU_TOP) src add-ons kernel drivers graphics amdgpu ] ;
 SubDirHdrs $(driver) ;
 SEARCH_SOURCE += $(driver) ;
+SimpleTest vram_allocator_test : vram_allocator_test.cpp VramAllocator.cpp
+	: [ TargetLibstdc++ ] ;
 SimpleTest uvd_hevc_test : uvd_hevc_test.cpp UvdHevc.cpp : [ TargetLibstdc++ ] ;
 SimpleTest uvd_h264_test : uvd_h264_test.cpp UvdH264.cpp Firmware.cpp
 	: [ TargetLibstdc++ ] ;

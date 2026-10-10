@@ -34,7 +34,8 @@ enum {
 	AMDGPU_VIDEO_DECODE,
 	AMDGPU_VIDEO_DESTROY,
 	AMDGPU_HEVC_CREATE,
-	AMDGPU_HEVC_DECODE
+	AMDGPU_HEVC_DECODE,
+	AMDGPU_CREATE_DEVICE_BUFFER
 };
 
 #define AMDGPU_ROM_SIZE (256 * 1024)
@@ -126,6 +127,8 @@ struct amdgpu_dma_init {
 
 // CREATE_BUFFER uses CPU-visible VRAM. CREATE_SYSTEM_BUFFER uses wired,
 // snooped system RAM; both use the same handle, mapping and command API.
+// CREATE_DEVICE_BUFFER uses VRAM beyond the CPU aperture, is zeroed by DMA
+// before publication, and rejects MAP. Transfer through a mapped RAM buffer.
 // File-local handles; no raw MMIO or arbitrary GPU addresses are accepted.
 // MAP creates a non-executable mapping in the calling team. FREE or closing
 // the file revokes every mapping (including clones) before memory can be reused.

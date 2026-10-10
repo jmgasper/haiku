@@ -13,7 +13,8 @@ struct VramAllocator {
 	bool Init(uint64_t size);
 	void Uninit();
 	bool Reserve(uint64_t offset, uint64_t size);
-	bool Allocate(uint64_t size, uint64_t alignment, uint64_t limit, uint64_t& offset);
+	bool Allocate(uint64_t size, uint64_t alignment, uint64_t limit, uint64_t& offset,
+		uint64_t minimum = 0);
 	bool Free(uint64_t offset, uint64_t size);
 };
 #endif

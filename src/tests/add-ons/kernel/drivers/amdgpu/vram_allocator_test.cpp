@@ -31,10 +31,14 @@ main()
 			uint64_t count = random() % 64 + 1;
 			uint64_t align = 1ULL << (random() % 5);
 			uint64_t limit = 512 + random() % 3585;
+			uint64_t minimum = iteration % 2 == 0 ? 0 : random() % (limit + 1);
 			uint64_t offset;
-			bool result = a.Allocate(count * 4096, align * 4096, limit * 4096, offset);
+			bool result = a.Allocate(count * 4096, align * 4096, limit * 4096,
+				offset, minimum * 4096);
 			bool possible = false;
 			for (uint64_t start = 0; start + count <= limit; start += align) {
+				if (start < minimum)
+					continue;
 				bool free = true;
 				for (uint64_t j = start; j < start + count; j++)
 					free &= !used[j];
@@ -43,6 +47,7 @@ main()
 			assert(result == possible);
 			if (result) {
 				assert(offset % (align * 4096) == 0 && offset + count * 4096 <= limit * 4096);
+				assert(offset >= minimum * 4096);
 				for (uint64_t i = offset / 4096; i < offset / 4096 + count; i++) {
 					assert(!used[i]);
 					used[i] = true;
@@ -67,6 +72,24 @@ main()
 	assert(!a.Allocate(UINT64_MAX - 4095, 4096, UINT64_MAX, offset));
 	assert(!a.Allocate(4096, UINT64_MAX, UINT64_MAX, offset));
 	assert(a.Free(5ULL << 30, 4096));
+	assert(!a.Allocate(4096, 4096, 8ULL << 30, offset, UINT64_MAX - 4095));
+	assert(!a.Allocate(4096, 4096, 8ULL << 30, offset, 1));
+	assert(!a.Allocate(4096, 4096, 8ULL << 30, offset, 8ULL << 30));
+	assert(a.Allocate(4096, 65536, 8ULL << 30, offset, (5ULL << 30) + 4096));
+	assert(offset == (5ULL << 30) + 65536);
+	assert(a.Free(offset, 4096));
 	a.Uninit();
-	puts("PASS: allocator reservations, 20,000 randomized operations, exhaustion and 64-bit bounds");
+	assert(a.Init(8ULL << 30));
+	assert(a.Reserve(0, 64ULL << 20));
+	// Exhaust device-only VRAM without consuming the CPU-visible pool.
+	for (uint64_t i = 0; i < 124; i++) {
+		assert(a.Allocate(64ULL << 20, 4096, 8ULL << 30, offset, 256ULL << 20));
+		assert(offset == (256ULL << 20) + i * (64ULL << 20));
+	}
+	assert(!a.Allocate(4096, 4096, 8ULL << 30, offset, 256ULL << 20));
+	assert(a.Allocate(192ULL << 20, 4096, 256ULL << 20, offset));
+	assert(offset == (64ULL << 20));
+	a.Uninit();
+	puts("PASS: allocator reservations, 20,000 range-bounded randomized operations,"
+		" separate aperture exhaustion and 64-bit bounds");
 }

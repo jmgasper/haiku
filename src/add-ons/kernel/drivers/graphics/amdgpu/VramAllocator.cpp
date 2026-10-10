@@ -36,10 +36,11 @@ VramAllocator::Reserve(uint64_t offset, uint64_t size)
 
 bool
 VramAllocator::Allocate(uint64_t size, uint64_t alignment, uint64_t limit,
-	uint64_t& offset)
+	uint64_t& offset, uint64_t minimum)
 {
 	if (bits == NULL || size == 0 || (size & 4095) != 0 || alignment < 4096
-		|| (alignment & (alignment - 1)) != 0 || alignment > (1ULL << 40))
+		|| (alignment & (alignment - 1)) != 0 || alignment > (1ULL << 40)
+		|| (minimum & 4095) != 0 || minimum > limit || minimum > pages * 4096)
 		return false;
 	uint64_t count = size >> 12;
 	uint64_t maxPage = limit >> 12;
@@ -48,7 +49,7 @@ VramAllocator::Allocate(uint64_t size, uint64_t alignment, uint64_t limit,
 	if (count > maxPage)
 		return false;
 	uint64_t alignPages = alignment >> 12;
-	uint64_t begin = 0;
+	uint64_t begin = ((minimum >> 12) + alignPages - 1) & ~(alignPages - 1);
 	while (begin <= maxPage - count) {
 		uint64_t i = 0;
 		while (i < count && (bits[(begin + i) / 32] & (1u << ((begin + i) % 32))) == 0)
