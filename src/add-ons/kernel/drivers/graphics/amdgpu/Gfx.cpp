@@ -171,7 +171,8 @@ GfxEngine::DumpExecutionState(const char* point)
 		0x3038, 0x30b9, 0x30ba, 0x30bb, 0x21b9,
 		0x3060, 0x30b2, 0x3061, 0x3062, 0x3063, 0x3064,
 		0x3065, 0x30b3, 0x3066, 0x3067, 0x3068, 0x3069,
-		0x219c, 0x219d, 0x219e, 0x219f, 0x21a0, 0x21a1, 0x21a2, 0x21a4,
+		0x219c, 0x219d, 0x219e, 0x219f, 0x21a0, 0x21a1, 0x21a2, 0x21a3,
+		0x21a4,
 		0xc069, 0xc06a, 0xc06d, 0xc06e, 0xc078, 0xc080, 0xc081,
 		0xc082, 0xc083, 0xc084, 0xc077, 0xc085, 0xc086, 0xc087,
 		0xc088, 0xc089, 0xc08a, 0xc0f0, 0xc0f1, 0xc0f2, 0xc0f3,
@@ -340,6 +341,40 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		(void)r[0x21b6];
 		snooze(50);
 		Snapshot(result);
+		// Establish whether the loaded CP can execute a basic memory write
+		// before the much longer clear-state stream. Use only the reserved
+		// snooped control page; no shader/context state is needed here.
+		volatile uint32* basicMarker = gart.commandMemory
+			+ (kControlOffset + 0x504) / 4;
+		ring[wptr++] = Packet(0x37, 3);
+		ring[wptr++] = 5 << 8 | 1 << 20;
+		ring[wptr++] = (uint32)(kControlGPU + 0x504);
+		ring[wptr++] = (kControlGPU + 0x504) >> 32;
+		ring[wptr++] = 0x43504231;
+		ring[wptr++] = Packet(0x42, 0); // PFP_SYNC_ME
+		ring[wptr++] = 0;
+		ring[wptr++] = Packet(0x10, 247); // pad this first batch to 256 DWORDs
+		while (wptr < 256)
+			ring[wptr++] = 0;
+		__sync_synchronize();
+		r[0x1520] = 1;
+		(void)r[0x1520];
+		r[0x3045] = wptr;
+		bigtime_t basicDeadline = system_time() + 500000;
+		while ((*basicMarker != 0x43504231 || r[0x21c0] != wptr)
+			&& system_time() < basicDeadline)
+			snooze(50);
+		dprintf("amdgpu: GFX basic startup marker %#x ring %u/%u VM %#x/%#x\n",
+			(unsigned)*basicMarker, (unsigned)r[0x21c0], (unsigned)wptr,
+			(unsigned)r[0x536], (unsigned)r[0x537]);
+		if (*basicMarker != 0x43504231 || r[0x21c0] != wptr
+			|| ((r[0x536] | r[0x537]) & 0xff) != 0) {
+			DumpExecutionState("basic startup stalled");
+			faulted = true;
+			r[0x21b6] |= kHalt;
+			Snapshot(result);
+			return B_DEV_NOT_READY;
+		}
 		// Match the VI CP startup sequence before submitting any IB: disable
 		// inherited shadow loads, define the hardware's full clear state,
 		// select the Polaris raster layout, and initialize CE partitions.
@@ -398,6 +433,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			(unsigned)r[0x536], (unsigned)r[0x537]);
 		if (*startupMarker != 0x43535031 || r[0x21c0] != wptr
 			|| ((r[0x536] | r[0x537]) & 0xff) != 0) {
+			DumpExecutionState("clear-state startup stalled");
 			faulted = true;
 			r[0x21b6] |= kHalt;
 			Snapshot(result);
