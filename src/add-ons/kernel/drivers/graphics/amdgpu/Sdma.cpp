@@ -74,19 +74,19 @@ Overlaps(uint64 start, uint64 size, uint64 other, uint64 otherSize)
 }
 
 
-static bool
-ScratchIsSafe(volatile uint32* r, const amdgpu_info& info,
-	const amdgpu::AtomVramReservation& reservation)
+bool
+amdgpu_vram_range_is_safe(volatile uint32* r, const amdgpu_info& info,
+	const amdgpu::AtomVramReservation& reservation, uint64 offset, uint64 size)
 {
-	if (info.bar_size[0] < kScratchOffset + kReservedSize
+	if (offset > info.bar_size[0] || size > info.bar_size[0] - offset
 		|| info.vram_size < info.bar_size[0]
 		|| info.boot_framebuffer < info.bar_address[0]
 		|| info.boot_framebuffer - info.bar_address[0] >= info.bar_size[0]
 		|| info.boot_framebuffer_size == 0 || reservation.start > info.vram_size
 		|| reservation.size > info.vram_size - reservation.start)
 		return false;
-	if (Overlaps(kScratchOffset, kReservedSize, reservation.start, reservation.size)
-		|| Overlaps(kScratchOffset, kReservedSize,
+	if (Overlaps(offset, size, reservation.start, reservation.size)
+		|| Overlaps(offset, size,
 			info.boot_framebuffer - info.bar_address[0], info.boot_framebuffer_size))
 		return false;
 	// Firmware may put driver scratch immediately before its own reservation,
@@ -94,7 +94,7 @@ ScratchIsSafe(volatile uint32* r, const amdgpu_info& info,
 	uint64 scratchEnd = reservation.start != 0
 		? reservation.start : info.bar_size[0];
 	if (reservation.driverScratchSize > scratchEnd
-		|| Overlaps(kScratchOffset, kReservedSize,
+		|| Overlaps(offset, size,
 			scratchEnd - reservation.driverScratchSize, reservation.driverScratchSize))
 		return false;
 	const uint32 heads[] = {0x1a00, 0x1c00, 0x1e00, 0x4000, 0x4200, 0x4400};
@@ -113,7 +113,7 @@ ScratchIsSafe(volatile uint32* r, const amdgpu_info& info,
 			return false;
 		if ((r[base + 0x66] & 1) != 0) {
 			uint64 cursor = (uint64)r[base + 0x69] << 32 | (r[base + 0x67] & ~0xffu);
-			if (Overlaps(info.vram_gpu_base + kScratchOffset, kReservedSize,
+			if (Overlaps(info.vram_gpu_base + offset, size,
 					cursor, 128 * 128 * 4))
 				return false;
 		}
@@ -128,7 +128,7 @@ amdgpu_sdma_test(volatile uint32* r, const amdgpu_info& info,
 	const amdgpu::AtomVramReservation& reservation, amdgpu_sdma_test_result& result)
 {
 	result.stage = 1;
-	if (sQuarantined)
+	if (sQuarantined || !amdgpu_smc_ready(r))
 		return B_DEV_NOT_READY;
 	dprintf("amdgpu: SDMA preflight halt %#x rings %#x/%#x/%#x\n",
 		(unsigned)r[0x3412], (unsigned)r[0x3480], (unsigned)r[0x3500],
@@ -138,7 +138,7 @@ amdgpu_sdma_test(volatile uint32* r, const amdgpu_info& info,
 	// Reject that state even if the driver has since been unloaded/reloaded.
 	if ((r[0x3412] & 1) == 0 || r[0x3480] != 0
 		|| (r[0x3500] & 1) != 0 || (r[0x3580] & 1) != 0
-		|| !ScratchIsSafe(r, info, reservation))
+		|| !amdgpu_vram_range_is_safe(r, info, reservation, kScratchOffset, kReservedSize))
 		return B_NOT_ALLOWED;
 	LogDiagnostics(r);
 	uint32* backup = (uint32*)malloc(kScratchSize);

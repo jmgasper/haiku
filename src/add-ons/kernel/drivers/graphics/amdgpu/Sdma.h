@@ -2,9 +2,28 @@
 #ifndef AMDGPU_SDMA_H
 #define AMDGPU_SDMA_H
 #include <amdgpu_haiku.h>
+#include <OS.h>
 #include "Firmware.h"
 
 status_t amdgpu_sdma_test(volatile uint32* regs, const amdgpu_info& info,
 	const amdgpu::FirmwareView& firmware,
 	const amdgpu::AtomVramReservation& reservation, amdgpu_sdma_test_result& result);
+
+bool amdgpu_vram_range_is_safe(volatile uint32* regs, const amdgpu_info& info,
+	const amdgpu::AtomVramReservation& reservation, uint64 offset, uint64 size);
+
+struct SdmaEngine {
+	volatile uint32* regs;
+	volatile uint32* memory;
+	area_id area;
+	uint64 gpu;
+	uint32 sequence;
+	bool faulted;
+	status_t Initialize(volatile uint32* r, const amdgpu_info& info,
+		const amdgpu::FirmwareView& firmware,
+		const amdgpu::AtomVramReservation& reservation);
+	status_t Execute(uint32 operation, uint64 source, uint64 destination,
+		uint64 bytes, uint32 value);
+	void Uninitialize();
+};
 #endif

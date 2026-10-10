@@ -1,0 +1,172 @@
+/*
+ * Copyright 2014 Advanced Micro Devices, Inc.
+ * Copyright 2026, air/OS.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+#include "Sdma.h"
+#include "Smu.h"
+#include <KernelExport.h>
+
+status_t
+SdmaEngine::Initialize(volatile uint32* r, const amdgpu_info& info,
+	const amdgpu::FirmwareView& firmware,
+	const amdgpu::AtomVramReservation& reservation)
+{
+	area = -1;
+	if (!amdgpu_smc_ready(r))
+		return B_DEV_NOT_READY;
+	if ((r[0x3412] & 1) == 0 || r[0x3480] != 0
+		|| (r[0x3500] & 1) != 0 || (r[0x3580] & 1) != 0
+		|| !amdgpu_vram_range_is_safe(r, info, reservation, 32ULL << 20, 3ULL << 20))
+		return B_NOT_ALLOWED;
+	area = map_physical_memory("amdgpu kernel VRAM", info.bar_address[0] + (32ULL << 20),
+		3 << 20, B_ANY_KERNEL_ADDRESS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
+		(void**)&memory);
+	if (area < 0)
+		return area;
+	regs = r;
+	gpu = info.vram_gpu_base + (32ULL << 20);
+	sequence = 0;
+	faulted = false;
+	for (uint32 i = 0; i < (1 << 20) / 4; i++)
+		memory[i] = 0;
+	r[0x80d] = info.vram_gpu_base >> 12;
+	r[0x80e] = (info.vram_gpu_base + info.vram_size - 1) >> 12;
+	r[0x80f] = (gpu + 0x2f0000) >> 12;
+	r[0x819] = (r[0x819] & ~0x7bu) | 0x5b;
+	r[0x3404] &= ~(0x40000u | 1u);
+	status_t status = amdgpu_smc_load_sdma(r, firmware,
+		memory + (1 << 20) / 4, gpu + (1 << 20));
+	if (status != B_OK) {
+		faulted = true;
+		r[0x3480] = 20; // retain ownership/failure marker across driver reloads
+		Uninitialize();
+		return status;
+	}
+	r[0x3405] = (r[0x3405] & ~0xfc910007u) | 0x00810007;
+	r[0x3403] &= ~0xff000fffu;
+	r[0x3406] = r[0x263e] & 0x70;
+	r[0x3409] = 0;
+	uint32 select = r[0x391];
+	r[0x391] = 0;
+	r[0x34a7] = r[0x34a8] = 0;
+	r[0x3480] = 20;
+	r[0x3483] = r[0x3484] = r[0x348b] = r[0x348c] = 0;
+	r[0x3488] = (gpu + 0x1010) >> 32;
+	r[0x3489] = (uint32)(gpu + 0x1010);
+	r[0x3481] = gpu >> 8;
+	r[0x3482] = gpu >> 40;
+	r[0x3492] &= ~0x10000000u;
+	r[0x3485] &= ~1u;
+	r[0x348a] = 0x100;
+	r[0x391] = select;
+	return B_OK;
+}
+
+status_t
+SdmaEngine::Execute(uint32 operation, uint64 source, uint64 destination,
+	uint64 bytes, uint32 value)
+{
+	if (area < 0 || faulted)
+		return B_DEV_NOT_READY;
+	if ((operation != AMDGPU_DMA_COPY && operation != AMDGPU_DMA_FILL)
+		|| bytes == 0 || bytes > (64ULL << 20) || ((source | destination | bytes) & 3) != 0)
+		return B_BAD_VALUE;
+	volatile uint32* r = regs;
+	uint32 select = r[0x391];
+	r[0x391] = 0;
+	uint32 n = 0;
+	while (bytes != 0) {
+		uint32 count = bytes < 0x3fffe0 ? bytes : 0x3fffe0;
+		if (operation == AMDGPU_DMA_COPY) {
+			memory[n++] = 1;
+			memory[n++] = count;
+			memory[n++] = 0;
+			memory[n++] = (uint32)source;
+			memory[n++] = source >> 32;
+			memory[n++] = (uint32)destination;
+			memory[n++] = destination >> 32;
+		} else {
+			memory[n++] = 11 | (2u << 30);
+			memory[n++] = (uint32)destination;
+			memory[n++] = destination >> 32;
+			memory[n++] = value;
+			memory[n++] = count;
+		}
+		source += count;
+		destination += count;
+		bytes -= count;
+	}
+	if (++sequence == 0)
+		sequence++;
+	memory[0x1000 / 4] = 0;
+	memory[n++] = 5;
+	memory[n++] = (uint32)(gpu + 0x1000);
+	memory[n++] = (gpu + 0x1000) >> 32;
+	memory[n++] = sequence;
+	while ((n & 7) != 0)
+		memory[n++] = 0;
+	r[0x3483] = r[0x3484] = 0;
+	__sync_synchronize();
+	(void)memory[n - 1];
+	r[0x1520] = 1;
+	(void)r[0x1520];
+	r[0x3480] |= 1;
+	r[0x3412] &= ~1u;
+	r[0x3484] = n * 4;
+	(void)r[0x3484];
+	bigtime_t start = system_time();
+	while (memory[0x1000 / 4] != sequence && system_time() - start < 500000)
+		snooze(50);
+	status_t status = memory[0x1000 / 4] == sequence ? B_OK : B_TIMED_OUT;
+	start = system_time();
+	while ((r[0x340d] & 1) == 0 && system_time() - start < 100000)
+		snooze(50);
+	r[0x3480] &= ~1u;
+	r[0x3412] |= 1;
+	(void)r[0x3412];
+	if ((r[0x340d] & 1) == 0 || (r[0x3412] & 1) == 0)
+		status = B_DEV_NOT_READY;
+	if (status != B_OK) {
+		faulted = true;
+		dprintf("amdgpu: DMA fault status %#x fence %u/%u ring %u/%u engine %#x\n",
+			(unsigned)status, (unsigned)memory[0x1000 / 4], (unsigned)sequence,
+			(unsigned)r[0x3483], (unsigned)r[0x3484], (unsigned)r[0x340d]);
+	}
+	r[0x391] = select;
+	return status;
+}
+
+void
+SdmaEngine::Uninitialize()
+{
+	if (area < 0)
+		return;
+	regs[0x3480] &= ~1u;
+	regs[0x3412] |= 1;
+	(void)regs[0x3412];
+	// The published device retains ownership until shutdown. Reinitializing
+	// a configured ring after unloading requires a cold boot, not guessing.
+	delete_area(area);
+	area = -1;
+	memory = NULL;
+}
+

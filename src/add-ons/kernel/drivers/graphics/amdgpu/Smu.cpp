@@ -231,3 +231,14 @@ amdgpu_smc_load_sdma(volatile uint32* regs,
 	return loaded ? B_OK : B_TIMED_OUT;
 }
 
+bool
+amdgpu_smc_ready(volatile uint32* regs)
+{
+	SmcAccess smc(regs);
+	amdgpu_smc_bootstrap info = {};
+	smc.Snapshot(info);
+	return (info.clock & 1) == 0 && info.pc >= 0x20100 && info.pc < 0x40000
+		&& (info.smu_status & 3) == 3 && info.soft_registers >= 0x20000
+		&& info.soft_registers <= 0x40000 - 120 && (info.soft_registers & 3) == 0;
+}
+

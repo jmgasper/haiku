@@ -17,6 +17,7 @@
 #include "Rom.h"
 #include "Sdma.h"
 #include "Smu.h"
+#include "Device.h"
 
 // Polaris 10 register indices, from AMD's MIT-licensed register headers:
 // Linux drivers/gpu/drm/amd/include/asic_reg/{bif/bif_5_0_d.h,
@@ -156,13 +157,18 @@ device_open(const char* name, uint32 flags, void** cookie)
 {
 	if (strcmp(name, AMDGPU_DEVICE_NAME) != 0)
 		return B_ENTRY_NOT_FOUND;
+	AmdgpuClient* client = amdgpu_client_open(flags);
+	if (client == NULL)
+		return B_NO_MEMORY;
 	mutex_lock(&sLock);
-	status_t status = sOpenCount == 0 ? map_registers() : B_OK;
+	status_t status = sRegisterArea < 0 ? map_registers() : B_OK;
 	if (status == B_OK) {
 		sOpenCount++;
-		*cookie = &sInfo;
+		*cookie = client;
 	}
 	mutex_unlock(&sLock);
+	if (status != B_OK)
+		amdgpu_client_free(client);
 	return status;
 }
 
@@ -177,8 +183,9 @@ device_close(void* cookie)
 static status_t
 device_free(void* cookie)
 {
+	amdgpu_client_free((AmdgpuClient*)cookie);
 	mutex_lock(&sLock);
-	if (--sOpenCount == 0) {
+	if (--sOpenCount == 0 && !amdgpu_device_active()) {
 		delete_area(sRegisterArea);
 		sRegisterArea = -1;
 		sRegisters = NULL;
@@ -191,6 +198,53 @@ device_free(void* cookie)
 static status_t
 device_control(void* cookie, uint32 op, void* buffer, size_t length)
 {
+	if (op >= AMDGPU_CREATE_BUFFER && op <= AMDGPU_MEMORY_INFO)
+		return amdgpu_client_control((AmdgpuClient*)cookie, op, buffer, length);
+	if (op == AMDGPU_START_DMA) {
+		if (geteuid() != 0)
+			return B_NOT_ALLOWED;
+		if (length != sizeof(amdgpu_dma_init))
+			return B_BAD_VALUE;
+		amdgpu_dma_init request;
+		if (user_memcpy(&request, buffer, sizeof(request)) != B_OK)
+			return B_BAD_ADDRESS;
+		if (request.version != AMDGPU_HAIKU_ABI_VERSION || request.size != sizeof(request)
+			|| request.reserved != 0 || request.firmware_size < 52 || request.firmware_size > 65536)
+			return B_BAD_VALUE;
+		void* firmware = malloc(request.firmware_size);
+		void* rom = malloc(AMDGPU_ROM_SIZE);
+		if (firmware == NULL || rom == NULL) {
+			free(firmware);
+			free(rom);
+			return B_NO_MEMORY;
+		}
+		status_t status = user_memcpy(firmware, (void*)(addr_t)request.firmware, request.firmware_size);
+		amdgpu::FirmwareView view;
+		if (status == B_OK && !amdgpu::ParseSdmaFirmware(firmware, request.firmware_size, view))
+			status = B_BAD_DATA;
+		if (status == B_OK) {
+			mutex_lock(&sLock);
+			if (amdgpu_device_active())
+				status = B_BUSY;
+			else {
+				status = set_area_protection(sRegisterArea, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA);
+				if (status == B_OK) {
+					amdgpu::AtomVramReservation reservation;
+					status = amdgpu_read_rom(sDevice, sRegisters, rom, AMDGPU_ROM_SIZE);
+					if (status == B_OK && !amdgpu::ParseAtomVramReservation(rom, AMDGPU_ROM_SIZE, reservation))
+						status = B_BAD_DATA;
+					if (status == B_OK)
+						status = amdgpu_device_start(sRegisters, sInfo, view, reservation);
+					if (status != B_OK)
+						set_area_protection(sRegisterArea, B_KERNEL_READ_AREA);
+				}
+			}
+			mutex_unlock(&sLock);
+		}
+		free(firmware);
+		free(rom);
+		return status;
+	}
 	if (op == AMDGPU_SMC_BOOTSTRAP) {
 		if (geteuid() != 0)
 			return B_NOT_ALLOWED;
@@ -217,7 +271,7 @@ device_control(void* cookie, uint32 op, void* buffer, size_t length)
 		result.size = sizeof(result);
 		if (status == B_OK) {
 			mutex_lock(&sLock);
-			status = set_area_protection(sRegisterArea,
+			status = amdgpu_device_active() ? B_BUSY : set_area_protection(sRegisterArea,
 				B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA);
 			if (status == B_OK) {
 				status = amdgpu_smc_bootstrap_firmware(sRegisters, view, result);
@@ -259,7 +313,7 @@ device_control(void* cookie, uint32 op, void* buffer, size_t length)
 		result.size = sizeof(result);
 		if (status == B_OK) {
 			mutex_lock(&sLock);
-			status = set_area_protection(sRegisterArea,
+			status = amdgpu_device_active() ? B_BUSY : set_area_protection(sRegisterArea,
 				B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA);
 			if (status == B_OK) {
 				status = amdgpu_read_rom(sDevice, sRegisters, rom, AMDGPU_ROM_SIZE);
@@ -295,7 +349,7 @@ device_control(void* cookie, uint32 op, void* buffer, size_t length)
 		if (rom == NULL)
 			return B_NO_MEMORY;
 		mutex_lock(&sLock);
-		status_t status = set_area_protection(sRegisterArea,
+		status_t status = amdgpu_device_active() ? B_BUSY : set_area_protection(sRegisterArea,
 			B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA);
 		if (status == B_OK) {
 			status = amdgpu_read_rom(sDevice, sRegisters, rom, AMDGPU_ROM_SIZE);
@@ -388,6 +442,12 @@ init_driver()
 void
 uninit_driver()
 {
+	amdgpu_device_stop();
+	if (sRegisterArea >= 0) {
+		delete_area(sRegisterArea);
+		sRegisterArea = -1;
+		sRegisters = NULL;
+	}
 	put_module(B_PCI_MODULE_NAME);
 }
 

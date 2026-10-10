@@ -16,7 +16,14 @@ enum {
 	AMDGPU_GET_INFO = B_DEVICE_OP_CODES_END + 1,
 	AMDGPU_READ_ROM,
 	AMDGPU_SDMA_TEST,
-	AMDGPU_SMC_BOOTSTRAP
+	AMDGPU_SMC_BOOTSTRAP,
+	AMDGPU_START_DMA,
+	AMDGPU_CREATE_BUFFER,
+	AMDGPU_MAP_BUFFER,
+	AMDGPU_FREE_BUFFER,
+	AMDGPU_SUBMIT_DMA,
+	AMDGPU_WAIT_FENCE,
+	AMDGPU_MEMORY_INFO
 };
 
 #define AMDGPU_ROM_SIZE (256 * 1024)
@@ -68,6 +75,63 @@ struct amdgpu_smc_bootstrap {
 	uint32 response;
 	uint32 soft_registers;
 	uint32 reserved_out;
+};
+
+struct amdgpu_dma_init {
+	uint32 version;
+	uint32 size;
+	uint64 firmware;
+	uint32 firmware_size;
+	uint32 reserved;
+};
+
+// File-local handles; no raw MMIO or arbitrary GPU addresses are accepted.
+// MAP creates a non-executable mapping in the calling team. FREE or closing
+// the file revokes every mapping (including clones) before VRAM can be reused.
+struct amdgpu_buffer {
+	uint32 version;
+	uint32 size;
+	uint64 handle;
+	uint64 bytes;
+	uint64 address;
+	int32 area;
+	uint32 reserved;
+};
+
+enum { AMDGPU_DMA_COPY = 1, AMDGPU_DMA_FILL = 2 };
+struct amdgpu_dma_submit {
+	uint32 version;
+	uint32 size;
+	uint32 operation;
+	uint32 value;
+	uint64 source;
+	uint64 destination;
+	uint64 source_offset;
+	uint64 destination_offset;
+	uint64 bytes;
+	uint64 fence;
+};
+
+struct amdgpu_fence_wait {
+	uint32 version;
+	uint32 size;
+	uint64 fence;
+	int64 timeout_us; // relative; 0 polls, maximum 5 seconds
+	int32 status; // GPU result; ioctl errors describe the wait/request itself
+	uint32 reserved;
+};
+
+struct amdgpu_memory_info {
+	uint32 version;
+	uint32 size;
+	uint64 total_vram;
+	uint64 visible_vram;
+	uint64 allocated_bytes;
+	uint64 client_bytes;
+	uint64 submitted;
+	uint64 completed;
+	uint32 pending_jobs;
+	uint32 faulted;
 };
 
 struct amdgpu_register_value {
