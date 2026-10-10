@@ -33,6 +33,14 @@ if (( smoke )); then
 	"$HERE/qemu-smoke.sh" "$IMAGE"
 fi
 if ! "${SSH[@]}" true 2>/dev/null; then
+	# the plug drops off Home Assistant now and then (Zigbee route):
+	# wait for it to come back rather than fail the cycle
+	deadline=$((SECONDS + 1200))
+	until "${POWER[@]}" status 2>/dev/null | grep -q -E '"switch": "(on|off)"'; do
+		(( SECONDS < deadline )) || { echo "the plug stays unavailable" >&2; exit 1; }
+		echo "waiting for the plug"
+		sleep 30
+	done
 	echo "power cycling into Debian"
 	"${POWER[@]}" cycle > /dev/null
 	deadline=$((SECONDS + 240))
@@ -54,4 +62,11 @@ until tail -n +"$start" "$LOG" | grep -a -q -E "$end"; do
 	sleep 3
 done
 sleep 5
+# the powervr firmware stage can end after the picture: wait for its summary
+done_gpu='powervr: (.*firmware stage (passed|FAILED|off)|disabled by)|Kernel Debugging Land'
+deadline=$((SECONDS + 60))
+until tail -n +"$start" "$LOG" | grep -a -q -E "$done_gpu"; do
+	(( SECONDS < deadline )) || break
+	sleep 2
+done
 tail -n +"$start" "$LOG" | cut -c14- | grep -a -E "$PATTERN" || true

@@ -4,103 +4,47 @@
  */
 
 /*	Imagination PowerVR Rogue GPUs: the BXM-4-64 MC1 of the Allwinner A733
-	(Radxa Cubie A7S). Bring-up stage 1: the GPU powered and identified.
+	(Radxa Cubie A7S). Bring-up stage 1: the GPU powered and identified;
+	stage 2: the firmware booted on the GPU's MIPS core and answering
+	(PvrDevice, behind the driver settings); stage 3: the DRM interface
+	Mesa's PowerVR Vulkan driver uses, on the opens of the device
+	(pvr_haiku.h, glue/pvr_haiku_drm.c).
 
 	The plan (lab evidence/gpu/DESIGN.md): a native driver that reuses the
-	hardware and firmware code of Linux's drm/imagination and speaks its
-	pvr_drm.h structures to Mesa's PowerVR Vulkan driver. */
+	hardware and firmware code of Linux's drm/imagination (upstream/, built
+	on compat/ and glue/) and speaks its pvr_drm.h structures to Mesa's
+	PowerVR Vulkan driver. */
 
 
+#include <new>
 #include <stdlib.h>
 #include <string.h>
 
 #include <bus/FDT.h>
 #include <device_manager.h>
-#include <driver_settings.h>
 #include <Drivers.h>
 #include <KernelExport.h>
 
+#include <kernel.h>
 #include <pvr_haiku.h>
 
-#include "A733Power.h"
+#include "PvrDevice.h"
 
 
 #define POWERVR_DRIVER_MODULE_NAME	"drivers/graphics/powervr/driver_v1"
 #define POWERVR_DEVICE_MODULE_NAME	"drivers/graphics/powervr/device_v1"
 
-#define TRACE(x...)	dprintf("powervr: " x)
 
-// Rogue control registers (pvr_rogue_cr_defs.h)
-#define ROGUE_CR_CORE_ID			0x0018
-#define ROGUE_CR_CORE_ID__PBVNC		0x0020
+using powervr::PvrDevice;
 
 
 struct powervr_info {
 	device_node*	node;
-	uint64			registerBase;
-	uint64			registerSize;
-	uint32			interrupt;
-
-	area_id			registerArea;
-	volatile uint8*	registers;
-
-	uint32			stage;
-	uint64			bvnc;
-	uint32			coreId;
-	uint32			coreClock;
+	PvrDevice*		device;
 };
 
 
 static device_manager_info* sDeviceManager;
-
-
-static bool
-disabled_by_settings()
-{
-	void* handle = load_driver_settings("powervr");
-	if (handle == NULL)
-		return false;
-	bool disabled = get_driver_boolean_parameter(handle, "disable", false,
-		true);
-	unload_driver_settings(handle);
-	return disabled;
-}
-
-
-static status_t
-bring_up(powervr_info* info)
-{
-	info->stage = PVR_HAIKU_STAGE_OFF;
-	if (disabled_by_settings()) {
-		TRACE("disabled by the driver settings\n");
-		return B_OK;
-	}
-
-	status_t status = powervr::a733_gpu_power_on(&info->coreClock);
-	if (status != B_OK) {
-		TRACE("the GPU does not power up: %s\n", strerror(status));
-		return status;
-	}
-	info->stage = PVR_HAIKU_STAGE_POWERED;
-
-	info->registerArea = map_physical_memory("powervr registers",
-		info->registerBase, info->registerSize, B_ANY_KERNEL_ADDRESS,
-		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, (void**)&info->registers);
-	if (info->registerArea < 0)
-		return info->registerArea;
-
-	info->bvnc = *(volatile uint64*)(info->registers + ROGUE_CR_CORE_ID__PBVNC);
-	info->coreId = *(volatile uint32*)(info->registers + ROGUE_CR_CORE_ID);
-	TRACE("BVNC %u.%u.%u.%u (%#" B_PRIx64 "), core ID %#" B_PRIx32
-		", %" B_PRIu32 " MHz\n", (unsigned)(info->bvnc >> 48),
-		(unsigned)((info->bvnc >> 32) & 0xffff),
-		(unsigned)((info->bvnc >> 16) & 0xffff),
-		(unsigned)(info->bvnc & 0xffff), info->bvnc, info->coreId,
-		info->coreClock / 1000000);
-	if (info->bvnc != 0)
-		info->stage = PVR_HAIKU_STAGE_IDENTIFIED;
-	return B_OK;
-}
 
 
 //	#pragma mark - device
@@ -114,11 +58,34 @@ powervr_init_device(void* driverCookie, void** _deviceCookie)
 }
 
 
+/*	One open: the DRM file behind the ioctls, when the firmware runs (an
+	open before that, or without it, can only ask for the STAGE). */
+struct powervr_cookie {
+	powervr_info*			info;
+	struct pvr_haiku_file*	file;
+};
+
+
 static status_t
 powervr_open(void* deviceCookie, const char* path, int openMode,
 	void** _cookie)
 {
-	*_cookie = deviceCookie;
+	powervr_info* info = (powervr_info*)deviceCookie;
+	powervr_cookie* cookie
+		= (powervr_cookie*)calloc(1, sizeof(powervr_cookie));
+	if (cookie == NULL)
+		return B_NO_MEMORY;
+	cookie->info = info;
+
+	struct pvr_device* device = info->device->Device();
+	if (device != NULL) {
+		status_t status = pvr_haiku_file_open(device, &cookie->file);
+		if (status != B_OK) {
+			free(cookie);
+			return status;
+		}
+	}
+	*_cookie = cookie;
 	return B_OK;
 }
 
@@ -131,32 +98,51 @@ powervr_close(void* cookie)
 
 
 static status_t
-powervr_free(void* cookie)
+powervr_free(void* _cookie)
 {
+	powervr_cookie* cookie = (powervr_cookie*)_cookie;
+	if (cookie->file != NULL)
+		pvr_haiku_file_close(cookie->file);
+	free(cookie);
 	return B_OK;
 }
 
 
 static status_t
-powervr_control(void* cookie, uint32 op, void* buffer, size_t length)
+powervr_stage(powervr_info* info, void* buffer, size_t length)
 {
-	powervr_info* info = (powervr_info*)cookie;
-
-	if (op == PVR_HAIKU_OP(PVR_HAIKU_NR_STAGE)) {
-		if (length != sizeof(pvr_haiku_stage))
-			return B_BAD_VALUE;
-		pvr_haiku_stage stage = {};
-		stage.version = PVR_HAIKU_ABI_VERSION;
-		stage.stage = info->stage;
-		stage.bvnc = info->bvnc;
-		stage.core_id = info->coreId;
-		stage.core_clock = info->coreClock;
-		return user_memcpy(buffer, &stage, sizeof(stage));
+	pvr_haiku_stage stage;
+	if (length != sizeof(stage))
+		return B_BAD_VALUE;
+	if (!IS_USER_ADDRESS(buffer)
+		|| user_memcpy(&stage, buffer, sizeof(stage)) != B_OK) {
+		return B_BAD_ADDRESS;
 	}
+	if (stage.version != PVR_HAIKU_ABI_VERSION)
+		return B_BAD_VALUE;
+	status_t status = info->device->Stage(stage);
+	if (status != B_OK)
+		return status;
+	return user_memcpy(buffer, &stage, sizeof(stage));
+}
+
+
+static status_t
+powervr_control(void* _cookie, uint32 op, void* buffer, size_t length)
+{
+	powervr_cookie* cookie = (powervr_cookie*)_cookie;
 
 	// Not a display driver: app_server asks every device under graphics/
 	// for an accelerant and has to be turned away.
-	return B_DEV_INVALID_IOCTL;
+	if (!PVR_HAIKU_IS_OP(op))
+		return B_DEV_INVALID_IOCTL;
+
+	uint32 nr = PVR_HAIKU_OP_NR(op);
+	if (nr == PVR_HAIKU_NR_STAGE)
+		return powervr_stage(cookie->info, buffer, length);
+	if (cookie->file == NULL)
+		return B_NO_INIT;
+	return pvr_haiku_file_ioctl(cookie->file, nr, buffer, length);
 }
 
 
@@ -208,24 +194,26 @@ powervr_init_driver(device_node* node, void** _cookie)
 	if (status != B_OK)
 		return status;
 
+	uint64 registerBase, registerSize, interrupt;
+	if (!fdt->get_reg(device, 0, &registerBase, &registerSize)
+		|| !fdt->get_interrupt(device, 0, NULL, &interrupt)) {
+		return B_BAD_DATA;
+	}
+
 	powervr_info* info = (powervr_info*)calloc(1, sizeof(powervr_info));
 	if (info == NULL)
 		return B_NO_MEMORY;
 	info->node = node;
-	info->registerArea = -1;
-
-	uint64 interrupt;
-	if (!fdt->get_reg(device, 0, &info->registerBase, &info->registerSize)
-		|| !fdt->get_interrupt(device, 0, NULL, &interrupt)) {
+	info->device = new(std::nothrow) PvrDevice(registerBase, registerSize,
+		(int32)interrupt);
+	if (info->device == NULL) {
 		free(info);
-		return B_BAD_DATA;
+		return B_NO_MEMORY;
 	}
-	info->interrupt = interrupt;
 
-	status = bring_up(info);
+	status = info->device->Init();
 	if (status != B_OK) {
-		if (info->registerArea >= 0)
-			delete_area(info->registerArea);
+		delete info->device;
 		free(info);
 		return status;
 	}
@@ -238,8 +226,7 @@ static void
 powervr_uninit_driver(void* cookie)
 {
 	powervr_info* info = (powervr_info*)cookie;
-	if (info->registerArea >= 0)
-		delete_area(info->registerArea);
+	delete info->device;
 	free(info);
 }
 
