@@ -3,19 +3,30 @@
 #define AMDGPU_GFX_H
 #include "Gart.h"
 struct GfxEngine {
+	static const uint64 kScratchOffset = 40ULL << 20;
+	static const uint64 kClientIbVA = 0x1000;
+	static const uint64 kClientShaderVA = 0x2000;
 	volatile uint32* regs;
 	volatile uint32* memory;
 	volatile uint32* ring;
 	area_id area, vmArea;
 	uint64 gpu;
-	uint32 wptr, sequence;
+	uint32 wptr, sequence, vmSequence;
 	bool attempted, ready, faulted, vmEnabled, mecStarted;
 	status_t InitializeVM(const amdgpu_info& info,
 		const amdgpu::AtomVramReservation& reservation, const Gart& gart);
+	status_t Initialize(volatile uint32* r, const amdgpu_info& info,
+		const amdgpu::AtomVramReservation& reservation,
+		const amdgpu::FirmwareView firmware[4], SdmaEngine& sdma, Gart& gart,
+		amdgpu_gfx_test& result, const amdgpu::MecFirmwareView* mec);
 	status_t Test(volatile uint32* r, const amdgpu_info& info,
 		const amdgpu::AtomVramReservation& reservation,
 		const amdgpu::FirmwareView firmware[4], SdmaEngine& sdma, Gart& gart,
 		amdgpu_gfx_test& result, const amdgpu::MecFirmwareView* mec);
+	status_t ExecuteVM(uint64 directory, uint64 destination, uint32 value,
+		Gart& gart, amdgpu_vm_test& result);
+	status_t ExecuteIB(uint64 directory, uint64 address, uint32 dwords,
+		Gart& gart, amdgpu_vm_test& result);
 	void Snapshot(amdgpu_gfx_test& result);
 	void DumpExecutionState(const char* point);
 	void Halt();

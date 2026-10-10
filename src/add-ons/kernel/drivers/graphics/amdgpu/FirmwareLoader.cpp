@@ -11,7 +11,7 @@
 #include <unistd.h>
 
 InstalledFirmware::InstalledFirmware()
-	: view(), fData(NULL)
+	: view(), mec(), fData(NULL), fSize(0)
 {
 }
 
@@ -35,8 +35,45 @@ InstalledFirmware::LoadUvd()
 }
 
 status_t
+InstalledFirmware::LoadGfx(uint32 index)
+{
+	const char* names[] = {"polaris10_ce_2.bin", "polaris10_pfp_2.bin",
+		"polaris10_me_2.bin", "polaris10_rlc.bin"};
+	const uint32 versions[] = {140, 254, 167, 286};
+	if (index >= 4)
+		return B_BAD_VALUE;
+	status_t status = ReadData(names[index], 65536);
+	if (status == B_OK && (!amdgpu::ParseGfxFirmware(fData, fSize, index == 3, view)
+		|| view.version != versions[index] || view.featureVersion != (index == 3 ? 1u : 49u)))
+		status = B_BAD_DATA;
+	return status;
+}
+
+status_t
+InstalledFirmware::LoadMec()
+{
+	status_t status = ReadData("polaris10_mec_2.bin", 320 * 1024);
+	if (status == B_OK && (!amdgpu::ParseMecFirmware(fData, fSize, mec)
+		|| mec.program.version != 730 || mec.program.featureVersion != 49))
+		status = B_BAD_DATA;
+	return status;
+}
+
+status_t
 InstalledFirmware::Read(const char* name, size_t limit,
 	bool (*parse)(const void*, size_t, amdgpu::FirmwareView&))
+{
+	status_t status = ReadData(name, limit);
+	if (status == B_OK && !parse(fData, fSize, view))
+		status = B_BAD_DATA;
+	if (status == B_OK)
+		dprintf("amdgpu: installed firmware %s version %#x feature %u\n",
+			name, (unsigned)view.version, (unsigned)view.featureVersion);
+	return status;
+}
+
+status_t
+InstalledFirmware::ReadData(const char* name, size_t limit)
 {
 	// Only fixed driver filenames are accepted; never search user directories.
 	if (fData != NULL || name == NULL || strchr(name, '/') != NULL)
@@ -76,10 +113,10 @@ InstalledFirmware::Read(const char* name, size_t limit,
 			status = bytes < 0 ? errno : B_IO_ERROR;
 	}
 	close(fd);
-	if (status == B_OK && !parse(fData, info.st_size, view))
-		status = B_BAD_DATA;
-	if (status == B_OK)
-		dprintf("amdgpu: installed firmware %s version %#x feature %u\n",
-			path, (unsigned)view.version, (unsigned)view.featureVersion);
+	if (status == B_OK) {
+		fSize = info.st_size;
+		dprintf("amdgpu: read installed firmware %s (%lu bytes)\n", path,
+			(unsigned long)fSize);
+	}
 	return status;
 }

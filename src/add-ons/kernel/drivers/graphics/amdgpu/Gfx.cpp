@@ -23,6 +23,7 @@
 
 // Polaris10 CP setup and golden values: Linux 6.18.52 gfx_v8_0.c (MIT).
 #include "Gfx.h"
+#include "GpuPageTable.h"
 #include "Smu.h"
 #include <KernelExport.h>
 
@@ -114,18 +115,19 @@ GfxEngine::InitializeVM(const amdgpu_info& info,
 	vmArea = -1;
 	const uint64 offset = 24ULL << 20;
 	if ((regs[0x505] & 1) != 0
-		|| !amdgpu_vram_range_is_safe(regs, info, reservation, offset, 8192))
+		|| !amdgpu_vram_range_is_safe(regs, info, reservation, offset,
+			GpuPageTable::kDirectoryBytes + 4096))
 		return B_NOT_ALLOWED;
 	volatile uint64* directory;
 	vmArea = map_physical_memory("amdgpu private GFX VM", info.bar_address[0] + offset,
-		8192, B_ANY_KERNEL_ADDRESS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
+		GpuPageTable::kDirectoryBytes + 4096, B_ANY_KERNEL_ADDRESS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
 		(void**)&directory);
 	if (vmArea < 0)
 		return vmArea;
-	for (uint32 i = 0; i < 1024; i++)
+	for (uint32 i = 0; i < (GpuPageTable::kDirectoryBytes + 4096) / 8; i++)
 		directory[i] = 0;
-	volatile uint64* ptes = directory + 512;
-	directory[0] = (info.vram_gpu_base + offset + 4096) | 1;
+	volatile uint64* ptes = directory + GpuPageTable::kDirectoryEntries;
+	directory[0] = (info.vram_gpu_base + offset + GpuPageTable::kDirectoryBytes) | 1;
 	for (uint32 i = 0; i < 16; i++)
 		ptes[kCommandVA / 4096 + i] = gart.table[16 + i];
 	for (uint32 i = 0; i < 256; i++)
@@ -138,7 +140,7 @@ GfxEngine::InitializeVM(const amdgpu_info& info,
 	regs[0x576] = 0;
 	regs[0x577] = 0;
 	regs[0x558] = 0;
-	regs[0x560] = 511;
+	regs[0x560] = (GpuPageTable::kSize >> 12) - 1;
 	regs[0x550] = (info.vram_gpu_base + offset) >> 12;
 	regs[0x547] = regs[0x546];
 	regs[0x50d] = 0; // retain the first fault; no interrupt handler yet
@@ -226,7 +228,7 @@ GfxEngine::Snapshot(amdgpu_gfx_test& result)
 }
 
 status_t
-GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
+GfxEngine::Initialize(volatile uint32* r, const amdgpu_info& info,
 	const amdgpu::AtomVramReservation& reservation,
 	const amdgpu::FirmwareView firmware[4], SdmaEngine& sdma, Gart& gart,
 	amdgpu_gfx_test& result, const amdgpu::MecFirmwareView* mec)
@@ -248,7 +250,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		if (!amdgpu_smc_ready(r) || (r[0x2004] & 0x80000000) != 0
 			|| (r[0x21b6] & kHalt) != kHalt || (r[0x3041] & 0x3f) != 0
 			|| r[0x21c0] != 0 || r[0x3045] != 0
-			|| !amdgpu_vram_range_is_safe(r, info, reservation, 40ULL << 20, 1ULL << 20))
+			|| !amdgpu_vram_range_is_safe(r, info, reservation, kScratchOffset, 1ULL << 20))
 			return B_NOT_ALLOWED;
 		if (mec != NULL) {
 			// Do not take over a firmware/foreign compute queue. No HQD or
@@ -272,13 +274,13 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 				return B_NOT_ALLOWED;
 			dprintf("amdgpu: GFX MEC preflight: both halted, 64 HQDs inactive\n");
 		}
-		area = map_physical_memory("amdgpu GFX kernel ring", info.bar_address[0] + (40ULL << 20),
+		area = map_physical_memory("amdgpu GFX kernel ring", info.bar_address[0] + (kScratchOffset),
 			1 << 20, B_ANY_KERNEL_ADDRESS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
 			(void**)&memory);
 		if (area < 0)
 			return area;
 		attempted = true;
-		gpu = info.vram_gpu_base + (40ULL << 20);
+		gpu = info.vram_gpu_base + (kScratchOffset);
 		ring = gart.commandMemory;
 		status_t status = InitializeVM(info, reservation, gart);
 		if (status != B_OK) {
@@ -473,6 +475,19 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		}
 		ready = true;
 	}
+	return B_OK;
+}
+
+status_t
+GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
+	const amdgpu::AtomVramReservation& reservation,
+	const amdgpu::FirmwareView firmware[4], SdmaEngine& sdma, Gart& gart,
+	amdgpu_gfx_test& result, const amdgpu::MecFirmwareView* mec)
+{
+	status_t initialized = Initialize(r, info, reservation, firmware, sdma, gart, result, mec);
+	if (initialized != B_OK)
+		return initialized;
+	volatile uint32* control = gart.commandMemory + kControlOffset / 4;
 	result.stage = 4;
 	uint32 n = 0;
 	volatile uint32* ib = gart.commandMemory + 65536 / 4;
@@ -978,6 +993,146 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	return status;
 }
 
+status_t
+GfxEngine::ExecuteVM(uint64 directory, uint64 destination, uint32 value,
+	Gart& gart, amdgpu_vm_test& result)
+{
+	volatile uint32* ib = gart.commandMemory + 65536 / 4;
+	uint32 count = 0;
+	auto command = [&](uint32 word) { ib[count++] = word; };
+	auto shader = [&](uint32 reg, uint32 word) {
+		command(Packet(0x76, 1) | 2);
+		command(reg - 0x2c00);
+		command(word);
+	};
+	shader(0x2e04, 0); shader(0x2e05, 0); shader(0x2e06, 0);
+	shader(0x2e07, 64); shader(0x2e08, 1); shader(0x2e09, 1);
+	shader(0x2e0c, kClientShaderVA >> 8); shader(0x2e0d, 0);
+	shader(0x2e12, 1 | 1 << 6 | 0xc0 << 12);
+	shader(0x2e13, 3 << 1 | 1 << 7);
+	shader(0x2e14, 2);
+	shader(0x2e15, 0);
+	shader(0x2e16, 0xffffffff); shader(0x2e17, 0xffffffff);
+	shader(0x2e18, 0);
+	shader(0x2e19, 0xffffffff); shader(0x2e1a, 0xffffffff);
+	shader(0x2e40, (uint32)destination);
+	shader(0x2e41, destination >> 32);
+	shader(0x2e42, value);
+	command(Packet(0x15, 3) | 2);
+	command(16); command(1); command(1); command(1 | 1 << 2);
+	command(Packet(0x46, 0)); command(7 | 4 << 8);
+	uint32 padding = (-count) & 255;
+	if (padding == 1) padding += 256;
+	if (padding != 0) {
+		command(Packet(0x10, padding - 2));
+		for (uint32 i = 1; i < padding; i++) command(0);
+	}
+	return ExecuteIB(directory, kClientIbVA, count, gart, result);
+}
+
+status_t
+GfxEngine::ExecuteIB(uint64 directory, uint64 address, uint32 dwords,
+	Gart& gart, amdgpu_vm_test& result)
+{
+	if (!ready || faulted || !mecStarted)
+		return B_DEV_NOT_READY;
+	volatile uint32* r = regs;
+	if (r[0x21c0] != (wptr & kRingMask))
+		return B_BUSY;
+	// VMID2 is leased only for this synchronous job. Between jobs it points
+	// at the kernel diagnostic's empty/private directory, never a client.
+	auto bind = [&](uint64 pageDirectory) {
+		r[0x1520] = 1;
+		(void)r[0x1520];
+		r[0x551] = pageDirectory >> 12;
+		(void)r[0x551];
+		r[0x51e] = 4;
+		bigtime_t deadline = system_time() + 100000;
+		while ((r[0x51f] & 4) == 0) {
+			if (system_time() >= deadline)
+				return B_TIMED_OUT;
+			snooze(10);
+		}
+		return B_OK;
+	};
+	status_t status = bind(directory);
+	if (status == B_OK) {
+		uint32 select = r[0x391];
+		r[0x391] = 2 << 4;
+		r[0x230d] = 1 << 5 | 3 << 8 | 3 << 3;
+		r[0x230a] = 0x2000;
+		r[0x230b] = 1;
+		r[0x230c] = 0;
+		r[0x391] = select;
+		// No client owns GDS, global wave sync or ordered-append resources.
+		// Linux gfx_v8_0_init_gds_vmid applies the same zero allocation.
+		r[0x3304] = 0; r[0x3305] = 0;
+		r[0x3322] = 0; r[0x3332] = 0;
+		volatile uint32* completion = gart.commandMemory + (kControlOffset + 0x600) / 4;
+		*completion = 0;
+		if (++vmSequence == 0) vmSequence++;
+		auto emit = [&](uint32 word) { ring[wptr++ & kRingMask] = word; };
+		emit(Packet(0x43, 3));
+		emit(1 << 22 | 1 << 23 | 1 << 27 | 1 << 29 | 1 << 18);
+		emit(0xffffffff); emit(0); emit(10);
+		emit(Packet(0x42, 0)); emit(0);
+		emit(Packet(0x28, 1)); emit(0x80000000); emit(0x80000000);
+		emit(Packet(0x76, 1) | 2); emit(0x2e14 - 0x2c00); emit(2);
+		emit(Packet(0x3f, 2)); emit((uint32)address); emit(address >> 32);
+		emit(dwords | 2 << 24);
+		// Both EOPs are in the trusted VMID0 ring. No client mapping includes
+		// this completion page. Raw PM4 remains root-only while hardware
+		// privilege enforcement is being qualified.
+		const uint64 fenceAddress = kControlGPU + 0x600;
+		for (uint32 i = 0; i < 2; i++) {
+			emit(Packet(0x47, 4));
+			emit(0x14 | 5 << 8 | 1 << 15 | 1 << 16 | 1 << 17);
+			emit((uint32)fenceAddress);
+			emit(fenceAddress >> 32 | 1 << 29);
+			emit(i == 0 ? vmSequence - 1 : vmSequence); emit(0);
+		}
+		uint32 padding = (-wptr) & 255;
+		if (padding == 1) padding += 256;
+		if (padding != 0) {
+			emit(Packet(0x10, padding - 2));
+			for (uint32 i = 1; i < padding; i++) emit(0);
+		}
+		__sync_synchronize();
+		(void)ring[(wptr - 1) & kRingMask];
+		r[0x1520] = 1; (void)r[0x1520];
+		r[0x3045] = wptr & kRingMask; (void)r[0x3045];
+		bigtime_t deadline = system_time() + 500000;
+		while ((*completion != vmSequence || r[0x21c0] != (wptr & kRingMask))
+			&& system_time() < deadline)
+			snooze(50);
+		__sync_synchronize();
+		status = *completion == vmSequence && r[0x21c0] == (wptr & kRingMask)
+			? B_OK : B_TIMED_OUT;
+		result.completion = *completion;
+		if (status == B_OK && ((r[0x536] | r[0x537]) & 0xff) != 0)
+			status = B_BAD_DATA;
+		if (status == B_OK) {
+			r[0xbcc] = 1; (void)r[0xbcc];
+			__sync_synchronize();
+			// All work has retired. Detach and invalidate before a caller can
+			// unmap or close; only then may page tables/backing BOs be reused.
+			status = bind(gpu - kScratchOffset + (24ULL << 20));
+		}
+	}
+	result.vm_fault_status[0] = r[0x536];
+	result.vm_fault_status[1] = r[0x537];
+	result.rptr = r[0x21c0]; result.wptr = r[0x3045];
+	if (status != B_OK) {
+		faulted = true;
+		Halt();
+		DumpExecutionState("client VM fault");
+	}
+	dprintf("amdgpu: client VM seq %u status %#x faults %#x/%#x ring %u/%u\n",
+		(unsigned)vmSequence, (unsigned)status, (unsigned)result.vm_fault_status[0],
+		(unsigned)result.vm_fault_status[1], (unsigned)result.rptr, (unsigned)result.wptr);
+	return status;
+}
+
 void
 GfxEngine::Halt()
 {
@@ -999,7 +1154,7 @@ GfxEngine::Uninitialize()
 	if (vmEnabled) {
 		regs[0x505] &= ~1u;
 		(void)regs[0x505];
-		regs[0x51e] = 2;
+		regs[0x51e] = 6;
 		(void)regs[0x51f];
 		vmEnabled = false;
 	}
