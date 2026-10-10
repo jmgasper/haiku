@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <utility>
+#include <string.h>
 
 #define CHECK(value) do { if (!(value)) { \
 	fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #value); abort(); } } while (0)
@@ -87,6 +88,62 @@ static void Pixels()
 	printf("PASS: cropped P010 exact, 8/10-bit YUV, 601/709 full/limited RGB max error %u, capacity and guards\n", maxError);
 }
 
+static void ColourRows()
+{
+	unsigned maxError = 0;
+	uint32_t random = 101;
+	for (int width : {2,4,6,8,10,14,16,18,30,32,34}) for (int height : {6,580}) {
+		HevcFrame f = {}; f.width = width; f.height = height; f.cropLeft = 2; f.cropTop = 4;
+		f.pitch = (2 * (width + 2) + 15) & ~15; f.codedHeight = height + 4;
+		f.p010 = true; f.pixels.resize(f.pitch * f.codedHeight * 3 / 2);
+		for (unsigned pattern = 0; pattern < 8; pattern++) {
+			for (auto& byte : f.pixels) { random = random * 1664525 + 1013904223; byte = random >> 24; }
+			for (unsigned bits : {8u,10u}) for (int matrix : {1,2,5,6}) for (bool full : {false,true}) {
+				f.bitDepth = bits; f.matrix = matrix; f.fullRange = full;
+				size_t size = width * height * 4;
+				std::vector<uint8_t> out(size + 34, 0xa5);
+				CHECK(HevcOutput::Copy(f, HevcOutput::RGB32, out.data() + 17, size));
+				for (unsigned i = 0; i < 17; i++) CHECK(out[i] == 0xa5 && out[size + 17 + i] == 0xa5);
+				// Two-pixel tiles always take the scalar tail, giving a complete
+				// bit-exact comparison independent of the vector load/shuffle.
+				HevcFrame pair = f; pair.width = 2;
+				std::vector<uint8_t> reference(2 * height * 4);
+				for (int x = 0; x < width; x += 2) {
+					pair.cropLeft = f.cropLeft + x;
+					CHECK(HevcOutput::Copy(pair, HevcOutput::RGB32, reference.data(), reference.size()));
+					for (int y = 0; y < height; y++)
+						CHECK(!memcmp(out.data() + 17 + (y * width + x) * 4, reference.data() + y * 8, 8));
+				}
+				bool bt709 = matrix == 1 || (matrix == 2 && height > 576);
+				double kr = bt709 ? .2126 : .299, kb = bt709 ? .0722 : .114;
+				double scale = 1u << (bits - 8), maximum = (1u << bits) - 1;
+				for (int y = 0; y < height; y++) for (int x = 0; x < width; x++) {
+					size_t uv = (f.codedHeight + (f.cropTop + y) / 2) * (f.pitch / 2) + f.cropLeft + (x & ~1);
+					double l = (Read(f, (f.cropTop + y) * (f.pitch / 2) + f.cropLeft + x) - (full ? 0. : 16. * scale)) / (full ? maximum : 219. * scale);
+					double u = (Read(f, uv) - 128. * scale) / (full ? maximum : 224. * scale);
+					double v = (Read(f, uv + 1) - 128. * scale) / (full ? maximum : 224. * scale);
+					int expected[] = {Clip((l + 2 * (1 - kb) * u) * 255),
+						Clip((l - 2 * kb * (1 - kb) / (1 - kr - kb) * u - 2 * kr * (1 - kr) / (1 - kr - kb) * v) * 255),
+						Clip((l + 2 * (1 - kr) * v) * 255), 255};
+					for (unsigned c = 0; c < 4; c++) {
+						unsigned error = std::abs(int(out[17 + (y * width + x) * 4 + c]) - expected[c]);
+						maxError = std::max(maxError, error); CHECK(error <= 1);
+					}
+				}
+			}
+		}
+	}
+	// The last chroma pair ends at the allocation boundary; vector loads
+	// cannot consume padding past either this scalar tail or a four-pixel row.
+	for (int width : {2,4,6}) {
+		HevcFrame f = {}; f.width = width; f.height = f.codedHeight = 2;
+		f.pitch = width * 2; f.p010 = true; f.bitDepth = 10; f.matrix = 1;
+		f.pixels.resize(width * 6, 0xff); std::vector<uint8_t> out(width * 8);
+		CHECK(HevcOutput::Copy(f, HevcOutput::RGB32, out.data(), out.size()));
+	}
+	printf("PASS: P010 RGB widths 2..34, 8/10 bits, matrices/ranges, crop/alignment/tails and guards; scalar exact, float max error %u\n", maxError);
+}
+
 static void Queue()
 {
 	HevcOutput q;
@@ -104,4 +161,4 @@ static void Queue()
 	puts("PASS: mixed storage/depth and timestamps survive shared output ordering and epoch changes");
 }
 
-int main() { Pixels(); Queue(); }
+int main() { Pixels(); ColourRows(); Queue(); }
