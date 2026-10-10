@@ -27,6 +27,7 @@ typedef struct {
 	size_t		size;
 	size_t		bytePos;
 	int		bitPos;
+	bool		failed; /* sticky: truncated or unrepresentable syntax */
 } H264Bits;
 
 void h264BitsInit(H264Bits *br, const uint8_t *data, size_t size);

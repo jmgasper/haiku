@@ -19,13 +19,12 @@ bitPosition(const H264Bits *br)
 	return br->bytePos * 8 + (size_t)br->bitPos;
 }
 
-/* The reader gives zeros past the end without moving, so a unit that ran out
- * shows as one with nothing left - where a whole one still has at least its
- * stop bit, and a slice header its slice data. */
+/* Whole parameter sets retain their stop bit; slice headers retain data.
+ * Also propagate the shared reader's sticky syntax/truncation failure. */
 static bool
 overran(const H264Bits *br)
 {
-	return br->bytePos >= br->size;
+	return br->failed || br->bytePos >= br->size;
 }
 
 /* ------------------------------------------------------- scaling lists */
