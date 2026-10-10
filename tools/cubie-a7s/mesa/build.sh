@@ -30,6 +30,8 @@ BASE=${CUBIE_MESA_BASE:-$WORK/artifacts/mali-system-opengl-build/20260918T125722
 TOOLS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 TREE=$(cd "$TOOLS/../../.." && pwd)
 PVR_HEADERS=${PVR_HAIKU_HEADERS:-$TREE/headers/private/graphics/powervr}
+# the display driver's contract, for the frame buffer import (direct present)
+SUNXI_HEADERS=$TREE/headers/private/graphics/sunxi_display
 CROSS=$WORK/build/arm64/cross-tools-arm64/bin/aarch64-unknown-haiku
 NATIVE_DEPS=$WORK/toolchains/mesa-native-deps
 JOBS=${HAIKU_JOBS:-16}
@@ -44,9 +46,9 @@ BUILD_GL=$ROOT/build-gl
 # one does not
 PATCHES=(mesa-haiku-pvr.patch mesa-haiku-gl.patch)
 TESTS=(pvr_vkprobe pvr_vkfill pvr_vkfence pvr_vktriangle pvr_vkhang
-	pvr_vkbench)
+	pvr_vkbench pvr_present)
 # OpenGL ES programs (through libglvnd's libEGL/libGLESv2)
-GL_TESTS=(pvr_glprobe pvr_glbench pvr_glreset)
+GL_TESTS=(pvr_glprobe pvr_glbench pvr_glreset pvr_glpresent)
 # the runtime loader's thread-local storage for dlopen()ed libraries: a
 # program and the library it loads, built from one file
 TLS_CHECK=(tls_generation_check libtls_generation_check.so)
@@ -215,6 +217,8 @@ remember_machine_files() {
 configure() {
 	[ -f "$PVR_HEADERS/pvr_haiku.h" ] || {
 		echo "pvr_haiku.h not found in $PVR_HEADERS" >&2; exit 1; }
+	[ -f "$SUNXI_HEADERS/sunxi_display.h" ] || {
+		echo "sunxi_display.h not found in $SUNXI_HEADERS" >&2; exit 1; }
 	[ -f "$BASE/haiku-aarch64.ini" ] || {
 		echo "no Haiku arm64 sysroot/cross file at $BASE" >&2; exit 1; }
 	local sysroot=$BASE/sysroot
@@ -225,8 +229,8 @@ configure() {
 	# from any root)
 	cat > "$ROOT/haiku-aarch64-pvr.ini" <<INI
 [built-in options]
-c_args = ['--sysroot=$sysroot', '-I$PVR_HEADERS', '-ffile-prefix-map=$ROOT/=', '-Wa,--debug-prefix-map=$ROOT/=']
-cpp_args = ['--sysroot=$sysroot', '-I$PVR_HEADERS', '-ffile-prefix-map=$ROOT/=', '-Wa,--debug-prefix-map=$ROOT/=']
+c_args = ['--sysroot=$sysroot', '-I$PVR_HEADERS', '-I$SUNXI_HEADERS', '-ffile-prefix-map=$ROOT/=', '-Wa,--debug-prefix-map=$ROOT/=']
+cpp_args = ['--sysroot=$sysroot', '-I$PVR_HEADERS', '-I$SUNXI_HEADERS', '-ffile-prefix-map=$ROOT/=', '-Wa,--debug-prefix-map=$ROOT/=']
 c_link_args = ['--sysroot=$sysroot']
 cpp_link_args = ['--sysroot=$sysroot']
 INI
@@ -409,6 +413,7 @@ JSON
 			echo "patch $(sha256sum "$TOOLS/$p" | cut -d' ' -f1) $p"
 		done
 		echo "pvr_haiku.h $(sha256sum "$PVR_HEADERS/pvr_haiku.h" | cut -d' ' -f1) $PVR_HEADERS/pvr_haiku.h"
+		echo "sunxi_display.h $(sha256sum "$SUNXI_HEADERS/sunxi_display.h" | cut -d' ' -f1) $SUNXI_HEADERS/sunxi_display.h"
 		echo "sysroot $BASE"
 		echo "host tools $(cat "$HOST_TOOLS/.mesa-version") $HOST_TOOLS/bin"
 		(cd "$OUT" && sha256sum libvulkan_powervr_mesa.so "${TESTS[@]}" \
@@ -526,7 +531,7 @@ shim() {
 	for t in "${GL_TESTS[@]}"; do
 		cc -std=gnu11 -O2 -g -Wall -I"$SRC/include" -o "$s/$t" "$TOOLS/$t.c" \
 			"$sb/src/egl/libEGL.so" "$sb/src/mesa/glapi/es2api/libGLESv2.so" \
-			-Wl,-rpath,"$sb/src/egl:$sb/src/mesa/glapi/es2api" -lm
+			-Wl,-rpath,"$sb/src/egl:$sb/src/mesa/glapi/es2api" -lm -ldl
 	done
 	cc -std=gnu11 -O2 -Wall -fPIC -shared -DTLS_GENERATION_LIBRARY \
 		-o "$s/${TLS_CHECK[1]}" "$TOOLS/tls_generation_check.c"
@@ -539,7 +544,7 @@ shim() {
 	# The memory types are the board's: the host-cached one (on by default
 	# only on Haiku) and zink's staging in it; host memory is coherent, so
 	# the cache maintenance is a no-op here.
-	local run name
+	local run name scanout
 	for run in tls_generation_check \
 		pvr_vkprobe pvr_vkfill "pvr_vkfill 1 5000 --cached" pvr_vkfence \
 		pvr_vktriangle pvr_vkhang "pvr_vktriangle --linear" \
@@ -547,10 +552,20 @@ shim() {
 		"pvr_vkbench --seconds 3 --interval 1 --timeline --rerecord" \
 		"pvr_glprobe --expect zink" \
 		"pvr_glprobe --expect zink --repeat 3" "pvr_glreset --frames 100" \
+		"pvr_present --expect-none" "SCANOUT=640x480 pvr_present --shim" \
+		"pvr_glpresent --shim --front-bpr 4096 --front-refused" \
+		"SCANOUT=640x480 pvr_glpresent --shim --front-bpr 2560" \
 		"pvr_glbench --seconds 3 --interval 1 --expect zink" \
 		"pvr_vkbench --dispatches 60 --timeline --rerecord --mark" \
 		"pvr_glbench --frames 60 --mark" \
 		"pvr_glbench --frames 60 --resize 5 --mark"; do
+		# SCANOUT=WxH: the driver's stand-in frame buffer for the direct
+		# present (PVR_SHIM_SCANOUT)
+		scanout=
+		case "$run" in
+		SCANOUT=*) scanout=${run%% *}; scanout=${scanout#SCANOUT=}
+			run=${run#* } ;;
+		esac
 		name=${run%% *}
 		case "$run" in
 		*--resize*--mark) name=balance-resize-$name ;;
@@ -559,9 +574,12 @@ shim() {
 		*--repeat*) name=$name-repeat ;;
 		*--linear) name=$name-linear ;;
 		*--cached) name=$name-cached ;;
+		*--expect-none) name=$name-none ;;
 		*--expect*) name=$name-expect-zink ;;
 		esac
+		[ -z "$scanout" ] || name=$name-scanout
 		(ulimit -s 256
+		[ -z "$scanout" ] || export PVR_SHIM_SCANOUT=$scanout
 		PVR_SHIM_DEVICE_BVNC=$SHIM_BVNC PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 \
 			PVR_CACHED_MEMORY_TYPE=1 ZINK_NONCOHERENT_CACHED_STAGING=1 \
 			EGL_PLATFORM=surfaceless MESA_LOADER_DRIVER_OVERRIDE=zink \
@@ -587,11 +605,18 @@ shim() {
 	# middle of its frames.
 	local rc fail
 	for run in "1 pvr_vkfill" "1 pvr_glprobe --expect zink" \
-		"10 pvr_glreset --frames 300"; do
+		"10 pvr_glreset --frames 300" \
+		"6 SCANOUT=640x480 pvr_glpresent --shim --lost --front-bpr 2560"; do
 		fail=${run%% *}
 		run=${run#* }
+		scanout=
+		case "$run" in
+		SCANOUT=*) scanout=${run%% *}; scanout=${scanout#SCANOUT=}
+			run=${run#* } ;;
+		esac
 		name=lost-${run%% *}
 		if (ulimit -s 256
+			[ -z "$scanout" ] || export PVR_SHIM_SCANOUT=$scanout
 			PVR_TRACE_FAIL_SUBMIT=$fail PVR_SHIM_DEVICE_BVNC=$SHIM_BVNC \
 			PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 EGL_PLATFORM=surfaceless \
 			PVR_CACHED_MEMORY_TYPE=1 ZINK_NONCOHERENT_CACHED_STAGING=1 \

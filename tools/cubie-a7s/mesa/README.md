@@ -28,9 +28,9 @@ Everything lives under `/mnt/HaikuWork/cubie/mesa` (`CUBIE_MESA_ROOT`):
 
 `out/` holds (stripped; `debug/` has the unstripped copies):
 - `libvulkan_powervr_mesa.so` and `powervr_mesa_icd.aarch64.json` (for a loader later);
-- `pvr_vkprobe`, `pvr_vkfill`, `pvr_vkfence`, `pvr_vktriangle`, `pvr_vkhang`, `pvr_vkbench`;
+- `pvr_vkprobe`, `pvr_vkfill`, `pvr_vkfence`, `pvr_vktriangle`, `pvr_vkhang`, `pvr_vkbench`, `pvr_present`;
 - `tls_generation_check` and `libtls_generation_check.so` (keep them in the same directory);
-- `libEGL_mesa.so.0`, `10_mesa.json` (its libglvnd vendor file), `libvulkan.so.1`, `pvr_glprobe`, `pvr_glbench` and `pvr_glreset`;
+- `libEGL_mesa.so.0`, `10_mesa.json` (its libglvnd vendor file), `libvulkan.so.1`, `pvr_glprobe`, `pvr_glbench`, `pvr_glreset` and `pvr_glpresent`;
 - `MANIFEST`, with the input hashes.
 
 On the image, the libraries go to `/boot/system/non-packaged/lib`, `10_mesa.json` to `.../non-packaged/add-ons/opengl/egl_vendor.d`, and the programs to `.../non-packaged/bin`.
@@ -70,6 +70,7 @@ What the kernel has to match:
 - **Every other request** is retried on `EINTR`/`EAGAIN`, as libdrm does.
 - **`SUBMIT_JOBS` on a context ended by a GPU reset** must fail with `EIO`, which is Haiku's `B_IO_ERROR` (the `-EIO` of Linux code, translated). `ENODEV` works as well. Any other error reads as out of memory: zink retries it for about 1.5 s before it gives up.
 - **`MAP_BO` takes the 32-byte `struct pvr_haiku_map_bo`, with `flags`.** A `static_assert` checks the size. With `PVR_HAIKU_MAP_BO_CACHED` the clone must be write-back cached. Userland keeps it coherent itself, which needs EL0 cache maintenance (`SCTLR_EL1.UCI`) and an EL0-readable `CTR_EL0` (`UCT`). A buffer must be zeroed and cleaned when it is created.
+- **`PVR_HAIKU_NR_IMPORT_HOST`** (`struct pvr_haiku_import_host`) imports the frame buffer for the direct present. The frame buffer is cloned into the team with `SUNXI_DISPLAY_CLONE_FRAME_BUFFER`, and its shape comes from `SUNXI_DISPLAY_GET_STATE`. A driver without the call answers `B_DEV_INVALID_IOCTL`, and the present falls back to reading frames back. `sunxi_display.h` comes by path, like `pvr_haiku.h`.
 - **After a reset, `SYNCOBJ_SIGNAL` and `SYNCOBJ_TIMELINE_SIGNAL` must still work** on that open file and wake waiters, including `WAIT_FOR_SUBMIT` waiters on a point that has no fence. The loss handling depends on them.
 
 ## Tests
@@ -201,6 +202,40 @@ Zink keeps its shader cache in the usual Mesa cache directory, limited to 128 MB
 - `LIBGL_ALWAYS_SOFTWARE=1 pvr_glprobe --expect softpipe` checks the fallback.
 - `--repeat N` does all of it N times in one process, `eglTerminate()` included. Zink unloads the Vulkan driver with its screen and loads it again for the next one. On an unfixed runtime loader, the second run is what crashed Summit's WebProcess (below).
 
+### Summit's direct present
+
+Summit's web process composites each page into a framebuffer object. Without help it reads every frame back, which serializes each step. With this port it hands the frame to `summit_haiku_present_framebuffer()` instead, from Summit's Mesa patch 06 (`apps/summit/tools/mesa-vm`).
+- The interface is unchanged: `summit_haiku_present_framebuffer`, `_wait_idle` and `_release`, exported by `libEGL_mesa.so.0` and found with `get_image_symbol()`; `struct summit_haiku_present` version 1; the return codes; and a completion callback for every present, after a device loss too.
+- The port is `zink_haiku_present.[ch]` and `zink_haiku_present_gl.c` in `mesa-haiku-gl.patch`, and the frame buffer import in `mesa-haiku-pvr.patch`. Patch 05 (frame copies) is x86 readback tuning and is not taken.
+
+What a present does:
+- **Front (the frame buffer).** The GPU copies the visible rectangles straight into the frame buffer. The PowerVR driver imports it through `VkImportScanoutMemoryHAIKU` (`include/vk_haiku_scanout.h`):
+  1. `SUNXI_DISPLAY_GET_STATE` for the frame buffer's shape;
+  2. `SUNXI_DISPLAY_CLONE_FRAME_BUFFER` to clone it into the team;
+  3. `PVR_HAIKU_NR_IMPORT_HOST` of the clone, with `DRM_PVR_BO_BYPASS_DEVICE_CACHE`, so that no GPU cache line half over a rectangle's edge is written back over app_server's pixels.
+  The buffer object owns the clone and deletes it after `GEM_CLOSE`. A mode change replaces the frame buffer. Zink notices by the row length, as before, and by the display driver's generation, which it reads once a second.
+- **Back (app_server's copy of the screen).** This copy is not imported. app_server's processor writes it all the time, and a cache line over a rectangle's edge could be lost from either side.
+  - In the same batch, the GPU copies the rectangles, packed, into a staging buffer of zink's own in host-cached memory. There is one staging buffer per present in flight, at most 4, each sized by its rectangles.
+  - After the batch's timeline wait, a helper thread invalidates the staging buffer, copies the rows into the window system's copy, and calls `completed()`.
+  - A back copy that cannot be made fails the present (-4): app_server composites the cursor from its copy.
+  - On a lost device nothing is copied, but `completed()` still comes.
+- **The image** must be B8G8R8A8 or B8G8R8X8 (-2 otherwise). Summit makes its target `GL_BGRA8_EXT` when the context has `GL_EXT_texture_format_BGRA8888` and `GL_EXT_read_format_bgra`, which zink on this driver has. Its direct present is only for TextureMapper compositing, not Skia.
+- **Release** waits until every present has finished before letting go of the import and the staging buffers. `eglTerminate()` releases them too, and so does exit.
+
+`pvr_present [--rect X,Y,W,H] [--color 0xAARRGGBB] [--expect-none] [--shim]` tests the front alone with Vulkan.
+- It imports the frame buffer and has the GPU fill a rectangle row by row.
+- It then reads the rectangle back through the import's CPU map, and checks a few pixels beside it, which must not turn the fill colour.
+- It prints the frame buffer's shape, including its bytes per row.
+- `--expect-none` passes when there is nothing to import.
+- `--shim` skips the pixel checks, because the shim runs nothing.
+
+`pvr_glpresent [--frames N] [--front-bpr N] [--front-refused] [--library NAME] [--shim] [--lost]` tests the whole path through Summit's entry points.
+- It makes an ES 2 context with a `GL_BGRA8_EXT` renderbuffer target, as Summit does.
+- It presents 30 frames into a padded 320x240 stand-in for app_server's copy, with two rectangles that are partly outside the image.
+- It checks that every present's callback came, that the rectangles hold the colour, and that every other byte is untouched.
+- It also checks the refusals: an RGBA target (-2), and a framebuffer object that is not bound (-11).
+- `--front-bpr N` also copies to the frame buffer; use the bytes per row that `pvr_present` prints. The present must succeed, unless `--front-refused` is also given, which expects -3: no frame buffer to be had.
+
 ## Host smoke test (`build.sh shim`)
 
 `build.sh shim` builds the same patched tree for Linux; the Haiku hunks compile out. It adds Mesa's pvr drm-shim (`PVR_SHIM_DEVICE_BVNC=36.56.104.183`) and `pvr_ioctl_trace.c`, an `LD_PRELOAD` tracer. It then runs the Vulkan tests (`pvr_vkhang` with its default 180 s timeout, harmless under the fake device, and `pvr_vktriangle --linear`) and `pvr_glprobe` on the build host.
@@ -219,6 +254,10 @@ The shim executes nothing. So in the expected results:
 - `tls_generation_check` passes: glibc's TLS has no such bug.
 - `pvr_glprobe --expect zink --repeat 3` runs the probe three times in one process.
 - `pvr_glreset` passes.
+- Off the board, the PowerVR driver imports a frame buffer only when `PVR_SHIM_SCANOUT=WxH` is set. It then makes a stand-in buffer object of that size, so the front path runs on the host with assertions on. The runs marked `SCANOUT=640x480` set it.
+- `pvr_present --expect-none` passes, because there is no frame buffer. `pvr_present-scanout` imports the stand-in, submits the fills and passes without checking pixels.
+- `pvr_glpresent --shim --front-bpr 4096 --front-refused` passes. The frame buffer is refused (-3), and the other refusals come back as expected.
+- `pvr_glpresent-scanout` presents to the stand-in frame buffer as well, and gets 31 completions for its 31 presents. 30 presents bring 30 callbacks, and exactly the clipped rectangles (20736 bytes) are copied: zeros, from a staging buffer the shim never ran a copy into.
 - `pvr_vkbench` (fence; then `--timeline --rerecord`) and `pvr_glbench` each run for 3 s with 1 s lines and fail their pixel or word checks. On the host their rates measure the driver and zink CPU paths only, because the shim executes nothing.
 
 The tracer also logs CPU maps of buffer objects: `mmap` of the DRM device and `munmap` of such a map, as `CPU_MAP` and `CPU_UNMAP` lines. On air/OS these are `MAP_BO` and `delete_area()`. Three marked runs, `pvr_glbench --frames 60 --mark`, `pvr_glbench --frames 60 --resize 5 --mark` and `pvr_vkbench --dispatches 60 --timeline --rerecord --mark`, are cut by `trace_balance` into frames 10 to 59. For each kind of object, it reports how many are made and freed per frame, and the net count for each half of that window. A kind whose net count grows in both halves is marked `PILES UP`. The result is in `shim/balance-*.txt`. Nothing piles up. With the data set cache, a steady GL frame makes no free list and no HWRT data set: two of each are made in the first frames (zink keeps two batches in flight) and reused after that. In the resize run, each new size makes one data set the first time, and none after that. A GL frame still makes, and frees again within that frame:
@@ -228,9 +267,10 @@ The tracer also logs CPU maps of buffer objects: `mmap` of the DRM device and `m
 
 On the board, each of these is still kernel work every frame: areas and MMU flushes, but no firmware objects now.
 
-Then come three GPU-reset runs: `lost-pvr_vkfill`, `lost-pvr_glprobe` and `lost-pvr_glreset`. `PVR_TRACE_FAIL_SUBMIT=N` makes the tracer fail the N-th `SUBMIT_JOBS` and every later one with `EIO`, as the kernel does after a reset; the shim is not called. N is 1 for the first two runs and 10 for `pvr_glreset`, so the loss comes in the middle of its frames. Each run is given 60 s. The expected results:
+Then come four GPU-reset runs: `lost-pvr_vkfill`, `lost-pvr_glprobe`, `lost-pvr_glreset` and `lost-pvr_glpresent`. `PVR_TRACE_FAIL_SUBMIT=N` makes the tracer fail the N-th `SUBMIT_JOBS` and every later one with `EIO`, as the kernel does after a reset; the shim is not called. N is 1 for the first two runs, 10 for `pvr_glreset` and 6 for `pvr_glpresent`, so for those two the loss comes in the middle of their frames. Each run is given 60 s. The expected results:
 - `lost-pvr_vkfill` exits 1 with `vkQueueSubmit ...: -4` (`VK_ERROR_DEVICE_LOST`). The trace shows `[injected EIO]`, then a `SYNCOBJ_SIGNAL` of the fence's syncobj. The drm-shim does not implement that request (`unhandled core DRM ioctl 0xC5`), but the kernel driver does.
 - `lost-pvr_glprobe` exits 1 with `FAIL` within milliseconds, after zink's `VK_ERROR_DEVICE_LOST` line. The trace shows the one failed `SUBMIT_JOBS`, then a `SYNCOBJ_TIMELINE_SIGNAL` of zink's batch timeline point, then no more submits. A hang shows up as exit 124 marked `(HUNG)`.
+- `lost-pvr_glpresent` (EIO from submit 6) still brings a callback for every present, copies nothing, and exits 0.
 - `lost-pvr_glreset` runs all 300 frames, and its teardown, and exits 0 with `PASS`. With the original `zink_batch.c` it hung (exit 124). gdb showed the main thread in `zink_image_map()` → `zink_resource_usage_wait()` → `zink_batch_usage_unflushed_wait()` → `cnd_wait()`.
 
 The shim's waits never block, so a host run cannot reproduce a thread that is already asleep in the kernel when the submit fails. On the board, the signal after the loss is what wakes that thread.

@@ -85,6 +85,33 @@ it).
                                     (=1 shows it off Haiku); a static_assert
                                     checks the 32-byte struct
                                     pvr_haiku_map_bo with its flags
+  include/vk_haiku_scanout.h (new), VkImportScanoutMemoryHAIKU (sType
+  pvr_device.c, winsys/pvr_winsys.h, 1000399000), Summit's direct present's
+  winsys/powervr/pvr_drm.c,         way to the screen: vkAllocateMemory with
+  winsys/powervr/pvr_drm_bo.[ch]    it in pNext (allocationSize ignored, any
+                                    device-local type) imports the
+                                    sunxi_display frame buffer: GET_STATE
+                                    for its shape, CLONE_FRAME_BUFFER into
+                                    this team, PVR_HAIKU_NR_IMPORT_HOST of the
+                                    clone with DRM_PVR_BO_BYPASS_DEVICE_CACHE
+                                    (no GPU cache line half over a
+                                    rectangle's edge); width, height,
+                                    rowPitch and size are written back. The
+                                    buffer object owns the clone: GEM_CLOSE,
+                                    then delete_area(); its CPU map is the
+                                    clone. Without the display driver, or a
+                                    kernel without the import, it fails and
+                                    zink presents some other way. The memory
+                                    object is made after the import, with
+                                    the buffer object's size (zink passes
+                                    allocationSize 0, which the runtime
+                                    asserts on). A new winsys op,
+                                    buffer_import_scanout; sunxi_display.h
+                                    comes by path, like pvr_haiku.h. Off
+                                    Haiku, PVR_SHIM_SCANOUT=WxH makes a
+                                    stand-in buffer object instead, for
+                                    build.sh shim; without it there is no
+                                    frame buffer
   pvr_rt_dataset.[ch], pvr_device.h, a device cache of idle render target data
   pvr_arch_device.c,                sets (HWRT data set + local free list) for
   pvr_arch_cmd_buffer.c             dynamic rendering. Every
@@ -143,6 +170,57 @@ diff -ruN a/include/drm-uapi/pvr_drm.h b/include/drm-uapi/pvr_drm.h
  
  #if defined(__cplusplus)
  extern "C" {
+diff -ruN a/include/vk_haiku_scanout.h b/include/vk_haiku_scanout.h
+--- a/include/vk_haiku_scanout.h
++++ b/include/vk_haiku_scanout.h
+@@ -0,0 +1,47 @@
++/*
++ * Drawing straight into the screen on Haiku.
++ *
++ * The frame buffer the display scans out is ordinary memory, and the display
++ * driver lets another program take hold of it. A renderer that copies its
++ * finished frame there never reads it back to the processor, which is what
++ * presenting through the window system costs otherwise.
++ *
++ * This is a private agreement between the Vulkan drivers on air/OS (NVK on
++ * the X399, PowerVR on the Cubie A7S) and the programs that present with
++ * them (zink's zink_haiku_present.c), not a registered Vulkan extension. It
++ * rides on the pNext chain of vkAllocateMemory, so it needs nothing of the
++ * loader: pass a VkImportScanoutMemoryHAIKU (allocationSize is ignored) and
++ * the memory that comes back is the screen, with its shape filled in.
++ *
++ * SPDX-License-Identifier: MIT
++ */
++#ifndef VK_HAIKU_SCANOUT_H
++#define VK_HAIKU_SCANOUT_H
++
++#include <vulkan/vulkan_core.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* Private sType, from the range reserved for unregistered extensions. */
++#define VK_STRUCTURE_TYPE_IMPORT_SCANOUT_MEMORY_HAIKU \
++   ((VkStructureType)1000399000)
++
++typedef struct VkImportScanoutMemoryHAIKU {
++   VkStructureType sType;
++   void *pNext;
++   /* Filled in by the driver: the shape of the frame buffer that came back.
++    * The memory is a linear surface of `height` rows of `rowPitch` bytes.
++    */
++   uint32_t width;
++   uint32_t height;
++   uint32_t rowPitch;
++   VkDeviceSize size;
++} VkImportScanoutMemoryHAIKU;
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* VK_HAIKU_SCANOUT_H */
 diff -ruN a/include/xf86drm.h b/include/xf86drm.h
 --- a/include/xf86drm.h
 +++ b/include/xf86drm.h
@@ -1003,15 +1081,116 @@ diff -ruN a/src/imagination/vulkan/pvr_arch_queue.c b/src/imagination/vulkan/pvr
 diff -ruN a/src/imagination/vulkan/pvr_device.c b/src/imagination/vulkan/pvr_device.c
 --- a/src/imagination/vulkan/pvr_device.c
 +++ b/src/imagination/vulkan/pvr_device.c
-@@ -64,6 +64,7 @@
+@@ -64,6 +64,8 @@
  #include "util/macros.h"
  #include "util/mesa-blake3.h"
  #include "util/os_misc.h"
 +#include "pvr_host_cache.h"
++#include "vk_haiku_scanout.h"
  #include "util/u_math.h"
  #include "vk_device_memory.h"
  #include "vk_extensions.h"
-@@ -345,11 +346,16 @@
+@@ -234,18 +236,90 @@
+                                 mem_type->heapIndex);
+ }
+ 
++/* VkImportScanoutMemoryHAIKU: the frame buffer the display scans out, from
++ * the winsys (air/OS; under build.sh shim, a stand-in), with its shape
++ * written back into the structure. Any device-local memory type will do;
++ * allocationSize is ignored (zink passes 0): the memory object gets the
++ * buffer object's size. Fails where there is no frame buffer to be had, and
++ * the caller presents some other way.
++ */
++static VkResult
++pvr_allocate_scanout_memory(struct pvr_device *device,
++                            const VkMemoryAllocateInfo *pAllocateInfo,
++                            const VkAllocationCallbacks *pAllocator,
++                            VkImportScanoutMemoryHAIKU *scanout_info,
++                            VkDeviceMemory *pMem)
++{
++   const VkMemoryType *mem_type =
++      &device->pdevice->memory.memoryTypes[pAllocateInfo->memoryTypeIndex];
++   uint32_t width, height, row_pitch;
++   struct pvr_winsys_bo *bo;
++   struct pvr_device_memory *mem;
++   VkResult result;
++
++   if (!(mem_type->propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ||
++       !device->ws->ops->buffer_import_scanout) {
++      return vk_error(device, VK_ERROR_INVALID_EXTERNAL_HANDLE);
++   }
++
++   /* the import first: its size is the memory object's */
++   result = device->ws->ops->buffer_import_scanout(device->ws,
++                                                   &width,
++                                                   &height,
++                                                   &row_pitch,
++                                                   &bo);
++   if (result != VK_SUCCESS)
++      return result;
++
++   VkMemoryAllocateInfo allocate_info = *pAllocateInfo;
++   allocate_info.allocationSize = bo->size;
++   mem = vk_device_memory_create(&device->vk,
++                                 &allocate_info,
++                                 pAllocator,
++                                 sizeof(*mem));
++   if (!mem) {
++      /* the import's clone goes with it */
++      device->ws->ops->buffer_destroy(bo);
++      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
++   }
++   mem->bo = bo;
++
++   scanout_info->width = width;
++   scanout_info->height = height;
++   scanout_info->rowPitch = row_pitch;
++   scanout_info->size = bo->size;
++
++   *pMem = pvr_device_memory_to_handle(mem);
++
++   pvr_memory_emit_report(device, mem, true, VK_SUCCESS);
++
++   return VK_SUCCESS;
++}
++
+ VkResult pvr_AllocateMemory(VkDevice _device,
+                             const VkMemoryAllocateInfo *pAllocateInfo,
+                             const VkAllocationCallbacks *pAllocator,
+                             VkDeviceMemory *pMem)
+ {
+    const VkImportMemoryFdInfoKHR *fd_info = NULL;
++   VkImportScanoutMemoryHAIKU *scanout_info = NULL;
+    VK_FROM_HANDLE(pvr_device, device, _device);
+    enum pvr_winsys_bo_type type = PVR_WINSYS_BO_TYPE_GPU;
+    struct pvr_device_memory *mem;
+    VkResult result;
+ 
+    assert(pAllocateInfo->sType == VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO);
++
++   /* air/OS: the screen's frame buffer (vk_haiku_scanout.h), whose size the
++    * driver reports instead of being told
++    */
++   scanout_info = (VkImportScanoutMemoryHAIKU *)
++      __vk_find_struct((void *)pAllocateInfo->pNext,
++                       VK_STRUCTURE_TYPE_IMPORT_SCANOUT_MEMORY_HAIKU);
++   if (scanout_info)
++      return pvr_allocate_scanout_memory(device, pAllocateInfo, pAllocator,
++                                         scanout_info, pMem);
++
+    assert(pAllocateInfo->allocationSize > 0);
+ 
+    const VkMemoryType *mem_type =
+@@ -285,6 +359,8 @@
+       case VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO:
+          /* We're not yet using any of the flags provided. */
+          break;
++      case VK_STRUCTURE_TYPE_IMPORT_SCANOUT_MEMORY_HAIKU:
++         break;
+       default:
+          vk_debug_ignored_stype(ext->sType);
+          break;
+@@ -345,11 +421,16 @@
         * types as an array that's indexed by pAllocateInfo->memoryTypeIndex so
         * that they can be looked up.
         */
@@ -1029,7 +1208,7 @@ diff -ruN a/src/imagination/vulkan/pvr_device.c b/src/imagination/vulkan/pvr_dev
                                                &mem->bo);
        if (result != VK_SUCCESS)
           goto err_vk_device_memory_destroy;
-@@ -510,10 +516,50 @@
+@@ -510,10 +591,50 @@
     return VK_SUCCESS;
  }
  
@@ -1080,7 +1259,7 @@ diff -ruN a/src/imagination/vulkan/pvr_device.c b/src/imagination/vulkan/pvr_dev
     return VK_SUCCESS;
  }
  
-@@ -522,6 +568,13 @@
+@@ -522,6 +643,13 @@
                                   uint32_t memoryRangeCount,
                                   const VkMappedMemoryRange *pMemoryRanges)
  {
@@ -1643,20 +1822,44 @@ diff -ruN a/src/imagination/vulkan/pvr_rt_dataset.h b/src/imagination/vulkan/pvr
  
        render_target->rt_dataset[valid_idx] = NULL;
        render_target->valid_mask &= ~BITFIELD_BIT(valid_idx);
+diff -ruN a/src/imagination/vulkan/winsys/powervr/pvr_drm.c b/src/imagination/vulkan/winsys/powervr/pvr_drm.c
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm.c
+@@ -398,6 +398,7 @@
+    .buffer_destroy = pvr_drm_winsys_buffer_destroy,
+    .buffer_get_fd = pvr_drm_winsys_buffer_get_fd,
+    .buffer_map = pvr_drm_winsys_buffer_map,
++   .buffer_import_scanout = pvr_drm_winsys_buffer_import_scanout,
+    .buffer_unmap = pvr_drm_winsys_buffer_unmap,
+    .heap_alloc = pvr_drm_winsys_heap_alloc,
+    .heap_free = pvr_drm_winsys_heap_free,
 diff -ruN a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c
 --- a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c
 +++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c
-@@ -31,6 +31,9 @@
+@@ -26,11 +26,22 @@
+ #include <stdbool.h>
+ #include <stddef.h>
+ #include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
+ #include <sys/mman.h>
+ #include <sys/types.h>
  #include <vulkan/vulkan.h>
  #include <unistd.h>
  #include <xf86drm.h>
 +#ifdef __HAIKU__
 +#include <OS.h>
++/* sunxi_display.h is written for C++: its structures name each other
++ * without "struct"
++ */
++typedef struct sunxi_display_timing sunxi_display_timing;
++typedef struct sunxi_display_output sunxi_display_output;
++#include <sunxi_display.h>
 +#endif
  
  #include "drm-uapi/pvr_drm.h"
  #include "pvr_drm.h"
-@@ -83,6 +86,7 @@
+@@ -83,6 +94,7 @@
                       "Failed to destroy gem bo");
  }
  
@@ -1664,7 +1867,7 @@ diff -ruN a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c b/src/imagination
  static VkResult pvr_drm_get_bo_mmap_offset(struct pvr_drm_winsys *drm_ws,
                                             uint32_t handle,
                                             uint64_t *const offset_out)
-@@ -103,6 +107,122 @@
+@@ -103,6 +115,122 @@
  
     return VK_SUCCESS;
  }
@@ -1787,28 +1990,225 @@ diff -ruN a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c b/src/imagination
  
  static void pvr_drm_buffer_acquire(struct pvr_drm_winsys_bo *drm_bo)
  {
-@@ -218,6 +338,7 @@
+@@ -117,6 +245,9 @@
+ 
+    if (p_atomic_dec_return(&drm_bo->ref_count) == 0) {
+       uint32_t handle = drm_bo->handle;
++#ifdef __HAIKU__
++      const area_id host_area = drm_bo->host_area;
++#endif
+ 
+       /* Our BO structs are stored in a sparse array in the winsys structure,
+        * so we don't want to free the BO pointer, instead we want to reset it
+@@ -129,6 +260,11 @@
+       memset(drm_bo, 0, sizeof(*drm_bo));
+ 
+       pvr_drm_destroy_gem_bo(drm_ws, handle);
++#ifdef __HAIKU__
++      /* the imported memory's clone goes after the handle (GEM_CLOSE) */
++      if (host_area > 0)
++         delete_area(host_area);
++#endif
+    }
+ 
+    u_rwlock_rdunlock(&drm_ws->dmabuf_bo_lock);
+@@ -218,6 +354,11 @@
     drm_bo->base.ws = ws;
     drm_bo->handle = handle;
     drm_bo->flags = drm_flags;
 +   drm_bo->cpu_cached = !!(ws_flags & PVR_WINSYS_BO_FLAG_CPU_CACHED);
++#ifdef __HAIKU__
++   drm_bo->host_area = 0;
++   drm_bo->host_address = NULL;
++#endif
  
     p_atomic_set(&drm_bo->ref_count, 1);
  
-@@ -262,6 +383,7 @@
+@@ -262,6 +403,11 @@
        drm_bo->base.size = (uint64_t)size;
        drm_bo->base.is_imported = true;
        drm_bo->handle = handle;
 +      drm_bo->cpu_cached = false;
++#ifdef __HAIKU__
++      drm_bo->host_area = 0;
++      drm_bo->host_address = NULL;
++#endif
  
        p_atomic_set(&drm_bo->ref_count, 1);
     } else {
-@@ -309,6 +431,17 @@
+@@ -275,6 +421,152 @@
+    return VK_SUCCESS;
+ }
+ 
++#ifdef __HAIKU__
++/* VkImportScanoutMemoryHAIKU on the Cubie A7S: the frame buffer of the
++ * sunxi_display driver, cloned into this team (SUNXI_DISPLAY_CLONE_FRAME_BUFFER)
++ * and imported as host memory (PVR_HAIKU_NR_IMPORT_HOST). The GPU writes it
++ * past its own cache (DRM_PVR_BO_BYPASS_DEVICE_CACHE): a cache line that
++ * covered a rectangle's edge would otherwise write back over pixels
++ * app_server drew around it. The frame buffer is write-combined, so the CPU
++ * side needs no cache maintenance. Without the display driver, or with a
++ * kernel driver that lacks the import (B_DEV_INVALID_IOCTL), this fails and
++ * the caller presents some other way.
++ */
++VkResult pvr_drm_winsys_buffer_import_scanout(struct pvr_winsys *ws,
++                                              uint32_t *const width_out,
++                                              uint32_t *const height_out,
++                                              uint32_t *const row_pitch_out,
++                                              struct pvr_winsys_bo **const bo_out)
++{
++   struct pvr_drm_winsys *drm_ws = to_pvr_drm_winsys(ws);
++   struct sunxi_display_shared_info info;
++   struct pvr_drm_winsys_bo *drm_bo;
++   area_info clone = { .area = -1 };
++   int fd;
++   int ret;
++
++   fd = open("/dev/" SUNXI_DISPLAY_DEVICE, O_RDWR | O_CLOEXEC);
++   if (fd < 0) {
++      return vk_errorf(NULL,
++                       VK_ERROR_INVALID_EXTERNAL_HANDLE,
++                       "no frame buffer: /dev/%s (%s)",
++                       SUNXI_DISPLAY_DEVICE,
++                       strerror(errno));
++   }
++
++   memset(&info, 0, sizeof(info));
++   ret = ioctl(fd, SUNXI_DISPLAY_GET_STATE, &info, sizeof(info));
++   if (ret == 0 && (info.width == 0 || info.height == 0 ||
++                    info.bytes_per_row < info.width * 4)) {
++      ret = -1;
++      errno = B_NO_INIT;
++   }
++   if (ret == 0)
++      ret = ioctl(fd, SUNXI_DISPLAY_CLONE_FRAME_BUFFER, &clone, sizeof(clone));
++   const int err = ret != 0 ? errno : 0;
++   close(fd);
++   if (ret != 0 || clone.area < 0) {
++      return vk_errorf(NULL,
++                       VK_ERROR_INVALID_EXTERNAL_HANDLE,
++                       "no frame buffer from %s (%s)",
++                       SUNXI_DISPLAY_DEVICE,
++                       strerror(err));
++   }
++
++   const uint64_t size =
++      ALIGN_POT((uint64_t)info.bytes_per_row * info.height, B_PAGE_SIZE);
++   if (size > clone.size) {
++      delete_area(clone.area);
++      return vk_errorf(NULL,
++                       VK_ERROR_INVALID_EXTERNAL_HANDLE,
++                       "frame buffer area (%zu bytes) smaller than "
++                       "%u rows of %u bytes",
++                       clone.size,
++                       info.height,
++                       info.bytes_per_row);
++   }
++
++   struct pvr_haiku_import_host args = {
++      .address = (uint64_t)(uintptr_t)clone.address,
++      .size = size,
++      .flags = DRM_PVR_BO_BYPASS_DEVICE_CACHE,
++   };
++   do {
++      ret = ioctl(drm_ws->base.render_fd,
++                  PVR_HAIKU_OP(PVR_HAIKU_NR_IMPORT_HOST),
++                  &args,
++                  sizeof(args));
++   } while (ret == -1 && errno == EINTR);
++   if (ret != 0) {
++      const int import_err = errno;
++      delete_area(clone.area);
++      return vk_errorf(NULL,
++                       VK_ERROR_INVALID_EXTERNAL_HANDLE,
++                       "PVR_HAIKU_NR_IMPORT_HOST of the frame buffer failed "
++                       "(%s)",
++                       strerror(import_err));
++   }
++
++   drm_bo = pvr_drm_winsys_lookup_bo(drm_ws, args.handle);
++   assert(drm_bo && drm_bo->handle == 0);
++
++   drm_bo->base.size = size;
++   drm_bo->base.ws = ws;
++   drm_bo->base.is_imported = true;
++   drm_bo->handle = args.handle;
++   drm_bo->flags = DRM_PVR_BO_BYPASS_DEVICE_CACHE;
++   drm_bo->cpu_cached = false;
++   drm_bo->host_area = clone.area;
++   drm_bo->host_address = clone.address;
++
++   p_atomic_set(&drm_bo->ref_count, 1);
++
++   *width_out = info.width;
++   *height_out = info.height;
++   *row_pitch_out = info.bytes_per_row;
++   *bo_out = &drm_bo->base;
++
++   return VK_SUCCESS;
++}
++#else /* __HAIKU__ */
++/* The host smoke test's stand-in (build.sh shim): with PVR_SHIM_SCANOUT=WxH
++ * in the environment, a CPU-accessible buffer object of that many 32 bit
++ * pixels, so that the frame buffer path of the direct present runs on the
++ * build host. There is no frame buffer to import otherwise.
++ */
++VkResult pvr_drm_winsys_buffer_import_scanout(struct pvr_winsys *ws,
++                                              uint32_t *const width_out,
++                                              uint32_t *const height_out,
++                                              uint32_t *const row_pitch_out,
++                                              struct pvr_winsys_bo **const bo_out)
++{
++   const char *shape = getenv("PVR_SHIM_SCANOUT");
++   unsigned width, height;
++   VkResult result;
++
++   if (!shape || sscanf(shape, "%ux%u", &width, &height) != 2 || !width ||
++       !height || width > 16384 || height > 16384) {
++      return vk_error(NULL, VK_ERROR_INVALID_EXTERNAL_HANDLE);
++   }
++
++   result = pvr_drm_winsys_buffer_create(
++      ws,
++      ALIGN_POT((uint64_t)width * 4 * height, ws->page_size),
++      ws->page_size,
++      PVR_WINSYS_BO_TYPE_GPU,
++      PVR_WINSYS_BO_FLAG_CPU_ACCESS | PVR_WINSYS_BO_FLAG_GPU_UNCACHED,
++      bo_out);
++   if (result != VK_SUCCESS)
++      return result;
++
++   *width_out = width;
++   *height_out = height;
++   *row_pitch_out = width * 4;
++
++   return VK_SUCCESS;
++}
++#endif /* __HAIKU__ */
++
+ void pvr_drm_winsys_buffer_destroy(struct pvr_winsys_bo *bo)
+ {
+    struct pvr_drm_winsys_bo *drm_bo = to_pvr_drm_winsys_bo(bo);
+@@ -309,6 +601,31 @@
  
     assert(!bo->map);
  
 +#ifdef __HAIKU__
 +   (void)offset;
++   if (drm_bo->host_area > 0) {
++      /* imported memory: already mapped, as the clone it was imported
++       * through; it cannot be placed
++       */
++      if (addr) {
++         return vk_errorf(NULL,
++                          VK_ERROR_MEMORY_MAP_FAILED,
++                          "imported memory cannot be mapped at %p",
++                          addr);
++      }
++      pvr_drm_buffer_acquire(drm_bo);
++      bo->map = drm_bo->host_address;
++      return VK_SUCCESS;
++   }
 +   result = pvr_drm_haiku_map_bo(drm_ws,
 +                                 drm_bo->handle,
 +                                 addr,
@@ -1821,7 +2221,7 @@ diff -ruN a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c b/src/imagination
     result = pvr_drm_get_bo_mmap_offset(drm_ws, drm_bo->handle, &offset);
     if (result != VK_SUCCESS)
        goto err_out;
-@@ -322,6 +455,7 @@
+@@ -322,6 +639,7 @@
                       &map);
     if (result != VK_SUCCESS)
        goto err_out;
@@ -1829,11 +2229,17 @@ diff -ruN a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c b/src/imagination
  
     VG(VALGRIND_MALLOCLIKE_BLOCK(map, bo->size, 0, true));
  
-@@ -341,7 +475,11 @@
+@@ -341,7 +659,17 @@
  
     assert(bo->map);
  
 +#ifdef __HAIKU__
++   if (drm_bo->host_area > 0) {
++      /* the clone stays until the buffer object goes */
++      bo->map = NULL;
++      pvr_drm_buffer_release(drm_bo);
++      return VK_SUCCESS;
++   }
 +   result = pvr_drm_haiku_unmap_bo(bo->map, bo->size, reserve);
 +#else
     result = pvr_munmap(bo->map, bo->size, reserve);
@@ -1844,16 +2250,35 @@ diff -ruN a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c b/src/imagination
 diff -ruN a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.h b/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.h
 --- a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.h
 +++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.h
-@@ -42,6 +42,9 @@
+@@ -42,6 +42,16 @@
  
     uint32_t handle;
     uint64_t flags;
 +
 +   /* CPU maps are cached (PVR_WINSYS_BO_FLAG_CPU_CACHED) */
 +   bool cpu_cached;
++
++   /* air/OS: an import of the caller's own memory (PVR_HAIKU_NR_IMPORT_HOST)
++    * through this clone of another team's area, which the buffer object owns:
++    * deleted after GEM_CLOSE. Its CPU map is the clone itself. 0: none.
++    */
++   int32_t host_area;
++   void *host_address;
  };
  
  struct pvr_drm_winsys_vma {
+@@ -68,6 +78,11 @@
+                                       int *const fd_out);
+ 
+ VkResult pvr_drm_winsys_buffer_map(struct pvr_winsys_bo *bo, void *addr);
++VkResult pvr_drm_winsys_buffer_import_scanout(struct pvr_winsys *ws,
++                                              uint32_t *const width_out,
++                                              uint32_t *const height_out,
++                                              uint32_t *const row_pitch_out,
++                                              struct pvr_winsys_bo **const bo_out);
+ VkResult pvr_drm_winsys_buffer_unmap(struct pvr_winsys_bo *bo, bool reserve);
+ 
+ VkResult pvr_drm_heap_alloc_carveout(struct pvr_winsys_heap *const heap,
 diff -ruN a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_common.h b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_common.h
 --- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_common.h
 +++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_common.h
@@ -2056,6 +2481,22 @@ diff -ruN a/src/imagination/vulkan/winsys/pvr_winsys.h b/src/imagination/vulkan/
  
  struct pvr_winsys_bo {
     struct pvr_winsys *ws;
+@@ -379,6 +386,15 @@
+    VkResult (*buffer_map)(struct pvr_winsys_bo *bo, void *addr);
+    VkResult (*buffer_unmap)(struct pvr_winsys_bo *bo, bool reserve);
+ 
++   /* air/OS: the frame buffer the display scans out, as a buffer object
++    * (VkImportScanoutMemoryHAIKU). NULL where there is none to be had.
++    */
++   VkResult (*buffer_import_scanout)(struct pvr_winsys *ws,
++                                     uint32_t *const width_out,
++                                     uint32_t *const height_out,
++                                     uint32_t *const row_pitch_out,
++                                     struct pvr_winsys_bo **const bo_out);
++
+    VkResult (*heap_alloc)(struct pvr_winsys_heap *heap,
+                           uint64_t size,
+                           uint64_t alignment,
 diff -ruN a/src/util/meson.build b/src/util/meson.build
 --- a/src/util/meson.build
 +++ b/src/util/meson.build
