@@ -1850,10 +1850,14 @@ LocalDeviceImpl::ConnectionComplete(struct hci_ev_conn_complete* event)
 			rd->encryption_enabled = event->encrypt_mode;
 		}
 
-		// TODO: Review, this rDevice is leaked
-		ConnectionIncoming* iConnection = new ConnectionIncoming(
-			new RemoteDevice(event->bdaddr, rd->classOfDevice));
-		iConnection->Show();
+		// Tell the user about a device that connected on its own; one we
+		// connected to was asked for.
+		if (!rd->outgoing) {
+			// TODO: Review, this rDevice is leaked
+			ConnectionIncoming* iConnection = new ConnectionIncoming(
+				new RemoteDevice(event->bdaddr, rd->classOfDevice));
+			iConnection->Show();
+		}
 
 		TRACE_BT("LocalDeviceImpl: %s: Address %s handle=%#x type=%d encrypt=%d\n", __FUNCTION__,
 				bdaddrUtils::ToString(event->bdaddr).String(), event->handle,
