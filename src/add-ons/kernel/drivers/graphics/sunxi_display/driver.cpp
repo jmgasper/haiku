@@ -25,6 +25,7 @@
 #include <bus/FDT.h>
 #include <device_manager.h>
 #include <Drivers.h>
+#include <driver_settings.h>
 #include <KernelExport.h>
 
 #include <boot_item.h>
@@ -119,27 +120,42 @@ notify_change(display_info* info)
 }
 
 
-/*!	Where output 0 starts in the frame buffer: its region of the layout,
-	or the top left corner before there is one.
+/*!	Output 0's region of the frame buffer once a layout is set (the display
+	engine scales it to the output's mode), the top left corner at the
+	output's size before.
 */
+static bool
+has_layout(display_info* info)
+{
+	const sunxi_display_shared_info& shared = *info->shared;
+	return shared.bytes_per_row != 0
+		&& (shared.outputs[0].flags & SUNXI_DISPLAY_OUTPUT_ENABLED) != 0;
+}
+
+
 static phys_addr_t
 scanout_address(display_info* info)
 {
 	const sunxi_display_shared_info& shared = *info->shared;
 	const sunxi_display_output& output = shared.outputs[0];
-	uint32 bytesPerRow = shared.bytes_per_row;
-	if ((output.flags & SUNXI_DISPLAY_OUTPUT_ENABLED) == 0 || bytesPerRow == 0)
+	if (!has_layout(info))
 		return info->bufferAddress;
+	return info->bufferAddress + (phys_addr_t)output.y * shared.bytes_per_row
+		+ output.x * 4;
+}
 
-	// The display engine shows the output's mode from there; keep it inside
-	// the buffer.
-	int32 x = output.x;
-	int32 y = output.y;
-	if (x + output.native_width > (int32)shared.width)
-		x = max_c(0, (int32)shared.width - output.native_width);
-	if (y + output.native_height > (int32)shared.height)
-		y = max_c(0, (int32)shared.height - output.native_height);
-	return info->bufferAddress + (phys_addr_t)y * bytesPerRow + x * 4;
+
+static void
+scanout_size(display_info* info, uint32& width, uint32& height)
+{
+	const sunxi_display_output& output = info->shared->outputs[0];
+	if (has_layout(info)) {
+		width = output.width;
+		height = output.height;
+	} else {
+		width = output.native_width;
+		height = output.native_height;
+	}
 }
 
 
@@ -147,11 +163,22 @@ static uint32
 scanout_bytes_per_row(display_info* info)
 {
 	const sunxi_display_shared_info& shared = *info->shared;
-	if (shared.bytes_per_row != 0
-		&& (shared.outputs[0].flags & SUNXI_DISPLAY_OUTPUT_ENABLED) != 0) {
+	if (has_layout(info))
 		return shared.bytes_per_row;
-	}
 	return shared.outputs[0].native_width * 4;
+}
+
+
+static void
+update_scanout(display_info* info)
+{
+	uint32 width, height;
+	scanout_size(info, width, height);
+	status_t status = info->pipe->SetScanout(scanout_address(info),
+		scanout_bytes_per_row(info), width, height);
+	if (status != B_OK)
+		ERROR("DP-1: cannot show %" B_PRIu32 "x%" B_PRIu32 ": %s\n", width,
+			height, strerror(status));
 }
 
 
@@ -178,6 +205,8 @@ connect_display(display_info* info)
 		output.native_height = timing.v_display;
 		status = info->pipe->Enable(timing, scanout_address(info),
 			scanout_bytes_per_row(info));
+		if (status == B_OK)
+			update_scanout(info);
 	}
 	if (status != B_OK) {
 		info->connectFailures++;
@@ -387,10 +416,8 @@ set_layout(display_info* info, const sunxi_display_layout& layout)
 	shared.height = layout.height;
 	shared.bytes_per_row = bytesPerRow;
 
-	if (info->pipe != NULL && info->pipe->Enabled()) {
-		info->pipe->SetScanout(scanout_address(info),
-			scanout_bytes_per_row(info));
-	}
+	if (info->pipe != NULL && info->pipe->Enabled())
+		update_scanout(info);
 
 	// the kernel's console and debugger follow
 	frame_buffer_update((addr_t)info->buffer, layout.width, layout.height, 32,
@@ -528,6 +555,22 @@ display_close(void* cookie)
 static display_info* sInfo;
 
 
+/*!	Register access from userland is for bringing the hardware up; the lab
+	images switch it on in the driver settings.
+*/
+static bool
+debug_registers_allowed()
+{
+	void* handle = load_driver_settings("sunxi_display");
+	if (handle == NULL)
+		return false;
+	bool allowed = get_driver_boolean_parameter(handle, "debug_registers",
+		false, true);
+	unload_driver_settings(handle);
+	return allowed;
+}
+
+
 static status_t
 display_free(void* cookie)
 {
@@ -612,6 +655,23 @@ display_control(void* cookie, uint32 op, void* buffer, size_t length)
 			if (status == B_OK)
 				info->owner = cookie;
 			return status;
+		}
+
+		case SUNXI_DISPLAY_DEBUG_REGISTER:
+		{
+			if (!debug_registers_allowed() || info->pipe == NULL)
+				return B_NOT_ALLOWED;
+			sunxi_display_register request;
+			if (length != sizeof(request)
+				|| user_memcpy(&request, buffer, sizeof(request)) != B_OK) {
+				return B_BAD_VALUE;
+			}
+			MutexLocker locker(info->lock);
+			status_t status = info->pipe->DebugRegister(request.address,
+				request.value, request.write != 0);
+			if (status != B_OK)
+				return status;
+			return user_memcpy(buffer, &request, sizeof(request));
 		}
 
 		case SUNXI_DISPLAY_CLONE_FRAME_BUFFER:

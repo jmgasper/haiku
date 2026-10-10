@@ -33,7 +33,10 @@ enum {
 	// consistent snapshot of sunxi_display_shared_info, including hotplug state
 	SUNXI_DISPLAY_GET_STATE,
 	// struct sunxi_display_change_port; negative port unregisters notifications
-	SUNXI_DISPLAY_SET_CHANGE_PORT
+	SUNXI_DISPLAY_SET_CHANGE_PORT,
+	// struct sunxi_display_register: reads or writes a display register;
+	// only when the driver settings say "debug_registers true" (the lab)
+	SUNXI_DISPLAY_DEBUG_REGISTER
 };
 
 #define SUNXI_DISPLAY_OUTPUT_CONNECTED	0x1
@@ -81,6 +84,12 @@ struct sunxi_display_layout {
 	sunxi_display_output outputs[SUNXI_DISPLAY_MAX_OUTPUTS];
 		// by index as in the shared info; id, flags and the region and
 		// mode fields count
+};
+
+struct sunxi_display_register {
+	uint64	address;			// physical, in a block the driver maps
+	uint32	value;
+	uint32	write;				// 0: read into value, 1: write value
 };
 
 struct sunxi_display_change_port {

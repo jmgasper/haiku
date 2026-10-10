@@ -39,6 +39,10 @@ if $(CUBIE_LAB_IMAGE) = auto {
 	}
 }
 
+if $(CUBIE_LAB_IMAGE) = 1 {
+	DeferredSubInclude HAIKU_TOP tools cubie-a7s ;
+}
+
 rule UserBuildConfigRulePreImage
 {
 	if $(CUBIE_AIROS_IMAGE) {
@@ -116,6 +120,14 @@ rule UserBuildConfigRulePreImage
 	}
 
 	if $(CUBIE_LAB_IMAGE) = 1 {
+		# lab tools, and the driver settings that let cubie_reg at the
+		# display registers
+		AddFilesToHaikuImage system non-packaged bin : cubie_reg ;
+		local labSettings = <cubie-lab>sunxi_display ;
+		SEARCH on $(labSettings) = [ FDirName $(HAIKU_TOP) tools cubie-a7s lab ] ;
+		AddFilesToHaikuImage home config settings kernel drivers
+			: $(labSettings) ;
+
 		# A telnet login for the lab, with an account whose password hash
 		# lives outside the tree (state/lab-overlay, made once per lab).
 		local overlay = /mnt/HaikuWork/cubie/state/lab-overlay ;

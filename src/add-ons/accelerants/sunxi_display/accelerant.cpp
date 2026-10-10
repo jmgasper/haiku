@@ -44,6 +44,9 @@ struct accelerant_info {
 static accelerant_info* gInfo;
 
 // the resolutions offered below an output's own
+// whether the driver scales regions to an output's mode (see display_pipe.cpp)
+static const bool kDisplayEngineScales = false;
+
 static const uint16 kSizes[][2] = {
 	{3840, 2160}, {2560, 1440}, {1920, 1200}, {1920, 1080}, {1680, 1050},
 	{1600, 900}, {1440, 900}, {1366, 768}, {1280, 1024}, {1280, 800},
@@ -520,11 +523,13 @@ sunxi_get_display_output_modes(uint32 id, display_mode* modes, uint32* _count)
 		return B_ENTRY_NOT_FOUND;
 	const sunxi_display_output& output = shared.outputs[id - 1];
 
-	// the output's own size first, then what the display engine scales up to it
+	// the output's own size first, then what the display engine scales up to
+	// it (not yet: the driver cannot scale on the A733 so far)
 	uint32 count = 0;
 	if (count < *_count)
 		modes[count++] = make_mode(output.native_width, output.native_height);
-	for (size_t i = 0; i < sizeof(kSizes) / sizeof(kSizes[0]); i++) {
+	for (size_t i = 0; kDisplayEngineScales
+			&& i < sizeof(kSizes) / sizeof(kSizes[0]); i++) {
 		if (count == *_count)
 			break;
 		if (kSizes[i][0] > output.native_width

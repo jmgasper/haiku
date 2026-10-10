@@ -52,11 +52,16 @@ static const uint32 kDomainVo1			= 10;
 
 static const phys_addr_t kDeIommuBypass	= 0x03910804;	// IOMMU1, master 8
 
-// display engine 3.5: top, video channel 0, disp0 blender/format/CM
+// display engine 3.5: top, video channels 0 and 1, disp0 blender, format,
+// colour matrix. The frame buffer goes through video channel 1, whose
+// scaler (VSU8) has the classic DE3 layout; channel 0 has a different one.
 static const phys_addr_t kDeTop			= 0x05008000;
 static const phys_addr_t kVch0			= 0x05100000;
-static const phys_addr_t kVch0Csc		= kVch0 + 0x800;
 static const phys_addr_t kVch0Overlay	= kVch0 + 0x1000;
+static const phys_addr_t kVch1			= 0x05120000;
+static const phys_addr_t kPlaneCsc		= kVch1 + 0x800;
+static const phys_addr_t kPlaneOverlay	= kVch1 + 0x1000;
+static const phys_addr_t kPlaneScaler	= kVch1 + 0x4000;
 static const phys_addr_t kBlender0		= 0x05281000;
 static const phys_addr_t kFormatter0	= 0x05285000;
 static const phys_addr_t kColorMatrix0	= 0x05289000;
@@ -143,6 +148,27 @@ static const uint8 kEdidHeader[8]
 // what is shown when the sink's EDID cannot be read or used (CEA VIC 16)
 static const display_timing k1080p60 = {
 	148500, 1920, 2008, 2052, 2200, 1080, 1084, 1089, 1125, true, true
+};
+
+
+/*	The channel's scaler (VSU8) stalls the pipe as programmed below: with
+	it on, even at 1:1, TCON-TV1 underflows and the output is black. Until
+	that is understood, regions other than the output's size are shown
+	unscaled, and the accelerant offers no other sizes. */
+static const bool kUseScaler = false;
+
+/*	A 4-tap Lanczos (a = 2) filter in 32 phases, the taps at -1, 0, +1 and
+	+2 in bytes 0..3, adding up to 64; generated for this driver, it matches
+	the table Allwinner's scaler driver uses for enlarging. */
+static const uint32 kLanczos2[32] = {
+	0x00004000, 0x000140ff, 0x00033ffe, 0x00053efd,
+	0x00063efc, 0x00083cfc, 0xff0a3cfb, 0xff0d39fb,
+	0xff0f37fb, 0xff1135fb, 0xfe1433fb, 0xfe1631fb,
+	0xfe192efb, 0xfd1c2cfb, 0xfd1f29fb, 0xfc2127fc,
+	0xfc2424fc, 0xfc2721fc, 0xfb291ffd, 0xfb2c1cfd,
+	0xfb2e19fe, 0xfb3116fe, 0xfb3314fe, 0xfb3511ff,
+	0xfb370fff, 0xfb390dff, 0xfb3c0aff, 0xfc3c0800,
+	0xfc3e0600, 0xfd3e0500, 0xfe3f0300, 0xff400100,
 };
 
 
@@ -1012,7 +1038,7 @@ DisplayPipe::_InitDisplayEngine(const display_timing& timing,
 	_Write(kBlender0 + 0x08c, size);
 	_Write(kBlender0 + 0x0fc, 0);
 	_Write(kBlender0 + 0x004, 0xff000000);
-	_Update(kBlender0 + 0x080, 0xf, 0);
+	_Update(kBlender0 + 0x080, 0xf, 1);	// pipe 0 from port 1: vch1
 	_Write(kBlender0 + 0x084, 0);
 	_Write(kBlender0 + 0x090, 0x03010301);
 	_Write(kBlender0 + 0x008, size);
@@ -1024,11 +1050,11 @@ DisplayPipe::_InitDisplayEngine(const display_timing& timing,
 	static const uint32 kIdentity[] = {
 		0x20000, 0, 0, 0, 0, 0x20000, 0, 0, 0, 0, 0x20000, 0, 0
 	};
-	_Write(kVch0Csc, 1);
+	_Write(kPlaneCsc, 1);
 	for (uint32 i = 1; i < 4; i++)
-		_Write(kVch0Csc + i * 4, 0);
+		_Write(kPlaneCsc + i * 4, 0);
 	for (uint32 i = 0; i < B_COUNT_OF(kIdentity); i++)
-		_Write(kVch0Csc + 0x10 + i * 4, kIdentity[i]);
+		_Write(kPlaneCsc + 0x10 + i * 4, kIdentity[i]);
 	static const uint32 kMatrix[] = {
 		0x20000, 0, 0, 0x10000, 0, 0x20000, 0, 0x10000, 0, 0, 0x20000, 0x10000
 	};
@@ -1039,18 +1065,19 @@ DisplayPipe::_InitDisplayEngine(const display_timing& timing,
 	for (uint32 i = 0; i < B_COUNT_OF(kMatrix); i++)
 		_Write(kColorMatrix0 + 0x10 + i * 4, kMatrix[i]);
 
+	// video channel 0 shows nothing (Linux and firmware may have used it)
+	for (uint32 layer = 0; layer < 4; layer++)
+		_Write(kVch0Overlay + layer * 0x30, 0);
+
 	// the layer: XRGB8888 (B_RGB32), global alpha, RGB on a video channel
-	_Write(kVch0Overlay + 0x004, size);
-	_Write(kVch0Overlay + 0x008, 0);
-	_Write(kVch0Overlay + 0x0e8, size);
-	_Write(kVch0Overlay + 0x030, 0);
-	_Write(kVch0Overlay + 0x060, 0);
-	_Write(kVch0Overlay + 0x090, 0);
-	_Write(kVch0 + 0x4000, 0);	// scaler
-	_Write(kVch0 + 0x5000, 0);	// AFBC decoder
-	_Write(kVch0 + 0x5400, 0);	// tiled frame buffer decoder
-	SetScanout(address, bytesPerRow);
-	_Write(kVch0Overlay + 0x000, 0xff008403);
+	_Write(kPlaneOverlay + 0x008, 0);
+	_Write(kPlaneOverlay + 0x030, 0);
+	_Write(kPlaneOverlay + 0x060, 0);
+	_Write(kPlaneOverlay + 0x090, 0);
+	_Write(kVch1 + 0x5000, 0);	// AFBC decoder
+	_Write(kVch1 + 0x5400, 0);	// tiled frame buffer decoder
+	SetScanout(address, bytesPerRow, timing.h_display, timing.v_display);
+	_Write(kPlaneOverlay + 0x000, 0xff008403);
 }
 
 
@@ -1121,6 +1148,7 @@ DisplayPipe::Init()
 		{ 0x03910000, 0x1000 },		// IOMMU1
 		{ kDeTop, 0x1000 },
 		{ kVch0, 0x6000 },
+		{ kVch1, 0x6000 },
 		{ 0x05280000, 0xa000 },		// disp0
 		{ kTconTop1, 0x1000 },
 		{ kTconTv1, 0x1000 },
@@ -1257,6 +1285,8 @@ DisplayPipe::Enable(const display_timing& timing, phys_addr_t address,
 		return B_NOT_SUPPORTED;
 	}
 
+	fWidth = timing.h_display;
+	fHeight = timing.v_display;
 	_InitDisplayEngine(timing, address, bytesPerRow);
 
 	status_t status = _SetPixelClock(timing.pixel_clock);
@@ -1280,8 +1310,6 @@ DisplayPipe::Enable(const display_timing& timing, phys_addr_t address,
 		return status;
 	_SetVideo(timing, fLinkRate);
 
-	fWidth = timing.h_display;
-	fHeight = timing.v_display;
 	fEnabled = true;
 
 	snooze(50000);
@@ -1295,13 +1323,105 @@ DisplayPipe::Enable(const display_timing& timing, phys_addr_t address,
 }
 
 
+/*!	Shows \a width x \a height pixels at \a address on the whole output,
+	through the channel's scaler when that is not the output's size.
+*/
 status_t
-DisplayPipe::SetScanout(phys_addr_t address, uint32 bytesPerRow)
+DisplayPipe::SetScanout(phys_addr_t address, uint32 bytesPerRow,
+	uint32 width, uint32 height)
 {
-	_Write(kVch0Overlay + 0x00c, bytesPerRow);
-	_Write(kVch0Overlay + 0x018, (uint32)address);
-	_Update(kVch0Overlay + 0x0d0, 0xff, (uint32)(address >> 32) & 0xff);
+	if (fWidth == 0 || fHeight == 0 || width == 0 || height == 0
+		|| width > 4096 || height > 4096)
+		return B_BAD_VALUE;
+
+	uint32 size = ((height - 1) << 16) | (width - 1);
+	uint32 outputSize = ((uint32)(fHeight - 1) << 16) | (fWidth - 1);
+	_Write(kPlaneOverlay + 0x004, size);
+	_Write(kPlaneOverlay + 0x0e8, size);
+	_Write(kPlaneOverlay + 0x00c, bytesPerRow);
+	_Write(kPlaneOverlay + 0x018, (uint32)address);
+	_Update(kPlaneOverlay + 0x0d0, 0xff, (uint32)(address >> 32) & 0xff);
+
+	if (width == fWidth && height == fHeight) {
+		_Write(kPlaneScaler, 0);
+		return B_OK;
+	}
+	if (!kUseScaler) {
+		// shown 1:1 from the top left corner, the rest black
+		_Write(kPlaneScaler, 0);
+		return B_OK;
+	}
+
+	// VSU8: steps in 4.19 fixed point, stored from bit 1; RGB, so the
+	// "chroma" path takes the same sizes and steps
+	uint32 horizontalStep = (uint32)(((uint64)width << 19) / fWidth) << 1;
+	uint32 verticalStep = (uint32)(((uint64)height << 19) / fHeight) << 1;
+	_Write(kPlaneScaler + 0x10, 0);		// scale mode: RGB
+	_Write(kPlaneScaler + 0x40, outputSize);
+	_Write(kPlaneScaler + 0x44, 0xff);	// global alpha
+	_Write(kPlaneScaler + 0x80, size);
+	_Write(kPlaneScaler + 0x88, horizontalStep);
+	_Write(kPlaneScaler + 0x8c, verticalStep);
+	_Write(kPlaneScaler + 0x90, 0);
+	_Write(kPlaneScaler + 0x98, 0);
+	_Write(kPlaneScaler + 0xc0, size);
+	_Write(kPlaneScaler + 0xc8, horizontalStep);
+	_Write(kPlaneScaler + 0xcc, verticalStep);
+	_Write(kPlaneScaler + 0xd0, 0);
+	_Write(kPlaneScaler + 0xd8, 0);
+	for (uint32 i = 0; i < 32; i++) {
+		_Write(kPlaneScaler + 0x200 + i * 4, kLanczos2[i]);
+		_Write(kPlaneScaler + 0x400 + i * 4, kLanczos2[i]);
+		_Write(kPlaneScaler + 0x600 + i * 4, kLanczos2[i]);
+	}
+	_Write(kPlaneScaler, (1u << 4) | 1);	// coefficients ready, enable
 	return B_OK;
+}
+
+
+status_t
+DisplayPipe::DebugRegister(phys_addr_t address, uint32& value, bool write)
+{
+	if ((address & 3) != 0)
+		return B_BAD_VALUE;
+	for (int32 i = 0; i < fMappingCount; i++) {
+		const Mapping& mapping = fMappings[i];
+		if (address < mapping.physical
+			|| address + 4 > mapping.physical + mapping.size) {
+			continue;
+		}
+		if (address >= kPhyRegisters
+			&& address < kPhyRegisters + 0x20000) {
+			// the PHY's register file takes 16-bit accesses only
+			if (write)
+				_Write16(address, (uint16)value);
+			else
+				value = _Read16(address);
+		} else if (write)
+			_Write(address, value);
+		else
+			value = _Read(address);
+		return B_OK;
+	}
+	return B_BAD_ADDRESS;
+}
+
+
+void
+DisplayPipe::DumpState(const char* when)
+{
+	TRACE("%s: overlay %#" B_PRIx32 " size %#" B_PRIx32 " pitch %#" B_PRIx32
+		" addr %#" B_PRIx32 " win %#" B_PRIx32 "; scaler %#" B_PRIx32 " out %#"
+		B_PRIx32 " in %#" B_PRIx32 " steps %#" B_PRIx32 "/%#" B_PRIx32
+		"; blender %#" B_PRIx32 " route %#" B_PRIx32 " in %#" B_PRIx32
+		"; RTMX status %#" B_PRIx32 "; TCON %#" B_PRIx32 "\n", when,
+		_Read(kPlaneOverlay), _Read(kPlaneOverlay + 0x004),
+		_Read(kPlaneOverlay + 0x00c), _Read(kPlaneOverlay + 0x018),
+		_Read(kPlaneOverlay + 0x0e8), _Read(kPlaneScaler),
+		_Read(kPlaneScaler + 0x40), _Read(kPlaneScaler + 0x80),
+		_Read(kPlaneScaler + 0x88), _Read(kPlaneScaler + 0x8c),
+		_Read(kBlender0), _Read(kBlender0 + 0x080), _Read(kBlender0 + 0x008),
+		_Read(kDeTop + 0x104), _Read(kTconTv1 + 0x0fc));
 }
 
 
@@ -1321,7 +1441,8 @@ DisplayPipe::Disable()
 	_Update(kTconTv1 + 0x000, 1u << 31, 0);
 	_Update(kTconTop1 + 0x000, 1u << 5, 0);
 	_Update(kTconTop1 + 0x020, 1u << 21, 0);
-	_Update(kVch0Overlay, 1, 0);
+	_Update(kPlaneOverlay, 1, 0);
+	_Write(kPlaneScaler, 0);
 	fEnabled = false;
 }
 

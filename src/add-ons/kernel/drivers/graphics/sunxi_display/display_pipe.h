@@ -52,13 +52,19 @@ public:
 									uint32* edidLength,
 									display_timing& timing);
 
-			// Shows \a width x \a height pixels of B_RGB32 memory at
-			// \a address (below 4 GiB) in the given timing.
+			// Shows B_RGB32 memory at \a address (below 4 GiB) in the
+			// given timing; SetScanout() then scales any region to it.
 			status_t			Enable(const display_timing& timing,
 									phys_addr_t address, uint32 bytesPerRow);
 			status_t			SetScanout(phys_addr_t address,
-									uint32 bytesPerRow);
+									uint32 bytesPerRow, uint32 width,
+									uint32 height);
 			void				Disable();
+			void				DumpState(const char* when);
+
+			// lab access to the registers of the mapped blocks
+			status_t			DebugRegister(phys_addr_t address,
+									uint32& value, bool write);
 
 			bool				Enabled() const { return fEnabled; }
 			uint32				LinkRate() const { return fLinkRate; }
