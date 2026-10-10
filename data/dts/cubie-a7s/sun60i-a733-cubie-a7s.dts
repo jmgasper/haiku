@@ -343,6 +343,18 @@
 			reg = <0x05000000 0x400000>;
 			status = "okay";
 		};
+
+		/* The video decoder (Cedar VE: H.264, H.265, VP9), its 8 KiB as the
+		   A733 user manual's memory map gives them; Radxa's BSP tree spans
+		   0x3000 and so the encoder's page as well. The sunxi_ve driver
+		   handles its clock, reset, power domain 2 and IOMMU bypass itself
+		   (CCU 0xa88/0xa8c, PCK-600 domain 2, IOMMU1 masters 0 and 1). */
+		video-codec@1c0e000 {
+			compatible = "allwinner,sun60i-a733-video-engine";
+			reg = <0x01c0e000 0x2000>;
+			interrupts = <GIC_SPI 49 IRQ_TYPE_LEVEL_HIGH>;
+			status = "okay";
+		};
 	};
 };
 
