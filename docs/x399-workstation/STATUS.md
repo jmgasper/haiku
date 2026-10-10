@@ -22,7 +22,7 @@ each USB port, the serial console, and a Bluetooth device to pair with.
 | USB | every port at its full speed | verified on every USB 3 port of the four controllers in use, with real devices: a USB 3 SSD reads 281-308 MB/s and writes 312-349 MB/s at SuperSpeed on a CPU rear port, a chipset front port and the ASM2142's USB-A port (43 MB/s before), data verified each time; a RTL8153 gigabit adapter links at SuperSpeed on the ASM2142's USB-C port and carries 815 Mbit/s (81 before); USB 2 flash drives read their 30-36 MB/s on every controller. Disks and network adapters plugged in while the system runs now attach. The Thunderbolt card is out of scope for now (its controller halts on its first DMA, under the BIOS too; its wiring is in doubt). The chipset's controller takes 3-4 ms per control transfer to a USB 2 device (one stage per frame, the controller's own pacing as far as can be told), which slows enumeration and the Bluetooth firmware load but not data |
 | Audio | ALC1220 analog output, HDMI audio | verified both: two outputs, each clocking its stream at the hardware's own rate (48322 and 48321 frames a second against the 48000 asked for). The graphics card's codec needed a change to Haiku's hda driver, which discarded any codec whose converters are all digital. The monitor reports it takes stereo. What nobody here can check is whether a speaker makes a sound |
 | Graphics | GTX 1070/1080 Ti accelerated 2D/3D, 3-4 monitors | 3D verified: Vulkan on the GPU (1.4 TFLOP/s compute, 57 Gpixel/s fill) and OpenGL 4.5 through it, with frames copied straight into the screen's own frame buffer in video memory rather than sent through the host - a lit sphere at 1600x900 goes from 209 to 970 frames a second. Vertical sync works (locks to 60.0) now that the accelerant hands out a retrace semaphore. Any program gets the GPU, with nothing set in its environment. Three heads driving one spanning desktop is verified, but with the third and second forced rather than plugged in. 2D is not accelerated at all: it runs four to eight times slower than drawing in memory, which is still far more than a desktop needs at one monitor |
-| Displays | two 4K monitors usable at arm's length: per-monitor scaling, arrangement, mirroring, per-monitor maximize, hot plug | verified on the two Dell P2415Q (DisplayPort): each monitor is a region of one frame buffer that the display engine scales up to the panel, at 100 to 250 percent in steps of 25, chosen per monitor. app_server arranges the monitors (side by side, stacked, swapped, one off, or one mirroring another), remembers the arrangement per monitor identity, keeps the mouse off the parts of the desktop no monitor shows, moves windows along with their monitor, and maximizes a window to the monitor most of it is on (the classic whole-desktop maximize is a setting). Two 24-inch 4K monitors come up at 200 percent, a 3840x1080 desktop drawn at full density with no settings at all; text is sharp in the frame buffer itself. The Screen preferences show the monitors as they stand and let them be dragged into place, identified by number on each screen, and read out from their EDID. Monitors coming and going are noticed two ways, but nobody was at the machine to plug one, so that path is untested. Frame buffer and VESA hardware gets the same scaling done in software, untested here |
+| Displays | two 4K monitors usable at arm's length: per-monitor scaling, arrangement, mirroring, per-monitor maximize, hot plug | verified on the two Dell P2415Q (DisplayPort): each monitor is a region of one frame buffer that the display engine scales up to the panel, at 100 to 250 percent in steps of 25, chosen per monitor. app_server arranges the monitors (side by side, stacked, swapped, one off, or one mirroring another), remembers the arrangement per monitor identity, keeps the mouse off the parts of the desktop no monitor shows, moves windows along with their monitor, and maximizes a window to the monitor most of it is on (the classic whole-desktop maximize is a setting). Two 24-inch 4K monitors come up at 200 percent, a 3840x1080 desktop drawn at full density with no settings at all; text is sharp in the frame buffer itself. Monitors at different scales share the largest density the engine can show: with the 1080p KVM at 100 percent beside them the 4K monitors stay one to one and the 1080p one is shrunk. The Screen preferences show the monitors as they stand and let them be dragged into place, identified by number on each screen, and read out from their EDID. Monitors coming and going are noticed two ways, but nobody was at the machine to plug one, so that path is untested. Frame buffer and VESA hardware gets the same scaling done in software, untested here |
 | Bluetooth | TP-Link Archer TX55E, working adapter and discovery | verified: the adapter answers as `90:74:ae:33:d7:cb` "MTK MT7922 #1" and an inquiry finds devices nearby, from a cold boot with nothing done by hand. The radio is a MediaTek MT7922 on USB, which runs a bootloader rather than a Bluetooth controller until it is given firmware - it takes the HCI Reset every stack opens with and never answers. The driver now hands it that firmware at open. Three further faults were in the way: `h2generic` took its event endpoint from the last interface that had one, which on this radio is MediaTek's audio interface, so it listened where no reply is ever sent; it stood isochronous transfers on the SCO endpoints at open, which nothing wants until there is a call; and the server never answered a request for a command the controller refuses outright, which hung the first program to ask for an adapter. Remote name lookup still fails, so discovered devices show an address and no name. Pairing and audio profiles are untried |
 | Wi-Fi | TP-Link Archer TX55E | verified: `mt7922wifi` joins WPA2-PSK/CCMP networks and carries traffic. Joining works from the Wi-Fi preferences (the password prompt, Remember this network, Known networks, Disconnect) and the WiFiStatus Deskbar applet lists networks with signal and lock, and shows the one joined. A saved network is joined again by net_server by itself once the card is up (it starts wpa_supplicant). DHCP configures the interface; with the wired card down the machine resolves names, fetches https pages and moves 50 MB each way (1.9 MB/s up, 2.5 MB/s down). Legacy 802.11a/g rates only for now (no HT/VHT/HE), chosen by the firmware's rate control. The driver is the Linux mt7921 layout in FreeBSD net80211 shape: firmware-offloaded scanning, the firmware's own channel management (remain-on-channel), software CCMP through net80211. It attaches at boot like any other driver and is part of the regular x86_64 image; the driver settings (`mt7922wifi`) can keep it out of the boot (`attach_at_boot false`, or `attach_at_boot_until <time>` for trying boot attachment where only the power switch reaches the machine) and turn on its diagnostics (`debug true`) |
 | Video decoding | H.264 on the card's video engine, and something that plays a film | verified: the GTX 1080 Ti has an NVDEC engine and an NVC2B0 decoder class, and thirteen H.264 streams together with 120 frames of 1080p Big Buck Bunny decode byte for byte identically to ffmpeg's own decoder - multiple references, B pictures, spatial and temporal direct prediction, B pictures used as references, weighted prediction and two coded sequences among them. 1080p decodes at 232 pictures a second, 4.3 ms each, about eight times what playing it needs. It is offered to the whole system as a media add-on, so any program that opens a film gets it, and `NVPlay` plays one with sound, stopping, starting and seeking. What it will not do is field pictures, 4:2:2 or more than eight bits a sample, and because Haiku picks one decoder for a format those refusals mean the film will not play rather than falling back |
@@ -30,6 +30,49 @@ each USB port, the serial console, and a Bluetooth device to pair with.
 | Sleep | S3 suspend and resume | sleeps and wakes; the display comes back, but the NVMe and the network card usually do not. Paused until a serial console arrives, which is also what the one untested path in the vertical sync work needs |
 
 ## Log
+
+- 2026-10-10: a 1080p monitor no longer blurs the 4K ones (branch
+  `x399-mixed-scale`). With both P2415Q at 200 percent and the KVM's 1080p
+  input at 100, everything was drawn at 100 percent and the 4K monitors were
+  enlarged from 1080p by the display engine - blurry until the KVM was
+  unplugged. The density was the smallest display scale because the engine
+  was thought unable to shrink a picture (a 4K monitor at 175 percent had
+  been refused). It can: `nvlayoutcheck`, which asks NVKMS whether a layout
+  is possible without applying it (a mode set with commit = false, allowed
+  while app_server owns the display), says a 3840x2160 region onto the
+  1080p monitor is fine and only a region shrunk onto a 4K monitor is not
+  (disp status 2, FAILED_EXTENDED_GPU_CAPABILITIES_CHECK - the bandwidth
+  check).
+  * app_server now draws at the largest display scale and lets the engine
+    shrink the less scaled monitors' regions; `Desktop::_SetDisplayLayout()`
+    tries `DisplayLayout::RenderScales()` from the largest down to the
+    smallest, which only enlarges. `nvidia_rm` checks every layout with
+    NVKMS before agreeing to it, so a refused one fails cleanly and the next
+    density is tried; rpi_display and rk3588_display refuse what they cannot
+    do as before.
+  * The card maps only 256 MiB of video memory for the CPU (BAR1), and the
+    11520x2160 frame buffer is 99.5 MiB. The accelerant kept the frame
+    buffer before the current one mapped and mapped the new one beside both,
+    so the second layout change in a row ran out (`NV_ERR_NO_MEMORY`) and
+    fell back to 100 percent. Now a layout's frame buffer is allocated
+    unmapped and mapped in place of the current one while the mode is set.
+  * On the workstation (repacked app_server, accelerant, two power cycles):
+    `nvidia_rm: layout: HDMI-0 ... scale 100% (3840x2160, drawn at 200%)`,
+    both P2415Q 3840x2160 one to one; the frame buffer (`nvscanout --dump`)
+    has text at full density in the 4K monitors' regions, and the NanoKVM's
+    capture shows a window on the 1080p monitor at its logical size, the
+    text shrunk cleanly. Five layout changes in a row stay at 200 percent;
+    DP-2 at 150 percent is refused at 200 and drawn at 150 (only the 1080p
+    region shrunk, DP-4 enlarged); the KVM disabled and enabled again stays
+    at 200. `displaylayouttest` has the three monitors as a case and a fake
+    engine that shrinks only onto monitors up to 1920 pixels wide.
+    `check-workstation.sh` 25 working, 0 not.
+  * Costs: the 1080p monitor's part of the desktop is drawn with four times
+    the pixels, and a desktop arranged with a lot of empty frame buffer
+    (monitors stacked in an L) can be too large to map at 200 percent; it
+    then falls back to a smaller density rather than failing.
+  * The workstation's wired address is now 192.168.1.247 (DHCP);
+    `ssh/config` and the airos_mcp registration were updated.
 
 - 2026-10-09: USB ports at full speed (branch `x399-usb3`, from master).
   Two USB stack bugs and two throughput limits were found with the drives
