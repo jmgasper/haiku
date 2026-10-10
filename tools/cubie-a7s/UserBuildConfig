@@ -196,7 +196,8 @@ rule UserBuildConfigRulePreImage
 		# lab tools, and the driver settings that let cubie_reg at the
 		# display registers
 		AddFilesToHaikuImage system non-packaged bin : cubie_reg cubie_fetch
-			pvrinfo pvrtest cedar_decode media_probe cpu_usage ;
+			pvrinfo pvrtest cedar_decode media_probe cpu_usage
+			cubie_audio_test ;
 
 		# The video engine's test streams and FFmpeg's hashes of them
 		# (evidence/video/proto/mkvectors.sh; not in git), for cedar_decode.

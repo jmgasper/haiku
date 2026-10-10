@@ -7,6 +7,11 @@ UsePrivateHeaders [ FDirName graphics powervr ] ;
 SimpleTest cubie_reg : reg.cpp ;
 SimpleTest pvrinfo : pvrinfo.cpp ;
 
+# a multi_audio (hmulti) driver driven directly: a tone out, the input's
+# level, the sample rates the device really runs at (USB sound cards)
+UsePrivateHeaders audio ;
+SimpleTest cubie_audio_test : audio_test.cpp ;
+
 # the powervr driver's DRM interface without Mesa: its pvr_drm.h, with the
 # few Linux headers it needs from pvr_uapi/
 ObjectSysHdrs [ FGristFiles pvrtest$(SUFOBJ) ] :
