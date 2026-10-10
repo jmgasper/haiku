@@ -58,7 +58,7 @@ int main(int argc, char** argv)
 		images[i][12] = saved;
 	}
 	puts("PASS: invalid GFX firmware requests rejected before hardware writes");
-	for (unsigned round = 0; round < 52; round++) {
+	for (unsigned round = 0; round < 60; round++) {
 		auto result = request;
 		Require(ioctl(fd, AMDGPU_GFX_TEST, &result, sizeof(result)) == 0, "GFX ioctl");
 		printf("GFX stage %u status %#x (%s) seq %u, checked %u, mismatches %u\n",
@@ -86,6 +86,6 @@ int main(int argc, char** argv)
 	close(fd);
 	for (uint8* image : images)
 		free(image);
-	puts("PASS: 52 GFX8 submissions including direct writes, compute shaders, rasterization and indirect buffers, complete data/guard checks");
+	puts("PASS: 60 GFX8 submissions including direct writes, compute address-space switches, rasterization and indirect buffers, complete data/guard checks");
 	return 0;
 }

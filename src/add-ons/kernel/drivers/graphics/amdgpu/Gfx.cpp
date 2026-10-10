@@ -70,6 +70,7 @@ static const uint64 kControlVA = kCommandVA + kControlOffset - 65536;
 static const uint32 kDirectSequences = 16;
 static const uint32 kShaderSequences = 16;
 static const uint32 kDrawSequences = 4;
+static const uint32 kVMShaderSequences = 8;
 // gfx803, assembled with LLVM 18. s[0:1] is the output address, s2 the seed,
 // s3 the workgroup X ID, and v0 the local thread X ID. No scratch or LDS.
 static const uint32 kFillShader[] = {
@@ -136,7 +137,9 @@ GfxEngine::InitializeVM(const amdgpu_info& info,
 	uint32 select = regs[0x391];
 	regs[0x391] = 1 << 4;
 	regs[0x230d] = 1 << 5 | 3 << 8 | 3 << 3; // NC default, UC APE1, unaligned
-	regs[0x230a] = 0;
+	// Linux VI graphics VMs put LDS at 0x2000000000000000. Keep the
+	// low GPU virtual addresses used by flat stores outside that aperture.
+	regs[0x230a] = 0x2000;
 	regs[0x230b] = 1;
 	regs[0x230c] = 0;
 	regs[0x391] = select;
@@ -335,15 +338,20 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	if (++sequence == 0)
 		sequence++;
 	result.sequence = sequence;
+	const uint32 shaderEnd = kDirectSequences + kShaderSequences;
+	const uint32 drawEnd = shaderEnd + kDrawSequences;
+	const uint32 vmShaderEnd = drawEnd + kVMShaderSequences;
 	const bool direct = sequence <= kDirectSequences;
-	const bool shader = !direct && sequence <= kDirectSequences + kShaderSequences;
-	const bool draw = sequence > kDirectSequences + kShaderSequences
-		&& sequence <= kDirectSequences + kShaderSequences + kDrawSequences;
-	const bool minimalIB = sequence == kDirectSequences + kShaderSequences + kDrawSequences + 1;
+	const bool vmShader = sequence > drawEnd && sequence <= vmShaderEnd;
+	const bool privateShader = vmShader && (sequence & 1) != 0;
+	const bool shader = (!direct && sequence <= shaderEnd) || vmShader;
+	const bool draw = sequence > shaderEnd && sequence <= drawEnd;
+	const bool minimalIB = sequence == vmShaderEnd + 1;
 	if (minimalIB)
 		DumpExecutionState("before IB");
 	uint64 destination = direct || shader || draw || minimalIB ? gpu : kMemoryVA;
-	uint64 markerAddress = direct || shader || draw || minimalIB ? kControlGPU : kControlVA;
+	uint64 markerAddress = privateShader ? kControlVA
+		: (direct || shader || draw || minimalIB ? kControlGPU : kControlVA);
 	for (uint32 i = 0; i < 3072; i++)
 		data[(int32)i - 1024] = 0xabcddcba;
 	ib[n++] = Packet(0x37, 1026); // WRITE_DATA, 1024 payload DWORDs
@@ -417,10 +425,24 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	emit(0x20);
 	snapshotVM(0);
 	if (shader) {
+		// VMID belongs to the IB execution context. A SET_SH_REG of
+		// COMPUTE_VMID in the kernel ring cannot select a client VM.
+		volatile uint32* shaderCommands = ib + 0x8000 / 4;
+		uint32 shaderLength = 0;
+		auto emitShader = [&](uint32 word) {
+			if (privateShader)
+				shaderCommands[shaderLength++] = word;
+			else
+				emit(word);
+		};
+		const uint64 shaderBase = privateShader ? kMemoryVA : gpu;
+		dprintf("amdgpu: compute seq %u VMID %u code %#" B_PRIx64
+			" output %#" B_PRIx64 "\n", (unsigned)sequence,
+			privateShader ? 1u : 0u, shaderBase + 0x40000, shaderBase + 0x20000);
 		auto setShader = [&](uint32 reg, uint32 value) {
-			emit(Packet(0x76, 1) | 2); // SET_SH_REG, compute shader type
-			emit(reg - 0x2c00);
-			emit(value);
+			emitShader(Packet(0x76, 1) | 2); // SET_SH_REG, compute shader type
+			emitShader(reg - 0x2c00);
+			emitShader(value);
 		};
 		setShader(0x2e04, 0); // COMPUTE_START_X/Y/Z
 		setShader(0x2e05, 0);
@@ -428,31 +450,48 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		setShader(0x2e07, 64); // NUM_THREAD_X/Y/Z
 		setShader(0x2e08, 1);
 		setShader(0x2e09, 1);
-		setShader(0x2e0c, (gpu + 0x40000) >> 8);
-		setShader(0x2e0d, (gpu + 0x40000) >> 40);
+		setShader(0x2e0c, (shaderBase + 0x40000) >> 8);
+		setShader(0x2e0d, (shaderBase + 0x40000) >> 40);
 		setShader(0x2e12, 1 | 1 << 6 | 0xc0 << 12); // 8 VGPR, 16 SGPR
 		setShader(0x2e13, 3 << 1 | 1 << 7); // 3 user SGPRs + group X
-		setShader(0x2e14, 0); // direct kernel dispatch uses VMID0
+		setShader(0x2e14, privateShader ? 1 : 0); // explicit shader address space
 		setShader(0x2e15, 0); // RESOURCE_LIMITS: one group per CU, no wave limit
 		setShader(0x2e16, 0xffffffff); // STATIC_THREAD_MGMT_SE0/1
 		setShader(0x2e17, 0xffffffff);
 		setShader(0x2e18, 0); // no scratch ring
 		setShader(0x2e19, 0xffffffff); // STATIC_THREAD_MGMT_SE2/3
 		setShader(0x2e1a, 0xffffffff);
-		setShader(0x2e40, (uint32)(gpu + 0x20000));
-		setShader(0x2e41, (gpu + 0x20000) >> 32);
+		setShader(0x2e40, (uint32)(shaderBase + 0x20000));
+		setShader(0x2e41, (shaderBase + 0x20000) >> 32);
 		setShader(0x2e42, 0x71324589 ^ sequence);
-		emit(Packet(0x15, 3) | 2); // DISPATCH_DIRECT: 16 groups x 64 threads
-		emit(16);
-		emit(1);
-		emit(1);
-		emit(1 | 1 << 2); // COMPUTE_SHADER_EN, FORCE_START_AT_000
-		emit(Packet(0x46, 0));
-		emit(7 | 4 << 8); // CS_PARTIAL_FLUSH before the completion marker
+		emitShader(Packet(0x15, 3) | 2); // DISPATCH_DIRECT: 16 groups x 64 threads
+		emitShader(16);
+		emitShader(1);
+		emitShader(1);
+		emitShader(1 | 1 << 2); // COMPUTE_SHADER_EN, FORCE_START_AT_000
+		emitShader(Packet(0x46, 0));
+		emitShader(7 | 4 << 8); // CS_PARTIAL_FLUSH before the completion marker
 		// Only the shader writes the payload. The CP writes its marker after
 		// all waves finish; EOP below makes their stores visible to the CPU.
 		for (uint32 i = 1028; i < 1033; i++)
-			emit(ib[i]);
+			emitShader(ib[i]);
+		if (privateShader) {
+			uint32 pad = (-shaderLength) & 255;
+			if (pad == 1)
+				pad += 256;
+			if (pad != 0) {
+				emitShader(Packet(0x10, pad - 2));
+				for (uint32 i = 1; i < pad; i++)
+					emitShader(0);
+			}
+			emit(Packet(0x28, 1));
+			emit(0x80000000);
+			emit(0x80000000);
+			emit(Packet(0x3f, 2));
+			emit(kCommandVA + 0x8000);
+			emit(0);
+			emit(shaderLength | 1 << 24);
+		}
 	}
 	if (draw) {
 		auto setContext = [&](uint32 reg, uint32 value) {
@@ -620,7 +659,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		const uint32 registers[] = {0x208d, 0x21c2, 0x3043, 0x3044, 0x3046,
 			0x3047, 0x3061, 0x3066, 0x230a, 0x230b, 0x230c, 0x230d,
 			0x500, 0x501, 0x502, 0x578, 0x504, 0x50c, 0x54f, 0x546,
-			0x3051, 0x2e0c, 0x2e0d, 0x2e12, 0x2e13, 0x2e14, 0x2e15};
+			0x3051, 0xa0da, 0x2e0c, 0x2e0d, 0x2e12, 0x2e13, 0x2e14, 0x2e15};
 		for (uint32 index : registers)
 			dprintf("amdgpu: GFX fault register %#x = %#x\n", (unsigned)index, (unsigned)r[index]);
 		faulted = true;

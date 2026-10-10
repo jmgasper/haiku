@@ -81,7 +81,7 @@ struct amdgpu_smc_bootstrap {
 };
 
 // Root-only GFX8 command-processor bring-up. CE, PFP, ME, RLC images.
-// Every PM4 packet and destination is kernel-owned; this does not submit shaders.
+// Every PM4 packet, shader and destination is kernel-owned; no user programs.
 struct amdgpu_gfx_test {
 	uint32 version, size;
 	uint64 firmware[4];
