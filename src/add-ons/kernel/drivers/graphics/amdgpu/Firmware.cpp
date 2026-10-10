@@ -99,6 +99,37 @@ ParseGfxFirmware(const void* data, size_t size, bool rlc, FirmwareView& view)
 
 
 bool
+ParseMecFirmware(const void* data, size_t size, MecFirmwareView& view)
+{
+	view = {};
+	if (data == NULL || size < 44 || size > 320 * 1024)
+		return false;
+	const uint8_t* p = (const uint8_t*)data;
+	uint32_t headerSize = ReadLE32(p + 4), codeSize = ReadLE32(p + 20);
+	uint32_t offset = ReadLE32(p + 24);
+	uint32_t jtOffset = ReadLE32(p + 36), jtSize = ReadLE32(p + 40);
+	if (ReadLE32(p) != size || ReadLE16(p + 8) != 1
+		|| ReadLE16(p + 10) != 0 || ReadLE16(p + 12) != 8
+		|| ReadLE16(p + 14) != 0 || headerSize < 44 || headerSize > size
+		|| offset < headerSize || offset > size || (offset & 3) != 0
+		|| (codeSize & 3) != 0 || codeSize != size - offset
+		|| jtOffset <= 65536 / 4 || jtOffset > (256 * 1024 + 20) / 4
+		|| jtOffset > codeSize / 4 || jtSize < 6 || jtSize > 4096 / 4
+		|| jtSize != codeSize / 4 - jtOffset)
+		return false;
+	// Linux's SMU loader authenticates these separately. The program and
+	// jump-table extents each include their own 20-byte digest on this PF.
+	view.program.code = p + offset;
+	view.program.codeSize = jtOffset * 4;
+	view.program.version = ReadLE32(p + 16);
+	view.program.featureVersion = ReadLE32(p + 32);
+	view.jumpTable = p + offset + jtOffset * 4;
+	view.jumpTableSize = jtSize * 4;
+	return true;
+}
+
+
+bool
 ParseUvdFirmware(const void* data, size_t size, FirmwareView& view)
 {
 	view = {};

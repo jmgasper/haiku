@@ -14,6 +14,8 @@ SimpleTest amdgpu_uvd : amdgpu_uvd.cpp ;
 local driver = [ FDirName $(HAIKU_TOP) src add-ons kernel drivers graphics amdgpu ] ;
 SubDirHdrs $(driver) ;
 SEARCH_SOURCE += $(driver) ;
+SimpleTest mec_firmware_test : mec_firmware_test.cpp Firmware.cpp
+	: [ TargetLibstdc++ ] ;
 SimpleTest vram_allocator_test : vram_allocator_test.cpp VramAllocator.cpp
 	: [ TargetLibstdc++ ] ;
 SimpleTest uvd_hevc_test : uvd_hevc_test.cpp UvdHevc.cpp : [ TargetLibstdc++ ] ;

@@ -36,7 +36,8 @@ enum {
 	AMDGPU_HEVC_CREATE,
 	AMDGPU_HEVC_DECODE,
 	AMDGPU_CREATE_DEVICE_BUFFER,
-	AMDGPU_DISPLAY_SNAPSHOT
+	AMDGPU_DISPLAY_SNAPSHOT,
+	AMDGPU_GFX_MEC_TEST
 };
 
 // Read-only DCE 11.2 observation, available without starting any GPU engine.
@@ -130,6 +131,16 @@ struct amdgpu_gfx_test {
 	uint32 stage, sequence, checked_bytes, mismatches;
 	uint32 cp_control, ring_control, rptr, wptr, grbm_status, rlc_status;
 	uint32 vm_fault_status, vm_fault_address, vm_fault_client;
+};
+
+// Optional root-only diagnostic: also authenticate/start MEC firmware with
+// every compute queue inactive. No userspace queue or shader is accepted.
+// gfx.size describes this complete structure for AMDGPU_GFX_MEC_TEST.
+struct amdgpu_gfx_mec_test {
+	amdgpu_gfx_test gfx;
+	uint64 mec_firmware;
+	uint32 mec_firmware_size;
+	uint32 reserved;
 };
 
 // Root-only UVD6 bring-up with one fixed H.264 picture. All messages,

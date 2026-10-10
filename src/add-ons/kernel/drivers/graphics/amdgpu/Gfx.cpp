@@ -229,7 +229,7 @@ status_t
 GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	const amdgpu::AtomVramReservation& reservation,
 	const amdgpu::FirmwareView firmware[4], SdmaEngine& sdma, Gart& gart,
-	amdgpu_gfx_test& result)
+	amdgpu_gfx_test& result, const amdgpu::MecFirmwareView* mec)
 {
 	regs = r;
 	volatile uint32* control = gart.commandMemory + kControlOffset / 4;
@@ -237,6 +237,8 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	result.stage = 1;
 	if (faulted || (attempted && !ready))
 		return B_DEV_NOT_READY;
+	if (ready && mecStarted != (mec != NULL))
+		return B_NOT_ALLOWED;
 	if (!ready) {
 		// BIOS leaves a placeholder base, even with RB_BUFSZ=0. Ownership
 		// requires all three processors halted and an empty unconfigured ring.
@@ -248,6 +250,28 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			|| r[0x21c0] != 0 || r[0x3045] != 0
 			|| !amdgpu_vram_range_is_safe(r, info, reservation, 40ULL << 20, 1ULL << 20))
 			return B_NOT_ALLOWED;
+		if (mec != NULL) {
+			// Do not take over a firmware/foreign compute queue. No HQD or
+			// queue address is programmed by this diagnostic; MEC stays idle.
+			if ((r[0x208d] & 0x50000000) != 0x50000000)
+				return B_NOT_ALLOWED;
+			uint32 select = r[0x391];
+			bool inactive = true;
+			for (uint32 me = 1; me <= 2; me++) {
+				for (uint32 pipe = 0; pipe < 4; pipe++) {
+					for (uint32 queue = 0; queue < 8; queue++) {
+						r[0x391] = me << 2 | pipe | queue << 8;
+						if ((r[0x3247] & 1) != 0)
+							inactive = false;
+					}
+				}
+			}
+			r[0x391] = select;
+			(void)r[0x391];
+			if (!inactive)
+				return B_NOT_ALLOWED;
+			dprintf("amdgpu: GFX MEC preflight: both halted, 64 HQDs inactive\n");
+		}
 		area = map_physical_memory("amdgpu GFX kernel ring", info.bar_address[0] + (40ULL << 20),
 			1 << 20, B_ANY_KERNEL_ADDRESS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
 			(void**)&memory);
@@ -299,10 +323,18 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		r[0x230b] = 1;
 		r[0x230c] = 0;
 		r[0x391] = select;
+		mecStarted = mec != NULL;
+		if (mecStarted) {
+			// No MEC interrupts until the IH path exists. All pipes/queues
+			// are exclusively ours and inactive, as checked above.
+			for (uint32 index = 0x3085; index <= 0x308c; index++)
+				r[index] = 0;
+		}
 		status = amdgpu_smc_load_gfx(r, firmware,
-			sdma.memory + (1 << 20) / 4, sdma.gpu + (1 << 20));
+			sdma.memory + (1 << 20) / 4, sdma.gpu + (1 << 20), mec);
 		if (status != B_OK) {
 			faulted = true;
+			Halt();
 			Snapshot(result);
 			return status;
 		}
@@ -371,7 +403,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			|| ((r[0x536] | r[0x537]) & 0xff) != 0) {
 			DumpExecutionState("basic startup stalled");
 			faulted = true;
-			r[0x21b6] |= kHalt;
+			Halt();
 			Snapshot(result);
 			return B_DEV_NOT_READY;
 		}
@@ -435,7 +467,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			|| ((r[0x536] | r[0x537]) & 0xff) != 0) {
 			DumpExecutionState("clear-state startup stalled");
 			faulted = true;
-			r[0x21b6] |= kHalt;
+			Halt();
 			Snapshot(result);
 			return B_DEV_NOT_READY;
 		}
@@ -936,8 +968,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		for (uint32 index : registers)
 			dprintf("amdgpu: GFX fault register %#x = %#x\n", (unsigned)index, (unsigned)r[index]);
 		faulted = true;
-		r[0x21b6] |= kHalt;
-		(void)r[0x21b6];
+		Halt();
 	} else
 		result.stage = 5;
 	dprintf("amdgpu: GFX stage %u status %#x seq %u ring %u/%u GRBM %#x RLC %#x\n",
@@ -948,12 +979,22 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 }
 
 void
+GfxEngine::Halt()
+{
+	regs[0x21b6] |= kHalt;
+	if (mecStarted) {
+		regs[0x208d] |= 0x50000000;
+		(void)regs[0x208d];
+	}
+	(void)regs[0x21b6];
+}
+
+void
 GfxEngine::Uninitialize()
 {
 	if (!attempted)
 		return;
-	regs[0x21b6] |= kHalt;
-	(void)regs[0x21b6];
+	Halt();
 	regs[0xec00] &= ~1u;
 	if (vmEnabled) {
 		regs[0x505] &= ~1u;

@@ -804,12 +804,13 @@ amdgpu_client_control(AmdgpuClient* client, uint32 op, void* data, size_t length
 }
 
 status_t
-amdgpu_device_gfx_test(const amdgpu::FirmwareView firmware[4], amdgpu_gfx_test& result)
+amdgpu_device_gfx_test(const amdgpu::FirmwareView firmware[4],
+	amdgpu_gfx_test& result, const amdgpu::MecFirmwareView* mec)
 {
 	mutex_lock(&sMutex);
 	status_t status = !sActive || sFault != B_OK ? B_DEV_NOT_READY
 		: sPending != 0 ? B_BUSY : sGfx.Test(sEngine.regs, sInfo, sReservation,
-			firmware, sEngine, sGart, result);
+			firmware, sEngine, sGart, result, mec);
 	if (sGfx.faulted && sFault == B_OK)
 		sFault = status;
 	mutex_unlock(&sMutex);

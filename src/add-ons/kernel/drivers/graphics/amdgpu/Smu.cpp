@@ -245,7 +245,7 @@ amdgpu_smc_ready(volatile uint32* regs)
 
 status_t
 amdgpu_smc_load_gfx(volatile uint32* regs, const amdgpu::FirmwareView firmware[4],
-	volatile uint32* workspace, uint64 gpu)
+	volatile uint32* workspace, uint64 gpu, const amdgpu::MecFirmwareView* mec)
 {
 	if (!amdgpu_smc_ready(regs))
 		return B_DEV_NOT_READY;
@@ -257,27 +257,51 @@ amdgpu_smc_load_gfx(volatile uint32* regs, const amdgpu::FirmwareView firmware[4
 	volatile uint32* toc = workspace + (1 << 20) / 4;
 	for (uint32 i = 0; i < (1 << 20) / 4; i++)
 		toc[i] = 0;
-	toc[0] = 1; toc[1] = 4;
-	const uint32 ids[] = {3, 4, 5, 10}; // CE, PFP, ME, RLC
+	toc[0] = 1;
 	uint32 offset = 4096;
-	for (uint32 i = 0; i < 4; i++) {
-		uint32 n = 2 + i * 7;
+	auto append = [&](uint32 id, uint32 version, const uint8* code,
+		uint32 bytes, uint32 flags) {
+		if (bytes == 0 || (bytes & 3) != 0 || bytes > (1u << 20) - offset)
+			return false;
+		uint32 n = 2 + toc[1]++ * 7;
 		uint64 address = gpu + (1 << 20) + offset;
-		toc[n] = (firmware[i].version & 0xffff) << 16 | ids[i];
+		toc[n] = (version & 0xffff) << 16 | id;
 		toc[n + 1] = address >> 32;
 		toc[n + 2] = (uint32)address;
-		toc[n + 5] = firmware[i].codeSize;
-		toc[n + 6] = i == 3 ? 1 : 0; // Linux unhalts RLC, keeps CP halted
-		for (uint32 b = 0; b < firmware[i].codeSize; b += 4)
-			toc[(offset + b) / 4] = amdgpu::ReadLE32(firmware[i].code + b);
-		offset = (offset + firmware[i].codeSize + 4095) & ~4095u;
+		toc[n + 5] = bytes;
+		toc[n + 6] = flags;
+		for (uint32 b = 0; b < bytes; b += 4)
+			toc[(offset + b) / 4] = amdgpu::ReadLE32(code + b);
+		offset = (offset + bytes + 4095) & ~4095u;
+		return true;
+	};
+	// Preserve the original four-image diagnostic. The optional complete
+	// graphics set follows Linux smu7_request_smu_load_fw's entry order.
+	const uint32 order[] = {3, 0, 1, 2};
+	const uint32 ids[] = {3, 4, 5, 10}; // CE, PFP, ME, RLC
+	for (uint32 entry = 0; entry < 4; entry++) {
+		uint32 i = mec != NULL ? order[entry] : entry;
+		if (!append(ids[i], firmware[i].version, firmware[i].code,
+			firmware[i].codeSize, i == 3 ? 1 : 0))
+			return B_BAD_VALUE;
+	}
+	if (mec != NULL) {
+		// MEC program and both jump tables retain their separate digests.
+		// As in Linux, start MEC only after the caller verified empty queues.
+		if (!append(6, mec->program.version, mec->program.code,
+			mec->program.codeSize, 1)
+			|| !append(7, mec->program.version, mec->jumpTable,
+				mec->jumpTableSize, 0)
+			|| !append(8, mec->program.version, mec->jumpTable,
+				mec->jumpTableSize, 0))
+			return B_BAD_VALUE;
 	}
 	__sync_synchronize();
 	(void)toc[offset / 4 - 1];
 	regs[0x1520] = 1;
 	(void)regs[0x1520];
 	uint32 loadStatus = info.soft_registers + 0x6c;
-	const uint32 mask = 0x438;
+	const uint32 mask = mec != NULL ? 0x5f8 : 0x438;
 	smc.Write(loadStatus, smc.Read(loadStatus) & ~mask);
 	status_t status = smc.Send(0x250, (gpu + (1 << 20)) >> 32);
 	if (status == B_OK)
@@ -286,7 +310,9 @@ amdgpu_smc_load_gfx(volatile uint32* regs, const amdgpu::FirmwareView firmware[4
 		status = smc.Send(0x254, mask);
 	if (status == B_OK && !smc.Wait(loadStatus, mask, mask))
 		status = B_TIMED_OUT;
-	dprintf("amdgpu: SMC GFX load status %#x\n", (unsigned)smc.Read(loadStatus));
+	dprintf("amdgpu: SMC GFX load mask %#x entries %u status %#x MEC %#x\n",
+		(unsigned)mask, (unsigned)toc[1], (unsigned)smc.Read(loadStatus),
+		(unsigned)regs[0x208d]);
 	// Polaris10 golden ACLK divider, as in gfx_v8_0_init_golden_registers.
 	if (status == B_OK)
 		smc.Write(0xc05000dc, (smc.Read(0xc05000dc) & ~0x7fu) | 0x18);
