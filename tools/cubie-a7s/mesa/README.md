@@ -19,7 +19,7 @@ that directory on the include path and does not copy it. The design is
 | `host` | Builds `mesa_clc`, `vtn_bindgen2` and `pco_clc` natively at the same Mesa version. Serialized NIR and USC code must match the driver's version. The build uses the host's LLVM 18, with clang-cpp, LLVMSPIRVLib and SPIRV-Tools from `toolchains/mesa-native-deps` (read only). It does not touch `toolchains/mesa-host`, which holds the 25.3.6 tools. |
 | `configure`, `driver` | Cross-builds only `-Dvulkan-drivers=imagination`: no GL, EGL, LLVM, shader cache or WSI. It uses the ROCK 5's pinned sysroot and cross file (`artifacts/mali-system-opengl-build/20260918T125722Z`), as the Pi 4 build does. Debug paths are relative to the root, so every root builds the same bytes. Meson reads machine files only at setup, so when they change the build directory is wiped. |
 | `tests` | Builds the test programs against the driver. Linking also checks that every symbol the driver needs exists in the sysroot. |
-| `gl` | Builds the EGL vendor library with zink and softpipe in `build-gl/`, the `libvulkan.so.1` shim, `pvr_glprobe` and `pvr_glbench`. |
+| `gl` | Builds the EGL vendor library with zink and softpipe in `build-gl/`, the `libvulkan.so.1` shim, `pvr_glprobe`, `pvr_glbench` and `pvr_glreset`. |
 | `all` | Runs everything above and fills `out/`. |
 
 Everything lives under `/mnt/HaikuWork/cubie/mesa` (`CUBIE_MESA_ROOT`):
@@ -30,7 +30,7 @@ Everything lives under `/mnt/HaikuWork/cubie/mesa` (`CUBIE_MESA_ROOT`):
 - `libvulkan_powervr_mesa.so` and `powervr_mesa_icd.aarch64.json` (for a loader later);
 - `pvr_vkprobe`, `pvr_vkfill`, `pvr_vkfence`, `pvr_vktriangle`, `pvr_vkhang`, `pvr_vkbench`;
 - `tls_generation_check` and `libtls_generation_check.so` (keep them in the same directory);
-- `libEGL_mesa.so.0`, `10_mesa.json` (its libglvnd vendor file), `libvulkan.so.1`, `pvr_glprobe` and `pvr_glbench`;
+- `libEGL_mesa.so.0`, `10_mesa.json` (its libglvnd vendor file), `libvulkan.so.1`, `pvr_glprobe`, `pvr_glbench` and `pvr_glreset`;
 - `MANIFEST`, with the input hashes.
 
 On the image, the libraries go to `/boot/system/non-packaged/lib`, `10_mesa.json` to `.../non-packaged/add-ons/opengl/egl_vendor.d`, and the programs to `.../non-packaged/bin`.
@@ -151,6 +151,28 @@ Zink exposes OpenGL 2.1 (GLSL 1.20) and OpenGL ES 2.0 (GLSL ES 1.00) on this cor
 
 **After a GPU reset** (a hung job), zink's next submit gets `VK_ERROR_DEVICE_LOST`. It logs `ZINK: vkQueueSubmit failed (VK_ERROR_DEVICE_LOST)`, submits nothing more, and stops waiting. Before this fix it waited forever. Rendering then does nothing, and `glGetError()` stays `GL_NO_ERROR`. Only a context created with a lose-context-on-reset strategy hears of the reset, through `glGetGraphicsResetStatus`. To draw again, the program has to make a new context; the device is gone for the whole process. `mesa-haiku-gl.patch` also stops `zink_wait_on_batch()` from asserting when a flush on a lost device yields no batch.
 
+A lost device must also let the program quit. GLTeapot used to hang after a reset, and `hey GLTeapot quit` never returned.
+- Zink never submits a batch ended after the loss, so the batch stayed "unflushed" for good. Any later wait on something that batch used blocked in `zink_batch_usage_unflushed_wait()`.
+- A BGLView present maps the frame the previous batch drew, so the render thread blocked there inside `SwapBuffers()`. It held the GL lock and GLTeapot's quitting semaphore, so the window thread's `DetachedFromWindow()` waited for it as well.
+- Batch states were never recycled either, so a program that kept running after the loss grew by a batch state, with all it held, every flush.
+
+`mesa-haiku-gl.patch` (`zink_batch.c`, `zink_context.c`) now does the following:
+- It retires such a batch: the batch gets a batch id and is marked flushed, submitted and completed.
+- It resets the batch states handed back to the screen, which the submit thread used to do after each submit.
+- It treats every batch state as reusable once the device is lost.
+- It starts a new batch after a failed submit, instead of recording into the ended one, which the next flush would have put on the list a second time.
+- The flush wakeup can no longer be lost.
+
+After a reset, rendering stops but the program keeps running, and it quits normally.
+
+`pvr_glreset [--frames N] [--seconds S]` checks this with a desktop OpenGL context, on the board across a reset (`pvr_vkhang`) or under the shim (below). Each frame it:
+1. clears the colour and depth/stencil buffers;
+2. draws a triangle in immediate mode;
+3. flushes;
+4. reads one packed depth/stencil value back.
+
+Mesa reads packed depth/stencil by mapping the buffer directly, so the read waits for the batch the flush ended, as the present does. The program must run to the end and print `PASS`.
+
 **Thread-local storage after a library is unloaded.** Haiku's runtime loader starts a new thread's dynamic thread vector at generation 0. That breaks once a library with thread-local storage has been unloaded in the process, for example when zink closes the Vulkan driver at `eglTerminate()`. From then on, a new thread's second TLS access frees and re-creates the blocks of every library loaded since, and what its first access wrote is lost.
 
 Summit's WebProcess crashed this way. Zink's shader-cache thread wrote `util_call_once_data()`'s context into the driver's TLS. The `call_once()` callback read it back as NULL and called it (`PC 0`, under `vk_pipeline_cache_create()` from zink's `cache_get_job()`).
@@ -196,6 +218,7 @@ The shim executes nothing. So in the expected results:
 - `pvr_glprobe --expect zink` runs zink on the PowerVR driver through Linux EGL (surfaceless, the shim's render node, `MESA_LOADER_DRIVER_OVERRIDE=zink`). It prints the zink renderer and OpenGL ES 2.0, links the program, and submits render and transfer jobs. The pixels it reads back are zeros.
 - `tls_generation_check` passes: glibc's TLS has no such bug.
 - `pvr_glprobe --expect zink --repeat 3` runs the probe three times in one process.
+- `pvr_glreset` passes.
 - `pvr_vkbench` (fence; then `--timeline --rerecord`) and `pvr_glbench` each run for 3 s with 1 s lines and fail their pixel or word checks. On the host their rates measure the driver and zink CPU paths only, because the shim executes nothing.
 
 The tracer also logs CPU maps of buffer objects: `mmap` of the DRM device and `munmap` of such a map, as `CPU_MAP` and `CPU_UNMAP` lines. On air/OS these are `MAP_BO` and `delete_area()`. Three marked runs, `pvr_glbench --frames 60 --mark`, `pvr_glbench --frames 60 --resize 5 --mark` and `pvr_vkbench --dispatches 60 --timeline --rerecord --mark`, are cut by `trace_balance` into frames 10 to 59. For each kind of object, it reports how many are made and freed per frame, and the net count for each half of that window. A kind whose net count grows in both halves is marked `PILES UP`. The result is in `shim/balance-*.txt`. Nothing piles up. With the data set cache, a steady GL frame makes no free list and no HWRT data set: two of each are made in the first frames (zink keeps two batches in flight) and reused after that. In the resize run, each new size makes one data set the first time, and none after that. A GL frame still makes, and frees again within that frame:
@@ -205,8 +228,9 @@ The tracer also logs CPU maps of buffer objects: `mmap` of the DRM device and `m
 
 On the board, each of these is still kernel work every frame: areas and MMU flushes, but no firmware objects now.
 
-Then come two GPU-reset runs: `lost-pvr_vkfill` and `lost-pvr_glprobe`. `PVR_TRACE_FAIL_SUBMIT=N` makes the tracer fail the N-th `SUBMIT_JOBS` and every later one with `EIO`, as the kernel does after a reset; the shim is not called. Here N is 1, and each run is given 60 s. The expected results:
+Then come three GPU-reset runs: `lost-pvr_vkfill`, `lost-pvr_glprobe` and `lost-pvr_glreset`. `PVR_TRACE_FAIL_SUBMIT=N` makes the tracer fail the N-th `SUBMIT_JOBS` and every later one with `EIO`, as the kernel does after a reset; the shim is not called. N is 1 for the first two runs and 10 for `pvr_glreset`, so the loss comes in the middle of its frames. Each run is given 60 s. The expected results:
 - `lost-pvr_vkfill` exits 1 with `vkQueueSubmit ...: -4` (`VK_ERROR_DEVICE_LOST`). The trace shows `[injected EIO]`, then a `SYNCOBJ_SIGNAL` of the fence's syncobj. The drm-shim does not implement that request (`unhandled core DRM ioctl 0xC5`), but the kernel driver does.
 - `lost-pvr_glprobe` exits 1 with `FAIL` within milliseconds, after zink's `VK_ERROR_DEVICE_LOST` line. The trace shows the one failed `SUBMIT_JOBS`, then a `SYNCOBJ_TIMELINE_SIGNAL` of zink's batch timeline point, then no more submits. A hang shows up as exit 124 marked `(HUNG)`.
+- `lost-pvr_glreset` runs all 300 frames, and its teardown, and exits 0 with `PASS`. With the original `zink_batch.c` it hung (exit 124). gdb showed the main thread in `zink_image_map()` → `zink_resource_usage_wait()` → `zink_batch_usage_unflushed_wait()` → `cnd_wait()`.
 
 The shim's waits never block, so a host run cannot reproduce a thread that is already asleep in the kernel when the submit fails. On the board, the signal after the loss is what wakes that thread.

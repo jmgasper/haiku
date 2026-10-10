@@ -46,7 +46,7 @@ PATCHES=(mesa-haiku-pvr.patch mesa-haiku-gl.patch)
 TESTS=(pvr_vkprobe pvr_vkfill pvr_vkfence pvr_vktriangle pvr_vkhang
 	pvr_vkbench)
 # OpenGL ES programs (through libglvnd's libEGL/libGLESv2)
-GL_TESTS=(pvr_glprobe pvr_glbench)
+GL_TESTS=(pvr_glprobe pvr_glbench pvr_glreset)
 # the runtime loader's thread-local storage for dlopen()ed libraries: a
 # program and the library it loads, built from one file
 TLS_CHECK=(tls_generation_check libtls_generation_check.so)
@@ -546,7 +546,7 @@ shim() {
 		"pvr_vkbench --seconds 3 --interval 1" \
 		"pvr_vkbench --seconds 3 --interval 1 --timeline --rerecord" \
 		"pvr_glprobe --expect zink" \
-		"pvr_glprobe --expect zink --repeat 3" \
+		"pvr_glprobe --expect zink --repeat 3" "pvr_glreset --frames 100" \
 		"pvr_glbench --seconds 3 --interval 1 --expect zink" \
 		"pvr_vkbench --dispatches 60 --timeline --rerecord --mark" \
 		"pvr_glbench --frames 60 --mark" \
@@ -579,14 +579,20 @@ shim() {
 		log "$name: per frame, frames 10-59 ($s/$name.txt)"
 		cat "$s/$name.txt"
 	done
-	# A GPU reset as Mesa sees it: every SUBMIT_JOBS fails with EIO (the
-	# tracer injects it). The driver must report the device lost and each
-	# program end with an error instead of waiting forever (timeout's 124).
-	local rc
-	for run in "pvr_vkfill" "pvr_glprobe --expect zink"; do
+	# A GPU reset as Mesa sees it: from the N-th SUBMIT_JOBS on, every one
+	# fails with EIO (the tracer injects it). The driver must report the
+	# device lost and each program end instead of waiting forever (timeout's
+	# 124): pvr_vkfill and pvr_glprobe at the first submit, pvr_glreset (a
+	# read of what an ended batch drew, as the BGLView present does) in the
+	# middle of its frames.
+	local rc fail
+	for run in "1 pvr_vkfill" "1 pvr_glprobe --expect zink" \
+		"10 pvr_glreset --frames 300"; do
+		fail=${run%% *}
+		run=${run#* }
 		name=lost-${run%% *}
 		if (ulimit -s 256
-			PVR_TRACE_FAIL_SUBMIT=1 PVR_SHIM_DEVICE_BVNC=$SHIM_BVNC \
+			PVR_TRACE_FAIL_SUBMIT=$fail PVR_SHIM_DEVICE_BVNC=$SHIM_BVNC \
 			PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 EGL_PLATFORM=surfaceless \
 			PVR_CACHED_MEMORY_TYPE=1 ZINK_NONCOHERENT_CACHED_STAGING=1 \
 			MESA_LOADER_DRIVER_OVERRIDE=zink \

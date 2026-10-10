@@ -49,6 +49,22 @@ shared V3D bitmaps, plus the zink pieces of the air/OS x86_64 fork
       zink_wait_on_batch() on a lost device: the flush submits nothing, so
       the batch has no id; report the loss and return instead of asserting
       (debugoptimized builds aborted the GL program after a GPU reset)
+  src/gallium/drivers/zink/zink_batch.c, zink_context.c
+      a lost device: batches ended after the loss were never submitted, so
+      they stayed "unflushed" forever and zink_batch_usage_unflushed_wait()
+      waited on them for good. A BGLView's present maps the frame the
+      previous batch drew, so GLTeapot's render thread hung there after a
+      GPU reset, and its quit with it (reproduced under the shim with
+      pvr_glreset: zink_image_map -> zink_resource_usage_wait ->
+      cnd_wait). Such a batch is now retired: given a batch id and marked
+      flushed, submitted and completed, and the screen's handed-back states
+      are reset as the submit thread did after each submit. Every batch
+      state is reusable on a lost device, so they are recycled instead of a
+      new one (with everything it held) per flush. flush_batch() starts a
+      new batch after a failed submit too, instead of recording into the
+      ended one, which the next flush put on the list a second time. And
+      the flush wakeup is no longer lost: the submit thread broadcasts
+      under the usage mutex and the waiter loops on the flag
   src/gallium/drivers/zink/zink_screen.c, zink_resource.c
       host-cached memory that is not coherent (the PowerVR driver's second
       type on air/OS): with no coherent cached type, the staging heap
@@ -1006,6 +1022,140 @@ diff -ruN a/src/gallium/auxiliary/target-helpers/inline_sw_helper.h b/src/galliu
  static inline struct pipe_screen *
  sw_screen_create_named(struct sw_winsys *winsys, const char *driver)
  {
+diff -ruN a/src/gallium/drivers/zink/zink_batch.c b/src/gallium/drivers/zink/zink_batch.c
+--- a/src/gallium/drivers/zink/zink_batch.c
++++ b/src/gallium/drivers/zink/zink_batch.c
+@@ -439,8 +439,12 @@
+       struct zink_batch_state *j = i->next;
+       /* only a submitted state can be reused */
+       if (i->fence.submitted &&
+-          /* a submitted state must have completed before it can be reused */
+-          (zink_screen_check_last_finished(screen, i->fence.batch_id) || i->fence.completed)) {
++          /* a submitted state must have completed before it can be reused;
++           * on a lost device every one has: nothing will run, and the waits
++           * that would have found out return early without saying so
++           */
++          (zink_screen_check_last_finished(screen, i->fence.batch_id) || i->fence.completed ||
++           screen->device_lost)) {
+          pop_batch_state(ctx);
+          reset_batch_state_ctx(ctx, i);
+          if (ctx->flags & ZINK_CONTEXT_COPY_ONLY) {
+@@ -640,6 +644,24 @@
+ 
+ #define ZINK_MAX_SIGNALS 3
+ 
++/* the completed batch states contexts handed to the screen
++ * (find_completed_batch_state()): reset, and free for any context
++ */
++static void
++reset_active_batch_states(struct zink_screen *screen)
++{
++   simple_mtx_lock(&screen->active_batch_states_lock);
++   simple_mtx_lock(&screen->free_batch_states_lock);
++   for (struct zink_batch_state *i = screen->active_batch_states, *j = i ? i->next : NULL; i; i = j, j = j ? j->next : NULL) {
++      reset_batch_state_internal(screen, i);
++      zink_batch_state_append(&screen->free_batch_states, &screen->last_free_batch_state, i);
++   }
++   screen->active_batch_states = NULL;
++   screen->last_active_batch_state = NULL;
++   simple_mtx_unlock(&screen->free_batch_states_lock);
++   simple_mtx_unlock(&screen->active_batch_states_lock);
++}
++
+ static void
+ submit_queue(void *data, void *gdata, int thread_index)
+ {
+@@ -842,22 +864,49 @@
+ 
+    bs->usage.submit_count++;
+ end:
++   /* under the mutex: a waiter that saw the batch unflushed is either
++    * waiting already or will see it flushed (zink_batch_usage_unflushed_wait)
++    */
++   mtx_lock(&bs->usage.mtx);
+    cnd_broadcast(&bs->usage.flush);
++   mtx_unlock(&bs->usage.mtx);
+ 
+    post_submit(bs, screen);
+ 
+    p_atomic_set(&bs->fence.submitted, true);
+ 
+-   simple_mtx_lock(&screen->active_batch_states_lock);
+-   simple_mtx_lock(&screen->free_batch_states_lock);
+-   for (struct zink_batch_state *i = screen->active_batch_states, *j = i ? i->next : NULL; i; i = j, j = j ? j->next : NULL) {
+-      reset_batch_state_internal(screen, i);
+-      zink_batch_state_append(&screen->free_batch_states, &screen->last_free_batch_state, i);
+-   }
+-   screen->active_batch_states = NULL;
+-   screen->last_active_batch_state = NULL;
+-   simple_mtx_unlock(&screen->free_batch_states_lock);
+-   simple_mtx_unlock(&screen->active_batch_states_lock);
++   reset_active_batch_states(screen);
++}
++
++/* A lost device runs nothing: a batch ended after the loss is as done as it
++ * will ever be. It is marked flushed, submitted and completed, with a batch
++ * id like a submitted one, so that
++ * - a wait on something it used returns: zink_batch_usage_unflushed_wait()
++ *   waited on bs->usage.flush for a submit that never came, which hung the
++ *   GL thread of a BGLView after a GPU reset (its present maps the frame
++ *   the previous, ended batch drew), and with it the application's quit;
++ * - its state is recycled (find_completed_batch_state() hands it to the
++ *   screen, reset_active_batch_states() resets it) instead of a new one
++ *   being made, with all it holds, for every flush.
++ */
++static void
++retire_lost_batch(struct zink_screen *screen, struct zink_batch_state *bs)
++{
++   while (!bs->fence.batch_id)
++      bs->fence.batch_id = (uint32_t)p_atomic_inc_return(&screen->curr_batch);
++   bs->usage.usage = bs->fence.batch_id;
++
++   mtx_lock(&bs->usage.mtx);
++   bs->usage.unflushed = false;
++   bs->usage.submit_count++;
++   cnd_broadcast(&bs->usage.flush);
++   mtx_unlock(&bs->usage.mtx);
++
++   p_atomic_set(&bs->fence.completed, true);
++   p_atomic_set(&bs->fence.submitted, true);
++
++   /* what the submit thread did after each submit, which no longer comes */
++   reset_active_batch_states(screen);
+ }
+ 
+ /* called during flush */
+@@ -888,8 +937,10 @@
+       ctx->swapchain = NULL;
+    }
+ 
+-   if (screen->device_lost)
++   if (screen->device_lost) {
++      retire_lost_batch(screen, bs);
+       return;
++   }
+ 
+    if (ctx->tc) {
+       set_foreach(&bs->active_queries, entry)
+@@ -1210,9 +1261,15 @@
+          mtx_lock(&u->mtx);
+          if (trywait) {
+             struct timespec ts = {0, 10000};
+-            cnd_timedwait(&u->flush, &u->mtx, &ts);
+-         } else
+-            cnd_wait(&u->flush, &u->mtx);
++            if (u->unflushed)
++               cnd_timedwait(&u->flush, &u->mtx, &ts);
++         } else {
++            /* the flag decides, not one wakeup: a flush between the check
++             * above and the wait was missed before
++             */
++            while (u->unflushed)
++               cnd_wait(&u->flush, &u->mtx);
++         }
+          mtx_unlock(&u->mtx);
+       }
+    }
 diff -ruN a/src/gallium/drivers/zink/zink_bo.c b/src/gallium/drivers/zink/zink_bo.c
 --- a/src/gallium/drivers/zink/zink_bo.c
 +++ b/src/gallium/drivers/zink/zink_bo.c
@@ -1023,7 +1173,23 @@ diff -ruN a/src/gallium/drivers/zink/zink_bo.c b/src/gallium/drivers/zink/zink_b
 diff -ruN a/src/gallium/drivers/zink/zink_context.c b/src/gallium/drivers/zink/zink_context.c
 --- a/src/gallium/drivers/zink/zink_context.c
 +++ b/src/gallium/drivers/zink/zink_context.c
-@@ -4602,6 +4602,11 @@
+@@ -4058,9 +4058,13 @@
+    if (sync)
+       sync_flush(ctx, ctx->bs);
+ 
+-   if (ctx->bs->is_device_lost) {
++   if (ctx->bs->is_device_lost)
+       check_device_lost(ctx);
+-   } else {
++   /* A new batch even on a lost device: recording goes on into batches that
++    * zink_end_batch() retires unsubmitted, not into the ended one, which the
++    * next flush would add to ctx->batch_states a second time (a cycle).
++    */
++   {
+       struct zink_screen *screen = zink_screen(ctx->base.screen);
+       zink_start_batch(ctx);
+       if (screen->info.have_EXT_transform_feedback && ctx->num_so_targets)
+@@ -4602,6 +4606,11 @@
        bs = ctx->last_batch_state;
        assert(bs);
        batch_id = bs->fence.batch_id;
