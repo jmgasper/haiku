@@ -108,13 +108,14 @@ GpuInterrupts::Handle(void* cookie)
 	uint32 raw = irq.memory[kRingBytes / 4];
 	__sync_synchronize();
 	uint32 wptr = raw & kMask;
-	if (wptr == irq.rptr && (raw & 0x80000000) == 0) {
+	if (wptr == irq.rptr && (raw & 1) == 0) {
 		release_spinlock(&irq.lock);
 		return B_UNHANDLED_INTERRUPT;
 	}
 	irq.stats.interrupts++;
 	bool wake = false;
-	if ((raw & 0x80000000) != 0 || (wptr & 15) != 0) {
+	// WPTR overflow is bit 0; CNTL's write-one overflow-clear is bit 31.
+	if ((raw & 1) != 0 || (wptr & 15) != 0 || (raw & 0x3fffc) > kMask) {
 		irq.stats.overflows++;
 		atomic_set(&irq.error, B_BAD_DATA);
 		irq.regs[0xe30] &= ~0x20001u;
@@ -130,7 +131,17 @@ GpuInterrupts::Handle(void* cookie)
 			uint32 vmid = (irq.stats.last[2] >> 8) & 255;
 			irq.stats.vectors++;
 			if (source == 181 && ring == 0 && vmid == 0) {
-				irq.stats.eop_events++; wake = true;
+				if (irq.stats.eop_events < 2)
+					memcpy(irq.stats.first_eop[irq.stats.eop_events], irq.stats.last, sizeof(irq.stats.last));
+				irq.stats.eop_events++;
+				// Hardware can report more than one EOP vector. Only the IRQ
+				// that observes this job's private fence may complete its wait.
+				__sync_synchronize();
+				if (irq.pendingFence && *irq.fence == irq.expectedFence) {
+					irq.pendingFence = false;
+					irq.stats.completed_fences++;
+					wake = true;
+				}
 			} else if (source == 146 || source == 147) {
 				irq.stats.vm_faults++;
 				atomic_set(&irq.error, B_BAD_DATA); wake = true;
@@ -165,12 +176,13 @@ GpuInterrupts::Handle(void* cookie)
 }
 
 uint64
-GpuInterrupts::Ticket()
+GpuInterrupts::Ticket(volatile uint32* completion, uint32 sequence)
 {
 	while (acquire_sem_etc(signal, 1, B_RELATIVE_TIMEOUT, 0) == B_OK) {}
 	cpu_status previous = disable_interrupts();
 	acquire_spinlock(&lock);
-	uint64 ticket = stats.eop_events;
+	uint64 ticket = stats.completed_fences;
+	fence = completion; expectedFence = sequence; pendingFence = true;
 	release_spinlock(&lock);
 	restore_interrupts(previous);
 	return ticket;
@@ -188,7 +200,7 @@ GpuInterrupts::Wait(uint64 ticket, bigtime_t deadline)
 		previous = disable_interrupts();
 		acquire_spinlock(&lock);
 		status_t status = Error();
-		bool completed = stats.eop_events > ticket;
+		bool completed = stats.completed_fences > ticket;
 		release_spinlock(&lock);
 		restore_interrupts(previous);
 		if (status != B_OK || completed) return status;

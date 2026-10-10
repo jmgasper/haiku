@@ -102,9 +102,10 @@ struct amdgpu_gfx_submit {
 struct amdgpu_irq_info {
 	uint32 version, size;
 	uint32 enabled, msi, vector, ring_bytes;
-	uint64 interrupts, vectors, eop_events, vm_faults, privileged_faults;
+	uint64 interrupts, vectors, eop_events, completed_fences, vm_faults, privileged_faults;
 	uint64 unknown, overflows, waits;
 	uint32 rptr, wptr, last[4];
+	uint32 first_eop[2][4];
 	int32 status;
 	uint32 reserved;
 };

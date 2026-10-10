@@ -17,6 +17,9 @@ struct GpuInterrupts {
 	pci_module_info* pci;
 	uint8 bus, slot, function;
 	uint32 vector, rptr;
+	volatile uint32* fence;
+	uint32 expectedFence;
+	bool pendingFence;
 	area_id area;
 	sem_id signal;
 	spinlock lock;
@@ -27,7 +30,7 @@ struct GpuInterrupts {
 	status_t Initialize(volatile uint32* r, const amdgpu_info& info, pci_module_info* module);
 	void Uninitialize();
 	status_t Error() { return atomic_get(&error); }
-	uint64 Ticket();
+	uint64 Ticket(volatile uint32* completion, uint32 sequence);
 	status_t Wait(uint64 ticket, bigtime_t deadline);
 	void Snapshot(amdgpu_irq_info& result);
 	static int32 Handle(void* cookie);

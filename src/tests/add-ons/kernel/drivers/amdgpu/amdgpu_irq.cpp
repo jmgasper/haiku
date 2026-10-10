@@ -56,25 +56,30 @@ int main(int argc, char** argv)
 	r = Request();
 	Require(ioctl(fd, AMDGPU_IRQ_INFO, &r, sizeof(r)) == 0, "read interrupt counters");
 	printf("IH enabled %u MSI %u vector %u bytes %u status %#x interrupts %llu vectors %llu"
-		" EOP %llu waits %llu VM faults %llu privileged %llu unknown %llu overflow %llu"
+		" EOP %llu completed %llu waits %llu VM faults %llu privileged %llu unknown %llu overflow %llu"
 		" ring %#x/%#x last %#x/%#x/%#x/%#x\n",
 		(unsigned)r.enabled, (unsigned)r.msi, (unsigned)r.vector, (unsigned)r.ring_bytes,
 		(unsigned)r.status, (unsigned long long)r.interrupts, (unsigned long long)r.vectors,
-		(unsigned long long)r.eop_events, (unsigned long long)r.waits,
+		(unsigned long long)r.eop_events, (unsigned long long)r.completed_fences, (unsigned long long)r.waits,
 		(unsigned long long)r.vm_faults, (unsigned long long)r.privileged_faults,
 		(unsigned long long)r.unknown, (unsigned long long)r.overflows,
 		(unsigned)r.rptr, (unsigned)r.wptr, (unsigned)r.last[0], (unsigned)r.last[1],
 		(unsigned)r.last[2], (unsigned)r.last[3]);
 	Require(r.enabled == 1 && r.msi == 1 && r.ring_bytes == 65536 && r.status == B_OK,
 		"MSI ring enabled and healthy");
-	Require(r.eop_events == expected && r.waits == expected && r.vectors == expected
-		&& r.interrupts > 0 && r.interrupts <= expected, "every job received exactly one completion event");
+	for (uint32 i = 0; i < 2; i++)
+		printf("first EOP %u: %#x/%#x/%#x/%#x\n", (unsigned)i,
+			(unsigned)r.first_eop[i][0], (unsigned)r.first_eop[i][1],
+			(unsigned)r.first_eop[i][2], (unsigned)r.first_eop[i][3]);
+	Require(r.completed_fences == expected && r.waits == expected && r.eop_events >= expected
+		&& r.vectors == r.eop_events && r.interrupts > 0 && r.interrupts <= r.vectors,
+		"every job fence was observed by its completion interrupt");
 	Require(r.vm_faults == 0 && r.privileged_faults == 0 && r.unknown == 0 && r.overflows == 0,
 		"no fault or unexpected interrupt vectors");
-	Require(r.rptr == r.wptr && r.rptr == ((expected * 16) & 65535)
+	Require(r.rptr == r.wptr && r.rptr == ((r.vectors * 16) & 65535)
 		&& (r.last[0] & 255) == 181 && (r.last[2] & 65535) == 0,
 		"all completion vectors consumed from the trusted ring");
 	close(fd);
-	puts("PASS: ordinary-client IRQ ABI, exact completion events, empty healthy MSI ring");
+	puts("PASS: ordinary-client IRQ ABI, exact completed fences, empty healthy MSI ring");
 	return 0;
 }

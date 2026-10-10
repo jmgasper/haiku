@@ -143,7 +143,7 @@ GfxEngine::InitializeVM(const amdgpu_info& info,
 	regs[0x560] = (GpuPageTable::kSize >> 12) - 1;
 	regs[0x550] = (info.vram_gpu_base + offset) >> 12;
 	regs[0x547] = regs[0x546];
-	regs[0x50d] = 0; // retain the first fault; no interrupt handler yet
+	regs[0x50d] = 0; // retain the first fault for the IRQ and submitting thread
 	regs[0x505] = regs[0x504] | 2; // two levels, 512 PTEs per page
 	vmEnabled = true;
 	regs[0x51e] = 2;
@@ -1108,7 +1108,7 @@ GfxEngine::ExecuteIB(uint64 directory, uint64 address, uint32 dwords,
 			emit(Packet(0x10, padding - 2));
 			for (uint32 i = 1; i < padding; i++) emit(0);
 		}
-		uint64 ticket = interrupts.Ticket();
+		uint64 ticket = interrupts.Ticket(completion, vmSequence);
 		__sync_synchronize();
 		(void)ring[(wptr - 1) & kRingMask];
 		r[0x1520] = 1; (void)r[0x1520];
