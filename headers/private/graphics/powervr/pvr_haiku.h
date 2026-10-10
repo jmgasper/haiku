@@ -83,8 +83,11 @@ enum {
 enum {
 	PVR_HAIKU_STAGE_QUERY = 0,		// report only
 	PVR_HAIKU_STAGE_HEALTH_CHECK,	// send a HEALTH_CHECK first (root)
-	PVR_HAIKU_STAGE_DUMP			// log registers, firmware state and
+	PVR_HAIKU_STAGE_DUMP,			// log registers, firmware state and
 									// trace to the syslog first (root)
+	PVR_HAIKU_STAGE_RESET,			// hard reset the GPU first (root)
+	PVR_HAIKU_STAGE_JOB_TIMEOUT		// set job_timeout_ms first, for the
+									// queues created from then on (root)
 };
 
 /*	PVR_HAIKU_OP(PVR_HAIKU_NR_STAGE): in: version and command; out: the
@@ -114,7 +117,13 @@ struct pvr_haiku_stage {
 	uint32	irq_spurious;			// GPU interrupts without one
 	uint32	mips_exception_status;	// ROGUE_CR_MIPS_EXCEPTION_STATUS
 	uint32	fw_faults;				// SYSDATA fw_faults
-	uint64	reserved[4];
+	uint32	resets;					// GPU resets that brought it back
+	uint32	device_lost;			// 1 once the GPU is given up
+	uint32	job_timeout_ms;			// in (JOB_TIMEOUT), out: a job queue
+									// with no job finishing that long has
+									// the GPU reset; 0 in: the default
+	uint32	reserved32;
+	uint64	reserved[2];
 };
 
 

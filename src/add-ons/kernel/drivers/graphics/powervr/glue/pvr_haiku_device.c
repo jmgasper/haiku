@@ -276,8 +276,9 @@ pvr_haiku_device_create(const pvr_haiku_platform* platform)
 	atomic_set(&pvr_dev->mmu_flush_cache_flags, 0);
 
 	// and pvr_probe() for the ioctls: contexts, job queues and their
-	// scheduler thread, job and free list IDs
+	// scheduler thread, job and free list IDs, resets
 	lx_dma_fence_init_globals();
+	pvr_haiku_power_init(pvr_dev);
 	pvr_context_device_init(pvr_dev);
 	if (pvr_queue_device_init(pvr_dev) != 0) {
 		pvr_context_device_fini(pvr_dev);
@@ -724,8 +725,13 @@ pvr_haiku_interrupt(struct pvr_device* pvr_dev)
 void
 pvr_haiku_interrupt_work(struct pvr_device* pvr_dev)
 {
-	if (!READ_ONCE(pvr_dev->fw_dev.initialised))
+	// a reset deals with the firmware itself (Linux disables the
+	// interrupt meanwhile); a lost device is left alone
+	if (!READ_ONCE(pvr_dev->fw_dev.initialised)
+		|| atomic_read(&to_haiku_device(pvr_dev)->resetting) != 0
+		|| pvr_dev->lost) {
 		return;
+	}
 	pvr_fwccb_process(pvr_dev);
 	pvr_kccb_wake_up_waiters(pvr_dev);
 	process_active_queues(pvr_dev);
@@ -1065,6 +1071,13 @@ pvr_haiku_firmware_verify(struct pvr_device* pvr_dev,
 /* #pragma mark - state and diagnostics */
 
 
+bool
+pvr_haiku_device_lost(struct pvr_device* pvr_dev)
+{
+	return pvr_dev->lost;
+}
+
+
 void
 pvr_haiku_firmware_state_get(struct pvr_device* pvr_dev,
 	pvr_haiku_firmware_state* state)
@@ -1092,6 +1105,8 @@ pvr_haiku_firmware_state_get(struct pvr_device* pvr_dev,
 	}
 	state->irq_count = atomic_read(&device->irq_count);
 	state->irq_spurious = atomic_read(&device->irq_spurious);
+	state->resets = device->resets;
+	state->lost = pvr_dev->lost;
 	state->mips_exception_status
 		= pvr_cr_read32(pvr_dev, ROGUE_CR_MIPS_EXCEPTION_STATUS);
 }

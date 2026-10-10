@@ -23,14 +23,20 @@ native code with the same interfaces:
   glue/pvr_haiku_vm.c     GPU VM contexts on pvr_mmu.c's page tables
                           (replaces pvr_vm.c, which is built on drm_gpuvm)
   glue/pvr_haiku_*.c      the device (pvr_device.c, pvr_drv.c's probe),
-                          buffers (pvr_gem.c), power-off and device-lost
-                          (pvr_power.c), and stubs for what this GPU never
-                          reaches (META and RISC-V firmware processors)
+                          buffers (pvr_gem.c), power-off, soft and hard
+                          resets and device-lost (pvr_power.c), and stubs
+                          for what this GPU never reaches (META and RISC-V
+                          firmware processors)
   glue/pvr_haiku_glue.h   the C interface PvrDevice.cpp and driver.cpp use
 
 compat/linux_compat_sched.c has the DRM core pvr_job.c, pvr_queue.c and
 pvr_sync.c are built on: work queues, reservation objects, drm_exec and a
 GPU scheduler with drm_sched's rules (linux_compat_sched.h says which).
+Its timeout differs from Linux on purpose: when no job of a queue finishes
+for SCHED_TIMEOUT_PERIOD, glue/pvr_haiku_power.c hard-resets the GPU
+(pvr_power_reset()) instead of calling pvr_queue_timedout_job(), which
+leaves recovery to the firmware; the firmware ends jobs that overrun its
+own context deadline first. pvrinfo --job-timeout shortens it for tests.
 compat's spinlock_t is a Haiku mutex, so what Linux does under a spinlock
 (signaling fences, freeing) works with interrupts on.
 
