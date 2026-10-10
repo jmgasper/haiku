@@ -32,6 +32,9 @@ struct ServerRemoteDevice
 	uint8				pscan_rep_mode;
 	uint8				classOfDevice[3];
 	linkkey_t			link_key;
+	uint8				key_type;
+		// of link_key, from Link Key Notification (Core Vol 4 Part E
+		// 7.7.24)
 	uint8				link_type;
 	uint8				encryption_enabled;
 

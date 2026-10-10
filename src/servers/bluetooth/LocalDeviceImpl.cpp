@@ -247,6 +247,7 @@ LocalDeviceImpl::SaveRemoteDevices()
 		device.AddData("class_of_device", B_RAW_TYPE, rd->classOfDevice,
 			sizeof(rd->classOfDevice));
 		device.AddData("link key", B_ANY_TYPE, &link_key, sizeof(linkkey_t));
+		device.AddUInt8("key type", rd->key_type);
 		device.AddUInt8("link type", rd->link_type);
 
 		devices.AddMessage("remote", &device);
@@ -276,18 +277,29 @@ LocalDeviceImpl::LoadRemoteDevices()
 
 	BMessage device;
 	for (int32 i = 0; devices.FindMessage("remote", i, &device) == B_OK; i++) {
-		ServerRemoteDevice* rd = new ServerRemoteDevice();
+		const void* data;
 		ssize_t size;
-		bdaddr_t* bdaddr;
-		device.FindData("bdaddr", B_ANY_TYPE, (const void**)&bdaddr, &size);
-		rd->bdaddr = *bdaddr;
+		if (device.FindData("bdaddr", B_ANY_TYPE, &data, &size) != B_OK
+			|| size != sizeof(bdaddr_t))
+			continue;
+		bdaddr_t bdaddr;
+		memcpy(&bdaddr, data, sizeof(bdaddr));
+		if (RemoteDeviceByAddr(bdaddr) != NULL)
+			continue;
+
+		ServerRemoteDevice* rd = new ServerRemoteDevice();
+		rd->bdaddr = bdaddr;
 		device.FindString("name", &rd->friendly_name);
 		device.FindUInt16("clock_offset", &rd->clock_offset);
 		device.FindUInt8("pscan_rep_mode", &rd->pscan_rep_mode);
-		device.FindUInt8("class_of_device", 0, &rd->classOfDevice[0]);
-		device.FindUInt8("class_of_device", 1, &rd->classOfDevice[1]);
-		device.FindUInt8("class_of_device", 2, &rd->classOfDevice[2]);
-		device.FindData("link key", B_ANY_TYPE, (const void**)&rd->link_key, &size);
+		if (device.FindData("class_of_device", B_RAW_TYPE, &data, &size)
+				== B_OK && size == sizeof(rd->classOfDevice))
+			memcpy(rd->classOfDevice, data, sizeof(rd->classOfDevice));
+		rd->link_key = LinkKeyUtils::NullKey();
+		if (device.FindData("link key", B_ANY_TYPE, &data, &size) == B_OK
+			&& size == sizeof(linkkey_t))
+			memcpy(&rd->link_key, data, sizeof(linkkey_t));
+		device.FindUInt8("key type", &rd->key_type);
 		device.FindUInt8("link type", &rd->link_type);
 		rd->conn_state = RemoteDevice::DISCONNECTED;
 
@@ -330,7 +342,11 @@ LocalDeviceImpl::AddRemoteDevice(ServerRemoteDevice* rd)
 void
 LocalDeviceImpl::RemoveRemoteDevice(ServerRemoteDevice* rd)
 {
+	if (rd == NULL)
+		return;
 	fRemoteDevicesList.RemoveItem(rd);
+	SaveRemoteDevices();
+		// a forgotten device must not come back with its key
 }
 
 
@@ -1515,6 +1531,7 @@ LocalDeviceImpl::ConnectionRequest(struct hci_ev_conn_request* event,
 		ServerRemoteDevice* serverRd;
 		serverRd = RemoteDeviceByAddr(event->bdaddr);
 
+		bool known = serverRd != NULL;
 		if (serverRd == NULL) {
 			serverRd = new ServerRemoteDevice();
 			serverRd->bdaddr = event->bdaddr;
@@ -1531,7 +1548,8 @@ LocalDeviceImpl::ConnectionRequest(struct hci_ev_conn_request* event,
 			sizeof(serverRd->classOfDevice));
 
 		((BluetoothServer*)be_app)->NotifyWatchers(&notice);
-		AddRemoteDevice(serverRd);
+		if (!known)
+			AddRemoteDevice(serverRd);
 
 		// Keep ourselves as slave
 		command = buildAcceptConnectionRequest(event->bdaddr, 0x01 , &size);
@@ -1579,6 +1597,7 @@ LocalDeviceImpl::CreateConnection(BMessage* message)
 	ServerRemoteDevice* rdConn;
 	rdConn = RemoteDeviceByAddr(*bdaddr);
 
+	bool known = rdConn != NULL;
 	if (rdConn == NULL) {
 		rdConn = new ServerRemoteDevice();
 		rdConn->bdaddr = *bdaddr;
@@ -1598,7 +1617,8 @@ LocalDeviceImpl::CreateConnection(BMessage* message)
 	rdConn->conn_state = RemoteDevice::CONNECTING;
 	rdConn->link_type = HCI_ACL_CONN;
 
-	AddRemoteDevice(rdConn);
+	if (!known)
+		AddRemoteDevice(rdConn);
 
 	BluetoothCommand<typed_command(hci_cp_create_conn)>
 		command(OGF_LINK_CONTROL, OCF_CREATE_CONN);
@@ -1679,6 +1699,8 @@ LocalDeviceImpl::Disconnect(BMessage* message)
 	message->FindData("bdaddr", B_ANY_TYPE, (const void**)&bdaddr, &addr_size);
 
 	ServerRemoteDevice* rd = RemoteDeviceByAddr(*bdaddr);
+	if (rd == NULL || rd->conn_state != RemoteDevice::CONNECTED)
+		return;
 	command->handle = rd->handle;
 	message->FindUInt8("reason", &command->reason);
 
@@ -1891,7 +1913,10 @@ LocalDeviceImpl::LinkKeyNotify(hci_ev_link_key_notify* event,
 		return;
 
 	rd->link_key = event->link_key;
-	rd->link_type = event->key_type;
+	rd->key_type = event->key_type;
+	// Keep the key now: the next time the device connects it is asked for,
+	// and losing it to a crash or power cut means pairing again.
+	SaveRemoteDevices();
 }
 
 
@@ -2122,6 +2147,7 @@ LocalDeviceImpl::AuthComplete(struct hci_ev_auth_complete* eventData, BMessage* 
 		ServerRemoteDevice* rd = RemoteDeviceByHandle(eventData->handle);
 		if (rd != NULL) {
 			rd->link_key = LinkKeyUtils::NullKey();
+			SaveRemoteDevices();
 			BMessage disconnReq;
 			bdaddr_t bdaddr = rd->bdaddr;
 			disconnReq.AddData("bdaddr", B_ANY_TYPE, &bdaddr, sizeof(bdaddr_t));
