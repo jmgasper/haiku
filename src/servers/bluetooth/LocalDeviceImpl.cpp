@@ -1687,8 +1687,10 @@ LocalDeviceImpl::CreateConnection(BMessage* message)
 	command->pkt_type &= ACL_PTYPE_MASK;
 	command->pscan_rep_mode = rdConn->pscan_rep_mode;
 	message->FindUInt8("pscan_mode", &command->pscan_mode); // Reserved in spec 2.1
-	command->clock_offset = rdConn->clock_offset;
-	command->clock_offset |= 0x8000; // substract!
+	// Bit 15 says the offset is valid; only an inquiry gives one.
+	command->clock_offset = rdConn->clock_offset & 0x7fff;
+	if (command->clock_offset != 0)
+		command->clock_offset |= 0x8000;
 	message->FindUInt8("role_switch", &command->role_switch);
 
 
