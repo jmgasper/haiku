@@ -33,6 +33,7 @@
 #include <team.h>
 #include <util/iovec_support.h>
 #include <vm/vm.h>
+#include <vm/vm_page.h>
 
 
 #define TRACE(x...)		dprintf("powervr: " x)
@@ -168,6 +169,24 @@ lx_access_ok(const void* address, unsigned long size)
 //	#pragma mark - memory
 
 
+// what exists of each kind, for the driver's dump
+static int32 sBufferCount;
+static int64 sBufferBytes;
+static int32 sPageCount;
+static int32 sVmapCount;
+
+
+void
+lx_memory_stats(uint32* _buffers, uint64* _bufferBytes, uint32* _pages,
+	uint32* _vmaps)
+{
+	*_buffers = (uint32)atomic_get(&sBufferCount);
+	*_bufferBytes = (uint64)atomic_get64(&sBufferBytes);
+	*_pages = (uint32)atomic_get(&sPageCount);
+	*_vmaps = (uint32)atomic_get(&sVmapCount);
+}
+
+
 static inline phys_addr_t
 dma_limit()
 {
@@ -285,6 +304,8 @@ lx_dma_buffer_alloc(struct lx_dma_buffer* buffer, size_t size,
 	buffer->size = size;
 	buffer->run_count = runCount;
 	buffer->runs = runs;
+	atomic_add(&sBufferCount, 1);
+	atomic_add64(&sBufferBytes, (int64)size);
 	return 0;
 }
 
@@ -292,8 +313,11 @@ lx_dma_buffer_alloc(struct lx_dma_buffer* buffer, size_t size,
 void
 lx_dma_buffer_free(struct lx_dma_buffer* buffer)
 {
-	if (buffer->area >= 0)
+	if (buffer->area >= 0) {
 		delete_area(buffer->area);
+		atomic_add(&sBufferCount, -1);
+		atomic_add64(&sBufferBytes, -(int64)buffer->size);
+	}
 	free(buffer->runs);
 	memset(buffer, 0, sizeof(*buffer));
 	buffer->area = -1;
@@ -339,13 +363,20 @@ alloc_page(unsigned int flags)
 	if (page == NULL)
 		return NULL;
 
+	// When the GPU reaches all of memory, a plain locked page will do: a
+	// physically restricted run (vm_page_allocate_page_run()) searches the
+	// page array, which grows slow as memory fragments, and page tables
+	// come and go with every GPU mapping.
 	virtual_address_restrictions virtualRestrictions = {};
 	virtualRestrictions.address_specification = B_ANY_KERNEL_ADDRESS;
 	physical_address_restrictions physicalRestrictions = {};
-	if (dma_limit() < ~(phys_addr_t)0)
+	uint32 lock = B_FULL_LOCK;
+	if (dma_limit() < vm_page_max_address()) {
 		physicalRestrictions.high_address = dma_limit() + 1;
+		lock = B_CONTIGUOUS;
+	}
 	page->area = create_area_etc(B_SYSTEM_TEAM, "powervr page", B_PAGE_SIZE,
-		B_CONTIGUOUS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, 0, 0,
+		lock, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, 0, 0,
 		&virtualRestrictions, &physicalRestrictions, &page->address);
 	if (page->area < 0) {
 		TRACE("no page: %s\n", strerror(page->area));
@@ -362,6 +393,7 @@ alloc_page(unsigned int flags)
 	page->physical = entry.address;
 	memset(page->address, 0, B_PAGE_SIZE);
 	clean_invalidate(page->address, B_PAGE_SIZE);
+	atomic_add(&sPageCount, 1);
 	return page;
 }
 
@@ -373,6 +405,7 @@ __free_page(struct page* page)
 		return;
 	delete_area(page->area);
 	free(page);
+	atomic_add(&sPageCount, -1);
 }
 
 
@@ -456,6 +489,7 @@ vmap(struct page** pages, unsigned int count, unsigned long flags,
 		TRACE("vmap of %u pages failed: %s\n", count, strerror(area));
 		return NULL;
 	}
+	atomic_add(&sVmapCount, 1);
 	return address;
 }
 
@@ -466,8 +500,8 @@ vunmap(const void* address)
 	if (address == NULL)
 		return;
 	area_id area = area_for(const_cast<void*>(address));
-	if (area >= 0)
-		delete_area(area);
+	if (area >= 0 && delete_area(area) == B_OK)
+		atomic_add(&sVmapCount, -1);
 }
 
 
