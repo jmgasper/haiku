@@ -55,7 +55,7 @@ to_haiku_device(struct pvr_device* pvr_dev)
 /* pvr_haiku_device.c */
 int		pvr_haiku_kccb_execute(struct pvr_device* pvr_dev,
 			struct rogue_fwif_kccb_cmd* command, const char* what,
-			u32* _return);
+			bool answers, u32* _return);
 void	pvr_haiku_fw_boot_failed(struct pvr_device* pvr_dev);
 void	pvr_haiku_force_reset(struct pvr_device* pvr_dev, const char* why);
 

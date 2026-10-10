@@ -44,7 +44,7 @@ typedef struct pvr_haiku_firmware_state {
 	uint32			version_minor;
 	uint32			version_build;
 	bigtime_t		boot_time;			// MIPS reset to firmware_started
-	uint32			health_checks;		// HEALTH_CHECKs answered
+	uint32			health_checks;		// HEALTH_CHECKs executed
 	uint32			health_check_failures;
 	uint32			last_kccb_return;	// return slot of the last command
 	uint32			kccb_cmds_executed;	// as the firmware counts them

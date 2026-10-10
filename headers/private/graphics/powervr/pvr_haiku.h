@@ -65,7 +65,7 @@ struct pvr_haiku_stage {
 	uint32	fw_version_build;
 	uint64	fw_boot_time;			// microseconds, MIPS out of reset to
 									// firmware_started
-	uint32	health_checks;			// HEALTH_CHECKs answered
+	uint32	health_checks;			// HEALTH_CHECKs the firmware executed
 	uint32	health_check_failures;
 	uint32	last_kccb_return;		// return slot of the last KCCB command
 	uint32	kccb_cmds_executed;		// as the firmware counts them (OSDATA)

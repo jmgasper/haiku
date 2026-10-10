@@ -60,7 +60,7 @@ pvr_mmu_flush_exec(struct pvr_device* pvr_dev, bool wait)
 	data->mmu_cache_sync_update_value = 0;
 
 	int error = pvr_haiku_kccb_execute(pvr_dev, &command, "MMU cache flush",
-		NULL);
+		true, NULL);
 	if (error != 0) {
 		drm_err(from_pvr_device(pvr_dev),
 			"MMU cache flush failed (%d); no reset before M4\n", error);

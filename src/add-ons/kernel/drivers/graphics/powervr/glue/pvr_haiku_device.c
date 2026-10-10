@@ -746,13 +746,34 @@ pvr_haiku_firmware_boot(struct pvr_device* pvr_dev,
 /* #pragma mark - firmware checks */
 
 
-/*!	Sends one KCCB command and waits up to a second for its return slot,
-	logging the slot, the return value, the time, the firmware's executed
-	count and the interrupts it took.
+/*!	Waits up to a second for the firmware's count of executed KCCB
+	commands to pass \a count: commands such as HEALTH_CHECK do not answer
+	in their return slot (the firmware writes it only for commands the host
+	waits on; Linux's watchdog sends HEALTH_CHECK without a slot and watches
+	this count, pvr_watchdog_kccb_stalled()).
+*/
+static int
+wait_for_executed(struct pvr_device* pvr_dev, u32 count)
+{
+	struct rogue_fwif_osdata* osdata = pvr_dev->fw_dev.fwif_osdata;
+	bigtime_t deadline = system_time() + 1000000;
+	while ((s32)(READ_ONCE(osdata->kccb_cmds_executed) - count) < 0) {
+		if (system_time() > deadline)
+			return -ETIMEDOUT;
+		snooze(20);
+	}
+	return 0;
+}
+
+
+/*!	Sends one KCCB command and waits up to a second, for its return slot
+	(\a answers) or for the firmware's executed count, and logs the slot,
+	the return value, the time, the executed count and the interrupts.
 */
 int
 pvr_haiku_kccb_execute(struct pvr_device* pvr_dev,
-	struct rogue_fwif_kccb_cmd* command, const char* what, u32* _return)
+	struct rogue_fwif_kccb_cmd* command, const char* what, bool answers,
+	u32* _return)
 {
 	struct pvr_haiku_device* device = to_haiku_device(pvr_dev);
 	struct rogue_fwif_osdata* osdata = pvr_dev->fw_dev.fwif_osdata;
@@ -767,20 +788,27 @@ pvr_haiku_kccb_execute(struct pvr_device* pvr_dev,
 		TRACE("%s: not sent: %d\n", what, error);
 		return error;
 	}
-	error = pvr_kccb_wait_for_completion(pvr_dev, slot, HZ, &result);
+	if (answers)
+		error = pvr_kccb_wait_for_completion(pvr_dev, slot, HZ, &result);
+	else
+		error = wait_for_executed(pvr_dev, executedBefore + 1);
 	bigtime_t elapsed = system_time() - start;
-	if (error != 0)
+	if (error != 0 || !answers)
 		result = READ_ONCE(pvr_dev->kccb.rtn[slot]);
 
 	device->last_kccb_return = result;
 	int irqs = atomic_read(&device->irq_count) - irqsBefore;
+	const char* outcome;
+	if (answers) {
+		outcome = (result & ROGUE_FWIF_KCCB_RTN_SLOT_CMD_EXECUTED) != 0
+			? "executed" : "no answer";
+	} else
+		outcome = error == 0 ? "executed, no answer expected" : "not executed";
 	TRACE("%s: KCCB slot %u, return %#x (%s), %" B_PRIdBIGTIME " us,"
 		" kccb_cmds_executed %u -> %u, %d interrupt%s%s\n", what, slot, result,
-		(result & ROGUE_FWIF_KCCB_RTN_SLOT_CMD_EXECUTED) != 0
-			? "executed" : "no answer",
-		elapsed, executedBefore, READ_ONCE(osdata->kccb_cmds_executed), irqs,
-		irqs == 1 ? "" : "s",
-		error == 0 && elapsed >= 900000
+		outcome, elapsed, executedBefore,
+		READ_ONCE(osdata->kccb_cmds_executed), irqs, irqs == 1 ? "" : "s",
+		answers && error == 0 && elapsed >= 900000
 			? ", seen only at the timeout: no interrupt woke the wait" : "");
 	if (_return != NULL)
 		*_return = result;
@@ -799,17 +827,16 @@ pvr_haiku_health_check(struct pvr_device* pvr_dev)
 	command.cmd_type = ROGUE_FWIF_KCCB_CMD_HEALTH_CHECK;
 	command.kccb_flags = 0;
 
-	u32 result = 0;
 	char what[32];
 	snprintf(what, sizeof(what), "HEALTH_CHECK %u",
 		device->health_checks + device->health_check_failures + 1);
-	int error = pvr_haiku_kccb_execute(pvr_dev, &command, what, &result);
-	if (error == 0 && (result & ROGUE_FWIF_KCCB_RTN_SLOT_CMD_EXECUTED) != 0) {
+	int error = pvr_haiku_kccb_execute(pvr_dev, &command, what, false, NULL);
+	if (error == 0) {
 		device->health_checks++;
 		return B_OK;
 	}
 	device->health_check_failures++;
-	return error != 0 ? lx_status(error) : B_ERROR;
+	return lx_status(error);
 }
 
 
