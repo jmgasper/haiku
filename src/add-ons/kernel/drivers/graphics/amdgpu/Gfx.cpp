@@ -367,10 +367,12 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	result.sequence = sequence;
 	const uint32 shaderEnd = kDirectSequences + kShaderSequences;
 	const uint32 drawEnd = shaderEnd + kDrawSequences;
-	const uint32 vmShaderEnd = drawEnd + kVMShaderSequences;
+	const uint32 ceEnd = drawEnd + 1;
+	const uint32 vmShaderEnd = ceEnd + kVMShaderSequences;
 	const bool direct = sequence <= kDirectSequences;
-	const bool vmShader = sequence > drawEnd && sequence <= vmShaderEnd;
-	const bool privateShader = vmShader && (sequence & 1) != 0;
+	const bool ceIB = sequence == ceEnd;
+	const bool vmShader = sequence > ceEnd && sequence <= vmShaderEnd;
+	const bool privateShader = vmShader && ((sequence - ceEnd) & 1) != 0;
 	const bool shader = (!direct && sequence <= shaderEnd) || vmShader;
 	const bool draw = sequence > shaderEnd && sequence <= drawEnd;
 	const bool minimalIB = sequence == vmShaderEnd + 1;
@@ -388,11 +390,11 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			control[0x300 / 4 + i] = 0;
 		}
 	}
-	if (minimalIB || privateShader)
+	if (minimalIB || privateShader || ceIB)
 		DumpExecutionState("before IB");
-	uint64 destination = direct || shader || draw || minimalIB ? gpu : kMemoryVA;
+	uint64 destination = direct || shader || draw || minimalIB || ceIB ? gpu : kMemoryVA;
 	uint64 markerAddress = privateShader ? kControlVA
-		: (direct || shader || draw || minimalIB ? kControlGPU : kControlVA);
+		: (direct || shader || draw || minimalIB || ceIB ? kControlGPU : kControlVA);
 	for (uint32 i = 0; i < 3072; i++)
 		data[(int32)i - 1024] = 0xabcddcba;
 	ib[n++] = Packet(0x37, 1026); // WRITE_DATA, 1024 payload DWORDs
@@ -616,7 +618,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			emit(ib[i]);
 	}
 
-	if (direct || minimalIB) {
+	if (direct || minimalIB || ceIB) {
 		// The minimal IB obtains its completion marker exclusively from the
 		// private VM's five-DWORD IB. Only its bulk payload runs directly.
 		uint32 directLength = minimalIB ? 1028 : n;
@@ -625,7 +627,23 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	}
 	// First exercise direct ring packets, then the indirect-buffer fetch path.
 	// Both streams and all addresses are private to the kernel.
-	if (!direct && !shader && !draw) {
+	if (ceIB) {
+		// libdrm basic_tests.c's CE counter handshake, with the DE wait in
+		// the direct ring. This isolates CE indirect fetch before the first
+		// DE indirect fetch. Only our existing private VM1 command RAM is used.
+		volatile uint32* commands = ib + 0xc000 / 4;
+		commands[0] = Packet(0x89, 0); // SET_CE_DE_COUNTERS
+		commands[1] = 0;
+		commands[2] = Packet(0x84, 0); // INCREMENT_CE_COUNTER
+		commands[3] = 1;
+		emit(Packet(0x33, 2)); // INDIRECT_BUFFER_CONST
+		emit(kCommandVA + 0xc000);
+		emit(0);
+		emit(4 | 1 << 24);
+		emit(Packet(0x86, 0)); // WAIT_ON_CE_COUNTER
+		emit(1);
+	}
+	if (!direct && !shader && !draw && !ceIB) {
 		// Explicitly disable inherited register loads/shadowing outside the
 		// clear-state preamble before entering a private indirect buffer.
 		emit(Packet(0x28, 1));
@@ -729,6 +747,13 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		|| r[0x21c0] != (wptr & 0x3fff)) && system_time() < deadline)
 		snooze(50);
 	__sync_synchronize();
+	if (ceIB) {
+		dprintf("amdgpu: GFX CE indirect seq %u counter %u VM %#x/%#x\n",
+			(unsigned)sequence, (unsigned)r[0xc09a], (unsigned)r[0x536],
+			(unsigned)r[0x537]);
+		if (r[0xc09a] != 1)
+			result.mismatches++;
+	}
 	if (cpRead) {
 		dprintf("amdgpu: GFX CP read case %u seq %u %s %s %s got %#x/%#x"
 			" expected %#x/%#x VM %#x/%#x\n", (unsigned)readCase,
