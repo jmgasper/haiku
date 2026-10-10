@@ -106,14 +106,14 @@ Gart::Initialize(volatile uint32* r, const amdgpu_info& info,
 		Uninitialize(true);
 		return status;
 	}
-	// Reserve the first 64 KiB of GART for private, snooped CP commands.
-	commandArea = create_area_etc(B_SYSTEM_TEAM, "amdgpu command RAM", 65536,
+	// Reserve the first 128 KiB of GART for the snooped CP ring and commands.
+	commandArea = create_area_etc(B_SYSTEM_TEAM, "amdgpu command RAM", kCommandBytes,
 		B_FULL_LOCK, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, 0, 0, &va, &pa,
 		(void**)&commandMemory);
 	status = commandArea < 0 ? commandArea : B_OK;
 	if (status == B_OK) {
-		memset((void*)commandMemory, 0, 65536);
-		status = Bind(0, 65536, (const void*)commandMemory, true);
+		memset((void*)commandMemory, 0, kCommandBytes);
+		status = Bind(0, kCommandBytes, (const void*)commandMemory, true);
 	}
 	if (status != B_OK) {
 		Uninitialize(status == B_TIMED_OUT);

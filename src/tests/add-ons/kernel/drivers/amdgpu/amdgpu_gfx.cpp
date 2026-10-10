@@ -73,7 +73,7 @@ int main(int argc, char** argv)
 		gart.size = sizeof(gart);
 		Require(ioctl(fd, AMDGPU_GART_INFO, &gart, sizeof(gart)) == 0, "VM fault query");
 		printf("VM fault status %#x, GPU page %#x, client %#x\n",
-			(unsigned)gart.vm_fault_status, (unsigned)gart.vm_fault_address,
+			(unsigned)result.vm_fault_status, (unsigned)result.vm_fault_address,
 			(unsigned)result.vm_fault_client);
 		Require(result.status == B_OK && result.stage == 5 && result.checked_bytes == 12288
 			&& result.mismatches == 0, "GFX indirect memory writes and guards");

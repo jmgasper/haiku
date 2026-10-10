@@ -5,10 +5,13 @@
 struct GfxEngine {
 	volatile uint32* regs;
 	volatile uint32* memory;
-	area_id area;
+	volatile uint32* ring;
+	area_id area, vmArea;
 	uint64 gpu;
 	uint32 wptr, sequence;
-	bool attempted, ready, faulted;
+	bool attempted, ready, faulted, vmEnabled;
+	status_t InitializeVM(const amdgpu_info& info,
+		const amdgpu::AtomVramReservation& reservation, const Gart& gart);
 	status_t Test(volatile uint32* r, const amdgpu_info& info,
 		const amdgpu::AtomVramReservation& reservation,
 		const amdgpu::FirmwareView firmware[4], SdmaEngine& sdma, Gart& gart,

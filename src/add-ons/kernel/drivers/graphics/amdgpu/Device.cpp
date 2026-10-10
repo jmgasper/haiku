@@ -214,7 +214,7 @@ Start(volatile uint32* regs, const amdgpu_info& info,
 		sAllocator.Uninit();
 		return status;
 	}
-	if (!sGartAllocator.Init(Gart::kSize) || !sGartAllocator.Reserve(0, 65536))
+	if (!sGartAllocator.Init(Gart::kSize) || !sGartAllocator.Reserve(0, Gart::kCommandBytes))
 		status = B_NO_MEMORY;
 	else
 		status = sGart.Initialize(regs, info, reservation);

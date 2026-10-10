@@ -59,7 +59,65 @@ static const uint32 kGolden[][3] = {
 	{0x31e7, 0xffffffff, 0x00FF7FAF}, // SPI_RESOURCE_RESERVE_EN_CU_1
 };
 static const uint32 kHalt = 0x15000000;
+static const uint64 kCommandVA = 0x10000;
+static const uint64 kMemoryVA = 0x100000;
 static uint32 Packet(uint32 op, uint32 count) { return 0xc0000000 | count << 16 | op << 8; }
+
+status_t
+GfxEngine::InitializeVM(const amdgpu_info& info,
+	const amdgpu::AtomVramReservation& reservation, const Gart& gart)
+{
+	// VMID1 is a private diagnostic address space. Only the owned command
+	// RAM and GFX scratch are mapped; it cannot reach client BOs or scanout.
+	vmArea = -1;
+	const uint64 offset = 24ULL << 20;
+	if ((regs[0x505] & 1) != 0
+		|| !amdgpu_vram_range_is_safe(regs, info, reservation, offset, 8192))
+		return B_NOT_ALLOWED;
+	volatile uint64* directory;
+	vmArea = map_physical_memory("amdgpu private GFX VM", info.bar_address[0] + offset,
+		8192, B_ANY_KERNEL_ADDRESS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
+		(void**)&directory);
+	if (vmArea < 0)
+		return vmArea;
+	for (uint32 i = 0; i < 1024; i++)
+		directory[i] = 0;
+	volatile uint64* ptes = directory + 512;
+	directory[0] = (info.vram_gpu_base + offset + 4096) | 1;
+	for (uint32 i = 0; i < 16; i++)
+		ptes[kCommandVA / 4096 + i] = gart.table[16 + i];
+	for (uint32 i = 0; i < 256; i++)
+		ptes[kMemoryVA / 4096 + i] = (gpu + i * 4096) | 0x71;
+	__sync_synchronize();
+	(void)directory[0];
+	regs[0x1520] = 1;
+	(void)regs[0x1520];
+	regs[0x575] = 0;
+	regs[0x576] = 0;
+	regs[0x577] = 0;
+	regs[0x558] = 0;
+	regs[0x560] = 511;
+	regs[0x550] = (info.vram_gpu_base + offset) >> 12;
+	regs[0x547] = regs[0x546];
+	regs[0x50d] = 0; // retain the first fault; no interrupt handler yet
+	regs[0x505] = regs[0x504] | 2; // two levels, 512 PTEs per page
+	vmEnabled = true;
+	regs[0x51e] = 2;
+	bigtime_t deadline = system_time() + 100000;
+	while ((regs[0x51f] & 2) == 0) {
+		if (system_time() >= deadline)
+			return B_TIMED_OUT;
+		snooze(10);
+	}
+	uint32 select = regs[0x391];
+	regs[0x391] = 1 << 4;
+	regs[0x230d] = 1 << 5 | 3 << 8 | 3 << 3; // NC default, UC APE1, unaligned
+	regs[0x230a] = 0;
+	regs[0x230b] = 1;
+	regs[0x230c] = 0;
+	regs[0x391] = select;
+	return B_OK;
+}
 
 void
 GfxEngine::Snapshot(amdgpu_gfx_test& result)
@@ -73,6 +131,11 @@ GfxEngine::Snapshot(amdgpu_gfx_test& result)
 	result.vm_fault_status = regs[0x536];
 	result.vm_fault_address = regs[0x53e];
 	result.vm_fault_client = regs[0x538];
+	if ((result.vm_fault_status & 0xff) == 0 && (regs[0x537] & 0xff) != 0) {
+		result.vm_fault_status = regs[0x537];
+		result.vm_fault_address = regs[0x53f];
+		result.vm_fault_client = regs[0x539];
+	}
 	dprintf("amdgpu: GFX snapshot stage %u VM %#x page %#x client %#x\n",
 		(unsigned)result.stage, (unsigned)result.vm_fault_status,
 		(unsigned)result.vm_fault_address, (unsigned)result.vm_fault_client);
@@ -114,9 +177,17 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			return area;
 		attempted = true;
 		gpu = info.vram_gpu_base + (40ULL << 20);
+		ring = gart.commandMemory;
+		status_t status = InitializeVM(info, reservation, gart);
+		if (status != B_OK) {
+			faulted = true;
+			return status;
+		}
 		wptr = sequence = 0;
 		for (uint32 i = 0; i < (1 << 20) / 4; i++)
-			memory[i] = i < 0x4000 ? 0xffff1000 : 0;
+			memory[i] = 0;
+		for (uint32 i = 0; i < 0x4000; i++)
+			ring[i] = 0xffff1000;
 		result.stage = 2;
 		Snapshot(result);
 		r[0x306a] = 0; // no interrupts until the IH path exists
@@ -136,7 +207,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		r[0x230b] = 1;
 		r[0x230c] = 0;
 		r[0x391] = select;
-		status_t status = amdgpu_smc_load_gfx(r, firmware,
+		status = amdgpu_smc_load_gfx(r, firmware,
 			sdma.memory + (1 << 20) / 4, sdma.gpu + (1 << 20));
 		if (status != B_OK) {
 			faulted = true;
@@ -168,8 +239,8 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		r[0x3047] = (gpu + 0x30020) >> 32;
 		snooze(1000);
 		r[0x3041] = control;
-		r[0x3040] = gpu >> 8;
-		r[0x30b1] = gpu >> 40;
+		r[0x3040] = Gart::kBase >> 8;
+		r[0x30b1] = Gart::kBase >> 40;
 		r[0x3059] &= ~0x10000000u;
 		r[0x30ae] = 7;
 		r[0x3050] = 0;
@@ -181,56 +252,57 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		// Match the VI CP startup sequence before submitting any IB: disable
 		// inherited shadow loads, define the hardware's full clear state,
 		// select the Polaris raster layout, and initialize CE partitions.
-		memory[wptr++] = Packet(0x4a, 0);
-		memory[wptr++] = 2u << 28;
-		memory[wptr++] = Packet(0x28, 1);
-		memory[wptr++] = 0x80000000;
-		memory[wptr++] = 0x80000000;
+		ring[wptr++] = Packet(0x4a, 0);
+		ring[wptr++] = 2u << 28;
+		ring[wptr++] = Packet(0x28, 1);
+		ring[wptr++] = 0x80000000;
+		ring[wptr++] = 0x80000000;
 		for (const cs_extent_def* ext = vi_SECT_CONTEXT_defs; ext->extent != NULL; ext++) {
-			memory[wptr++] = Packet(0x69, ext->reg_count);
-			memory[wptr++] = ext->reg_index - 0xa000;
+			ring[wptr++] = Packet(0x69, ext->reg_count);
+			ring[wptr++] = ext->reg_index - 0xa000;
 			for (uint32 i = 0; i < ext->reg_count; i++)
-				memory[wptr++] = ext->extent[i];
+				ring[wptr++] = ext->extent[i];
 		}
-		memory[wptr++] = Packet(0x69, 2);
-		memory[wptr++] = 0xd4;
-		memory[wptr++] = 0x16000012;
-		memory[wptr++] = 0x2a;
-		memory[wptr++] = Packet(0x4a, 0);
-		memory[wptr++] = 3u << 28;
-		memory[wptr++] = Packet(0x12, 0);
-		memory[wptr++] = 0;
-		memory[wptr++] = Packet(0x11, 2);
-		memory[wptr++] = 3;
-		memory[wptr++] = 0x8000;
-		memory[wptr++] = 0x8000;
+		ring[wptr++] = Packet(0x69, 2);
+		ring[wptr++] = 0xd4;
+		ring[wptr++] = 0x16000012;
+		ring[wptr++] = 0x2a;
+		ring[wptr++] = Packet(0x4a, 0);
+		ring[wptr++] = 3u << 28;
+		ring[wptr++] = Packet(0x12, 0);
+		ring[wptr++] = 0;
+		ring[wptr++] = Packet(0x11, 2);
+		ring[wptr++] = 3;
+		ring[wptr++] = 0x8000;
+		ring[wptr++] = 0x8000;
 		ready = true;
 	}
 	result.stage = 4;
 	uint32 n = 0;
-	volatile uint32* ib = gart.commandMemory;
+	volatile uint32* ib = gart.commandMemory + 65536 / 4;
 	volatile uint32* data = memory + 0x20000 / 4;
 	if (++sequence == 0)
 		sequence++;
 	result.sequence = sequence;
+	uint64 destination = sequence >= 3 ? kMemoryVA : gpu;
 	for (uint32 i = 0; i < 3072; i++)
 		data[(int32)i - 1024] = 0xabcddcba;
 	ib[n++] = Packet(0x37, 1026); // WRITE_DATA, 1024 payload DWORDs
 	ib[n++] = 5 << 8 | 1 << 20; // memory, write confirmation
-	ib[n++] = (uint32)(gpu + 0x20000);
-	ib[n++] = (gpu + 0x20000) >> 32;
+	ib[n++] = (uint32)(destination + 0x20000);
+	ib[n++] = (destination + 0x20000) >> 32;
 	for (uint32 i = 0; i < 1024; i++)
 		ib[n++] = 0x71324589 ^ (i * 0x10204081u) ^ sequence;
 	// A confirmed memory write in the same IB follows all payload writes.
 	memory[0x30000 / 4] = 0;
 	ib[n++] = Packet(0x37, 3);
 	ib[n++] = 5 << 8 | 1 << 20;
-	ib[n++] = (uint32)(gpu + 0x30000);
-	ib[n++] = (gpu + 0x30000) >> 32;
+	ib[n++] = (uint32)(destination + 0x30000);
+	ib[n++] = (destination + 0x30000) >> 32;
 	ib[n++] = sequence;
 	while ((n & 255) != 0)
 		ib[n++] = 0xffff1000;
-	auto emit = [&](uint32 word) { memory[wptr++ & 0x3fff] = word; };
+	auto emit = [&](uint32 word) { ring[wptr++ & 0x3fff] = word; };
 	// Invalidate caches after CPU updates and synchronize PFP before IB reads.
 	// gfx_v8_0_emit_mem_sync uses this full-range VI cache operation.
 	emit(Packet(0x43, 3));
@@ -243,7 +315,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	// First exercise direct ring packets, then the indirect-buffer fetch path.
 	// Both streams and all addresses are private to the kernel.
 	if (sequence >= 2) {
-		uint64 address = Gart::kBase;
+		uint64 address = kCommandVA;
 		uint32 length = n;
 		if (sequence == 2) {
 			// Isolate fetching/returning from an IB before its WRITE_DATA path.
@@ -252,14 +324,14 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			for (uint32 i = 0; i < length; i++)
 				ib[0x8000 / 4 + i] = 0xffff1000;
 		}
-		memory[wptr++ & 0x3fff] = Packet(0x3f, 2);
-		memory[wptr++ & 0x3fff] = (uint32)address;
-		memory[wptr++ & 0x3fff] = address >> 32;
-		memory[wptr++ & 0x3fff] = length; // graphics IB: VMID0, no compute VALID bit
+		ring[wptr++ & 0x3fff] = Packet(0x3f, 2);
+		ring[wptr++ & 0x3fff] = (uint32)address;
+		ring[wptr++ & 0x3fff] = address >> 32;
+		ring[wptr++ & 0x3fff] = length | 1 << 24; // private VMID1
 	}
 	if (sequence <= 2) {
 		for (uint32 i = 0; i < n; i++)
-			memory[wptr++ & 0x3fff] = ib[i];
+			ring[wptr++ & 0x3fff] = ib[i];
 	}
 	// VI requires a dummy EOP followed by the real event. This fence is
 	// outside the IB and covers its return plus cache writeback/invalidation.
@@ -273,9 +345,9 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		emit(0);
 	}
 	while ((wptr & 255) != 0)
-		memory[wptr++ & 0x3fff] = 0xffff1000; // type-3 zero-payload NOP
+		ring[wptr++ & 0x3fff] = 0xffff1000; // type-3 zero-payload NOP
 	__sync_synchronize();
-	(void)memory[(wptr - 1) & 0x3fff];
+	(void)ring[(wptr - 1) & 0x3fff];
 	r[0x1520] = 1;
 	(void)r[0x1520];
 	r[0x3045] = wptr & 0x3fff;
@@ -296,7 +368,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 				result.mismatches++;
 		}
 		result.checked_bytes = 12288;
-		if (result.mismatches != 0 || (r[0x536] & 0xff) != 0)
+		if (result.mismatches != 0 || ((r[0x536] | r[0x537]) & 0xff) != 0)
 			status = B_BAD_DATA;
 	}
 	Snapshot(result);
@@ -326,6 +398,16 @@ GfxEngine::Uninitialize()
 	regs[0x21b6] |= kHalt;
 	(void)regs[0x21b6];
 	regs[0xec00] &= ~1u;
+	if (vmEnabled) {
+		regs[0x505] &= ~1u;
+		(void)regs[0x505];
+		regs[0x51e] = 2;
+		(void)regs[0x51f];
+		vmEnabled = false;
+	}
+	if (vmArea >= 0)
+		delete_area(vmArea);
+	vmArea = -1;
 	delete_area(area);
 	ready = false;
 	area = -1;

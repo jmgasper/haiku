@@ -11,6 +11,7 @@
 struct Gart {
 	static const uint64 kSize = 1ULL << 30;
 	static const uint64 kBase = 0x10000000;
+	static const uint32 kCommandBytes = 131072;
 	volatile uint32* regs;
 	volatile uint64* table;
 	area_id tableArea, dummyArea, commandArea;
