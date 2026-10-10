@@ -276,8 +276,9 @@ pvr_haiku_device_create(const pvr_haiku_platform* platform)
 	atomic_set(&pvr_dev->mmu_flush_cache_flags, 0);
 
 	// and pvr_probe() for the ioctls: contexts, job queues and their
-	// scheduler thread, job and free list IDs
+	// scheduler thread, job and free list IDs, resets
 	lx_dma_fence_init_globals();
+	pvr_haiku_power_init(pvr_dev);
 	pvr_context_device_init(pvr_dev);
 	if (pvr_queue_device_init(pvr_dev) != 0) {
 		pvr_context_device_fini(pvr_dev);
@@ -724,8 +725,13 @@ pvr_haiku_interrupt(struct pvr_device* pvr_dev)
 void
 pvr_haiku_interrupt_work(struct pvr_device* pvr_dev)
 {
-	if (!READ_ONCE(pvr_dev->fw_dev.initialised))
+	// a reset deals with the firmware itself (Linux disables the
+	// interrupt meanwhile); a lost device is left alone
+	if (!READ_ONCE(pvr_dev->fw_dev.initialised)
+		|| atomic_read(&to_haiku_device(pvr_dev)->resetting) != 0
+		|| pvr_dev->lost) {
 		return;
+	}
 	pvr_fwccb_process(pvr_dev);
 	pvr_kccb_wake_up_waiters(pvr_dev);
 	process_active_queues(pvr_dev);
@@ -1065,6 +1071,13 @@ pvr_haiku_firmware_verify(struct pvr_device* pvr_dev,
 /* #pragma mark - state and diagnostics */
 
 
+bool
+pvr_haiku_device_lost(struct pvr_device* pvr_dev)
+{
+	return pvr_dev->lost;
+}
+
+
 void
 pvr_haiku_firmware_state_get(struct pvr_device* pvr_dev,
 	pvr_haiku_firmware_state* state)
@@ -1092,6 +1105,8 @@ pvr_haiku_firmware_state_get(struct pvr_device* pvr_dev,
 	}
 	state->irq_count = atomic_read(&device->irq_count);
 	state->irq_spurious = atomic_read(&device->irq_spurious);
+	state->resets = device->resets;
+	state->lost = pvr_dev->lost;
 	state->mips_exception_status
 		= pvr_cr_read32(pvr_dev, ROGUE_CR_MIPS_EXCEPTION_STATUS);
 }
@@ -1256,12 +1271,77 @@ dump_trace_line(void* cookie, const char* text)
 }
 
 
+static u32
+xa_count(struct xarray* xa)
+{
+	unsigned long index;
+	void* entry;
+	u32 count = 0;
+	xa_for_each(xa, index, entry)
+		count++;
+	return count;
+}
+
+
+/*!	What exists: buffers, page-table pages, firmware objects, contexts,
+	jobs on the queues (handed to the firmware, and still queued).
+*/
+static void
+dump_objects(struct pvr_device* pvr_dev)
+{
+	uint32 buffers, pages, vmaps;
+	uint64 bufferBytes;
+	lx_memory_stats(&buffers, &bufferBytes, &pages, &vmaps);
+
+	u32 fwObjects = 0;
+	struct list_head* position;
+	if (READ_ONCE(pvr_dev->fw_dev.initialised)) {
+		mutex_lock(&pvr_dev->fw_dev.fw_objs.lock);
+		list_for_each(position, &pvr_dev->fw_dev.fw_objs.list)
+			fwObjects++;
+		mutex_unlock(&pvr_dev->fw_dev.fw_objs.lock);
+	}
+
+	u32 queues = 0, pending = 0, queued = 0;
+	struct pvr_queue* queue;
+	struct list_head* lists[] = {
+		&pvr_dev->queues.active, &pvr_dev->queues.idle
+	};
+	mutex_lock(&pvr_dev->queues.lock);
+	for (int i = 0; i < 2; i++) {
+		list_for_each_entry(queue, lists[i], node) {
+			queues++;
+			spin_lock(&queue->scheduler.job_list_lock);
+			list_for_each(position, &queue->scheduler.pending_list)
+				pending++;
+			spin_unlock(&queue->scheduler.job_list_lock);
+			struct drm_sched_entity* entity = queue->scheduler.entity;
+			if (entity != NULL) {
+				spin_lock(&entity->lock);
+				list_for_each(position, &entity->job_queue)
+					queued++;
+				spin_unlock(&entity->lock);
+			}
+		}
+	}
+	mutex_unlock(&pvr_dev->queues.lock);
+
+	TRACE("dump: objects: %u buffers (%llu KiB), %u pages, %u vmaps, %u"
+		" firmware objects, %u contexts, %u jobs, %u free lists; %u queues"
+		" with %u jobs on the GPU and %u queued\n", buffers,
+		(unsigned long long)(bufferBytes / 1024), pages, vmaps, fwObjects,
+		xa_count(&pvr_dev->ctx_ids), xa_count(&pvr_dev->job_ids),
+		xa_count(&pvr_dev->free_list_ids), queues, pending, queued);
+}
+
+
 void
 pvr_haiku_dump(struct pvr_device* pvr_dev, const char* why,
 	uint32 traceLines)
 {
 	struct pvr_fw_device* fw_dev = &pvr_dev->fw_dev;
 	TRACE("dump (%s):\n", why);
+	dump_objects(pvr_dev);
 	dump_registers(pvr_dev);
 
 	// the firmware structures exist while the firmware runs, and in the

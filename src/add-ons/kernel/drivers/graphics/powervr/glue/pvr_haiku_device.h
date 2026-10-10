@@ -36,6 +36,12 @@ struct pvr_haiku_device {
 	atomic_t				irq_count;
 	atomic_t				irq_spurious;
 
+	/*	A reset runs (pvr_power_reset()): the interrupt thread leaves the
+		firmware alone meanwhile. */
+	atomic_t				resetting;
+	u32						resets;
+	struct work_struct		lost_work;		/* fails every job once lost */
+
 	u32						health_checks;
 	u32						health_check_failures;
 	u32						last_kccb_return;
@@ -82,6 +88,7 @@ const struct drm_driver*	pvr_haiku_drm_driver(void);
 
 /* pvr_haiku_power.c */
 int		pvr_haiku_power_off(struct pvr_device* pvr_dev);
+void	pvr_haiku_power_init(struct pvr_device* pvr_dev);
 
 
 #endif	/* POWERVR_HAIKU_DEVICE_H */

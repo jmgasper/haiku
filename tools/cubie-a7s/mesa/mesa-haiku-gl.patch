@@ -45,12 +45,23 @@ shared V3D bitmaps, plus the zink pieces of the air/OS x86_64 fork
   src/gallium/drivers/zink/zink_screen.c
       disk cache key: without a build-id note, the library file's timestamp
       (else no cache), so a new zink never reads an old one's shaders
+  src/gallium/drivers/zink/zink_context.c
+      zink_wait_on_batch() on a lost device: the flush submits nothing, so
+      the batch has no id; report the loss and return instead of asserting
+      (debugoptimized builds aborted the GL program after a GPU reset)
   src/c11/impl/threads_posix.c
       thrd_create() gives Mesa's threads (util_queue, u_thread_create(),
       the Vulkan runtime's submit thread) 8 MiB of stack, as on Linux,
       instead of Haiku's 256 KiB: zink's flush thread overflowed it in the
       PowerVR driver's transfer submission (the pvr patch also moves that
-      frame to the heap)
+      frame to the heap); and each of them touches its thread-local storage
+      twice before it runs anything. Haiku's runtime loader starts a new
+      thread's TLS vector at generation 0, so after any library with TLS
+      was unloaded, the thread's second TLS access dropped what the first
+      wrote. Summit's zink cache thread called util_call_once_data()'s lost
+      callback, NULL. The runtime loader needs the real fix
+      (tls_generation_check tests it); this keeps Mesa's threads safe
+      without it
   src/gallium/drivers/zink/zink_state.c, zink_descriptors.c,
   src/compiler/nir/nir_opt_varyings.c
       the three largest stack frames left (zink_create_vertex_state() 109
@@ -85,7 +96,43 @@ diff -ruN a/include/renderdoc_app.h b/include/renderdoc_app.h
 diff -ruN a/src/c11/impl/threads_posix.c b/src/c11/impl/threads_posix.c
 --- a/src/c11/impl/threads_posix.c
 +++ b/src/c11/impl/threads_posix.c
-@@ -252,6 +252,29 @@
+@@ -35,11 +35,35 @@
+     void *arg;
+ };
+ 
++#ifdef __HAIKU__
++/* Haiku's runtime loader starts a thread's dynamic thread vector at
++ * generation 0. Once any library with thread-local storage has been
++ * unloaded in the process, the thread's second TLS access frees and
++ * re-creates the blocks of every library loaded since, and what the first
++ * access wrote is lost. In Summit's WebProcess, zink's cache thread wrote
++ * util_call_once_data()'s context; the call_once() callback then read it
++ * back as NULL and called it. Two accesses before the thread runs anything
++ * bring its vector up to date. Each call is one __tls_get_addr(), which
++ * updates the whole vector, not just this library's block.
++ */
++static __thread volatile int impl_thrd_tls_primer;
++
++static void __attribute__((noinline, noclone))
++impl_thrd_touch_tls(void)
++{
++    impl_thrd_tls_primer++;
++}
++#endif
++
+ static void *
+ impl_thrd_routine(void *p)
+ {
+     struct impl_thrd_param pack = *((struct impl_thrd_param *)p);
+     free(p);
++#ifdef __HAIKU__
++    impl_thrd_touch_tls();
++    impl_thrd_touch_tls();
++#endif
+     return (void*)(intptr_t)pack.func(pack.arg);
+ }
+ 
+@@ -252,6 +276,29 @@
      if (!pack) return thrd_nomem;
      pack->func = func;
      pack->arg = arg;
@@ -962,6 +1009,21 @@ diff -ruN a/src/gallium/drivers/zink/zink_bo.c b/src/gallium/drivers/zink/zink_b
 +   if (screen->pb.bo_cache.buckets)
 +      pb_cache_deinit(&screen->pb.bo_cache);
  }
+diff -ruN a/src/gallium/drivers/zink/zink_context.c b/src/gallium/drivers/zink/zink_context.c
+--- a/src/gallium/drivers/zink/zink_context.c
++++ b/src/gallium/drivers/zink/zink_context.c
+@@ -4602,6 +4602,11 @@
+       bs = ctx->last_batch_state;
+       assert(bs);
+       batch_id = bs->fence.batch_id;
++      /* a lost device submits nothing, so the batch never gets an id */
++      if (!batch_id && zink_screen(ctx->base.screen)->device_lost) {
++         check_device_lost(ctx);
++         return;
++      }
+    }
+    assert(batch_id);
+    if (!zink_screen_timeline_wait(zink_screen(ctx->base.screen), batch_id, UINT64_MAX))
 diff -ruN a/src/gallium/drivers/zink/zink_descriptors.c b/src/gallium/drivers/zink/zink_descriptors.c
 --- a/src/gallium/drivers/zink/zink_descriptors.c
 +++ b/src/gallium/drivers/zink/zink_descriptors.c
