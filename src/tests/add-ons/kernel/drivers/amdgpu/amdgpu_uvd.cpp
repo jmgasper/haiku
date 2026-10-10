@@ -16,10 +16,14 @@ static void Require(bool ok, const char* why)
 int main(int argc, char** argv)
 {
 	setvbuf(stdout, NULL, _IOLBF, 0);
-	if (argc != 3) {
-		fprintf(stderr, "usage: amdgpu_uvd polaris10_uvd.bin output-prefix\n");
+	if (argc != 3 && argc != 4) {
+		fprintf(stderr, "usage: amdgpu_uvd polaris10_uvd.bin output-prefix [rounds: 1..64]\n");
 		return 2;
 	}
+	char* end = NULL;
+	long rounds = argc == 4 ? strtol(argv[3], &end, 10) : 4;
+	Require(rounds >= 1 && rounds <= 64 && (argc != 4 || (end != argv[3] && *end == 0)),
+		"round count");
 	FILE* file = fopen(argv[1], "rb");
 	Require(file != NULL && fseek(file, 0, SEEK_END) == 0, "open firmware");
 	long size = ftell(file);
@@ -51,7 +55,7 @@ int main(int argc, char** argv)
 		&& bad.stage == 0 && bad.status == B_BAD_DATA, "wrong UVD firmware IP rejected");
 	image[12] = saved;
 	puts("PASS: invalid UVD firmware rejected before hardware access");
-	for (uint32 round = 0; round < 4; round++) {
+	for (uint32 round = 0; round < (uint32)rounds; round++) {
 		auto result = request;
 		Require(ioctl(fd, AMDGPU_UVD_TEST, &result, sizeof(result)) == 0, "UVD ioctl");
 		printf("UVD stage %u status %#x (%s) firmware %#x seq %u fence %u\n",
@@ -82,6 +86,6 @@ int main(int argc, char** argv)
 			"UVD create/decode/destroy, fence, guards and VM faults");
 	}
 	close(fd); free(image); free(output);
-	puts("PASS: four fixed UVD H.264 decodes; saved output still requires full software-reference comparison");
+	printf("PASS: %ld fixed UVD H.264 decodes; saved output still requires full software-reference comparison\n", rounds);
 	return 0;
 }
