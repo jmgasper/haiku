@@ -10,8 +10,12 @@
 #include <frame_buffer_console.h>
 #include <lock.h>
 #include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
 
 #include <amdgpu_haiku.h>
+#include "Rom.h"
+#include "Sdma.h"
 
 // Polaris 10 register indices, from AMD's MIT-licensed register headers:
 // Linux drivers/gpu/drm/amd/include/asic_reg/{bif/bif_5_0_d.h,
@@ -186,6 +190,84 @@ device_free(void* cookie)
 static status_t
 device_control(void* cookie, uint32 op, void* buffer, size_t length)
 {
+	if (op == AMDGPU_SDMA_TEST) {
+		if (geteuid() != 0)
+			return B_NOT_ALLOWED;
+		if (length != sizeof(amdgpu_sdma_test_result))
+			return B_BAD_VALUE;
+		amdgpu_sdma_test_result request;
+		if (user_memcpy(&request, buffer, sizeof(request)) != B_OK)
+			return B_BAD_ADDRESS;
+		if (request.version != AMDGPU_HAIKU_ABI_VERSION
+			|| request.size != sizeof(request) || request.reserved != 0
+			|| request.firmware_size < 52 || request.firmware_size > 65536)
+			return B_BAD_VALUE;
+		void* firmware = malloc(request.firmware_size);
+		void* rom = malloc(AMDGPU_ROM_SIZE);
+		if (firmware == NULL || rom == NULL) {
+			free(firmware);
+			free(rom);
+			return B_NO_MEMORY;
+		}
+		status_t status = user_memcpy(firmware, (void*)(addr_t)request.firmware,
+			request.firmware_size);
+		amdgpu::FirmwareView view;
+		if (status == B_OK
+			&& !amdgpu::ParseSdmaFirmware(firmware, request.firmware_size, view))
+			status = B_BAD_DATA;
+		amdgpu_sdma_test_result result = {};
+		result.version = AMDGPU_HAIKU_ABI_VERSION;
+		result.size = sizeof(result);
+		if (status == B_OK) {
+			mutex_lock(&sLock);
+			status = set_area_protection(sRegisterArea,
+				B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA);
+			if (status == B_OK) {
+				status = amdgpu_read_rom(sDevice, sRegisters, rom, AMDGPU_ROM_SIZE);
+				amdgpu::AtomVramReservation reservation;
+				if (status == B_OK && !amdgpu::ParseAtomVramReservation(rom,
+						AMDGPU_ROM_SIZE, reservation))
+					status = B_BAD_DATA;
+				if (status == B_OK)
+					status = amdgpu_sdma_test(sRegisters, sInfo, view, reservation,
+						result);
+				set_area_protection(sRegisterArea, B_KERNEL_READ_AREA);
+			}
+			mutex_unlock(&sLock);
+		}
+		free(firmware);
+		free(rom);
+		result.status = status;
+		return user_memcpy(buffer, &result, sizeof(result));
+	}
+	if (op == AMDGPU_READ_ROM) {
+		if (geteuid() != 0)
+			return B_NOT_ALLOWED;
+		if (length != sizeof(amdgpu_rom))
+			return B_BAD_VALUE;
+		amdgpu_rom request;
+		if (user_memcpy(&request, buffer, sizeof(request)) != B_OK)
+			return B_BAD_ADDRESS;
+		if (request.version != AMDGPU_HAIKU_ABI_VERSION
+			|| request.size != sizeof(request) || request.reserved != 0
+			|| request.capacity != AMDGPU_ROM_SIZE)
+			return B_BAD_VALUE;
+		void* rom = malloc(AMDGPU_ROM_SIZE);
+		if (rom == NULL)
+			return B_NO_MEMORY;
+		mutex_lock(&sLock);
+		status_t status = set_area_protection(sRegisterArea,
+			B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA);
+		if (status == B_OK) {
+			status = amdgpu_read_rom(sDevice, sRegisters, rom, AMDGPU_ROM_SIZE);
+			set_area_protection(sRegisterArea, B_KERNEL_READ_AREA);
+		}
+		mutex_unlock(&sLock);
+		if (status == B_OK)
+			status = user_memcpy((void*)(addr_t)request.data, rom, AMDGPU_ROM_SIZE);
+		free(rom);
+		return status;
+	}
 	if (op != AMDGPU_GET_INFO)
 		return B_DEV_INVALID_IOCTL;
 	if (length != sizeof(amdgpu_info))

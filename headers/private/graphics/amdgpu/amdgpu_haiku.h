@@ -13,7 +13,40 @@
 #define AMDGPU_DEVICE_NAME "dri/amdgpu/0"
 
 enum {
-	AMDGPU_GET_INFO = B_DEVICE_OP_CODES_END + 1
+	AMDGPU_GET_INFO = B_DEVICE_OP_CODES_END + 1,
+	AMDGPU_READ_ROM,
+	AMDGPU_SDMA_TEST
+};
+
+#define AMDGPU_ROM_SIZE (256 * 1024)
+struct amdgpu_rom {
+	uint32 version;
+	uint32 size;
+	uint64 data; // userspace destination, AMDGPU_ROM_SIZE bytes
+	uint32 capacity;
+	uint32 reserved;
+};
+
+// Root-only bring-up operation. The kernel builds all packets and addresses;
+// userspace supplies only the firmware image, never a GPU program or address.
+struct amdgpu_sdma_test_result {
+	uint32 version;
+	uint32 size;
+	uint64 firmware;
+	uint32 firmware_size;
+	uint32 reserved;
+	int32 status;
+	uint32 stage; // 1: validated, 2: VRAM mapped, 3: firmware, 4: submitted, 5: done
+	uint64 scratch_gpu;
+	uint32 firmware_version;
+	uint32 checked_bytes;
+	uint32 mismatches;
+	uint32 fence;
+	uint32 rptr;
+	uint32 wptr;
+	uint32 engine_status;
+	uint32 halted;
+	uint64 elapsed_us;
 };
 
 struct amdgpu_register_value {
