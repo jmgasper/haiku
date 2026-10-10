@@ -202,10 +202,14 @@ rule UserBuildConfigRulePreImage
 			local vulkanDriver = <cubie-mesa>libvulkan_powervr_mesa.so ;
 			SEARCH on $(vulkanDriver) = $(mesaOut) ;
 			AddFilesToHaikuImage system non-packaged lib : $(vulkanDriver) ;
-			local vulkanTests = <cubie-mesa>pvr_vkprobe <cubie-mesa>pvr_vkfill
-				<cubie-mesa>pvr_vkfence ;
-			SEARCH on $(vulkanTests) = $(mesaOut) ;
-			AddFilesToHaikuImage system non-packaged bin : $(vulkanTests) ;
+			local test ;
+			for test in pvr_vkprobe pvr_vkfill pvr_vkfence pvr_vktriangle {
+				if [ Glob $(mesaOut) : $(test) ] {
+					local testFile = <cubie-mesa>$(test) ;
+					SEARCH on $(testFile) = $(mesaOut) ;
+					AddFilesToHaikuImage system non-packaged bin : $(testFile) ;
+				}
+			}
 		}
 
 		# A telnet login for the lab, with an account whose password hash

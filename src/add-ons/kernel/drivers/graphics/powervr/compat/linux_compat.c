@@ -525,6 +525,35 @@ lx_dma_fence_all(struct dma_fence** fences, u32 count)
 }
 
 
+/* #pragma mark - dma_fence_unwrap */
+
+
+struct dma_fence*
+lx_dma_fence_unwrap_first(struct dma_fence* head,
+	struct dma_fence_unwrap* cursor)
+{
+	cursor->head = head;
+	cursor->index = 0;
+	if (head == NULL || head->ops != &sFenceAllOps)
+		return head;
+	struct lx_fence_all* all = container_of(head, struct lx_fence_all, base);
+	return all->count > 0 ? all->parts[0].fence : NULL;
+}
+
+
+struct dma_fence*
+lx_dma_fence_unwrap_next(struct dma_fence_unwrap* cursor)
+{
+	struct dma_fence* head = cursor->head;
+	if (head == NULL || head->ops != &sFenceAllOps)
+		return NULL;
+	struct lx_fence_all* all = container_of(head, struct lx_fence_all, base);
+	if (++cursor->index >= all->count)
+		return NULL;
+	return all->parts[cursor->index].fence;
+}
+
+
 /* #pragma mark - seq_file */
 
 

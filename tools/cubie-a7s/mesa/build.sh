@@ -39,7 +39,7 @@ HOST_TOOLS=$ROOT/host-tools
 BUILD=$ROOT/build
 OUT=$ROOT/out
 PATCH=$TOOLS/mesa-haiku-pvr.patch
-TESTS=(pvr_vkprobe pvr_vkfill pvr_vkfence)
+TESTS=(pvr_vkprobe pvr_vkfill pvr_vkfence pvr_vktriangle)
 
 export PATH=$HOST_TOOLS/bin:$WORK/toolchains/mesa-python/bin:$WORK/toolchains/host/usr/bin:$PATH
 export LD_LIBRARY_PATH=$NATIVE_DEPS/usr/lib/x86_64-linux-gnu:$NATIVE_DEPS/usr/lib/llvm-18/lib

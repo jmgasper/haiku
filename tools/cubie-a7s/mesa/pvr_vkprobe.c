@@ -59,8 +59,10 @@ result_name(VkResult result)
 		case VK_ERROR_MEMORY_MAP_FAILED: return "VK_ERROR_MEMORY_MAP_FAILED";
 		case VK_ERROR_EXTENSION_NOT_PRESENT:
 			return "VK_ERROR_EXTENSION_NOT_PRESENT";
-		case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
-		case VK_ERROR_INCOMPATIBLE_DRIVER: return "VK_ERROR_INCOMPATIBLE_DRIVER";
+		case VK_ERROR_FEATURE_NOT_PRESENT:
+			return "VK_ERROR_FEATURE_NOT_PRESENT";
+		case VK_ERROR_INCOMPATIBLE_DRIVER:
+			return "VK_ERROR_INCOMPATIBLE_DRIVER";
 		case VK_ERROR_UNKNOWN: return "VK_ERROR_UNKNOWN";
 		default: return "(other)";
 	}
@@ -90,7 +92,8 @@ print_uuid(const char* label, const uint8_t* uuid, size_t size)
 {
 	printf("  %-28s ", label);
 	for (size_t i = 0; i < size; i++)
-		printf("%02x%s", uuid[i], i == 3 || i == 5 || i == 7 || i == 9 ? "-" : "");
+		printf("%02x%s", uuid[i],
+			i == 3 || i == 5 || i == 7 || i == 9 ? "-" : "");
 	printf("\n");
 }
 
@@ -313,7 +316,8 @@ main(void)
 	// line by line: whatever was printed survives a crash in the driver
 	setvbuf(stdout, NULL, _IOLBF, 0);
 
-	printf("pvr_vkprobe: PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=%s HAIKU_PVR_DEVICE=%s\n",
+	printf("pvr_vkprobe: PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=%s "
+		"HAIKU_PVR_DEVICE=%s\n",
 		getenv("PVR_I_WANT_A_BROKEN_VULKAN_DRIVER") != NULL
 			? getenv("PVR_I_WANT_A_BROKEN_VULKAN_DRIVER") : "(unset)",
 		getenv("HAIKU_PVR_DEVICE") != NULL
@@ -483,7 +487,8 @@ main(void)
 
 	// queue families
 	uint32_t familyCount = 0;
-	vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &familyCount, NULL);
+	vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &familyCount,
+		NULL);
 	VkQueueFamilyProperties* families
 		= calloc(familyCount, sizeof(VkQueueFamilyProperties));
 	vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &familyCount,

@@ -26,6 +26,7 @@
 #include "pvr_haiku_device.h"
 #include "pvr_mmu.h"
 #include "pvr_power.h"
+#include "pvr_queue.h"
 #include "pvr_rogue_cr_defs.h"
 #include "pvr_rogue_fwif.h"
 #include "pvr_rogue_heap_config.h"
@@ -272,15 +273,18 @@ pvr_haiku_device_create(const pvr_haiku_platform* platform)
 	// reused code
 	init_waitqueue_head(&pvr_dev->kccb.rtn_q);
 	init_rwsem(&pvr_dev->reset_sem);
-	INIT_LIST_HEAD(&pvr_dev->queues.active);
-	INIT_LIST_HEAD(&pvr_dev->queues.idle);
-	mutex_init(&pvr_dev->queues.lock);
-	spin_lock_init(&pvr_dev->ctx_list_lock);
 	atomic_set(&pvr_dev->mmu_flush_cache_flags, 0);
 
-	// and pvr_probe() for the ioctls: contexts, job and free list IDs
+	// and pvr_probe() for the ioctls: contexts, job queues and their
+	// scheduler thread, job and free list IDs
 	lx_dma_fence_init_globals();
 	pvr_context_device_init(pvr_dev);
+	if (pvr_queue_device_init(pvr_dev) != 0) {
+		pvr_context_device_fini(pvr_dev);
+		lx_drm_dev_release(&pvr_dev->base);
+		kfree(device);
+		return NULL;
+	}
 	xa_init_flags(&pvr_dev->free_list_ids, XA_FLAGS_ALLOC1);
 	xa_init_flags(&pvr_dev->job_ids, XA_FLAGS_ALLOC1);
 	atomic_set(&device->irq_count, 0);
@@ -298,10 +302,10 @@ pvr_haiku_device_delete(struct pvr_device* pvr_dev)
 
 	xa_destroy(&pvr_dev->job_ids);
 	xa_destroy(&pvr_dev->free_list_ids);
+	pvr_queue_device_fini(pvr_dev);
 	pvr_context_device_fini(pvr_dev);
 	release_firmware(pvr_dev->fw_dev.firmware);
 	lx_drm_dev_release(&pvr_dev->base);
-	mutex_destroy(&pvr_dev->queues.lock);
 	rw_lock_destroy(&pvr_dev->reset_sem.lock);
 	kfree(device);
 }
@@ -676,6 +680,27 @@ pvr_haiku_clear_stale_interrupts(struct pvr_device* pvr_dev)
 	here, as nothing masks the level-triggered line until the thread runs.
 	Raw accesses: never traced.
 */
+/*!	pvr_device.c's pvr_device_process_active_queues(): signals the jobs the
+	firmware finished and lets waiting ones into their CCCBs.
+*/
+static void
+process_active_queues(struct pvr_device* pvr_dev)
+{
+	struct pvr_queue* queue;
+	struct pvr_queue* next;
+	LIST_HEAD(active_queues);
+
+	mutex_lock(&pvr_dev->queues.lock);
+
+	// the queues still active afterwards go back onto queues.active
+	list_splice_init(&pvr_dev->queues.active, &active_queues);
+	list_for_each_entry_safe(queue, next, &active_queues, node)
+		pvr_queue_process(queue);
+
+	mutex_unlock(&pvr_dev->queues.lock);
+}
+
+
 bool
 pvr_haiku_interrupt(struct pvr_device* pvr_dev)
 {
@@ -703,7 +728,7 @@ pvr_haiku_interrupt_work(struct pvr_device* pvr_dev)
 		return;
 	pvr_fwccb_process(pvr_dev);
 	pvr_kccb_wake_up_waiters(pvr_dev);
-	// M3: pvr_device_process_active_queues()
+	process_active_queues(pvr_dev);
 }
 
 

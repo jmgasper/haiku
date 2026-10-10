@@ -187,7 +187,8 @@ main(int argc, char** argv)
 
 	// a queue family that can compute
 	uint32_t familyCount = 0;
-	vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &familyCount, NULL);
+	vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &familyCount,
+		NULL);
 	VkQueueFamilyProperties families[8];
 	if (familyCount > 8)
 		familyCount = 8;

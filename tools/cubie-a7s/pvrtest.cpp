@@ -442,12 +442,21 @@ test_buffers()
 		check(pvr_ioctl(PVR_NR(VM_MAP), &vmMap) == 0,
 			"VM_MAP again, left for DESTROY_VM_CONTEXT");
 
-		// contexts need job queues, which the driver does not have yet
+		// a transfer context needs no static state: the firmware context,
+		// its CCCB and the job queue with its scheduler
 		drm_pvr_ioctl_create_context_args context = {};
-		context.type = DRM_PVR_CTX_TYPE_COMPUTE;
+		context.type = DRM_PVR_CTX_TYPE_TRANSFER_FRAG;
+		context.priority = DRM_PVR_CTX_PRIORITY_NORMAL;
 		context.vm_context_handle = vm.handle;
 		error = pvr_ioctl(PVR_NR(CREATE_CONTEXT), &context);
-		printf("INFO  CREATE_CONTEXT compute: %s\n", strerror(error));
+		check(error == 0 && context.handle != 0,
+			"CREATE_CONTEXT transfer", error != 0 ? strerror(error) : NULL);
+		if (error == 0) {
+			drm_pvr_ioctl_destroy_context_args destroy = {};
+			destroy.handle = context.handle;
+			check(pvr_ioctl(PVR_NR(DESTROY_CONTEXT), &destroy) == 0,
+				"DESTROY_CONTEXT");
+		}
 	}
 	if (vm.handle != 0) {
 		drm_pvr_ioctl_destroy_vm_context_args destroy = {};

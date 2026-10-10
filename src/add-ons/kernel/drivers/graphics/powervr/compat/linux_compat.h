@@ -246,6 +246,9 @@ typedef s64				ktime_t;
 #define _BITULL(x)		(1ULL << (x))
 #define BIT(nr)			(1UL << (nr))
 #define BIT_ULL(nr)		(1ULL << (nr))
+#define BIT_MASK(nr)	(1UL << ((nr) % BITS_PER_LONG))
+#define lower_32_bits(n)	((u32)((n) & 0xffffffff))
+#define upper_32_bits(n)	((u32)(((n) >> 16) >> 16))
 #define GENMASK(high, low) \
 	(((~0UL) - (1UL << (low)) + 1) & (~0UL >> (BITS_PER_LONG - 1 - (high))))
 #define GENMASK_ULL(high, low) \
@@ -578,6 +581,15 @@ kvmalloc_array(size_t count, size_t size, gfp_t flags)
 
 #define kzalloc_obj(object, ...) \
 	((__typeof__(object)*)kzalloc(sizeof(object), GFP_KERNEL))
+#define kvmalloc_objs(object, count, ...) \
+	((__typeof__(object)*)kvmalloc_array((count), sizeof(object), \
+		GFP_KERNEL))
+
+/* overflow.h; the sizes here are small, no saturation needed */
+#define struct_size(pointer, member, count) \
+	(sizeof(*(pointer)) + sizeof(*(pointer)->member) * (size_t)(count))
+#define struct_size_t(type, member, count) \
+	struct_size((type*)NULL, member, count)
 
 static inline bool
 mem_is_zero(const void* memory, size_t size)
@@ -640,6 +652,8 @@ lx_atomic_xchg(atomic_t* atomic, int value)
 #define atomic_set(atomic, value)	lx_atomic_set(atomic, value)
 #define atomic_add(value, atomic) \
 	((void)lx_atomic_add_return(value, atomic))
+#define atomic_sub(value, atomic) \
+	((void)lx_atomic_add_return(-(value), atomic))
 #define atomic_inc(atomic)			((void)lx_atomic_add_return(1, atomic))
 #define atomic_dec(atomic)			((void)lx_atomic_add_return(-1, atomic))
 #define atomic_inc_return(atomic)	lx_atomic_add_return(1, atomic)
@@ -784,6 +798,9 @@ list_splice_init(struct list_head* list, struct list_head* head)
 	INIT_LIST_HEAD(list);
 }
 
+#define LIST_HEAD_INIT(name)	{ &(name), &(name) }
+#define LIST_HEAD(name)			struct list_head name = LIST_HEAD_INIT(name)
+
 #define list_entry(pointer, type, member)	container_of(pointer, type, member)
 #define list_first_entry(head, type, member) \
 	list_entry((head)->next, type, member)
@@ -814,30 +831,30 @@ list_splice_init(struct list_head* list, struct list_head* head)
 /* #pragma mark - locks */
 
 
-/*	Haiku's spinlocks need interrupts off, as Linux's spin_lock_irqsave()
-	has them; the plain variants do the same. */
+/*	spinlock_t is a Haiku mutex. Linux code never sleeps under a spinlock,
+	so a mutex keeps every lock order it has; and unlike a Haiku spinlock
+	it leaves interrupts on, so what Linux allows under one (kfree(),
+	signaling fences, whose callbacks free and wake) works here too. None
+	is taken in interrupt context: the hard interrupt handler is native and
+	takes no lock. */
 typedef struct {
-	spinlock	lock;
-	cpu_status	state;
+	mutex	lock;
 } spinlock_t;
 
+/* (mutex_init) is Haiku's, not the one-argument macro below */
 #define spin_lock_init(spinlock_) \
-	do { B_INITIALIZE_SPINLOCK(&(spinlock_)->lock); } while (0)
+	do { (mutex_init)(&(spinlock_)->lock, "powervr spinlock"); } while (0)
 
 static inline void
 spin_lock(spinlock_t* lock)
 {
-	cpu_status state = disable_interrupts();
-	acquire_spinlock(&lock->lock);
-	lock->state = state;
+	mutex_lock(&lock->lock);
 }
 
 static inline void
 spin_unlock(spinlock_t* lock)
 {
-	cpu_status state = lock->state;
-	release_spinlock(&lock->lock);
-	restore_interrupts(state);
+	mutex_unlock(&lock->lock);
 }
 
 #define spin_lock_irqsave(lock, flags) \
@@ -931,17 +948,26 @@ struct drm_vma_offset_node {
 	u64	offset;
 };
 
+/* A buffer's fences by use; linux_compat_sched.h has the functions. */
+struct dma_resv {
+	struct mutex		lock;
+	struct list_head	fences;
+};
+
 struct drm_gem_object {
 	struct drm_device*			dev;
 	size_t						size;
 	struct kref					refcount;
 	struct drm_vma_offset_node	vma_node;
+	struct dma_resv*			resv;
+	struct dma_resv				_resv;
 };
 
 /* The open file a DRM ioctl comes from (the driver's per-open state hangs
    off driver_priv; glue/pvr_haiku_drm.c owns the rest). */
 struct drm_file {
 	void*	driver_priv;
+	u64		client_id;
 };
 
 void lx_drm_dev_init(struct drm_device* drm, struct device* device);
@@ -1046,15 +1072,6 @@ void xa_unlock(struct xarray* xa);
 	for ((index) = 0; ((entry) = lx_xa_find((xa), &(index))) != NULL; \
 		(index)++)
 
-/* Only the structures pvr_device.h embeds. */
-
-struct work_struct {
-	void	(*func)(struct work_struct* work);
-};
-
-struct delayed_work {
-	struct work_struct	work;
-};
 
 
 /* #pragma mark - ioctls and user memory */
@@ -1118,6 +1135,10 @@ void* memdup_user(const void __user* from, size_t size);
 uid_t geteuid(void);
 
 #define in_interrupt()		0
+
+/* The calling team (the argument, "current", is never evaluated). */
+#define task_tgid_nr(task)	((int)getpid())
+pid_t getpid(void);
 
 
 /* #pragma mark - the DRM driver description */
@@ -1678,6 +1699,9 @@ int param_get_hexint(char* buffer, const struct kernel_param* parameter);
 #define MODULE_PARM_DESC(name_, text_)		_Static_assert(1, text_)
 
 int kstrtouint(const char* text, unsigned int base, unsigned int* _value);
+
+
+#include "linux_compat_sched.h"
 
 
 #endif	/* POWERVR_LINUX_COMPAT_H */
