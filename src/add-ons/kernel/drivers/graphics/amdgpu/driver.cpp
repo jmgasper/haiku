@@ -255,7 +255,8 @@ device_control(void* cookie, uint32 op, void* buffer, size_t length)
 {
 	if ((op >= AMDGPU_CREATE_BUFFER && op <= AMDGPU_GART_INFO)
 		|| (op >= AMDGPU_VIDEO_CREATE && op <= AMDGPU_HEVC_DECODE)
-		|| op == AMDGPU_CREATE_DEVICE_BUFFER)
+		|| op == AMDGPU_CREATE_DEVICE_BUFFER
+		|| (op >= AMDGPU_VM_INFO && op <= AMDGPU_VM_TEST))
 		return amdgpu_client_control((AmdgpuClient*)cookie, op, buffer, length,
 			start_installed_device);
 	if (op == AMDGPU_DISPLAY_SNAPSHOT) {

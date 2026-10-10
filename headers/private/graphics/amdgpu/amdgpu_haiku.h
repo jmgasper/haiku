@@ -37,7 +37,45 @@ enum {
 	AMDGPU_HEVC_DECODE,
 	AMDGPU_CREATE_DEVICE_BUFFER,
 	AMDGPU_DISPLAY_SNAPSHOT,
-	AMDGPU_GFX_MEC_TEST
+	AMDGPU_GFX_MEC_TEST,
+	AMDGPU_VM_INFO,
+	AMDGPU_VM_MAP,
+	AMDGPU_VM_UNMAP,
+	AMDGPU_VM_TEST
+};
+
+// One GPU virtual address space per open client. Mappings retain their BO
+// until explicitly unmapped or the client closes; only that client's handles
+// may be mapped. UNMAP requires the exact address/size of a prior MAP and
+// zero handle, buffer_offset and permissions. No physical address is exposed.
+enum {
+	AMDGPU_VM_READ = 1,
+	AMDGPU_VM_WRITE = 2,
+	AMDGPU_VM_EXECUTE = 4
+};
+struct amdgpu_vm_info {
+	uint32 version, size;
+	uint64 address_start, address_end; // exclusive upper bound
+	uint64 mapped_bytes;
+	uint32 mapping_count, page_size;
+	uint32 reserved[2];
+};
+struct amdgpu_vm_mapping {
+	uint32 version, size;
+	uint64 handle, buffer_offset, address, bytes;
+	uint32 permissions, reserved;
+};
+// Bounded GPU execution for validating these mappings: a kernel-owned shader
+// writes 1024 DWORDs at address, value XOR (index * 0x10204081). This is not
+// the general command-submission interface; no user program or PM4 is accepted.
+struct amdgpu_vm_test {
+	uint32 version, size;
+	uint64 address;
+	uint32 value, reserved;
+	uint64 completion;
+	uint32 vm_fault_status[2], rptr, wptr;
+	int32 status;
+	uint32 reserved_out;
 };
 
 // Read-only DCE 11.2 observation, available without starting any GPU engine.

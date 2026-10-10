@@ -3,6 +3,7 @@
 #include "Sdma.h"
 #include "Gart.h"
 #include "Gfx.h"
+#include "GpuPageTable.h"
 #include "Uvd.h"
 #include "FirmwareLoader.h"
 #include "VramAllocator.h"
@@ -23,6 +24,20 @@ struct Buffer {
 	bool poisoned, system;
 };
 
+struct VmBinding {
+	VmBinding* next;
+	Buffer* buffer;
+	uint64 address, bytes, offset;
+	uint32 permissions;
+};
+
+struct ClientVM {
+	GpuPageTable table;
+	VmBinding* bindings;
+	uint64 bytes;
+	uint32 mappings;
+};
+
 struct AmdgpuClient {
 	team_id team;
 	uint32 flags, references, bufferCount, pending;
@@ -30,7 +45,8 @@ struct AmdgpuClient {
 	status_t failure;
 	Buffer* buffers;
 	UvdSession* video;
-	bool videoBusy;
+	bool videoBusy, graphicsBusy;
+	ClientVM* vm;
 };
 
 struct Job {
@@ -61,7 +77,8 @@ static Job* sLast;
 static uint32 sPending;
 static uint64 sNextHandle = 1;
 static uint32 sNextVideoHandle = 1;
-static uint32 sVideoSessions;
+static uint32 sVideoSessions, sVMCount;
+static void ReleaseVM(AmdgpuClient* client);
 static void ReleaseVideo(AmdgpuClient* client);
 
 static void
@@ -167,6 +184,7 @@ amdgpu_client_free(AmdgpuClient* client)
 {
 	mutex_lock(&sMutex);
 	ReleaseVideo(client);
+	ReleaseVM(client);
 	while (client->buffers != NULL) {
 		Buffer* bo = client->buffers;
 		client->buffers = bo->next;
@@ -491,6 +509,228 @@ VideoControl(AmdgpuClient* client, uint32 op, void* data, size_t length)
 	return B_BAD_VALUE;
 }
 
+static bool
+AllocatePageTable(void*, size_t bytes, GpuPageTable::Allocation& allocation)
+{
+	uint64 offset;
+	if (!sAllocator.Allocate(bytes, 4096, sInfo.bar_size[0], offset))
+		return false;
+	void* address;
+	area_id area = map_physical_memory("amdgpu client page table",
+		sInfo.bar_address[0] + offset, bytes, B_ANY_KERNEL_ADDRESS,
+		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, &address);
+	if (area < 0) {
+		sAllocator.Free(offset, bytes);
+		return false;
+	}
+	allocation.cpu = (volatile uint64*)address;
+	allocation.gpu = sInfo.vram_gpu_base + offset;
+	allocation.cookie = area;
+	return true;
+}
+
+static void
+ReleasePageTable(void*, size_t bytes, GpuPageTable::Allocation& allocation, bool reclaim)
+{
+	// Complete CPU writes to this BAR mapping before another allocation can
+	// reuse its pages, including a close without any intervening GPU job.
+	__sync_synchronize();
+	(void)allocation.cpu[bytes / 8 - 1];
+	delete_area(allocation.cookie);
+	if (reclaim)
+		sAllocator.Free(allocation.gpu - sInfo.vram_gpu_base, bytes);
+}
+
+static void
+ReleaseVM(AmdgpuClient* client)
+{
+	ClientVM* vm = client->vm;
+	if (vm == NULL)
+		return;
+	vm->table.Uninitialize(sFault == B_OK);
+	while (vm->bindings != NULL) {
+		VmBinding* binding = vm->bindings;
+		vm->bindings = binding->next;
+		PutBuffer(binding->buffer);
+		free(binding);
+	}
+	free(vm);
+	client->vm = NULL;
+	sVMCount--;
+}
+
+static status_t
+CreateVM(AmdgpuClient* client)
+{
+	if (client->vm != NULL)
+		return B_OK;
+	if (sVMCount >= 32)
+		return B_NO_MEMORY;
+	ClientVM* vm = (ClientVM*)calloc(1, sizeof(ClientVM));
+	if (vm == NULL)
+		return B_NO_MEMORY;
+	bool okay = vm->table.Initialize(NULL, AllocatePageTable, ReleasePageTable);
+	// These two kernel-owned pages are below the client's VA range and
+	// read-only to the GPU. Neither page contains a fence or other client data.
+	uint64 entry = (sGart.table[16] & ~0x40ULL) | 0x10;
+	if (okay)
+		okay = vm->table.Map(GfxEngine::kClientIbVA, &entry, 1) == GpuPageTable::OK;
+	entry = (sInfo.vram_gpu_base + GfxEngine::kScratchOffset + 0x40000) | 0x31;
+	if (okay)
+		okay = vm->table.Map(GfxEngine::kClientShaderVA, &entry, 1) == GpuPageTable::OK;
+	if (!okay) {
+		vm->table.Uninitialize(true);
+		free(vm);
+		return B_NO_MEMORY;
+	}
+	client->vm = vm;
+	sVMCount++;
+	return B_OK;
+}
+
+static status_t
+StartGraphics()
+{
+	if (sGfx.ready)
+		return sGfx.faulted ? B_DEV_NOT_READY : sGfx.mecStarted ? B_OK : B_NOT_ALLOWED;
+	InstalledFirmware images[5];
+	amdgpu::FirmwareView firmware[4];
+	for (uint32 i = 0; i < 4; i++) {
+		status_t status = images[i].LoadGfx(i);
+		if (status != B_OK)
+			return status;
+		firmware[i] = images[i].view;
+	}
+	status_t status = images[4].LoadMec();
+	if (status != B_OK)
+		return status;
+	amdgpu_gfx_test result = {};
+	status = sGfx.Initialize(sEngine.regs, sInfo, sReservation, firmware,
+		sEngine, sGart, result, &images[4].mec);
+	if (sGfx.faulted)
+		sFault = status;
+	return status;
+}
+
+static status_t
+VMControl(AmdgpuClient* client, uint32 op, void* data, size_t length)
+{
+	if (sFault != B_OK)
+		return B_DEV_NOT_READY;
+	if (op == AMDGPU_VM_INFO) {
+		amdgpu_vm_info request;
+		status_t status = ReadRequest(request, data, length);
+		if (status != B_OK) return status;
+		if (request.reserved[0] != 0 || request.reserved[1] != 0) return B_BAD_VALUE;
+		status = CreateVM(client);
+		if (status != B_OK) return status;
+		request.address_start = 65536;
+		request.address_end = GpuPageTable::kSize;
+		request.page_size = 4096;
+		request.mapped_bytes = client->vm->bytes;
+		request.mapping_count = client->vm->mappings;
+		return user_memcpy(data, &request, sizeof(request));
+	}
+	ClientVM* vm = client->vm;
+	if (vm == NULL)
+		return B_DEV_NOT_READY;
+	if (op == AMDGPU_VM_TEST) {
+		amdgpu_vm_test request;
+		status_t status = ReadRequest(request, data, length);
+		if (status != B_OK) return status;
+		if (request.reserved != 0 || request.reserved_out != 0 || (request.address & 3) != 0)
+			return B_BAD_VALUE;
+		VmBinding* binding = vm->bindings;
+		while (binding != NULL) {
+			if (request.address >= binding->address
+				&& request.address - binding->address <= binding->bytes
+				&& 4096 <= binding->bytes - (request.address - binding->address))
+				break;
+			binding = binding->next;
+		}
+		if (binding == NULL || (binding->permissions & AMDGPU_VM_WRITE) == 0)
+			return B_NOT_ALLOWED;
+		// graphicsBusy prevents this file's VM changes across the wait.
+		// Mapping references keep the BO alive even if its handle is freed.
+		status = WaitDmaIdle();
+		if (status == B_OK) status = StartGraphics();
+		amdgpu_vm_test result = {};
+		result.version = AMDGPU_HAIKU_ABI_VERSION;
+		result.size = sizeof(result);
+		result.address = request.address; result.value = request.value;
+		if (status == B_OK)
+			status = sGfx.ExecuteVM(vm->table.directory.gpu, request.address,
+				request.value, sGart, result);
+		if (sGfx.faulted && sFault == B_OK)
+			sFault = status;
+		result.status = status;
+		return user_memcpy(data, &result, sizeof(result));
+	}
+	amdgpu_vm_mapping request;
+	status_t status = ReadRequest(request, data, length);
+	if (status != B_OK) return status;
+	if (request.reserved != 0 || request.address < 65536
+		|| request.bytes == 0 || request.bytes > (64ULL << 20)
+		|| ((request.address | request.bytes | request.buffer_offset) & 4095) != 0
+		|| request.address >= GpuPageTable::kSize
+		|| request.bytes > GpuPageTable::kSize - request.address)
+		return B_BAD_VALUE;
+	if (op == AMDGPU_VM_UNMAP) {
+		if (request.handle != 0 || request.buffer_offset != 0 || request.permissions != 0)
+			return B_BAD_VALUE;
+		VmBinding** link = &vm->bindings;
+		while (*link != NULL && ((*link)->address != request.address || (*link)->bytes != request.bytes))
+			link = &(*link)->next;
+		if (*link == NULL) return B_BAD_VALUE;
+		VmBinding* binding = *link;
+		if (!vm->table.Unmap(request.address, request.bytes / 4096))
+			return B_BAD_DATA;
+		*link = binding->next;
+		vm->mappings--; vm->bytes -= binding->bytes;
+		PutBuffer(binding->buffer);
+		free(binding);
+		return B_OK;
+	}
+	Buffer* buffer = Lookup(client, request.handle);
+	if (buffer == NULL || request.buffer_offset > buffer->bytes
+		|| request.bytes > buffer->bytes - request.buffer_offset
+		|| request.permissions == 0 || (request.permissions & ~7u) != 0
+		|| ((request.permissions & AMDGPU_VM_EXECUTE) != 0
+			&& (request.permissions & AMDGPU_VM_READ) == 0))
+		return B_BAD_VALUE;
+	if (vm->mappings >= 1024 || vm->bytes > (16ULL << 30) - request.bytes)
+		return B_NO_MEMORY;
+	VmBinding* binding = (VmBinding*)malloc(sizeof(VmBinding));
+	uint32 pages = request.bytes / 4096;
+	uint64* entries = (uint64*)malloc(pages * sizeof(uint64));
+	if (binding == NULL || entries == NULL) {
+		free(binding); free(entries);
+		return B_NO_MEMORY;
+	}
+	uint64 flags = 1 | ((request.permissions & AMDGPU_VM_READ) != 0 ? 0x20 : 0)
+		| ((request.permissions & AMDGPU_VM_WRITE) != 0 ? 0x40 : 0)
+		| ((request.permissions & AMDGPU_VM_EXECUTE) != 0 ? 0x10 : 0);
+	for (uint32 i = 0; i < pages; i++) {
+		uint64 offset = request.buffer_offset + (uint64)i * 4096;
+		entries[i] = buffer->system
+			? (sGart.table[(buffer->offset + offset) / 4096] & (GpuPageTable::kPhysicalMask | 6)) | flags
+			: (buffer->gpu + offset) | flags;
+	}
+	GpuPageTable::Result mapped = vm->table.Map(request.address, entries, pages);
+	free(entries);
+	if (mapped != GpuPageTable::OK) {
+		free(binding);
+		return mapped == GpuPageTable::NO_MEMORY ? B_NO_MEMORY : B_BAD_VALUE;
+	}
+	binding->buffer = buffer; binding->address = request.address;
+	binding->bytes = request.bytes; binding->offset = request.buffer_offset;
+	binding->permissions = request.permissions; binding->next = vm->bindings;
+	vm->bindings = binding;
+	buffer->references++;
+	vm->mappings++; vm->bytes += request.bytes;
+	return B_OK;
+}
+
 static status_t
 Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 {
@@ -499,6 +739,13 @@ Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 	if (client->team != team_get_current_team_id()
 		|| (client->flags & O_ACCMODE) != O_RDWR)
 		return B_NOT_ALLOWED;
+	if (op >= AMDGPU_VM_INFO && op <= AMDGPU_VM_TEST) {
+		if (client->graphicsBusy) return B_BUSY;
+		client->graphicsBusy = true;
+		status_t status = VMControl(client, op, data, length);
+		client->graphicsBusy = false;
+		return status;
+	}
 	if (op >= AMDGPU_VIDEO_CREATE && op <= AMDGPU_HEVC_DECODE) {
 		// WaitDmaIdle releases sMutex. Keep another thread on this file from
 		// destroying/replacing the session while the first call holds pointers.
@@ -764,7 +1011,12 @@ amdgpu_client_control(AmdgpuClient* client, uint32 op, void* data, size_t length
 		// Validate the triggering request before loading firmware or touching
 		// engines. Close/free/map/submit cannot initialize an absent device.
 		status_t status;
-		if (op == AMDGPU_MEMORY_INFO) {
+		if (op == AMDGPU_VM_INFO) {
+			amdgpu_vm_info request;
+			status = ReadRequest(request, data, length);
+			if (status == B_OK && (request.reserved[0] != 0 || request.reserved[1] != 0))
+				status = B_BAD_VALUE;
+		} else if (op == AMDGPU_MEMORY_INFO) {
 			amdgpu_memory_info request;
 			status = ReadRequest(request, data, length);
 		} else if (op == AMDGPU_GART_INFO) {
