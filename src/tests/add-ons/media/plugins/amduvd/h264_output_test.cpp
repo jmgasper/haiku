@@ -2,6 +2,7 @@
 #include "H264Output.h"
 #include "H264Packet.h"
 #include <assert.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 #include <utility>
@@ -100,6 +101,8 @@ static void Pixels()
 	}
 	f.matrix = 9; assert(!H264Output::Copy(f, H264Output::RGB32, rgb.data()));
 	f.cropTop = 15; assert(!H264Output::Copy(f, H264Output::NV12, rgb.data()));
+	f.cropTop = 0; f.cropLeft = INT_MAX - 1;
+	assert(!H264Output::Copy(f, H264Output::NV12, rgb.data()));
 }
 int main()
 {

@@ -77,3 +77,10 @@ configuration disables packet conversion until reconfigured. Main and Main
 ASan/UBSan and in QEMU. `amdgpu_hevc_stream` and `hevc_stream.py` prepare
 native NV12/P010 qualification, which has not run. These CPU checks do not
 establish HEVC hardware decoding or Main-10 output quality.
+
+`HevcOutput` preserves cropped P010 samples and converts RGB from the coded
+precision and VUI range/matrix. Explicit eight-bit YUV output rounds ten-bit
+codes to the nearest eight-bit value. H.264 and HEVC share the bounded
+`VideoOutputQueue`, keeping per-picture format/depth and timestamps. The
+output tests pass under ASan/UBSan and QEMU; the shared-queue H.264 addon
+also passes the native 252-picture exact-pixel/timestamp regression.

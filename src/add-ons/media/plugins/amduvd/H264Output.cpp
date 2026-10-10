@@ -1,49 +1,11 @@
 /* Copyright 2026, air/OS. Distributed under the terms of the MIT License. */
 #include "H264Output.h"
-#include <algorithm>
 #include <string.h>
-#include <utility>
-
-void H264Output::Reset()
-{
-	fFrames.clear(); fSequence = fLastSequence = 0; fLastPoc = 0;
-	fReorderLimit = 0; fHaveOutput = false;
-}
-
-bool H264Output::Push(H264Frame&& frame, unsigned reorderLimit, bool discardPrior)
-{
-	if (reorderLimit > 16 || frame.sequence < fSequence
-		|| (fHaveOutput && frame.sequence == fLastSequence && frame.poc <= fLastPoc))
-		return false;
-	if (discardPrior) fFrames.clear();
-	if (fFrames.size() >= 17) return false;
-	for (const auto& f : fFrames)
-		if (f.sequence == frame.sequence && f.poc == frame.poc) return false;
-	fSequence = frame.sequence; fReorderLimit = reorderLimit;
-	auto position = std::lower_bound(fFrames.begin(), fFrames.end(), frame,
-		[](const H264Frame& a, const H264Frame& b) {
-			return a.sequence != b.sequence ? a.sequence < b.sequence : a.poc < b.poc;
-		});
-	fFrames.insert(position, std::move(frame));
-	return true;
-}
-
-bool H264Output::Ready(bool drain) const
-{
-	return !fFrames.empty() && (drain || fFrames.front().sequence < fSequence
-		|| fFrames.size() > fReorderLimit);
-}
-
-void H264Output::Pop()
-{
-	fHaveOutput = true; fLastSequence = fFrames.front().sequence;
-	fLastPoc = fFrames.front().poc; fFrames.erase(fFrames.begin());
-}
 
 size_t H264Output::Bytes(int width, int height, Format format)
 {
 	if (width <= 0 || width > 4096 || height <= 0 || height > 4096
-		|| (width & 1) || (height & 1)) return 0;
+		|| (width & 1) || (height & 1) || format < NV12 || format > RGB32) return 0;
 	size_t area = (size_t)width * height;
 	return format == RGB32 ? area * 4 : format == YCbCr422 ? area * 2 : area * 3 / 2;
 }
@@ -58,8 +20,8 @@ bool H264Output::Copy(const H264Frame& f, Format format, uint8_t* output)
 {
 	if (output == NULL || Bytes(f.width, f.height, format) == 0
 		|| f.cropLeft < 0 || f.cropTop < 0 || (f.cropLeft & 1) || (f.cropTop & 1)
-		|| (uint32_t)(f.cropLeft + f.width) > f.pitch
-		|| (uint32_t)(f.cropTop + f.height) > f.codedHeight
+		|| (uint64_t)f.cropLeft + f.width > f.pitch
+		|| (uint64_t)f.cropTop + f.height > f.codedHeight
 		|| (f.codedHeight & 1) || f.codedHeight > 4096 || f.pitch > 4096
 		|| f.pixels.size() != (size_t)f.pitch * f.codedHeight * 3 / 2) return false;
 	const uint8_t* luma = f.pixels.data() + (size_t)f.cropTop * f.pitch + f.cropLeft;

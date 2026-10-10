@@ -19,3 +19,5 @@ SimpleTest hevc_stream_test : hevc_stream_test.cpp HevcStream.cpp hevc_parse.c h
 	: [ TargetLibstdc++ ] ;
 SimpleTest hevc_packet_test : hevc_packet_test.cpp HevcPacket.cpp HevcStream.cpp hevc_parse.c h264_parse.c
 	: [ TargetLibstdc++ ] ;
+SimpleTest hevc_output_test : hevc_output_test.cpp HevcOutput.cpp H264Output.cpp
+	: [ TargetLibstdc++ ] ;
