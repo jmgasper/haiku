@@ -173,6 +173,11 @@ GfxEngine::DumpExecutionState(const char* point)
 		0x52c, 0x52d, 0x52e, 0x52f, 0x530, 0x531, 0x532, 0x533, 0x534,
 		0xd808, 0xdc80, 0xdc81, 0xdc82, 0xdc83, 0xdc84, 0xec71,
 		0x3052, 0x3053,
+		// CE's unused init and second-IB state were absent from earlier
+		// snapshots. Capture every defined base/size at both IB gates.
+		0xc098, 0xc099, 0xc09a,
+		0xc0c3, 0xc0c4, 0xc0c5, 0xc0c6, 0xc0c7, 0xc0c8,
+		0xc0c9, 0xc0ca, 0xc0cb,
 	};
 	for (uint32 index : registers)
 		dprintf("amdgpu: GFX %s register %#x = %#x\n", point,
@@ -201,8 +206,9 @@ GfxEngine::Snapshot(amdgpu_gfx_test& result)
 		(unsigned)result.vm_fault_address, (unsigned)result.vm_fault_client);
 	if (result.stage == 4) {
 		const uint32 indexes[] = {0xc08d, 0xc08e, 0x30ad, 0xc092, 0xc093, 0xc0cc, 0xc0cd,
-			0xc0ce, 0xc0cf, 0xc0d0, 0xc0d1, 0xc0c3, 0xc0c4, 0xc0c6,
-			0xc0c7, 0xc0c8, 0xc0d2, 0xc0d3, 0xeca2, 0xeca3, 0xeca4};
+			0xc0ce, 0xc0cf, 0xc0d0, 0xc0d1, 0xc0c3, 0xc0c4, 0xc0c5,
+			0xc0c6, 0xc0c7, 0xc0c8, 0xc0c9, 0xc0ca, 0xc0cb,
+			0xc0d2, 0xc0d3, 0xeca2, 0xeca3, 0xeca4};
 		for (uint32 index : indexes)
 			dprintf("amdgpu: GFX IB register %#x = %#x\n", (unsigned)index, (unsigned)regs[index]);
 	}
@@ -672,6 +678,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			(unsigned)control[0], (unsigned)control[1], (unsigned)r[0x536],
 			(unsigned)r[0x537], (unsigned)r[0x53e], (unsigned)r[0x53f],
 			(unsigned)r[0xc0ce], (unsigned)r[0x21c0], (unsigned)r[0x3045]);
+		DumpExecutionState("IB entry gate");
 		control[0x80 / 4] = 1;
 		__sync_synchronize();
 		r[0x1520] = 1;
@@ -685,6 +692,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			(unsigned)sequence, (unsigned)control[0], (unsigned)r[0x536],
 			(unsigned)r[0x537], (unsigned)r[0x53e], (unsigned)r[0x53f],
 			(unsigned)r[0xc0ce], (unsigned)r[0x21c0], (unsigned)r[0x3045]);
+		DumpExecutionState("IB tail gate");
 		// Always release the private wait, including a missing-marker case.
 		control[0x80 / 4] = 2;
 		__sync_synchronize();
