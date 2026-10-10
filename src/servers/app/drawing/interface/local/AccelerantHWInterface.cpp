@@ -709,8 +709,12 @@ AccelerantHWInterface::_SetMode(const display_mode& mode, bool force)
 		status = fAccSetDisplayMode(&newMode);
 	if (status != B_OK) {
 		ATRACE(("setting display mode failed\n"));
-		if (!fInitialModeSwitch)
+		if (!fInitialModeSwitch) {
+			// The old mode stays, but the accelerant may have had to map
+			// its frame buffer anew while trying.
+			_UpdateFrameBufferConfig();
 			return status;
+		}
 
 		if (fModeList == NULL) {
 			status = _UpdateModeList();
