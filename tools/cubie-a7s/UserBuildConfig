@@ -180,7 +180,7 @@ rule UserBuildConfigRulePreImage
 		# lab tools, and the driver settings that let cubie_reg at the
 		# display registers
 		AddFilesToHaikuImage system non-packaged bin : cubie_reg cubie_fetch
-			pvrinfo pvrtest cedar_decode media_probe ;
+			pvrinfo pvrtest cedar_decode media_probe cpu_usage ;
 
 		# The video engine's test streams and FFmpeg's hashes of them
 		# (evidence/video/proto/mkvectors.sh; not in git), for cedar_decode.
@@ -192,6 +192,15 @@ rule UserBuildConfigRulePreImage
 			SEARCH on $(cedarVectors) = $(cedarVectorDir) ;
 			AddFilesToHaikuImage system non-packaged data cedar-vectors
 				: $(cedarVectors) ;
+		}
+
+		# Films for the players' tests (not in git), when the build
+		# directory's UserBuildConfig names a directory of them.
+		if $(CUBIE_LAB_MEDIA) {
+			local labMedia = [ Glob $(CUBIE_LAB_MEDIA) : *.mp4 *.mkv *.webm ] ;
+			labMedia = <cubie-lab-media>$(labMedia:BS) ;
+			SEARCH on $(labMedia) = $(CUBIE_LAB_MEDIA) ;
+			AddFilesToHaikuImage home media : $(labMedia) ;
 		}
 		local labSettings = <cubie-lab>sunxi_display ;
 		SEARCH on $(labSettings) = [ FDirName $(HAIKU_TOP) tools cubie-a7s lab ] ;

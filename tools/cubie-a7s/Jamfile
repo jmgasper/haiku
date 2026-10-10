@@ -39,3 +39,6 @@ SimpleTest cedar_decode :
 
 # a file's first video track through the Media Kit, as MediaPlayer decodes it
 SimpleTest media_probe : media_probe.cpp : be media [ TargetLibsupc++ ] ;
+
+# how busy the processors and some teams are, for the decoders' cost
+SimpleTest cpu_usage : cpu_usage.cpp ;
