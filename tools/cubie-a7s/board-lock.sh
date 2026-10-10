@@ -12,13 +12,48 @@ set -euo pipefail
 if [[ -n ${CUBIE_BOARD_LOCKED:-} ]]; then
 	exec "$@"
 fi
-lock=${CUBIE_STATE:-/mnt/HaikuWork/cubie/state}/board.lock
+state=${CUBIE_STATE:-/mnt/HaikuWork/cubie/state}
+lock=$state/board.lock
 exec 9>> "$lock"
-if ! flock -n 9; then
-	echo "board-lock: waiting for the board ($(cat "$lock.owner" 2>/dev/null))" >&2
-	flock -w "${CUBIE_BOARD_WAIT:-3600}" 9 \
-		|| { echo "board-lock: timed out" >&2; exit 75; }
-fi
+# First come, first served: flock alone lets any waiter in, and a session
+# could wait an hour while later ones went ahead. Each waiter queues a
+# ticket (time.pid) and takes the lock only when its ticket is the oldest.
+queue=$state/board.queue
+mkdir -p "$queue"
+ticket=$queue/$(date +%s%N).$$
+echo "${CUBIE_BOARD_OWNER:-$(whoami)}" > "$ticket"
+trap 'rm -f "$ticket"' EXIT
+deadline=$((SECONDS + ${CUBIE_BOARD_WAIT:-3600}))
+waiting=
+while :; do
+	tickets=()
+	for t in "$queue"/*; do
+		# drop the tickets of waiters that went away
+		if [[ -e $t ]] && ! kill -0 "${t##*.}" 2>/dev/null; then
+			rm -f "$t"
+		elif [[ -e $t ]]; then
+			tickets+=("$t")
+		fi
+	done
+	if [[ ${tickets[0]:-} == "$ticket" ]] && flock -n 9; then
+		break
+	fi
+	if [[ -z $waiting ]]; then
+		ahead=0
+		while [[ ${tickets[ahead]:-$ticket} != "$ticket" ]]; do
+			ahead=$((ahead + 1))
+		done
+		echo "board-lock: waiting for the board ($(cat "$lock.owner" \
+			2>/dev/null); $ahead queued ahead)" >&2
+		waiting=1
+	fi
+	if (( SECONDS >= deadline )); then
+		echo "board-lock: timed out" >&2
+		exit 75
+	fi
+	sleep 5
+done
+rm -f "$ticket"
 echo "$$ ${CUBIE_BOARD_OWNER:-$(whoami)} since $(date -u +%H:%MZ)" > "$lock.owner"
 export CUBIE_BOARD_LOCKED=1
 "$@"

@@ -74,6 +74,24 @@ rule UserBuildConfigRulePreImage
 		AddPackageFilesToHaikuImage system packages : $(zstdPackage) ;
 	}
 
+	# The AIC8800D80 Wi-Fi/Bluetooth module's firmware, unchanged, with
+	# AICSemi's licence (tools/cubie-a7s/stage-aic8800-firmware.sh). The
+	# aic8800wifi driver loads it; Bluetooth comes up with it.
+	local aicFirmwareDir = $(CUBIE_AIC8800_FIRMWARE) ;
+	if ! $(aicFirmwareDir) {
+		aicFirmwareDir = /mnt/HaikuWork/cubie/firmware/aic8800wifi ;
+	}
+	local aicFirmware = <cubie-aic>fw_patch_table_8800d80_u02.bin
+		<cubie-aic>fw_adid_8800d80_u02.bin <cubie-aic>fw_patch_8800d80_u02.bin
+		<cubie-aic>fw_patch_8800d80_u02_ext0.bin
+		<cubie-aic>fmacfw_8800d80_u02.bin <cubie-aic>fmacfw_8800d80_h_u02.bin
+		<cubie-aic>aic_userconfig_8800d80.txt <cubie-aic>LICENSE.aic
+		<cubie-aic>PROVENANCE ;
+	SEARCH on $(aicFirmware) = $(aicFirmwareDir) ;
+	AddFilesToHaikuImage system non-packaged data firmware aic8800wifi
+		: $(aicFirmware) ;
+	AddDriversToHaikuImage net : aic8800wifi ;
+
 	if $(CUBIE_AIROS_IMAGE) {
 		local extras = /mnt/HaikuWork/rock5-image-extras ;
 
@@ -146,9 +164,20 @@ rule UserBuildConfigRulePreImage
 		imagePackages = <cubie-app-pkg>$(imagePackages:BS) ;
 		SEARCH on $(imagePackages) = $(imagePackageDir) ;
 		AddFilesToHaikuImage system packages : $(imagePackages) ;
-		local airTime = <airtime-pkg>airtime-1.0.0-14-arm64.hpkg ;
+		local airTime = <airtime-pkg>airtime-1.0.0-15-arm64.hpkg ;
 		SEARCH on $(airTime) = /mnt/HaikuWork/apps/airTime/artifacts ;
 		AddFilesToHaikuImage system packages : $(airTime) ;
+
+		# The video engine's add-on before FFmpeg's in the Media Kit's
+		# lookup, so that MediaPlayer and every BMediaFile user decode H.264
+		# and HEVC on the engine. The Media Kit searches the add-on
+		# directories in order (system/non-packaged before system) and in one
+		# directory takes the first add-on registered for a format, which is
+		# FFmpeg's (rock5_ffmpeg's entries come first). The add-on registers
+		# its formats only where the engine is, and hands a stream the engine
+		# does not decode to FFmpeg's decoder itself.
+		AddSymlinkToHaikuImage system non-packaged add-ons media plugins
+			: /boot/system/add-ons/media/plugins/sunxi_cedar : sunxi_cedar ;
 
 		# TLS for curl and Summit
 		local airosLibDir = /mnt/HaikuWork/airos/lib-arm64 ;
@@ -185,8 +214,33 @@ rule UserBuildConfigRulePreImage
 		# lab tools, and the driver settings that let cubie_reg at the
 		# display registers
 		AddFilesToHaikuImage system non-packaged bin : cubie_reg cubie_fetch
-			pvrinfo pvrtest ;
-		local labSettings = <cubie-lab>sunxi_display ;
+			pvrinfo pvrtest cedar_decode media_probe cpu_usage aicload ;
+		if $(CUBIE_AIROS_IMAGE) {
+			# a Bluetooth diagnostic the regular image leaves out
+			AddFilesToHaikuImage system non-packaged bin : bt_dev_info ;
+		}
+
+		# The video engine's test streams and FFmpeg's hashes of them
+		# (evidence/video/proto/mkvectors.sh; not in git), for cedar_decode.
+		local cedarVectorDir = /mnt/HaikuWork/cubie/evidence/video/proto/vectors ;
+		local cedarVectors = [ Glob $(cedarVectorDir) : *.264 *.265
+			*.framemd5 ] ;
+		if $(cedarVectors) {
+			cedarVectors = <cedar-vector>$(cedarVectors:BS) ;
+			SEARCH on $(cedarVectors) = $(cedarVectorDir) ;
+			AddFilesToHaikuImage system non-packaged data cedar-vectors
+				: $(cedarVectors) ;
+		}
+
+		# Films for the players' tests (not in git), when the build
+		# directory's UserBuildConfig names a directory of them.
+		if $(CUBIE_LAB_MEDIA) {
+			local labMedia = [ Glob $(CUBIE_LAB_MEDIA) : *.mp4 *.mkv *.webm ] ;
+			labMedia = <cubie-lab-media>$(labMedia:BS) ;
+			SEARCH on $(labMedia) = $(CUBIE_LAB_MEDIA) ;
+			AddFilesToHaikuImage home media : $(labMedia) ;
+		}
+		local labSettings = <cubie-lab>sunxi_display <cubie-lab>aic8800wifi ;
 		SEARCH on $(labSettings) = [ FDirName $(HAIKU_TOP) tools cubie-a7s lab ] ;
 		AddFilesToHaikuImage home config settings kernel drivers
 			: $(labSettings) ;

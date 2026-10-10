@@ -195,7 +195,8 @@ if $(TARGET_ARCH) = arm64 {
 if $(TARGET_ARCH) = arm64 {
 	# the Raspberry Pi's firmware services: sound output, and the message
 	# channel itself for the H.264 decoder add-on; the SoC's HEVC decoder
-	# block for the HEVC one; the GPIO pins of the 40-pin header for AirPins
+	# block for the HEVC one; the GPIO pins of the 40-pin header for AirPins;
+	# the Allwinner A733's video decoder for the sunxi_cedar add-on
 	AddDriversToPackage audio hmulti :
 		bcm2835_audio
 		;
@@ -203,6 +204,7 @@ if $(TARGET_ARCH) = arm64 {
 		<driver>vchiq
 		<driver>rpi_hevc
 		<driver>rpi_gpio
+		<driver>sunxi_ve
 		;
 	# the SoC temperature from the firmware, in the thermal drivers' format
 	AddDriversToPackage power :
