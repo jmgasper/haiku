@@ -54,6 +54,11 @@ On the image, the libraries go to `/boot/system/non-packaged/lib`, `10_mesa.json
     - A data set still belongs to one render state at a time. It only enters the cache once its command buffer is no longer pending.
     - The cache keeps at most 16 idle data sets. One is destroyed after 256 later releases, so sizes no longer drawn age out. A data set left in the middle of a render (`need_frag`) is destroyed instead of cached.
     - Render pass framebuffers keep their own data sets, as before.
+- Freed buffer objects are reused (`pvr_bo.c`). Command buffers allocate them as they record and free them when they are reset: control streams, descriptor and uniform uploads through the sub-allocators, and SPM constants. A WebGL frame made dozens, each one a `CREATE_BO`, `VM_MAP`, `MAP_BO`, `VM_UNMAP` and `GEM_CLOSE`.
+    - A freed CPU-mapped buffer object is now kept with both of its mappings, and handed out again for the same heap, page count, alignment and flags.
+    - It is cleared first unless the caller passes `PVR_BO_ALLOC_FLAG_NO_ZERO`. The sub-allocators pass it, because they clear what they hand out when asked to.
+    - The cache holds at most 64 MB (`PVR_BO_CACHE_MB`; 0 turns it off), and the least recently freed objects go first.
+- Buffers and images share one GPU mapping of their memory, made at the first bind (`pvr_memory_shared_vma()`). Zink binds a new buffer into its slabs for nearly every buffer it hands out, and each bind was a `VM_MAP` and each destroy a `VM_UNMAP`.
 - Small fixes cover `drm.h`, `pvr_drm.h`, `vk_image` and `pvr_physical_device.c`.
 
 There are no buffer or sync file descriptors yet. Those paths fail with `EOPNOTSUPP`. They forward to the kernel once `pvr_haiku.h` defines `PVR_HAIKU_NR_PRIME_*` or `PVR_HAIKU_NR_SYNCOBJ_{HANDLE_TO_FD,FD_TO_HANDLE}`.
@@ -234,6 +239,7 @@ What a present does:
 - It presents 30 frames into a padded 320x240 stand-in for app_server's copy, with two rectangles that are partly outside the image.
 - It checks that every present's callback came, that the rectangles hold the colour, and that every other byte is untouched.
 - It also checks the refusals: an RGBA target (-2), and a framebuffer object that is not bound (-11).
+- `--scene DRAWS` draws a WebGL-like frame before each present. Each of the DRAWS textured quads gets a `glBufferSubData()` and a `glUniform4f()` of its own. The quads go into a column the rectangles leave out, so they let you count what such a frame allocates.
 - `--front-bpr N` also copies to the frame buffer; use the bytes per row that `pvr_present` prints. The present must succeed, unless `--front-refused` is also given, which expects -3: no frame buffer to be had.
 
 ## Host smoke test (`build.sh shim`)
@@ -260,10 +266,12 @@ The shim executes nothing. So in the expected results:
 - `pvr_glpresent-scanout` presents to the stand-in frame buffer as well, and gets 31 completions for its 31 presents. 30 presents bring 30 callbacks, and exactly the clipped rectangles (20736 bytes) are copied: zeros, from a staging buffer the shim never ran a copy into.
 - `pvr_vkbench` (fence; then `--timeline --rerecord`) and `pvr_glbench` each run for 3 s with 1 s lines and fail their pixel or word checks. On the host their rates measure the driver and zink CPU paths only, because the shim executes nothing.
 
-The tracer also logs CPU maps of buffer objects: `mmap` of the DRM device and `munmap` of such a map, as `CPU_MAP` and `CPU_UNMAP` lines. On air/OS these are `MAP_BO` and `delete_area()`. Three marked runs, `pvr_glbench --frames 60 --mark`, `pvr_glbench --frames 60 --resize 5 --mark` and `pvr_vkbench --dispatches 60 --timeline --rerecord --mark`, are cut by `trace_balance` into frames 10 to 59. For each kind of object, it reports how many are made and freed per frame, and the net count for each half of that window. A kind whose net count grows in both halves is marked `PILES UP`. The result is in `shim/balance-*.txt`. Nothing piles up. With the data set cache, a steady GL frame makes no free list and no HWRT data set: two of each are made in the first frames (zink keeps two batches in flight) and reused after that. In the resize run, each new size makes one data set the first time, and none after that. A GL frame still makes, and frees again within that frame:
-- 2 buffer objects, both CPU mapped: the graphics sub-command's control stream (`pvr_arch_csb.c`) and the render's SPM background-object constants (`pvr_arch_spm.c`). Before the cache, it was 7 buffer objects, 1 free list and 1 HWRT data set;
-- 4 GPU VM maps (before: 9);
-- 13 syncobjs, over 3 `SUBMIT_JOBS` with 5 jobs.
+The tracer also logs CPU maps of buffer objects: `mmap` of the DRM device and `munmap` of such a map, as `CPU_MAP` and `CPU_UNMAP` lines. On air/OS these are `MAP_BO` and `delete_area()`. Three marked runs, `pvr_glbench --frames 60 --mark`, `pvr_glbench --frames 60 --resize 5 --mark` and `pvr_vkbench --dispatches 60 --timeline --rerecord --mark`, are cut by `trace_balance` into frames 10 to 59. For each kind of object, it reports how many are made and freed per frame, and the net count for each half of that window. A kind whose net count grows in both halves is marked `PILES UP`. The result is in `shim/balance-*.txt`. Nothing piles up. With the data set cache, a steady GL frame makes no free list and no HWRT data set: two of each are made in the first frames (zink keeps two batches in flight) and reused after that. In the resize run, each new size makes one data set the first time, and none after that. With the buffer object cache and the shared memory mappings, a steady GL frame makes no buffer object, GPU VM map or CPU map at all. Before the caches it made 7 buffer objects, 9 VM maps, 1 free list and 1 HWRT data set. What is left per frame is 13 syncobjs, created and destroyed, over 3 `SUBMIT_JOBS` with 5 jobs.
+
+Counting a present (`pvr_glpresent`, 90 against 30 frames):
+- Without the caches, a present alone made 2 buffer objects, 2 VM maps and 2 CPU maps.
+- With `--scene 8` it made 6.4 buffer objects, 13.4 VM maps (7 of them zink's buffer binds) and 6.4 CPU maps per frame. Most came from `pvr_cmd_buffer_upload_general` → `pvr_bo_suballoc` (128 KiB blocks for descriptors and uniforms), the rest from `pvr_csb_buffer_extend` and the SPM constants.
+- With the caches, both cases make 0.
 
 On the board, each of these is still kernel work every frame: areas and MMU flushes, but no firmware objects now.
 

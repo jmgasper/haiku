@@ -20,10 +20,14 @@
 // object that is not bound (-11), an RGBA image (-2), and with --front-bpr,
 // a frame buffer that cannot be had (-3, the host) or is used.
 //   pvr_glpresent [--frames N] [--front-bpr N] [--front-refused]
-//       [--library NAME] [--shim] [--lost]
+//       [--scene DRAWS] [--library NAME] [--shim] [--lost]
 // --front-bpr: also copy into the screen's frame buffer, whose rows have
 // that many bytes (pvr_present prints it), where it must work, or with
 // --front-refused be refused (-3, no frame buffer to be had); --library:
+// --scene: draw like a WebGL page before each present, DRAWS textured
+// quads each with a glBufferSubData() of its vertices and a glUniform4f()
+// of its colour, into a corner of the image the rectangles leave out (for
+// counting what a frame allocates); --library:
 // where the entry points are (default
 // libEGL_mesa.so.0 on air/OS); --shim: the GPU runs nothing (build.sh
 // shim), so the rectangles must hold what the untouched staging buffer
@@ -135,6 +139,78 @@ make_target(GLenum format, GLuint* renderbuffer)
 }
 
 
+// A WebGL page's frame in small: a textured quad shader, a vertex buffer
+// rewritten before each draw, a colour uniform set for each. Drawn into
+// columns 60-79 of the image, which neither rectangle covers (whichever
+// way rows run).
+static GLint
+make_scene(void)
+{
+	static const char* vertex =
+		"attribute vec2 position;\n"
+		"varying vec2 uv;\n"
+		"void main() {\n"
+		"	uv = position * 0.5 + 0.5;\n"
+		"	gl_Position = vec4(position, 0.0, 1.0);\n"
+		"}\n";
+	static const char* fragment =
+		"precision mediump float;\n"
+		"uniform sampler2D image;\n"
+		"uniform vec4 color;\n"
+		"varying vec2 uv;\n"
+		"void main() { gl_FragColor = texture2D(image, uv) * color; }\n";
+	GLuint program = glCreateProgram();
+	GLuint shaders[2] = { glCreateShader(GL_VERTEX_SHADER),
+		glCreateShader(GL_FRAGMENT_SHADER) };
+	glShaderSource(shaders[0], 1, &vertex, NULL);
+	glShaderSource(shaders[1], 1, &fragment, NULL);
+	for (int i = 0; i < 2; i++) {
+		glCompileShader(shaders[i]);
+		glAttachShader(program, shaders[i]);
+	}
+	glBindAttribLocation(program, 0, "position");
+	glLinkProgram(program);
+	glUseProgram(program);
+
+	static const uint8_t texels[4 * 4 * 4] = { 255, 255, 255, 255 };
+	GLuint texture;
+	glGenTextures(1, &texture);
+	glBindTexture(GL_TEXTURE_2D, texture);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 4, 4, 0, GL_RGBA,
+		GL_UNSIGNED_BYTE, texels);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glUniform1i(glGetUniformLocation(program, "image"), 0);
+
+	GLuint buffer;
+	glGenBuffers(1, &buffer);
+	glBindBuffer(GL_ARRAY_BUFFER, buffer);
+	glBufferData(GL_ARRAY_BUFFER, 8 * sizeof(GLfloat), NULL,
+		GL_DYNAMIC_DRAW);
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (const void*)0);
+	glEnableVertexAttribArray(0);
+	return glGetUniformLocation(program, "color");
+}
+
+
+static void
+draw_scene(unsigned draws, GLint colorLocation, unsigned frame)
+{
+	glViewport(60, 40, 20, 20);
+	glScissor(60, 40, 20, 20);
+	glEnable(GL_SCISSOR_TEST);
+	for (unsigned i = 0; i < draws; i++) {
+		const GLfloat d = ((frame + i) % 16) / 32.0f;
+		const GLfloat quad[8] = { -1 + d, -1, 1, -1 + d, -1, 1 - d, 1 - d, 1 };
+		glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(quad), quad);
+		glUniform4f(colorLocation, (i % 4) / 4.0f, 0.5f, 1.0f - d, 1.0f);
+		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+	}
+	glDisable(GL_SCISSOR_TEST);
+	glViewport(0, 0, SIZE, SIZE);
+}
+
+
 int
 main(int argc, char** argv)
 {
@@ -142,6 +218,7 @@ main(int argc, char** argv)
 
 	unsigned frames = 30, frontBpr = 0;
 	int shim = 0, lost = 0, frontRefused = 0;
+	unsigned sceneDraws = 0;
 #ifdef __HAIKU__
 	const char* library = "libEGL_mesa.so.0";
 #else
@@ -158,11 +235,14 @@ main(int argc, char** argv)
 			shim = 1;
 		else if (strcmp(argv[i], "--front-refused") == 0)
 			frontRefused = 1;
+		else if (strcmp(argv[i], "--scene") == 0 && i + 1 < argc)
+			sceneDraws = strtoul(argv[++i], NULL, 0);
 		else if (strcmp(argv[i], "--lost") == 0)
 			lost = 1;
 		else {
 			printf("usage: %s [--frames N] [--front-bpr N] [--front-refused] "
-				"[--library NAME] [--shim] [--lost]\n", argv[0]);
+				"[--scene DRAWS] [--library NAME] [--shim] [--lost]\n",
+				argv[0]);
 			return 2;
 		}
 	}
@@ -283,10 +363,15 @@ main(int argc, char** argv)
 	// the frames: B, G, R, A = 191, 128, 64, 255
 	const uint8_t color[4] = { 191, 128, 64, 255 };
 	int presented = frontBpr != 0 && !frontRefused ? 1 : 0;
+	GLint colorLocation = -1;
+	if (sceneDraws != 0)
+		colorLocation = make_scene();
 	glViewport(0, 0, SIZE, SIZE);
 	for (unsigned frame = 0; frame < frames; frame++) {
 		glClearColor(64 / 255.0f, 128 / 255.0f, 191 / 255.0f, 1);
 		glClear(GL_COLOR_BUFFER_BIT);
+		if (sceneDraws != 0)
+			draw_scene(sceneDraws, colorLocation, frame);
 		result = present(bgra, &request);
 		if (result != 0) {
 			printf("FAIL: frame %u: present %d\n", frame, result);
