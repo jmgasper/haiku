@@ -54,7 +54,9 @@ rule UserBuildConfigRulePreImage
 	# in git), for the powervr driver's firmware stage. Left out, with a
 	# note, when they have not been fetched.
 	if $(HAIKU_BUILD_PROFILE) in minimum-cubie cubie-airos {
-		local gpuFirmwareDir = /mnt/HaikuWork/cubie/firmware/powervr ;
+		# (-sCUBIE_GPU_FIRMWARE_DIR=... builds an image with other or none)
+		local gpuFirmwareDir = $(CUBIE_GPU_FIRMWARE_DIR) ;
+		gpuFirmwareDir ?= /mnt/HaikuWork/cubie/firmware/powervr ;
 		local gpuFirmwareFiles = rogue_36.56.104.183_v1.fw LICENSE.powervr ;
 		local found = [ Glob $(gpuFirmwareDir) : $(gpuFirmwareFiles) ] ;
 		if $(found[2]) {
@@ -130,6 +132,24 @@ rule UserBuildConfigRulePreImage
 		SEARCH on $(vendorFile) = $(mesaStage) ;
 		AddFilesToHaikuImage system non-packaged add-ons opengl egl_vendor.d
 			: $(vendorFile) ;
+		# The GPU: its firmware stage (the lab's settings log more), and
+		# Mesa's PowerVR Vulkan driver with zink's libvulkan.so.1 (the
+		# driver, without a loader) once built.
+		if $(CUBIE_LAB_IMAGE) != 1 {
+			local gpuSettings = <cubie-settings>powervr ;
+			SEARCH on $(gpuSettings)
+				= [ FDirName $(HAIKU_TOP) tools cubie-a7s settings ] ;
+			AddFilesToHaikuImage home config settings kernel drivers
+				: $(gpuSettings) ;
+		}
+		local vulkanOut = /mnt/HaikuWork/cubie/mesa/out ;
+		if [ Glob $(vulkanOut) : libvulkan_powervr_mesa.so ] {
+			local vulkanLibs = <cubie-mesa>libvulkan_powervr_mesa.so
+				<cubie-mesa>libvulkan.so.1 ;
+			SEARCH on $(vulkanLibs) = $(vulkanOut) ;
+			AddFilesToHaikuImage system non-packaged lib : $(vulkanLibs) ;
+		}
+
 		local glDemos = <cubie-gl>GLTeapot ;
 		SEARCH on $(glDemos) = [ FDirName $(extras) apps ] ;
 		AddFilesToHaikuImage system non-packaged demos : $(glDemos) ;
@@ -245,29 +265,28 @@ rule UserBuildConfigRulePreImage
 		AddFilesToHaikuImage home config settings kernel drivers
 			: $(labSettings) ;
 
-		# The powervr driver boots the GPU firmware at start and logs it
-		# (bring-up stage 2): lab images only, distributable ones leave the
-		# firmware stage off.
+		# The powervr driver's settings with the firmware's trace logged;
+		# air/OS images have their own without (settings/powervr).
 		local gpuSettings = <cubie-lab-settings>powervr ;
 		SEARCH on $(gpuSettings) = [ FDirName $(HAIKU_TOP) tools cubie-a7s lab ] ;
 		AddFilesToHaikuImage home config settings kernel drivers
 			: $(gpuSettings) ;
 
-		# Mesa's PowerVR Vulkan driver and its tests, once
-		# tools/cubie-a7s/mesa/build.sh has built them (lab only: Mesa does
-		# not list this core as conformant).
+		# The tests of Mesa's PowerVR Vulkan driver, once
+		# tools/cubie-a7s/mesa/build.sh has built them, and the driver for
+		# the minimum image (air/OS images have it anyway).
 		local mesaOut = /mnt/HaikuWork/cubie/mesa/out ;
 		if [ Glob $(mesaOut) : libvulkan_powervr_mesa.so ] {
-			local vulkanDriver = <cubie-mesa>libvulkan_powervr_mesa.so ;
-			SEARCH on $(vulkanDriver) = $(mesaOut) ;
-			AddFilesToHaikuImage system non-packaged lib : $(vulkanDriver) ;
-			# zink's libvulkan.so.1: the driver, without a loader
-			local vulkanShim = <cubie-mesa>libvulkan.so.1 ;
-			SEARCH on $(vulkanShim) = $(mesaOut) ;
-			AddFilesToHaikuImage system non-packaged lib : $(vulkanShim) ;
+			if ! $(CUBIE_AIROS_IMAGE) {
+				local vulkanLibs = <cubie-mesa>libvulkan_powervr_mesa.so
+					<cubie-mesa>libvulkan.so.1 ;
+				SEARCH on $(vulkanLibs) = $(mesaOut) ;
+				AddFilesToHaikuImage system non-packaged lib : $(vulkanLibs) ;
+			}
 			local test ;
 			for test in pvr_vkprobe pvr_vkfill pvr_vkfence pvr_vktriangle
-					pvr_glprobe {
+					pvr_vkhang pvr_vkbench pvr_glprobe pvr_glbench
+					tls_generation_check libtls_generation_check.so {
 				if [ Glob $(mesaOut) : $(test) ] {
 					local testFile = <cubie-mesa>$(test) ;
 					SEARCH on $(testFile) = $(mesaOut) ;
