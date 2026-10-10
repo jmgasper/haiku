@@ -97,9 +97,14 @@ rule UserBuildConfigRulePreImage
 		SEARCH on $(glViewLib) = /mnt/HaikuWork/rpi4/glvnd/stage ;
 		AddFilesToHaikuImage system non-packaged lib : $(glViewLib) ;
 
-		# OpenGL in software until the PowerVR driver runs: the Pi's Mesa
-		# (tools/rpi4/mesa) finds no V3D here and falls back to softpipe.
+		# OpenGL: Mesa 26.2.4 (tools/cubie-a7s/mesa) once built, zink on the
+		# PowerVR Vulkan driver and softpipe without it; otherwise the Pi's
+		# Mesa (tools/rpi4/mesa), which finds no V3D here and falls back to
+		# softpipe.
 		local mesaStage = /mnt/HaikuWork/rpi4/mesa/stage ;
+		if [ Glob /mnt/HaikuWork/cubie/mesa/out : libEGL_mesa.so.0 ] {
+			mesaStage = /mnt/HaikuWork/cubie/mesa/out ;
+		}
 		local mesaLib = <cubie-mesa>libEGL_mesa.so.0 ;
 		SEARCH on $(mesaLib) = $(mesaStage) ;
 		AddFilesToHaikuImage system non-packaged lib : $(mesaLib) ;
@@ -202,8 +207,13 @@ rule UserBuildConfigRulePreImage
 			local vulkanDriver = <cubie-mesa>libvulkan_powervr_mesa.so ;
 			SEARCH on $(vulkanDriver) = $(mesaOut) ;
 			AddFilesToHaikuImage system non-packaged lib : $(vulkanDriver) ;
+			# zink's libvulkan.so.1: the driver, without a loader
+			local vulkanShim = <cubie-mesa>libvulkan.so.1 ;
+			SEARCH on $(vulkanShim) = $(mesaOut) ;
+			AddFilesToHaikuImage system non-packaged lib : $(vulkanShim) ;
 			local test ;
-			for test in pvr_vkprobe pvr_vkfill pvr_vkfence pvr_vktriangle {
+			for test in pvr_vkprobe pvr_vkfill pvr_vkfence pvr_vktriangle
+					pvr_glprobe {
 				if [ Glob $(mesaOut) : $(test) ] {
 					local testFile = <cubie-mesa>$(test) ;
 					SEARCH on $(testFile) = $(mesaOut) ;

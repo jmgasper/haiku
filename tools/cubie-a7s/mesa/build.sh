@@ -2,12 +2,13 @@
 # Build Mesa's PowerVR Vulkan driver (libvulkan_powervr_mesa.so) and its
 # test programs for air/OS arm64 (Cubie A7S, PowerVR BXM-4-64 MC1).
 #
-#   build.sh [all|fetch|host|patch|configure|driver|tests|shim]   (default: all)
+#   build.sh [all|fetch|host|patch|configure|driver|tests|gl|shim]
+#   (default: all)
 #
 # From a clean $ROOT, "all" downloads and verifies the pinned Mesa source,
 # builds Mesa's host shader tools (mesa_clc, vtn_bindgen2, pco_clc) at the
 # same version, applies mesa-haiku-pvr.patch, cross-builds the driver and
-# the three test programs and copies the results to $ROOT/out. Every step
+# the test programs and copies the results to $ROOT/out. Every step
 # is incremental; rerunning it is cheap.
 #
 # The driver talks to the air/OS kernel driver "powervr" through
@@ -38,7 +39,10 @@ HOST_BUILD=$ROOT/build-host
 HOST_TOOLS=$ROOT/host-tools
 BUILD=$ROOT/build
 OUT=$ROOT/out
-PATCH=$TOOLS/mesa-haiku-pvr.patch
+BUILD_GL=$ROOT/build-gl
+# applied in this order; mesa-haiku-gl.patch only touches files the first
+# one does not
+PATCHES=(mesa-haiku-pvr.patch mesa-haiku-gl.patch)
 TESTS=(pvr_vkprobe pvr_vkfill pvr_vkfence pvr_vktriangle)
 
 export PATH=$HOST_TOOLS/bin:$WORK/toolchains/mesa-python/bin:$WORK/toolchains/host/usr/bin:$PATH
@@ -69,24 +73,38 @@ fetch() {
 	[ "$(cat "$SRC/VERSION")" = "$MESA_VERSION" ]
 }
 
-# -- the patch ----------------------------------------------------------------
-# Applied once; a stamp holds the applied patch's hash. A changed patch is
-# re-applied after reverting the old one (kept as $SRC/.haiku-pvr.patch).
+# -- the patches --------------------------------------------------------------
+# Applied once; $SRC/.haiku-patches keeps copies of what was applied and the
+# hash of the series. A changed series is applied after reverting the old
+# one, last patch first.
 patch_source() {
-	local want have=
-	want=$(sha256sum "$PATCH" | cut -d' ' -f1)
-	[ ! -f "$SRC/.haiku-pvr.sha256" ] || have=$(cat "$SRC/.haiku-pvr.sha256")
-	[ "$want" != "$have" ] || { log "patch already applied"; return 0; }
-	if [ -n "$have" ]; then
-		log "reverting the previous patch"
-		patch -d "$SRC" -p1 -R -s --no-backup-if-mismatch < "$SRC/.haiku-pvr.patch"
+	local applied=$SRC/.haiku-patches want have= p n=1
+	want=$(cd "$TOOLS" && cat "${PATCHES[@]}" | sha256sum | cut -d' ' -f1)
+	[ ! -f "$applied/sha256" ] || have=$(cat "$applied/sha256")
+	# a tree patched when there was only mesa-haiku-pvr.patch
+	if [ -z "$have" ] && [ -f "$SRC/.haiku-pvr.patch" ]; then
+		mkdir -p "$applied"
+		mv "$SRC/.haiku-pvr.patch" "$applied/1-mesa-haiku-pvr.patch"
 		rm -f "$SRC/.haiku-pvr.sha256"
+		have=old
 	fi
-	log "applying $(basename "$PATCH")"
-	patch -d "$SRC" -p1 --dry-run -s --no-backup-if-mismatch < "$PATCH"
-	patch -d "$SRC" -p1 -s --no-backup-if-mismatch < "$PATCH"
-	cp "$PATCH" "$SRC/.haiku-pvr.patch"
-	echo "$want" > "$SRC/.haiku-pvr.sha256"
+	[ "$want" != "$have" ] || { log "patches already applied"; return 0; }
+	if [ -d "$applied" ]; then
+		log "reverting the patches applied before"
+		for p in $(ls -r "$applied"/*.patch 2>/dev/null); do
+			patch -d "$SRC" -p1 -R -s --no-backup-if-mismatch < "$p"
+		done
+		rm -rf "$applied"
+	fi
+	mkdir -p "$applied"
+	for p in "${PATCHES[@]}"; do
+		log "applying $p"
+		patch -d "$SRC" -p1 --dry-run -s --no-backup-if-mismatch < "$TOOLS/$p"
+		patch -d "$SRC" -p1 -s --no-backup-if-mismatch < "$TOOLS/$p"
+		cp "$TOOLS/$p" "$applied/$n-$p"
+		n=$((n + 1))
+	done
+	echo "$want" > "$applied/sha256"
 }
 
 # -- host tools ---------------------------------------------------------------
@@ -163,6 +181,28 @@ INI
 	echo "$MESA_VERSION" > "$stamp"
 }
 
+# How to run "meson setup" on build directory $1 with machine files $2...:
+# --reconfigure, or --wipe when the machine files changed since it was set
+# up (Meson reads their options only then).
+setup_mode() {
+	local dir=$1 hash
+	shift
+	hash=$(cat "$@" | sha256sum | cut -d' ' -f1)
+	if [ ! -f "$dir/build.ninja" ]; then
+		:
+	elif [ "$(cat "$dir/.haiku-machine-files" 2>/dev/null)" = "$hash" ]; then
+		echo --reconfigure
+	else
+		echo --wipe
+	fi
+}
+
+remember_machine_files() {
+	local dir=$1
+	shift
+	cat "$@" | sha256sum | cut -d' ' -f1 > "$dir/.haiku-machine-files"
+}
+
 # -- the driver ---------------------------------------------------------------
 # Only the PowerVR Vulkan driver: no GL, no EGL, no LLVM (the shader
 # compilers that need it ran on the host), no window system integration.
@@ -173,17 +213,19 @@ configure() {
 		echo "no Haiku arm64 sysroot/cross file at $BASE" >&2; exit 1; }
 	local sysroot=$BASE/sysroot
 	# BASE's cross file names the compilers and the sysroot; this one adds
-	# the kernel driver's userland header directory to every compile
+	# the kernel driver's userland header directory to every compile, and
+	# keeps $ROOT out of the debug information, the compiler's and the
+	# assembler's line tables (and so out of the build-id: the same output
+	# from any root)
 	cat > "$ROOT/haiku-aarch64-pvr.ini" <<INI
 [built-in options]
-c_args = ['--sysroot=$sysroot', '-I$PVR_HEADERS']
-cpp_args = ['--sysroot=$sysroot', '-I$PVR_HEADERS']
+c_args = ['--sysroot=$sysroot', '-I$PVR_HEADERS', '-ffile-prefix-map=$ROOT/=', '-Wa,--debug-prefix-map=$ROOT/=']
+cpp_args = ['--sysroot=$sysroot', '-I$PVR_HEADERS', '-ffile-prefix-map=$ROOT/=', '-Wa,--debug-prefix-map=$ROOT/=']
 c_link_args = ['--sysroot=$sysroot']
 cpp_link_args = ['--sysroot=$sysroot']
 INI
-	local reconfigure=()
-	[ ! -f "$BUILD/build.ninja" ] || reconfigure=(--reconfigure)
-	meson setup "${reconfigure[@]}" "$BUILD" "$SRC" \
+	local files=("$BASE/haiku-aarch64.ini" "$ROOT/haiku-aarch64-pvr.ini")
+	meson setup $(setup_mode "$BUILD" "${files[@]}") "$BUILD" "$SRC" \
 		--cross-file="$BASE/haiku-aarch64.ini" \
 		--cross-file="$ROOT/haiku-aarch64-pvr.ini" \
 		--prefix=/boot/system/non-packaged --libdir=lib \
@@ -196,6 +238,7 @@ INI
 		-Dshader-cache=disabled -Dvalgrind=disabled -Dlibunwind=disabled \
 		-Dzstd=disabled -Dzlib=disabled -Dexpat=disabled -Dxmlconfig=disabled \
 		-Dbuild-tests=false '-Dtools=[]' '-Dvulkan-layers=[]'
+	remember_machine_files "$BUILD" "${files[@]}"
 }
 
 driver() {
@@ -221,6 +264,99 @@ tests() {
 	done
 }
 
+# -- OpenGL: EGL with zink and softpipe -----------------------------------------
+# A second build of the same tree: Mesa's EGL vendor library for libglvnd
+# (libEGL_mesa.so.0, which carries GL and GLES too) with the Gallium drivers
+# zink (GL on the PowerVR Vulkan driver) and softpipe (the fallback), and
+# the on-disk shader cache. llvmpipe would need LLVM for arm64 Haiku, which
+# the sysroot does not have. Zink finds the Vulkan driver through
+# libvulkan.so.1, vulkan_shim.c.
+gl_configure() {
+	local pc=$ROOT/gl-pkgconfig
+	mkdir -p "$pc"
+	# the sysroot's zlib.pc names its original /packages location
+	cat > "$pc/zlib.pc" <<'PC'
+prefix=/boot/system/develop
+libdir=${prefix}/lib
+includedir=${prefix}/headers
+Name: zlib
+Description: zlib in the pinned Haiku ARM64 sysroot
+Version: 1.2.13
+Libs: -L${libdir} -lz
+Cflags: -I${includedir}
+PC
+	cat > "$ROOT/haiku-aarch64-gl.ini" <<INI
+[properties]
+pkg_config_libdir = ['$pc', '$BASE/sysroot/boot/system/develop/lib/pkgconfig', '$BASE/sysroot/boot/system/lib/pkgconfig']
+INI
+	local files=("$BASE/haiku-aarch64.ini" "$ROOT/haiku-aarch64-pvr.ini"
+		"$ROOT/haiku-aarch64-gl.ini")
+	meson setup $(setup_mode "$BUILD_GL" "${files[@]}") "$BUILD_GL" "$SRC" \
+		--cross-file="$BASE/haiku-aarch64.ini" \
+		--cross-file="$ROOT/haiku-aarch64-pvr.ini" \
+		--cross-file="$ROOT/haiku-aarch64-gl.ini" \
+		--prefix=/boot/system/non-packaged --libdir=lib \
+		--buildtype=debugoptimized --wrap-mode=nofallback \
+		-Dplatforms=haiku -Dgallium-drivers=zink,softpipe '-Dvulkan-drivers=[]' \
+		-Dopengl=true -Dgles1=disabled -Dgles2=enabled -Degl=enabled \
+		-Dglvnd=enabled -Dglx=disabled -Dgbm=disabled -Dllvm=disabled \
+		-Dshader-cache=enabled -Dshader-cache-max-size=128M -Dzlib=enabled \
+		-Dzstd=disabled -Dexpat=disabled -Dxmlconfig=disabled \
+		-Dvalgrind=disabled -Dlibunwind=disabled -Dmesa-clc=system \
+		-Dprecomp-compiler=system -Dspirv-tools=disabled \
+		-Dbuild-tests=false '-Dtools=[]' '-Dvulkan-layers=[]'
+	remember_machine_files "$BUILD_GL" "${files[@]}"
+}
+
+gl() {
+	[ -f "$BUILD/src/imagination/vulkan/libvulkan_powervr_mesa.so" ] || driver
+	[ -f "$BUILD_GL/build.ninja" ] || gl_configure
+	ninja -C "$BUILD_GL" -j"$JOBS" src/egl/libEGL_mesa.so.0.0.0
+	local gl=$ROOT/gl lib=$BUILD/src/imagination/vulkan
+	local opengl=$BASE/sysroot/boot/system/develop/headers/os/opengl
+	mkdir -p "$gl"
+	"$CROSS-gcc" --sysroot="$BASE/sysroot" -std=gnu11 -O2 -g -Wall -Wextra \
+		-fPIC -shared -fvisibility=hidden -Wl,-soname,libvulkan.so.1 \
+		-I"$SRC/include" -o "$gl/libvulkan.so.1" "$TOOLS/vulkan_shim.c" \
+		-L"$lib" -lvulkan_powervr_mesa -Wl,--no-allow-shlib-undefined \
+		-Wl,-rpath-link="$BASE/sysroot/boot/system/lib"
+	"$CROSS-gcc" --sysroot="$BASE/sysroot" -std=gnu11 -O2 -g -Wall -Wextra \
+		-I"$opengl" -o "$gl/pvr_glprobe" "$TOOLS/pvr_glprobe.c" \
+		-L"$BASE/sysroot/boot/system/develop/lib" -lEGL -lGLESv2 \
+		-Wl,--no-allow-shlib-undefined \
+		-Wl,-rpath-link="$BASE/sysroot/boot/system/lib"
+	check_symbols "$BUILD_GL/src/egl/libEGL_mesa.so.0.0.0"
+}
+
+# Every symbol a library needs is defined by one of the libraries it names
+# (NEEDED), found in the sysroot. (ld --no-allow-shlib-undefined would also
+# follow libbe's own dependencies, which the sysroot does not all have.)
+check_symbols() {
+	local lib=$1 n d defined missing
+	local dirs=("$BASE/sysroot/boot/system/lib"
+		"$BASE/sysroot/boot/system/develop/lib")
+	defined=$(for n in $("$CROSS-readelf" -d "$lib" \
+			| sed -n 's/.*Shared library: \[\(.*\)\]/\1/p'); do
+		for d in "${dirs[@]}"; do
+			[ -f "$d/$n" ] || continue
+			"$CROSS-readelf" --dyn-syms -W "$d/$n" \
+				| awk '$7 != "UND" && $8 != "" { sub(/@.*/, "", $8); print $8 }'
+			continue 2
+		done
+		echo "$lib: $n is not in the sysroot" >&2
+		exit 1
+	done | sort -u)
+	missing=$("$CROSS-readelf" --dyn-syms -W "$lib" \
+		| awk '$7 == "UND" && $5 != "WEAK" && $8 != "" \
+			{ sub(/@.*/, "", $8); print $8 }' \
+		| sort -u | comm -23 - <(echo "$defined"))
+	if [ -n "$missing" ]; then
+		echo "$lib: undefined:" $missing >&2
+		exit 1
+	fi
+	log "$(basename "$lib"): every symbol it needs is in the sysroot"
+}
+
 results() {
 	local lib=$BUILD/src/imagination/vulkan
 	mkdir -p "$OUT/debug"
@@ -234,13 +370,33 @@ results() {
 	# for a Vulkan loader later (library in /boot/system/non-packaged/lib);
 	# the tests do not read it
 	cp "$lib/powervr_mesa_icd.aarch64.json" "$OUT/"
+	# OpenGL: the EGL vendor library and its libglvnd vendor file, the
+	# libvulkan.so.1 zink loads, and the EGL/GLES2 check
+	cp "$BUILD_GL/src/egl/libEGL_mesa.so.0.0.0" "$OUT/debug/libEGL_mesa.so.0"
+	"$CROSS-strip" -o "$OUT/libEGL_mesa.so.0" \
+		"$BUILD_GL/src/egl/libEGL_mesa.so.0.0.0"
+	cp "$ROOT/gl/libvulkan.so.1" "$OUT/debug/"
+	"$CROSS-strip" -o "$OUT/libvulkan.so.1" "$ROOT/gl/libvulkan.so.1"
+	cp "$ROOT/gl/pvr_glprobe" "$OUT/debug/"
+	"$CROSS-strip" -o "$OUT/pvr_glprobe" "$ROOT/gl/pvr_glprobe"
+	cat > "$OUT/10_mesa.json" <<'JSON'
+{
+  "file_format_version": "1.0.0",
+  "ICD": {
+    "library_path": "/boot/system/non-packaged/lib/libEGL_mesa.so.0"
+  }
+}
+JSON
 	{
 		echo "mesa $MESA_VERSION sha256 $MESA_SHA256"
-		echo "patch $(sha256sum "$PATCH" | cut -d' ' -f1) $(basename "$PATCH")"
+		for p in "${PATCHES[@]}"; do
+			echo "patch $(sha256sum "$TOOLS/$p" | cut -d' ' -f1) $p"
+		done
 		echo "pvr_haiku.h $(sha256sum "$PVR_HEADERS/pvr_haiku.h" | cut -d' ' -f1) $PVR_HEADERS/pvr_haiku.h"
 		echo "sysroot $BASE"
 		echo "host tools $(cat "$HOST_TOOLS/.mesa-version") $HOST_TOOLS/bin"
-		(cd "$OUT" && sha256sum libvulkan_powervr_mesa.so "${TESTS[@]}")
+		(cd "$OUT" && sha256sum libvulkan_powervr_mesa.so "${TESTS[@]}" \
+			libEGL_mesa.so.0 libvulkan.so.1 pvr_glprobe 10_mesa.json)
 	} > "$OUT/MANIFEST"
 	log "results in $OUT"
 	ls -l "$OUT"
@@ -249,7 +405,7 @@ results() {
 # -- host smoke test (optional, not part of "all") ----------------------------
 # The same patched source built for Linux (the Haiku hunks compile out) with
 # Mesa's pvr drm-shim, which answers DEV_QUERY like the Linux kernel driver
-# for any BVNC. The three tests run on the build host against BXM-4-64
+# for any BVNC. The tests run on the build host against BXM-4-64
 # 36.56.104.183 under an ioctl tracer: the driver's own code (enumeration,
 # device creation, the PowerVR shader compiler, command streams, null jobs)
 # runs, and every ioctl it makes is logged to $ROOT/shim/<test>.log, in
@@ -258,32 +414,57 @@ results() {
 # unwritten and pvr_vkfence's waits that must time out do not.
 SHIM_BVNC=36.56.104.183
 shim() {
-	local sb=$ROOT/build-shim
-	if [ ! -f "$sb/build.ninja" ]; then
-		meson setup "$sb" "$SRC" --buildtype=debugoptimized \
-			--wrap-mode=nofallback -Dplatforms= '-Dgallium-drivers=[]' \
-			-Dvulkan-drivers=imagination -Dtools=drm-shim -Dopengl=false \
-			-Dgles1=disabled -Dgles2=disabled -Degl=disabled -Dglx=disabled \
-			-Dgbm=disabled -Dglvnd=disabled -Dllvm=disabled -Dmesa-clc=system \
-			-Dprecomp-compiler=system -Dspirv-tools=disabled \
-			-Dshader-cache=disabled -Dvalgrind=disabled -Dlibunwind=disabled \
-			-Dzstd=disabled -Dexpat=disabled -Dxmlconfig=disabled \
-			-Dbuild-tests=false '-Dvulkan-layers=[]'
-	fi
-	ninja -C "$sb" -j"$JOBS" src/imagination/vulkan/libvulkan_powervr_mesa.so \
-		src/imagination/drm-shim/libpowervr_noop_drm_shim.so
+	local sb=$ROOT/build-shim reconfigure=()
+	[ ! -f "$sb/build.ninja" ] || reconfigure=(--reconfigure)
+	meson setup "${reconfigure[@]}" "$sb" "$SRC" --buildtype=debugoptimized \
+		--wrap-mode=nofallback -Dplatforms= -Dgallium-drivers=zink,softpipe \
+		-Dvulkan-drivers=imagination -Dtools=drm-shim -Dopengl=true \
+		-Dgles1=disabled -Dgles2=enabled -Degl=enabled -Dglx=disabled \
+		-Dgbm=disabled -Dglvnd=disabled -Dllvm=disabled -Dmesa-clc=system \
+		-Dprecomp-compiler=system -Dspirv-tools=disabled \
+		-Dshader-cache=disabled -Dvalgrind=disabled -Dlibunwind=disabled \
+		-Dzstd=disabled -Dexpat=disabled -Dxmlconfig=disabled \
+		-Dbuild-tests=false '-Dvulkan-layers=[]'
+	ninja -C "$sb" -j"$JOBS"
 	local lib=$sb/src/imagination/vulkan s=$ROOT/shim
-	mkdir -p "$s"
+	mkdir -p "$s/lib"
 	cc -shared -fPIC -O2 -Wall -I"$SRC/include" -o "$s/libpvr_ioctl_trace.so" \
 		"$TOOLS/pvr_ioctl_trace.c" -ldl -lpthread
 	local preload=$s/libpvr_ioctl_trace.so:$sb/src/imagination/drm-shim/libpowervr_noop_drm_shim.so
 	for t in "${TESTS[@]}"; do
 		cc -std=gnu11 -O2 -g -Wall -I"$SRC/include" -o "$s/$t" "$TOOLS/$t.c" \
 			-L"$lib" -lvulkan_powervr_mesa -Wl,-rpath,"$lib"
+	done
+	# OpenGL ES through zink: EGL without a window system (surfaceless) on
+	# the shim's "powervr" render node, which Mesa gives to zink (forced:
+	# the shim's renderD128 may be a real GPU on the host as well); zink
+	# loads the Vulkan driver through this tree's libvulkan.so.1. (Haiku
+	# makes zink without a DRM device; on Linux that path asserts in
+	# driconf, so this is the closest.)
+	cc -std=gnu11 -O2 -Wall -shared -fPIC -fvisibility=hidden \
+		-Wl,-soname,libvulkan.so.1 -I"$SRC/include" -o "$s/lib/libvulkan.so.1" \
+		"$TOOLS/vulkan_shim.c" -L"$lib" -lvulkan_powervr_mesa -Wl,-rpath,"$lib"
+	cc -std=gnu11 -O2 -g -Wall -I"$SRC/include" -o "$s/pvr_glprobe" \
+		"$TOOLS/pvr_glprobe.c" "$sb/src/egl/libEGL.so" \
+		"$sb/src/mesa/glapi/es2api/libGLESv2.so" \
+		-Wl,-rpath,"$sb/src/egl:$sb/src/mesa/glapi/es2api"
+	# Every thread gets Haiku's default stack, 256 KiB (glibc sizes thread
+	# stacks from RLIMIT_STACK; the Haiku-only 8 MiB for Mesa's own threads
+	# does not apply here): a frame too large for an application's thread
+	# crashes here as on the board.
+	local run name
+	for run in "${TESTS[@]}" "pvr_vktriangle --linear" \
+		"pvr_glprobe --expect zink"; do
+		name=${run// --/-}
+		name=${name// /-}
+		(ulimit -s 256
 		PVR_SHIM_DEVICE_BVNC=$SHIM_BVNC PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 \
-			LD_PRELOAD=$preload timeout 120 "$s/$t" > "$s/$t.log" 2>&1 || true
-		printf '%-12s %5s ioctls, last line: %s\n' "$t" \
-			"$(grep -c '^ioctl ' "$s/$t.log")" "$(tail -1 "$s/$t.log")"
+			EGL_PLATFORM=surfaceless MESA_LOADER_DRIVER_OVERRIDE=zink \
+			LD_LIBRARY_PATH="$s/lib:$LD_LIBRARY_PATH" \
+			LD_PRELOAD=$preload timeout 120 "$s/"$run > "$s/$name.log" 2>&1) \
+			|| true
+		printf '%-22s %5s ioctls, last line: %s\n' "$name" \
+			"$(grep -c '^ioctl ' "$s/$name.log")" "$(tail -1 "$s/$name.log")"
 	done
 	log "logs in $s"
 }
@@ -296,6 +477,9 @@ patch) fetch; patch_source ;;
 configure) fetch; patch_source; host_tools; configure ;;
 driver) fetch; patch_source; host_tools; driver ;;
 tests) tests ;;
-all) fetch; patch_source; host_tools; configure; driver; tests; results ;;
-*) echo "usage: $0 [all|fetch|host|patch|configure|driver|tests|shim]" >&2; exit 2 ;;
+gl) fetch; patch_source; host_tools; driver; gl_configure; gl ;;
+all) fetch; patch_source; host_tools; configure; driver; tests; gl_configure
+	gl; results ;;
+*) echo "usage: $0 [all|fetch|host|patch|configure|driver|tests|gl|shim]" >&2
+	exit 2 ;;
 esac

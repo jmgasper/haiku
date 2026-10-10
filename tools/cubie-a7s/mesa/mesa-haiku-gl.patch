@@ -1,0 +1,1269 @@
+air/OS (Haiku arm64): OpenGL and OpenGL ES for the Cubie A7S from Mesa 26.2.4,
+Mesa's EGL vendor library for libglvnd (libEGL_mesa.so.0) with the Gallium
+drivers zink, on the PowerVR Vulkan driver, and softpipe. Applied after
+mesa-haiku-pvr.patch; it touches none of that patch's files.
+
+Haiku's EGL and hgl code is the Raspberry Pi 4 / ROCK 5 port (Mesa 25.3.6:
+tools/rpi4/mesa, tools/rock5-itx/mesa/mesa-haiku-native.patch), whose
+upstream base is unchanged in 26.2.4, without its V3D and Mali screens and
+shared V3D bitmaps, plus the zink pieces of the air/OS x86_64 fork
+(airos-25.3.6-x86_64: 7fc91dc, 2c7a86b, 8f699d2, 33656fb).
+
+  src/egl/drivers/haiku/egl_haiku.cpp
+      - zink when the "powervr" kernel driver published its device
+        (HAIKU_PVR_DEVICE or /dev/graphics/powervr/0) and neither
+        LIBGL_ALWAYS_SOFTWARE nor another GALLIUM_DRIVER says otherwise;
+        softpipe when zink is not wanted or no screen comes up (no
+        libvulkan.so.1, no Vulkan device). PVR_I_WANT_A_BROKEN_VULKAN_DRIVER
+        is set for the zink screen's creation only, unless already set
+      - GPU screens present by reading the frame back into a bitmap that the
+        window's BitmapHook shows, two bitmaps, the displayed one only
+        written after SetBitmap() gave it back (the Pi's window presentation)
+      - contexts with their attributes (GL core/compat and ES versions,
+        flags, robustness, priority, no-error, release behaviour), client
+        APIs and configs from what the screen supports (RGBA8888, depth 24,
+        stencil 8, pbuffers up to the largest texture), window size
+        tracking and eglQuerySurface, pbuffers that do not swap,
+        eglMakeCurrent that restores the old binding on failure, display
+        reference counting
+      - haiku_mesa_readback_band_bytes() (Summit's optional readback hint):
+        0, whole rectangles, for zink; -1 otherwise
+      - printf()s become TRACE()
+  src/egl/meson.build, egl*.sym, egl*-symbols.txt
+      link zink and xmlconfig; export the readback hint
+  src/gallium/frontends/hgl/hgl.c, hgl_context.h
+      present and size hooks for the EGL driver; display targets only for
+      software screens; a depth/stencil format the screen has; contexts
+      from st_context_attribs; drawables destroyed with the framebuffer
+  src/gallium/frontends/hgl/meson.build, winsys/sw/hgl/meson.build
+      depend on the generated format header (a parallel build race)
+  src/gallium/auxiliary/target-helpers/inline_sw_helper.h
+      include zink_public.h (sw_screen_create_zink() did not compile)
+  src/gallium/drivers/zink/zink_bo.c
+      a screen that failed before zink_bo_init() tore down an uninitialized
+      cache mutex and asserted: the softpipe fallback crashed
+  src/gallium/drivers/zink/zink_screen.c
+      disk cache key: without a build-id note, the library file's timestamp
+      (else no cache), so a new zink never reads an old one's shaders
+  src/c11/impl/threads_posix.c
+      thrd_create() gives Mesa's threads (util_queue, u_thread_create(),
+      the Vulkan runtime's submit thread) 8 MiB of stack, as on Linux,
+      instead of Haiku's 256 KiB: zink's flush thread overflowed it in the
+      PowerVR driver's transfer submission (the pvr patch also moves that
+      frame to the heap)
+  src/gallium/drivers/zink/zink_state.c, zink_descriptors.c,
+  src/compiler/nir/nir_opt_varyings.c
+      the three largest stack frames left (zink_create_vertex_state() 109
+      KiB: a whole zink_context; zink_descriptor_program_init() 85 KiB;
+      backward_inter_shader_code_motion() 70 KiB) on the heap instead: they
+      run on the application's GL thread, 256 KiB by default on Haiku
+  src/mesa/state_tracker/st_cb_flush.c
+      a polled device reset is not also replayed as a callback event
+  src/gallium/auxiliary/draw/draw_decompose_tmp.h, draw_vs_exec.c
+      softpipe: quad-strip edge flags after rotation; the TGSI machine's
+      cached token address is dropped when its shader is deleted
+  include/renderdoc_app.h
+      calling convention on Haiku
+
+Not ported: V3D/Mali screens, texture caches, GPU readback and shared
+bitmaps (driver-specific); the x86_64 fork's pipeline-library checks
+(66c695e: the PowerVR driver has no graphics pipeline libraries), Summit's
+parallel readback copies (e6152fd) and NVIDIA scan-out (f4e58bd).
+
+diff -ruN a/include/renderdoc_app.h b/include/renderdoc_app.h
+--- a/include/renderdoc_app.h
++++ b/include/renderdoc_app.h
+@@ -35,7 +35,7 @@
+ 
+ #if defined(WIN32) || defined(__WIN32__) || defined(_WIN32) || defined(_MSC_VER)
+ #define RENDERDOC_CC __cdecl
+-#elif defined(__linux__)
++#elif defined(__linux__) || defined(__HAIKU__)
+ #define RENDERDOC_CC
+ #elif defined(__APPLE__)
+ #define RENDERDOC_CC
+diff -ruN a/src/c11/impl/threads_posix.c b/src/c11/impl/threads_posix.c
+--- a/src/c11/impl/threads_posix.c
++++ b/src/c11/impl/threads_posix.c
+@@ -252,6 +252,29 @@
+     if (!pack) return thrd_nomem;
+     pack->func = func;
+     pack->arg = arg;
++#ifdef __HAIKU__
++    {
++        /* Haiku gives a thread 256 KiB of stack, Linux 8 MiB, and Mesa's
++         * code is written for the latter: zink's flush thread overflowed in
++         * the PowerVR driver's transfer submission. Every thread Mesa makes
++         * (util_queue, u_thread_create(), the Vulkan runtime's submit
++         * thread) comes through here. */
++        pthread_attr_t attr;
++        int err;
++        if (pthread_attr_init(&attr) != 0) {
++            free(pack);
++            return thrd_error;
++        }
++        pthread_attr_setstacksize(&attr, 8 * 1024 * 1024);
++        err = pthread_create(thr, &attr, impl_thrd_routine, pack);
++        pthread_attr_destroy(&attr);
++        if (err != 0) {
++            free(pack);
++            return thrd_error;
++        }
++        return thrd_success;
++    }
++#endif
+     if (pthread_create(thr, NULL, impl_thrd_routine, pack) != 0) {
+         free(pack);
+         return thrd_error;
+diff -ruN a/src/compiler/nir/nir_opt_varyings.c b/src/compiler/nir/nir_opt_varyings.c
+--- a/src/compiler/nir/nir_opt_varyings.c
++++ b/src/compiler/nir/nir_opt_varyings.c
+@@ -4493,9 +4493,20 @@
+    return true;
+ }
+ 
++struct movable_load {
++   nir_def *def;
++   nir_intrinsic_instr *first_load;
++};
++
++/* (air/OS) movable_loads[NUM_SCALAR_SLOTS] is some 70 KiB: on the heap
++ * (backward_inter_shader_code_motion() below), not on the stack of the
++ * thread linking the program, often an application's GL thread with Haiku's
++ * 256 KiB of stack.
++ */
+ static bool
+-backward_inter_shader_code_motion(struct linkage_info *linkage,
+-                                  nir_opt_varyings_progress *progress)
++backward_inter_shader_code_motion_impl(struct linkage_info *linkage,
++                                       nir_opt_varyings_progress *progress,
++                                       struct movable_load *movable_loads)
+ {
+    /* These producers are not supported. The description at the beginning
+     * suggests a possible workaround.
+@@ -4511,10 +4522,6 @@
+    /* Gather inputs that can be moved into the previous shader. These are only
+     * checked for the basic constraints for movability.
+     */
+-   struct {
+-      nir_def *def;
+-      nir_intrinsic_instr *first_load;
+-   } movable_loads[NUM_SCALAR_SLOTS];
+    unsigned num_movable_loads = 0;
+    unsigned i;
+ 
+@@ -4674,7 +4681,7 @@
+       if (BITSET_TEST(linkage->xfb_mask, i))
+          continue;
+ 
+-      assert(num_movable_loads < ARRAY_SIZE(movable_loads));
++      assert(num_movable_loads < NUM_SCALAR_SLOTS);
+       movable_loads[num_movable_loads].def = load_def;
+       movable_loads[num_movable_loads].first_load = load;
+       num_movable_loads++;
+@@ -4806,6 +4813,20 @@
+    return false;
+ }
+ 
++static bool
++backward_inter_shader_code_motion(struct linkage_info *linkage,
++                                  nir_opt_varyings_progress *progress)
++{
++   struct movable_load *movable_loads =
++      malloc(sizeof(*movable_loads) * NUM_SCALAR_SLOTS);
++   if (!movable_loads)
++      return false;
++   bool result = backward_inter_shader_code_motion_impl(linkage, progress,
++                                                        movable_loads);
++   free(movable_loads);
++   return result;
++}
++
+ /******************************************************************
+  * SIGNED ZERO LINKING
+  ******************************************************************/
+diff -ruN a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_haiku.cpp
+--- a/src/egl/drivers/haiku/egl_haiku.cpp
++++ b/src/egl/drivers/haiku/egl_haiku.cpp
+@@ -26,8 +26,12 @@
+ #include <errno.h>
+ #include <stdint.h>
+ #include <stdio.h>
++#include <unistd.h>
+ 
+ #include <algorithm>
++#include <new>
++#include <cstdlib>
++#include <cstring>
+ 
+ #include "eglconfig.h"
+ #include "eglcontext.h"
+@@ -43,7 +47,10 @@
+ #include "pipe/p_context.h"
+ #include "pipe/p_defines.h"
+ #include "state_tracker/st_context.h"
++#include "util/box.h"
+ #include "util/u_atomic.h"
++#include "util/u_debug.h"
++#include "util/u_inlines.h"
+ #include "mesa/glapi/glapi/glapi.h"
+ 
+ #include "hgl/hgl_sw_winsys.h"
+@@ -68,6 +75,9 @@
+ 
+ struct haiku_egl_display {
+    int ref_count;
++   /* A GPU screen (zink): window frames are read back into bitmaps rather
++    * than drawn into software display targets. */
++   bool gpu_present;
+    struct hgl_display *disp;
+ };
+ 
+@@ -84,8 +94,98 @@
+    _EGLSurface base;
+    struct hgl_buffer *fb;
+    struct pipe_fence_handle *throttle_fence;
++   /* GPU presentation: the bitmap the view shows, and the one it gave back */
++   BBitmap *front_bitmap;
++   BBitmap *back_bitmap;
+ };
+ 
++/* Private air/OS performance hint for the current EGL context. A negative
++ * result means no preference, zero means whole rectangles, positive values
++ * give a preferred CPU readback band size in bytes. No GL state is changed.
++ * Zink reads back through one GPU copy and a wait per call: whole
++ * rectangles are cheapest.
++ */
++extern "C" PUBLIC int
++haiku_mesa_readback_band_bytes(void)
++{
++   struct st_context *st = st_api_get_current();
++   if (st && st->pipe && st->pipe->screen &&
++       strncmp(st->pipe->screen->get_name(st->pipe->screen), "zink", 4) == 0)
++      return 0;
++   return -1;
++}
++
++static void update_size(struct hgl_buffer *buffer);
++
++/* GPU rendering, CPU presentation: the frame is read back (a mapping of the
++ * GPU texture: zink copies it to host memory and waits) into a bitmap that
++ * the window's BitmapHook then shows. A view owns its displayed bitmap until
++ * SetBitmap() returns it, under the view's draw lock and after DrawBitmap()
++ * has read it; only that bitmap is written next.
++ */
++static bool
++haiku_present_texture(struct pipe_context *pipe, struct hgl_buffer *buffer,
++                      struct pipe_resource *texture)
++{
++   if (!pipe || !buffer->winsysContext || !texture || texture->width0 == 0 ||
++       texture->height0 == 0 || texture->width0 > INT32_MAX ||
++       texture->format != PIPE_FORMAT_BGRA8888_UNORM)
++      return false;
++
++   struct haiku_egl_surface *surface =
++      static_cast<struct haiku_egl_surface *>(buffer->present_private);
++   if (!surface)
++      return false;
++   const unsigned width = texture->width0, height = texture->height0;
++   BBitmap *back = surface->back_bitmap;
++   surface->back_bitmap = NULL;
++   if (back && (back->Bounds().IntegerWidth() + 1 != int64_t(width) ||
++                back->Bounds().IntegerHeight() + 1 != int64_t(height))) {
++      delete back;
++      back = NULL;
++   }
++   if (!back) {
++      back = new(std::nothrow) BBitmap(BRect(0, 0, width - 1, height - 1), 0,
++         B_RGBA32);
++   }
++   if (!back || back->InitCheck() != B_OK) {
++      delete back;
++      return false;
++   }
++
++   const size_t row_bytes = size_t(width) * 4;
++   struct pipe_box box;
++   u_box_2d(0, 0, width, height, &box);
++   struct pipe_transfer *transfer = NULL;
++   const uint8_t *pixels = static_cast<const uint8_t *>(
++      pipe->texture_map(pipe, texture, 0, PIPE_MAP_READ, &box, &transfer));
++   if (!pixels || transfer->stride < row_bytes ||
++       back->BytesPerRow() < int64_t(row_bytes)) {
++      if (pixels)
++         pipe->texture_unmap(pipe, transfer);
++      delete back;
++      return false;
++   }
++
++   const size_t destination_stride = back->BytesPerRow();
++   for (unsigned y = 0; y < height; ++y) {
++      uint8_t *destination = static_cast<uint8_t *>(back->Bits())
++         + size_t(y) * destination_stride;
++      memcpy(destination, pixels + size_t(y) * transfer->stride, row_bytes);
++      if (destination_stride > row_bytes)
++         memset(destination + row_bytes, 0, destination_stride - row_bytes);
++   }
++   pipe->texture_unmap(pipe, transfer);
++
++   BBitmap *retired =
++      static_cast<BitmapHook *>(buffer->winsysContext)->SetBitmap(back);
++   assert(retired == surface->front_bitmap);
++   (void)retired;
++   surface->back_bitmap = surface->front_bitmap;
++   surface->front_bitmap = back;
++   return true;
++}
++
+ // #pragma mark EGLSurface
+ 
+ // Called via eglCreateWindowSurface(), drv->CreateWindowSurface().
+@@ -93,7 +193,11 @@
+ haiku_create_window_surface(_EGLDisplay *disp, _EGLConfig *conf,
+                             void *native_window, const EGLint *attrib_list)
+ {
+-   printf("haiku_create_window_surface\n");
++   if (!native_window) {
++      _eglError(EGL_BAD_NATIVE_WINDOW, "Haiku EGL needs a BitmapHook");
++      return NULL;
++   }
++   TRACE("haiku_create_window_surface\n");
+    struct haiku_egl_display *hgl_dpy = haiku_egl_display(disp);
+ 
+    struct haiku_egl_surface *wgl_surf =
+@@ -108,7 +212,7 @@
+    }
+ 
+    struct st_visual visual;
+-   hgl_get_st_visual(&visual, HGL_DOUBLE | HGL_DEPTH);
++   hgl_get_st_visual(&visual, HGL_DOUBLE | HGL_ALPHA | HGL_DEPTH);
+ 
+    wgl_surf->fb =
+       hgl_create_st_framebuffer(hgl_dpy->disp, &visual, native_window);
+@@ -117,6 +221,15 @@
+       return NULL;
+    }
+ 
++   wgl_surf->fb->update_size = update_size;
++   if (hgl_dpy->gpu_present) {
++      wgl_surf->fb->present = haiku_present_texture;
++      wgl_surf->fb->present_private = wgl_surf;
++   }
++   update_size(wgl_surf->fb);
++   wgl_surf->base.Width = wgl_surf->fb->newWidth;
++   wgl_surf->base.Height = wgl_surf->fb->newHeight;
++
+    // Unset and delete previously set bitmap if any.
+    delete ((BitmapHook *)native_window)->SetBitmap(NULL);
+ 
+@@ -127,7 +240,7 @@
+ haiku_create_pixmap_surface(_EGLDisplay *disp, _EGLConfig *conf,
+                             void *native_pixmap, const EGLint *attrib_list)
+ {
+-   printf("haiku_create_pixmap_surface\n");
++   TRACE("haiku_create_pixmap_surface\n");
+    return NULL;
+ }
+ 
+@@ -135,7 +248,7 @@
+ haiku_create_pbuffer_surface(_EGLDisplay *disp, _EGLConfig *conf,
+                              const EGLint *attrib_list)
+ {
+-   printf("haiku_create_pbuffer_surface\n");
++   TRACE("haiku_create_pbuffer_surface\n");
+    struct haiku_egl_display *hgl_dpy = haiku_egl_display(disp);
+ 
+    struct haiku_egl_surface *wgl_surf =
+@@ -150,7 +263,7 @@
+    }
+ 
+    struct st_visual visual;
+-   hgl_get_st_visual(&visual, HGL_DOUBLE | HGL_DEPTH);
++   hgl_get_st_visual(&visual, HGL_ALPHA | HGL_DEPTH);
+ 
+    wgl_surf->fb = hgl_create_st_framebuffer(hgl_dpy->disp, &visual, NULL);
+    if (!wgl_surf->fb) {
+@@ -168,8 +281,9 @@
+ static EGLBoolean
+ haiku_destroy_surface(_EGLDisplay *disp, _EGLSurface *surf)
+ {
+-   struct haiku_egl_display *hgl_dpy = haiku_egl_display(disp);
+    if (_eglPutSurface(surf)) {
++      struct haiku_egl_display *hgl_dpy =
++         haiku_egl_display(surf->Resource.Display);
+       struct haiku_egl_surface *hgl_surf = haiku_egl_surface(surf);
+       struct pipe_screen *screen = hgl_dpy->disp->fscreen->screen;
+       screen->fence_reference(screen, &hgl_surf->throttle_fence, NULL);
+@@ -177,9 +291,15 @@
+       // Unset bitmap to release ownership. Bitmap will be deleted later
+       // when destroying framebuffer.
+       BitmapHook *bitmapHook = (BitmapHook*)hgl_surf->fb->winsysContext;
+-      if (bitmapHook != NULL)
+-         bitmapHook->SetBitmap(NULL);
++      if (bitmapHook != NULL) {
++         BBitmap *bitmap = bitmapHook->SetBitmap(NULL);
++         if (hgl_surf->fb->present)
++            assert(bitmap == hgl_surf->front_bitmap);
++         (void)bitmap;
++      }
+ 
++      delete hgl_surf->front_bitmap;
++      delete hgl_surf->back_bitmap;
+       hgl_destroy_st_framebuffer(hgl_surf->fb);
+       free(surf);
+    }
+@@ -189,9 +309,19 @@
+ static void
+ update_size(struct hgl_buffer *buffer)
+ {
++   /* An offscreen surface keeps its EGL dimensions and has no BitmapHook. */
++   if (!buffer->winsysContext)
++      return;
++
+    uint32_t newWidth, newHeight;
+    ((BitmapHook *)buffer->winsysContext)->GetSize(newWidth, newHeight);
+    if (buffer->newWidth != newWidth || buffer->newHeight != newHeight) {
++      /* Software displaytargets own their bitmaps. Detach the borrowed bitmap
++       * before drawable validation drops the old texture references on resize.
++       * Native presentation bitmaps have an independent lifetime.
++       */
++      if (!buffer->present)
++         ((BitmapHook *)buffer->winsysContext)->SetBitmap(NULL);
+       buffer->newWidth = newWidth;
+       buffer->newHeight = newHeight;
+       p_atomic_inc(&buffer->base.stamp);
+@@ -199,8 +329,25 @@
+ }
+ 
+ static EGLBoolean
++haiku_query_surface(_EGLDisplay *disp, _EGLSurface *surf, EGLint attribute,
++                     EGLint *value)
++{
++   if (surf->Type == EGL_WINDOW_BIT) {
++      struct hgl_buffer *buffer = haiku_egl_surface(surf)->fb;
++      update_size(buffer);
++      surf->Width = buffer->newWidth;
++      surf->Height = buffer->newHeight;
++   }
++   return _eglQuerySurface(disp, surf, attribute, value);
++}
++
++static EGLBoolean
+ haiku_swap_buffers(_EGLDisplay *disp, _EGLSurface *surf)
+ {
++   /* EGL swaps only window surfaces. Pbuffers retain their contents. */
++   if (surf->Type == EGL_PBUFFER_BIT)
++      return EGL_TRUE;
++
+    struct haiku_egl_display *hgl_dpy = haiku_egl_display(disp);
+    struct haiku_egl_surface *hgl_surf = haiku_egl_surface(surf);
+    struct haiku_egl_context *hgl_ctx = haiku_egl_context(surf->CurrentContext);
+@@ -210,6 +357,8 @@
+    struct st_context *st = hgl_ctx->ctx->st;
+    struct pipe_screen *screen = hgl_dpy->disp->fscreen->screen;
+ 
++   _mesa_glthread_finish(st->ctx);
++
+    struct hgl_buffer *buffer = hgl_surf->fb;
+    auto &frontBuffer = buffer->textures[ST_ATTACHMENT_FRONT_LEFT];
+    auto &backBuffer = buffer->textures[ST_ATTACHMENT_BACK_LEFT];
+@@ -218,8 +367,6 @@
+    if (backBuffer != NULL)
+       st->pipe->flush_resource(st->pipe, backBuffer);
+ 
+-   _mesa_glthread_finish(st->ctx);
+-
+    struct pipe_fence_handle *new_fence = NULL;
+    st_context_flush(st, ST_FLUSH_FRONT, &new_fence, NULL, NULL);
+    if (hgl_surf->throttle_fence) {
+@@ -231,8 +378,13 @@
+ 
+    // flush back buffer and swap buffers if double buffering is used
+    if (backBuffer != NULL) {
+-      screen->flush_frontbuffer(screen, st->pipe, backBuffer, 0, 0,
+-                                buffer->winsysContext, 1, NULL);
++      if (buffer->present) {
++         if (!buffer->present(st->pipe, buffer, backBuffer))
++            return _eglError(EGL_BAD_ALLOC, "Haiku EGL bitmap presentation failed");
++      } else {
++         screen->flush_frontbuffer(screen, st->pipe, backBuffer, 0, 0,
++                                   buffer->winsysContext, 1, NULL);
++      }
+       std::swap(frontBuffer, backBuffer);
+       p_atomic_inc(&buffer->base.stamp);
+    }
+@@ -273,20 +425,22 @@
+    conf->base.ConfigID = 1;
+    conf->base.BindToTextureRGB = EGL_FALSE;
+    conf->base.BindToTextureRGBA = EGL_FALSE;
+-   conf->base.StencilSize = 0;
++   conf->base.StencilSize = 8;
+    conf->base.TransparentType = EGL_NONE;
+-   conf->base.NativeRenderable = EGL_TRUE; // Let's say yes
++   conf->base.NativeRenderable = EGL_FALSE;
+    conf->base.NativeVisualID = 0;          // No visual
+    conf->base.NativeVisualType = EGL_NONE; // No visual
+-   conf->base.RenderableType = 0x8;
++   conf->base.RenderableType = disp->ClientAPIs;
+    conf->base.SampleBuffers = 0; // TODO: How to get the right value ?
+    conf->base.Samples = conf->base.SampleBuffers == 0 ? 0 : 0;
+-   conf->base.DepthSize = 24; // TODO: How to get the right value ?
++   conf->base.DepthSize = 24;
+    conf->base.Level = 0;
+-   conf->base.MaxPbufferWidth = _EGL_MAX_PBUFFER_WIDTH;
+-   conf->base.MaxPbufferHeight = _EGL_MAX_PBUFFER_HEIGHT;
+-   conf->base.MaxPbufferPixels = 0; // TODO: How to get the right value ?
+-   conf->base.SurfaceType = EGL_WINDOW_BIT | EGL_PIXMAP_BIT | EGL_PBUFFER_BIT;
++   struct pipe_screen *screen = haiku_egl_display(disp)->disp->fscreen->screen;
++   unsigned max_size = screen->caps.max_texture_2d_size;
++   conf->base.MaxPbufferWidth = std::min<unsigned>(max_size, _EGL_MAX_PBUFFER_WIDTH);
++   conf->base.MaxPbufferHeight = std::min<unsigned>(max_size, _EGL_MAX_PBUFFER_HEIGHT);
++   conf->base.MaxPbufferPixels = conf->base.MaxPbufferWidth * conf->base.MaxPbufferHeight;
++   conf->base.SurfaceType = EGL_PBUFFER_BIT | EGL_WINDOW_BIT;
+ 
+    TRACE("Config configuated\n");
+    if (!_eglValidateConfig(&conf->base, EGL_FALSE)) {
+@@ -321,12 +475,56 @@
+    if (!p_atomic_dec_zero(&hgl_dpy->ref_count))
+       return;
+ 
++   _eglCleanupDisplay(disp);
+    struct pipe_screen *screen = hgl_dpy->disp->fscreen->screen;
+    hgl_destroy_display(hgl_dpy->disp);
+    hgl_dpy->disp = NULL;
+    screen->destroy(screen); // destroy will deallocate object
+ 
+    free(hgl_dpy);
++   disp->DriverData = NULL;
++}
++
++/* The Cubie A7S's PowerVR GPU is reachable only through its Vulkan driver
++ * (libvulkan_powervr_mesa.so, loaded through libvulkan.so.1), so OpenGL and
++ * GLES go through zink. Only when the "powervr" kernel driver published its
++ * device (HAIKU_PVR_DEVICE names another), and no software renderer was
++ * asked for (LIBGL_ALWAYS_SOFTWARE, or GALLIUM_DRIVER naming another
++ * driver). NULL leaves softpipe.
++ */
++static struct pipe_screen *
++haiku_create_gpu_screen(_EGLDisplay *disp)
++{
++#ifdef GALLIUM_ZINK
++   if (disp->Options.ForceSoftware ||
++       debug_get_bool_option("LIBGL_ALWAYS_SOFTWARE", false))
++      return NULL;
++   const char *driver = getenv("GALLIUM_DRIVER");
++   if (driver != NULL && *driver != '\0' && strcmp(driver, "zink") != 0)
++      return NULL;
++   const char *device = getenv("HAIKU_PVR_DEVICE");
++   if (device == NULL || *device == '\0')
++      device = "/dev/graphics/powervr/0";
++   if (access(device, R_OK | W_OK) != 0)
++      return NULL;
++
++   /* Mesa does not count this PowerVR core (BXM-4-64 36.56.104.183) as a
++    * conformant Vulkan implementation and hides it unless asked. Zink is
++    * its user here: ask, for the creation of this screen only, unless the
++    * process already decided. */
++   static const char kConformance[] = "PVR_I_WANT_A_BROKEN_VULKAN_DRIVER";
++   const bool ask = getenv(kConformance) == NULL;
++   if (ask)
++      setenv(kConformance, "1", 0);
++   struct pipe_screen *screen = sw_screen_create_zink(NULL, NULL, false);
++   if (ask)
++      unsetenv(kConformance);
++   if (screen == NULL)
++      ERROR("no zink screen on %s; software rendering\n", device);
++   return screen;
++#else
++   return NULL;
++#endif
+ }
+ 
+ static EGLBoolean
+@@ -342,20 +540,49 @@
+    hgl_dpy->ref_count = 1;
+    disp->DriverData = (void *)hgl_dpy;
+ 
+-   struct sw_winsys *winsys = hgl_create_sw_winsys();
+-   struct pipe_screen *screen = sw_screen_create(winsys);
++   struct pipe_screen *screen = haiku_create_gpu_screen(disp);
++   if (screen != NULL) {
++      hgl_dpy->gpu_present = true;
++   } else {
++      /* softpipe: drawn into software display targets (hgl_sw_winsys) */
++      struct sw_winsys *winsys = hgl_create_sw_winsys();
++      if (winsys) {
++         screen = sw_screen_create(winsys);
++         if (!screen)
++            winsys->destroy(winsys);
++      }
++   }
++   if (!screen) {
++      free(hgl_dpy);
++      disp->DriverData = NULL;
++      return _eglError(EGL_NOT_INITIALIZED, "Haiku screen creation failed");
++   }
+    hgl_dpy->disp = hgl_create_display(screen);
++   if (!hgl_dpy->disp) {
++      screen->destroy(screen);
++      free(hgl_dpy);
++      disp->DriverData = NULL;
++      return _eglError(EGL_BAD_ALLOC, "Haiku display creation failed");
++   }
+ 
++   struct st_config_options options = {};
++   int gl_core, gl_compat, gles1, gles2;
++   st_api_query_versions(hgl_dpy->disp->fscreen, &options,
++                        &gl_core, &gl_compat, &gles1, &gles2);
+    disp->ClientAPIs = 0;
+-   if (_eglIsApiValid(EGL_OPENGL_API))
++   if (_eglIsApiValid(EGL_OPENGL_API) && (gl_core || gl_compat))
+       disp->ClientAPIs |= EGL_OPENGL_BIT;
+-   if (_eglIsApiValid(EGL_OPENGL_ES_API))
+-      disp->ClientAPIs |=
+-         EGL_OPENGL_ES_BIT | EGL_OPENGL_ES2_BIT | EGL_OPENGL_ES3_BIT_KHR;
++   if (_eglIsApiValid(EGL_OPENGL_ES_API)) {
++      if (gles1 >= 10)
++         disp->ClientAPIs |= EGL_OPENGL_ES_BIT;
++      if (gles2 >= 20)
++         disp->ClientAPIs |= EGL_OPENGL_ES2_BIT;
++      if (gles2 >= 30)
++         disp->ClientAPIs |= EGL_OPENGL_ES3_BIT_KHR;
++   }
+ 
+    disp->Extensions.KHR_no_config_context = EGL_TRUE;
+    disp->Extensions.KHR_surfaceless_context = EGL_TRUE;
+-   disp->Extensions.MESA_query_driver = EGL_TRUE;
+ 
+    /* Report back to EGL the bitmask of priorities supported */
+    disp->Extensions.IMG_context_priority =
+@@ -364,17 +591,17 @@
+       disp->Extensions.IMG_context_priority &
+       (1 << __EGL_CONTEXT_PRIORITY_REALTIME_BIT);
+ 
+-   disp->Extensions.EXT_pixel_format_float = EGL_TRUE;
+-
+-   if (hgl_dpy->disp->fscreen->screen->is_format_supported(
+-          hgl_dpy->disp->fscreen->screen, PIPE_FORMAT_B8G8R8A8_SRGB,
+-          PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_RENDER_TARGET))
+-      disp->Extensions.KHR_gl_colorspace = EGL_TRUE;
+-
+    disp->Extensions.KHR_create_context = EGL_TRUE;
+-   disp->Extensions.KHR_reusable_sync = EGL_TRUE;
+-
+-   haiku_add_configs_for_visuals(disp);
++   disp->Extensions.EXT_create_context_robustness =
++      hgl_dpy->disp->fscreen->screen->caps.device_reset_status_query &&
++      hgl_dpy->disp->fscreen->screen->caps.robust_buffer_access_behavior;
++   disp->RobustBufferAccess =
++      hgl_dpy->disp->fscreen->screen->caps.robust_buffer_access_behavior;
++
++   if (!disp->ClientAPIs || !haiku_add_configs_for_visuals(disp)) {
++      haiku_display_destroy(disp);
++      return _eglError(EGL_NOT_INITIALIZED, "Haiku EGL configuration failed");
++   }
+ 
+    return EGL_TRUE;
+ }
+@@ -386,7 +613,7 @@
+    struct haiku_egl_display *hgl_dpy = haiku_egl_display(disp);
+ 
+    if (hgl_dpy) {
+-      hgl_dpy->ref_count++;
++      p_atomic_inc(&hgl_dpy->ref_count);
+       return EGL_TRUE;
+    }
+ 
+@@ -414,6 +641,8 @@
+ static EGLBoolean
+ haiku_terminate(_EGLDisplay *disp)
+ {
++   /* Bound resources keep their display reference until they are unbound. */
++   _eglReleaseDisplayResources(disp);
+    haiku_display_destroy(disp);
+    return EGL_TRUE;
+ }
+@@ -428,8 +657,9 @@
+ 
+    struct haiku_egl_display *hgl_dpy = haiku_egl_display(disp);
+ 
+-   struct st_visual visual;
+-   hgl_get_st_visual(&visual, HGL_DOUBLE | HGL_DEPTH);
++   struct st_context_attribs attribs = {};
++   enum st_context_error error = ST_CONTEXT_SUCCESS;
++   hgl_get_st_visual(&attribs.visual, HGL_DOUBLE | HGL_ALPHA | HGL_DEPTH);
+ 
+    struct haiku_egl_context *context =
+       (struct haiku_egl_context *)calloc(1, sizeof(*context));
+@@ -441,11 +671,56 @@
+    if (!_eglInitContext(&context->base, disp, conf, share_list, attrib_list))
+       goto cleanup;
+ 
+-   context->ctx = hgl_create_context(
+-      hgl_dpy->disp, &visual,
+-      share_list == NULL ? NULL : haiku_egl_context(share_list)->ctx->st);
+-   if (context->ctx == NULL)
++   attribs.major = context->base.ClientMajorVersion;
++   attribs.minor = context->base.ClientMinorVersion;
++   switch (context->base.ClientAPI) {
++   case EGL_OPENGL_ES_API:
++      attribs.profile = attribs.major == 1 ? API_OPENGLES : API_OPENGLES2;
++      break;
++   case EGL_OPENGL_API:
++      if (((attribs.major > 3 || (attribs.major == 3 && attribs.minor >= 2)) &&
++           context->base.Profile == EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR) ||
++          (attribs.major == 3 && attribs.minor == 1))
++         attribs.profile = API_OPENGL_CORE;
++      else
++         attribs.profile = API_OPENGL_COMPAT;
++      break;
++   default:
++      _eglError(EGL_BAD_PARAMETER, "Haiku EGL client API");
+       goto cleanup;
++   }
++   if (context->base.Flags & EGL_CONTEXT_OPENGL_FORWARD_COMPATIBLE_BIT_KHR)
++      attribs.flags |= ST_CONTEXT_FLAG_FORWARD_COMPATIBLE;
++   if (context->base.Flags & EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR)
++      attribs.flags |= ST_CONTEXT_FLAG_DEBUG;
++   if (context->base.Flags & EGL_CONTEXT_OPENGL_ROBUST_ACCESS_BIT_KHR)
++      attribs.context_flags |= PIPE_CONTEXT_ROBUST_BUFFER_ACCESS;
++   if (context->base.ResetNotificationStrategy != EGL_NO_RESET_NOTIFICATION)
++      attribs.context_flags |= PIPE_CONTEXT_LOSE_CONTEXT_ON_RESET;
++   if (context->base.NoError)
++      attribs.flags |= ST_CONTEXT_FLAG_NO_ERROR;
++   if (context->base.ReleaseBehavior == EGL_CONTEXT_RELEASE_BEHAVIOR_NONE_KHR)
++      attribs.flags |= ST_CONTEXT_FLAG_RELEASE_NONE;
++   switch (context->base.ContextPriority) {
++   case EGL_CONTEXT_PRIORITY_LOW_IMG:
++      attribs.context_flags |= PIPE_CONTEXT_LOW_PRIORITY;
++      break;
++   case EGL_CONTEXT_PRIORITY_HIGH_IMG:
++      attribs.context_flags |= PIPE_CONTEXT_HIGH_PRIORITY;
++      break;
++   case EGL_CONTEXT_PRIORITY_REALTIME_NV:
++      attribs.context_flags |= PIPE_CONTEXT_REALTIME_PRIORITY;
++      break;
++   }
++
++   context->ctx = hgl_create_context_attribs(
++      hgl_dpy->disp, &attribs,
++      share_list == NULL ? NULL : haiku_egl_context(share_list)->ctx->st, &error);
++   if (context->ctx == NULL) {
++      _eglError(error == ST_CONTEXT_ERROR_NO_MEMORY ? EGL_BAD_ALLOC : EGL_BAD_MATCH,
++                "Haiku EGL context creation failed");
++      goto cleanup;
++   }
+ 
+    return &context->base;
+ 
+@@ -488,23 +763,61 @@
+       return EGL_TRUE;
+    }
+ 
+-   if (ctx == NULL) {
+-      st_api_make_current(NULL, NULL, NULL);
+-   } else {
+-      if (dsurf != NULL && dsurf != old_dsurf)
+-         update_size(hgl_dsurf->fb);
++   _EGLDisplay *old_disp = old_ctx ? old_ctx->Resource.Display : NULL;
++   if (old_ctx && old_ctx->ReleaseBehavior == EGL_CONTEXT_RELEASE_BEHAVIOR_FLUSH_KHR) {
++      struct st_context *st = haiku_egl_context(old_ctx)->ctx->st;
++      _mesa_glthread_finish(st->ctx);
++      st_context_flush(st, 0, NULL, NULL, NULL);
++   }
++
++   if (hgl_dsurf)
++      update_size(hgl_dsurf->fb);
++   if (hgl_rsurf && hgl_rsurf != hgl_dsurf)
++      update_size(hgl_rsurf->fb);
++
++   if (!st_api_make_current(hgl_ctx ? hgl_ctx->ctx->st : NULL,
++                            hgl_dsurf ? &hgl_dsurf->fb->base : NULL,
++                            hgl_rsurf ? &hgl_rsurf->fb->base : NULL)) {
++      _EGLContext *tmp_ctx;
++      _EGLSurface *tmp_draw, *tmp_read;
++      _eglBindContext(old_ctx, old_dsurf, old_rsurf,
++                      &tmp_ctx, &tmp_draw, &tmp_read);
++      assert(tmp_ctx == ctx && tmp_draw == dsurf && tmp_read == rsurf);
++      _eglPutContext(tmp_ctx);
++      _eglPutSurface(tmp_draw);
++      _eglPutSurface(tmp_read);
++
++      bool restored = st_api_make_current(
++         old_ctx ? haiku_egl_context(old_ctx)->ctx->st : NULL,
++         old_dsurf ? &haiku_egl_surface(old_dsurf)->fb->base : NULL,
++         old_rsurf ? &haiku_egl_surface(old_rsurf)->fb->base : NULL);
++      _eglPutContext(old_ctx);
++      _eglPutSurface(old_dsurf);
++      _eglPutSurface(old_rsurf);
++      if (restored)
++         return _eglError(EGL_BAD_MATCH, "Haiku EGL framebuffer binding failed");
+ 
+-      st_api_make_current(hgl_ctx->ctx->st,
+-                          hgl_dsurf == NULL ? NULL : &hgl_dsurf->fb->base,
+-                          hgl_rsurf == NULL ? NULL : &hgl_rsurf->fb->base);
++      /* If restoration also fails, leave both EGL and GL unbound. */
++      _eglBindContext(NULL, NULL, NULL, &old_ctx, &old_dsurf, &old_rsurf);
++      st_api_make_current(NULL, NULL, NULL);
++      haiku_destroy_surface(old_disp, old_dsurf);
++      haiku_destroy_surface(old_disp, old_rsurf);
++      haiku_destroy_context(old_disp, old_ctx);
++      if (old_disp)
++         haiku_display_destroy(old_disp);
++      return _eglError(EGL_BAD_MATCH, "Haiku EGL context restoration failed");
+    }
+ 
++   if (ctx)
++      p_atomic_inc(&haiku_egl_display(disp)->ref_count);
+    if (old_dsurf != NULL)
+-      haiku_destroy_surface(disp, old_dsurf);
++      haiku_destroy_surface(old_disp, old_dsurf);
+    if (old_rsurf != NULL)
+-      haiku_destroy_surface(disp, old_rsurf);
+-   if (old_ctx != NULL)
+-      haiku_destroy_context(disp, old_ctx);
++      haiku_destroy_surface(old_disp, old_rsurf);
++   if (old_ctx != NULL) {
++      haiku_destroy_context(old_disp, old_ctx);
++      haiku_display_destroy(old_disp);
++   }
+ 
+    return EGL_TRUE;
+ }
+@@ -519,5 +832,6 @@
+    .CreatePixmapSurface = haiku_create_pixmap_surface,
+    .CreatePbufferSurface = haiku_create_pbuffer_surface,
+    .DestroySurface = haiku_destroy_surface,
++   .QuerySurface = haiku_query_surface,
+    .SwapBuffers = haiku_swap_buffers,
+ };
+diff -ruN a/src/egl/egl-glvnd-symbols.txt b/src/egl/egl-glvnd-symbols.txt
+--- a/src/egl/egl-glvnd-symbols.txt
++++ b/src/egl/egl-glvnd-symbols.txt
+@@ -2,3 +2,4 @@
+ MesaGLInteropEGLQueryDeviceInfo
+ MesaGLInteropEGLExportObject
+ MesaGLInteropEGLFlushObjects
++haiku_mesa_readback_band_bytes (optional)
+diff -ruN a/src/egl/egl-glvnd.sym b/src/egl/egl-glvnd.sym
+--- a/src/egl/egl-glvnd.sym
++++ b/src/egl/egl-glvnd.sym
+@@ -1,5 +1,6 @@
+ {
+ 	global:
++		haiku_mesa_readback_band_bytes;
+ 		__egl_Main;
+ 		MesaGLInteropEGLQueryDeviceInfo;
+ 		MesaGLInteropEGLExportObject;
+diff -ruN a/src/egl/egl-symbols.txt b/src/egl/egl-symbols.txt
+--- a/src/egl/egl-symbols.txt
++++ b/src/egl/egl-symbols.txt
+@@ -45,3 +45,4 @@
+ MesaGLInteropEGLQueryDeviceInfo
+ MesaGLInteropEGLExportObject
+ MesaGLInteropEGLFlushObjects
++haiku_mesa_readback_band_bytes (optional)
+diff -ruN a/src/egl/egl.sym b/src/egl/egl.sym
+--- a/src/egl/egl.sym
++++ b/src/egl/egl.sym
+@@ -1,5 +1,6 @@
+ {
+ 	global:
++		haiku_mesa_readback_band_bytes;
+ 		egl*;
+ 		MesaGLInteropEGL*;
+ 	local:
+diff -ruN a/src/egl/meson.build b/src/egl/meson.build
+--- a/src/egl/meson.build
++++ b/src/egl/meson.build
+@@ -148,7 +148,8 @@
+   incs_for_egl += [include_directories('../gallium/frontends/hgl')]
+ 
+   link_for_egl += [libmesa, libgallium, libswhgl, libsthgl, libglapi]
+-  deps_for_egl += [cpp.find_library('be'), driver_swrast]
++  deps_for_egl += [cpp.find_library('be'), driver_swrast, driver_zink,
++    idep_xmlconfig]
+ elif with_platform_windows
+   c_args_for_egl += [
+     '-DEGLAPI=', '-DPUBLIC='
+diff -ruN a/src/gallium/auxiliary/draw/draw_decompose_tmp.h b/src/gallium/auxiliary/draw/draw_decompose_tmp.h
+--- a/src/gallium/auxiliary/draw/draw_decompose_tmp.h
++++ b/src/gallium/auxiliary/draw/draw_decompose_tmp.h
+@@ -255,17 +255,19 @@
+                QUAD(0, idx[3], idx[2],
+                     idx[0], idx[1]);
+ #else
+-               flags = DRAW_PIPE_RESET_STIPPLE |
+-                       DRAW_PIPE_EDGE_FLAG_0 |
+-                       DRAW_PIPE_EDGE_FLAG_1;
+-               /* always emit idx[3] / idx[0 first */
++               /* Preserve the outer strip edges after rotating triangles
++                * to put the provoking vertex first.  The idx[0] -> idx[3]
++                * diagonal is internal when the first vertex provokes. */
++               flags = DRAW_PIPE_RESET_STIPPLE | DRAW_PIPE_EDGE_FLAG_1 |
++                       (quads_flatshade_last ? DRAW_PIPE_EDGE_FLAG_0 : DRAW_PIPE_EDGE_FLAG_2);
++               /* always emit idx[3] / idx[0] first */
+                if (quads_flatshade_last)
+                   TRIANGLE(flags, idx[3], idx[2], idx[0]);
+                else
+                   TRIANGLE(flags, idx[0], idx[3], idx[2]);
+ 
+                flags = DRAW_PIPE_EDGE_FLAG_1 |
+-                       DRAW_PIPE_EDGE_FLAG_2;
++                       (quads_flatshade_last ? DRAW_PIPE_EDGE_FLAG_2 : DRAW_PIPE_EDGE_FLAG_0);
+                if (quads_flatshade_last)
+                   TRIANGLE(flags, idx[3], idx[0], idx[1]);
+                else
+diff -ruN a/src/gallium/auxiliary/draw/draw_vs_exec.c b/src/gallium/auxiliary/draw/draw_vs_exec.c
+--- a/src/gallium/auxiliary/draw/draw_vs_exec.c
++++ b/src/gallium/auxiliary/draw/draw_vs_exec.c
+@@ -210,6 +210,13 @@
+ static void
+ vs_exec_delete(UNUSED struct draw_context *draw, struct draw_vertex_shader *dvs)
+ {
++   struct exec_vertex_shader *evs = exec_vertex_shader(dvs);
++   /* The machine caches expanded instructions by the token address. Retiring
++    * that address must invalidate the cache before the allocator can reuse it
++    * for a different shader, including after draw_bind_vertex_shader(NULL).
++    */
++   if (evs->machine->Tokens == dvs->state.tokens)
++      tgsi_exec_machine_bind_shader(evs->machine, NULL, NULL, NULL, NULL);
+    FREE((void*) dvs->state.tokens);
+    FREE(dvs);
+ }
+diff -ruN a/src/gallium/auxiliary/target-helpers/inline_sw_helper.h b/src/gallium/auxiliary/target-helpers/inline_sw_helper.h
+--- a/src/gallium/auxiliary/target-helpers/inline_sw_helper.h
++++ b/src/gallium/auxiliary/target-helpers/inline_sw_helper.h
+@@ -29,6 +29,13 @@
+ #include "d3d12/d3d12_public.h"
+ #endif
+ 
++/* sw_helper.h declares zink the same way; this header left it out, so
++ * every target that reaches zink through it failed to compile (Haiku's
++ * EGL, from the air/OS x86_64 port's commit 7fc91dc) */
++#ifdef GALLIUM_ZINK
++#include "zink/zink_public.h"
++#endif
++
+ static inline struct pipe_screen *
+ sw_screen_create_named(struct sw_winsys *winsys, const char *driver)
+ {
+diff -ruN a/src/gallium/drivers/zink/zink_bo.c b/src/gallium/drivers/zink/zink_bo.c
+--- a/src/gallium/drivers/zink/zink_bo.c
++++ b/src/gallium/drivers/zink/zink_bo.c
+@@ -1379,5 +1379,9 @@
+ {
+    if (screen->pb.bo_slabs.groups)
+       pb_slabs_deinit(&screen->pb.bo_slabs);
+-   pb_cache_deinit(&screen->pb.bo_cache);
++   /* A screen that failed before zink_bo_init() (no Vulkan library or no
++    * device) has no cache, and its mutex was never initialized: tearing it
++    * down asserted in mtx_lock (air/OS x86_64 port's commit 2c7a86b). */
++   if (screen->pb.bo_cache.buckets)
++      pb_cache_deinit(&screen->pb.bo_cache);
+ }
+diff -ruN a/src/gallium/drivers/zink/zink_descriptors.c b/src/gallium/drivers/zink/zink_descriptors.c
+--- a/src/gallium/drivers/zink/zink_descriptors.c
++++ b/src/gallium/drivers/zink/zink_descriptors.c
+@@ -490,12 +490,17 @@
+  * called during program creation
+  * may be called from threads (no unsafe ctx use!)
+  */
+-bool
+-zink_descriptor_program_init(struct zink_context *ctx, struct zink_program *pg)
++/* (air/OS) The binding and template arrays are some 85 KiB: they are on the
++ * heap (zink_descriptor_program_init() below), not on the stack of the
++ * thread creating the program, often an application's GL thread with
++ * Haiku's 256 KiB of stack.
++ */
++static bool
++descriptor_program_init(struct zink_context *ctx, struct zink_program *pg,
++                        VkDescriptorSetLayoutBinding (*bindings)[MESA_SHADER_STAGES * 64],
++                        VkDescriptorUpdateTemplateEntry (*entries)[MESA_SHADER_STAGES * 64])
+ {
+    struct zink_screen *screen = zink_screen(ctx->base.screen);
+-   VkDescriptorSetLayoutBinding bindings[ZINK_DESCRIPTOR_BASE_TYPES][MESA_SHADER_STAGES * 64];
+-   VkDescriptorUpdateTemplateEntry entries[ZINK_DESCRIPTOR_BASE_TYPES][MESA_SHADER_STAGES * 64];
+    unsigned num_bindings[ZINK_DESCRIPTOR_BASE_TYPES] = {0};
+    uint8_t has_bindings = 0;
+    unsigned push_count = 0;
+@@ -702,6 +707,20 @@
+    return true;
+ }
+ 
++bool
++zink_descriptor_program_init(struct zink_context *ctx, struct zink_program *pg)
++{
++   struct {
++      VkDescriptorSetLayoutBinding bindings[ZINK_DESCRIPTOR_BASE_TYPES][MESA_SHADER_STAGES * 64];
++      VkDescriptorUpdateTemplateEntry entries[ZINK_DESCRIPTOR_BASE_TYPES][MESA_SHADER_STAGES * 64];
++   } *arrays = malloc(sizeof(*arrays));
++   if (!arrays)
++      return false;
++   bool ok = descriptor_program_init(ctx, pg, arrays->bindings, arrays->entries);
++   free(arrays);
++   return ok;
++}
++
+ void
+ zink_descriptor_shader_get_binding_offsets(const struct zink_shader *shader, unsigned *offsets)
+ {
+diff -ruN a/src/gallium/drivers/zink/zink_screen.c b/src/gallium/drivers/zink/zink_screen.c
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -321,6 +321,12 @@
+    unsigned build_id_len = build_id_length(note);
+    assert(note && build_id_len <= BUILD_ID_EXPECTED_HASH_LENGTH);
+    _mesa_blake3_update(&ctx, build_id_data(note), build_id_len);
++#elif defined(__HAIKU__)
++   /* No build-id note at run time (no dl_iterate_phdr()): the library this
++    * code was loaded from, by its timestamp, or no cache at all, so that a
++    * new zink never reads the old one's shaders. */
++   if (!disk_cache_get_function_identifier((void *)disk_cache_init, &ctx))
++      return true;
+ #endif
+ 
+    /* Hash in the Vulkan pipeline cache UUID to identify the combination of
+diff -ruN a/src/gallium/drivers/zink/zink_state.c b/src/gallium/drivers/zink/zink_state.c
+--- a/src/gallium/drivers/zink/zink_state.c
++++ b/src/gallium/drivers/zink/zink_state.c
+@@ -805,17 +805,28 @@
+       return NULL;
+    }
+ 
++   /* (air/OS) A whole zink_context (some 110 KiB) only to carry the screen:
++    * on the heap, not on the calling GL thread's stack (256 KiB by default
++    * on Haiku).
++    */
++   struct zink_context *ctx = CALLOC_STRUCT(zink_context);
++   if (!ctx) {
++      mesa_loge("ZINK: failed to allocate a context!");
++      FREE(zstate);
++      return NULL;
++   }
++
+    util_init_pipe_vertex_state(pscreen, buffer, elements, num_elements, indexbuf, full_velem_mask,
+                                &zstate->b);
+ 
+    /* Initialize the vertex element state in state->element.
+     * Do it by creating a vertex element state object and copying it there.
+     */
+-   struct zink_context ctx;
+-   ctx.base.screen = pscreen;
+-   struct zink_vertex_elements_state *elems = zink_create_vertex_elements_state(&ctx.base, num_elements, elements);
++   ctx->base.screen = pscreen;
++   struct zink_vertex_elements_state *elems = zink_create_vertex_elements_state(&ctx->base, num_elements, elements);
+    zstate->velems = *elems;
+-   zink_delete_vertex_elements_state(&ctx.base, elems);
++   zink_delete_vertex_elements_state(&ctx->base, elems);
++   FREE(ctx);
+ 
+    return &zstate->b;
+ }
+diff -ruN a/src/gallium/frontends/hgl/hgl.c b/src/gallium/frontends/hgl/hgl.c
+--- a/src/gallium/frontends/hgl/hgl.c
++++ b/src/gallium/frontends/hgl/hgl.c
+@@ -65,8 +65,11 @@
+ 	if (statt != ST_ATTACHMENT_FRONT_LEFT)
+ 		return false;
+ 
+-	if (!ptex)
++	/* Pbuffers have no window hook or presentation target. */
++	if (!ptex || !buffer->winsysContext)
+ 		return true;
++	if (buffer->present)
++		return buffer->present(st->pipe, buffer, ptex);
+ 
+ 	// TODO: pipe_context here??? Might be needed for hw renderers
+ 	buffer->screen->flush_frontbuffer(buffer->screen, NULL, ptex, 0, 0,
+@@ -114,11 +117,34 @@
+ 				case ST_ATTACHMENT_FRONT_RIGHT:
+ 				case ST_ATTACHMENT_BACK_RIGHT:
+ 					format = buffer->visual.color_format;
+-					bind = PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_RENDER_TARGET;
++					bind = PIPE_BIND_RENDER_TARGET;
++					if (buffer->winsysContext && !buffer->present)
++						bind |= PIPE_BIND_DISPLAY_TARGET;
+ 					break;
+ 				case ST_ATTACHMENT_DEPTH_STENCIL:
+ 					format = buffer->visual.depth_stencil_format;
+ 					bind = PIPE_BIND_DEPTH_STENCIL;
++					if (format != PIPE_FORMAT_NONE
++						&& !buffer->screen->is_format_supported(buffer->screen,
++							format, buffer->target, 0, 0, bind)) {
++						// Not every driver has the visual's layout of depth
++						// and stencil (V3D only has the other byte order).
++						static const enum pipe_format kFormats[] = {
++							PIPE_FORMAT_S8_UINT_Z24_UNORM,
++							PIPE_FORMAT_Z24_UNORM_S8_UINT,
++							PIPE_FORMAT_X8Z24_UNORM,
++							PIPE_FORMAT_Z24X8_UNORM,
++							PIPE_FORMAT_Z16_UNORM
++						};
++						for (unsigned k = 0; k < ARRAY_SIZE(kFormats); k++) {
++							if (buffer->screen->is_format_supported(
++									buffer->screen, kFormats[k], buffer->target,
++									0, 0, bind)) {
++								format = kFormats[k];
++								break;
++							}
++						}
++					}
+ 					break;
+ 				default:
+ 					format = PIPE_FORMAT_NONE;
+@@ -163,6 +189,8 @@
+ 	CALLED();
+ 
+ 	buffer = hgl_st_framebuffer(drawable);
++	if (buffer->update_size)
++		buffer->update_size(buffer);
+ 
+ 	// Build mask of current attachments
+ 	stAttachmentMask = 0;
+@@ -223,7 +251,8 @@
+ 	assert(visual);
+ 
+ 	buffer = CALLOC_STRUCT(hgl_buffer);
+-	assert(buffer);
++	if (!buffer)
++		return NULL;
+ 
+ 	// Prepare our buffer
+ 	buffer->visual = *visual;
+@@ -252,6 +281,7 @@
+ hgl_destroy_st_framebuffer(struct hgl_buffer *buffer)
+ {
+ 	CALLED();
++	st_api_destroy_drawable(&buffer->base);
+ 
+ 	int i;
+ 	for (i = 0; i < ST_ATTACHMENT_COUNT; i++)
+@@ -264,10 +294,6 @@
+ struct hgl_context*
+ hgl_create_context(struct hgl_display *display, struct st_visual* visual, struct st_context* shared)
+ {
+-	struct hgl_context* context = CALLOC_STRUCT(hgl_context);
+-	assert(context);
+-	context->display = display;
+-
+ 	struct st_context_attribs attribs;
+ 	memset(&attribs, 0, sizeof(attribs));
+ 	attribs.options.force_glsl_extensions_warn = false;
+@@ -277,7 +303,22 @@
+ 	attribs.minor = 0;
+ 
+ 	enum st_context_error result;
+-	context->st = st_api_create_context(display->fscreen, &attribs, &result, shared);
++	return hgl_create_context_attribs(display, &attribs, shared, &result);
++}
++
++
++struct hgl_context*
++hgl_create_context_attribs(struct hgl_display *display,
++	const struct st_context_attribs *attribs, struct st_context *shared,
++	enum st_context_error *error)
++{
++	struct hgl_context* context = CALLOC_STRUCT(hgl_context);
++	if (!context) {
++		*error = ST_CONTEXT_ERROR_NO_MEMORY;
++		return NULL;
++	}
++	context->display = display;
++	context->st = st_api_create_context(display->fscreen, attribs, error, shared);
+ 	if (context->st == NULL) {
+ 		FREE(context);
+ 		return NULL;
+@@ -310,6 +351,7 @@
+ 	CALLED();
+ 
+ 	assert(visual);
++	memset(visual, 0, sizeof(*visual));
+ 
+ 	// Determine color format
+ 	if ((options & HGL_INDEX) != 0) {
+@@ -358,9 +400,13 @@
+ 	struct hgl_display* display;
+ 
+ 	display = CALLOC_STRUCT(hgl_display);
+-	assert(display);
++	if (!display)
++		return NULL;
+ 	display->fscreen = CALLOC_STRUCT(pipe_frontend_screen);
+-	assert(display->fscreen);
++	if (!display->fscreen) {
++		FREE(display);
++		return NULL;
++	}
+ 	display->fscreen->screen = screen;
+ 	display->fscreen->get_param = hgl_st_manager_get_param;
+ 	// display->fscreen->st_screen is used by llvmpipe
+diff -ruN a/src/gallium/frontends/hgl/hgl_context.h b/src/gallium/frontends/hgl/hgl_context.h
+--- a/src/gallium/frontends/hgl/hgl_context.h
++++ b/src/gallium/frontends/hgl/hgl_context.h
+@@ -54,6 +54,10 @@
+ 
+ 	struct pipe_screen* screen;
+ 	void* winsysContext;
++	void (*update_size)(struct hgl_buffer* buffer);
++	bool (*present)(struct pipe_context* pipe, struct hgl_buffer* buffer,
++		struct pipe_resource* texture);
++	void* present_private;
+ 
+ 	enum pipe_texture_target target;
+ 	struct pipe_resource* textures[ST_ATTACHMENT_COUNT];
+@@ -79,6 +83,10 @@
+ void hgl_destroy_st_framebuffer(struct hgl_buffer *buffer);
+ 
+ struct hgl_context* hgl_create_context(struct hgl_display *display, struct st_visual* visual, struct st_context* shared);
++struct st_context_attribs;
++struct hgl_context* hgl_create_context_attribs(struct hgl_display *display,
++	const struct st_context_attribs *attribs, struct st_context *shared,
++	enum st_context_error *error);
+ void hgl_destroy_context(struct hgl_context* context);
+ 
+ // hgl visual
+diff -ruN a/src/gallium/frontends/hgl/meson.build b/src/gallium/frontends/hgl/meson.build
+--- a/src/gallium/frontends/hgl/meson.build
++++ b/src/gallium/frontends/hgl/meson.build
+@@ -13,5 +13,6 @@
+     inc_include, inc_util, inc_mesa, inc_src,
+     inc_gallium, inc_gallium_aux
+   ],
++  dependencies : idep_mesautilformat,
+   gnu_symbol_visibility : 'hidden',
+ )
+diff -ruN a/src/gallium/winsys/sw/hgl/meson.build b/src/gallium/winsys/sw/hgl/meson.build
+--- a/src/gallium/winsys/sw/hgl/meson.build
++++ b/src/gallium/winsys/sw/hgl/meson.build
+@@ -8,6 +8,6 @@
+   include_directories : [inc_gallium, inc_include, inc_src, inc_gallium_aux,
+     include_directories('../../../frontends/hgl')
+   ],
+-  dependencies: idep_mesautil,
++  dependencies: [idep_mesautil, idep_mesautilformat],
+   build_by_default : false,
+ )
+diff -ruN a/src/mesa/state_tracker/st_cb_flush.c b/src/mesa/state_tracker/st_cb_flush.c
+--- a/src/mesa/state_tracker/st_cb_flush.c
++++ b/src/mesa/state_tracker/st_cb_flush.c
+@@ -159,8 +159,19 @@
+       st->reset_status = PIPE_NO_RESET;
+    } else {
+       status = st->pipe->get_device_reset_status(st->pipe);
++#ifdef __HAIKU__
++      if (status != PIPE_NO_RESET) {
++         /* This polled event is returned by this call. Do not also cache it
++          * as a callback event: that would replay a completed reset and
++          * skip the next native recovery-state query. Real callback events
++          * still use st_device_reset_callback() and are consumed above.
++          */
++         _mesa_set_context_lost_dispatch(st->ctx);
++      }
++#else
+       if (status != PIPE_NO_RESET)
+          st_device_reset_callback(st, status);
++#endif
+    }
+ 
+    return gl_reset_status_from_pipe_reset_status(status);
