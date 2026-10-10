@@ -18,9 +18,14 @@ media/DMA coexistence. Separate read-only-page and privileged-register
 faults fail the jobs and preserve quarantined allocations through close;
 recovery still requires a cold boot. A native Mesa metadata candidate now
 reports measured CU/RB masks, tiling, firmware, timestamp clocks and explicit
-interface limits; its graphics/DMA/media regression trial passes. RadeonSI
-rendering is not yet implemented. Unprivileged general
-graphics submission, Mesa and native display remain unfinished. AMD UVD H.264 plays three minutes of 1080p30/AAC with zero drops
+interface limits; its graphics/DMA/media regression trial passes. Private
+RadeonSI now passes compositor and EGL-window pixels, resizing and shared
+contexts; Summit's short native GPU rendering trial also passes. The windows
+still use CPU bitmap presentation. A concurrent UVD/GFX scheduling candidate
+passes decode/graphics/DMA and in-flight close tests, and reduces the combined
+900-frame Summit HEVC trial from 560 drops to 188. This still fails playback
+acceptance; concurrent fault qualification continues. Unprivileged general
+graphics submission, system Mesa defaults and native display remain unfinished. AMD UVD H.264 plays three minutes of 1080p30/AAC with zero drops
 in private airTime and Summit builds. HEVC Main/Main 10 has independent native
 pixel/format/lifecycle verification; both private applications also pass
 three-minute 1080p30 Main-10/AAC playback without drops. Summit also passes
