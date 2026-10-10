@@ -1091,6 +1091,7 @@ void NvAccelerant::SetDisplayMode(display_mode* modeToSet)
 		}
 	}
 
+	fOldFramebuffer = NvKmsBitmap();
 	NvKmsBitmap newFramebuffer(fRmDev, fKmsDev, modeToSet->virtual_width,
 		modeToSet->virtual_height, (color_space)modeToSet->space);
 
@@ -1197,8 +1198,11 @@ void NvAccelerant::ApplyLayout(NvKmsBitmap &framebuffer)
 bool NvAccelerant::CheckLayout(const std::vector<Output> &outputs, uint32 width,
 	uint32 height)
 {
+	// The frame buffer from before the current one has been off screen for
+	// a whole mode set; its video memory can go now.
+	fOldFramebuffer = NvKmsBitmap();
 	fCheckedFramebuffer = NvKmsBitmap();
-	NvKmsBitmap framebuffer(fRmDev, fKmsDev, width, height, B_RGB32);
+	NvKmsBitmap framebuffer(fRmDev, fKmsDev, width, height, B_RGB32, false, false);
 
 	NvKmsSetModeParams params {};
 	FillLayoutRequest(outputs, framebuffer, params.request);
@@ -1232,11 +1236,26 @@ void NvAccelerant::SetLayoutMode(const display_mode &mode)
 		newFramebuffer = std::move(fCheckedFramebuffer);
 	} else {
 		fCheckedFramebuffer = NvKmsBitmap();
+		fOldFramebuffer = NvKmsBitmap();
 		newFramebuffer = NvKmsBitmap(fRmDev, fKmsDev, fLayoutMode.timings.hVisible,
-			fLayoutMode.timings.vVisible, (color_space)mode.space);
+			fLayoutMode.timings.vVisible, (color_space)mode.space, false, false);
 	}
 
-	ApplyLayout(newFramebuffer);
+	// Only 256 MiB of video memory can be mapped for the CPU at a time, and
+	// two frame buffers of three monitors drawn at 200 percent are 200 MiB:
+	// the new one is mapped in place of the current one, which nothing
+	// draws into while app_server is setting the mode. Should anything fail,
+	// the current one is mapped again and stays on screen; app_server reads
+	// its new address.
+	fFramebuffer.Unmap();
+	try {
+		newFramebuffer.Map();
+		ApplyLayout(newFramebuffer);
+	} catch (...) {
+		newFramebuffer.Unmap();
+		fFramebuffer.Map();
+		throw;
+	}
 
 	fCurrentMode = fLayoutMode;
 	fCurrentHaikuMode = mode;
