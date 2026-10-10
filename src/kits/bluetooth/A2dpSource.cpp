@@ -517,7 +517,9 @@ A2dpSource::A2dpSource(const bdaddr_t& address)
 	fBitpoolLimit(53),
 	fDelayReport(0),
 	fSequence(0),
-	fTimestamp(0)
+	fTimestamp(0),
+	fPageRepetitionMode(0x02),
+	fClockOffset(0)
 {
 	memset(&fSinkInfo, 0, sizeof(fSinkInfo));
 	memset(fCapabilities, 0, sizeof(fCapabilities));
@@ -698,10 +700,10 @@ A2dpSource::_EnsureLink(bigtime_t deadline)
 			&& reply.FindInt32("result", &value) == B_OK && value != 0)
 			packetType = value;
 		request.AddUInt16("packet type", packetType);
-		request.AddUInt8("pscan_rep_mode", 0x02);
-			// R2: we do not know better without an inquiry
+		request.AddUInt8("pscan_rep_mode", fPageRepetitionMode);
+			// R2 unless an inquiry told better
 		request.AddUInt8("pscan_mode", 0);
-		request.AddUInt16("clock_offset", 0);
+		request.AddUInt16("clock_offset", fClockOffset);
 		request.AddUInt8("role_switch", 1);
 		reply.MakeEmpty();
 		if (server.SendMessage(&request, &reply) != B_OK)

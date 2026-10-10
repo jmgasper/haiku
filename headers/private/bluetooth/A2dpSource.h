@@ -87,6 +87,11 @@ public:
 
 			void				SetPreferredSampleRate(uint32 rate)
 									{ fPreferredRate = rate; }
+			void				SetPageParameters(uint8 repetitionMode,
+									uint16 clockOffset)
+									{ fPageRepetitionMode = repetitionMode;
+									  fClockOffset = clockOffset; }
+				// from an inquiry: they make paging faster
 			void				SetMaxBitpool(uint8 bitpool)
 									{ fBitpoolLimit = bitpool; }
 
@@ -165,6 +170,8 @@ private:
 			uint16				fDelayReport;
 			uint16				fSequence;
 			uint32				fTimestamp;
+			uint8				fPageRepetitionMode;
+			uint16				fClockOffset;
 };
 
 

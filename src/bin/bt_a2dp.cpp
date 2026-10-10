@@ -13,16 +13,22 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <Looper.h>
 #include <MediaRoster.h>
 #include <Message.h>
 #include <Messenger.h>
 #include <OS.h>
 
 #include <bluetooth/bdaddrUtils.h>
+#include <bluetooth/DiscoveryAgent.h>
+#include <bluetooth/LocalDevice.h>
 #include <bluetooth/bluetooth_error.h>
 #include <bluetooth/HCI/btHCI.h>
+#include <bluetooth/HCI/btHCI_command.h>
+#include <bluetooth/HCI/btHCI_event.h>
 
 #include <A2dpSource.h>
+#include <CommandManager.h>
 #include <SbcEncoder.h>
 #include <bluetoothserver_p.h>
 
@@ -49,7 +55,11 @@ usage(const char* name)
 		"  -u, --use          make the device the Bluetooth audio output\n"
 		"                     and exit; \"none\" as address forgets it\n"
 		"  -n, --name <name>  the device's name, with --use\n"
-		"  -o, --output       show the system's audio output and exit\n",
+		"  -o, --output       show the system's audio output and exit\n"
+		"  -i, --inquiry      look for the device first (and list what\n"
+		"                     answers), to page it with what it reports\n"
+		"  -D, --discoverable make this computer discoverable and\n"
+		"                     connectable, and exit\n",
 		name);
 }
 
@@ -159,6 +169,126 @@ stream(A2dpSource& source, Generator& generator, double seconds)
 }
 
 
+/*!	Receives what a Classic inquiry finds: address, signal strength, page
+	scan repetition mode and clock offset of each device.
+*/
+class InquiryLooper : public BLooper {
+public:
+	InquiryLooper(const bdaddr_t& wanted)
+		:
+		BLooper("inquiry"),
+		fWanted(wanted),
+		fFound(false),
+		fDone(create_sem(0, "inquiry done"))
+	{
+	}
+
+	~InquiryLooper()
+	{
+		delete_sem(fDone);
+	}
+
+	virtual void MessageReceived(BMessage* message)
+	{
+		switch (message->what) {
+			case BT_MSG_INQUIRY_DEVICE:
+			{
+				uint8 count = message->GetUInt8("count", 0);
+				for (uint8 i = 0; i < count; i++) {
+					const void* data;
+					ssize_t size;
+					if (message->FindData("bdaddr", B_ANY_TYPE, i, &data,
+							&size) != B_OK || size != sizeof(bdaddr_t))
+						continue;
+					bdaddr_t address;
+					memcpy(&address, data, sizeof(address));
+					int8 rssi = 127;
+					uint8 mode = 0;
+					uint16 offset = 0;
+					message->FindInt8("rssi", i, &rssi);
+					message->FindUInt8("page_repetition_mode", i, &mode);
+					message->FindUInt16("clock_offset", i, &offset);
+					const char* name = message->GetString("friendly_name", i,
+						"");
+					printf("  %s  rssi %4d  page scan R%u  clock offset "
+						"%#06x  %s\n",
+						bdaddrUtils::ToString(address).String(), rssi, mode,
+						offset, name);
+					if (bdaddrUtils::Compare(address, fWanted)) {
+						fFound = true;
+						fMode = mode;
+						fOffset = offset;
+					}
+				}
+				break;
+			}
+			case BT_MSG_INQUIRY_COMPLETED:
+			case BT_MSG_INQUIRY_TERMINATED:
+			case BT_MSG_INQUIRY_ERROR:
+				release_sem(fDone);
+				break;
+			default:
+				BLooper::MessageReceived(message);
+		}
+	}
+
+	bool Wait(bigtime_t timeout)
+	{
+		acquire_sem_etc(fDone, 1, B_RELATIVE_TIMEOUT, timeout);
+		return fFound;
+	}
+
+	bdaddr_t	fWanted;
+	bool		fFound;
+	uint8		fMode;
+	uint16		fOffset;
+	sem_id		fDone;
+};
+
+
+static bool
+inquire(const bdaddr_t& address, uint8& mode, uint16& offset)
+{
+	BMessenger server(BLUETOOTH_SIGNATURE);
+	BMessage acquire(BT_MSG_ACQUIRE_LOCAL_DEVICE);
+	BMessage reply;
+	hci_id hid;
+	if (server.SendMessage(&acquire, &reply) != B_OK
+		|| reply.FindInt32("hci_id", &hid) != B_OK)
+		return false;
+
+	InquiryLooper* looper = new InquiryLooper(address);
+	looper->Run();
+
+	// General inquiry for 8 x 1.28 s, as the Bluetooth kit does it.
+	size_t size;
+	void* command = buildInquiry(BT_GIAC, 8, BT_MAX_RESPONSES, &size);
+	BMessage request(BT_MSG_HANDLE_SIMPLE_REQUEST);
+	request.AddInt32("hci_id", hid);
+	request.AddData("raw command", B_ANY_TYPE, command, size);
+	request.AddInt16("eventExpected", HCI_EVENT_CMD_STATUS);
+	request.AddInt16("opcodeExpected",
+		PACK_OPCODE(OGF_LINK_CONTROL, OCF_INQUIRY));
+	request.AddInt16("eventExpected", HCI_EVENT_INQUIRY_RESULT);
+	request.AddInt16("eventExpected", HCI_EVENT_INQUIRY_RESULT_WITH_RSSI);
+	request.AddInt16("eventExpected", HCI_EVENT_EXTENDED_INQUIRY_RESULT);
+	request.AddInt16("eventExpected", HCI_EVENT_INQUIRY_COMPLETE);
+	free(command);
+
+	printf("inquiry (10 s):\n");
+	bool found = false;
+	if (server.SendMessage(&request, looper) == B_OK)
+		found = looper->Wait(15000000);
+	if (found) {
+		mode = looper->fMode;
+		offset = looper->fOffset;
+	}
+	looper->Lock();
+	looper->Quit();
+	return found;
+}
+
+
 static int
 show_output()
 {
@@ -222,6 +352,8 @@ main(int argc, char** argv)
 		{ "use", no_argument, NULL, 'u' },
 		{ "name", required_argument, NULL, 'n' },
 		{ "output", no_argument, NULL, 'o' },
+		{ "inquiry", no_argument, NULL, 'i' },
+		{ "discoverable", no_argument, NULL, 'D' },
 		{ "help", no_argument, NULL, 'h' },
 		{ NULL, 0, NULL, 0 }
 	};
@@ -241,9 +373,21 @@ main(int argc, char** argv)
 	bool use = false;
 	const char* useName = NULL;
 	int option;
-	while ((option = getopt_long(argc, argv, "qs:r:b:dt:wf:l:v:un:oh",
+	bool inquiry = false;
+	while ((option = getopt_long(argc, argv, "qs:r:b:dt:wf:l:v:un:oiDh",
 			kOptions, NULL)) != -1) {
 		switch (option) {
+			case 'D':
+			{
+				LocalDevice* local = LocalDevice::GetLocalDevice();
+				status_t status = local != NULL
+					? local->SetDiscoverable(HCI_SCAN_INQUIRY_PAGE) : B_DEV_NOT_READY;
+				printf("discoverable: %s\n", strerror(status));
+				return status == B_OK ? 0 : 1;
+			}
+			case 'i':
+				inquiry = true;
+				break;
 			case 'o':
 				return show_output();
 			case 'u':
@@ -320,6 +464,16 @@ main(int argc, char** argv)
 
 	A2dpSource source(address);
 	source.SetPreferredSampleRate(rate);
+	if (inquiry) {
+		uint8 mode;
+		uint16 offset;
+		if (inquire(address, mode, offset)) {
+			printf("found it; paging with R%u, clock offset %#x\n", mode,
+				offset);
+			source.SetPageParameters(mode, offset);
+		} else
+			printf("the device did not answer the inquiry\n");
+	}
 	if (bitpool >= 2 && bitpool <= 250)
 		source.SetMaxBitpool(bitpool);
 
