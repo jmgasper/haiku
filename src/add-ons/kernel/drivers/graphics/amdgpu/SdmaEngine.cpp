@@ -91,8 +91,11 @@ SdmaEngine::Execute(uint32 operation, uint64 source, uint64 destination,
 		|| bytes == 0 || bytes > (64ULL << 20) || ((source | destination | bytes) & 3) != 0)
 		return B_BAD_VALUE;
 	volatile uint32* r = regs;
-	uint32 select = r[0x391];
-	r[0x391] = 0;
+	// These ring/control registers have fixed SDMA0 addresses. Unlike the
+	// virtual-address registers set at initialization, they do not need
+	// SRBM_GFX_CNTL selection (see Linux sdma_v3_0_gfx_resume/stop).
+	// Changing that shared selector here races GFX's per-VM SH_MEM setup
+	// when private video readback overlaps an initialized graphics client.
 	uint32 n = 0;
 	while (bytes != 0) {
 		uint32 count = bytes < 0x3fffe0 ? bytes : 0x3fffe0;
@@ -157,7 +160,6 @@ SdmaEngine::Execute(uint32 operation, uint64 source, uint64 destination,
 			(unsigned)status, (unsigned)memory[0x1000 / 4], (unsigned)sequence,
 			(unsigned)r[0x3483], (unsigned)r[0x3484], (unsigned)r[0x340d]);
 	}
-	r[0x391] = select;
 	return status;
 }
 
