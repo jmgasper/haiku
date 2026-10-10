@@ -31,6 +31,7 @@
 #include <bluetooth/LocalDevice.h>
 #include <bluetooth/RemoteDevice.h>
 
+#include <A2dpSource.h>
 #include <LaunchRoster.h>
 #include <LEBondStore.h>
 #include <LELog.h>
@@ -642,6 +643,7 @@ BluetoothWindow::MessageReceived(BMessage* message)
 						(BHandler*)NULL, 1000000);
 				}
 			} else {
+				_ReleaseAudioSink(device->address);
 				status = SendClassicRequest(BT_REQ_REMOVE_DEVICE, _HCIID(),
 					device->address);
 			}
@@ -1310,8 +1312,23 @@ BluetoothWindow::_DisconnectPaired()
 
 	bool connecting
 		= device->connectionState == Bluetooth::RemoteDevice::CONNECTING;
+	_ReleaseAudioSink(device->address);
 	SendClassicRequest(connecting ? BT_REQ_CANCEL_CONN : BT_REQ_DISCONNECT,
 		_HCIID(), device->address);
+}
+
+
+/*!	A speaker the user disconnects or forgets stops being the sound output;
+	the output goes back to what it was before.
+*/
+void
+BluetoothWindow::_ReleaseAudioSink(const uint8 address[6])
+{
+	bdaddr_t sink;
+	BString name;
+	if (Bluetooth::GetAudioSink(sink, name) == B_OK
+		&& memcmp(sink.b, address, 6) == 0)
+		Bluetooth::SetAudioSink(NULL, NULL);
 }
 
 
@@ -1903,6 +1920,16 @@ BluetoothWindow::_ClassicConnectFinished(bool success, uint8 status)
 	BString text;
 	if (success) {
 		title = B_TRANSLATE("Connected to %name%");
+		if (fOperationKind == DEVICE_KIND_AUDIO) {
+			// Speakers and headsets take over the sound output; the
+			// Bluetooth audio output connects its stream to them.
+			bdaddr_t address;
+			AddressForKey(fOperationKey, address.b);
+			if (Bluetooth::SetAudioSink(&address, fOperationName.String())
+					== B_OK) {
+				text = B_TRANSLATE("Sound now plays through it.");
+			}
+		}
 	} else {
 		title = B_TRANSLATE("Could not connect to %name%");
 		if (status == 0)
