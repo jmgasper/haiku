@@ -230,6 +230,16 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	ib[n++] = sequence;
 	while ((n & 255) != 0)
 		ib[n++] = 0xffff1000;
+	auto emit = [&](uint32 word) { memory[wptr++ & 0x3fff] = word; };
+	// Invalidate caches after CPU updates and synchronize PFP before IB reads.
+	// gfx_v8_0_emit_mem_sync uses this full-range VI cache operation.
+	emit(Packet(0x43, 3));
+	emit(1 << 22 | 1 << 23 | 1 << 27 | 1 << 29 | 1 << 18);
+	emit(0xffffffff);
+	emit(0);
+	emit(10);
+	emit(Packet(0x42, 0)); // PFP_SYNC_ME
+	emit(0);
 	// First exercise direct ring packets, then the indirect-buffer fetch path.
 	// Both streams and all addresses are private to the kernel.
 	if (sequence >= 2) {
@@ -251,6 +261,17 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		for (uint32 i = 0; i < n; i++)
 			memory[wptr++ & 0x3fff] = ib[i];
 	}
+	// VI requires a dummy EOP followed by the real event. This fence is
+	// outside the IB and covers its return plus cache writeback/invalidation.
+	memory[0x30004 / 4] = 0;
+	for (uint32 value = 0; value < 2; value++) {
+		emit(Packet(0x47, 4));
+		emit(0x14 | 5 << 8 | 1 << 15 | 1 << 16 | 1 << 17);
+		emit((uint32)(gpu + 0x30004));
+		emit((gpu + 0x30004) >> 32 | 1 << 29);
+		emit(value == 0 ? sequence - 1 : sequence);
+		emit(0);
+	}
 	while ((wptr & 255) != 0)
 		memory[wptr++ & 0x3fff] = 0xffff1000; // type-3 zero-payload NOP
 	__sync_synchronize();
@@ -260,9 +281,13 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	r[0x3045] = wptr & 0x3fff;
 	(void)r[0x3045];
 	bigtime_t deadline = system_time() + 500000;
-	while (memory[0x30000 / 4] != sequence && system_time() < deadline)
+	while ((memory[0x30000 / 4] != sequence || memory[0x30004 / 4] != sequence
+		|| r[0x21c0] != (wptr & 0x3fff)) && system_time() < deadline)
 		snooze(50);
-	status_t status = memory[0x30000 / 4] == sequence ? B_OK : B_TIMED_OUT;
+	__sync_synchronize();
+	status_t status = memory[0x30000 / 4] == sequence
+		&& memory[0x30004 / 4] == sequence && r[0x21c0] == (wptr & 0x3fff)
+		? B_OK : B_TIMED_OUT;
 	if (status == B_OK) {
 		for (uint32 i = 0; i < 3072; i++) {
 			uint32 expected = i >= 1024 && i < 2048
