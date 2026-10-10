@@ -61,6 +61,11 @@ static const uint32 kGolden[][3] = {
 static const uint32 kHalt = 0x15000000;
 static const uint64 kCommandVA = 0x10000;
 static const uint64 kMemoryVA = 0x100000;
+// Last command-RAM page is reserved for snooped completion and control data.
+// Keep it outside the ring, bulk IB, and minimal IB ranges.
+static const uint32 kControlOffset = Gart::kCommandBytes - 4096;
+static const uint64 kControlGPU = Gart::kBase + kControlOffset;
+static const uint64 kControlVA = kCommandVA + kControlOffset - 65536;
 static const uint32 kDirectSequences = 16;
 static const uint32 kShaderSequences = 16;
 // gfx803, assembled with LLVM 18. s[0:1] is the output address, s2 the seed,
@@ -137,6 +142,24 @@ GfxEngine::InitializeVM(const amdgpu_info& info,
 }
 
 void
+GfxEngine::DumpExecutionState(const char* point)
+{
+	// Defined GFX8 address/state registers only; no indexed read ports.
+	const uint32 registers[] = {
+		0x3038, 0x30b9, 0x30ba, 0x30bb, 0x21b9,
+		0x219c, 0x219d, 0x219e, 0x219f, 0x21a0, 0x21a1, 0x21a2, 0x21a4,
+		0xc069, 0xc06a, 0xc06d, 0xc06e, 0xc078, 0xc080, 0xc081,
+		0xc082, 0xc083, 0xc084, 0xc077, 0xc085, 0xc086, 0xc087,
+		0xc088, 0xc089, 0xc08a, 0xc0f0, 0xc0f1, 0xc0f2, 0xc0f3,
+		0xc0f4, 0xc0f5, 0xc0f6, 0xc0f7, 0xc0f8, 0xc0f9, 0xc0fb, 0xc0fc,
+		0xec1d, 0xec1e, 0xec43, 0xec80,
+	};
+	for (uint32 index : registers)
+		dprintf("amdgpu: GFX %s register %#x = %#x\n", point,
+			(unsigned)index, (unsigned)regs[index]);
+}
+
+void
 GfxEngine::Snapshot(amdgpu_gfx_test& result)
 {
 	result.cp_control = regs[0x21b6];
@@ -172,6 +195,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	amdgpu_gfx_test& result)
 {
 	regs = r;
+	volatile uint32* control = gart.commandMemory + kControlOffset / 4;
 	Snapshot(result);
 	result.stage = 1;
 	if (faulted || (attempted && !ready))
@@ -201,6 +225,8 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			return status;
 		}
 		wptr = sequence = 0;
+		for (uint32 i = 0; i < 4096 / 4; i++)
+			control[i] = 0;
 		for (uint32 i = 0; i < (1 << 20) / 4; i++)
 			memory[i] = 0;
 		for (uint32 i = 0; i < sizeof(kFillShader) / sizeof(uint32); i++)
@@ -252,10 +278,10 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		const uint32 control = 13 | 11 << 8 | 3 << 15 | 1 << 22;
 		r[0x3041] = control | 0x80000000;
 		r[0x3045] = 0;
-		r[0x3043] = (uint32)(gpu + 0x30010);
-		r[0x3044] = (gpu + 0x30010) >> 32;
-		r[0x3046] = (uint32)(gpu + 0x30020);
-		r[0x3047] = (gpu + 0x30020) >> 32;
+		r[0x3043] = (uint32)(kControlGPU + 0x10);
+		r[0x3044] = (kControlGPU + 0x10) >> 32;
+		r[0x3046] = (uint32)(kControlGPU + 0x20);
+		r[0x3047] = (kControlGPU + 0x20) >> 32;
 		snooze(1000);
 		r[0x3041] = control;
 		r[0x3040] = Gart::kBase >> 8;
@@ -306,7 +332,10 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	const bool direct = sequence <= kDirectSequences;
 	const bool shader = !direct && sequence <= kDirectSequences + kShaderSequences;
 	const bool minimalIB = sequence == kDirectSequences + kShaderSequences + 1;
+	if (minimalIB)
+		DumpExecutionState("before IB");
 	uint64 destination = direct || shader || minimalIB ? gpu : kMemoryVA;
+	uint64 markerAddress = direct || shader || minimalIB ? kControlGPU : kControlVA;
 	for (uint32 i = 0; i < 3072; i++)
 		data[(int32)i - 1024] = 0xabcddcba;
 	ib[n++] = Packet(0x37, 1026); // WRITE_DATA, 1024 payload DWORDs
@@ -316,11 +345,11 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	for (uint32 i = 0; i < 1024; i++)
 		ib[n++] = 0x71324589 ^ (i * 0x10204081u) ^ sequence;
 	// A confirmed memory write in the same IB follows all payload writes.
-	memory[0x30000 / 4] = 0;
+	control[0x0 / 4] = 0;
 	ib[n++] = Packet(0x37, 3);
 	ib[n++] = 5 << 8 | 1 << 20;
-	ib[n++] = (uint32)(destination + 0x30000);
-	ib[n++] = (destination + 0x30000) >> 32;
+	ib[n++] = (uint32)markerAddress;
+	ib[n++] = markerAddress >> 32;
 	ib[n++] = sequence;
 	// Like Mesa, use one counted NOP for the padding block. Keep this
 	// diagnostic independent of the header-only (-1 count) NOP encoding.
@@ -335,23 +364,23 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	auto emit = [&](uint32 word) { ring[wptr++ & 0x3fff] = word; };
 	auto snapshotVM = [&](uint32 slot) {
 		for (uint32 context = 0; context < 2; context++) {
-			uint32 offset = 0x30100 + (slot * 2 + context) * 4;
-			memory[offset / 4] = 0xffffffff;
+			uint32 offset = 0x100 + (slot * 2 + context) * 4;
+			control[offset / 4] = 0xffffffff;
 			emit(Packet(0x40, 4)); // COPY_DATA: register to confirmed memory
 			emit(5 << 8 | 1 << 20);
 			emit(0x536 + context);
 			emit(0);
-			emit((uint32)(gpu + offset));
-			emit((gpu + offset) >> 32);
+			emit((uint32)(kControlGPU + offset));
+			emit((kControlGPU + offset) >> 32);
 		}
-		uint32 offset = 0x30110 + slot * 4;
-		memory[offset / 4] = 0xffffffff;
+		uint32 offset = 0x110 + slot * 4;
+		control[offset / 4] = 0xffffffff;
 		emit(Packet(0x40, 4));
 		emit(5 << 8 | 1 << 20);
 		emit(0xc08e); // CP_PFP_LOAD_CONTROL
 		emit(0);
-		emit((uint32)(gpu + offset));
-		emit((gpu + offset) >> 32);
+		emit((uint32)(kControlGPU + offset));
+		emit((kControlGPU + offset) >> 32);
 	};
 	// Invalidate caches after CPU updates and synchronize PFP before IB reads.
 	// gfx_v8_0_emit_mem_sync uses this full-range VI cache operation.
@@ -364,10 +393,10 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	emit(0);
 	// Match amdgpu_ib_schedule's kernel-job wrapper on GFX8. The private
 	// condition is always true; no client can modify it or these packets.
-	memory[0x30040 / 4] = 1;
+	control[0x40 / 4] = 1;
 	emit(Packet(0x22, 3)); // COND_EXEC
-	emit((uint32)(gpu + 0x30040));
-	emit((gpu + 0x30040) >> 32);
+	emit((uint32)(kControlGPU + 0x40));
+	emit((kControlGPU + 0x40) >> 32);
 	emit(0);
 	uint32 conditionOffset = wptr;
 	emit(0); // patch the number of following DWORDs after the EOP fence
@@ -441,7 +470,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			length = 5;
 			ib[0x8000 / 4] = Packet(0x37, 3);
 			ib[0x8000 / 4 + 1] = 5 << 8 | 1 << 20;
-			ib[0x8000 / 4 + 2] = kMemoryVA + 0x30000;
+			ib[0x8000 / 4 + 2] = kControlVA;
 			ib[0x8000 / 4 + 3] = 0;
 			ib[0x8000 / 4 + 4] = sequence;
 		}
@@ -458,12 +487,12 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	emit(1);
 	// VI requires a dummy EOP followed by the real event. This fence is
 	// outside the IB and covers its return plus cache writeback/invalidation.
-	memory[0x30004 / 4] = 0;
+	control[0x4 / 4] = 0;
 	for (uint32 value = 0; value < 2; value++) {
 		emit(Packet(0x47, 4));
 		emit(0x14 | 5 << 8 | 1 << 15 | 1 << 16 | 1 << 17);
-		emit((uint32)(gpu + 0x30004));
-		emit((gpu + 0x30004) >> 32 | 1 << 29);
+		emit((uint32)(kControlGPU + 0x04));
+		emit((kControlGPU + 0x04) >> 32 | 1 << 29);
 		emit(value == 0 ? sequence - 1 : sequence);
 		emit(0);
 	}
@@ -483,14 +512,19 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	r[0x3045] = wptr & 0x3fff;
 	(void)r[0x3045];
 	bigtime_t deadline = system_time() + 500000;
-	while ((memory[0x30000 / 4] != sequence || memory[0x30004 / 4] != sequence
+	while ((control[0x0 / 4] != sequence || control[0x4 / 4] != sequence
 		|| r[0x21c0] != (wptr & 0x3fff)) && system_time() < deadline)
 		snooze(50);
 	__sync_synchronize();
-	status_t status = memory[0x30000 / 4] == sequence
-		&& memory[0x30004 / 4] == sequence && r[0x21c0] == (wptr & 0x3fff)
+	status_t status = control[0x0 / 4] == sequence
+		&& control[0x4 / 4] == sequence && r[0x21c0] == (wptr & 0x3fff)
 		? B_OK : B_TIMED_OUT;
 	if (status == B_OK) {
+		// The completion page is snooped RAM. Invalidate HDP only after GPU
+		// completion so CPU reads of the VRAM payload cannot reuse old data.
+		r[0xbcc] = 1;
+		(void)r[0xbcc];
+		__sync_synchronize();
 		for (uint32 i = 0; i < 3072; i++) {
 			uint32 expected = i >= 1024 && i < 2048
 				? 0x71324589 ^ ((i - 1024) * 0x10204081u) ^ sequence : 0xabcddcba;
@@ -503,12 +537,15 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	}
 	Snapshot(result);
 	dprintf("amdgpu: GFX VM checkpoints seq %u before %#x/%#x after %#x/%#x\n",
-		(unsigned)sequence, (unsigned)memory[0x30100 / 4],
-		(unsigned)memory[0x30104 / 4], (unsigned)memory[0x30108 / 4],
-		(unsigned)memory[0x3010c / 4]);
+		(unsigned)sequence, (unsigned)control[0x100 / 4],
+		(unsigned)control[0x104 / 4], (unsigned)control[0x108 / 4],
+		(unsigned)control[0x10c / 4]);
 	dprintf("amdgpu: GFX load control before %#x after %#x\n",
-		(unsigned)memory[0x30110 / 4], (unsigned)memory[0x30114 / 4]);
+		(unsigned)control[0x110 / 4], (unsigned)control[0x114 / 4]);
 	if (status != B_OK) {
+		dprintf("amdgpu: GFX completion marker %u EOP %u expected %u\n",
+			(unsigned)control[0], (unsigned)control[1], (unsigned)sequence);
+		DumpExecutionState("after fault");
 		const uint32 registers[] = {0x208d, 0x21c2, 0x3043, 0x3044, 0x3046,
 			0x3047, 0x3061, 0x3066, 0x230a, 0x230b, 0x230c, 0x230d,
 			0x500, 0x501, 0x502, 0x578, 0x504, 0x50c, 0x54f, 0x546,

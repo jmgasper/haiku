@@ -77,8 +77,11 @@ int main(int argc, char** argv)
 			(unsigned)((result.vm_fault_status >> 25) & 15),
 			(unsigned)result.vm_fault_address,
 			(unsigned)result.vm_fault_client);
-		Require(result.status == B_OK && result.stage == 5 && result.checked_bytes == 12288
-			&& result.mismatches == 0, "GFX execution, data, guards and VM faults");
+		if (result.status != B_OK || result.stage != 5 || result.checked_bytes != 12288
+			|| result.mismatches != 0) {
+			errno = result.status != B_OK ? result.status : B_BAD_DATA;
+			Require(false, "GFX execution, data, guards and VM faults");
+		}
 	}
 	close(fd);
 	for (uint8* image : images)

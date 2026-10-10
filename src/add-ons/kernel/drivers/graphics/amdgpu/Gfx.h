@@ -17,6 +17,7 @@ struct GfxEngine {
 		const amdgpu::FirmwareView firmware[4], SdmaEngine& sdma, Gart& gart,
 		amdgpu_gfx_test& result);
 	void Snapshot(amdgpu_gfx_test& result);
+	void DumpExecutionState(const char* point);
 	void Uninitialize();
 };
 #endif
