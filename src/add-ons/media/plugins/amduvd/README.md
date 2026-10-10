@@ -1,14 +1,15 @@
 # AMD UVD Media Kit decoder
 
 `jam amduvd` builds an explicitly selected Media Kit decoder over the native
-WX5100 H.264 interface. It registers no formats with the Media Kit because
+WX5100 H.264 and HEVC interfaces. It registers no formats with the Media Kit because
 that lookup has no software fallback. An application loads `amduvd`, calls
 `instantiate_plugin()` and `DecoderPlugin::NewDecoder(0)` for H.264, and
 retains its software decoder when setup or decoding fails. Decoder index 1
-now prepares HEVC Main/Main 10 qualification; indexes above 1 are rejected.
-airTime and Summit currently select H.264 explicitly; full Summit browser
-qualification and release-image installation remain pending. Native tests
-and applications currently use the private lab build.
+selects HEVC Main/Main 10; indexes above 1 are rejected. airTime and Summit
+explicitly select both codecs and have passed native playback and fallback
+qualification with private lab builds. The addon is included in the regular
+`haiku_datatranslators` package; final native release installation remains
+pending. General AMD graphics and native display are separate, unfinished work.
 
 The input is progressive eight-bit 4:2:0 Baseline/Main/High H.264, one complete
 access unit per chunk. Both Annex B and MP4/Matroska AVC configuration and
@@ -65,20 +66,21 @@ The interleaved 48-picture 320x240 plus 24-picture 1080p stage improved from
 20.12 to 4.01 seconds including output writes (3.79 seconds to `/dev/null`).
 This is a bounded regression measurement. Subsequent qualified ROM clock
 requests allow the native three-minute 1080p30 airTime test to keep all
-5,400 pictures on hardware, with 5,400 shown and no drops. Full Summit
-browser/MSE qualification, broader format/error coverage and final packaging
-remain; focused Summit file-decoder tests already pass.
+5,400 pictures on hardware, with 5,400 shown and no drops. Summit's qualified
+read-ahead path also passes sustained H.264 browser/MSE playback with all
+5,400 pictures, exact source timestamps and zero drops. Its composition still
+uses CPU Mesa; these are video-decoding results.
 
-The HEVC path is preparation and is available only through explicit decoder
-index 1 in the new candidate; it is not selected by applications yet.
+The HEVC path is available through explicit decoder index 1.
 `HevcStream` prepares Main/Main-10 UVD metadata, POC and retained references;
 `HevcPacket` accepts hvcC configuration and length-prefixed packets, orders
 parameter-set arrays for parsing and bounds expansion to 4 MiB. A failed
 configuration disables packet conversion until reconfigured. Main and Main
 10 fixtures pass parser, metadata, slot and packet-equivalence tests under
-ASan/UBSan and in QEMU. `amdgpu_hevc_stream` and `hevc_stream.py` prepare
-native NV12/P010 qualification, which has not run. These CPU checks do not
-establish HEVC hardware decoding or Main-10 output quality.
+ASan/UBSan and in QEMU. Native `amdgpu_hevc_stream` output matches independent
+FFmpeg references for Main NV12 and full-precision Main-10 P010. A 540-picture
+Main-10 stream crosses two POC-LSB wraps with all 124,416,000 visible P010
+bytes exact. The ten-bit samples are retained with zero low six storage bits.
 
 `HevcOutput` preserves cropped P010 samples and converts RGB from the coded
 precision and VUI range/matrix. Explicit eight-bit YUV output rounds ten-bit
@@ -92,5 +94,17 @@ packed YUV and RGB32, and keeps EOF, interrupted input, seek and latched-error
 behavior consistent with H.264. Setup clears parameter sets without a large
 stack temporary; seek retains them and destroys the old hardware session.
 QEMU tests prove valid Main/Main-10 configurations reach the absent device,
-and the combined addon preserves the native H.264 regression. HEVC decoding,
-output pixels, sustained playback and application selection remain unqualified.
+and the combined addon preserves the native H.264 regression. Native
+interleaved Main/Main-10 tests cover formats, timestamps, seek, malformed
+input and fresh reuse: YUV is exact and RGB differs from an independent
+floating-point reference by at most one. SSE4.1 conversion preserves the
+scalar result, and reuse of consumed pixel storage avoids repeated allocation.
+
+Both airTime and Summit pass three-minute 1080p30 Main-10/AAC playback with
+all 5,400 pictures on hardware and zero reported drops. Summit additionally
+passes MSE/file paused-seek pixel checks, runtime and first-call software
+fallback, and selection with an older addon lacking HEVC support. Its MSE
+timestamps match each source picture once; file drop counters are not
+implemented. These bounded results do not qualify arbitrary streams or
+engine reset/reuse after a GPU fault. See the sustained HEVC and recovery
+sections of `docs/x399-workstation/WX5100.md` for versions and evidence.
