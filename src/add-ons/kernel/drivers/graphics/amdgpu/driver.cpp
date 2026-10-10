@@ -198,7 +198,7 @@ device_free(void* cookie)
 static status_t
 device_control(void* cookie, uint32 op, void* buffer, size_t length)
 {
-	if (op >= AMDGPU_CREATE_BUFFER && op <= AMDGPU_MEMORY_INFO)
+	if (op >= AMDGPU_CREATE_BUFFER && op <= AMDGPU_GART_INFO)
 		return amdgpu_client_control((AmdgpuClient*)cookie, op, buffer, length);
 	if (op == AMDGPU_START_DMA) {
 		if (geteuid() != 0)

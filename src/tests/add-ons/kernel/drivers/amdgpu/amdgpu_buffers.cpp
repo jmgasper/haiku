@@ -12,6 +12,8 @@
 #include <unistd.h>
 #include <vector>
 
+static bool sSystemBuffers;
+
 static void
 Require(bool okay, const char* message)
 {
@@ -44,15 +46,24 @@ Info(int fd)
 	auto info = Request<amdgpu_memory_info>();
 	Require(ioctl(fd, AMDGPU_MEMORY_INFO, &info, sizeof(info)) == 0, "memory info");
 	Require(info.faulted == 0, "device remains healthy");
+	auto gart = Request<amdgpu_gart_info>();
+	Require(ioctl(fd, AMDGPU_GART_INFO, &gart, sizeof(gart)) == 0, "GART info");
+	Require((gart.vm_fault_status & 0xff) == 0, "no GPU VM faults");
+	if (sSystemBuffers) {
+		info.allocated_bytes = gart.allocated_bytes;
+		info.client_bytes = gart.client_bytes;
+	}
 	return info;
 }
 
 static amdgpu_buffer
-Create(int fd, uint64 bytes, bool map = true)
+Create(int fd, uint64 bytes, bool map = true, uint32 operation = 0)
 {
 	auto bo = Request<amdgpu_buffer>();
 	bo.bytes = bytes;
-	Require(ioctl(fd, AMDGPU_CREATE_BUFFER, &bo, sizeof(bo)) == 0, "create buffer");
+	if (operation == 0)
+		operation = sSystemBuffers ? AMDGPU_CREATE_SYSTEM_BUFFER : AMDGPU_CREATE_BUFFER;
+	Require(ioctl(fd, operation, &bo, sizeof(bo)) == 0, "create buffer");
 	Require(bo.bytes >= bytes && bo.handle != 0, "buffer dimensions");
 	if (map)
 		Require(ioctl(fd, AMDGPU_MAP_BUFFER, &bo, sizeof(bo)) == 0, "map buffer");
@@ -78,8 +89,14 @@ Wait(int fd, uint64 fence)
 {
 	auto wait = Request<amdgpu_fence_wait>();
 	wait.fence = fence;
-	wait.timeout_us = 5000000;
-	Require(ioctl(fd, AMDGPU_WAIT_FENCE, &wait, sizeof(wait)) == 0, "wait fence");
+	bigtime_t deadline = system_time() + 5000000;
+	int result;
+	do {
+		wait.timeout_us = deadline - system_time();
+		Require(wait.timeout_us > 0, "fence deadline");
+		result = ioctl(fd, AMDGPU_WAIT_FENCE, &wait, sizeof(wait));
+	} while (result < 0 && errno == B_INTERRUPTED);
+	Require(result == 0, "wait fence");
 	Require(wait.status == B_OK, "GPU job completed successfully");
 }
 
@@ -140,15 +157,21 @@ int
 main(int argc, char** argv)
 {
 	setvbuf(stdout, NULL, _IOLBF, 0);
-	if (argc < 2 || argc > 3) {
-		fprintf(stderr, "usage: amdgpu_buffers polaris10_sdma.bin | --reuse [--unprivileged]\n");
+	if (argc < 2 || argc > 4) {
+		fprintf(stderr, "usage: amdgpu_buffers firmware | --reuse [--system] [--unprivileged]\n");
 		return 2;
 	}
-	if (argc == 3) {
-		Require(strcmp(argv[1], "--reuse") == 0 && strcmp(argv[2], "--unprivileged") == 0,
-			"unprivileged usage");
-		Require(setuid(65534) == 0 && geteuid() == 65534, "drop root privileges");
+	for (int i = 2; i < argc; i++) {
+		if (strcmp(argv[i], "--system") == 0)
+			sSystemBuffers = true;
+		else {
+			Require(strcmp(argv[1], "--reuse") == 0
+				&& strcmp(argv[i], "--unprivileged") == 0, "unprivileged usage");
+			Require(setuid(65534) == 0 && geteuid() == 65534, "drop root privileges");
+		}
 	}
+	printf("Testing %s buffers, effective UID %u\n",
+		sSystemBuffers ? "system RAM" : "VRAM", (unsigned)geteuid());
 	int fd = Open();
 	if (strcmp(argv[1], "--reuse") != 0) {
 		FILE* file = fopen(argv[1], "rb");
@@ -175,7 +198,7 @@ main(int argc, char** argv)
 	volatile uint32* a = (volatile uint32*)(addr_t)src.address;
 	volatile uint32* b = (volatile uint32*)(addr_t)dst.address;
 	for (uint64 i = 0; i < src.bytes / 4; i++) {
-		Require(a[i] == 0 && b[i] == 0, "new VRAM is zeroed");
+		Require(a[i] == 0 && b[i] == 0, "new buffer is zeroed");
 		a[i] = Pattern(i);
 	}
 	Wait(fd, Submit(fd, AMDGPU_DMA_FILL, 0, dst.handle, 0, 0, dst.bytes, 0xcccccccc));
@@ -214,7 +237,8 @@ main(int argc, char** argv)
 	Require(ioctl(fd, AMDGPU_SUBMIT_DMA, &invalid, sizeof(invalid)) == -1
 		&& errno == B_BAD_VALUE, "overlapping DMA copy rejected");
 	auto badSize = Request<amdgpu_buffer>(); badSize.bytes = UINT64_MAX;
-	Require(ioctl(fd, AMDGPU_CREATE_BUFFER, &badSize, sizeof(badSize)) == -1
+	Require(ioctl(fd, sSystemBuffers ? AMDGPU_CREATE_SYSTEM_BUFFER : AMDGPU_CREATE_BUFFER,
+		&badSize, sizeof(badSize)) == -1
 		&& errno == B_BAD_VALUE, "overflowing allocation rejected");
 	auto wait = Request<amdgpu_fence_wait>(); wait.fence = UINT64_MAX;
 	Require(ioctl(fd, AMDGPU_WAIT_FENCE, &wait, sizeof(wait)) == -1
@@ -232,7 +256,7 @@ main(int argc, char** argv)
 	delete_area(src.area); delete_area(clone);
 	Free(fd, dst); delete_area(dst.area);
 	Require(Info(fd).allocated_bytes == 0, "explicit free reclaims memory");
-	puts("PASS: mapping and clone revocation before VRAM reuse");
+	puts("PASS: mapping and clone revocation before memory reuse");
 
 	thread_id threads[4];
 	for (unsigned i = 0; i < 4; i++) {
@@ -273,6 +297,66 @@ main(int argc, char** argv)
 		Free(fd, reuse); delete_area(reuse.area);
 	}
 	Require(Info(fd).allocated_bytes == 0, "final allocation accounting");
+	if (sSystemBuffers) {
+		// Simultaneous mappings exceed the card's 256 MiB CPU VRAM aperture.
+		// The last 64 MiB fill also crosses sixteen SDMA packet boundaries.
+		amdgpu_buffer large[5];
+		uint64 last = 0;
+		for (unsigned i = 0; i < 5; i++) {
+			large[i] = Create(fd, 64ULL << 20);
+			last = Submit(fd, AMDGPU_DMA_FILL, 0, large[i].handle, 0, 0,
+				large[i].bytes, Pattern(i));
+		}
+		Require(Info(fd).allocated_bytes == (320ULL << 20), "320 MiB mapped in GART");
+		Wait(fd, last);
+		for (unsigned i = 0; i < 5; i++) {
+			volatile uint32* p = (volatile uint32*)(addr_t)large[i].address;
+			for (uint64 j = 0; j < large[i].bytes / 4; j++)
+				Require(p[j] == Pattern(i), "64 MiB GPU fill in system RAM");
+			Free(fd, large[i]); delete_area(large[i].area);
+		}
+		Require(Info(fd).allocated_bytes == 0, "large RAM buffers reclaimed");
+		puts("PASS: 320 MiB simultaneous RAM mappings and five complete 64 MiB fills");
+	}
+
+	// Exercise both domains in one dependency chain. CPU writes only the
+	// source RAM; every destination and guard is produced by actual SDMA.
+	const uint64 mixedBytes = (8ULL << 20) + 8192;
+	auto ramIn = Create(fd, mixedBytes, true, AMDGPU_CREATE_SYSTEM_BUFFER);
+	auto vram = Create(fd, mixedBytes, true, AMDGPU_CREATE_BUFFER);
+	auto ramOut = Create(fd, mixedBytes, true, AMDGPU_CREATE_SYSTEM_BUFFER);
+	volatile uint32* in = (volatile uint32*)(addr_t)ramIn.address;
+	volatile uint32* out = (volatile uint32*)(addr_t)ramOut.address;
+	for (uint64 i = 0; i < mixedBytes / 4; i++)
+		in[i] = Pattern(i, 0xa129c45b);
+	Submit(fd, AMDGPU_DMA_FILL, 0, vram.handle, 0, 0, mixedBytes, 0xabcdef98);
+	Submit(fd, AMDGPU_DMA_FILL, 0, ramOut.handle, 0, 0, mixedBytes, 0x76543210);
+	Submit(fd, AMDGPU_DMA_COPY, ramIn.handle, vram.handle, 4, 4092, bytes);
+	Wait(fd, Submit(fd, AMDGPU_DMA_COPY, vram.handle, ramOut.handle, 4092, 4100, bytes));
+	for (uint64 i = 0; i < mixedBytes / 4; i++) {
+		uint32 expected = i >= 1025 && i < 1025 + bytes / 4
+			? Pattern(i - 1024, 0xa129c45b) : 0x76543210;
+		Require(out[i] == expected, "RAM to VRAM to RAM across unaligned page boundaries");
+	}
+	// Dirty cached CPU source lines again between submissions, then read
+	// the same cached destination lines. This detects missing PCIe snooping.
+	for (unsigned round = 0; round < 64; round++) {
+		for (unsigned i = 0; i < 4096; i++)
+			in[i] = Pattern(i, round);
+		Wait(fd, Submit(fd, AMDGPU_DMA_COPY, ramIn.handle, ramOut.handle, 0, 0, 16384));
+		for (unsigned i = 0; i < 4096; i++)
+			Require(out[i] == Pattern(i, round), "cached CPU and GPU writes remain coherent");
+	}
+	Free(fd, ramIn); Free(fd, vram); Free(fd, ramOut);
+	delete_area(ramIn.area); delete_area(vram.area); delete_area(ramOut.area);
+	auto gart = Request<amdgpu_gart_info>();
+	Require(ioctl(fd, AMDGPU_GART_INFO, &gart, sizeof(gart)) == 0, "final GART stats");
+	Require(gart.allocated_bytes == 0 && gart.client_bytes == 0
+		&& (gart.vm_fault_status & 0xff) == 0, "GART released without VM faults");
+	printf("PASS: RAM/VRAM transfers, cached CPU coherency, %" B_PRIu64
+		" bound pages, %" B_PRIu64 " physical discontinuities\n",
+		gart.bound_pages, gart.scatter_boundaries);
+	Require(Info(fd).allocated_bytes == 0, "mixed transfers reclaim memory");
 	close(other); close(fd);
 	fd = Open();
 	Require(Info(fd).allocated_bytes == 0, "persistent device survives all clients closing");

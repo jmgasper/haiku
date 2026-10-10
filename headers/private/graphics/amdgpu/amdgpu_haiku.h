@@ -23,7 +23,9 @@ enum {
 	AMDGPU_FREE_BUFFER,
 	AMDGPU_SUBMIT_DMA,
 	AMDGPU_WAIT_FENCE,
-	AMDGPU_MEMORY_INFO
+	AMDGPU_MEMORY_INFO,
+	AMDGPU_CREATE_SYSTEM_BUFFER,
+	AMDGPU_GART_INFO
 };
 
 #define AMDGPU_ROM_SIZE (256 * 1024)
@@ -85,9 +87,11 @@ struct amdgpu_dma_init {
 	uint32 reserved;
 };
 
+// CREATE_BUFFER uses CPU-visible VRAM. CREATE_SYSTEM_BUFFER uses wired,
+// snooped system RAM; both use the same handle, mapping and command API.
 // File-local handles; no raw MMIO or arbitrary GPU addresses are accepted.
 // MAP creates a non-executable mapping in the calling team. FREE or closing
-// the file revokes every mapping (including clones) before VRAM can be reused.
+// the file revokes every mapping (including clones) before memory can be reused.
 struct amdgpu_buffer {
 	uint32 version;
 	uint32 size;
@@ -132,6 +136,18 @@ struct amdgpu_memory_info {
 	uint64 completed;
 	uint32 pending_jobs;
 	uint32 faulted;
+};
+
+struct amdgpu_gart_info {
+	uint32 version;
+	uint32 size;
+	uint64 total_bytes;
+	uint64 allocated_bytes; // includes buffers retained by pending jobs
+	uint64 client_bytes;
+	uint64 bound_pages; // cumulative successful RAM bindings
+	uint64 scatter_boundaries; // physically nonadjacent pages within bindings
+	uint32 vm_fault_status;
+	uint32 vm_fault_address; // GPU virtual page number, not a CPU address
 };
 
 struct amdgpu_register_value {

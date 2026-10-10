@@ -145,6 +145,12 @@ SdmaEngine::Execute(uint32 operation, uint64 source, uint64 destination,
 	(void)r[0x3412];
 	if ((r[0x340d] & 1) == 0 || (r[0x3412] & 1) == 0)
 		status = B_DEV_NOT_READY;
+	if ((r[0x536] & 0xff) != 0) {
+		dprintf("amdgpu: VMID0 fault %#x page %#x\n", (unsigned)r[0x536],
+			(unsigned)r[0x53e]);
+		status = B_BAD_ADDRESS;
+	}
+	__sync_synchronize(); // publish snooped system-memory writes to CPU readers
 	if (status != B_OK) {
 		faulted = true;
 		dprintf("amdgpu: DMA fault status %#x fence %u/%u ring %u/%u engine %#x\n",

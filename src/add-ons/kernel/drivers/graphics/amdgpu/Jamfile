@@ -4,4 +4,4 @@ UsePrivateKernelHeaders ;
 UsePrivateHeaders [ FDirName graphics amdgpu ] ;
 
 KernelAddon amdgpu : driver.cpp Firmware.cpp Rom.cpp Sdma.cpp Smu.cpp
-	Device.cpp SdmaEngine.cpp VramAllocator.cpp ;
+	Device.cpp SdmaEngine.cpp Gart.cpp VramAllocator.cpp ;

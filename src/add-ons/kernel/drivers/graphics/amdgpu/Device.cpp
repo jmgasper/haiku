@@ -1,6 +1,7 @@
 /* Copyright 2026, air/OS. Distributed under the terms of the MIT License. */
 #include "Device.h"
 #include "Sdma.h"
+#include "Gart.h"
 #include "VramAllocator.h"
 #include <KernelExport.h>
 #include <condition_variable.h>
@@ -12,17 +13,17 @@
 
 struct Buffer {
 	Buffer* next;
-	uint64 handle, offset, bytes;
+	uint64 handle, offset, bytes, gpu;
 	area_id area;
 	volatile uint32* cpu;
 	uint32 references;
-	bool poisoned;
+	bool poisoned, system;
 };
 
 struct AmdgpuClient {
 	team_id team;
 	uint32 flags, references, bufferCount, pending;
-	uint64 bytes, submitted, completed, failedFence;
+	uint64 bytes, systemBytes, submitted, completed, failedFence;
 	status_t failure;
 	Buffer* buffers;
 };
@@ -38,6 +39,8 @@ struct Job {
 static mutex sMutex = MUTEX_INITIALIZER("amdgpu buffers");
 static ConditionVariable sCompleted;
 static VramAllocator sAllocator = {};
+static VramAllocator sGartAllocator = {};
+static Gart sGart = {};
 static SdmaEngine sEngine = {};
 static amdgpu_info sInfo;
 static bool sActive, sStopping;
@@ -54,11 +57,20 @@ PutBuffer(Buffer* bo)
 {
 	if (bo == NULL || --bo->references != 0)
 		return;
-	delete_area(bo->area);
-	// If a GPU job failed or mapping revocation failed, these pages remain
-	// allocated until a cold boot. Never give a late write another owner.
-	if (!bo->poisoned && sFault == B_OK)
-		sAllocator.Free(bo->offset, bo->bytes);
+	// RAM must remain wired on failure: deleting its area would return pages
+	// to the OS while a late GPU write may still be possible. VRAM mappings
+	// can be deleted, but the allocator still quarantines their physical pages.
+	if (bo->system && !bo->poisoned && sFault == B_OK) {
+		status_t status = sGart.Unbind(bo->offset, bo->bytes);
+		if (status != B_OK)
+			sFault = status;
+	}
+	if (!bo->system || (!bo->poisoned && sFault == B_OK))
+		delete_area(bo->area);
+	if (!bo->poisoned && sFault == B_OK) {
+		VramAllocator& allocator = bo->system ? sGartAllocator : sAllocator;
+		allocator.Free(bo->offset, bo->bytes);
+	}
 	free(bo);
 }
 
@@ -100,8 +112,8 @@ Executor(void*)
 		if (status == B_OK) {
 			const amdgpu_dma_submit& c = job->command;
 			uint64 source = job->source != NULL
-				? sInfo.vram_gpu_base + job->source->offset + c.source_offset : 0;
-			uint64 destination = sInfo.vram_gpu_base + job->destination->offset
+				? job->source->gpu + c.source_offset : 0;
+			uint64 destination = job->destination->gpu
 				+ c.destination_offset;
 			status = sEngine.Execute(c.operation, source, destination, c.bytes, c.value);
 		}
@@ -199,12 +211,26 @@ Start(volatile uint32* regs, const amdgpu_info& info,
 		sAllocator.Uninit();
 		return status;
 	}
+	if (!sGartAllocator.Init(Gart::kSize))
+		status = B_NO_MEMORY;
+	else
+		status = sGart.Initialize(regs, info, reservation);
+	if (status != B_OK) {
+		sEngine.Uninitialize();
+		sGartAllocator.Uninit();
+		delete_sem(sJobs);
+		sJobs = -1;
+		sAllocator.Uninit();
+		return status;
+	}
 	sInfo = info;
 	sFault = B_OK;
 	sStopping = false;
 	sCompleted.Init(&sCompleted, "amdgpu fence");
 	sWorker = spawn_kernel_thread(Executor, "amdgpu DMA", B_NORMAL_PRIORITY, NULL);
 	if (sWorker < 0) {
+		sGart.Uninitialize(false);
+		sGartAllocator.Uninit();
 		sEngine.Uninitialize();
 		delete_sem(sJobs);
 		sJobs = -1;
@@ -259,6 +285,20 @@ Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 		info.completed = client->completed;
 		info.pending_jobs = sPending;
 		info.faulted = sFault != B_OK;
+		return user_memcpy(data, &info, sizeof(info));
+	}
+	if (op == AMDGPU_GART_INFO) {
+		amdgpu_gart_info info;
+		status_t status = ReadRequest(info, data, length);
+		if (status != B_OK)
+			return status;
+		info.total_bytes = Gart::kSize;
+		info.allocated_bytes = sGartAllocator.allocated;
+		info.client_bytes = client->systemBytes;
+		info.bound_pages = sGart.boundPages;
+		info.scatter_boundaries = sGart.scatterBoundaries;
+		info.vm_fault_status = sGart.regs[0x536];
+		info.vm_fault_address = sGart.regs[0x53e];
 		return user_memcpy(data, &info, sizeof(info));
 	}
 	if (op == AMDGPU_WAIT_FENCE) {
@@ -336,7 +376,8 @@ Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 		release_sem(sJobs);
 		return B_OK;
 	}
-	if (op != AMDGPU_CREATE_BUFFER && op != AMDGPU_MAP_BUFFER && op != AMDGPU_FREE_BUFFER)
+	if (op != AMDGPU_CREATE_BUFFER && op != AMDGPU_CREATE_SYSTEM_BUFFER
+		&& op != AMDGPU_MAP_BUFFER && op != AMDGPU_FREE_BUFFER)
 		return B_DEV_INVALID_IOCTL;
 	amdgpu_buffer request;
 	status_t status = ReadRequest(request, data, length);
@@ -344,7 +385,7 @@ Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 		return status;
 	if (request.reserved != 0)
 		return B_BAD_VALUE;
-	if (op == AMDGPU_CREATE_BUFFER) {
+	if (op == AMDGPU_CREATE_BUFFER || op == AMDGPU_CREATE_SYSTEM_BUFFER) {
 		if (sFault != B_OK)
 			return B_DEV_NOT_READY;
 		if (request.bytes == 0 || request.bytes > (64ULL << 20))
@@ -355,16 +396,27 @@ Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 		if (bo == NULL)
 			return B_NO_MEMORY;
 		bo->bytes = (request.bytes + 4095) & ~4095ULL;
-		if (!sAllocator.Allocate(bo->bytes, 4096, sInfo.bar_size[0], bo->offset)) {
+		bo->system = op == AMDGPU_CREATE_SYSTEM_BUFFER;
+		VramAllocator& allocator = bo->system ? sGartAllocator : sAllocator;
+		uint64 limit = bo->system ? Gart::kSize : sInfo.bar_size[0];
+		if (!allocator.Allocate(bo->bytes, 4096, limit, bo->offset)) {
 			free(bo);
 			return B_NO_MEMORY;
 		}
-		bo->area = map_physical_memory("amdgpu client VRAM", sInfo.bar_address[0] + bo->offset,
-			bo->bytes, B_ANY_KERNEL_ADDRESS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
-			(void**)&bo->cpu);
+		if (bo->system) {
+			virtual_address_restrictions va = {};
+			physical_address_restrictions pa = {};
+			bo->area = create_area_etc(B_SYSTEM_TEAM, "amdgpu client RAM", bo->bytes,
+				B_FULL_LOCK, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, 0, 0, &va, &pa,
+				(void**)&bo->cpu);
+		} else {
+			bo->area = map_physical_memory("amdgpu client VRAM", sInfo.bar_address[0] + bo->offset,
+				bo->bytes, B_ANY_KERNEL_ADDRESS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
+				(void**)&bo->cpu);
+		}
 		if (bo->area < 0) {
 			status = bo->area;
-			sAllocator.Free(bo->offset, bo->bytes);
+			allocator.Free(bo->offset, bo->bytes);
 			free(bo);
 			return status;
 		}
@@ -373,6 +425,17 @@ Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 		__sync_synchronize();
 		(void)bo->cpu[bo->bytes / 4 - 1];
 		bo->references = 1;
+		bo->gpu = (bo->system ? Gart::kBase : sInfo.vram_gpu_base) + bo->offset;
+		if (bo->system) {
+			status = sGart.Bind(bo->offset, bo->bytes, (const void*)bo->cpu);
+			if (status != B_OK) {
+				// An invalidation timeout requires retaining backing RAM.
+				if (status == B_TIMED_OUT)
+					sFault = status;
+				PutBuffer(bo);
+				return status;
+			}
+		}
 		bo->handle = sNextHandle++;
 		request.handle = bo->handle;
 		request.bytes = bo->bytes;
@@ -386,7 +449,10 @@ Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 		bo->next = client->buffers;
 		client->buffers = bo;
 		client->bufferCount++;
-		client->bytes += bo->bytes;
+		if (bo->system)
+			client->systemBytes += bo->bytes;
+		else
+			client->bytes += bo->bytes;
 		return B_OK;
 	}
 	Buffer* bo = Lookup(client, request.handle);
@@ -414,7 +480,10 @@ Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 		link = &(*link)->next;
 	*link = bo->next;
 	client->bufferCount--;
-	client->bytes -= bo->bytes;
+	if (bo->system)
+		client->systemBytes -= bo->bytes;
+	else
+		client->bytes -= bo->bytes;
 	PutBuffer(bo);
 	return B_OK;
 }
@@ -442,6 +511,8 @@ amdgpu_device_stop()
 	delete_sem(sJobs);
 	sJobs = sWorker = -1;
 	sEngine.Uninitialize();
+	sGart.Uninitialize(sFault != B_OK);
+	sGartAllocator.Uninit();
 	sAllocator.Uninit();
 	sActive = false;
 }
