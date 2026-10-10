@@ -30,6 +30,7 @@ enum { SECT_NONE, SECT_CONTEXT };
 struct cs_extent_def { const unsigned int* extent; uint32 reg_index, reg_count; };
 struct cs_section_def { const cs_extent_def* section; uint32 id; };
 #include "ClearState.h"
+#include "GfxDraw.h"
 
 static const uint32 kGolden[][3] = {
 	{0xcd4, 0x000c0fc0, 0x000c0200}, // ATC_MISC_CG
@@ -68,6 +69,7 @@ static const uint64 kControlGPU = Gart::kBase + kControlOffset;
 static const uint64 kControlVA = kCommandVA + kControlOffset - 65536;
 static const uint32 kDirectSequences = 16;
 static const uint32 kShaderSequences = 16;
+static const uint32 kDrawSequences = 4;
 // gfx803, assembled with LLVM 18. s[0:1] is the output address, s2 the seed,
 // s3 the workgroup X ID, and v0 the local thread X ID. No scratch or LDS.
 static const uint32 kFillShader[] = {
@@ -231,6 +233,10 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			memory[i] = 0;
 		for (uint32 i = 0; i < sizeof(kFillShader) / sizeof(uint32); i++)
 			memory[0x40000 / 4 + i] = kFillShader[i];
+		for (uint32 i = 0; i < sizeof(kTriangleVS) / sizeof(uint32); i++)
+			memory[0x41000 / 4 + i] = kTriangleVS[i];
+		for (uint32 i = 0; i < sizeof(kColorPS) / sizeof(uint32); i++)
+			memory[0x42000 / 4 + i] = kColorPS[i];
 		for (uint32 i = 0; i < 0x4000; i++)
 			ring[i] = (i & 1) == 0 ? Packet(0x10, 0) : 0;
 		result.stage = 2;
@@ -331,11 +337,13 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	result.sequence = sequence;
 	const bool direct = sequence <= kDirectSequences;
 	const bool shader = !direct && sequence <= kDirectSequences + kShaderSequences;
-	const bool minimalIB = sequence == kDirectSequences + kShaderSequences + 1;
+	const bool draw = sequence > kDirectSequences + kShaderSequences
+		&& sequence <= kDirectSequences + kShaderSequences + kDrawSequences;
+	const bool minimalIB = sequence == kDirectSequences + kShaderSequences + kDrawSequences + 1;
 	if (minimalIB)
 		DumpExecutionState("before IB");
-	uint64 destination = direct || shader || minimalIB ? gpu : kMemoryVA;
-	uint64 markerAddress = direct || shader || minimalIB ? kControlGPU : kControlVA;
+	uint64 destination = direct || shader || draw || minimalIB ? gpu : kMemoryVA;
+	uint64 markerAddress = direct || shader || draw || minimalIB ? kControlGPU : kControlVA;
 	for (uint32 i = 0; i < 3072; i++)
 		data[(int32)i - 1024] = 0xabcddcba;
 	ib[n++] = Packet(0x37, 1026); // WRITE_DATA, 1024 payload DWORDs
@@ -446,6 +454,60 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		for (uint32 i = 1028; i < 1033; i++)
 			emit(ib[i]);
 	}
+	if (draw) {
+		auto setContext = [&](uint32 reg, uint32 value) {
+			emit(Packet(0x69, 1));
+			emit(reg - 0xa000);
+			emit(value);
+		};
+		auto setShader = [&](uint32 reg, uint32 value) {
+			emit(Packet(0x76, 1));
+			emit(reg - 0x2c00);
+			emit(value);
+		};
+		for (const auto& entry : kDrawContext)
+			setContext(entry[0], entry[1]);
+		setContext(0xa318, (gpu + 0x20000) >> 8);
+		setContext(0xa319, 3); // 32 pixels / 8 - 1
+		setContext(0xa31a, 15); // 32 * 32 / 64 - 1
+		setContext(0xa31b, 0); // single slice
+		setContext(0xa31c, 10 << 2 | 1 << 7 | 1 << 15); // RGBA8 UNORM, linear
+		setContext(0xa31d, 0); // 1 sample, no FMASK
+		for (uint32 reg = 0xa31e; reg <= 0xa325; reg++)
+			setContext(reg, 0); // no DCC/CMASK/FMASK or fast-clear metadata
+		for (uint32 target = 1; target < 8; target++)
+			setContext(0xa31c + target * 15, 0);
+		for (uint32 reg = 0xa2fe; reg <= 0xa30d; reg++)
+			setContext(reg, 0); // center sample locations
+		setContext(0x1000a2aa, 0x2010007f); // IA index 1, 2 prim groups/wave
+		setShader(0x2c46, 0xffff);
+		setShader(0x2c48, (gpu + 0x41000) >> 8);
+		setShader(0x2c49, (gpu + 0x41000) >> 40);
+		setShader(0x2c4a, 1 | 1 << 6 | 0xc0 << 12); // 8 VGPR, 16 SGPR
+		setShader(0x2c4b, 0); // vertex ID only; no scratch, user SGPR or streamout
+		setShader(0x2c07, 0xffff);
+		setShader(0x2c08, (gpu + 0x42000) >> 8);
+		setShader(0x2c09, (gpu + 0x42000) >> 40);
+		setShader(0x2c0a, 1 << 6 | 0xc0 << 12); // 4 VGPR, 16 SGPR
+		setShader(0x2c0b, 4 << 1); // RGBA in s0..s3
+		setShader(0x2c0c, (sequence & 1) ? 0x3f800000 : 0);
+		setShader(0x2c0d, (sequence & 1) ? 0 : 0x3f800000);
+		setShader(0x2c0e, 0);
+		setShader(0x2c0f, 0x3f800000);
+		emit(Packet(0x79, 1)); // VGT_PRIMITIVE_TYPE, index 1
+		emit(0x10000242);
+		emit(4); // triangle list
+		emit(Packet(0x2f, 0)); // NUM_INSTANCES
+		emit(1);
+		emit(Packet(0x2d, 1)); // DRAW_INDEX_AUTO, exactly three vertices
+		emit(3);
+		emit(2); // auto-generated indices
+		emit(Packet(0x46, 0));
+		emit(0x10 | 4 << 8); // PS_PARTIAL_FLUSH
+		for (uint32 i = 1028; i < 1033; i++)
+			emit(ib[i]);
+	}
+
 	if (direct || minimalIB) {
 		// The minimal IB obtains its completion marker exclusively from the
 		// private VM's five-DWORD IB. Only its bulk payload runs directly.
@@ -455,7 +517,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	}
 	// First exercise direct ring packets, then the indirect-buffer fetch path.
 	// Both streams and all addresses are private to the kernel.
-	if (!direct && !shader) {
+	if (!direct && !shader && !draw) {
 		// Explicitly disable inherited register loads/shadowing outside the
 		// clear-state preamble before entering a private indirect buffer.
 		emit(Packet(0x28, 1));
@@ -528,8 +590,17 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		for (uint32 i = 0; i < 3072; i++) {
 			uint32 expected = i >= 1024 && i < 2048
 				? 0x71324589 ^ ((i - 1024) * 0x10204081u) ^ sequence : 0xabcddcba;
-			if (data[(int32)i - 1024] != expected)
+			if (draw && i >= 1024 && i < 2048) {
+				uint32 pixel = i - 1024;
+				expected = pixel % 32 + pixel / 32 <= 31
+					? ((sequence & 1) ? 0xff0000ff : 0xff00ff00) : 0xabcddcba;
+			}
+			if (data[(int32)i - 1024] != expected) {
+				if (draw && result.mismatches < 8)
+					dprintf("amdgpu: draw word %u got %#x expected %#x\n",
+						(unsigned)i, (unsigned)data[(int32)i - 1024], (unsigned)expected);
 				result.mismatches++;
+			}
 		}
 		result.checked_bytes = 12288;
 		if (result.mismatches != 0 || ((r[0x536] | r[0x537]) & 0xff) != 0)
