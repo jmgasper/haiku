@@ -128,10 +128,20 @@ int main(int argc, char** argv)
 		Require(ioctl(fd, AMDGPU_MEMORY_INFO, &memory, sizeof(memory)) == 0,
 			"start installed DMA service");
 	}
+	uint32 firstSequence = 0, previousSequence = 0;
 	for (unsigned round = 0; round < 61; round++) {
 		auto response = request;
 		Require(ioctl(fd, op, &response, requestSize) == 0, "GFX ioctl");
 		const auto& result = response.gfx;
+		if (round == 0)
+			firstSequence = result.sequence;
+		else {
+			uint32 expected = previousSequence + 1;
+			if (expected == 0)
+				expected++;
+			Require(result.sequence == expected, "ordered diagnostic sequence");
+		}
+		previousSequence = result.sequence;
 		printf("GFX stage %u status %#x (%s) seq %u, checked %u, mismatches %u\n",
 			(unsigned)result.stage, (unsigned)result.status, strerror(result.status),
 			(unsigned)result.sequence, (unsigned)result.checked_bytes, (unsigned)result.mismatches);
@@ -157,6 +167,14 @@ int main(int argc, char** argv)
 	close(fd);
 	for (uint8* image : images)
 		free(image);
-	puts("PASS: 61 GFX8 submissions including direct writes, CE indirect fetch, compute address-space switches, rasterization and indirect buffers, complete data/guard checks");
+	if (firstSequence == 1) {
+		puts("PASS: 61 GFX8 submissions including direct writes, CE indirect fetch, compute address-space switches, rasterization and indirect buffers, complete data/guard checks");
+	} else {
+		// The diagnostic schedule belongs to the persistent engine, not the
+		// descriptor. Reopening continues IB checks after its initial suite.
+		printf("PASS: 61 continued GFX8 submissions, sequences %u through %u, "
+			"complete data/guard checks\n", (unsigned)firstSequence,
+			(unsigned)previousSequence);
+	}
 	return 0;
 }
