@@ -546,9 +546,11 @@ shim() {
 		"pvr_glprobe --expect zink --repeat 3" \
 		"pvr_glbench --seconds 3 --interval 1 --expect zink" \
 		"pvr_vkbench --dispatches 60 --timeline --rerecord --mark" \
-		"pvr_glbench --frames 60 --mark"; do
+		"pvr_glbench --frames 60 --mark" \
+		"pvr_glbench --frames 60 --resize 5 --mark"; do
 		name=${run%% *}
 		case "$run" in
+		*--resize*--mark) name=balance-resize-$name ;;
 		*--mark) name=balance-$name ;;
 		*--timeline*) name=$name-timeline-rerecord ;;
 		*--repeat*) name=$name-repeat ;;
@@ -566,7 +568,8 @@ shim() {
 	done
 	# objects made per frame (dispatch) that are not destroyed again, in the
 	# steady state: frames 10 to 59
-	for name in balance-pvr_glbench balance-pvr_vkbench; do
+	for name in balance-pvr_glbench balance-resize-pvr_glbench \
+		balance-pvr_vkbench; do
 		trace_balance "$s/$name.log" > "$s/$name.txt"
 		log "$name: per frame, frames 10-59 ($s/$name.txt)"
 		cat "$s/$name.txt"

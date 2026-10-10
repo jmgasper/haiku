@@ -43,6 +43,11 @@ On the image, the libraries go to `/boot/system/non-packaged/lib`, `10_mesa.json
 - `pvr_instance.c` opens the device node directly. `HAIKU_PVR_DEVICE` overrides the path.
 - `pvr_drm_bo.c` maps buffers with `PVR_HAIKU_NR_MAP_BO` and unmaps them with `delete_area()`.
 - A GPU reset loses the device. When the kernel refuses a job with `EIO` (or `ENODEV`), the winsys returns `VK_ERROR_DEVICE_LOST` instead of `VK_ERROR_OUT_OF_DEVICE_MEMORY`. This covers render, compute, transfer and null jobs. `pvr_arch_queue.c` then marks the queue lost and signals that submission's semaphores and fence, which wakes any thread already waiting on them. Every later wait, submit or status query returns `VK_ERROR_DEVICE_LOST` at once.
+- Dynamic rendering reuses render target data sets. Each `vkCmdBeginRendering()`, which zink uses for every render pass, gets a render state of its own. That used to mean a new HWRT data set and local free list for every frame, destroyed when the command buffer was reset. In the kernel, each create and destroy meant firmware objects, buffers, VM maps and synchronous firmware cleanups.
+    - When a render state is cleaned up, its data sets now go to a device cache (`pvr_rt_dataset.c`). The next rendering with the same width, height, samples and layers takes one.
+    - A data set still belongs to one render state at a time. It only enters the cache once its command buffer is no longer pending.
+    - The cache keeps at most 16 idle data sets. One is destroyed after 256 later releases, so sizes no longer drawn age out. A data set left in the middle of a render (`need_frag`) is destroyed instead of cached.
+    - Render pass framebuffers keep their own data sets, as before.
 - Small fixes cover `drm.h`, `pvr_drm.h`, `vk_image` and `pvr_physical_device.c`.
 
 There are no buffer or sync file descriptors yet. Those paths fail with `EOPNOTSUPP`. They forward to the kernel once `pvr_haiku.h` defines `PVR_HAIKU_NR_PRIME_*` or `PVR_HAIKU_NR_SYNCOBJ_{HANDLE_TO_FD,FD_TO_HANDLE}`.
@@ -87,12 +92,12 @@ Every program prints `PASS`/`FAIL` and exits 0/1. Output is line-buffered, so it
 
 `pvr_glbench` and `pvr_vkbench` run a steady load for a long time and print one line per interval. A slowdown over time shows up in the line where it starts, and the bench it shows up in tells you which layer causes it.
 
-`pvr_glbench [--seconds N] [--size WxH] [--readback WxH] [--interval S] [--frames N] [--expect TEXT] [--mark]` is GLTeapot's frame on zink without a window. It uses the same EGL setup as `pvr_glprobe`: a pbuffer (default 300x300) with depth and an ES 2 context. Each frame:
+`pvr_glbench [--seconds N] [--size WxH] [--readback WxH] [--interval S] [--frames N] [--resize N] [--expect TEXT] [--mark]` is GLTeapot's frame on zink without a window. It uses the same EGL setup as `pvr_glprobe`: a pbuffer (default 300x300) with depth and an ES 2 context. Each frame:
 1. clears colour and depth;
 2. draws a lit, rotating torus of 3072 triangles with one `glDrawElements()`, then calls `glFlush()`;
 3. reads back the centred region of up to 300x300 with `glReadPixels()`, as each BGLView swap on zink does.
 
-`--readback 0` replaces the readback with `glFinish()`, which separates the readback's own cost from the GPU wait. Frame 0 compiles the pipeline and gets a line of its own. After that, each line (default every 10 s, `--seconds` default 300) shows:
+`--readback 0` replaces the readback with `glFinish()`, which separates the readback's own cost from the GPU wait. `--resize N` switches every N frames to the next of three pbuffers: `--size`, 3/4 of it and 1/2 of it. That gives render targets of new sizes, then the same sizes again. Frame 0 compiles the pipeline and gets a line of its own. After that, each line (default every 10 s, `--seconds` default 300) shows:
 - frames/s in that window;
 - the average ms per frame, split into draw+flush and readback. Draw+flush is only the application thread's share: zink's threaded context records and submits the frame on a thread of its own. The readback waits for that thread and for the GPU, so their time lands there;
 - `areas`: the process's areas. `powervr` counts its `powervr buffer` areas, the `MAP_BO` clones;
@@ -175,13 +180,12 @@ The shim executes nothing. So in the expected results:
 - `pvr_glprobe --expect zink --repeat 3` runs the probe three times in one process.
 - `pvr_vkbench` (fence; then `--timeline --rerecord`) and `pvr_glbench` each run for 3 s with 1 s lines and fail their pixel or word checks. On the host their rates measure the driver and zink CPU paths only, because the shim executes nothing.
 
-The tracer also logs CPU maps of buffer objects: `mmap` of the DRM device and `munmap` of such a map, as `CPU_MAP` and `CPU_UNMAP` lines. On air/OS these are `MAP_BO` and `delete_area()`. Two marked runs, `pvr_glbench --frames 60 --mark` and `pvr_vkbench --dispatches 60 --timeline --rerecord --mark`, are cut by `trace_balance` into frames 10 to 59. For each kind of object, it reports how many are made and freed per frame, and the net count for each half of that window. A kind whose net count grows in both halves is marked `PILES UP`. The result is in `shim/balance-*.txt`. At 26.2.4 nothing piles up. A GL frame makes, and frees again within that frame:
-- 1 free list and 1 HWRT data set: the driver makes a new render state for every dynamic rendering, which zink uses, and frees it when the command buffer is reset;
-- 7 buffer objects, 2 of them CPU mapped;
-- 9 GPU VM maps;
+The tracer also logs CPU maps of buffer objects: `mmap` of the DRM device and `munmap` of such a map, as `CPU_MAP` and `CPU_UNMAP` lines. On air/OS these are `MAP_BO` and `delete_area()`. Three marked runs, `pvr_glbench --frames 60 --mark`, `pvr_glbench --frames 60 --resize 5 --mark` and `pvr_vkbench --dispatches 60 --timeline --rerecord --mark`, are cut by `trace_balance` into frames 10 to 59. For each kind of object, it reports how many are made and freed per frame, and the net count for each half of that window. A kind whose net count grows in both halves is marked `PILES UP`. The result is in `shim/balance-*.txt`. Nothing piles up. With the data set cache, a steady GL frame makes no free list and no HWRT data set: two of each are made in the first frames (zink keeps two batches in flight) and reused after that. In the resize run, each new size makes one data set the first time, and none after that. A GL frame still makes, and frees again within that frame:
+- 2 buffer objects, both CPU mapped: the graphics sub-command's control stream (`pvr_arch_csb.c`) and the render's SPM background-object constants (`pvr_arch_spm.c`). Before the cache, it was 7 buffer objects, 1 free list and 1 HWRT data set;
+- 4 GPU VM maps (before: 9);
 - 13 syncobjs, over 3 `SUBMIT_JOBS` with 5 jobs.
 
-On the board, each of these is kernel work every frame: areas, firmware objects and MMU flushes.
+On the board, each of these is still kernel work every frame: areas and MMU flushes, but no firmware objects now.
 
 Then come two GPU-reset runs: `lost-pvr_vkfill` and `lost-pvr_glprobe`. `PVR_TRACE_FAIL_SUBMIT=N` makes the tracer fail the N-th `SUBMIT_JOBS` and every later one with `EIO`, as the kernel does after a reset; the shim is not called. Here N is 1, and each run is given 60 s. The expected results:
 - `lost-pvr_vkfill` exits 1 with `vkQueueSubmit ...: -4` (`VK_ERROR_DEVICE_LOST`). The trace shows `[injected EIO]`, then a `SYNCOBJ_SIGNAL` of the fence's syncobj. The drm-shim does not implement that request (`unhandled core DRM ioctl 0xC5`), but the kernel driver does.

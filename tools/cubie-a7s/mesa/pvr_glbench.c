@@ -17,13 +17,15 @@
 //   - the share of read-back pixels the torus covered in the last frame.
 // At the end, the areas whose count changed since the first frame, by name.
 //   pvr_glbench [--seconds N] [--size WxH] [--readback WxH] [--interval S]
-//               [--frames N] [--expect TEXT] [--mark]
+//               [--frames N] [--resize N] [--expect TEXT] [--mark]
 // --seconds: run time (default 300; 0 = until --frames or Ctrl+C);
 // --size: the pbuffer (default 300x300); --readback: the region read each
 // frame, centred (default 300x300, clipped to the pbuffer; 0x0 replaces
 // the readback with glFinish(), to tell the two costs apart); --interval:
 // seconds per line (default 10); --frames: stop after N frames;
-// --expect: fail unless GL_RENDERER contains TEXT; --mark: print
+// --resize: every N frames, draw to the next of three pbuffers, the --size
+// one, 3/4 and 1/2 of it (render targets of new sizes, then the same sizes
+// again); --expect: fail unless GL_RENDERER contains TEXT; --mark: print
 // "== frame N" before each frame (lines for a trace to be cut at).
 // Frame 0 compiles the pipeline: it is timed on its own line, outside the
 // windows. FAIL means setup failed, GL reported an error, or no frame drew
@@ -219,6 +221,19 @@ static const char* kFragmentShader =
 	"void main() { gl_FragColor = vec4(min(color, 1.0), 1.0); }\n";
 
 
+// a pbuffer to draw to, with its readback region and projection
+struct target {
+	EGLSurface	surface;
+	int			width;
+	int			height;
+	int			readX;
+	int			readY;
+	int			readWidth;
+	int			readHeight;
+	float		projection[16];
+};
+
+
 struct window {
 	unsigned	frames;
 	double		drawMs;
@@ -253,7 +268,7 @@ main(int argc, char** argv)
 
 	double seconds = 300, interval = 10;
 	int width = 300, height = 300, readWidth = 300, readHeight = 300;
-	unsigned maxFrames = 0;
+	unsigned maxFrames = 0, resizeEvery = 0;
 	int mark = 0;
 	const char* expect = NULL;
 	for (int i = 1; i < argc; i++) {
@@ -263,6 +278,8 @@ main(int argc, char** argv)
 			interval = atof(argv[++i]);
 		else if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc)
 			maxFrames = strtoul(argv[++i], NULL, 0);
+		else if (strcmp(argv[i], "--resize") == 0 && i + 1 < argc)
+			resizeEvery = strtoul(argv[++i], NULL, 0);
 		else if (strcmp(argv[i], "--size") == 0 && i + 1 < argc
 			&& parse_size(argv[i + 1], &width, &height) && width > 0
 			&& height > 0)
@@ -276,20 +293,34 @@ main(int argc, char** argv)
 			mark = 1;
 		else {
 			printf("usage: %s [--seconds N] [--size WxH] [--readback WxH] "
-				"[--interval S] [--frames N] [--expect TEXT] [--mark]\n",
-				argv[0]);
+				"[--interval S] [--frames N] [--resize N] [--expect TEXT] "
+				"[--mark]\n", argv[0]);
 			return 2;
 		}
 	}
 	if (interval <= 0)
 		interval = 10;
-	if (readWidth > width)
-		readWidth = width;
-	if (readHeight > height)
-		readHeight = height;
 	const int readback = readWidth > 0 && readHeight > 0;
-	const int readX = (width - readWidth) / 2;
-	const int readY = (height - readHeight) / 2;
+
+	// the pbuffers: the --size one, and with --resize 3/4 and 1/2 of it,
+	// each with its centred readback region and its projection
+	struct target targets[3];
+	const int targetCount = resizeEvery != 0 ? 3 : 1;
+	for (int i = 0; i < targetCount; i++) {
+		struct target* target = &targets[i];
+		static const int kScale[3] = { 4, 3, 2 };
+		target->width = width * kScale[i] / 4 > 0 ? width * kScale[i] / 4 : 1;
+		target->height = height * kScale[i] / 4 > 0
+			? height * kScale[i] / 4 : 1;
+		target->readWidth = readWidth < target->width
+			? readWidth : target->width;
+		target->readHeight = readHeight < target->height
+			? readHeight : target->height;
+		target->readX = (target->width - target->readWidth) / 2;
+		target->readY = (target->height - target->readHeight) / 2;
+		projection_matrix(target->projection,
+			(float)target->width / target->height);
+	}
 
 	signal(SIGINT, stop_handler);
 	signal(SIGTERM, stop_handler);
@@ -317,11 +348,21 @@ main(int argc, char** argv)
 		printf("FAIL: eglChooseConfig (pbuffer, ES2, RGBA8888, depth)\n");
 		return 1;
 	}
-	const EGLint surfaceAttributes[] = {
-		EGL_WIDTH, width, EGL_HEIGHT, height, EGL_NONE
-	};
-	EGLSurface surface = eglCreatePbufferSurface(display, config,
-		surfaceAttributes);
+	EGLSurface surface = EGL_NO_SURFACE;
+	for (int i = 0; i < targetCount; i++) {
+		const EGLint surfaceAttributes[] = {
+			EGL_WIDTH, targets[i].width, EGL_HEIGHT, targets[i].height,
+			EGL_NONE
+		};
+		targets[i].surface = eglCreatePbufferSurface(display, config,
+			surfaceAttributes);
+		if (targets[i].surface == EGL_NO_SURFACE) {
+			printf("FAIL: eglCreatePbufferSurface %dx%d\n", targets[i].width,
+				targets[i].height);
+			return 1;
+		}
+	}
+	surface = targets[0].surface;
 	eglBindAPI(EGL_OPENGL_ES_API);
 	const EGLint contextAttributes[] = {
 		EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE
@@ -381,22 +422,28 @@ main(int argc, char** argv)
 	glEnableVertexAttribArray(1);
 
 	glViewport(0, 0, width, height);
+	const struct target* target = &targets[0];
 	glEnable(GL_DEPTH_TEST);
 	glEnable(GL_CULL_FACE);
 	glClearColor(kClearBytes[0] / 255.0f, kClearBytes[1] / 255.0f,
 		kClearBytes[2] / 255.0f, 1.0f);
-	float projection[16];
-	projection_matrix(projection, (float)width / height);
 
-	size_t readSize = readback ? (size_t)readWidth * readHeight * 4 : 4;
+	// the first target is the largest
+	size_t readSize = readback
+		? (size_t)target->readWidth * target->readHeight * 4 : 4;
 	uint8_t* pixels = malloc(readSize);
 	printf("pbuffer %dx%d, %d triangles per frame, ", width, height,
 		INDEX_COUNT / 3);
 	if (readback) {
-		printf("reading back %dx%d at (%d, %d)\n", readWidth, readHeight,
-			readX, readY);
+		printf("reading back %dx%d at (%d, %d)\n", target->readWidth,
+			target->readHeight, target->readX, target->readY);
 	} else
 		printf("glFinish() instead of a readback\n");
+	if (resizeEvery != 0) {
+		printf("every %u frames the next of %dx%d, %dx%d, %dx%d\n",
+			resizeEvery, targets[0].width, targets[0].height, targets[1].width,
+			targets[1].height, targets[2].width, targets[2].height);
+	}
 
 	double runStart = now_ms();
 	struct window window = { 0, 0, 0, 0 };
@@ -412,10 +459,25 @@ main(int argc, char** argv)
 			break;
 		if (mark)
 			printf("== frame %u\n", frame);
+		if (resizeEvery != 0 && frame != 0 && frame % resizeEvery == 0) {
+			target = &targets[(frame / resizeEvery) % targetCount];
+			if (!eglMakeCurrent(display, target->surface, target->surface,
+					context)) {
+				printf("FAIL: eglMakeCurrent %dx%d\n", target->width,
+					target->height);
+				ok = 0;
+				break;
+			}
+			glViewport(0, 0, target->width, target->height);
+			readSize = readback
+				? (size_t)target->readWidth * target->readHeight * 4 : 4;
+			if (mark)
+				printf("== size %dx%d\n", target->width, target->height);
+		}
 
 		float model[16], mvp[16];
 		model_matrix(model, frame * (float)M_PI / 180.0f);
-		multiply(mvp, projection, model);
+		multiply(mvp, target->projection, model);
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 		glUniformMatrix4fv(mvpLocation, 1, GL_FALSE, mvp);
 		glUniformMatrix4fv(modelLocation, 1, GL_FALSE, model);
@@ -424,8 +486,8 @@ main(int argc, char** argv)
 		glFlush();
 		double drawn = now_ms();
 		if (readback) {
-			glReadPixels(readX, readY, readWidth, readHeight, GL_RGBA,
-				GL_UNSIGNED_BYTE, pixels);
+			glReadPixels(target->readX, target->readY, target->readWidth,
+				target->readHeight, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
 		} else
 			glFinish();
 		double done = now_ms();
@@ -499,7 +561,8 @@ main(int argc, char** argv)
 	glDeleteProgram(program);
 	eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
 	eglDestroyContext(display, context);
-	eglDestroySurface(display, surface);
+	for (int i = 0; i < targetCount; i++)
+		eglDestroySurface(display, targets[i].surface);
 	eglTerminate(display);
 
 	if (glErrors != 0)

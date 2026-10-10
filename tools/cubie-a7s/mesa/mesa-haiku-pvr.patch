@@ -68,6 +68,25 @@ it).
                                     free the reservation and pass the address),
                                     unmapped with delete_area(); "reserve"
                                     unmaps leave a PROT_NONE mapping
+  pvr_rt_dataset.[ch], pvr_device.h, a device cache of idle render target data
+  pvr_arch_device.c,                sets (HWRT data set + local free list) for
+  pvr_arch_cmd_buffer.c             dynamic rendering. Every
+                                    vkCmdBeginRendering() (zink's every render
+                                    pass) has its own render state, and so
+                                    created both and destroyed them when the
+                                    command buffer was reset: firmware objects,
+                                    buffers, VM maps and synchronous firmware
+                                    cleanups in the kernel, every frame. A data
+                                    set still belongs to one render state at a
+                                    time; once that is cleaned up (its command
+                                    buffer no longer pending) the next
+                                    rendering of the same width, height,
+                                    samples and layers takes it. At most 16
+                                    idle ones are kept, and one is destroyed
+                                    after 256 later releases (old sizes age
+                                    out); one left mid-render (need_frag) is
+                                    destroyed. Render pass framebuffers keep
+                                    their own data sets, as before
 
 Not changed: the heap size (util/os_misc.c: sysconf(_SC_PHYS_PAGES), which
 Haiku's libroot answers from get_system_info()); the conformance gate
@@ -678,6 +697,144 @@ diff -ruN a/include/xf86drm.h b/include/xf86drm.h
 +#endif /* HAIKU_PVR_XF86DRM_H */
 +
 +#endif /* __HAIKU__ */
+diff -ruN a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+--- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
++++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
+@@ -1593,7 +1593,8 @@
+ static VkResult pvr_render_targets_dataset_init(
+    struct pvr_device *device,
+    struct pvr_render_state *rstate,
+-   const struct pvr_renderpass_hwsetup_render *hw_render);
++   const struct pvr_renderpass_hwsetup_render *hw_render,
++   bool use_cache);
+ 
+ static VkResult pvr_sub_cmd_gfx_job_init(const struct pvr_device_info *dev_info,
+                                          struct pvr_cmd_buffer *cmd_buffer,
+@@ -1751,8 +1752,10 @@
+ 
+    if (cmd_buffer->state.current_sub_cmd->is_dynamic_render &&
+        !cmd_buffer->state.current_sub_cmd->is_resume) {
+-      result =
+-         pvr_render_targets_dataset_init(cmd_buffer->device, rstate, hw_render);
++      result = pvr_render_targets_dataset_init(cmd_buffer->device,
++                                               rstate,
++                                               hw_render,
++                                               true);
+       if (result != VK_SUCCESS) {
+          vk_command_buffer_set_error(&cmd_buffer->vk, result);
+          return result;
+@@ -3208,7 +3211,8 @@
+    struct pvr_device *device,
+    struct pvr_render_state *rstate,
+    const struct pvr_renderpass_hwsetup_render *hw_render,
+-   struct pvr_render_target *render_target)
++   struct pvr_render_target *render_target,
++   bool use_cache)
+ {
+    const struct pvr_device_info *const dev_info = &device->pdevice->dev_info;
+    const uint32_t layers =
+@@ -3223,16 +3227,30 @@
+       if (render_target->valid_mask & BITFIELD_BIT(view_idx))
+          continue;
+ 
+-      result = pvr_arch_render_target_dataset_create(device,
+-                                                     rstate->width,
+-                                                     rstate->height,
+-                                                     hw_render->sample_count,
+-                                                     layers,
+-                                                     &rt_dataset);
+-      if (result != VK_SUCCESS) {
+-         pvr_render_targets_datasets_destroy(render_target);
+-         pthread_mutex_unlock(&render_target->mutex);
+-         return result;
++      /* A dynamic rendering's render state lives only as long as its
++       * command buffer: its data sets come from, and go back to, the
++       * device's cache.
++       */
++      rt_dataset = use_cache ? pvr_rt_dataset_cache_take(device,
++                                                         rstate->width,
++                                                         rstate->height,
++                                                         hw_render->sample_count,
++                                                         layers)
++                             : NULL;
++      if (!rt_dataset) {
++         result = pvr_arch_render_target_dataset_create(device,
++                                                        rstate->width,
++                                                        rstate->height,
++                                                        hw_render->sample_count,
++                                                        layers,
++                                                        &rt_dataset);
++         if (result != VK_SUCCESS) {
++            pvr_render_targets_datasets_destroy(render_target);
++            pthread_mutex_unlock(&render_target->mutex);
++            return result;
++         }
++
++         rt_dataset->cached = use_cache;
+       }
+ 
+       render_target->valid_mask |= BITFIELD_BIT(view_idx);
+@@ -3247,7 +3265,8 @@
+ static VkResult pvr_render_targets_dataset_init(
+    struct pvr_device *device,
+    struct pvr_render_state *rstate,
+-   const struct pvr_renderpass_hwsetup_render *hw_render)
++   const struct pvr_renderpass_hwsetup_render *hw_render,
++   bool use_cache)
+ {
+    struct pvr_render_target *render_target =
+       pvr_get_render_target(hw_render, rstate);
+@@ -3255,7 +3274,8 @@
+    return pvr_render_targets_datasets_create(device,
+                                              rstate,
+                                              hw_render,
+-                                             render_target);
++                                             render_target,
++                                             use_cache);
+ }
+ 
+ static VkResult
+@@ -3270,7 +3290,8 @@
+ 
+       result = pvr_render_targets_dataset_init(device,
+                                                framebuffer->rstate,
+-                                               hw_render);
++                                               hw_render,
++                                               false);
+       if (result != VK_SUCCESS)
+          return result;
+    }
+diff -ruN a/src/imagination/vulkan/pvr_arch_device.c b/src/imagination/vulkan/pvr_arch_device.c
+--- a/src/imagination/vulkan/pvr_arch_device.c
++++ b/src/imagination/vulkan/pvr_arch_device.c
+@@ -30,6 +30,7 @@
+ #include "pvr_query.h"
+ #include "pvr_queue.h"
+ #include "pvr_robustness.h"
++#include "pvr_rt_dataset.h"
+ #include "pvr_tex_state.h"
+ 
+ #define PVR_GLOBAL_FREE_LIST_INITIAL_SIZE (2U * 1024U * 1024U)
+@@ -851,6 +852,7 @@
+ 
+    simple_mtx_init(&device->rs_mtx, mtx_plain);
+    list_inithead(&device->render_states);
++   pvr_rt_dataset_cache_init(device);
+ 
+    *pDevice = pvr_device_to_handle(device);
+ 
+@@ -937,6 +939,11 @@
+    simple_mtx_unlock(&device->rs_mtx);
+    simple_mtx_destroy(&device->rs_mtx);
+ 
++   /* After the render states, which give their data sets back to it, and
++    * before the global free list the data sets use.
++    */
++   pvr_rt_dataset_cache_finish(device);
++
+    pvr_arch_border_color_table_finish(device);
+    pvr_robustness_buffer_finish(device);
+    pvr_spm_finish_scratch_buffer_store(device);
 diff -ruN a/src/imagination/vulkan/pvr_arch_job_transfer.c b/src/imagination/vulkan/pvr_arch_job_transfer.c
 --- a/src/imagination/vulkan/pvr_arch_job_transfer.c
 +++ b/src/imagination/vulkan/pvr_arch_job_transfer.c
@@ -826,6 +983,25 @@ diff -ruN a/src/imagination/vulkan/pvr_arch_queue.c b/src/imagination/vulkan/pvr
  VkResult PVR_PER_ARCH(QueueBindSparse)(VkQueue _queue,
                                         uint32_t bindInfoCount,
                                         const VkBindSparseInfo *pBindInfo,
+diff -ruN a/src/imagination/vulkan/pvr_device.h b/src/imagination/vulkan/pvr_device.h
+--- a/src/imagination/vulkan/pvr_device.h
++++ b/src/imagination/vulkan/pvr_device.h
+@@ -146,6 +146,15 @@
+ 
+    simple_mtx_t rs_mtx;
+    struct list_head render_states;
++
++   /* Idle render target data sets of dynamic renderings (pvr_rt_dataset.h). */
++   struct {
++      simple_mtx_t mtx;
++      /* The most recently released first. */
++      struct list_head idle;
++      uint32_t count;
++      uint64_t serial;
++   } rt_dataset_cache;
+ };
+ 
+ struct pvr_device_memory {
 diff -ruN a/src/imagination/vulkan/pvr_instance.c b/src/imagination/vulkan/pvr_instance.c
 --- a/src/imagination/vulkan/pvr_instance.c
 +++ b/src/imagination/vulkan/pvr_instance.c
@@ -1024,6 +1200,191 @@ diff -ruN a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulka
        pdevice->has_primary = true;
        pdevice->primary_devid = primary_stat.st_rdev;
     }
+diff -ruN a/src/imagination/vulkan/pvr_rt_dataset.c b/src/imagination/vulkan/pvr_rt_dataset.c
+--- a/src/imagination/vulkan/pvr_rt_dataset.c
++++ b/src/imagination/vulkan/pvr_rt_dataset.c
+@@ -60,6 +60,115 @@
+    rt_dataset->vheap_rtc_bo = NULL;
+ }
+ 
++/* At most this many idle data sets are kept, and one is destroyed once this
++ * many others have been released after it: sizes that are no longer drawn
++ * (a window that was resized) age out.
++ */
++#define PVR_RT_DATASET_CACHE_MAX_IDLE 16U
++#define PVR_RT_DATASET_CACHE_MAX_AGE 256U
++
++void pvr_rt_dataset_cache_init(struct pvr_device *device)
++{
++   simple_mtx_init(&device->rt_dataset_cache.mtx, mtx_plain);
++   list_inithead(&device->rt_dataset_cache.idle);
++   device->rt_dataset_cache.count = 0;
++   device->rt_dataset_cache.serial = 0;
++}
++
++void pvr_rt_dataset_cache_finish(struct pvr_device *device)
++{
++   list_for_each_entry_safe (struct pvr_rt_dataset,
++                             rt_dataset,
++                             &device->rt_dataset_cache.idle,
++                             cache_link) {
++      list_del(&rt_dataset->cache_link);
++      pvr_render_target_dataset_destroy(rt_dataset);
++   }
++
++   device->rt_dataset_cache.count = 0;
++   simple_mtx_destroy(&device->rt_dataset_cache.mtx);
++}
++
++struct pvr_rt_dataset *pvr_rt_dataset_cache_take(struct pvr_device *device,
++                                                 uint32_t width,
++                                                 uint32_t height,
++                                                 uint32_t samples,
++                                                 uint32_t layers)
++{
++   struct pvr_rt_dataset *found = NULL;
++
++   simple_mtx_lock(&device->rt_dataset_cache.mtx);
++
++   /* The most recently released first. */
++   list_for_each_entry (struct pvr_rt_dataset,
++                        rt_dataset,
++                        &device->rt_dataset_cache.idle,
++                        cache_link) {
++      if (rt_dataset->width == width && rt_dataset->height == height &&
++          rt_dataset->samples == samples && rt_dataset->layers == layers) {
++         list_del(&rt_dataset->cache_link);
++         device->rt_dataset_cache.count--;
++         found = rt_dataset;
++         break;
++      }
++   }
++
++   simple_mtx_unlock(&device->rt_dataset_cache.mtx);
++
++   return found;
++}
++
++void pvr_rt_dataset_cache_release(struct pvr_rt_dataset *rt_dataset)
++{
++   struct pvr_device *device = rt_dataset->device;
++   struct list_head evicted;
++
++   /* A geometry job without its fragment job left data in it for the next
++    * geometry job to add to; only a data set no render is in the middle of
++    * can start the next one.
++    */
++   if (rt_dataset->need_frag) {
++      pvr_render_target_dataset_destroy(rt_dataset);
++      return;
++   }
++
++   list_inithead(&evicted);
++
++   simple_mtx_lock(&device->rt_dataset_cache.mtx);
++
++   rt_dataset->cache_serial = ++device->rt_dataset_cache.serial;
++   list_add(&rt_dataset->cache_link, &device->rt_dataset_cache.idle);
++   device->rt_dataset_cache.count++;
++
++   while (!list_is_empty(&device->rt_dataset_cache.idle)) {
++      struct pvr_rt_dataset *oldest =
++         list_last_entry(&device->rt_dataset_cache.idle,
++                         struct pvr_rt_dataset,
++                         cache_link);
++
++      if (device->rt_dataset_cache.count <= PVR_RT_DATASET_CACHE_MAX_IDLE &&
++          device->rt_dataset_cache.serial - oldest->cache_serial <=
++             PVR_RT_DATASET_CACHE_MAX_AGE) {
++         break;
++      }
++
++      list_del(&oldest->cache_link);
++      device->rt_dataset_cache.count--;
++      list_addtail(&oldest->cache_link, &evicted);
++   }
++
++   simple_mtx_unlock(&device->rt_dataset_cache.mtx);
++
++   /* Outside the lock: destroying makes requests to the kernel. */
++   list_for_each_entry_safe (struct pvr_rt_dataset,
++                             entry,
++                             &evicted,
++                             cache_link) {
++      list_del(&entry->cache_link);
++      pvr_render_target_dataset_destroy(entry);
++   }
++}
++
+ void pvr_render_target_dataset_destroy(struct pvr_rt_dataset *rt_dataset)
+ {
+    struct pvr_device *device = rt_dataset->device;
+diff -ruN a/src/imagination/vulkan/pvr_rt_dataset.h b/src/imagination/vulkan/pvr_rt_dataset.h
+--- a/src/imagination/vulkan/pvr_rt_dataset.h
++++ b/src/imagination/vulkan/pvr_rt_dataset.h
+@@ -11,6 +11,7 @@
+ #include <stdbool.h>
+ 
+ #include "util/bitscan.h"
++#include "util/list.h"
+ 
+ #include "pvr_framebuffer.h"
+ #include "pvr_rogue_fw.h"
+@@ -24,6 +25,15 @@
+ struct pvr_rt_dataset {
+    struct pvr_device *device;
+ 
++   /* Owned by a dynamic rendering's render state: when that is cleaned up,
++    * the data set goes back to the device's cache instead of being
++    * destroyed (pvr_rt_dataset_cache_release()).
++    */
++   bool cached;
++   /* In the cache while idle; when it was released. */
++   struct list_head cache_link;
++   uint64_t cache_serial;
++
+    /* RT dataset information */
+    uint32_t width;
+    uint32_t height;
+@@ -70,14 +80,36 @@
+ 
+ void pvr_render_target_dataset_destroy(struct pvr_rt_dataset *rt_dataset);
+ 
++/* The device's cache of idle render target data sets for dynamic rendering.
++ * Each dynamic rendering (vkCmdBeginRendering(), which zink uses for every
++ * render pass) has a render state of its own and so needed a new HWRT data
++ * set and local free list, firmware objects in the kernel, destroyed again
++ * when the command buffer was reset: every frame. A data set is used by one
++ * render state at a time, as before; when that render state is cleaned up
++ * (its command buffer is no longer pending), the data set is idle and the
++ * next rendering with the same width, height, samples and layers takes it.
++ */
++void pvr_rt_dataset_cache_init(struct pvr_device *device);
++void pvr_rt_dataset_cache_finish(struct pvr_device *device);
++struct pvr_rt_dataset *pvr_rt_dataset_cache_take(struct pvr_device *device,
++                                                 uint32_t width,
++                                                 uint32_t height,
++                                                 uint32_t samples,
++                                                 uint32_t layers);
++void pvr_rt_dataset_cache_release(struct pvr_rt_dataset *rt_dataset);
++
+ static inline void
+ pvr_render_targets_datasets_destroy(struct pvr_render_target *render_target)
+ {
+    u_foreach_bit (valid_idx, render_target->valid_mask) {
+       struct pvr_rt_dataset *rt_dataset = render_target->rt_dataset[valid_idx];
+ 
+-      if (rt_dataset && render_target->valid_mask & BITFIELD_BIT(valid_idx))
+-         pvr_render_target_dataset_destroy(rt_dataset);
++      if (rt_dataset && render_target->valid_mask & BITFIELD_BIT(valid_idx)) {
++         if (rt_dataset->cached)
++            pvr_rt_dataset_cache_release(rt_dataset);
++         else
++            pvr_render_target_dataset_destroy(rt_dataset);
++      }
+ 
+       render_target->rt_dataset[valid_idx] = NULL;
+       render_target->valid_mask &= ~BITFIELD_BIT(valid_idx);
 diff -ruN a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c
 --- a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c
 +++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c
