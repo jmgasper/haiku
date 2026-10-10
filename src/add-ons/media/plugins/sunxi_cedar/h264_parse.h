@@ -11,9 +11,9 @@
 	and the prediction weights. Section numbers: ITU-T H.264 (08/2021).
 
 	Not handled (reported as unsupported): field and MBAFF pictures, slice
-	groups, other than 4:2:0 8 bit. Gaps in frame_num get "non-existing"
-	reference frames (frame -1), which a conforming stream never predicts
-	from. */
+	groups, SP and SI slices, data partitioning, other than 4:2:0 8 bit.
+	Gaps in frame_num get "non-existing" reference frames (frame -1), which a
+	conforming stream never predicts from. */
 
 #include <stdint.h>
 

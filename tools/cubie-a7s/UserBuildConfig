@@ -164,7 +164,7 @@ rule UserBuildConfigRulePreImage
 		imagePackages = <cubie-app-pkg>$(imagePackages:BS) ;
 		SEARCH on $(imagePackages) = $(imagePackageDir) ;
 		AddFilesToHaikuImage system packages : $(imagePackages) ;
-		local airTime = <airtime-pkg>airtime-1.0.0-15-arm64.hpkg ;
+		local airTime = <airtime-pkg>airtime-1.0.0-16-arm64.hpkg ;
 		SEARCH on $(airTime) = /mnt/HaikuWork/apps/airTime/artifacts ;
 		AddFilesToHaikuImage system packages : $(airTime) ;
 
@@ -214,7 +214,8 @@ rule UserBuildConfigRulePreImage
 		# lab tools, and the driver settings that let cubie_reg at the
 		# display registers
 		AddFilesToHaikuImage system non-packaged bin : cubie_reg cubie_fetch
-			pvrinfo pvrtest cedar_decode media_probe cpu_usage aicload ;
+			pvrinfo pvrtest cedar_decode media_probe cpu_usage aicload
+			cubie_audio_test ;
 		if $(CUBIE_AIROS_IMAGE) {
 			# a Bluetooth diagnostic the regular image leaves out
 			AddFilesToHaikuImage system non-packaged bin : bt_dev_info ;

@@ -7,6 +7,8 @@
 
 #include "Driver.h"
 
+#include <stdio.h>
+
 #include <AutoLock.h>
 #include <usb/USB_audio.h>
 
@@ -177,8 +179,16 @@ usb_audio_open(const char* name, uint32 flags, void** cookie)
 
 	*cookie = NULL;
 	status_t status = ENODEV;
-	for (int32 i = 0; i < MAX_DEVICES && gDevices[i] != NULL; i++) {
-		if (strcmp(gDeviceNames[i], name) == 0) {
+	for (int32 i = 0; i < MAX_DEVICES; i++) {
+		// publish_devices() names the device in slot i "usb/<i + 1>";
+		// gDeviceNames[] has no gaps, gDevices[] can have them
+		if (gDevices[i] == NULL)
+			continue;
+
+		char deviceName[64];
+		snprintf(deviceName, sizeof(deviceName), "%s%" B_PRId32,
+			sDeviceBaseName, i + 1);
+		if (strcmp(deviceName, name) == 0) {
 			status = gDevices[i]->Open(flags);
 			*cookie = gDevices[i];
 			break;
