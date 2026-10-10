@@ -12,6 +12,7 @@ SimpleTest amdgpu_uvd : amdgpu_uvd.cpp ;
 local driver = [ FDirName $(HAIKU_TOP) src add-ons kernel drivers graphics amdgpu ] ;
 SubDirHdrs $(driver) ;
 SEARCH_SOURCE += $(driver) ;
+SimpleTest uvd_hevc_test : uvd_hevc_test.cpp UvdHevc.cpp : [ TargetLibstdc++ ] ;
 SimpleTest amdgpu_video : amdgpu_video.cpp : [ TargetLibstdc++ ] ;
 local video = [ FDirName $(HAIKU_TOP) src add-ons media plugins ] ;
 SubDirHdrs $(video)/amduvd ;
