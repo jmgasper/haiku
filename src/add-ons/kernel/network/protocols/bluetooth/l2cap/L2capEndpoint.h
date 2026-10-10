@@ -47,6 +47,8 @@ public:
 			ssize_t		Sendable();
 			ssize_t		Receivable();
 
+			status_t	GetOption(int option, void* value, int* _length);
+
 public:
 			void		_HandleCommandRejected(uint8 ident, uint16 reason,
 							const l2cap_command_reject_data& data);

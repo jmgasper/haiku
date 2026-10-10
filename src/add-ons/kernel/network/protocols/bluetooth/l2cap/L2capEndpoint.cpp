@@ -658,6 +658,34 @@ L2capEndpoint::Receivable()
 }
 
 
+status_t
+L2capEndpoint::GetOption(int option, void* value, int* _length)
+{
+	MutexLocker locker(fLock);
+
+	uint16 result;
+	switch (option) {
+		case B_L2CAP_OUTGOING_MTU:
+			result = fChannelConfig.outgoing_mtu;
+			break;
+		case B_L2CAP_INCOMING_MTU:
+			result = fChannelConfig.incoming_mtu;
+			break;
+		default:
+			return ENOPROTOOPT;
+	}
+
+	if (*_length < (int)sizeof(result))
+		return B_BAD_VALUE;
+	if (fState != OPEN)
+		return ENOTCONN;
+
+	memcpy(value, &result, sizeof(result));
+	*_length = sizeof(result);
+	return B_OK;
+}
+
+
 void
 L2capEndpoint::_HandleCommandRejected(uint8 ident, uint16 reason,
 	const l2cap_command_reject_data& data)
