@@ -24,10 +24,10 @@ cp -- "$base/firmware/LICENSE.amdgpu" "$stage/data/licenses/AMD Firmware"
 cp -- "$manifest" "$stage/documentation/packages/amdgpu_polaris10_firmware/polaris10.sha256"
 cat > "$stage/.PackageInfo" <<'PACKAGE'
 name amdgpu_polaris10_firmware
-version 20261010-2
+version 20261010-3
 architecture any
 summary "Pinned AMD Polaris10 firmware for the air/OS WX5100 driver"
-description "AMD firmware used by the WX5100 native driver: SMC 0x171a00, SDMA 58, CE 134, PFP 235, ME 161, RLC 286 and UVD 0x01008210. Automatic startup currently uses only SMC and SDMA. UVD has a fixed native H.264 diagnostic; general GFX and video clients are still under qualification. The binaries are distributed unchanged from linux-firmware. Their SHA-256 manifest is included."
+description "AMD firmware used by the WX5100 native driver: SMC 0x171a00, SDMA 58, RLC 286 and UVD 0x01008210. The matching feature-49 graphics set is CE 140, PFP 254, ME 167 and MEC 730; the earlier feature-46 CE/PFP/ME images are retained for diagnostics. SMC/SDMA and H.264/HEVC sessions load installed firmware. GFX remains an explicit root diagnostic; general graphics clients are not enabled. The binaries are distributed unchanged from linux-firmware. Their SHA-256 manifest is included."
 packager "air/OS"
 vendor "air/OS"
 licenses { "AMD Firmware" }
@@ -35,6 +35,6 @@ copyrights { "2023 Advanced Micro Devices, Inc." }
 provides { amdgpu_polaris10_firmware = 20261010 }
 urls { "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git" }
 PACKAGE
-package=$output/amdgpu_polaris10_firmware-20261010-2-any.hpkg
+package=$output/amdgpu_polaris10_firmware-20261010-3-any.hpkg
 (cd -- "$stage" && "$tool" create -q "$package")
 sha256sum "$package"

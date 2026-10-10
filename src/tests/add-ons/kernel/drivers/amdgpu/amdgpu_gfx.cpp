@@ -1,5 +1,7 @@
 /* Copyright 2026, air/OS. Distributed under the terms of the MIT License. */
 #include <amdgpu_haiku.h>
+#include <FindDirectory.h>
+#include <StorageDefs.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -16,14 +18,46 @@ static void Require(bool okay, const char* message)
 	}
 }
 
+static FILE*
+OpenInstalledFirmware(unsigned index)
+{
+	const char* names[] = {"polaris10_ce_2.bin", "polaris10_pfp_2.bin",
+		"polaris10_me_2.bin", "polaris10_rlc.bin", "polaris10_mec_2.bin"};
+	const directory_which places[] = {B_SYSTEM_NONPACKAGED_DATA_DIRECTORY,
+		B_SYSTEM_DATA_DIRECTORY};
+	for (directory_which place : places) {
+		char path[B_PATH_NAME_LENGTH];
+		status_t status = find_directory(place, -1, false, path, sizeof(path));
+		if (status != B_OK) {
+			errno = status;
+			return NULL;
+		}
+		if (strlcat(path, "/firmware/amdgpu/", sizeof(path)) >= sizeof(path)
+			|| strlcat(path, names[index], sizeof(path)) >= sizeof(path)) {
+			errno = B_NAME_TOO_LONG;
+			return NULL;
+		}
+		FILE* file = fopen(path, "rb");
+		if (file != NULL) {
+			printf("Installed GFX firmware: %s\n", path);
+			return file;
+		}
+		if (errno != B_ENTRY_NOT_FOUND)
+			return NULL;
+	}
+	return NULL;
+}
+
 int main(int argc, char** argv)
 {
 	setvbuf(stdout, NULL, _IOLBF, 0);
-	if (argc != 5 && argc != 6) {
-		fprintf(stderr, "usage: amdgpu_gfx CE.bin PFP.bin ME.bin RLC.bin [MEC.bin]\n");
+	const bool installed = argc == 2 && strcmp(argv[1], "--installed") == 0;
+	if (!installed && argc != 5 && argc != 6) {
+		fprintf(stderr, "usage: amdgpu_gfx --installed\n"
+			"       amdgpu_gfx CE.bin PFP.bin ME.bin RLC.bin [MEC.bin]\n");
 		return 2;
 	}
-	const bool withMec = argc == 6;
+	const bool withMec = installed || argc == 6;
 	const uint32 op = withMec ? AMDGPU_GFX_MEC_TEST : AMDGPU_GFX_TEST;
 	const size_t requestSize = withMec ? sizeof(amdgpu_gfx_mec_test)
 		: sizeof(amdgpu_gfx_test);
@@ -32,7 +66,7 @@ int main(int argc, char** argv)
 	request.gfx.size = requestSize;
 	uint8* images[5] = {};
 	for (unsigned i = 0; i < (withMec ? 5u : 4u); i++) {
-		FILE* file = fopen(argv[i + 1], "rb");
+		FILE* file = installed ? OpenInstalledFirmware(i) : fopen(argv[i + 1], "rb");
 		Require(file != NULL, "open firmware");
 		Require(fseek(file, 0, SEEK_END) == 0, "firmware seek");
 		long size = ftell(file);
@@ -85,6 +119,15 @@ int main(int argc, char** argv)
 		images[4][32] = saved;
 	}
 	puts("PASS: invalid GFX firmware requests rejected before hardware writes");
+	if (installed) {
+		// Start the existing owned SMC/SDMA service from system firmware if
+		// this is the boot's first engine client. GFX remains root-only.
+		amdgpu_memory_info memory = {};
+		memory.version = AMDGPU_HAIKU_ABI_VERSION;
+		memory.size = sizeof(memory);
+		Require(ioctl(fd, AMDGPU_MEMORY_INFO, &memory, sizeof(memory)) == 0,
+			"start installed DMA service");
+	}
 	for (unsigned round = 0; round < 61; round++) {
 		auto response = request;
 		Require(ioctl(fd, op, &response, requestSize) == 0, "GFX ioctl");
