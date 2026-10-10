@@ -10,6 +10,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
+#include "GfxDraw.h"
 
 static void Require(bool okay, const char* message)
 {
@@ -138,6 +139,59 @@ static amdgpu_gfx_submit SubmitRequest()
 {
 	auto r = Request<amdgpu_gfx_submit>(); r.address = kIB; r.dwords = 256; return r;
 }
+static uint32 DrawProgram(Client& c, bool red)
+{
+	std::vector<uint32> shaders(8192 / 4);
+	memcpy(shaders.data(), kTriangleVS, sizeof(kTriangleVS));
+	memcpy(shaders.data() + 4096 / 4, kColorPS, sizeof(kColorPS));
+	Upload(c, c.shader, shaders);
+	c.expected.assign(kBytes / 4, 0xabcddcba);
+	Upload(c, c.data, c.expected);
+	std::vector<uint32> ib;
+	auto emit = [&](uint32 word) { ib.push_back(word); };
+	auto context = [&](uint32 index, uint32 value) {
+		emit(Packet(0x69, 1)); emit(index - 0xa000); emit(value);
+	};
+	auto shader = [&](uint32 index, uint32 value) {
+		emit(Packet(0x76, 1)); emit(index - 0x2c00); emit(value);
+	};
+	for (const auto& entry : kDrawContext) {
+		// The CP gets its VMID from the kernel's INDIRECT_BUFFER packet.
+		if (entry[0] != 0xa0da) context(entry[0], entry[1]);
+	}
+	const uint64 target = kData + 8192;
+	context(0xa318, target >> 8); context(0xa319, 3); context(0xa31a, 15);
+	context(0xa31b, 0); context(0xa31c, 10 << 2 | 1 << 7 | 1 << 15); context(0xa31d, 0);
+	for (uint32 reg = 0xa31e; reg <= 0xa325; reg++) context(reg, 0);
+	for (uint32 target = 1; target < 8; target++) context(0xa31c + target * 15, 0);
+	for (uint32 reg = 0xa2fe; reg <= 0xa30d; reg++) context(reg, 0);
+	context(0x1000a2aa, 0x2010007f);
+	shader(0x2c46, 0xffff);
+	shader(0x2c48, kShader >> 8); shader(0x2c49, kShader >> 40);
+	shader(0x2c4a, 1 | 1 << 6 | 0xc0 << 12); shader(0x2c4b, 0);
+	shader(0x2c07, 0xffff);
+	shader(0x2c08, (kShader + 4096) >> 8); shader(0x2c09, (kShader + 4096) >> 40);
+	shader(0x2c0a, 1 << 6 | 0xc0 << 12); shader(0x2c0b, 4 << 1);
+	shader(0x2c0c, red ? 0x3f800000 : 0); shader(0x2c0d, red ? 0 : 0x3f800000);
+	shader(0x2c0e, 0); shader(0x2c0f, 0x3f800000);
+	emit(Packet(0x79, 1)); emit(0x10000242); emit(4);
+	emit(Packet(0x2f, 0)); emit(1);
+	emit(Packet(0x2d, 1)); emit(3); emit(2);
+	emit(Packet(0x46, 0)); emit(0x10 | 4 << 8);
+	uint32 padding = (-ib.size()) & 255;
+	if (padding == 1) padding += 256;
+	if (padding != 0) {
+		emit(Packet(0x10, padding - 2));
+		for (uint32 i = 1; i < padding; i++) emit(0);
+	}
+	Upload(c, c.ib, ib);
+	for (uint32 y = 0; y < 32; y++) {
+		for (uint32 x = 0; x < 32; x++) {
+			if (x + y <= 31) c.expected[8192 / 4 + y * 32 + x] = red ? 0xff0000ff : 0xff00ff00;
+		}
+	}
+	return ib.size();
+}
 static void Reject(int fd, amdgpu_gfx_submit r, status_t status)
 {
 	Require(ioctl(fd, AMDGPU_GFX_SUBMIT, &r, sizeof(r)) == -1 && errno == status,
@@ -151,7 +205,8 @@ int main(int argc, char** argv)
 		Require(monitor < 0 && errno == ENOENT, "no AMD device in QEMU");
 		puts("PASS: no-device user submission handling"); return 0;
 	}
-	Require(argc == 1 && geteuid() == 0 && monitor >= 0, "usage: amdgpu_submit (root)");
+	bool draw = argc == 2 && strcmp(argv[1], "--draw") == 0;
+	Require((argc == 1 || draw) && geteuid() == 0 && monitor >= 0, "usage: amdgpu_submit [--draw] (root)");
 	uint64 vram = Allocated(monitor, false), ram = Allocated(monitor, true);
 	Client clients[4];
 	for (uint32 i = 0; i < 4; i++) {
@@ -196,13 +251,14 @@ int main(int argc, char** argv)
 	int childStatus; Require(waitpid(child, &childStatus, 0) == child && childStatus == 0, "ownership/privilege rejection");
 	puts("PASS: ABI, range, execute permission, team ownership and root restriction");
 	uint64 last = 0;
-	for (uint32 round = 0; round < 8; round++) {
+	for (uint32 round = 0; round < (draw ? 4u : 8u); round++) {
 		for (uint32 i = 0; i < 4; i++) {
 			Client& c = clients[i];
 			uint32 seed = 0x5100aabb ^ round * 0x123 ^ i * 0x102030;
 			uint32 factor = (round & 1) ? 0x01010101 : 0x11223345;
 			uint32 dwords = round % 3 == 0 ? 16384 : round % 3 == 1 ? 4096 : 256;
-			Program(c, seed, factor, dwords);
+			if (draw) dwords = DrawProgram(c, (round + i) & 1);
+			else Program(c, seed, factor, dwords);
 			r = SubmitRequest(); r.dwords = dwords;
 			Require(ioctl(c.fd, AMDGPU_GFX_SUBMIT, &r, sizeof(r)) == 0, "submit userspace PM4");
 			printf("client %u round %u status %#x fence %llu faults %#x/%#x ring %u/%u us %llu\n",
@@ -215,7 +271,8 @@ int main(int argc, char** argv)
 			for (Client& other : clients) Check(other);
 		}
 	}
-	puts("PASS: 32 user PM4/shader submissions, shader replacement, 64-KiB IB tails, high VAs, cross-4-GiB stores, four VMs and complete data/guards");
+	puts(draw ? "PASS: 16 user raster submissions, four VMs, VRAM/RAM/device-only shaders and targets, exact triangle pixels and complete guards"
+		: "PASS: 32 user PM4/shader submissions, shader replacement, 64-KiB IB tails, high VAs, cross-4-GiB stores, four VMs and complete data/guards");
 	for (Client& c : clients) {
 		close(c.fd);
 		for (const amdgpu_buffer* b : {&c.ib, &c.shader, &c.data, &c.staging}) {
