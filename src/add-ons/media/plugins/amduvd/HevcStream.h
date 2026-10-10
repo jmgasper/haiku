@@ -12,6 +12,7 @@
 class HevcStream {
 public:
 	HevcStream();
+	void Clear(); // new stream, including parameter sets; avoids a large stack temporary
 	void Reset();
 	bool Prepare(const uint8_t* data, size_t bytes);
 	bool Commit();

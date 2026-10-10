@@ -63,14 +63,16 @@ struct Context {
 	size_t bytes;
 	unsigned frames;
 	Context(DecoderPlugin* plugin, const Fixture& f) : fixture(f), frames(0) {
-		decoder = plugin->NewDecoder(0); Require(decoder != NULL, "new decoder");
+		decoder = plugin->NewDecoder(1); Require(decoder != NULL, "new decoder");
+		media_codec_info codec = {}; decoder->GetCodecInfo(&codec);
+		Require(strcmp(codec.short_name, "amduvd hevc") == 0, "explicit AMD HEVC decoder");
 		provider = new Provider(f); decoder->SetChunkProvider(provider);
 	}
 	~Context() { delete decoder; }
 	status_t Setup() {
 		media_format_description description = {};
 		description.family = B_MISC_FORMAT_FAMILY; description.u.misc.file_format = 'ffmp';
-		description.u.misc.codec = 27;
+		description.u.misc.codec = 173;
 		media_format format; format.Clear(); format.type = B_MEDIA_ENCODED_VIDEO;
 		Check(BMediaFormats().MakeFormatFor(&description, 1, &format), "register stream format");
 		format.u.encoded_video.output.display.line_width = fixture.width;
@@ -85,7 +87,7 @@ struct Context {
 		space = output.u.raw_video.display.format; Require(space == requested, "requested colour space");
 		Require(output.u.raw_video.display.line_width == fixture.width
 			&& output.u.raw_video.display.line_count == fixture.height, "negotiated dimensions");
-		bytes = fixture.width * fixture.height * (space == B_YCbCr422 ? 2 : space == B_RGB32 ? 4 : 3) / (space == B_YCbCr422 || space == B_RGB32 ? 1 : 2);
+		bytes = fixture.width * fixture.height * (space == B_YCbCr422 ? 2 : space == B_RGB32 ? 4 : 3) / (space == B_YCbCr422 || space == B_RGB32 || space == (color_space)0x50303130 ? 1 : 2);
 		pixels.assign(bytes + 64, 0xbd);
 	}
 	status_t Next(FILE* output, uint32 stage) {
@@ -112,13 +114,13 @@ int main(int argc, char** argv)
 	setvbuf(stdout, NULL, _IOLBF, 0);
 	bool absent = (argc == 5 || argc == 6) && strcmp(argv[4], "--expect-no-device") == 0;
 	if (!absent && (argc < 6 || argc > 7)) {
-		fprintf(stderr, "usage: amduvd_plugin_test add-on fixtureA fixtureB outA outB [--unprivileged]\n"
-			"       amduvd_plugin_test add-on fixtureA fixtureB --expect-no-device\n"); return 2;
+		fprintf(stderr, "usage: amduvd_hevc_plugin_test add-on fixtureA fixtureB outA outB [--unprivileged]\n"
+			"       amduvd_hevc_plugin_test add-on fixtureA fixtureB --expect-no-device\n"); return 2;
 	}
 	Fixture fa(argv[2]), fb(argv[3]);
 	FILE* outputs[2] = {absent ? NULL : fopen(argv[4], "wb"), absent ? NULL : fopen(argv[5], "wb")};
 	Require(absent || (outputs[0] && outputs[1]), "open outputs");
-	BApplication app("application/x-vnd.airOS-amduvd-test");
+	BApplication app("application/x-vnd.airOS-amduvd-hevc-test");
 	// The lab desktop belongs to UID 0; establish its app_server connection
 	// before dropping privileges. The decoder/device are opened afterwards.
 	if ((absent && argc == 6) || argc == 7)
@@ -135,9 +137,15 @@ int main(int argc, char** argv)
 	{
 		Context a(plugin, fa), b(plugin, fb);
 		status_t sa = a.Setup(), sb = b.Setup();
-		if (absent) { Require(sa != B_OK && sb != B_OK, "no device fails setup"); puts("PASS: plugin load, explicit selection and no-device fallback"); return 0; }
+		if (absent) {
+			printf("HEVC setup without device: %s / %s\n", strerror(sa), strerror(sb));
+			Require(sa == B_ENTRY_NOT_FOUND && sb == B_ENTRY_NOT_FOUND,
+				"valid HEVC configurations reach the absent device");
+			puts("PASS: HEVC plugin load, explicit selection, configuration and no-device fallback");
+			return 0;
+		}
 		Check(sa, "setup A"); Check(sb, "setup B");
-		a.Negotiate((color_space)0x4e563132); b.Negotiate((color_space)0x4e563132);
+		a.Negotiate((color_space)0x50303130); b.Negotiate((color_space)0x50303130);
 		for (int i = 0; i < 3; i++) { Check(a.Next(NULL, 0), "warmup A"); Check(b.Next(NULL, 0), "warmup B"); }
 		a.Seek(0); a.provider->interruptAt = 2;
 		Require(a.Next(NULL, 0) == B_INTERRUPTED, "interruption is not EOF and emits no queued frame");
@@ -168,6 +176,9 @@ int main(int argc, char** argv)
 		a.provider->corrupt = false; a.provider->at = 0;
 		Check(a.Setup(), "setup after failure"); a.Negotiate((color_space)0x4e563132);
 		for (size_t i = 0; i < fa.packets.size(); i++) Check(a.Next(outputs[0], 5), "fresh session after failure");
+		a.Seek(0); a.Negotiate(B_RGB32);
+		for (size_t i = 0; i < fa.packets.size(); i++) Check(a.Next(outputs[0], 6), "RGB output");
+		Require(a.Next(NULL, 0) == B_LAST_BUFFER_ERROR, "RGB fully drained");
 	}
 	delete plugin; unload_add_on(image);
 	for (auto f : outputs) Require(fclose(f) == 0, "close output");

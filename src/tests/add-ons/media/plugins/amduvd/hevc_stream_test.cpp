@@ -42,12 +42,14 @@ static void Test(const char* path)
 	uint32_t slots = 0;
 	unsigned frames = 0, skipped = 0;
 	std::vector<int32_t> order;
+	std::vector<uint8_t> firstSlices;
 	for (const auto& unit : units) {
 		if (!stream->Prepare(unit.data(), unit.size())) {
 			fprintf(stderr, "%s frame %u: %s\n", path, frames, stream->Error()); abort();
 		}
 		if (stream->skipPicture) skipped++;
 		else {
+			if (!frames) firstSlices = stream->bitstream;
 			CHECK(amdgpu::UvdHevcValidate(stream->config, stream->picture, stream->bitstream.size()));
 			CHECK(amdgpu::UvdHevcBitstream(stream->bitstream.data(), stream->bitstream.size(), stream->picture.nal_type));
 			uint32_t next;
@@ -71,6 +73,11 @@ static void Test(const char* path)
 	CHECK(stream->Prepare(units[0].data(), units[0].size()));
 	CHECK(stream->picture.current_slot == 0 && stream->poc == 0);
 	CHECK(stream->Commit());
+	stream->Reset();
+	CHECK(stream->Prepare(firstSlices.data(), firstSlices.size()) && stream->Commit());
+	stream->Clear();
+	CHECK(!stream->Prepare(firstSlices.data(), firstSlices.size()));
+	CHECK(stream->Prepare(units[0].data(), units[0].size()) && stream->sequence == 1 && stream->Commit());
 	if (units.size() > 1) {
 		stream->Reset();
 		CHECK(!stream->Prepare(units[1].data(), units[1].size()));

@@ -7,6 +7,8 @@ SimpleTest h264_output_test : h264_output_test.cpp H264Packet.cpp H264Output.cpp
 	: [ TargetLibstdc++ ] ;
 SimpleTest amduvd_plugin_test : amduvd_plugin_test.cpp
 	: be media [ TargetLibstdc++ ] ;
+SimpleTest amduvd_hevc_plugin_test : amduvd_hevc_plugin_test.cpp
+	: be media [ TargetLibstdc++ ] ;
 
 SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) src add-ons media plugins nvdec ] ;
 SimpleTest h264_stream_state_test : h264_stream_state_test.cpp H264Stream.cpp h264_parse.c

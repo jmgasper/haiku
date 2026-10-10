@@ -3,9 +3,10 @@
 `jam amduvd` builds an explicitly selected Media Kit decoder over the native
 WX5100 H.264 interface. It registers no formats with the Media Kit because
 that lookup has no software fallback. An application loads `amduvd`, calls
-`instantiate_plugin()` and `DecoderPlugin::NewDecoder(0)`, and retains its
-software decoder when setup or decoding fails. Other decoder indices are
-rejected. airTime and Summit now select it explicitly; full Summit browser
+`instantiate_plugin()` and `DecoderPlugin::NewDecoder(0)` for H.264, and
+retains its software decoder when setup or decoding fails. Decoder index 1
+now prepares HEVC Main/Main 10 qualification; indexes above 1 are rejected.
+airTime and Summit currently select H.264 explicitly; full Summit browser
 qualification and release-image installation remain pending. Native tests
 and applications currently use the private lab build.
 
@@ -68,7 +69,8 @@ requests allow the native three-minute 1080p30 airTime test to keep all
 browser/MSE qualification, broader format/error coverage and final packaging
 remain; focused Summit file-decoder tests already pass.
 
-The HEVC path is preparation and is not exposed by this addon yet.
+The HEVC path is preparation and is available only through explicit decoder
+index 1 in the new candidate; it is not selected by applications yet.
 `HevcStream` prepares Main/Main-10 UVD metadata, POC and retained references;
 `HevcPacket` accepts hvcC configuration and length-prefixed packets, orders
 parameter-set arrays for parsing and bounds expansion to 4 MiB. A failed
@@ -84,3 +86,11 @@ codes to the nearest eight-bit value. H.264 and HEVC share the bounded
 `VideoOutputQueue`, keeping per-picture format/depth and timestamps. The
 output tests pass under ASan/UBSan and QEMU; the shared-queue H.264 addon
 also passes the native 252-picture exact-pixel/timestamp regression.
+
+`HevcDecoder` uses the owned HEVC kernel session, supports P010, NV12, I420,
+packed YUV and RGB32, and keeps EOF, interrupted input, seek and latched-error
+behavior consistent with H.264. Setup clears parameter sets without a large
+stack temporary; seek retains them and destroys the old hardware session.
+QEMU tests prove valid Main/Main-10 configurations reach the absent device,
+and the combined addon preserves the native H.264 regression. HEVC decoding,
+output pixels, sustained playback and application selection remain unqualified.

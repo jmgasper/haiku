@@ -24,6 +24,14 @@ void HevcStream::Reset()
 	fError = ""; bitstream.clear();
 }
 
+void HevcStream::Clear()
+{
+	memset(&fSets, 0, sizeof(fSets)); memset(&fSlice, 0, sizeof(fSlice));
+	memset(&config, 0, sizeof(config)); memset(&picture, 0, sizeof(picture));
+	sequence = fSequence = 0;
+	Reset();
+}
+
 bool HevcStream::Fail(const char* reason) { fError = reason; return false; }
 
 bool HevcStream::References(const HevcSps& sps, bool reset)
