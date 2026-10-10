@@ -50,6 +50,14 @@ def verify(source, output):
         # Explicit eight-bit YUV from this addon uses nearest-code rounding.
         samples = np.frombuffer(p010, dtype='<u2').astype(np.uint32) >> 6
         reference = np.minimum(255, (samples + 2) // 4).astype(np.uint8).tobytes()
+    else:
+        # The addon's eight-bit-to-P010 contract keeps each code value and
+        # pads its low eight bits with zero. libswscale instead replicates
+        # the byte across all sixteen bits (including P010's low six bits),
+        # so construct this reference from independently decoded NV12.
+        promoted = bytearray(len(reference) * 2)
+        promoted[1::2] = reference
+        p010 = promoted
     times = sorted(round(float(p['pts_time']) * 1000000) for p in info['packets'])
     assert len(reference) == len(times) * frame_size
     assert len(p010) == len(reference) * 2
