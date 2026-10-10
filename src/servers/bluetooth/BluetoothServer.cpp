@@ -473,6 +473,10 @@ void BluetoothServer::MessageReceived(BMessage* message)
 				rd = lDeviceImpl->RemoteDeviceByAddr(*bdaddr);
 			reply.AddUInt8("conn state", static_cast<uint8>(rd != NULL
 				? rd->conn_state : RemoteDevice::DISCONNECTED));
+			if (rd != NULL && rd->conn_state == RemoteDevice::CONNECTED) {
+				reply.AddBool("encrypted", rd->encryption_enabled != 0);
+				reply.AddUInt16("handle", rd->handle);
+			}
 
 			message->SendReply(&reply);
 		}
