@@ -7,7 +7,9 @@ listed as verified is untested.
 The NVIDIA results below describe the previous card. AMD desktop output still
 uses the firmware framebuffer. SDMA and the full 61-submission bounded GFX diagnostic pass, including
 indirect buffers, compute, rasterization and VM switches with zero VM faults
-and data mismatches when the matching MEC firmware is loaded. General
+and data mismatches when the matching MEC firmware is loaded. Separate
+client GPU address spaces also pass 393 native shader dispatches, same-address
+isolation, concurrent clients and complete memory reclamation. General
 graphics submission, Mesa and native display remain unfinished. AMD UVD H.264 plays three minutes of 1080p30/AAC with zero drops
 in private airTime and Summit builds. HEVC Main/Main 10 has independent native
 pixel/format/lifecycle verification; both private applications also pass
