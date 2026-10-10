@@ -199,6 +199,10 @@ rule UserBuildConfigRulePreImage
 		# display registers
 		AddFilesToHaikuImage system non-packaged bin : cubie_reg cubie_fetch
 			pvrinfo aicload ;
+		if $(CUBIE_AIROS_IMAGE) {
+			# a Bluetooth diagnostic the regular image leaves out
+			AddFilesToHaikuImage system non-packaged bin : bt_dev_info ;
+		}
 		local labSettings = <cubie-lab>sunxi_display <cubie-lab>aic8800wifi ;
 		SEARCH on $(labSettings) = [ FDirName $(HAIKU_TOP) tools cubie-a7s lab ] ;
 		AddFilesToHaikuImage home config settings kernel drivers

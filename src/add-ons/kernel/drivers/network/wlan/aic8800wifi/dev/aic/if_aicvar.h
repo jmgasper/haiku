@@ -69,6 +69,7 @@ struct aic_softc {
 	bigtime_t			sc_scan_started;
 	int					sc_scan_results;
 	int					sc_scan_results_5ghz;
+	bigtime_t			sc_scan_logged;
 
 	/* the association */
 	int					sc_connected;

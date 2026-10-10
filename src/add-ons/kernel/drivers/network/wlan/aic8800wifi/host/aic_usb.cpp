@@ -58,6 +58,7 @@
 #define TX_SLOTS			64
 #define BOOT_WINDOW			(60 * 1000000LL)
 #define LOADER_WAIT			(15 * 1000000LL)
+#define ROM_ECHO_TIME		(5 * 1000000LL)
 
 #define MARKER_NAME			DRIVER_NAME " firmware"
 #define MARKER_MAGIC		0x41494338	/* "AIC8" */
@@ -282,6 +283,16 @@ device_added(usb_device device, void** _cookie)
 	*_cookie = slot;
 	TRACE_ALWAYS("%04x attached (%s)\n", descriptor->product_id,
 		slot == &sRom ? "ROM loader" : "firmware running");
+
+	marker loaded;
+	if (slot == &sRom && marker_get(&loaded)
+		&& system_time() - loaded.loaded < ROM_ECHO_TIME) {
+		// Right after the start request the ROM can show itself once more
+		// on its way off the bus; the firmware takes over moments later.
+		TRACE_ALWAYS("%04x shows up again while the firmware starts; "
+			"left alone\n", descriptor->product_id);
+		return B_OK;
+	}
 
 	if (slot == &sFirmware) {
 		bool wasGone = sGone;

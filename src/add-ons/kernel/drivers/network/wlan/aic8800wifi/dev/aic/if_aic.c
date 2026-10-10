@@ -846,9 +846,14 @@ aic_scan_done(struct aic_softc* sc)
 	if (!sc->sc_scanning)
 		return;
 	sc->sc_scanning = 0;
-	DPRINTF("%s: scan done, %d results (%d at 5 GHz) in %" B_PRIdBIGTIME
-		" ms\n", DEVNAME(sc), sc->sc_scan_results, sc->sc_scan_results_5ghz,
-		(system_time() - sc->sc_scan_started) / 1000);
+	if (aic_debug && system_time() - sc->sc_scan_logged > 30000000) {
+		// net80211 scans back to back while it finds nothing to join
+		sc->sc_scan_logged = system_time();
+		printf("%s: scan done, %d results (%d at 5 GHz) in %" B_PRIdBIGTIME
+			" ms\n", DEVNAME(sc), sc->sc_scan_results,
+			sc->sc_scan_results_5ghz,
+			(system_time() - sc->sc_scan_started) / 1000);
+	}
 
 	if (ic->ic_state == IEEE80211_S_SCAN
 		|| (ic->ic_state == IEEE80211_S_RUN

@@ -1,5 +1,4 @@
-# lab images: the Wi-Fi driver stays out of the boot while it is being
-# developed (touching its file in non-packaged/add-ons/kernel/drivers/bin
-# brings it in after the first minute), and says what it does
-attach_at_boot false
+# lab images: the Wi-Fi driver says what it does. "attach_at_boot false"
+# keeps it out of the boot (touching its file in non-packaged/add-ons/
+# kernel/drivers/bin brings it in after the first minute).
 debug true
