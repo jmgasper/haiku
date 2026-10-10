@@ -2,6 +2,7 @@
 #ifndef AMDGPU_GFX_H
 #define AMDGPU_GFX_H
 #include "Gart.h"
+#include "Interrupts.h"
 struct GfxEngine {
 	static const uint64 kScratchOffset = 40ULL << 20;
 	static const uint64 kClientIbVA = 0x1000;
@@ -13,6 +14,8 @@ struct GfxEngine {
 	uint64 gpu;
 	uint32 wptr, sequence, vmSequence;
 	bool attempted, ready, faulted, vmEnabled, mecStarted;
+	pci_module_info* pci;
+	GpuInterrupts interrupts;
 	status_t InitializeVM(const amdgpu_info& info,
 		const amdgpu::AtomVramReservation& reservation, const Gart& gart);
 	status_t Initialize(volatile uint32* r, const amdgpu_info& info,

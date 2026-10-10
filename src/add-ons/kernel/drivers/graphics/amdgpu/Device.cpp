@@ -82,11 +82,25 @@ static uint32 sVideoSessions, sVMCount;
 static void ReleaseVM(AmdgpuClient* client);
 static void ReleaseVideo(AmdgpuClient* client);
 
+// Called with sMutex held, including cleanup and the DMA worker. An async
+// fault must quarantine allocations even if the client closes immediately.
+static void
+ObserveInterruptFault()
+{
+	status_t status = sGfx.interrupts.Error();
+	if (status != B_OK && sFault == B_OK) {
+		sFault = status;
+		sGfx.faulted = true;
+		sGfx.Halt();
+	}
+}
+
 static void
 PutBuffer(Buffer* bo)
 {
 	if (bo == NULL || --bo->references != 0)
 		return;
+	ObserveInterruptFault();
 	// RAM must remain wired on failure: deleting its area would return pages
 	// to the OS while a late GPU write may still be possible. VRAM mappings
 	// can be deleted, but the allocator still quarantines their physical pages.
@@ -126,6 +140,7 @@ Executor(void*)
 {
 	while (acquire_sem(sJobs) == B_OK) {
 		mutex_lock(&sMutex);
+		ObserveInterruptFault();
 		Job* job = sFirst;
 		if (job == NULL) {
 			bool stop = sStopping;
@@ -184,6 +199,7 @@ void
 amdgpu_client_free(AmdgpuClient* client)
 {
 	mutex_lock(&sMutex);
+	ObserveInterruptFault();
 	ReleaseVideo(client);
 	ReleaseVM(client);
 	while (client->buffers != NULL) {
@@ -281,10 +297,11 @@ Start(volatile uint32* regs, const amdgpu_info& info,
 status_t
 amdgpu_device_start(volatile uint32* regs, const amdgpu_info& info,
 	const amdgpu::FirmwareView& firmware, const amdgpu::AtomVramReservation& reservation,
-	bool uvdClocksQualified)
+	bool uvdClocksQualified, pci_module_info* pci)
 {
 	mutex_lock(&sMutex);
 	status_t status = Start(regs, info, firmware, reservation, uvdClocksQualified);
+	if (status == B_OK) sGfx.pci = pci;
 	mutex_unlock(&sMutex);
 	return status;
 }
@@ -781,9 +798,18 @@ Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 {
 	if (!sActive)
 		return B_DEV_NOT_READY;
+	ObserveInterruptFault();
 	if (client->team != team_get_current_team_id()
 		|| (client->flags & O_ACCMODE) != O_RDWR)
 		return B_NOT_ALLOWED;
+	if (op == AMDGPU_IRQ_INFO) {
+		amdgpu_irq_info info;
+		status_t status = ReadRequest(info, data, length);
+		if (status != B_OK) return status;
+		if (info.reserved != 0) return B_BAD_VALUE;
+		sGfx.interrupts.Snapshot(info);
+		return user_memcpy(data, &info, sizeof(info));
+	}
 	if (op >= AMDGPU_VM_INFO && op <= AMDGPU_GFX_SUBMIT) {
 		if (client->graphicsBusy) return B_BUSY;
 		client->graphicsBusy = true;
@@ -1105,6 +1131,7 @@ amdgpu_device_gfx_test(const amdgpu::FirmwareView firmware[4],
 	amdgpu_gfx_test& result, const amdgpu::MecFirmwareView* mec)
 {
 	mutex_lock(&sMutex);
+	ObserveInterruptFault();
 	status_t status = !sActive || sFault != B_OK ? B_DEV_NOT_READY
 		: sPending != 0 ? B_BUSY : sGfx.Test(sEngine.regs, sInfo, sReservation,
 			firmware, sEngine, sGart, result, mec);
@@ -1119,6 +1146,7 @@ amdgpu_device_uvd_test(const amdgpu::FirmwareView& firmware,
 	amdgpu_uvd_test& result, void* output)
 {
 	mutex_lock(&sMutex);
+	ObserveInterruptFault();
 	status_t status = !sActive || sFault != B_OK ? B_DEV_NOT_READY
 		: sPending != 0 ? B_BUSY : sUvd.Test(sEngine.regs, sInfo, sReservation, sUvdClocksQualified,
 			firmware, result, output);
@@ -1134,6 +1162,7 @@ amdgpu_device_stop()
 	if (!sActive)
 		return;
 	mutex_lock(&sMutex);
+	ObserveInterruptFault();
 	sStopping = true;
 	mutex_unlock(&sMutex);
 	release_sem(sJobs);

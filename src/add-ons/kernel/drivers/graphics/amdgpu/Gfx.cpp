@@ -473,6 +473,14 @@ GfxEngine::Initialize(volatile uint32* r, const amdgpu_info& info,
 			Snapshot(result);
 			return B_DEV_NOT_READY;
 		}
+		status_t irqStatus = interrupts.Initialize(r, info, pci);
+		if (irqStatus != B_OK) {
+			dprintf("amdgpu: IH initialization failed %#x\n", (unsigned)irqStatus);
+			faulted = true;
+			Halt();
+			Snapshot(result);
+			return irqStatus;
+		}
 		ready = true;
 	}
 	return B_OK;
@@ -940,6 +948,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	status_t status = control[0x0 / 4] == sequence
 		&& control[0x4 / 4] == sequence && r[0x21c0] == (wptr & kRingMask)
 		? B_OK : B_TIMED_OUT;
+	if (interrupts.Error() != B_OK) status = interrupts.Error();
 	if (status == B_OK) {
 		// The completion page is snooped RAM. Invalidate HDP only after GPU
 		// completion so CPU reads of the VRAM payload cannot reuse old data.
@@ -1036,6 +1045,8 @@ GfxEngine::ExecuteIB(uint64 directory, uint64 address, uint32 dwords,
 {
 	if (!ready || faulted || !mecStarted)
 		return B_DEV_NOT_READY;
+	if (interrupts.Error() != B_OK)
+		return interrupts.Error();
 	volatile uint32* r = regs;
 	if (r[0x21c0] != (wptr & kRingMask))
 		return B_BUSY;
@@ -1088,7 +1099,7 @@ GfxEngine::ExecuteIB(uint64 directory, uint64 address, uint32 dwords,
 			emit(Packet(0x47, 4));
 			emit(0x14 | 5 << 8 | 1 << 15 | 1 << 16 | 1 << 17);
 			emit((uint32)fenceAddress);
-			emit(fenceAddress >> 32 | 1 << 29);
+			emit(fenceAddress >> 32 | 1 << 29 | (i == 1 ? 2 << 24 : 0));
 			emit(i == 0 ? vmSequence - 1 : vmSequence); emit(0);
 		}
 		uint32 padding = (-wptr) & 255;
@@ -1097,17 +1108,24 @@ GfxEngine::ExecuteIB(uint64 directory, uint64 address, uint32 dwords,
 			emit(Packet(0x10, padding - 2));
 			for (uint32 i = 1; i < padding; i++) emit(0);
 		}
+		uint64 ticket = interrupts.Ticket();
 		__sync_synchronize();
 		(void)ring[(wptr - 1) & kRingMask];
 		r[0x1520] = 1; (void)r[0x1520];
 		r[0x3045] = wptr & kRingMask; (void)r[0x3045];
 		bigtime_t deadline = system_time() + 500000;
-		while ((*completion != vmSequence || r[0x21c0] != (wptr & kRingMask))
+		status = interrupts.Wait(ticket, deadline);
+		// The IRQ proves notification, the private fence proves retirement.
+		// Ring padding can retire shortly after EOP; it shares the same limit.
+		while (status == B_OK && interrupts.Error() == B_OK
+			&& (*completion != vmSequence || r[0x21c0] != (wptr & kRingMask))
 			&& system_time() < deadline)
 			snooze(50);
 		__sync_synchronize();
-		status = *completion == vmSequence && r[0x21c0] == (wptr & kRingMask)
-			? B_OK : B_TIMED_OUT;
+		if (status == B_OK)
+			status = *completion == vmSequence && r[0x21c0] == (wptr & kRingMask)
+				? B_OK : B_TIMED_OUT;
+		if (interrupts.Error() != B_OK) status = interrupts.Error();
 		result.completion = *completion;
 		if (status == B_OK && ((r[0x536] | r[0x537]) & 0xff) != 0)
 			status = B_BAD_DATA;
@@ -1125,6 +1143,12 @@ GfxEngine::ExecuteIB(uint64 directory, uint64 address, uint32 dwords,
 	if (status != B_OK) {
 		faulted = true;
 		Halt();
+		amdgpu_irq_info irq;
+		interrupts.Snapshot(irq);
+		dprintf("amdgpu: client IRQ status %#x events %" B_PRIu64 " vectors %" B_PRIu64
+			" ring %#x/%#x last %#x/%#x/%#x/%#x\n", (unsigned)irq.status,
+			irq.eop_events, irq.vectors, (unsigned)irq.rptr, (unsigned)irq.wptr,
+			(unsigned)irq.last[0], (unsigned)irq.last[1], (unsigned)irq.last[2], (unsigned)irq.last[3]);
 		DumpExecutionState("client VM fault");
 	}
 	dprintf("amdgpu: client VM seq %u status %#x faults %#x/%#x ring %u/%u\n",
@@ -1150,6 +1174,7 @@ GfxEngine::Uninitialize()
 	if (!attempted)
 		return;
 	Halt();
+	interrupts.Uninitialize();
 	regs[0xec00] &= ~1u;
 	if (vmEnabled) {
 		regs[0x505] &= ~1u;
