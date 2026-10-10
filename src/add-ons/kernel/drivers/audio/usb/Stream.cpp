@@ -12,7 +12,18 @@
 
 #include "Device.h"
 #include "Driver.h"
+#include "IsoPacketSizes.h"
 #include "Settings.h"
+
+
+// One isochronous packet per 1 ms USB frame (the full-speed frame; a
+// high-speed device with bInterval 4 is serviced at the same rate).
+static const uint32 kPacketsPerSecond = 1000;
+
+// A full-speed device behind a high-speed hub is scheduled on EHCI's
+// 128-frame periodic list (siTDs); kSamplesBufferCount buffers of this many
+// packets must fit in it with room for the scheduling threshold.
+static const uint32 kMaxPacketsPerBuffer = 48;
 
 
 Stream::Stream(Device* device, size_t interface, usb_interface_list* List)
@@ -41,7 +52,7 @@ Stream::~Stream()
 {
 	delete_area(fArea);
 	delete_area(fKernelArea);
-	delete fDescriptors;
+	delete[] fDescriptors;
 }
 
 
@@ -58,6 +69,12 @@ Stream::_ChooseAlternate()
 
 		if (fAlternates[i]->Format() == 0) {
 			TRACE(INF, "Ignore alternate %d - zero format description.\n", i);
+			continue;
+		}
+
+		if (fAlternates[i]->Endpoint() == 0) {
+			TRACE(INF, "Ignore alternate %d - no audio endpoint description.\n",
+				i);
 			continue;
 		}
 
@@ -174,13 +191,32 @@ Stream::_SetupBuffers()
 
 	uint32 samplingRate = fAlternates[fActiveAlternate]->GetSamplingRate();
 	uint32 sampleSize = format->fNumChannels * format->fSubframeSize;
+	if (samplingRate == 0 || sampleSize == 0) {
+		TRACE(ERR, "no sampling rate (%" B_PRIu32 ") or sample size (%"
+			B_PRIu32 ")!\n", samplingRate, sampleSize);
+		return B_BAD_VALUE;
+	}
 
-	// data size pro 1 ms USB 1 frame
-	size_t packetSize = samplingRate * sampleSize / 1000;
-	TRACE(INF, "packetSize:%ld\n", packetSize);
+	// Packets carry rate / kPacketsPerSecond samples on average: 48 for
+	// 48 kHz, 44 or 45 for 44.1 kHz. Each buffer is whole repeats of that
+	// pattern (IsoPacketSizes.h).
+	uint32 packetsPerBuffer = usb_audio_packets::packets_per_buffer(
+		samplingRate, kPacketsPerSecond, kSamplesBufferSize,
+		kMaxPacketsPerBuffer);
+	uint32 samplesPerBuffer = usb_audio_packets::samples_per_buffer(
+		samplingRate, kPacketsPerSecond, packetsPerBuffer);
+	size_t maxPacketSize = usb_audio_packets::max_samples_in_packet(
+		samplingRate, kPacketsPerSecond) * sampleSize;
+	size_t endpointPacketSize
+		= fAlternates[fActiveAlternate]->Endpoint()->fMaxPacketSize & 0x7ff;
+	TRACE(INF, "%" B_PRIu32 " Hz: %" B_PRIu32 " packets of up to %"
+		B_PRIuSIZE " bytes, %" B_PRIu32 " samples per buffer\n", samplingRate,
+		packetsPerBuffer, maxPacketSize, samplesPerBuffer);
 
-	if (packetSize == 0) {
-		TRACE(ERR, "computed packet size is 0!");
+	if (maxPacketSize > endpointPacketSize) {
+		TRACE(ERR, "%" B_PRIu32 " Hz needs %" B_PRIuSIZE "-byte packets, the "
+			"endpoint takes %" B_PRIuSIZE "!\n", samplingRate, maxPacketSize,
+			endpointPacketSize);
 		return B_BAD_VALUE;
 	}
 
@@ -188,26 +224,32 @@ Stream::_SetupBuffers()
 		Stop();
 		delete_area(fArea);
 		delete_area(fKernelArea);
-		delete fDescriptors;
+		delete[] fDescriptors;
+		fArea = fKernelArea = -1;
+		fDescriptors = NULL;
+		fAreaSize = 0;
 	}
 
-	fAreaSize = sampleSize * kSamplesBufferSize * kSamplesBufferCount;
+	fAreaSize = sampleSize * samplesPerBuffer * kSamplesBufferCount;
 	TRACE(INF, "estimate fAreaSize:%d\n", fAreaSize);
 
 	// round up to B_PAGE_SIZE and create area
 	fAreaSize = (fAreaSize + (B_PAGE_SIZE - 1)) &~ (B_PAGE_SIZE - 1);
 	TRACE(INF, "rounded up fAreaSize:%d\n", fAreaSize);
 
+	// Locked: the USB controller's isochronous completion copies into it.
 	fArea = create_area(fIsInput ? DRIVER_NAME "_record_area"
 		: DRIVER_NAME "_playback_area", (void**)&fBuffers,
-		B_ANY_ADDRESS, fAreaSize, B_NO_LOCK,
+		B_ANY_ADDRESS, fAreaSize, B_FULL_LOCK,
 		B_READ_AREA | B_WRITE_AREA);
 	if (fArea < 0) {
 		TRACE(ERR, "Error of creating %#x - "
 			"bytes size buffer area:%#010x\n", fAreaSize, fArea);
 		fStatus = fArea;
+		fAreaSize = 0;
 		return fStatus;
 	}
+	memset(fBuffers, 0, fAreaSize);
 
 	// The kernel is not allowed to touch userspace areas, so we clone our
 	// area into kernel space.
@@ -219,21 +261,25 @@ Stream::_SetupBuffers()
 	}
 
 	TRACE(INF, "Created area id:%d at addr:%#010x size:%#010lx\n",
-		fArea, fDescriptors, fAreaSize);
+		fArea, fBuffers, fAreaSize);
 
-	fDescriptorsCount = fAreaSize / packetSize;
-	// we need same size sub-buffers. round it
-	fDescriptorsCount = ROUNDDOWN(fDescriptorsCount, kSamplesBufferCount);
-	fDescriptors = new usb_iso_packet_descriptor[fDescriptorsCount];
+	fDescriptorsCount = packetsPerBuffer * kSamplesBufferCount;
+	fDescriptors = new(std::nothrow) usb_iso_packet_descriptor[fDescriptorsCount];
+	if (fDescriptors == NULL) {
+		fDescriptorsCount = 0;
+		return B_NO_MEMORY;
+	}
 	TRACE(INF, "descriptorsCount:%d\n", fDescriptorsCount);
 
 	// samples count
-	fSamplesCount = fDescriptorsCount * packetSize / sampleSize;
+	fSamplesCount = samplesPerBuffer * kSamplesBufferCount;
 	TRACE(INF, "samplesCount:%d\n", fSamplesCount);
 
-	// initialize descriptors array
+	// initialize descriptors array: every buffer has the same packets
 	for (size_t i = 0; i < fDescriptorsCount; i++) {
-		fDescriptors[i].request_length = packetSize;
+		fDescriptors[i].request_length = sampleSize
+			* usb_audio_packets::samples_in_packet(samplingRate,
+				kPacketsPerSecond, i % packetsPerBuffer);
 		fDescriptors[i].actual_length = 0;
 		fDescriptors[i].status = B_OK;
 	}
