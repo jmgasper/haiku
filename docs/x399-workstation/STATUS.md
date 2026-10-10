@@ -16,7 +16,10 @@ pixels. GFX client completion now requires IH3 MSI observation of its private
 fence: two 4,382-job cold-boot trials pass with ring wraps, exact data and
 media/DMA coexistence. Separate read-only-page and privileged-register
 faults fail the jobs and preserve quarantined allocations through close;
-recovery still requires a cold boot. Unprivileged general
+recovery still requires a cold boot. A native Mesa metadata candidate now
+reports measured CU/RB masks, tiling, firmware, timestamp clocks and explicit
+interface limits; its graphics/DMA/media regression trial passes. RadeonSI
+rendering is not yet implemented. Unprivileged general
 graphics submission, Mesa and native display remain unfinished. AMD UVD H.264 plays three minutes of 1080p30/AAC with zero drops
 in private airTime and Summit builds. HEVC Main/Main 10 has independent native
 pixel/format/lifecycle verification; both private applications also pass
