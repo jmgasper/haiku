@@ -6,6 +6,7 @@
 #define AMDGPU_HAIKU_H
 
 #include <Drivers.h>
+#include <amdgpu_video.h>
 
 // Native bring-up interface. This is not the Linux DRM ABI. Keep it separate
 // from the eventual Mesa command-submission interface.
@@ -27,7 +28,10 @@ enum {
 	AMDGPU_CREATE_SYSTEM_BUFFER,
 	AMDGPU_GART_INFO,
 	AMDGPU_GFX_TEST,
-	AMDGPU_UVD_TEST
+	AMDGPU_UVD_TEST,
+	AMDGPU_VIDEO_CREATE,
+	AMDGPU_VIDEO_DECODE,
+	AMDGPU_VIDEO_DESTROY
 };
 
 #define AMDGPU_ROM_SIZE (256 * 1024)

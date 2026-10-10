@@ -4,6 +4,7 @@
 #include "Gart.h"
 #include "Gfx.h"
 #include "Uvd.h"
+#include "FirmwareLoader.h"
 #include "VramAllocator.h"
 #include <KernelExport.h>
 #include <condition_variable.h>
@@ -28,6 +29,8 @@ struct AmdgpuClient {
 	uint64 bytes, systemBytes, submitted, completed, failedFence;
 	status_t failure;
 	Buffer* buffers;
+	UvdSession* video;
+	bool videoBusy;
 };
 
 struct Job {
@@ -56,6 +59,9 @@ static Job* sFirst;
 static Job* sLast;
 static uint32 sPending;
 static uint64 sNextHandle = 1;
+static uint32 sNextVideoHandle = 1;
+static uint32 sVideoSessions;
+static void ReleaseVideo(AmdgpuClient* client);
 
 static void
 PutBuffer(Buffer* bo)
@@ -159,6 +165,7 @@ void
 amdgpu_client_free(AmdgpuClient* client)
 {
 	mutex_lock(&sMutex);
+	ReleaseVideo(client);
 	while (client->buffers != NULL) {
 		Buffer* bo = client->buffers;
 		client->buffers = bo->next;
@@ -271,6 +278,125 @@ ReadRequest(T& request, void* data, size_t length)
 }
 
 static status_t
+WaitDmaIdle()
+{
+	bigtime_t deadline = system_time() + 5000000;
+	while (sPending != 0 && sFault == B_OK) {
+		status_t status = sCompleted.Wait(&sMutex, B_ABSOLUTE_TIMEOUT, deadline);
+		if (status != B_OK && sPending != 0) return status;
+	}
+	return sFault == B_OK ? B_OK : B_DEV_NOT_READY;
+}
+
+static void
+ReleaseVideo(AmdgpuClient* client)
+{
+	UvdSession* s = client->video;
+	if (s == NULL) return;
+	if (s->created && sFault == B_OK) {
+		amdgpu_uvd_test result = {};
+		status_t status = WaitDmaIdle();
+		if (status == B_OK) status = sUvd.Session(*s, 2, NULL, NULL, 0, NULL, result);
+		if (status != B_OK) {
+			sFault = status;
+			sUvd.faulted = true;
+			sUvd.Stop();
+		}
+	}
+	delete_area(s->area);
+	// A failed engine may still hold addresses. Keep its VRAM quarantined.
+	if (sFault == B_OK) sAllocator.Free(s->offset, s->layout.bytes);
+	client->bytes -= s->layout.bytes;
+	client->video = NULL;
+	sVideoSessions--;
+	free(s);
+}
+
+static status_t
+VideoControl(AmdgpuClient* client, uint32 op, void* data, size_t length)
+{
+	if (op == AMDGPU_VIDEO_CREATE) {
+		amdgpu_video_create request;
+		status_t status = ReadRequest(request, data, length);
+		amdgpu::UvdH264Layout layout;
+		if (status != B_OK) return status;
+		if (!amdgpu::UvdH264Size(request.config, layout)) return B_BAD_VALUE;
+		if (client->video != NULL) return B_BUSY;
+		if (sFault != B_OK) return B_DEV_NOT_READY;
+		if (sNextVideoHandle == 0 || sVideoSessions >= 32) return B_NO_MEMORY;
+		UvdSession* s = (UvdSession*)calloc(1, sizeof(UvdSession));
+		if (s == NULL) return B_NO_MEMORY;
+		s->config = request.config; s->layout = layout;
+		if (!sAllocator.Allocate(layout.bytes, 4096, sInfo.bar_size[0], s->offset)) {
+			free(s); return B_NO_MEMORY;
+		}
+		s->area = map_physical_memory("amdgpu private video session",
+			sInfo.bar_address[0] + s->offset, layout.bytes, B_ANY_KERNEL_ADDRESS,
+			B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, (void**)&s->cpu);
+		if (s->area < 0) {
+			status = s->area; sAllocator.Free(s->offset, layout.bytes); free(s); return status;
+		}
+		s->gpu = sInfo.vram_gpu_base + s->offset;
+		s->handle = sNextVideoHandle++;
+		client->video = s; client->bytes += layout.bytes; sVideoSessions++;
+		for (uint32 i = 0; i < layout.bytes / 4; i++) s->cpu[i] = 0;
+		status = WaitDmaIdle();
+		amdgpu_uvd_test result = {};
+		if (status == B_OK && !sUvd.ready) {
+			InstalledFirmware firmware;
+			status = firmware.LoadUvd();
+			if (status == B_OK)
+				status = sUvd.Initialize(sEngine.regs, sInfo, sReservation, firmware.view, result);
+		}
+		if (status == B_OK) status = sUvd.Session(*s, 0, NULL, NULL, 0, NULL, result);
+		if (sUvd.faulted && sFault == B_OK) sFault = status;
+		if (status == B_OK) {
+			request.handle = s->handle; request.pitch = layout.pitch;
+			request.output_bytes = layout.outputBytes; request.allocated_bytes = layout.bytes;
+			status = user_memcpy(data, &request, sizeof(request));
+		}
+		if (status != B_OK) ReleaseVideo(client);
+		return status;
+	}
+	if (op == AMDGPU_VIDEO_DESTROY) {
+		amdgpu_video_destroy request;
+		status_t status = ReadRequest(request, data, length);
+		if (status != B_OK) return status;
+		if (client->video == NULL || request.handle != client->video->handle) return B_BAD_VALUE;
+		ReleaseVideo(client);
+		return sFault == B_OK ? B_OK : B_DEV_NOT_READY;
+	}
+	amdgpu_video_decode request;
+	status_t status = ReadRequest(request, data, length);
+	if (status != B_OK) return status;
+	UvdSession* s = client->video;
+	if (s == NULL || request.handle != s->handle || request.bitstream == 0 || request.output == 0
+		|| request.output_capacity != s->layout.outputBytes
+		|| !amdgpu::UvdH264Validate(s->config, request.picture, request.bitstream_bytes))
+		return B_BAD_VALUE;
+	if (sFault != B_OK) return B_DEV_NOT_READY;
+	void* input = malloc(request.bitstream_bytes);
+	void* output = malloc(s->layout.outputBytes);
+	status = input == NULL || output == NULL ? B_NO_MEMORY
+		: user_memcpy(input, (void*)(addr_t)request.bitstream, request.bitstream_bytes);
+	amdgpu_uvd_test result = {};
+	if (status == B_OK) status = WaitDmaIdle();
+	if (status == B_OK)
+		status = sUvd.Session(*s, 1, &request.picture, input, request.bitstream_bytes, output, result);
+	if (sUvd.faulted && sFault == B_OK) sFault = status;
+	if (status == B_OK)
+		status = user_memcpy((void*)(addr_t)request.output, output, s->layout.outputBytes);
+	request.sequence = result.sequence; request.fence = result.fence;
+	request.rptr = result.rptr; request.wptr = result.wptr;
+	request.guard_mismatches = result.guard_mismatches;
+	request.vm_fault_status = result.vm_fault_status; request.vm_fault_address = result.vm_fault_address;
+	memcpy(request.feedback, result.feedback, sizeof(request.feedback));
+	status_t copied = user_memcpy(data, &request, sizeof(request));
+	free(input); free(output);
+	return status != B_OK ? status : copied;
+}
+
+static status_t
 Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 {
 	if (!sActive)
@@ -278,6 +404,15 @@ Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 	if (client->team != team_get_current_team_id()
 		|| (client->flags & O_ACCMODE) != O_RDWR)
 		return B_NOT_ALLOWED;
+	if (op >= AMDGPU_VIDEO_CREATE && op <= AMDGPU_VIDEO_DESTROY) {
+		// WaitDmaIdle releases sMutex. Keep another thread on this file from
+		// destroying/replacing the session while the first call holds pointers.
+		if (client->videoBusy) return B_BUSY;
+		client->videoBusy = true;
+		status_t status = VideoControl(client, op, data, length);
+		client->videoBusy = false;
+		return status;
+	}
 	if (op == AMDGPU_MEMORY_INFO) {
 		amdgpu_memory_info info;
 		status_t status = ReadRequest(info, data, length);
@@ -520,6 +655,11 @@ amdgpu_client_control(AmdgpuClient* client, uint32 op, void* data, size_t length
 			if (status == B_OK && (request.reserved != 0 || request.bytes == 0
 				|| request.bytes > (64ULL << 20)))
 				status = B_BAD_VALUE;
+		} else if (op == AMDGPU_VIDEO_CREATE) {
+			amdgpu_video_create request;
+			amdgpu::UvdH264Layout layout;
+			status = ReadRequest(request, data, length);
+			if (status == B_OK && !amdgpu::UvdH264Size(request.config, layout)) status = B_BAD_VALUE;
 		} else
 			return B_DEV_NOT_READY;
 		if (status != B_OK)

@@ -189,9 +189,9 @@ UvdEngine::Submit(uint32 words, amdgpu_uvd_test& result)
 }
 
 status_t
-UvdEngine::Test(volatile uint32* r, const amdgpu_info& info,
+UvdEngine::Initialize(volatile uint32* r, const amdgpu_info& info,
 	const amdgpu::AtomVramReservation& reservation,
-	const amdgpu::FirmwareView& firmware, amdgpu_uvd_test& result, void* output)
+	const amdgpu::FirmwareView& firmware, amdgpu_uvd_test& result)
 {
 	regs = r;
 	result.stage = 1;
@@ -235,6 +235,16 @@ UvdEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			ready = status == B_OK;
 		}
 	}
+	if (status != B_OK) { faulted = true; Stop(); }
+	return status;
+}
+
+status_t
+UvdEngine::Test(volatile uint32* r, const amdgpu_info& info,
+	const amdgpu::AtomVramReservation& reservation,
+	const amdgpu::FirmwareView& firmware, amdgpu_uvd_test& result, void* output)
+{
+	status_t status = Initialize(r, info, reservation, firmware, result);
 	if (status == B_OK) {
 		for (uint32 i = kMessage / 4; i < kBytes / 4; i++)
 			memory[i] = 0;

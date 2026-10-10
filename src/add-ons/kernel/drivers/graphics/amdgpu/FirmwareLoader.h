@@ -10,8 +10,11 @@ public:
 	InstalledFirmware();
 	~InstalledFirmware();
 	status_t Load(const char* name, bool smc);
+	status_t LoadUvd();
 	amdgpu::FirmwareView view;
 private:
+	status_t Read(const char* name, size_t limit,
+		bool (*parse)(const void*, size_t, amdgpu::FirmwareView&));
 	void* fData;
 	InstalledFirmware(const InstalledFirmware&) = delete;
 	InstalledFirmware& operator=(const InstalledFirmware&) = delete;

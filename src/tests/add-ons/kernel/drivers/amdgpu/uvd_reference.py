@@ -51,6 +51,8 @@ def main():
     parser.add_argument("directory", type=Path)
     parser.add_argument("--decoded", type=Path)
     parser.add_argument("--linear-output", type=Path)
+    parser.add_argument("--progressive", action="store_true",
+                        help="compare the client API's linear progressive NV12 output")
     args = parser.parse_args()
     fixture = (Path(__file__).resolve().parents[5]
                / "add-ons/kernel/drivers/graphics/amdgpu/UvdFixture.h").read_text()
@@ -93,9 +95,13 @@ def main():
         assert len(actual) == 1024 * 480 * 3 // 2
         active_errors = padding_errors = 0
         linear = bytearray()
-        for top, bottom, rows in ((0, 0x3c000, 480), (0x78000, 0x96000, 240)):
+        planes = ((0, 0x3c000, 480), (0x78000, 0x96000, 240))
+        if args.progressive:
+            planes = ((0, 0, 480), (1024 * 480, 1024 * 480, 240))
+        for top, bottom, rows in planes:
             for row in range(rows):
-                offset = (bottom if row & 1 else top) + (row // 2) * 1024
+                offset = (top + row * 1024 if args.progressive else
+                          (bottom if row & 1 else top) + (row // 2) * 1024)
                 linear.extend(actual[offset:offset + 864])
                 padding_errors += sum(value != 0 for value in actual[offset + 864:offset + 1024])
         active_errors = sum(a != b for a, b in zip(linear, expected))

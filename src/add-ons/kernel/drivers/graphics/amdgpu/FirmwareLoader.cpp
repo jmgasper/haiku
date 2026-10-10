@@ -23,6 +23,21 @@ InstalledFirmware::~InstalledFirmware()
 status_t
 InstalledFirmware::Load(const char* name, bool smc)
 {
+	return Read(name, smc ? 0x20100 : 65536,
+		smc ? amdgpu::ParseSmcFirmware : amdgpu::ParseSdmaFirmware);
+}
+
+status_t
+InstalledFirmware::LoadUvd()
+{
+	status_t status = Read("polaris10_uvd.bin", 1024 * 1024, amdgpu::ParseUvdFirmware);
+	return status == B_OK && view.version != 0x01008210 ? B_BAD_DATA : status;
+}
+
+status_t
+InstalledFirmware::Read(const char* name, size_t limit,
+	bool (*parse)(const void*, size_t, amdgpu::FirmwareView&))
+{
 	// Only fixed driver filenames are accepted; never search user directories.
 	if (fData != NULL || name == NULL || strchr(name, '/') != NULL)
 		return B_BAD_VALUE;
@@ -48,7 +63,7 @@ InstalledFirmware::Load(const char* name, bool smc)
 	struct stat info;
 	status_t status = fstat(fd, &info) == 0 ? B_OK : errno;
 	if (status == B_OK && (!S_ISREG(info.st_mode) || info.st_size < 36
-		|| info.st_size > (smc ? 0x20100 : 65536)))
+		|| (uint64)info.st_size > limit))
 		status = B_BAD_DATA;
 	if (status == B_OK) {
 		fData = malloc(info.st_size);
@@ -61,9 +76,7 @@ InstalledFirmware::Load(const char* name, bool smc)
 			status = bytes < 0 ? errno : B_IO_ERROR;
 	}
 	close(fd);
-	if (status == B_OK && !(smc
-		? amdgpu::ParseSmcFirmware(fData, info.st_size, view)
-		: amdgpu::ParseSdmaFirmware(fData, info.st_size, view)))
+	if (status == B_OK && !parse(fData, info.st_size, view))
 		status = B_BAD_DATA;
 	if (status == B_OK)
 		dprintf("amdgpu: installed firmware %s version %#x feature %u\n",

@@ -2,6 +2,16 @@
 #ifndef AMDGPU_UVD_H
 #define AMDGPU_UVD_H
 #include "Sdma.h"
+#include "UvdH264.h"
+struct UvdSession {
+	amdgpu_h264_config config;
+	amdgpu::UvdH264Layout layout;
+	volatile uint32* cpu;
+	uint64 offset, gpu;
+	area_id area;
+	uint32 handle, frames;
+	bool created;
+};
 struct UvdEngine {
 	volatile uint32* regs;
 	volatile uint32* memory;
@@ -9,6 +19,12 @@ struct UvdEngine {
 	uint64 gpu;
 	uint32 wptr, sequence;
 	bool attempted, ready, faulted;
+	status_t Initialize(volatile uint32* r, const amdgpu_info& info,
+		const amdgpu::AtomVramReservation& reservation,
+		const amdgpu::FirmwareView& firmware, amdgpu_uvd_test& result);
+	status_t Session(UvdSession& session, uint32 type,
+		const amdgpu_h264_picture* picture, const void* bitstream, uint32 bytes,
+		void* output, amdgpu_uvd_test& result);
 	status_t Test(volatile uint32* r, const amdgpu_info& info,
 		const amdgpu::AtomVramReservation& reservation,
 		const amdgpu::FirmwareView& firmware, amdgpu_uvd_test& result, void* output);
