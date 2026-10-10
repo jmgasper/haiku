@@ -5,8 +5,9 @@ listed as verified is untested.
 
 **2026-10-10 GPU replacement:** the X399 now has a Radeon Pro WX 5100.
 The NVIDIA display, 3D and video results below are historical. The current
-AMD installation runs on the firmware framebuffer; hardware acceleration
-and decoding are not yet available. [WX5100.md](WX5100.md) records the native
+AMD desktop runs on the firmware framebuffer. SDMA transfers and bounded
+kernel compute shaders now pass native data checks; application rendering
+and hardware decoding are not yet available. [WX5100.md](WX5100.md) records the native
 hardware probe, implementation work and acceptance criteria.
 
 `tools/check-workstation.sh` re-checks the machine against all of this in one

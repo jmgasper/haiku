@@ -157,7 +157,7 @@ GfxEngine::Snapshot(amdgpu_gfx_test& result)
 		(unsigned)result.stage, (unsigned)result.vm_fault_status,
 		(unsigned)result.vm_fault_address, (unsigned)result.vm_fault_client);
 	if (result.stage == 4) {
-		const uint32 indexes[] = {0xc08d, 0xc092, 0xc093, 0xc0cc, 0xc0cd,
+		const uint32 indexes[] = {0xc08d, 0xc08e, 0x30ad, 0xc092, 0xc093, 0xc0cc, 0xc0cd,
 			0xc0ce, 0xc0cf, 0xc0d0, 0xc0d1, 0xc0c3, 0xc0c4, 0xc0c6,
 			0xc0c7, 0xc0c8, 0xc0d2, 0xc0d3, 0xeca2, 0xeca3, 0xeca4};
 		for (uint32 index : indexes)
@@ -344,6 +344,14 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			emit((uint32)(gpu + offset));
 			emit((gpu + offset) >> 32);
 		}
+		uint32 offset = 0x30110 + slot * 4;
+		memory[offset / 4] = 0xffffffff;
+		emit(Packet(0x40, 4));
+		emit(5 << 8 | 1 << 20);
+		emit(0xc08e); // CP_PFP_LOAD_CONTROL
+		emit(0);
+		emit((uint32)(gpu + offset));
+		emit((gpu + offset) >> 32);
 	};
 	// Invalidate caches after CPU updates and synchronize PFP before IB reads.
 	// gfx_v8_0_emit_mem_sync uses this full-range VI cache operation.
@@ -419,6 +427,11 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	// First exercise direct ring packets, then the indirect-buffer fetch path.
 	// Both streams and all addresses are private to the kernel.
 	if (!direct && !shader) {
+		// Explicitly disable inherited register loads/shadowing outside the
+		// clear-state preamble before entering a private indirect buffer.
+		emit(Packet(0x28, 1));
+		emit(0x80000000);
+		emit(0x80000000);
 		uint64 address = kCommandVA;
 		uint32 length = n;
 		if (minimalIB) {
@@ -493,6 +506,8 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		(unsigned)sequence, (unsigned)memory[0x30100 / 4],
 		(unsigned)memory[0x30104 / 4], (unsigned)memory[0x30108 / 4],
 		(unsigned)memory[0x3010c / 4]);
+	dprintf("amdgpu: GFX load control before %#x after %#x\n",
+		(unsigned)memory[0x30110 / 4], (unsigned)memory[0x30114 / 4]);
 	if (status != B_OK) {
 		const uint32 registers[] = {0x208d, 0x21c2, 0x3043, 0x3044, 0x3046,
 			0x3047, 0x3061, 0x3066, 0x230a, 0x230b, 0x230c, 0x230d,
