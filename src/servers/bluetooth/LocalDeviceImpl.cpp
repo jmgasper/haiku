@@ -18,6 +18,7 @@
 #include <bluetooth/HCI/btHCI_event.h>
 
 #include <ConnectionIncoming.h>
+#include <LELog.h>
 #include <PincodeWindow.h>
 #include <Alert.h>
 #include <ByteOrder.h>
@@ -27,6 +28,14 @@
 #include <stdio.h>
 #include <string.h>
 #include <new>
+
+
+// Classic links, pairing and encryption go to the Bluetooth log (see
+// LELog.h): connection problems are otherwise invisible.
+using namespace Bluetooth;
+
+#define CLASSIC_LOG(level, format, args...) \
+	LELog(level, "classic", format, ##args)
 
 
 #if 0
@@ -1223,6 +1232,10 @@ LocalDeviceImpl::CommandStatus(struct hci_ev_cmd_status* event,
 		case PACK_OPCODE(OGF_LINK_CONTROL, OCF_CREATE_CONN):
 		{
 			TRACE_BT("LocalDeviceImpl: Command Status for create connection %x\n", event->status);
+			if (event->status != BT_OK) {
+				CLASSIC_LOG(LE_LOG_ERROR, "Create Connection refused: %#x",
+					event->status);
+			}
 
 			switch (event->status) {
 				case BT_OK:
@@ -1679,11 +1692,12 @@ LocalDeviceImpl::CreateConnection(BMessage* message)
 	message->FindUInt8("role_switch", &command->role_switch);
 
 
+	CLASSIC_LOG(LE_LOG_INFO, "connecting to %s (packet types %#x, page scan "
+		"mode %u, clock offset %#x)", bdaddrUtils::ToString(*bdaddr).String(),
+		command->pkt_type, command->pscan_rep_mode, command->clock_offset);
 	if (fHCIDelegate->IssueCommand(command.Data(), command.Size()) == B_ERROR) {
-		TRACE_BT("LocalDeviceImpl: Command issued error for %s\n", __FUNCTION__);
+		CLASSIC_LOG(LE_LOG_ERROR, "could not issue Create Connection");
 		return;
-	} else {
-		TRACE_BT("LocalDeviceImpl: Command issued for %s\n", __FUNCTION__);
 	}
 
 	BMessage* newRequest = new BMessage;
@@ -1842,6 +1856,10 @@ LocalDeviceImpl::ConnectionComplete(struct hci_ev_conn_complete* event)
 		reply.AddData("bdaddr", B_ANY_TYPE, &event->bdaddr, sizeof(bdaddr_t));
 
 	reply.AddUInt8("status", event->status);
+	CLASSIC_LOG(event->status == BT_OK ? LE_LOG_INFO : LE_LOG_ERROR,
+		"link to %s: status %#x, handle %#x, type %u, encryption %u",
+		bdaddrUtils::ToString(event->bdaddr).String(), event->status,
+		event->handle, event->link_type, event->encrypt_mode);
 	if (event->status == BT_OK) {
 		if (rd != NULL) {
 			rd->handle = event->handle;
@@ -1900,6 +1918,8 @@ LocalDeviceImpl::DisconnectionComplete(hci_ev_disconnection_complete_reply* even
 		BluetoothError(event->reason), event->status);
 	uint16 handle = B_LENDIAN_TO_HOST_INT16(event->handle);
 	HandleLEDisconnection(handle, event->status, event->reason);
+	CLASSIC_LOG(LE_LOG_INFO, "link %#x down: status %#x, reason %#x", handle,
+		event->status, event->reason);
 
 	ServerRemoteDevice* rd;
 	rd = RemoteDeviceByHandle(handle);
@@ -1965,6 +1985,8 @@ LocalDeviceImpl::LinkKeyNotify(hci_ev_link_key_notify* event,
 	if (rd == NULL)
 		return;
 
+	CLASSIC_LOG(LE_LOG_INFO, "new link key for %s, type %u",
+		bdaddrUtils::ToString(event->bdaddr).String(), event->key_type);
 	rd->link_key = event->link_key;
 	rd->key_type = event->key_type;
 	// Keep the key now: the next time the device connects it is asked for,
@@ -1982,7 +2004,12 @@ LocalDeviceImpl::LinkKeyRequested(struct hci_ev_link_key_req* keyRequested,
 
 	ServerRemoteDevice* rd = RemoteDeviceByAddr(keyRequested->bdaddr);
 	linkkey_t nullLinkKey = LinkKeyUtils::NullKey();
-	if (rd == NULL || LinkKeyUtils::Compare(&rd->link_key, &nullLinkKey)) {
+	const bool haveKey = rd != NULL
+		&& !LinkKeyUtils::Compare(&rd->link_key, &nullLinkKey);
+	CLASSIC_LOG(LE_LOG_INFO, "link key for %s requested: %s",
+		bdaddrUtils::ToString(keyRequested->bdaddr).String(),
+		haveKey ? "stored" : "none, pairing");
+	if (!haveKey) {
 		BluetoothCommand<typed_command(hci_cp_link_key_neg_reply)>
 			linkKeyNegativeReply(OGF_LINK_CONTROL, OCF_LINK_KEY_NEG_REPLY);
 
@@ -2128,6 +2155,9 @@ LocalDeviceImpl::IOCapabilityResponse(struct hci_ev_io_capability_response* even
 	ServerRemoteDevice* rd = RemoteDeviceByAddr(event->bdaddr);
 	if (rd != NULL)
 		rd->remote_io_capability = event->capability;
+	CLASSIC_LOG(LE_LOG_INFO, "pairing with %s: its IO capability %u, "
+		"authentication %#x", bdaddrUtils::ToString(event->bdaddr).String(),
+		event->capability, event->authentication);
 }
 
 
@@ -2193,6 +2223,9 @@ void
 LocalDeviceImpl::SimplePairingComplete(struct hci_ev_simple_pairing_complete* event,
 	BMessage* request)
 {
+	CLASSIC_LOG(event->status == BT_OK ? LE_LOG_INFO : LE_LOG_ERROR,
+		"pairing with %s finished: %#x",
+		bdaddrUtils::ToString(event->bdaddr).String(), event->status);
 	if (event->status == BT_OK) {
 		TRACE_BT("LocalDeviceImpl: %s successfull for %s!\n", __FUNCTION__,
 			bdaddrUtils::ToString(event->bdaddr).String());
@@ -2211,6 +2244,8 @@ LocalDeviceImpl::AuthComplete(struct hci_ev_auth_complete* eventData, BMessage* 
 {
 	uint16 handle = B_LENDIAN_TO_HOST_INT16(eventData->handle);
 	uint8 status = eventData->status;
+	CLASSIC_LOG(status == BT_OK ? LE_LOG_INFO : LE_LOG_ERROR,
+		"authentication of link %#x: %#x", handle, status);
 
 	if (status == BT_OK) {
 		TRACE_BT("LocalDeviceImpl: Authentication Successful for handle %d\n", handle);
@@ -2262,6 +2297,9 @@ LocalDeviceImpl::EncryptChange(struct hci_ev_encrypt_change* event)
 	if (rd == NULL)
 		return;
 
+	CLASSIC_LOG(event->status == BT_OK ? LE_LOG_INFO : LE_LOG_ERROR,
+		"encryption of link %#x: status %#x, %s", handle, event->status,
+		event->encrypt ? "on" : "off");
 	rd->encryption_enabled = event->encrypt;
 	if (rd->encryption_enabled != 0)
 		((BluetoothServer*)be_app)->NotifyServices(rd);
