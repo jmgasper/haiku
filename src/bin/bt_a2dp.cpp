@@ -46,8 +46,9 @@ usage(const char* name)
 		"  -r, --rate <hz>    preferred sample rate, 44100 or 48000\n"
 		"  -b, --bitpool <n>  highest bitpool to use (53)\n"
 		"  -d, --disconnect   drop the ACL link at the end\n"
-		"  -u, --use [name]   make the device the Bluetooth audio output\n"
+		"  -u, --use          make the device the Bluetooth audio output\n"
 		"                     and exit; \"none\" as address forgets it\n"
+		"  -n, --name <name>  the device's name, with --use\n"
 		"  -o, --output       show the system's audio output and exit\n",
 		name);
 }
@@ -218,7 +219,8 @@ main(int argc, char** argv)
 		{ "file", required_argument, NULL, 'f' },
 		{ "lead", required_argument, NULL, 'l' },
 		{ "volume", required_argument, NULL, 'v' },
-		{ "use", optional_argument, NULL, 'u' },
+		{ "use", no_argument, NULL, 'u' },
+		{ "name", required_argument, NULL, 'n' },
 		{ "output", no_argument, NULL, 'o' },
 		{ "help", no_argument, NULL, 'h' },
 		{ NULL, 0, NULL, 0 }
@@ -239,13 +241,15 @@ main(int argc, char** argv)
 	bool use = false;
 	const char* useName = NULL;
 	int option;
-	while ((option = getopt_long(argc, argv, "qs:r:b:dt:wf:l:v:u::oh",
+	while ((option = getopt_long(argc, argv, "qs:r:b:dt:wf:l:v:un:oh",
 			kOptions, NULL)) != -1) {
 		switch (option) {
 			case 'o':
 				return show_output();
 			case 'u':
 				use = true;
+				break;
+			case 'n':
 				useName = optarg;
 				break;
 			case 't':
