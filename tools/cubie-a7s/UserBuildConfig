@@ -50,6 +50,24 @@ if $(CUBIE_LAB_IMAGE) = 1 {
 
 rule UserBuildConfigRulePreImage
 {
+	# The PowerVR GPU's firmware and its licence (fetch-gpu-firmware.sh; not
+	# in git), for the powervr driver's firmware stage. Left out, with a
+	# note, when they have not been fetched.
+	if $(HAIKU_BUILD_PROFILE) in minimum-cubie cubie-airos {
+		local gpuFirmwareDir = /mnt/HaikuWork/cubie/firmware/powervr ;
+		local gpuFirmwareFiles = rogue_36.56.104.183_v1.fw LICENSE.powervr ;
+		local found = [ Glob $(gpuFirmwareDir) : $(gpuFirmwareFiles) ] ;
+		if $(found[2]) {
+			local gpuFirmware = <cubie-gpu-firmware>$(gpuFirmwareFiles) ;
+			SEARCH on $(gpuFirmware) = $(gpuFirmwareDir) ;
+			AddFilesToHaikuImage system non-packaged data firmware powervr
+				: $(gpuFirmware) ;
+		} else {
+			Echo "cubie-a7s: no PowerVR GPU firmware in $(gpuFirmwareDir),"
+				"the image goes without (fetch-gpu-firmware.sh)" ;
+		}
+	}
+
 	if $(HAIKU_ARM64_ZSTD_PACKAGES_DIR) {
 		local zstdPackage = <cubie-zstd>zstd-1.5.7-1-arm64.hpkg ;
 		SEARCH on $(zstdPackage) = $(HAIKU_ARM64_ZSTD_PACKAGES_DIR) ;
@@ -178,11 +196,20 @@ rule UserBuildConfigRulePreImage
 	if $(CUBIE_LAB_IMAGE) = 1 {
 		# lab tools, and the driver settings that let cubie_reg at the
 		# display registers
-		AddFilesToHaikuImage system non-packaged bin : cubie_reg aicload ;
+		AddFilesToHaikuImage system non-packaged bin : cubie_reg cubie_fetch
+			pvrinfo aicload ;
 		local labSettings = <cubie-lab>sunxi_display ;
 		SEARCH on $(labSettings) = [ FDirName $(HAIKU_TOP) tools cubie-a7s lab ] ;
 		AddFilesToHaikuImage home config settings kernel drivers
 			: $(labSettings) ;
+
+		# The powervr driver boots the GPU firmware at start and logs it
+		# (bring-up stage 2): lab images only, distributable ones leave the
+		# firmware stage off.
+		local gpuSettings = <cubie-lab-settings>powervr ;
+		SEARCH on $(gpuSettings) = [ FDirName $(HAIKU_TOP) tools cubie-a7s lab ] ;
+		AddFilesToHaikuImage home config settings kernel drivers
+			: $(gpuSettings) ;
 
 		# A telnet login for the lab, with an account whose password hash
 		# lives outside the tree (state/lab-overlay, made once per lab).
