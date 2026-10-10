@@ -536,10 +536,13 @@ shim() {
 	# stacks from RLIMIT_STACK; the Haiku-only 8 MiB for Mesa's own threads
 	# does not apply here): a frame too large for an application's thread
 	# crashes here as on the board.
+	# The memory types are the board's: the host-cached one (on by default
+	# only on Haiku) and zink's staging in it; host memory is coherent, so
+	# the cache maintenance is a no-op here.
 	local run name
 	for run in tls_generation_check \
-		pvr_vkprobe pvr_vkfill pvr_vkfence pvr_vktriangle pvr_vkhang \
-		"pvr_vktriangle --linear" \
+		pvr_vkprobe pvr_vkfill "pvr_vkfill 1 5000 --cached" pvr_vkfence \
+		pvr_vktriangle pvr_vkhang "pvr_vktriangle --linear" \
 		"pvr_vkbench --seconds 3 --interval 1" \
 		"pvr_vkbench --seconds 3 --interval 1 --timeline --rerecord" \
 		"pvr_glprobe --expect zink" \
@@ -555,10 +558,12 @@ shim() {
 		*--timeline*) name=$name-timeline-rerecord ;;
 		*--repeat*) name=$name-repeat ;;
 		*--linear) name=$name-linear ;;
+		*--cached) name=$name-cached ;;
 		*--expect*) name=$name-expect-zink ;;
 		esac
 		(ulimit -s 256
 		PVR_SHIM_DEVICE_BVNC=$SHIM_BVNC PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 \
+			PVR_CACHED_MEMORY_TYPE=1 ZINK_NONCOHERENT_CACHED_STAGING=1 \
 			EGL_PLATFORM=surfaceless MESA_LOADER_DRIVER_OVERRIDE=zink \
 			LD_LIBRARY_PATH="$s/lib:$LD_LIBRARY_PATH" \
 			LD_PRELOAD=$preload timeout 120 "$s/"$run > "$s/$name.log" 2>&1) \
@@ -583,6 +588,7 @@ shim() {
 		if (ulimit -s 256
 			PVR_TRACE_FAIL_SUBMIT=1 PVR_SHIM_DEVICE_BVNC=$SHIM_BVNC \
 			PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 EGL_PLATFORM=surfaceless \
+			PVR_CACHED_MEMORY_TYPE=1 ZINK_NONCOHERENT_CACHED_STAGING=1 \
 			MESA_LOADER_DRIVER_OVERRIDE=zink \
 			LD_LIBRARY_PATH="$s/lib:$LD_LIBRARY_PATH" \
 			LD_PRELOAD=$preload timeout 60 "$s/"$run > "$s/$name.log" 2>&1)

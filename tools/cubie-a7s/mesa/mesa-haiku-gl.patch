@@ -49,6 +49,17 @@ shared V3D bitmaps, plus the zink pieces of the air/OS x86_64 fork
       zink_wait_on_batch() on a lost device: the flush submits nothing, so
       the batch has no id; report the loss and return instead of asserting
       (debugoptimized builds aborted the GL program after a GPU reset)
+  src/gallium/drivers/zink/zink_screen.c, zink_resource.c
+      host-cached memory that is not coherent (the PowerVR driver's second
+      type on air/OS): with no coherent cached type, the staging heap
+      (ZINK_HEAP_HOST_VISIBLE_COHERENT_CACHED) takes the cached types
+      first, the coherent ones after them (Haiku only); coherent and
+      persistent resources skip types that are not coherent (Haiku only);
+      a read map of such a buffer needs no second staging copy (Haiku
+      only); and zink_image_map() invalidates a non-coherent staging buffer
+      or linear image before it is read, which it did not (any OS). Every
+      GL frame's readback (glReadPixels, the BGLView present) read from
+      write-combined memory before
   src/c11/impl/threads_posix.c
       thrd_create() gives Mesa's threads (util_queue, u_thread_create(),
       the Vulkan runtime's submit thread) 8 MiB of stack, as on Linux,
@@ -1070,6 +1081,105 @@ diff -ruN a/src/gallium/drivers/zink/zink_descriptors.c b/src/gallium/drivers/zi
  void
  zink_descriptor_shader_get_binding_offsets(const struct zink_shader *shader, unsigned *offsets)
  {
+diff -ruN a/src/gallium/drivers/zink/zink_resource.c b/src/gallium/drivers/zink/zink_resource.c
+--- a/src/gallium/drivers/zink/zink_resource.c
++++ b/src/gallium/drivers/zink/zink_resource.c
+@@ -1160,6 +1160,17 @@
+       for (unsigned i = 0; !obj->bo && i < screen->heap_count[heap]; i++) {
+          if (!(reqs->memoryTypeBits & BITFIELD_BIT(screen->heap_map[heap][i])))
+             continue;
++         /* Coherent and persistent maps are never flushed or invalidated:
++          * not in host memory that is not coherent (see zink_screen.c).
++          */
++         if (screen->noncoherent_cached_staging &&
++             (templ->flags & (PIPE_RESOURCE_FLAG_MAP_COHERENT | PIPE_RESOURCE_FLAG_MAP_PERSISTENT))) {
++            const VkMemoryPropertyFlags type_flags =
++               screen->info.mem_props.memoryTypes[screen->heap_map[heap][i]].propertyFlags;
++            if ((type_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
++                !(type_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
++               continue;
++         }
+ 
+          mai.memoryTypeIndex = screen->heap_map[heap][i];
+          obj->bo = zink_bo(zink_bo_create(screen, reqs->size, alignment, heap, mai.pNext ? ZINK_ALLOC_NO_SUBALLOC : 0, mai.memoryTypeIndex, mai.pNext));
+@@ -2548,6 +2559,29 @@
+       *size += align;
+ }
+ 
++/* The first size bytes of obj, widened to nonCoherentAtomSize. Unlike
++ * zink_resource_init_mem_range(), whose limit is the object's size although
++ * offsets are relative to its (possibly larger, shared) memory, this stays
++ * inside the object: an image's readback no longer invalidates its whole
++ * staging slab.
++ */
++static VkMappedMemoryRange
++noncoherent_object_range(struct zink_screen *screen, struct zink_resource_object *obj, VkDeviceSize size)
++{
++   const VkDeviceSize atom = MAX2(screen->info.props.limits.nonCoherentAtomSize, 1);
++   const VkDeviceSize start = obj->offset - obj->offset % atom;
++   VkDeviceSize end = obj->offset + MIN2(size, obj->size);
++   end += (atom - end % atom) % atom;
++   VkMappedMemoryRange range = {
++      VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
++      NULL,
++      zink_bo_get_mem(obj->bo),
++      start,
++      end > obj->offset + obj->size ? VK_WHOLE_SIZE : end - start
++   };
++   return range;
++}
++
+ VkMappedMemoryRange
+ zink_resource_init_mem_range(struct zink_screen *screen, struct zink_resource_object *obj, VkDeviceSize offset, VkDeviceSize size)
+ {
+@@ -2722,7 +2756,13 @@
+          goto success;
+       usage |= PIPE_MAP_UNSYNCHRONIZED;
+    } else if (((usage & PIPE_MAP_READ) && !(usage & PIPE_MAP_PERSISTENT) &&
+-               ((screen->info.mem_props.memoryTypes[res->obj->bo->base.placement].propertyFlags & VK_STAGING_RAM) != VK_STAGING_RAM)) ||
++               ((screen->info.mem_props.memoryTypes[res->obj->bo->base.placement].propertyFlags & VK_STAGING_RAM) != VK_STAGING_RAM)
++               /* cached memory that is not coherent reads as fast, once
++                * invalidated (below): no second staging copy
++                */
++               && !(screen->noncoherent_cached_staging &&
++                    (screen->info.mem_props.memoryTypes[res->obj->bo->base.placement].propertyFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT))
++              ) ||
+               !res->obj->host_visible) {
+       /* any read, non-HV write, or unmappable that reaches this point needs staging */
+       if ((usage & PIPE_MAP_READ) || !res->obj->host_visible || res->base.b.flags & PIPE_RESOURCE_FLAG_DONT_MAP_DIRECTLY) {
+@@ -2892,6 +2932,16 @@
+       }
+ 
+       ptr = map_resource(screen, staging_res);
++      /* the copy is complete (zink_fence_wait()); a staging buffer in host
++       * memory that is not coherent must be invalidated before it is read
++       */
++      if (ptr && (usage & PIPE_MAP_READ) && !staging_res->obj->coherent) {
++         VkMappedMemoryRange range =
++            noncoherent_object_range(screen, staging_res->obj,
++                                     staging_res->base.b.width0);
++         if (VKSCR(InvalidateMappedMemoryRanges)(screen->dev, 1, &range) != VK_SUCCESS)
++            mesa_loge("ZINK: vkInvalidateMappedMemoryRanges failed");
++      }
+    } else {
+       assert(res->linear);
+       ptr = map_resource(screen, res);
+@@ -2904,6 +2954,15 @@
+          else
+             zink_resource_usage_wait(ctx, res, ZINK_RESOURCE_ACCESS_WRITE);
+       }
++      /* a linear image in host memory that is not coherent: invalidate what
++       * the GPU wrote before reading it
++       */
++      if ((usage & PIPE_MAP_READ) && !res->obj->coherent) {
++         VkMappedMemoryRange range =
++            noncoherent_object_range(screen, res->obj, res->obj->size);
++         if (VKSCR(InvalidateMappedMemoryRanges)(screen->dev, 1, &range) != VK_SUCCESS)
++            mesa_loge("ZINK: vkInvalidateMappedMemoryRanges failed");
++      }
+       VkImageSubresource isr = {
+          res->modifiers ? res->obj->modifier_aspect : res->aspect,
+          level,
 diff -ruN a/src/gallium/drivers/zink/zink_screen.c b/src/gallium/drivers/zink/zink_screen.c
 --- a/src/gallium/drivers/zink/zink_screen.c
 +++ b/src/gallium/drivers/zink/zink_screen.c
@@ -1086,6 +1196,35 @@ diff -ruN a/src/gallium/drivers/zink/zink_screen.c b/src/gallium/drivers/zink/zi
  #endif
  
     /* Hash in the Vulkan pipeline cache UUID to identify the combination of
+@@ -3541,8 +3547,26 @@
+          assert(i == ZINK_HEAP_HOST_VISIBLE_COHERENT_CACHED || i == ZINK_HEAP_DEVICE_LOCAL_LAZY ||
+                 i == ZINK_HEAP_DEVICE_LOCAL_VISIBLE);
+          if (i == ZINK_HEAP_HOST_VISIBLE_COHERENT_CACHED) {
+-            memcpy(screen->heap_map[i], screen->heap_map[ZINK_HEAP_HOST_VISIBLE_COHERENT], screen->heap_count[ZINK_HEAP_HOST_VISIBLE_COHERENT]);
+-            screen->heap_count[i] = screen->heap_count[ZINK_HEAP_HOST_VISIBLE_COHERENT];
++            /* No coherent cached memory (the PowerVR driver on air/OS): the
++             * staging that reads back what the GPU wrote, every GL frame, is
++             * far faster from cached memory that is kept coherent by hand
++             * (each object knows whether it is coherent, and maps of the
++             * others are invalidated and flushed) than from write-combined
++             * memory. Coherent types follow, for resources that must be
++             * coherent (allocate_bo()). On air/OS by default;
++             * ZINK_NONCOHERENT_CACHED_STAGING=1 elsewhere, =0 to turn it off.
++             */
++            if (debug_get_bool_option("ZINK_NONCOHERENT_CACHED_STAGING", DETECT_OS_HAIKU)) {
++               const VkMemoryPropertyFlags cached =
++                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
++               for (unsigned j = 0; j < screen->info.mem_props.memoryTypeCount; j++) {
++                  if ((screen->info.mem_props.memoryTypes[j].propertyFlags & cached) == cached)
++                     screen->heap_map[i][screen->heap_count[i]++] = j;
++               }
++               screen->noncoherent_cached_staging = screen->heap_count[i] > 0;
++            }
++            for (unsigned j = 0; j < screen->heap_count[ZINK_HEAP_HOST_VISIBLE_COHERENT]; j++)
++               screen->heap_map[i][screen->heap_count[i]++] = screen->heap_map[ZINK_HEAP_HOST_VISIBLE_COHERENT][j];
+          } else {
+             memcpy(screen->heap_map[i], screen->heap_map[ZINK_HEAP_DEVICE_LOCAL], screen->heap_count[ZINK_HEAP_DEVICE_LOCAL]);
+             screen->heap_count[i] = screen->heap_count[ZINK_HEAP_DEVICE_LOCAL];
 diff -ruN a/src/gallium/drivers/zink/zink_state.c b/src/gallium/drivers/zink/zink_state.c
 --- a/src/gallium/drivers/zink/zink_state.c
 +++ b/src/gallium/drivers/zink/zink_state.c
@@ -1122,6 +1261,20 @@ diff -ruN a/src/gallium/drivers/zink/zink_state.c b/src/gallium/drivers/zink/zin
  
     return &zstate->b;
  }
+diff -ruN a/src/gallium/drivers/zink/zink_types.h b/src/gallium/drivers/zink/zink_types.h
+--- a/src/gallium/drivers/zink/zink_types.h
++++ b/src/gallium/drivers/zink/zink_types.h
+@@ -1446,6 +1446,10 @@
+    } pb;
+    uint8_t heap_map[ZINK_HEAP_MAX][VK_MAX_MEMORY_TYPES];  // mapping from zink heaps to memory type indices
+    uint8_t heap_count[ZINK_HEAP_MAX];  // number of memory types per zink heap
++   /* staging (ZINK_HEAP_HOST_VISIBLE_COHERENT_CACHED) uses host-cached memory
++    * that is not coherent, kept coherent on map/unmap (zink_screen.c)
++    */
++   bool noncoherent_cached_staging;
+    bool resizable_bar;
+ 
+    uint64_t total_video_mem;
 diff -ruN a/src/gallium/frontends/hgl/hgl.c b/src/gallium/frontends/hgl/hgl.c
 --- a/src/gallium/frontends/hgl/hgl.c
 +++ b/src/gallium/frontends/hgl/hgl.c

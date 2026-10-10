@@ -68,6 +68,23 @@ it).
                                     free the reservation and pass the address),
                                     unmapped with delete_area(); "reserve"
                                     unmaps leave a PROT_NONE mapping
+  pvr_host_cache.h (new),            a second memory type, DEVICE_LOCAL |
+  pvr_physical_device.c,            HOST_VISIBLE | HOST_CACHED (not COHERENT),
+  pvr_device.c, winsys/pvr_winsys.h, after the coherent one (so apps asking
+  winsys/powervr/pvr_drm_bo.[ch]    for HOST_VISIBLE or HOST_COHERENT still
+                                    get that first): mapped write-back cached
+                                    (PVR_HAIKU_MAP_BO_CACHED, through the new
+                                    PVR_WINSYS_BO_FLAG_CPU_CACHED), kept
+                                    coherent by vkFlushMappedMemoryRanges
+                                    ("dc cvac") and
+                                    vkInvalidateMappedMemoryRanges ("dc
+                                    civac"), which were no-ops;
+                                    nonCoherentAtomSize is the larger of the
+                                    cache line (CTR_EL0) and 64.
+                                    PVR_CACHED_MEMORY_TYPE=0 hides the type
+                                    (=1 shows it off Haiku); a static_assert
+                                    checks the 32-byte struct
+                                    pvr_haiku_map_bo with its flags
   pvr_rt_dataset.[ch], pvr_device.h, a device cache of idle render target data
   pvr_arch_device.c,                sets (HWRT data set + local free list) for
   pvr_arch_cmd_buffer.c             dynamic rendering. Every
@@ -983,6 +1000,100 @@ diff -ruN a/src/imagination/vulkan/pvr_arch_queue.c b/src/imagination/vulkan/pvr
  VkResult PVR_PER_ARCH(QueueBindSparse)(VkQueue _queue,
                                         uint32_t bindInfoCount,
                                         const VkBindSparseInfo *pBindInfo,
+diff -ruN a/src/imagination/vulkan/pvr_device.c b/src/imagination/vulkan/pvr_device.c
+--- a/src/imagination/vulkan/pvr_device.c
++++ b/src/imagination/vulkan/pvr_device.c
+@@ -64,6 +64,7 @@
+ #include "util/macros.h"
+ #include "util/mesa-blake3.h"
+ #include "util/os_misc.h"
++#include "pvr_host_cache.h"
+ #include "util/u_math.h"
+ #include "vk_device_memory.h"
+ #include "vk_extensions.h"
+@@ -345,11 +346,16 @@
+        * types as an array that's indexed by pAllocateInfo->memoryTypeIndex so
+        * that they can be looked up.
+        */
++      uint32_t ws_flags = PVR_WINSYS_BO_FLAG_CPU_ACCESS;
++
++      if (mem_type->propertyFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)
++         ws_flags |= PVR_WINSYS_BO_FLAG_CPU_CACHED;
++
+       result = device->ws->ops->buffer_create(device->ws,
+                                               pAllocateInfo->allocationSize,
+                                               alignment,
+                                               type,
+-                                              PVR_WINSYS_BO_FLAG_CPU_ACCESS,
++                                              ws_flags,
+                                               &mem->bo);
+       if (result != VK_SUCCESS)
+          goto err_vk_device_memory_destroy;
+@@ -510,10 +516,50 @@
+    return VK_SUCCESS;
+ }
+ 
++/* Cache maintenance of mapped ranges of the host-cached (non-coherent)
++ * memory type; the coherent type needs none.
++ */
++static void pvr_mapped_memory_ranges_maintain(
++   struct pvr_device *device,
++   uint32_t memoryRangeCount,
++   const VkMappedMemoryRange *pMemoryRanges,
++   bool invalidate)
++{
++   for (uint32_t i = 0; i < memoryRangeCount; i++) {
++      VK_FROM_HANDLE(pvr_device_memory, mem, pMemoryRanges[i].memory);
++      const VkMemoryType *mem_type =
++         &device->pdevice->memory.memoryTypes[mem->vk.memory_type_index];
++      VkDeviceSize offset = pMemoryRanges[i].offset;
++      VkDeviceSize size;
++
++      if (mem_type->propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
++         continue;
++
++      /* The range must be mapped; the whole memory object always is. */
++      if (!mem->bo->map || offset >= mem->bo->size)
++         continue;
++
++      size = pMemoryRanges[i].size == VK_WHOLE_SIZE
++                ? mem->bo->size - offset
++                : MIN2(pMemoryRanges[i].size, mem->bo->size - offset);
++
++      pvr_host_cache_maintain((const uint8_t *)mem->bo->map + offset,
++                              size,
++                              invalidate);
++   }
++}
++
+ VkResult pvr_FlushMappedMemoryRanges(VkDevice _device,
+                                      uint32_t memoryRangeCount,
+                                      const VkMappedMemoryRange *pMemoryRanges)
+ {
++   VK_FROM_HANDLE(pvr_device, device, _device);
++
++   pvr_mapped_memory_ranges_maintain(device,
++                                     memoryRangeCount,
++                                     pMemoryRanges,
++                                     false);
++
+    return VK_SUCCESS;
+ }
+ 
+@@ -522,6 +568,13 @@
+                                  uint32_t memoryRangeCount,
+                                  const VkMappedMemoryRange *pMemoryRanges)
+ {
++   VK_FROM_HANDLE(pvr_device, device, _device);
++
++   pvr_mapped_memory_ranges_maintain(device,
++                                     memoryRangeCount,
++                                     pMemoryRanges,
++                                     true);
++
+    return VK_SUCCESS;
+ }
+ 
 diff -ruN a/src/imagination/vulkan/pvr_device.h b/src/imagination/vulkan/pvr_device.h
 --- a/src/imagination/vulkan/pvr_device.h
 +++ b/src/imagination/vulkan/pvr_device.h
@@ -1002,6 +1113,116 @@ diff -ruN a/src/imagination/vulkan/pvr_device.h b/src/imagination/vulkan/pvr_dev
  };
  
  struct pvr_device_memory {
+diff -ruN a/src/imagination/vulkan/pvr_host_cache.h b/src/imagination/vulkan/pvr_host_cache.h
+--- a/src/imagination/vulkan/pvr_host_cache.h
++++ b/src/imagination/vulkan/pvr_host_cache.h
+@@ -0,0 +1,106 @@
++/*
++ * Copyright 2026, air/OS. All rights reserved.
++ *
++ * SPDX-License-Identifier: MIT
++ */
++
++#ifndef PVR_HOST_CACHE_H
++#define PVR_HOST_CACHE_H
++
++/* The host-cached memory type (air/OS): HOST_VISIBLE | HOST_CACHED, not
++ * HOST_COHERENT. The GPU does not snoop the CPU caches, so CPU maps of the
++ * other type are write-combined, which is slow to read: zink's readback of
++ * every GL frame read from such memory. Buffers of this type are mapped
++ * write-back cached (PVR_HAIKU_MAP_BO_CACHED), and vkFlushMappedMemoryRanges()
++ * and vkInvalidateMappedMemoryRanges() keep them coherent with the data cache
++ * maintenance instructions EL0 may use on arm64 ("dc cvac" cleans what the CPU
++ * wrote before the GPU reads it, "dc civac" cleans and invalidates what the
++ * CPU will read after the GPU wrote it).
++ *
++ * PVR_CACHED_MEMORY_TYPE=0 hides the type, =1 shows it off air/OS too (the
++ * host smoke test, where all memory is coherent and the maintenance is a
++ * no-op).
++ */
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#include "util/detect_os.h"
++#include "util/macros.h"
++#include "util/u_debug.h"
++
++static inline bool pvr_host_cached_memory_type_enabled(void)
++{
++   return debug_get_bool_option("PVR_CACHED_MEMORY_TYPE", DETECT_OS_HAIKU);
++}
++
++#if defined(__aarch64__)
++static inline uint64_t pvr_host_ctr_el0(void)
++{
++   uint64_t ctr;
++
++   __asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr));
++   return ctr;
++}
++#endif
++
++/* The smallest data cache line: the stride of the maintenance loops. */
++static inline uintptr_t pvr_host_dcache_line_size(void)
++{
++#if defined(__aarch64__)
++   /* DminLine, log2 of the number of words */
++   return 4u << ((pvr_host_ctr_el0() >> 16) & 0xf);
++#else
++   return 64;
++#endif
++}
++
++/* VkPhysicalDeviceLimits::nonCoherentAtomSize: no smaller than the largest
++ * line any cache might write back (CTR_EL0.CWG), so that maintenance of one
++ * atom never touches its neighbours' lines.
++ */
++static inline uint32_t pvr_host_noncoherent_atom_size(void)
++{
++   uint32_t size = 64;
++
++#if defined(__aarch64__)
++   const uint64_t ctr = pvr_host_ctr_el0();
++   const uint32_t cwg = (ctr >> 24) & 0xf;
++
++   size = MAX2(size, 4u << ((ctr >> 16) & 0xf));
++   if (cwg != 0)
++      size = MAX2(size, 4u << cwg);
++#endif
++
++   return size;
++}
++
++/* Clean (CPU writes to memory, for the GPU to read) or clean and invalidate
++ * (so the CPU reads what the GPU wrote) the lines covering [addr, addr+size).
++ */
++static inline void
++pvr_host_cache_maintain(const void *addr, size_t size, bool invalidate)
++{
++#if defined(__aarch64__)
++   const uintptr_t line = pvr_host_dcache_line_size();
++   const uintptr_t end = (uintptr_t)addr + size;
++   uintptr_t p = (uintptr_t)addr & ~(line - 1);
++
++   if (invalidate) {
++      for (; p < end; p += line)
++         __asm__ volatile("dc civac, %0" : : "r"(p) : "memory");
++   } else {
++      for (; p < end; p += line)
++         __asm__ volatile("dc cvac, %0" : : "r"(p) : "memory");
++   }
++
++   __asm__ volatile("dsb sy" : : : "memory");
++#else
++   (void)addr;
++   (void)size;
++   (void)invalidate;
++#endif
++}
++
++#endif /* PVR_HOST_CACHE_H */
 diff -ruN a/src/imagination/vulkan/pvr_instance.c b/src/imagination/vulkan/pvr_instance.c
 --- a/src/imagination/vulkan/pvr_instance.c
 +++ b/src/imagination/vulkan/pvr_instance.c
@@ -1163,7 +1384,7 @@ diff -ruN a/src/imagination/vulkan/pvr_instance.c b/src/imagination/vulkan/pvr_i
 diff -ruN a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulkan/pvr_physical_device.c
 --- a/src/imagination/vulkan/pvr_physical_device.c
 +++ b/src/imagination/vulkan/pvr_physical_device.c
-@@ -12,7 +12,15 @@
+@@ -12,13 +12,22 @@
  
  #include "pvr_physical_device.h"
  
@@ -1179,7 +1400,14 @@ diff -ruN a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulka
  
  #include "git_sha1.h"
  
-@@ -115,7 +123,9 @@
+ #include "util/disk_cache.h"
+ #include "util/ralloc.h"
+ #include "util/os_misc.h"
++#include "pvr_host_cache.h"
+ 
+ #include "vk_util.h"
+ #include "vk_log.h"
+@@ -115,7 +124,9 @@
     disk_cache_destroy(pdevice->vk.disk_cache);
     pdevice->vk.disk_cache = NULL;
  #else
@@ -1190,7 +1418,16 @@ diff -ruN a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulka
  #endif /* ENABLE_SHADER_CACHE */
  }
  
-@@ -1118,7 +1128,8 @@
+@@ -764,7 +775,7 @@
+       .standardSampleLocations = true,
+       .optimalBufferCopyOffsetAlignment = PVR_STORAGE_BUFFER_OFFSET_ALIGNMENT,
+       .optimalBufferCopyRowPitchAlignment = PVR_STORAGE_BUFFER_OFFSET_ALIGNMENT,
+-      .nonCoherentAtomSize = 1U,
++      .nonCoherentAtomSize = pvr_host_noncoherent_atom_size(),
+ 
+       /* Vulkan 1.1 */
+       .subgroupSize = ROGUE_MAX_INSTANCES_PER_TASK,
+@@ -1118,7 +1129,8 @@
     primary_path = drm_render_device->nodes[DRM_NODE_PRIMARY];
     pdevice->has_primary = false;
     pdevice->primary_devid = 0;
@@ -1200,6 +1437,27 @@ diff -ruN a/src/imagination/vulkan/pvr_physical_device.c b/src/imagination/vulka
        pdevice->has_primary = true;
        pdevice->primary_devid = primary_stat.st_rdev;
     }
+@@ -1176,6 +1188,20 @@
+       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    pdevice->memory.memoryTypes[0].heapIndex = 0;
+ 
++   /* The host-cached type (pvr_host_cache.h). The coherent type stays first:
++    * an application asking for HOST_VISIBLE or HOST_COHERENT memory takes the
++    * first type that has it, as before; neither type's flags are a subset of
++    * the other's, so either order is valid. DEVICE_LOCAL because the heap is.
++    */
++   if (pvr_host_cached_memory_type_enabled()) {
++      pdevice->memory.memoryTypes[1].propertyFlags =
++         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
++         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
++         VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
++      pdevice->memory.memoryTypes[1].heapIndex = 0;
++      pdevice->memory.memoryTypeCount = 2;
++   }
++
+    pvr_physical_device_get_supported_extensions(&supported_extensions, instance);
+    pvr_physical_device_get_supported_features(&pdevice->dev_info,
+                                               &supported_features);
 diff -ruN a/src/imagination/vulkan/pvr_rt_dataset.c b/src/imagination/vulkan/pvr_rt_dataset.c
 --- a/src/imagination/vulkan/pvr_rt_dataset.c
 +++ b/src/imagination/vulkan/pvr_rt_dataset.c
@@ -1406,7 +1664,7 @@ diff -ruN a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c b/src/imagination
  static VkResult pvr_drm_get_bo_mmap_offset(struct pvr_drm_winsys *drm_ws,
                                             uint32_t handle,
                                             uint64_t *const offset_out)
-@@ -103,6 +107,114 @@
+@@ -103,6 +107,122 @@
  
     return VK_SUCCESS;
  }
@@ -1423,16 +1681,24 @@ diff -ruN a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c b/src/imagination
 + * exactly its place (B_EXACT_ADDRESS); if that fails, the reservation is
 + * put back.
 + */
++/* The structure grew flags (PVR_HAIKU_MAP_BO_CACHED); a kernel driver still
++ * expecting the old 24 bytes maps write-combined.
++ */
++static_assert(sizeof(struct pvr_haiku_map_bo) == 32,
++              "struct pvr_haiku_map_bo is not the 32-byte one with flags");
++
 +static VkResult pvr_drm_haiku_map_bo(struct pvr_drm_winsys *drm_ws,
 +                                     uint32_t handle,
 +                                     void *addr,
 +                                     uint64_t size,
++                                     bool cached,
 +                                     void **const map_out)
 +{
 +   struct pvr_haiku_map_bo args = {
 +      .handle = handle,
 +      .area = -1,
 +      .address = (uint64_t)(uintptr_t)addr,
++      .flags = cached ? PVR_HAIKU_MAP_BO_CACHED : 0,
 +   };
 +   int ret;
 +   int err;
@@ -1521,20 +1787,41 @@ diff -ruN a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c b/src/imagination
  
  static void pvr_drm_buffer_acquire(struct pvr_drm_winsys_bo *drm_bo)
  {
-@@ -309,6 +421,12 @@
+@@ -218,6 +338,7 @@
+    drm_bo->base.ws = ws;
+    drm_bo->handle = handle;
+    drm_bo->flags = drm_flags;
++   drm_bo->cpu_cached = !!(ws_flags & PVR_WINSYS_BO_FLAG_CPU_CACHED);
+ 
+    p_atomic_set(&drm_bo->ref_count, 1);
+ 
+@@ -262,6 +383,7 @@
+       drm_bo->base.size = (uint64_t)size;
+       drm_bo->base.is_imported = true;
+       drm_bo->handle = handle;
++      drm_bo->cpu_cached = false;
+ 
+       p_atomic_set(&drm_bo->ref_count, 1);
+    } else {
+@@ -309,6 +431,17 @@
  
     assert(!bo->map);
  
 +#ifdef __HAIKU__
 +   (void)offset;
-+   result = pvr_drm_haiku_map_bo(drm_ws, drm_bo->handle, addr, bo->size, &map);
++   result = pvr_drm_haiku_map_bo(drm_ws,
++                                 drm_bo->handle,
++                                 addr,
++                                 bo->size,
++                                 drm_bo->cpu_cached,
++                                 &map);
 +   if (result != VK_SUCCESS)
 +      goto err_out;
 +#else
     result = pvr_drm_get_bo_mmap_offset(drm_ws, drm_bo->handle, &offset);
     if (result != VK_SUCCESS)
        goto err_out;
-@@ -322,6 +440,7 @@
+@@ -322,6 +455,7 @@
                       &map);
     if (result != VK_SUCCESS)
        goto err_out;
@@ -1542,7 +1829,7 @@ diff -ruN a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c b/src/imagination
  
     VG(VALGRIND_MALLOCLIKE_BLOCK(map, bo->size, 0, true));
  
-@@ -341,7 +460,11 @@
+@@ -341,7 +475,11 @@
  
     assert(bo->map);
  
@@ -1554,6 +1841,19 @@ diff -ruN a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c b/src/imagination
  
     VG(VALGRIND_FREELIKE_BLOCK(bo->map, 0));
  
+diff -ruN a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.h b/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.h
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.h
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.h
+@@ -42,6 +42,9 @@
+ 
+    uint32_t handle;
+    uint64_t flags;
++
++   /* CPU maps are cached (PVR_WINSYS_BO_FLAG_CPU_CACHED) */
++   bool cpu_cached;
+ };
+ 
+ struct pvr_drm_winsys_vma {
 diff -ruN a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_common.h b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_common.h
 --- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_common.h
 +++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_common.h
@@ -1739,6 +2039,23 @@ diff -ruN a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c b/src/i
 +                              &args,
 +                              "Failed to submit transfer job");
  }
+diff -ruN a/src/imagination/vulkan/winsys/pvr_winsys.h b/src/imagination/vulkan/winsys/pvr_winsys.h
+--- a/src/imagination/vulkan/winsys/pvr_winsys.h
++++ b/src/imagination/vulkan/winsys/pvr_winsys.h
+@@ -114,6 +114,13 @@
+  * accessible to the Parameter Manager unit and firmware processor.
+  */
+ #define PVR_WINSYS_BO_FLAG_PM_FW_PROTECT BITFIELD_BIT(2U)
++/**
++ * \brief Flag passed to #pvr_winsys_ops.buffer_create to indicate that the
++ * buffer's CPU maps should be cached (write-back) rather than write-combined:
++ * the host-cached memory type, kept coherent by the caller
++ * (pvr_host_cache.h). Only the air/OS winsys acts on it.
++ */
++#define PVR_WINSYS_BO_FLAG_CPU_CACHED BITFIELD_BIT(3U)
+ 
+ struct pvr_winsys_bo {
+    struct pvr_winsys *ws;
 diff -ruN a/src/util/meson.build b/src/util/meson.build
 --- a/src/util/meson.build
 +++ b/src/util/meson.build

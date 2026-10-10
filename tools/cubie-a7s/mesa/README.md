@@ -42,6 +42,12 @@ On the image, the libraries go to `/boot/system/non-packaged/lib`, `10_mesa.json
 - `src/util/u_sync_provider_haiku.c` connects those wrappers to the Vulkan runtime, with timelines.
 - `pvr_instance.c` opens the device node directly. `HAIKU_PVR_DEVICE` overrides the path.
 - `pvr_drm_bo.c` maps buffers with `PVR_HAIKU_NR_MAP_BO` and unmaps them with `delete_area()`.
+- There is a second memory type: DEVICE_LOCAL | HOST_VISIBLE | HOST_CACHED, not HOST_COHERENT (`pvr_host_cache.h`).
+    - Its buffers are mapped write-back cached with `PVR_HAIKU_MAP_BO_CACHED`. The coherent type's maps are write-combined, which is slow to read.
+    - `vkFlushMappedMemoryRanges()` cleans the range (`dc cvac`) and `vkInvalidateMappedMemoryRanges()` cleans and invalidates it (`dc civac`). Before this they did nothing. `nonCoherentAtomSize` is the larger of 64 and the cache line size from `CTR_EL0`.
+    - The coherent type stays type 0, so applications that ask for HOST_VISIBLE or HOST_COHERENT still get it first. Neither type's flags are a subset of the other's, so the Vulkan ordering rule allows either order.
+    - `PVR_CACHED_MEMORY_TYPE=0` hides the type, and `=1` shows it off Haiku.
+    - Zink needs `mesa-haiku-gl.patch` to use it: see [OpenGL](#opengl).
 - A GPU reset loses the device. When the kernel refuses a job with `EIO` (or `ENODEV`), the winsys returns `VK_ERROR_DEVICE_LOST` instead of `VK_ERROR_OUT_OF_DEVICE_MEMORY`. This covers render, compute, transfer and null jobs. `pvr_arch_queue.c` then marks the queue lost and signals that submission's semaphores and fence, which wakes any thread already waiting on them. Every later wait, submit or status query returns `VK_ERROR_DEVICE_LOST` at once.
 - Dynamic rendering reuses render target data sets. Each `vkCmdBeginRendering()`, which zink uses for every render pass, gets a render state of its own. That used to mean a new HWRT data set and local free list for every frame, destroyed when the command buffer was reset. In the kernel, each create and destroy meant firmware objects, buffers, VM maps and synchronous firmware cleanups.
     - When a render state is cleaned up, its data sets now go to a device cache (`pvr_rt_dataset.c`). The next rendering with the same width, height, samples and layers takes one.
@@ -63,6 +69,7 @@ What the kernel has to match:
 - **A wait that runs out of time** must fail. Userland maps `B_TIMED_OUT` and `B_WOULD_BLOCK` to `ETIME`, and does not retry waits on `EAGAIN`.
 - **Every other request** is retried on `EINTR`/`EAGAIN`, as libdrm does.
 - **`SUBMIT_JOBS` on a context ended by a GPU reset** must fail with `EIO`, which is Haiku's `B_IO_ERROR` (the `-EIO` of Linux code, translated). `ENODEV` works as well. Any other error reads as out of memory: zink retries it for about 1.5 s before it gives up.
+- **`MAP_BO` takes the 32-byte `struct pvr_haiku_map_bo`, with `flags`.** A `static_assert` checks the size. With `PVR_HAIKU_MAP_BO_CACHED` the clone must be write-back cached. Userland keeps it coherent itself, which needs EL0 cache maintenance (`SCTLR_EL1.UCI`) and an EL0-readable `CTR_EL0` (`UCT`). A buffer must be zeroed and cleaned when it is created.
 - **After a reset, `SYNCOBJ_SIGNAL` and `SYNCOBJ_TIMELINE_SIGNAL` must still work** on that open file and wake waiters, including `WAIT_FOR_SUBMIT` waiters on a point that has no fence. The loss handling depends on them.
 
 ## Tests
@@ -70,7 +77,9 @@ What the kernel has to match:
 The Vulkan tests need `PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1`, because 36.56.104.183 is not on Mesa's conformance list. There is no Vulkan loader on arm64 Haiku, so each program links the driver directly and starts from `vk_icdGetInstanceProcAddr`. Put `libvulkan_powervr_mesa.so` in `/boot/system/non-packaged/lib`, or next to the program with `LIBRARY_PATH=%A:$LIBRARY_PATH`.
 
 - `pvr_vkprobe` prints the instance, the properties (name, versions, IDs, UUIDs, DRM nodes), the limits, the 1.0/1.1/1.2 features, the memory heaps and types, the queue families and the device extensions. It then creates a device with one queue, waits for it to go idle and destroys it. `PVR_DEBUG=info` also makes the driver dump the core's details.
-- `pvr_vkfill [runs] [timeout-ms]` runs one compute dispatch that writes `gl_GlobalInvocationID.x * 3 + 1` into a 1 MiB storage buffer in HOST_VISIBLE|COHERENT memory. The buffer is prefilled with `0xdeadbeef`. The test waits on a fence, checks every word, and prints the first 16 mismatches, the count and the timings.
+- `pvr_vkfill [runs] [timeout-ms] [--cached]` runs one compute dispatch that writes `gl_GlobalInvocationID.x * 3 + 1` into a 1 MiB storage buffer in HOST_VISIBLE|COHERENT memory. The buffer is prefilled with `0xdeadbeef`. The test waits on a fence, checks every word, and prints the first 16 mismatches, the count and the timings.
+    - `--cached` uses the HOST_CACHED type instead. It flushes the fill before the dispatch and invalidates the buffer before the check. This tests the kernel's cached clone and the cache maintenance.
+    - The "checked in" time includes the invalidate, so the coherent and cached runs compare reading 1 MiB from write-combined memory with reading it from cached memory.
     - The shader is SPIR-V 1.0 in the source as words. There is no glslang anywhere in the lab, so it was written in SPIR-V assembly (quoted in the source), assembled with `spirv-as` and validated with `spirv-val --target-env vulkan1.0`, both from `toolchains/mesa-native-deps/usr/bin`.
 - `pvr_vkfence [timeout-ms]` submits with no command buffers, which takes the null-job path. That submit signals a fence and timeline value 1. The test then:
     - waits on both, and checks the counter;
@@ -150,6 +159,15 @@ Summit's WebProcess crashed this way. Zink's shader-cache thread wrote `util_cal
 - `tls_generation_check` tests the runtime loader. It loads, unloads and reloads `libtls_generation_check.so`. Then a new thread writes the library's TLS and reads it back. It should fail on the current loader and pass once the loader is fixed.
 - Until the loader is fixed, `mesa-haiku-gl.patch` has every thread Mesa creates touch its TLS twice before it runs anything. Application threads that make a GL context current are still exposed if those are their first TLS accesses.
 
+**Readback from cached memory.** Each GL frame's readback copies the image into a zink staging buffer, then the CPU reads it. That covers `glReadPixels` and the BGLView present. Zink's staging heap only takes types that are HOST_COHERENT and HOST_CACHED. With no such type, it used the write-combined coherent one: about 7 ms for 300x300 on the board. `mesa-haiku-gl.patch` changes that:
+- Without a coherent cached type, the staging heap takes the HOST_CACHED types first. This is on by default only on Haiku: `ZINK_NONCOHERENT_CACHED_STAGING=0`/`1` overrides it.
+- Resources with coherent or persistent maps skip non-coherent types, because those maps are never flushed or invalidated.
+- A read map of such a buffer is read directly, with no second staging copy.
+- `zink_image_map()` invalidates a non-coherent staging buffer or linear image before it is read. It never did, on any OS. The invalidate covers only the object's own bytes.
+- Writes are flushed at unmap, as zink already did for non-coherent memory.
+
+Under the shim, `pvr_glbench` allocates its staging slab from type 1 and makes one 360000-byte invalidate per frame (300x300x4). The readback time there means nothing, because host memory is cached either way.
+
 Zink keeps its shader cache in the usual Mesa cache directory, limited to 128 MB (`MESA_SHADER_CACHE_DISABLE=true` turns it off). Its key includes the library file's timestamp.
 
 **Why `libvulkan.so.1` is a shim.** There is no Vulkan loader on arm64 Haiku. Zink `dlopen()`s `libvulkan.so.1` and takes `vkGetInstanceProcAddr` and `vkGetDeviceProcAddr` from it. `vulkan_shim.c` provides those two, plus the global commands, by forwarding to the driver's `vk_icdGetInstanceProcAddr`. It links the driver by name. This keeps zink unpatched and gives any program the usual way in. It is not a loader: no layers, one driver, no window system surfaces. A ported Khronos loader would replace it.
@@ -167,11 +185,11 @@ Zink keeps its shader cache in the usual Mesa cache directory, limited to 128 MB
 
 All of the driver's own code runs: enumeration, device creation, the PowerVR compiler on this core, command streams and null jobs. Every DRM ioctl lands in `shim/<test>.log`, in order and with its flags, so the logs show what the kernel will receive. The differences on Haiku are that `GET_BO_MMAP_OFFSET` + `mmap()` become `MAP_BO`, and enumeration opens the node by path.
 
-Every test runs with 256 KiB stacks (`ulimit -s 256`), Haiku's default for an application's thread. A stack frame too large for the board crashes here too; this is how the `pvr_queue_transfer()` overflow reproduces off-board.
+Every test runs with 256 KiB stacks (`ulimit -s 256`), Haiku's default for an application's thread. A stack frame too large for the board crashes here too; this is how the `pvr_queue_transfer()` overflow reproduces off-board. The runs set `PVR_CACHED_MEMORY_TYPE=1` and `ZINK_NONCOHERENT_CACHED_STAGING=1`, so they get the board's memory types and zink's staging in the cached one. Host memory is coherent, so the cache maintenance does nothing there.
 
 The shim executes nothing. So in the expected results:
 - `pvr_vkprobe` passes;
-- `pvr_vkfill` reports every word unwritten;
+- `pvr_vkfill` reports every word unwritten, in both modes;
 - `pvr_vkfence` reports the 9 checks that need real syncobj state (values, `NOT_READY`, timeouts).
 - `pvr_vktriangle` (both modes) reports every pixel never written.
 - `pvr_vkhang` runs its whole flow in milliseconds and reports FAIL. The fake device signals the fence at once, so the "hang" ends instantly (no 180 s wait off-board) and the recovery dispatches find their data unwritten. Its value here is the ioctl trace: a COMPUTE `SUBMIT_JOBS` then a bounded `SYNCOBJ_WAIT WAIT_FOR_SUBMIT` on the job's syncobj, the timeout the kernel will see.
