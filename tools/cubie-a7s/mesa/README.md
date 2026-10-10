@@ -1,7 +1,7 @@
 # Mesa's PowerVR Vulkan driver for air/OS (Cubie A7S)
 
 `build.sh` cross-builds Mesa 26.2.4's Imagination Vulkan driver,
-`libvulkan_powervr_mesa.so`, for Haiku arm64, and three test programs.
+`libvulkan_powervr_mesa.so`, for Haiku arm64, and four test programs.
 The driver talks to the air/OS kernel driver `powervr` through
 `/dev/graphics/powervr/0`. The kernel's userland contract is
 `headers/private/graphics/powervr/pvr_haiku.h` in this tree. The build puts
@@ -65,11 +65,17 @@ All three need `PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1`, because 36.56.104.183 is n
     - signals 3 from the host;
     - checks that a wait for 10 and a wait on a reset fence each return `VK_TIMEOUT` after 10 ms.
 
+- `pvr_vktriangle [--linear] [--ppm FILE] [--timeout MS]` draws one triangle into a 64x64 `R8G8B8A8_UNORM` image cleared to (51, 102, 153, 255), copies it to a host-visible buffer, and compares every byte with a CPU reference.
+    - The fragment colour is a constant (204, 153, 51, 102), and the corners are framebuffer points (0, 0), (64.25, 0) and (0, 64.25), taken from `gl_VertexIndex`. A pixel is covered if and only if x + y <= 63, and no pixel centre lies on an edge.
+    - On the GPU this is a render submit (GEOMETRY, partial-render FRAGMENT and FRAGMENT on an HWRT data set with its own free list), then one TRANSFER_FRAG job for the copy.
+    - `--linear` renders into a LINEAR image and reads it in place, which needs no transfer job.
+    - It prints the first mismatches, counts of triangle, clear and unwritten pixels, and a map of every fourth row and column when anything is wrong.
+
 Every program prints `PASS`/`FAIL` and exits 0/1. Output is line-buffered, so it survives a crash.
 
 ## Host smoke test (`build.sh shim`)
 
-`build.sh shim` builds the same patched tree for Linux; the Haiku hunks compile out. It adds Mesa's pvr drm-shim (`PVR_SHIM_DEVICE_BVNC=36.56.104.183`) and `pvr_ioctl_trace.c`, an `LD_PRELOAD` tracer. It then runs the three tests on the build host.
+`build.sh shim` builds the same patched tree for Linux; the Haiku hunks compile out. It adds Mesa's pvr drm-shim (`PVR_SHIM_DEVICE_BVNC=36.56.104.183`) and `pvr_ioctl_trace.c`, an `LD_PRELOAD` tracer. It then runs the four tests (and `pvr_vktriangle --linear`) on the build host.
 
 All of the driver's own code runs: enumeration, device creation, the PowerVR compiler on this core, command streams and null jobs. Every DRM ioctl lands in `shim/<test>.log`, in order and with its flags, so the logs show what the kernel will receive. The differences on Haiku are that `GET_BO_MMAP_OFFSET` + `mmap()` become `MAP_BO`, and enumeration opens the node by path.
 
@@ -77,3 +83,4 @@ The shim executes nothing. So in the expected results:
 - `pvr_vkprobe` passes;
 - `pvr_vkfill` reports every word unwritten;
 - `pvr_vkfence` reports the 9 checks that need real syncobj state (values, `NOT_READY`, timeouts).
+- `pvr_vktriangle` (both modes) reports every pixel never written.
