@@ -319,6 +319,14 @@ SunxiCedarDecoder::_EngineDecodes(BString& reason) const
 				} else if (!sps.frameMbsOnly) {
 					reason = "the engine decodes no fields";
 					decodes = false;
+				} else if (sps.profileIdc == 88
+					&& (sps.constraintFlags & 0xc0) == 0) {
+					// Extended profile, not kept to Baseline or Main: SP
+					// and SI slices or data partitioning may come later,
+					// when the software decoder could no longer take over
+					reason = "the engine has no SP and SI slices or data "
+						"partitioning (Extended profile)";
+					decodes = false;
 				} else if ((uint32)sps.widthMbs * 16 > kMaxSize
 					|| (uint32)sps.heightMapUnits * 16 > kMaxSize) {
 					reason = "the engine decodes up to 4096x4096";

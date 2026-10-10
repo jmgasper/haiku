@@ -8,8 +8,8 @@
 	every picture in output order, cropped and as yuv420p: the hashes of
 	`ffmpeg -i X -f framemd5 -pix_fmt yuv420p`.
 
-	cedar_decode [-c expected] [-m] [-n] [-o out.yuv] [-r times] h264|hevc
-		stream
+	cedar_decode [-c expected] [-m] [-M] [-n] [-o out.yuv] [-r times]
+		[-2 out] [-p 422|rgb32] [-k pictures] h264|hevc stream
 
 	-c	compares with the "<picture> <md5>" lines of a file (vecheck's and
 		the vectors' .framemd5; ten bit pictures are hashed as P010, so
@@ -21,7 +21,10 @@
 	-2	the low two bits of ten bit pictures, as the engine left them, to a
 		file
 	-p	hashes the pictures as the Media Kit gets them: 422 (B_YCbCr422) or
-		rgb32 (B_RGB32) */
+		rgb32 (B_RGB32)
+	-k	stops after that many pictures
+	-M	the MD5 of all the pictures together (what the JCT-VC streams'
+		_md5.txt files hold) */
 
 
 #include <errno.h>
@@ -41,8 +44,9 @@
 static void
 usage(const char* name)
 {
-	fprintf(stderr, "usage: %s [-c expected] [-m] [-n] [-o out.yuv] [-r times]"
-		" h264|hevc stream\n", name);
+	fprintf(stderr, "usage: %s [-c expected] [-m] [-M] [-n] [-o out.yuv]"
+		" [-r times] [-2 out] [-p 422|rgb32] [-k pictures] h264|hevc stream\n",
+		name);
 	exit(1);
 }
 
@@ -56,6 +60,8 @@ struct Output {
 	FILE*		file;
 	FILE*		twoBitFile;
 	color_space	packed;
+	bool		wholeMd5;
+	MD5_CTX		whole;
 	uint8*		buffer;
 	size_t		bufferSize;
 	uint32		pictures;
@@ -152,6 +158,8 @@ take_pictures(CedarDecoder& decoder, Output& output)
 				decoder.CopyPlanes(picture, output.buffer, stride, tenBit);
 			if (output.file != NULL)
 				fwrite(output.buffer, 1, size, output.file);
+			if (output.wholeMd5)
+				MD5_Update(&output.whole, output.buffer, size);
 			if (output.printMd5 || output.expected != NULL) {
 				MD5_CTX context;
 				uint8 digest[16];
@@ -196,12 +204,20 @@ main(int argc, char** argv)
 	Output output = {};
 	output.copy = true;
 	int repeat = 1;
+	uint32 limit = 0;
 	const char* outputPath = NULL;
 	const char* expectedPath = NULL;
 
 	int option;
-	while ((option = getopt(argc, argv, "2:c:mno:p:r:")) != -1) {
+	while ((option = getopt(argc, argv, "2:c:k:mMno:p:r:")) != -1) {
 		switch (option) {
+			case 'M':
+				output.wholeMd5 = true;
+				MD5_Init(&output.whole);
+				break;
+			case 'k':
+				limit = atoi(optarg);
+				break;
 			case 'p':
 				output.packed = strcmp(optarg, "rgb32") == 0
 					? B_RGB32 : B_YCbCr422;
@@ -285,9 +301,13 @@ main(int argc, char** argv)
 				break;
 			}
 			take_pictures(decoder, output);
+			if (limit != 0 && output.pictures >= limit)
+				break;
 		}
-		decoder.Drain();
-		take_pictures(decoder, output);
+		if (limit == 0 || output.pictures < limit) {
+			decoder.Drain();
+			take_pictures(decoder, output);
+		}
 	}
 
 	bigtime_t elapsed = system_time() - start;
@@ -304,6 +324,14 @@ main(int argc, char** argv)
 		decoder.SlicesDecoded(), elapsed / 1000000.0,
 		elapsed > 0 ? output.pictures * 1000000.0 / elapsed : 0.0,
 		decoder.EngineTime() / 1000000.0, cpu / 1000000.0);
+	if (output.wholeMd5) {
+		uint8 digest[16];
+		MD5_Final(digest, &output.whole);
+		printf("all pictures: ");
+		for (int i = 0; i < 16; i++)
+			printf("%02x", digest[i]);
+		printf("\n");
+	}
 	if (expectedPath != NULL) {
 		uint32 wanted = output.expectedCount * repeat;
 		bool pass = result == 0 && output.mismatches == 0

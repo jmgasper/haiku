@@ -39,13 +39,14 @@ struct CedarFrame {
 	// samples twoBitStride bytes long, then the chroma rows (Cb and Cr in
 	// pairs) the same way
 	size_t		twoBitOffset;
+	size_t		twoBitChroma;	// where the chroma rows begin
 	uint32		twoBitStride;
 
 	CedarFrame() : position(-1), poc(0), pts(0), current(false),
 		waiting(false), ready(false), held(false), corrupt(false),
 		latency(0), stride(0), lumaSize(0), cropLeft(0), cropTop(0),
-		width(0), height(0), bitDepth(8), twoBitOffset(0), twoBitStride(0)
-		{}
+		width(0), height(0), bitDepth(8), twoBitOffset(0), twoBitChroma(0),
+		twoBitStride(0) {}
 };
 
 
@@ -92,6 +93,12 @@ public:
 			uint32				BitDepth() const { return fBitDepth; }
 			size_t				TwoBitOffset() const { return fTwoBitOffset; }
 			uint32				TwoBitStride() const { return fTwoBitStride; }
+			//!	The chroma rows of the two-bit planes follow as many luma rows
+			//	as the picture is high (not the 16 aligned height: 1080p and
+			//	1000x562 Main 10 streams say so).
+			size_t				TwoBitChroma() const
+									{ return fTwoBitOffset
+										+ (size_t)fTwoBitStride * fHeight; }
 			bool				Matches(uint32 width, uint32 height,
 									size_t mvcolSize) const;
 
