@@ -37,6 +37,10 @@ struct ServerRemoteDevice
 		// 7.7.24)
 	uint8				link_type;
 	uint8				encryption_enabled;
+	uint8				remote_io_capability;
+		// from the IO Capability Response of the current pairing
+	bool				outgoing;
+		// the current link was asked for here
 
 	uint16				handle;
 	RemoteDevice::ConnectionState			conn_state;

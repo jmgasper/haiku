@@ -427,6 +427,50 @@ LocalDeviceImpl::HandleUnexpectedEvent(struct hci_event_header* event)
 				EncryptChange(JumpEventHeader<struct hci_ev_encrypt_change>(event));
 			break;
 
+		// Pairing and authentication events come whenever the controller or
+		// the peer needs them, not only after a request of ours that
+		// registered for them; answer them anyway, or the controller waits
+		// and the pairing (and the link key) is lost.
+		case HCI_EVENT_LINK_KEY_REQ:
+			LinkKeyRequested(
+				JumpEventHeader<struct hci_ev_link_key_req>(event), NULL);
+			break;
+
+		case HCI_EVENT_LINK_KEY_NOTIFY:
+			LinkKeyNotify(
+				JumpEventHeader<struct hci_ev_link_key_notify>(event), NULL);
+			break;
+
+		case HCI_EVENT_IO_CAPABILITY_REQUEST:
+			IOCapabilityRequest(JumpEventHeader
+				<struct hci_ev_io_capability_request>(event), NULL);
+			break;
+
+		case HCI_EVENT_IO_CAPABILITY_RESPONSE:
+			IOCapabilityResponse(JumpEventHeader
+				<struct hci_ev_io_capability_response>(event), NULL);
+			break;
+
+		case HCI_EVENT_USER_CONFIRMATION_REQUEST:
+			UserConfirmationRequest(JumpEventHeader
+				<struct hci_ev_user_confirmation_request>(event), NULL);
+			break;
+
+		case HCI_EVENT_SIMPLE_PAIRING_COMPLETE:
+			SimplePairingComplete(JumpEventHeader
+				<struct hci_ev_simple_pairing_complete>(event), NULL);
+			break;
+
+		case HCI_EVENT_AUTH_COMPLETE:
+			AuthComplete(
+				JumpEventHeader<struct hci_ev_auth_complete>(event), NULL);
+			break;
+
+		case HCI_EVENT_PIN_CODE_REQ:
+			PinCodeRequest(
+				JumpEventHeader<struct hci_ev_pin_code_req>(event), NULL);
+			break;
+
 		default:
 			TRACE_BT("Couldn't handle the unexpected event with code: %x", event->ecode);
 			break;
@@ -1540,6 +1584,7 @@ LocalDeviceImpl::ConnectionRequest(struct hci_ev_conn_request* event,
 
 		serverRd->link_type = event->link_type;
 		serverRd->conn_state = RemoteDevice::CONNECTING;
+		serverRd->outgoing = false;
 		memcpy(serverRd->classOfDevice, event->dev_class, 3 * sizeof(uint8));
 
 		BMessage notice(BT_MSG_NEW_REMOTE_DEVICE);
@@ -1616,6 +1661,7 @@ LocalDeviceImpl::CreateConnection(BMessage* message)
 
 	rdConn->conn_state = RemoteDevice::CONNECTING;
 	rdConn->link_type = HCI_ACL_CONN;
+	rdConn->outgoing = true;
 
 	if (!known)
 		AddRemoteDevice(rdConn);
@@ -1860,8 +1906,11 @@ LocalDeviceImpl::DisconnectionComplete(hci_ev_disconnection_complete_reply* even
 		reply.AddData("bdaddr", B_ANY_TYPE, &rd->bdaddr, sizeof(bdaddr_t));
 
 	if (rd != NULL && (event->status == BT_OK
-		|| event->status == BT_NO_CONNECTION))
+		|| event->status == BT_NO_CONNECTION)) {
 		rd->conn_state = RemoteDevice::DISCONNECTED;
+		rd->outgoing = false;
+		rd->encryption_enabled = 0;
+	}
 
 
 	((BluetoothServer*)be_app)->NotifyWatchers(&reply);
@@ -2071,6 +2120,10 @@ LocalDeviceImpl::IOCapabilityResponse(struct hci_ev_io_capability_response* even
 	TRACE_BT("LocalDeviceImpl: %s for %s - Capability: 0x%02x, OOB: 0x%02x, Auth: 0x%02x\n",
 		__FUNCTION__, bdaddrUtils::ToString(event->bdaddr).String(), event->capability,
 		event->oob_data, event->authentication);
+
+	ServerRemoteDevice* rd = RemoteDeviceByAddr(event->bdaddr);
+	if (rd != NULL)
+		rd->remote_io_capability = event->capability;
 }
 
 
@@ -2080,10 +2133,31 @@ LocalDeviceImpl::UserConfirmationRequest(struct hci_ev_user_confirmation_request
 {
 	TRACE_BT("LocalDeviceImpl: User Confirmation Request for %s (Passkey: %06" B_PRIu32 ")\n",
 		bdaddrUtils::ToString(event->bdaddr).String(), event->passkey);
+
+	ServerRemoteDevice* rd = RemoteDeviceByAddr(event->bdaddr);
+	BString name = bdaddrUtils::ToString(event->bdaddr);
+	if (rd != NULL && !rd->friendly_name.IsEmpty())
+		name = rd->friendly_name;
+
 	BString prompt;
-	prompt.SetToFormat("Confirm pairing with %s only if the other device shows "
-		"the same code: %06" B_PRIu32,
-		bdaddrUtils::ToString(event->bdaddr).String(), event->passkey);
+	if (rd != NULL
+		&& rd->remote_io_capability == HCI_IO_CAP_NO_INPUT_NO_OUTPUT) {
+		// "Just Works" (Core Vol 3 Part C 5.2.2.6): a speaker or headset
+		// can neither show nor confirm a number, so there is nothing to
+		// compare. When the link was asked for here, the user already chose
+		// this device; otherwise ask, but without a meaningless code.
+		if (rd->outgoing) {
+			printf("Bluetooth: pairing with %s, which has no display or "
+				"input\n", name.String());
+			ConfirmPairing(event->bdaddr, true);
+			return;
+		}
+		prompt.SetToFormat("Pair with %s?", name.String());
+	} else {
+		prompt.SetToFormat("Confirm pairing with %s only if the other device "
+			"shows the same code: %06" B_PRIu32, name.String(),
+			event->passkey);
+	}
 	BMessage* decision = new BMessage(BT_MSG_PAIR_CONFIRM_RESULT);
 	decision->AddInt32("hci_id", GetID());
 	decision->AddData("bdaddr", B_ANY_TYPE, &event->bdaddr, sizeof(bdaddr_t));
@@ -2136,15 +2210,16 @@ LocalDeviceImpl::AuthComplete(struct hci_ev_auth_complete* eventData, BMessage* 
 
 	if (status == BT_OK) {
 		TRACE_BT("LocalDeviceImpl: Authentication Successful for handle %d\n", handle);
-		ServerRemoteDevice* rd = RemoteDeviceByHandle(eventData->handle);
-
-		SetConnEncryption(rd->handle, true);
-		((BluetoothServer*)be_app)->DiscoverServices(rd);
+		ServerRemoteDevice* rd = RemoteDeviceByHandle(handle);
+		if (rd != NULL) {
+			SetConnEncryption(rd->handle, true);
+			((BluetoothServer*)be_app)->DiscoverServices(rd);
+		}
 	} else {
 		TRACE_BT("LocalDeviceImpl: Authentication Failed for handle %d with status 0x%02x\n",
 			handle, status);
 
-		ServerRemoteDevice* rd = RemoteDeviceByHandle(eventData->handle);
+		ServerRemoteDevice* rd = RemoteDeviceByHandle(handle);
 		if (rd != NULL) {
 			rd->link_key = LinkKeyUtils::NullKey();
 			SaveRemoteDevices();
