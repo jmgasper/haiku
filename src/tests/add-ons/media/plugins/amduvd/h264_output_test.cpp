@@ -2,6 +2,7 @@
 #include "H264Output.h"
 #include "H264Packet.h"
 #include <assert.h>
+#include <cmath>
 #include <limits.h>
 #include <stdio.h>
 #include <string.h>
@@ -104,8 +105,61 @@ static void Pixels()
 	f.cropTop = 0; f.cropLeft = INT_MAX - 1;
 	assert(!H264Output::Copy(f, H264Output::NV12, rgb.data()));
 }
+
+static void ColourRows()
+{
+	unsigned maxError = 0;
+	uint32_t random = 101;
+	for (int width : {2,4,6,8,10,14,16,18,30,32,34}) {
+		H264Frame f = {}; f.width = width; f.height = 6; f.cropLeft = 2; f.cropTop = 4;
+		f.pitch = (width + 17) & ~15; f.codedHeight = 16;
+		f.pixels.resize(f.pitch * f.codedHeight * 3 / 2);
+		for (unsigned pattern = 0; pattern < 64; pattern++) {
+			for (auto& byte : f.pixels) { random = random * 1664525 + 1013904223; byte = random >> 24; }
+			for (int matrix : {1,2,5,6}) for (bool full : {false, true}) {
+				f.matrix = matrix; f.fullRange = full;
+				size_t size = width * f.height * 4;
+				std::vector<uint8_t> out(size + 34, 0xa5);
+				assert(H264Output::Copy(f, H264Output::RGB32, out.data() + 17));
+				for (unsigned i = 0; i < 17; i++) assert(out[i] == 0xa5 && out[size + 17 + i] == 0xa5);
+				// Tiling into two-pixel crops exercises the scalar tail: the
+				// vector path must preserve every original fixed-point result.
+				H264Frame pair = f; pair.width = 2;
+				std::vector<uint8_t> reference(2 * f.height * 4);
+				for (int x = 0; x < width; x += 2) {
+					pair.cropLeft = f.cropLeft + x;
+					assert(H264Output::Copy(pair, H264Output::RGB32, reference.data()));
+					for (int y = 0; y < f.height; y++)
+						assert(!memcmp(out.data() + 17 + (y * width + x) * 4, reference.data() + y * 8, 8));
+				}
+				// Independent floating-point YUV equations check the colour
+				// math as well as equivalence between the two code paths.
+				double kr = matrix == 1 ? .2126 : .299, kb = matrix == 1 ? .0722 : .114;
+				auto clip = [](double v) { return v <= 0 ? 0 : v >= 255 ? 255 : int(std::floor(v + .5)); };
+				for (int y = 0; y < f.height; y++) for (int x = 0; x < width; x++) {
+					size_t uv = f.pitch * f.codedHeight + (f.cropTop + y) / 2 * f.pitch + f.cropLeft + (x & ~1);
+					double l = (f.pixels[(f.cropTop + y) * f.pitch + f.cropLeft + x] - (full ? 0. : 16.)) / (full ? 255. : 219.);
+					double u = (f.pixels[uv] - 128.) / (full ? 255. : 224.);
+					double v = (f.pixels[uv + 1] - 128.) / (full ? 255. : 224.);
+					int expected[] = {clip((l + 2 * (1 - kb) * u) * 255),
+						clip((l - 2 * kb * (1 - kb) / (1 - kr - kb) * u - 2 * kr * (1 - kr) / (1 - kr - kb) * v) * 255),
+						clip((l + 2 * (1 - kr) * v) * 255), 255};
+					for (unsigned c = 0; c < 4; c++) {
+						unsigned error = std::abs(int(out[17 + (y * width + x) * 4 + c]) - expected[c]);
+						maxError = std::max(maxError, error); assert(error <= 1);
+					}
+				}
+			}
+		}
+	}
+	// No row padding: ASan checks the last two-byte chroma pair's allocation.
+	H264Frame f = {}; f.width = f.height = f.pitch = f.codedHeight = 2; f.matrix = 1;
+	f.pixels = {0,16,235,255,128,240}; uint8_t out[16];
+	assert(H264Output::Copy(f, H264Output::RGB32, out));
+	printf("PASS: RGB widths 2..34, crop/alignment/tails and guards; scalar tiles exact, floating-point max error %u\n", maxError);
+}
 int main()
 {
-	Packet(); Queue(); Pixels();
+	Packet(); Queue(); Pixels(); ColourRows();
 	puts("PASS: bounded AVCC packets, 25000 malformed inputs, output epochs/order, crop/planes/packed YUV/RGB and guards");
 }
