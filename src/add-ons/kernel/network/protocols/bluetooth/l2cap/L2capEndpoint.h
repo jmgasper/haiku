@@ -74,6 +74,7 @@ private:
 
 			void		_SendChannelConfig();
 			status_t	_MarkEstablished();
+			void		_MarkRefused(status_t error);
 			void		_MarkClosed();
 
 private:
@@ -101,6 +102,7 @@ private:
 	uint16			fChannelID, fDestinationChannelID;
 	bool			fFixedChannel;
 	L2capEndpoint*	fNextFixed;
+	status_t		fConnectError;
 
 	net_fifo		fReceiveQueue, fSendQueue;
 	net_timer		fSendTimer;

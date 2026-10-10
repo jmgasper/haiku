@@ -51,7 +51,8 @@ L2capEndpoint::L2capEndpoint(net_socket* socket)
 	fChannelID(L2CAP_NULL_CID),
 	fDestinationChannelID(L2CAP_NULL_CID),
 	fFixedChannel(false),
-	fNextFixed(NULL)
+	fNextFixed(NULL),
+	fConnectError(ECONNREFUSED)
 {
 	CALLED();
 
@@ -294,7 +295,7 @@ L2capEndpoint::Connect(const struct sockaddr* _address)
 			if (status != B_OK)
 				return status;
 		}
-		return (fState == OPEN) ? B_OK : ECONNREFUSED;
+		return (fState == OPEN) ? B_OK : fConnectError;
 	} else {
 		timeout = gStackModule->set_syscall_restart_timeout(socket->send.timeout);
 	}
@@ -387,13 +388,14 @@ L2capEndpoint::Connect(const struct sockaddr* _address)
 	}
 
 	fState = WAIT_FOR_CONNECTION_RSP;
+	fConnectError = ECONNREFUSED;
 
 	while (fState != CLOSED && fState != OPEN) {
 		status = _WaitForStateChange(timeout);
 		if (status != B_OK)
 			return status;
 	}
-	return (fState == OPEN) ? B_OK : ECONNREFUSED;
+	return (fState == OPEN) ? B_OK : fConnectError;
 }
 
 
@@ -581,8 +583,7 @@ L2capEndpoint::_HandleCommandRejected(uint8 ident, uint16 reason,
 	switch (fState) {
 		case WAIT_FOR_CONNECTION_RSP:
 			// Connection request was rejected. Reset state.
-			fState = CLOSED;
-			socket->error = ECONNREFUSED;
+			_MarkRefused(ECONNREFUSED);
 		break;
 
 		case CONFIGURATION:
@@ -666,18 +667,17 @@ L2capEndpoint::_HandleConnectionRsp(uint8 ident, const l2cap_connection_rsp& res
 	}
 
 	if (response.result == l2cap_connection_rsp::RESULT_PENDING) {
-		// The connection is still pending on the remote end.
-		// We will receive another CONNECTION_RSP later.
-
-		// TODO: Increase/reset timeout? (We don't have any timeouts presently.)
+		// The connection is still pending on the remote end, which is often
+		// busy authenticating or authorizing the link. It answers again later
+		// with the same identifier (Core Vol 3 Part A 4.3).
 		return;
 	} else if (response.result != l2cap_connection_rsp::RESULT_SUCCESS) {
-		// Some error response.
-		// TODO: Translate `result` if possible?
-		socket->error = ECONNREFUSED;
-
-		fState = CLOSED;
-		fCommandWait.NotifyAll();
+		dprintf("l2cap: connection refused by the peer, result %#x status "
+			"%#x\n", response.result, response.status);
+		_MarkRefused(response.result
+			== l2cap_connection_rsp::RESULT_SECURITY_BLOCK
+				? EACCES : ECONNREFUSED);
+		return;
 	}
 
 	// Success: channel is now open for configuration.
@@ -911,6 +911,21 @@ L2capEndpoint::_HandleDisconnectionRsp(uint8 ident, uint16 dcid, uint16 scid)
 	}
 
 	_MarkClosed();
+}
+
+
+void
+L2capEndpoint::_MarkRefused(status_t error)
+{
+	ASSERT_LOCKED_MUTEX(&fLock);
+
+	fState = CLOSED;
+	fConnectError = error;
+	socket->error = error;
+	fCommandWait.NotifyAll();
+	gSocketModule->notify(socket, B_SELECT_ERROR, error);
+
+	gL2capEndpointManager.UnbindFromChannel(this);
 }
 
 
