@@ -1,0 +1,288 @@
+/*
+ * Copyright 2026, air/OS. All rights reserved.
+ * Distributed under the terms of the MIT License.
+ */
+
+/*	Lab tool: decodes an H.264 or HEVC Annex B stream with the sunxi_cedar
+	add-on's decoder on the Cubie A7S's video engine, and prints an MD5 of
+	every picture in output order, cropped and as yuv420p: the hashes of
+	`ffmpeg -i X -f framemd5 -pix_fmt yuv420p`.
+
+	cedar_decode [-c expected] [-m] [-n] [-o out.yuv] [-r times] h264|hevc
+		stream
+
+	-c	compares with the "<picture> <md5>" lines of a file (vecheck's and
+		the vectors' .framemd5) and says PASS or FAIL
+	-m	"<picture> <md5>" for every picture
+	-n	no copying out (the engine's speed alone)
+	-o	the pictures as yuv420p to a file
+	-r	decodes the stream that many times (for timing) */
+
+
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include <OS.h>
+
+#include <md5.h>
+
+#include "CedarDecoder.h"
+#include "bits.h"
+
+
+static void
+usage(const char* name)
+{
+	fprintf(stderr, "usage: %s [-c expected] [-m] [-n] [-o out.yuv] [-r times]"
+		" h264|hevc stream\n", name);
+	exit(1);
+}
+
+
+struct Output {
+	char		(*expected)[33];
+	uint32		expectedCount;
+	uint32		mismatches;
+	bool		printMd5;
+	bool		copy;
+	FILE*		file;
+	uint8*		buffer;
+	size_t		bufferSize;
+	uint32		pictures;
+	uint32		corrupt;
+};
+
+
+/*!	The "<picture> <md5>" lines of a file. */
+static bool
+read_expected(const char* path, Output& output)
+{
+	FILE* file = fopen(path, "r");
+	if (file == NULL) {
+		fprintf(stderr, "%s: %s\n", path, strerror(errno));
+		return false;
+	}
+	char line[256];
+	uint32 allocated = 0;
+	while (fgets(line, sizeof(line), file) != NULL) {
+		unsigned index;
+		char hex[33];
+		if (line[0] == '#' || sscanf(line, "%u %32s", &index, hex) != 2)
+			continue;
+		if (index >= allocated) {
+			allocated = index + 64;
+			output.expected = (char(*)[33])realloc(output.expected,
+				allocated * 33);
+		}
+		while (output.expectedCount <= index)
+			output.expected[output.expectedCount++][0] = '\0';
+		strlcpy(output.expected[index], hex, 33);
+	}
+	fclose(file);
+	return true;
+}
+
+
+static uint8*
+read_file(const char* path, size_t& size)
+{
+	FILE* file = fopen(path, "rb");
+	if (file == NULL) {
+		fprintf(stderr, "%s: %s\n", path, strerror(errno));
+		return NULL;
+	}
+	fseek(file, 0, SEEK_END);
+	long length = ftell(file);
+	fseek(file, 0, SEEK_SET);
+	uint8* data = (uint8*)malloc(length + 16);
+	if (data == NULL || fread(data, 1, length, file) != (size_t)length) {
+		fprintf(stderr, "%s: cannot read it\n", path);
+		fclose(file);
+		free(data);
+		return NULL;
+	}
+	fclose(file);
+	size = length;
+	return data;
+}
+
+
+
+
+static void
+take_pictures(CedarDecoder& decoder, Output& output)
+{
+	CedarDecoder::Picture picture;
+	while (decoder.NextPicture(picture)) {
+		if (picture.corrupt)
+			output.corrupt++;
+		if (output.copy) {
+			uint32 width = picture.width;
+			uint32 height = picture.height;
+			size_t size = (size_t)width * height
+				+ 2 * (size_t)(width / 2) * (height / 2);
+			if (size > output.bufferSize) {
+				free(output.buffer);
+				output.buffer = (uint8*)malloc(size);
+				output.bufferSize = size;
+			}
+			decoder.CopyPlanes(picture, output.buffer, width, false);
+			if (output.file != NULL)
+				fwrite(output.buffer, 1, size, output.file);
+			if (output.printMd5 || output.expected != NULL) {
+				MD5_CTX context;
+				uint8 digest[16];
+				MD5_Init(&context);
+				MD5_Update(&context, output.buffer, size);
+				MD5_Final(digest, &context);
+				char hex[33];
+				for (int i = 0; i < 16; i++)
+					sprintf(hex + 2 * i, "%02x", digest[i]);
+				if (output.printMd5)
+					printf("%" B_PRIu32 " %s\n", output.pictures, hex);
+				if (output.expected != NULL) {
+					// (with -r, the stream's pictures again and again)
+					uint32 index = output.expectedCount > 0
+						? output.pictures % output.expectedCount : 0;
+					if (output.expectedCount == 0
+						|| strcmp(output.expected[index], hex) != 0) {
+						if (output.mismatches++ == 0) {
+							printf("picture %" B_PRIu32 ": %s, expected %s\n",
+								output.pictures, hex, output.expectedCount > 0
+									? output.expected[index] : "none");
+						}
+					}
+				}
+			}
+		}
+		decoder.ReleasePicture(picture);
+		output.pictures++;
+	}
+}
+
+
+int
+main(int argc, char** argv)
+{
+	Output output = {};
+	output.copy = true;
+	int repeat = 1;
+	const char* outputPath = NULL;
+	const char* expectedPath = NULL;
+
+	int option;
+	while ((option = getopt(argc, argv, "c:mno:r:")) != -1) {
+		switch (option) {
+			case 'c':
+				expectedPath = optarg;
+				break;
+			case 'm':
+				output.printMd5 = true;
+				break;
+			case 'n':
+				output.copy = false;
+				break;
+			case 'o':
+				outputPath = optarg;
+				break;
+			case 'r':
+				repeat = atoi(optarg);
+				break;
+			default:
+				usage(argv[0]);
+		}
+	}
+	if (argc - optind != 2)
+		usage(argv[0]);
+
+	CedarDecoder::codec codec;
+	if (strcmp(argv[optind], "h264") == 0)
+		codec = CedarDecoder::H264;
+	else if (strcmp(argv[optind], "hevc") == 0)
+		codec = CedarDecoder::HEVC;
+	else
+		usage(argv[0]);
+
+	const char* streamPath = argv[optind + 1];
+	size_t size;
+	uint8* data = read_file(streamPath, size);
+	if (data == NULL)
+		return 1;
+	if (expectedPath != NULL && !read_expected(expectedPath, output))
+		return 1;
+	if (outputPath != NULL) {
+		output.file = fopen(outputPath, "wb");
+		if (output.file == NULL) {
+			fprintf(stderr, "%s: %s\n", outputPath, strerror(errno));
+			return 1;
+		}
+	}
+
+	CedarDecoder decoder(codec);
+	BString error;
+	status_t status = decoder.Open(&error);
+	if (status != B_OK) {
+		fprintf(stderr, "cedar_decode: %s\n", error.String());
+		return 1;
+	}
+	const sunxi_ve_info& info = decoder.Info();
+	fprintf(stderr, "cedar_decode: decoder IP %#" B_PRIx32 ", clock %" B_PRIu32
+		" Hz\n", info.decoder_ip, info.clock);
+
+	bigtime_t start = system_time();
+	thread_info thread;
+	get_thread_info(find_thread(NULL), &thread);
+	bigtime_t cpuStart = thread.user_time + thread.kernel_time;
+
+	int result = 0;
+	for (int pass = 0; pass < repeat && result == 0; pass++) {
+		decoder.Reset();
+		size_t position = 0;
+		const uint8_t* nal;
+		size_t nalSize;
+		int64 units = 0;
+		while (annexb_next(data, size, &position, &nal, &nalSize)) {
+			status = decoder.PutNal(nal, nalSize, units++);
+			if (status != B_OK) {
+				fprintf(stderr, "cedar_decode: %s\n", decoder.Error());
+				result = 1;
+				break;
+			}
+			take_pictures(decoder, output);
+		}
+		decoder.Drain();
+		take_pictures(decoder, output);
+	}
+
+	bigtime_t elapsed = system_time() - start;
+	get_thread_info(find_thread(NULL), &thread);
+	bigtime_t cpu = thread.user_time + thread.kernel_time - cpuStart;
+	if (output.file != NULL)
+		fclose(output.file);
+
+	fprintf(stderr, "cedar_decode: %" B_PRIu32 " pictures (%" B_PRIu32
+		" corrupt), %" B_PRIu32 " slices in %.3f s: %.1f pictures/s; engine"
+		" %.3f s, CPU %.3f s\n", output.pictures, output.corrupt,
+		decoder.SlicesDecoded(), elapsed / 1000000.0,
+		elapsed > 0 ? output.pictures * 1000000.0 / elapsed : 0.0,
+		decoder.EngineTime() / 1000000.0, cpu / 1000000.0);
+	if (expectedPath != NULL) {
+		uint32 wanted = output.expectedCount * repeat;
+		bool pass = result == 0 && output.mismatches == 0
+			&& output.corrupt == 0 && output.pictures == wanted;
+		const char* name = strrchr(streamPath, '/');
+		printf("%s %s: %" B_PRIu32 " of %" B_PRIu32 " pictures, %" B_PRIu32
+			" differ\n", pass ? "PASS" : "FAIL",
+			name != NULL ? name + 1 : streamPath, output.pictures, wanted,
+			output.mismatches);
+		if (!pass)
+			result = 1;
+	}
+	free(output.expected);
+	free(output.buffer);
+	free(data);
+	return result != 0 || output.corrupt != 0 ? 1 : 0;
+}

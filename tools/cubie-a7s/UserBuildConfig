@@ -141,7 +141,7 @@ rule UserBuildConfigRulePreImage
 		imagePackages = <cubie-app-pkg>$(imagePackages:BS) ;
 		SEARCH on $(imagePackages) = $(imagePackageDir) ;
 		AddFilesToHaikuImage system packages : $(imagePackages) ;
-		local airTime = <airtime-pkg>airtime-1.0.0-14-arm64.hpkg ;
+		local airTime = <airtime-pkg>airtime-1.0.0-15-arm64.hpkg ;
 		SEARCH on $(airTime) = /mnt/HaikuWork/apps/airTime/artifacts ;
 		AddFilesToHaikuImage system packages : $(airTime) ;
 
@@ -180,7 +180,19 @@ rule UserBuildConfigRulePreImage
 		# lab tools, and the driver settings that let cubie_reg at the
 		# display registers
 		AddFilesToHaikuImage system non-packaged bin : cubie_reg cubie_fetch
-			pvrinfo pvrtest ;
+			pvrinfo pvrtest cedar_decode media_probe ;
+
+		# The video engine's test streams and FFmpeg's hashes of them
+		# (evidence/video/proto/mkvectors.sh; not in git), for cedar_decode.
+		local cedarVectorDir = /mnt/HaikuWork/cubie/evidence/video/proto/vectors ;
+		local cedarVectors = [ Glob $(cedarVectorDir) : *.264 *.265
+			*.framemd5 ] ;
+		if $(cedarVectors) {
+			cedarVectors = <cedar-vector>$(cedarVectors:BS) ;
+			SEARCH on $(cedarVectors) = $(cedarVectorDir) ;
+			AddFilesToHaikuImage system non-packaged data cedar-vectors
+				: $(cedarVectors) ;
+		}
 		local labSettings = <cubie-lab>sunxi_display ;
 		SEARCH on $(labSettings) = [ FDirName $(HAIKU_TOP) tools cubie-a7s lab ] ;
 		AddFilesToHaikuImage home config settings kernel drivers

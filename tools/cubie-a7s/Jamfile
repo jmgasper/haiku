@@ -19,3 +19,23 @@ SimpleTest pvrtest : pvrtest.cpp ;
 # (tools/rpi4/push.py serves it)
 SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) tools rpi4 ] ;
 SimpleTest cubie_fetch : fetch.cpp : network ;
+
+# the sunxi_cedar media add-on's decoder on its own, for the video engine's
+# tests: per-picture hashes against FFmpeg's (evidence/video/proto/vectors)
+UsePrivateHeaders drivers shared ;
+SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) src add-ons media plugins
+	sunxi_cedar ] ;
+SubDirHdrs [ FDirName $(HAIKU_TOP) src add-ons media plugins sunxi_cedar ] ;
+SimpleTest cedar_decode :
+	cedar_decode.cpp
+	bits.c
+	h264_parse.c
+	hevc_parse.c
+	CedarDecoder.cpp
+	CedarEngine.cpp
+	VeDevice.cpp
+	: be shared [ TargetLibstdc++ ] [ TargetLibsupc++ ]
+;
+
+# a file's first video track through the Media Kit, as MediaPlayer decodes it
+SimpleTest media_probe : media_probe.cpp : be media [ TargetLibsupc++ ] ;
