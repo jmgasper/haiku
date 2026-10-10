@@ -35,9 +35,16 @@ Measured on the lab's network ("Gaspers", a WPA2-PSK/CCMP mesh; joined on
 - A firmware restart (forced from the lab with `aicload --reboot`): the
   driver reloads the chip and rejoins 5 s after it left the bus; Bluetooth
   comes back with it.
+- After a power cycle, five boots out of five: the driver attached during
+  boot, `wifiautojoin` joined the saved network, and the Bluetooth
+  controller was there.
+- The desktop: the WiFiStatus Deskbar menu lists the networks and joins a
+  known one with a click; the Wi-Fi preferences show the connection and its
+  address; the "Connected" notification comes up.
 - Bluetooth: `bt_dev_info` shows the controller (Bluetooth 5.4, HCI/LMP 13,
   manufacturer 0x0b3b, ACL 1021 x 9); `bt_le scan` lists advertisers; the
-  BluetoothStatus Deskbar applet shows the adapter.
+  BluetoothStatus menu and the Bluetooth preferences show the adapter
+  ("AIC8820") and find nearby devices.
 
 ## Pieces
 
