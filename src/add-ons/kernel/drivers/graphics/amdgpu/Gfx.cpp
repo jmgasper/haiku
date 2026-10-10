@@ -61,6 +61,7 @@ static const uint32 kGolden[][3] = {
 static const uint32 kHalt = 0x15000000;
 static const uint64 kCommandVA = 0x10000;
 static const uint64 kMemoryVA = 0x100000;
+static const uint32 kDirectSequences = 16;
 static uint32 Packet(uint32 op, uint32 count) { return 0xc0000000 | count << 16 | op << 8; }
 
 status_t
@@ -187,7 +188,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		for (uint32 i = 0; i < (1 << 20) / 4; i++)
 			memory[i] = 0;
 		for (uint32 i = 0; i < 0x4000; i++)
-			ring[i] = 0xffff1000;
+			ring[i] = (i & 1) == 0 ? Packet(0x10, 0) : 0;
 		result.stage = 2;
 		Snapshot(result);
 		r[0x306a] = 0; // no interrupts until the IH path exists
@@ -284,7 +285,9 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	if (++sequence == 0)
 		sequence++;
 	result.sequence = sequence;
-	uint64 destination = sequence >= 3 ? kMemoryVA : gpu;
+	const bool direct = sequence <= kDirectSequences;
+	const bool minimalIB = sequence == kDirectSequences + 1;
+	uint64 destination = direct || minimalIB ? gpu : kMemoryVA;
 	for (uint32 i = 0; i < 3072; i++)
 		data[(int32)i - 1024] = 0xabcddcba;
 	ib[n++] = Packet(0x37, 1026); // WRITE_DATA, 1024 payload DWORDs
@@ -300,8 +303,16 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	ib[n++] = (uint32)(destination + 0x30000);
 	ib[n++] = (destination + 0x30000) >> 32;
 	ib[n++] = sequence;
-	while ((n & 255) != 0)
-		ib[n++] = 0xffff1000;
+	// Like Mesa, use one counted NOP for the padding block. Keep this
+	// diagnostic independent of the header-only (-1 count) NOP encoding.
+	uint32 padding = (-n) & 255;
+	if (padding == 1)
+		padding += 256;
+	if (padding != 0) {
+		ib[n++] = Packet(0x10, padding - 2);
+		for (uint32 i = 1; i < padding; i++)
+			ib[n++] = 0;
+	}
 	auto emit = [&](uint32 word) { ring[wptr++ & 0x3fff] = word; };
 	// Invalidate caches after CPU updates and synchronize PFP before IB reads.
 	// gfx_v8_0_emit_mem_sync uses this full-range VI cache operation.
@@ -312,26 +323,33 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	emit(10);
 	emit(Packet(0x42, 0)); // PFP_SYNC_ME
 	emit(0);
+	if (direct || minimalIB) {
+		// The minimal IB obtains its completion marker exclusively from the
+		// private VM's five-DWORD IB. Only its bulk payload runs directly.
+		uint32 directLength = minimalIB ? 1028 : n;
+		for (uint32 i = 0; i < directLength; i++)
+			emit(ib[i]);
+	}
 	// First exercise direct ring packets, then the indirect-buffer fetch path.
 	// Both streams and all addresses are private to the kernel.
-	if (sequence >= 2) {
+	if (!direct) {
 		uint64 address = kCommandVA;
 		uint32 length = n;
-		if (sequence == 2) {
-			// Isolate fetching/returning from an IB before its WRITE_DATA path.
+		if (minimalIB) {
+			// Match the unpadded WRITE_DATA used by Linux's GFX8 ring test.
+			// This also proves that the IB actually writes through VMID1.
 			address += 0x8000;
-			length = 256;
-			for (uint32 i = 0; i < length; i++)
-				ib[0x8000 / 4 + i] = 0xffff1000;
+			length = 5;
+			ib[0x8000 / 4] = Packet(0x37, 3);
+			ib[0x8000 / 4 + 1] = 5 << 8 | 1 << 20;
+			ib[0x8000 / 4 + 2] = kMemoryVA + 0x30000;
+			ib[0x8000 / 4 + 3] = 0;
+			ib[0x8000 / 4 + 4] = sequence;
 		}
 		ring[wptr++ & 0x3fff] = Packet(0x3f, 2);
 		ring[wptr++ & 0x3fff] = (uint32)address;
 		ring[wptr++ & 0x3fff] = address >> 32;
 		ring[wptr++ & 0x3fff] = length | 1 << 24; // private VMID1
-	}
-	if (sequence <= 2) {
-		for (uint32 i = 0; i < n; i++)
-			ring[wptr++ & 0x3fff] = ib[i];
 	}
 	// VI requires a dummy EOP followed by the real event. This fence is
 	// outside the IB and covers its return plus cache writeback/invalidation.
@@ -344,8 +362,14 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		emit(value == 0 ? sequence - 1 : sequence);
 		emit(0);
 	}
-	while ((wptr & 255) != 0)
-		ring[wptr++ & 0x3fff] = 0xffff1000; // type-3 zero-payload NOP
+	padding = (-wptr) & 255;
+	if (padding == 1)
+		padding += 256;
+	if (padding != 0) {
+		emit(Packet(0x10, padding - 2));
+		for (uint32 i = 1; i < padding; i++)
+			emit(0);
+	}
 	__sync_synchronize();
 	(void)ring[(wptr - 1) & 0x3fff];
 	r[0x1520] = 1;
