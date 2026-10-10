@@ -2,6 +2,7 @@
 #include "Device.h"
 #include "Sdma.h"
 #include "Gart.h"
+#include "Gfx.h"
 #include "VramAllocator.h"
 #include <KernelExport.h>
 #include <condition_variable.h>
@@ -41,6 +42,8 @@ static ConditionVariable sCompleted;
 static VramAllocator sAllocator = {};
 static VramAllocator sGartAllocator = {};
 static Gart sGart = {};
+static GfxEngine sGfx = {};
+static amdgpu::AtomVramReservation sReservation;
 static SdmaEngine sEngine = {};
 static amdgpu_info sInfo;
 static bool sActive, sStopping;
@@ -211,7 +214,7 @@ Start(volatile uint32* regs, const amdgpu_info& info,
 		sAllocator.Uninit();
 		return status;
 	}
-	if (!sGartAllocator.Init(Gart::kSize))
+	if (!sGartAllocator.Init(Gart::kSize) || !sGartAllocator.Reserve(0, 65536))
 		status = B_NO_MEMORY;
 	else
 		status = sGart.Initialize(regs, info, reservation);
@@ -224,6 +227,7 @@ Start(volatile uint32* regs, const amdgpu_info& info,
 		return status;
 	}
 	sInfo = info;
+	sReservation = reservation;
 	sFault = B_OK;
 	sStopping = false;
 	sCompleted.Init(&sCompleted, "amdgpu fence");
@@ -497,6 +501,19 @@ amdgpu_client_control(AmdgpuClient* client, uint32 op, void* data, size_t length
 	return status;
 }
 
+status_t
+amdgpu_device_gfx_test(const amdgpu::FirmwareView firmware[4], amdgpu_gfx_test& result)
+{
+	mutex_lock(&sMutex);
+	status_t status = !sActive || sFault != B_OK ? B_DEV_NOT_READY
+		: sPending != 0 ? B_BUSY : sGfx.Test(sEngine.regs, sInfo, sReservation,
+			firmware, sEngine, sGart, result);
+	if (sGfx.faulted && sFault == B_OK)
+		sFault = status;
+	mutex_unlock(&sMutex);
+	return status;
+}
+
 void
 amdgpu_device_stop()
 {
@@ -510,6 +527,7 @@ amdgpu_device_stop()
 	wait_for_thread(sWorker, &result);
 	delete_sem(sJobs);
 	sJobs = sWorker = -1;
+	sGfx.Uninitialize();
 	sEngine.Uninitialize();
 	sGart.Uninitialize(sFault != B_OK);
 	sGartAllocator.Uninit();

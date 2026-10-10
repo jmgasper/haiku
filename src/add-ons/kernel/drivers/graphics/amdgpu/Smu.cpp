@@ -242,3 +242,53 @@ amdgpu_smc_ready(volatile uint32* regs)
 		&& info.soft_registers <= 0x40000 - 120 && (info.soft_registers & 3) == 0;
 }
 
+
+status_t
+amdgpu_smc_load_gfx(volatile uint32* regs, const amdgpu::FirmwareView firmware[4],
+	volatile uint32* workspace, uint64 gpu)
+{
+	if (!amdgpu_smc_ready(regs))
+		return B_DEV_NOT_READY;
+	SmcAccess smc(regs);
+	amdgpu_smc_bootstrap info = {};
+	smc.Snapshot(info);
+	// Keep the running SMU's first MiB intact; replace only the completed
+	// transfer table and images in its second MiB. SDMA is idle/owned by us.
+	volatile uint32* toc = workspace + (1 << 20) / 4;
+	for (uint32 i = 0; i < (1 << 20) / 4; i++)
+		toc[i] = 0;
+	toc[0] = 1; toc[1] = 4;
+	const uint32 ids[] = {3, 4, 5, 10}; // CE, PFP, ME, RLC
+	uint32 offset = 4096;
+	for (uint32 i = 0; i < 4; i++) {
+		uint32 n = 2 + i * 7;
+		uint64 address = gpu + (1 << 20) + offset;
+		toc[n] = (firmware[i].version & 0xffff) << 16 | ids[i];
+		toc[n + 1] = address >> 32;
+		toc[n + 2] = (uint32)address;
+		toc[n + 5] = firmware[i].codeSize;
+		toc[n + 6] = i == 3 ? 1 : 0; // Linux unhalts RLC, keeps CP halted
+		for (uint32 b = 0; b < firmware[i].codeSize; b += 4)
+			toc[(offset + b) / 4] = amdgpu::ReadLE32(firmware[i].code + b);
+		offset = (offset + firmware[i].codeSize + 4095) & ~4095u;
+	}
+	__sync_synchronize();
+	(void)toc[offset / 4 - 1];
+	regs[0x1520] = 1;
+	(void)regs[0x1520];
+	uint32 loadStatus = info.soft_registers + 0x6c;
+	const uint32 mask = 0x438;
+	smc.Write(loadStatus, smc.Read(loadStatus) & ~mask);
+	status_t status = smc.Send(0x250, (gpu + (1 << 20)) >> 32);
+	if (status == B_OK)
+		status = smc.Send(0x251, (uint32)(gpu + (1 << 20)));
+	if (status == B_OK)
+		status = smc.Send(0x254, mask);
+	if (status == B_OK && !smc.Wait(loadStatus, mask, mask))
+		status = B_TIMED_OUT;
+	dprintf("amdgpu: SMC GFX load status %#x\n", (unsigned)smc.Read(loadStatus));
+	// Polaris10 golden ACLK divider, as in gfx_v8_0_init_golden_registers.
+	if (status == B_OK)
+		smc.Write(0xc05000dc, (smc.Read(0xc05000dc) & ~0x7fu) | 0x18);
+	return status;
+}

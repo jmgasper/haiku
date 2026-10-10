@@ -61,6 +61,43 @@ ParseSdmaFirmware(const void* data, size_t size, FirmwareView& view)
 }
 
 
+bool
+ParseGfxFirmware(const void* data, size_t size, bool rlc, FirmwareView& view)
+{
+	view = {};
+	uint32_t minimum = rlc ? 104 : 44;
+	if (data == NULL || size < minimum || size > 65536)
+		return false;
+	const uint8_t* p = (const uint8_t*)data;
+	uint32_t headerSize = ReadLE32(p + 4), codeSize = ReadLE32(p + 20);
+	uint32_t offset = ReadLE32(p + 24);
+	if (ReadLE32(p) != size || ReadLE16(p + 8) != (rlc ? 2 : 1)
+		|| ReadLE16(p + 10) != 0 || ReadLE16(p + 12) != 8
+		|| ReadLE16(p + 14) != 0 || headerSize < minimum || headerSize > size
+		|| offset < headerSize || offset > size || (offset & 3) != 0
+		|| codeSize < 24 || (codeSize & 3) != 0 || codeSize > size - offset)
+		return false;
+	uint32_t jtOffset = ReadLE32(p + 36), jtSize = ReadLE32(p + 40);
+	if (jtOffset > codeSize / 4 || jtSize > codeSize / 4 - jtOffset)
+		return false;
+	// RLC carries restoration arrays outside its signed microcode. Validate
+	// their file ranges even though Polaris10's initial ring path skips PG.
+	if (rlc) {
+		for (uint32_t field = 72; field <= 96; field += 8) {
+			uint32_t bytes = ReadLE32(p + field), start = ReadLE32(p + field + 4);
+			if ((bytes & 3) != 0 || (start & 3) != 0 || start > size
+				|| bytes > size - start || (bytes != 0 && start < headerSize))
+				return false;
+		}
+	}
+	view.code = p + offset;
+	view.codeSize = codeSize;
+	view.version = ReadLE32(p + 16);
+	view.featureVersion = ReadLE32(p + 32);
+	return true;
+}
+
+
 static bool
 TableFits(const uint8_t* p, size_t size, size_t offset, size_t minimum)
 {

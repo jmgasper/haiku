@@ -25,7 +25,8 @@ enum {
 	AMDGPU_WAIT_FENCE,
 	AMDGPU_MEMORY_INFO,
 	AMDGPU_CREATE_SYSTEM_BUFFER,
-	AMDGPU_GART_INFO
+	AMDGPU_GART_INFO,
+	AMDGPU_GFX_TEST
 };
 
 #define AMDGPU_ROM_SIZE (256 * 1024)
@@ -77,6 +78,18 @@ struct amdgpu_smc_bootstrap {
 	uint32 response;
 	uint32 soft_registers;
 	uint32 reserved_out;
+};
+
+// Root-only GFX8 command-processor bring-up. CE, PFP, ME, RLC images.
+// Every PM4 packet and destination is kernel-owned; this does not submit shaders.
+struct amdgpu_gfx_test {
+	uint32 version, size;
+	uint64 firmware[4];
+	uint32 firmware_size[4];
+	int32 status;
+	uint32 stage, sequence, checked_bytes, mismatches;
+	uint32 cp_control, ring_control, rptr, wptr, grbm_status, rlc_status;
+	uint32 vm_fault_status, vm_fault_address, vm_fault_client;
 };
 
 struct amdgpu_dma_init {

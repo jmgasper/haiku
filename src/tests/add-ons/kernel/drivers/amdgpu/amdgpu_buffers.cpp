@@ -188,9 +188,12 @@ main(int argc, char** argv)
 		init.firmware_size = size;
 		Require(ioctl(fd, AMDGPU_START_DMA, &init, sizeof(init)) == 0, "initialize persistent DMA");
 	}
-	if (geteuid() != 0)
+	if (geteuid() != 0) {
 		Require(ioctl(fd, AMDGPU_SMC_BOOTSTRAP, NULL, 0) == -1 && errno == B_NOT_ALLOWED,
 			"unprivileged firmware startup denied");
+		Require(ioctl(fd, AMDGPU_GFX_TEST, NULL, 0) == -1 && errno == B_NOT_ALLOWED,
+			"unprivileged GFX startup denied");
+	}
 	Require(Info(fd).allocated_bytes == 0, "initial allocation accounting");
 	const uint64 bytes = 8ULL << 20;
 	auto src = Create(fd, bytes + 8192);

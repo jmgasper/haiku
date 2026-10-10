@@ -200,6 +200,47 @@ device_control(void* cookie, uint32 op, void* buffer, size_t length)
 {
 	if (op >= AMDGPU_CREATE_BUFFER && op <= AMDGPU_GART_INFO)
 		return amdgpu_client_control((AmdgpuClient*)cookie, op, buffer, length);
+	if (op == AMDGPU_GFX_TEST) {
+		if (geteuid() != 0)
+			return B_NOT_ALLOWED;
+		if (length != sizeof(amdgpu_gfx_test))
+			return B_BAD_VALUE;
+		amdgpu_gfx_test request;
+		if (user_memcpy(&request, buffer, sizeof(request)) != B_OK)
+			return B_BAD_ADDRESS;
+		if (request.version != AMDGPU_HAIKU_ABI_VERSION || request.size != sizeof(request))
+			return B_BAD_VALUE;
+		amdgpu_gfx_test result = {};
+		result.version = AMDGPU_HAIKU_ABI_VERSION;
+		result.size = sizeof(result);
+		void* images[4] = {};
+		amdgpu::FirmwareView firmware[4];
+		status_t status = B_OK;
+		for (uint32 i = 0; i < 4 && status == B_OK; i++) {
+			uint32 size = request.firmware_size[i];
+			if (size < 44 || size > 65536) {
+				status = B_BAD_VALUE;
+				break;
+			}
+			images[i] = malloc(size);
+			if (images[i] == NULL) {
+				status = B_NO_MEMORY;
+				break;
+			}
+			status = user_memcpy(images[i], (void*)(addr_t)request.firmware[i], size);
+			if (status == B_OK && !amdgpu::ParseGfxFirmware(images[i], size, i == 3, firmware[i]))
+				status = B_BAD_DATA;
+		}
+		if (status == B_OK) {
+			mutex_lock(&sLock);
+			status = amdgpu_device_gfx_test(firmware, result);
+			mutex_unlock(&sLock);
+		}
+		for (void* image : images)
+			free(image);
+		result.status = status;
+		return user_memcpy(buffer, &result, sizeof(result));
+	}
 	if (op == AMDGPU_START_DMA) {
 		if (geteuid() != 0)
 			return B_NOT_ALLOWED;

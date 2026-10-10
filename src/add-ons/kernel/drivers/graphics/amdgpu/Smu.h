@@ -10,5 +10,7 @@ status_t amdgpu_smc_bootstrap_firmware(volatile uint32* regs,
 // followed by TOC and firmware staging. Retain it until a cold boot.
 status_t amdgpu_smc_load_sdma(volatile uint32* regs,
 	const amdgpu::FirmwareView& firmware, volatile uint32* workspace, uint64 gpu);
+status_t amdgpu_smc_load_gfx(volatile uint32* regs,
+	const amdgpu::FirmwareView firmware[4], volatile uint32* workspace, uint64 gpu);
 bool amdgpu_smc_ready(volatile uint32* regs);
 #endif

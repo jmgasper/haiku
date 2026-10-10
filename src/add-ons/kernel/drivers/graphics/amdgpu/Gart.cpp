@@ -48,7 +48,7 @@ status_t
 Gart::Initialize(volatile uint32* r, const amdgpu_info& info,
 	const amdgpu::AtomVramReservation& reservation)
 {
-	tableArea = dummyArea = -1;
+	tableArea = dummyArea = commandArea = -1;
 	enabled = false;
 	boundPages = scatterBoundaries = 0;
 	regs = r;
@@ -106,13 +106,26 @@ Gart::Initialize(volatile uint32* r, const amdgpu_info& info,
 		Uninitialize(true);
 		return status;
 	}
+	// Reserve the first 64 KiB of GART for private, snooped CP commands.
+	commandArea = create_area_etc(B_SYSTEM_TEAM, "amdgpu command RAM", 65536,
+		B_FULL_LOCK, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, 0, 0, &va, &pa,
+		(void**)&commandMemory);
+	status = commandArea < 0 ? commandArea : B_OK;
+	if (status == B_OK) {
+		memset((void*)commandMemory, 0, 65536);
+		status = Bind(0, 65536, (const void*)commandMemory, true);
+	}
+	if (status != B_OK) {
+		Uninitialize(status == B_TIMED_OUT);
+		return status;
+	}
 	dprintf("amdgpu: GART 1024 MiB, private VMID0, table %#" B_PRIx64 "\n",
 		info.vram_gpu_base + tableOffset);
 	return B_OK;
 }
 
 status_t
-Gart::Bind(uint64 offset, uint64 bytes, const void* cpu)
+Gart::Bind(uint64 offset, uint64 bytes, const void* cpu, bool executable)
 {
 	if (!enabled || bytes == 0 || ((offset | bytes | (addr_t)cpu) & 4095) != 0
 		|| offset >= kSize || bytes > kSize - offset)
@@ -135,7 +148,7 @@ Gart::Bind(uint64 offset, uint64 bytes, const void* cpu)
 		if (i != 0 && entry.address != previous + 4096)
 			scatter++;
 		previous = entry.address;
-		table[(offset + i) / 4096] = entry.address | 0x67;
+		table[(offset + i) / 4096] = entry.address | 0x67 | (executable ? 0x10 : 0);
 	}
 	status_t status = Flush();
 	if (status == B_OK) {
@@ -171,5 +184,7 @@ Gart::Uninitialize(bool faulted)
 	// If completion is uncertain, even the fault page must remain wired.
 	if (dummyArea >= 0 && !faulted)
 		delete_area(dummyArea);
-	tableArea = dummyArea = -1;
+	if (commandArea >= 0 && !faulted)
+		delete_area(commandArea);
+	tableArea = dummyArea = commandArea = -1;
 }

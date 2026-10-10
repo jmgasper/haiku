@@ -32,6 +32,7 @@ struct AtomVramReservation {
 	uint32_t driverScratchSize;
 };
 
+bool ParseGfxFirmware(const void* data, size_t size, bool rlc, FirmwareView& view);
 bool ParseSdmaFirmware(const void* data, size_t size, FirmwareView& view);
 bool ParseSmcFirmware(const void* data, size_t size, FirmwareView& view);
 bool ParseAtomVramReservation(const void* data, size_t size,
