@@ -44,17 +44,19 @@ renumber(unsigned nr, void* arg)
 	uint32_t* handle;
 	switch (nr) {
 		case 0x43:
-			handle = &((struct drm_pvr_ioctl_create_vm_context_args*)arg)->handle;
+			handle
+				= &((struct drm_pvr_ioctl_create_vm_context_args*)arg)->handle;
 			break;
 		case 0x47:
 			handle = &((struct drm_pvr_ioctl_create_context_args*)arg)->handle;
 			break;
 		case 0x49:
-			handle = &((struct drm_pvr_ioctl_create_free_list_args*)arg)->handle;
+			handle
+				= &((struct drm_pvr_ioctl_create_free_list_args*)arg)->handle;
 			break;
 		case 0x4b:
-			handle
-				= &((struct drm_pvr_ioctl_create_hwrt_dataset_args*)arg)->handle;
+			handle = &((struct drm_pvr_ioctl_create_hwrt_dataset_args*)
+				arg)->handle;
 			break;
 		case 0xbf:
 			handle = &((struct drm_syncobj_create*)arg)->handle;
@@ -192,7 +194,8 @@ print_in(FILE* out, unsigned nr, void* arg)
 		case 0x41: {
 			struct drm_pvr_ioctl_create_bo_args* a = arg;
 			fprintf(out, " size=0x%llx" " flags=%s%s%s", a->size,
-				a->flags & DRM_PVR_BO_BYPASS_DEVICE_CACHE ? "BYPASS_CACHE|" : "",
+				a->flags & DRM_PVR_BO_BYPASS_DEVICE_CACHE
+					? "BYPASS_CACHE|" : "",
 				a->flags & DRM_PVR_BO_PM_FW_PROTECT ? "PM_FW_PROTECT|" : "",
 				a->flags & DRM_PVR_BO_ALLOW_CPU_USERSPACE_ACCESS
 					? "CPU_ACCESS" : "");
@@ -262,7 +265,8 @@ print_in(FILE* out, unsigned nr, void* arg)
 					const struct drm_pvr_sync_op* op = (const void*)
 						((const char*)ops + j * job->sync_ops.stride);
 					fprintf(out, " %s:%u%s",
-						op->flags & DRM_PVR_SYNC_OP_FLAG_SIGNAL ? "signal" : "wait",
+						op->flags & DRM_PVR_SYNC_OP_FLAG_SIGNAL
+							? "signal" : "wait",
 						op->handle, (op->flags & 0xf)
 							== DRM_PVR_SYNC_OP_FLAG_HANDLE_TYPE_TIMELINE_SYNCOBJ
 							? "(timeline)" : "");
@@ -365,7 +369,8 @@ print_out(FILE* out, unsigned nr, void* arg)
 			break;
 		case 0xcb: {
 			struct drm_syncobj_timeline_array* a = arg;
-			print_handles(out, "-> points", a->handles, a->points, a->count_handles);
+			print_handles(out, "-> points", a->handles, a->points,
+				a->count_handles);
 			break;
 		}
 	}
@@ -381,7 +386,8 @@ ioctl(int fd, unsigned long request, ...)
 	va_end(args);
 
 	if (sNextIoctl == NULL)
-		sNextIoctl = (int (*)(int, unsigned long, ...))dlsym(RTLD_NEXT, "ioctl");
+		sNextIoctl
+			= (int (*)(int, unsigned long, ...))dlsym(RTLD_NEXT, "ioctl");
 
 	const char* name = _IOC_TYPE(request) == DRM_IOCTL_BASE
 		? request_name(_IOC_NR(request)) : NULL;

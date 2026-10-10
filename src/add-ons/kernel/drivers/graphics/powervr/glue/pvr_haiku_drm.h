@@ -141,20 +141,9 @@ int		pvr_haiku_syncobj_query(struct pvr_haiku_file* file,
 int		pvr_haiku_syncobj_transfer(struct pvr_haiku_file* file,
 			struct drm_syncobj_transfer* args);
 
-/* pvr_haiku_sync.c: for job submission */
+/* pvr_haiku_sync.c: the open's table (drm_syncobj.h is in compat) */
 void	pvr_haiku_syncobjs_init(struct pvr_haiku_file* file);
 void	pvr_haiku_syncobjs_fini(struct pvr_haiku_file* file);
-
-/*	A reference to the fence for \a point (0: the current fence) of a sync
-	object: -ENOENT for no such handle, -EINVAL if there is no fence for
-	the point yet. */
-int		pvr_haiku_syncobj_find_fence(struct pvr_haiku_file* file, u32 handle,
-			u64 point, struct dma_fence** _fence);
-
-/*	Sets the fence of a sync object at \a point, or replaces its fence
-	when \a point is 0. Takes its own reference to \a fence. */
-int		pvr_haiku_syncobj_add_fence(struct pvr_haiku_file* file, u32 handle,
-			u64 point, struct dma_fence* fence);
 
 
 #endif	/* POWERVR_HAIKU_DRM_H */

@@ -34,6 +34,7 @@ KernelAddon powervr :
 	# compat/
 	linux_compat.c
 	linux_compat_haiku.cpp
+	linux_compat_sched.c
 
 	# glue/
 	pvr_haiku_device.c
@@ -41,7 +42,6 @@ KernelAddon powervr :
 	pvr_haiku_drv.c		# includes upstream/pvr_drv.c
 	pvr_haiku_gem.c
 	pvr_haiku_power.c
-	pvr_haiku_queue.c
 	pvr_haiku_stubs.c
 	pvr_haiku_sync.c
 	pvr_haiku_vm.c
@@ -59,8 +59,11 @@ KernelAddon powervr :
 	pvr_fw_trace.c
 	pvr_fw_util.c
 	pvr_hwrt.c
+	pvr_job.c
 	pvr_mmu.c
+	pvr_queue.c
 	pvr_stream.c
 	pvr_stream_defs.c
+	pvr_sync.c
 	pvr_vm_mips.c
 ;
