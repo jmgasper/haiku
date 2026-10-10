@@ -41,7 +41,8 @@ enum {
 	AMDGPU_VM_INFO,
 	AMDGPU_VM_MAP,
 	AMDGPU_VM_UNMAP,
-	AMDGPU_VM_TEST
+	AMDGPU_VM_TEST,
+	AMDGPU_GFX_SUBMIT
 };
 
 // One GPU virtual address space per open client. Mappings retain their BO
@@ -76,6 +77,22 @@ struct amdgpu_vm_test {
 	uint32 vm_fault_status[2], rptr, wptr;
 	int32 status;
 	uint32 reserved_out;
+};
+
+// Root-only user-command bring-up. The IB must lie entirely within an owned
+// READ|EXECUTE mapping. The caller supplies complete PM4 state and shaders;
+// command validation and recovery are not yet qualified for untrusted users.
+// One synchronous IB, 256-byte address alignment, 256-DWORD length alignment,
+// at most 64 KiB. flags/reserved must be zero. All mappings stay retained until
+// retirement and VMID detach. completion is an observation, not a wait handle.
+struct amdgpu_gfx_submit {
+	uint32 version, size;
+	uint64 address;
+	uint32 dwords, flags;
+	uint64 completion, elapsed_us;
+	uint32 vm_fault_status[2], rptr, wptr;
+	int32 status;
+	uint32 reserved;
 };
 
 // Read-only DCE 11.2 observation, available without starting any GPU engine.

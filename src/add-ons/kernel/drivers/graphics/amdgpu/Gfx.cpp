@@ -997,6 +997,43 @@ status_t
 GfxEngine::ExecuteVM(uint64 directory, uint64 destination, uint32 value,
 	Gart& gart, amdgpu_vm_test& result)
 {
+	volatile uint32* ib = gart.commandMemory + 65536 / 4;
+	uint32 count = 0;
+	auto command = [&](uint32 word) { ib[count++] = word; };
+	auto shader = [&](uint32 reg, uint32 word) {
+		command(Packet(0x76, 1) | 2);
+		command(reg - 0x2c00);
+		command(word);
+	};
+	shader(0x2e04, 0); shader(0x2e05, 0); shader(0x2e06, 0);
+	shader(0x2e07, 64); shader(0x2e08, 1); shader(0x2e09, 1);
+	shader(0x2e0c, kClientShaderVA >> 8); shader(0x2e0d, 0);
+	shader(0x2e12, 1 | 1 << 6 | 0xc0 << 12);
+	shader(0x2e13, 3 << 1 | 1 << 7);
+	shader(0x2e14, 2);
+	shader(0x2e15, 0);
+	shader(0x2e16, 0xffffffff); shader(0x2e17, 0xffffffff);
+	shader(0x2e18, 0);
+	shader(0x2e19, 0xffffffff); shader(0x2e1a, 0xffffffff);
+	shader(0x2e40, (uint32)destination);
+	shader(0x2e41, destination >> 32);
+	shader(0x2e42, value);
+	command(Packet(0x15, 3) | 2);
+	command(16); command(1); command(1); command(1 | 1 << 2);
+	command(Packet(0x46, 0)); command(7 | 4 << 8);
+	uint32 padding = (-count) & 255;
+	if (padding == 1) padding += 256;
+	if (padding != 0) {
+		command(Packet(0x10, padding - 2));
+		for (uint32 i = 1; i < padding; i++) command(0);
+	}
+	return ExecuteIB(directory, kClientIbVA, count, gart, result);
+}
+
+status_t
+GfxEngine::ExecuteIB(uint64 directory, uint64 address, uint32 dwords,
+	Gart& gart, amdgpu_vm_test& result)
+{
 	if (!ready || faulted || !mecStarted)
 		return B_DEV_NOT_READY;
 	volatile uint32* r = regs;
@@ -1027,36 +1064,10 @@ GfxEngine::ExecuteVM(uint64 directory, uint64 destination, uint32 value,
 		r[0x230b] = 1;
 		r[0x230c] = 0;
 		r[0x391] = select;
-		volatile uint32* ib = gart.commandMemory + 65536 / 4;
-		uint32 count = 0;
-		auto command = [&](uint32 word) { ib[count++] = word; };
-		auto shader = [&](uint32 reg, uint32 word) {
-			command(Packet(0x76, 1) | 2);
-			command(reg - 0x2c00);
-			command(word);
-		};
-		shader(0x2e04, 0); shader(0x2e05, 0); shader(0x2e06, 0);
-		shader(0x2e07, 64); shader(0x2e08, 1); shader(0x2e09, 1);
-		shader(0x2e0c, kClientShaderVA >> 8); shader(0x2e0d, 0);
-		shader(0x2e12, 1 | 1 << 6 | 0xc0 << 12);
-		shader(0x2e13, 3 << 1 | 1 << 7);
-		shader(0x2e14, 2);
-		shader(0x2e15, 0);
-		shader(0x2e16, 0xffffffff); shader(0x2e17, 0xffffffff);
-		shader(0x2e18, 0);
-		shader(0x2e19, 0xffffffff); shader(0x2e1a, 0xffffffff);
-		shader(0x2e40, (uint32)destination);
-		shader(0x2e41, destination >> 32);
-		shader(0x2e42, value);
-		command(Packet(0x15, 3) | 2);
-		command(16); command(1); command(1); command(1 | 1 << 2);
-		command(Packet(0x46, 0)); command(7 | 4 << 8);
-		uint32 padding = (-count) & 255;
-		if (padding == 1) padding += 256;
-		if (padding != 0) {
-			command(Packet(0x10, padding - 2));
-			for (uint32 i = 1; i < padding; i++) command(0);
-		}
+		// No client owns GDS, global wave sync or ordered-append resources.
+		// Linux gfx_v8_0_init_gds_vmid applies the same zero allocation.
+		r[0x3304] = 0; r[0x3305] = 0;
+		r[0x3322] = 0; r[0x3332] = 0;
 		volatile uint32* completion = gart.commandMemory + (kControlOffset + 0x600) / 4;
 		*completion = 0;
 		if (++vmSequence == 0) vmSequence++;
@@ -1066,9 +1077,12 @@ GfxEngine::ExecuteVM(uint64 directory, uint64 destination, uint32 value,
 		emit(0xffffffff); emit(0); emit(10);
 		emit(Packet(0x42, 0)); emit(0);
 		emit(Packet(0x28, 1)); emit(0x80000000); emit(0x80000000);
-		emit(Packet(0x3f, 2)); emit(kClientIbVA); emit(0); emit(count | 2 << 24);
-		// Both EOPs are in the trusted VMID0 ring. Client mappings never
-		// include the completion page and cannot forge this fence.
+		emit(Packet(0x76, 1) | 2); emit(0x2e14 - 0x2c00); emit(2);
+		emit(Packet(0x3f, 2)); emit((uint32)address); emit(address >> 32);
+		emit(dwords | 2 << 24);
+		// Both EOPs are in the trusted VMID0 ring. No client mapping includes
+		// this completion page. Raw PM4 remains root-only while hardware
+		// privilege enforcement is being qualified.
 		const uint64 fenceAddress = kControlGPU + 0x600;
 		for (uint32 i = 0; i < 2; i++) {
 			emit(Packet(0x47, 4));
@@ -1077,7 +1091,7 @@ GfxEngine::ExecuteVM(uint64 directory, uint64 destination, uint32 value,
 			emit(fenceAddress >> 32 | 1 << 29);
 			emit(i == 0 ? vmSequence - 1 : vmSequence); emit(0);
 		}
-		padding = (-wptr) & 255;
+		uint32 padding = (-wptr) & 255;
 		if (padding == 1) padding += 256;
 		if (padding != 0) {
 			emit(Packet(0x10, padding - 2));

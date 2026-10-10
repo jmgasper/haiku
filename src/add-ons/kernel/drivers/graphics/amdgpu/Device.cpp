@@ -634,6 +634,41 @@ VMControl(AmdgpuClient* client, uint32 op, void* data, size_t length)
 	ClientVM* vm = client->vm;
 	if (vm == NULL)
 		return B_DEV_NOT_READY;
+	if (op == AMDGPU_GFX_SUBMIT) {
+		amdgpu_gfx_submit request;
+		status_t status = ReadRequest(request, data, length);
+		if (status != B_OK) return status;
+		if (request.flags != 0 || request.reserved != 0
+			|| (request.address & 255) != 0 || (request.dwords & 255) != 0
+			|| request.dwords == 0 || request.dwords > 16384)
+			return B_BAD_VALUE;
+		VmBinding* binding = vm->bindings;
+		while (binding != NULL) {
+			if (request.address >= binding->address
+				&& request.address - binding->address <= binding->bytes
+				&& (uint64)request.dwords * 4 <= binding->bytes - (request.address - binding->address))
+				break;
+			binding = binding->next;
+		}
+		const uint32 permissions = AMDGPU_VM_READ | AMDGPU_VM_EXECUTE;
+		if (binding == NULL || (binding->permissions & permissions) != permissions)
+			return B_NOT_ALLOWED;
+		// All VM mappings remain immutable while WaitDmaIdle releases sMutex.
+		// Binding references also retain BOs whose public handles are freed.
+		status = WaitDmaIdle();
+		if (status == B_OK) status = StartGraphics();
+		amdgpu_vm_test result = {};
+		bigtime_t started = system_time();
+		if (status == B_OK)
+			status = sGfx.ExecuteIB(vm->table.directory.gpu, request.address,
+				request.dwords, sGart, result);
+		request.elapsed_us = system_time() - started;
+		if (sGfx.faulted && sFault == B_OK) sFault = status;
+		request.status = status; request.completion = result.completion;
+		memcpy(request.vm_fault_status, result.vm_fault_status, sizeof(request.vm_fault_status));
+		request.rptr = result.rptr; request.wptr = result.wptr;
+		return user_memcpy(data, &request, sizeof(request));
+	}
 	if (op == AMDGPU_VM_TEST) {
 		amdgpu_vm_test request;
 		status_t status = ReadRequest(request, data, length);
@@ -739,7 +774,7 @@ Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 	if (client->team != team_get_current_team_id()
 		|| (client->flags & O_ACCMODE) != O_RDWR)
 		return B_NOT_ALLOWED;
-	if (op >= AMDGPU_VM_INFO && op <= AMDGPU_VM_TEST) {
+	if (op >= AMDGPU_VM_INFO && op <= AMDGPU_GFX_SUBMIT) {
 		if (client->graphicsBusy) return B_BUSY;
 		client->graphicsBusy = true;
 		status_t status = VMControl(client, op, data, length);
