@@ -59,6 +59,15 @@ static const uint32 kGolden[][3] = {
 	{0x31e6, 0xffffffff, 0x00FF7FBF}, // SPI_RESOURCE_RESERVE_EN_CU_0
 	{0x31e7, 0xffffffff, 0x00FF7FAF}, // SPI_RESOURCE_RESERVE_EN_CU_1
 };
+// Linux 6.18.52 gmc_v8_0.c, golden_settings_polaris10_a11.
+// Disable unused partial-residency apertures and use the Polaris read weight.
+static const uint32 kGMCGolden[][3] = {
+	{0x9e1, 0x00000003, 0}, // MC_ARB_WTM_GRPWT_RD
+	{0x52c, 0x0fffffff, 0x0fffffff}, // VM_PRT_APERTURE0..3_LOW_ADDR
+	{0x52d, 0x0fffffff, 0x0fffffff},
+	{0x52e, 0x0fffffff, 0x0fffffff},
+	{0x52f, 0x0fffffff, 0x0fffffff},
+};
 static const uint32 kHalt = 0x15000000;
 static const uint64 kCommandVA = 0x10000;
 static const uint64 kMemoryVA = 0x100000;
@@ -160,6 +169,10 @@ GfxEngine::DumpExecutionState(const char* point)
 		0xc088, 0xc089, 0xc08a, 0xc0f0, 0xc0f1, 0xc0f2, 0xc0f3,
 		0xc0f4, 0xc0f5, 0xc0f6, 0xc0f7, 0xc0f8, 0xc0f9, 0xc0fb, 0xc0fc,
 		0xec1d, 0xec1e, 0xec43, 0xec80,
+		0x80a, 0x80b, 0x80c, 0x80f, 0x9e1,
+		0x52c, 0x52d, 0x52e, 0x52f, 0x530, 0x531, 0x532, 0x533, 0x534,
+		0xd808, 0xdc80, 0xdc81, 0xdc82, 0xdc83, 0xdc84, 0xec71,
+		0x3052, 0x3053,
 	};
 	for (uint32 index : registers)
 		dprintf("amdgpu: GFX %s register %#x = %#x\n", point,
@@ -250,6 +263,12 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		r[0x21b6] |= kHalt;
 		(void)r[0x21b6];
 		snooze(50);
+		for (const auto& value : kGMCGolden) {
+			uint32 before = r[value[0]];
+			r[value[0]] = (before & ~value[1]) | value[2];
+			dprintf("amdgpu: GMC golden %#x before %#x after %#x\n",
+				(unsigned)value[0], (unsigned)before, (unsigned)r[value[0]]);
+		}
 		for (const auto& value : kGolden)
 			r[value[0]] = (r[value[0]] & ~value[1]) | value[2];
 		r[0x2000] = (r[0x2000] & ~0xffu) | 0xff; // GRBM read timeout
@@ -647,9 +666,10 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		while (control[0x84 / 4] != sequence && system_time() < gateDeadline)
 			snooze(50);
 		snooze(1000);
-		dprintf("amdgpu: GFX IB entry seq %u marker %u VM %#x/%#x"
+		dprintf("amdgpu: GFX IB entry seq %u marker %u shader marker %u EOP %u VM %#x/%#x"
 			" pages %#x/%#x IB remaining %u ring %u/%u\n",
-			(unsigned)sequence, (unsigned)control[0x84 / 4], (unsigned)r[0x536],
+			(unsigned)sequence, (unsigned)control[0x84 / 4],
+			(unsigned)control[0], (unsigned)control[1], (unsigned)r[0x536],
 			(unsigned)r[0x537], (unsigned)r[0x53e], (unsigned)r[0x53f],
 			(unsigned)r[0xc0ce], (unsigned)r[0x21c0], (unsigned)r[0x3045]);
 		control[0x80 / 4] = 1;
