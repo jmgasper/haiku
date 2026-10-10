@@ -1,0 +1,35 @@
+SubDir HAIKU_TOP src tests add-ons kernel drivers amdgpu ;
+
+UsePrivateHeaders [ FDirName graphics amdgpu ] ;
+SimpleTest amdgpu_probe : amdgpu_probe.cpp ;
+SimpleTest amdgpu_sdma : amdgpu_sdma.cpp ;
+SimpleTest amdgpu_smc : amdgpu_smc.cpp ;
+SimpleTest amdgpu_buffers : amdgpu_buffers.cpp ;
+SimpleTest amdgpu_device_buffers : amdgpu_device_buffers.cpp : [ TargetLibstdc++ ] ;
+SimpleTest amdgpu_startup : amdgpu_startup.cpp ;
+SimpleTest amdgpu_gfx : amdgpu_gfx.cpp ;
+SimpleTest amdgpu_uvd : amdgpu_uvd.cpp ;
+
+local driver = [ FDirName $(HAIKU_TOP) src add-ons kernel drivers graphics amdgpu ] ;
+SubDirHdrs $(driver) ;
+SEARCH_SOURCE += $(driver) ;
+SimpleTest vram_allocator_test : vram_allocator_test.cpp VramAllocator.cpp
+	: [ TargetLibstdc++ ] ;
+SimpleTest uvd_hevc_test : uvd_hevc_test.cpp UvdHevc.cpp : [ TargetLibstdc++ ] ;
+SimpleTest uvd_h264_test : uvd_h264_test.cpp UvdH264.cpp Firmware.cpp
+	: [ TargetLibstdc++ ] ;
+SimpleTest amdgpu_video : amdgpu_video.cpp : [ TargetLibstdc++ ] ;
+local video = [ FDirName $(HAIKU_TOP) src add-ons media plugins ] ;
+SubDirHdrs $(video)/amduvd ;
+SEARCH_SOURCE += $(video)/amduvd $(video)/nvdec ;
+SimpleTest amdgpu_video_stream : amdgpu_video_stream.cpp H264Stream.cpp h264_parse.c UvdH264.cpp
+	: [ TargetLibstdc++ ] ;
+SimpleTest amdgpu_hevc_stream : amdgpu_hevc_stream.cpp HevcStream.cpp hevc_parse.c h264_parse.c UvdHevc.cpp
+	: [ TargetLibstdc++ ] ;
+SimpleTest amdgpu_rom : amdgpu_rom.cpp Firmware.cpp ;
+
+UsePrivateHeaders libroot ;
+SimpleTest amdgpu_uvd_clocks : amdgpu_uvd_clocks.cpp UvdClock.cpp SHA256.cpp
+	: [ TargetLibstdc++ ] ;
+SEARCH on [ FGristFiles SHA256.cpp ]
+	= [ FDirName $(HAIKU_TOP) src system libroot posix crypt ] ;

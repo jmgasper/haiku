@@ -3,6 +3,20 @@
 Status values are backed by observation on the workstation. Anything not
 listed as verified is untested.
 
+**2026-10-11 WX 5100 status:** the X399 now has a Radeon Pro WX 5100.
+The NVIDIA results below describe the previous card. AMD desktop output still
+uses the firmware framebuffer. SDMA and bounded offscreen graphics tests pass,
+but indirect GFX execution retains a VM fault and Mesa/native display are
+unfinished. AMD UVD H.264 plays three minutes of 1080p30/AAC with zero drops
+in private airTime and Summit builds. HEVC Main/Main 10 has independent native
+pixel/format/lifecycle verification; both private applications also pass
+three-minute 1080p30 Main-10/AAC playback without drops. Summit also passes
+injected HEVC failure, paused-seek recovery and old-addon software fallback.
+Root and unprivileged clients also pass complete readback of 7.75 GiB of
+VRAM beyond the CPU aperture. General graphics, native display and the final
+complete release remain open.
+[WX5100.md](WX5100.md) records identities, evidence, limitations and next work.
+
 `tools/check-workstation.sh` re-checks the machine against all of this in one
 pass, with nothing set in the environment of the programs it runs, because
 several of these have looked fine while being quietly broken. It last came back
