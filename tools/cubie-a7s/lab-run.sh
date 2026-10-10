@@ -11,6 +11,9 @@
 #              a kernel debugger entry or the fallback to Debian
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+if [[ -z ${CUBIE_BOARD_LOCKED:-} ]]; then
+	exec "$HERE/board-lock.sh" "$0" "$@"
+fi
 smoke=1
 if [[ ${1:-} == -n ]]; then
 	smoke=0
