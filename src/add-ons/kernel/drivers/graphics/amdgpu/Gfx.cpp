@@ -83,6 +83,11 @@ static const uint32 kDirectSequences = 16;
 static const uint32 kShaderSequences = 16;
 static const uint32 kDrawSequences = 4;
 static const uint32 kVMShaderSequences = 8;
+// A long DE IB separates the entry gate from its tail. Inspect the remaining
+// fetch count at that gate instead of assuming the tail is still unfetched.
+// Stop before the separate CE IB at
+// command VA + 0xc000; the control page is further away at VA + 0xf000.
+static const uint32 kShaderIBDwords = 0xc000 / 4;
 // gfx803, assembled with LLVM 18. s[0:1] is the output address, s2 the seed,
 // s3 the workgroup X ID, and v0 the local thread X ID. No scratch or LDS.
 static const uint32 kFillShader[] = {
@@ -181,6 +186,8 @@ GfxEngine::DumpExecutionState(const char* point)
 		0xc098, 0xc099, 0xc09a,
 		0xc0c3, 0xc0c4, 0xc0c5, 0xc0c6, 0xc0c7, 0xc0c8,
 		0xc0c9, 0xc0ca, 0xc0cb,
+		0xc094, 0xc095, 0xc096, 0xc097, // DE preamble bounds
+		0x21bc, 0x21bd, 0x21d5, 0x21d6, // ROQ/MEQ thresholds
 	};
 	for (uint32 index : registers)
 		dprintf("amdgpu: GFX %s register %#x = %#x\n", point,
@@ -510,7 +517,10 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 	if (shader) {
 		// VMID belongs to the IB execution context. A SET_SH_REG of
 		// COMPUTE_VMID in the kernel ring cannot select a client VM.
-		volatile uint32* shaderCommands = ib + 0x8000 / 4;
+		// Preserve the marker packet before reusing the bulk-data IB for the
+		// longer shader stream. Its NOP runway overwrites the old packet.
+		const uint32 marker[] = {ib[1028], ib[1029], ib[1030], ib[1031], ib[1032]};
+		volatile uint32* shaderCommands = ib;
 		uint32 shaderLength = 0;
 		auto emitShader = [&](uint32 word) {
 			if (privateShader)
@@ -534,6 +544,13 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			emitShader(1);
 			emitShader(0xffffffff);
 			emitShader(0x20);
+			// Use separate two-DWORD NOPs so this is a stream of packets,
+			// not a single large NOP whose payload could simply be skipped.
+			// The entry gate plus its packets occupy an even DWORD count.
+			while (shaderLength < kShaderIBDwords - 256) {
+				emitShader(Packet(0x10, 0));
+				emitShader(0);
+			}
 		}
 		const uint64 shaderBase = privateShader ? kMemoryVA : gpu;
 		dprintf("amdgpu: compute seq %u VMID %u code %#" B_PRIx64
@@ -573,8 +590,8 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 		emitShader(7 | 4 << 8); // CS_PARTIAL_FLUSH before the completion marker
 		// Only the shader writes the payload. The CP writes its marker after
 		// all waves finish; EOP below makes their stores visible to the CPU.
-		for (uint32 i = 1028; i < 1033; i++)
-			emitShader(ib[i]);
+		for (uint32 word : marker)
+			emitShader(word);
 		if (privateShader) {
 			// Hold PFP inside the IB after its shader and confirmed marker.
 			// The CPU samples both fault contexts before allowing IB return.
@@ -599,7 +616,7 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 			emit(0x80000000);
 			emit(0x80000000);
 			emit(Packet(0x3f, 2));
-			emit(kCommandVA + 0x8000);
+			emit(kCommandVA);
 			emit(0);
 			emit(shaderLength | 1 << 24);
 		}
