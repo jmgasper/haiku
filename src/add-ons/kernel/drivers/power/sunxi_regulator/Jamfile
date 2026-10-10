@@ -1,0 +1,7 @@
+SubDir HAIKU_TOP src add-ons kernel drivers power sunxi_regulator ;
+
+UsePrivateKernelHeaders ;
+
+KernelAddon sunxi_regulator :
+	sunxi_regulator.cpp
+;

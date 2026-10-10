@@ -1,0 +1,11 @@
+SubDir HAIKU_TOP tools cubie-a7s ;
+
+UsePrivateHeaders [ FDirName graphics sunxi_display ] ;
+
+# lab programs for the Radxa Cubie A7S port
+SimpleTest cubie_reg : reg.cpp ;
+
+# the Pi lab's file fetch: a file from a TCP port of the lab host
+# (tools/rpi4/push.py serves it)
+SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) tools rpi4 ] ;
+SimpleTest cubie_fetch : fetch.cpp : network ;

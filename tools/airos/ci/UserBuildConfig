@@ -11,6 +11,11 @@
 #              arm64 machines with UEFI firmware)
 #   Pi 4       jam -q @airos-rpi4 airos-rpi-image         -> airos-rpi4.img
 #              SD card image (FAT boot partition + BFS) that boots directly
+#   Cubie A7S  jam -q @airos-cubie                        -> haiku-airos-cubie.image
+#              then tools/cubie-a7s/build-sd-image.sh haiku-airos-cubie.image
+#              airos-cubie.img: SD card image (Radxa's boot chain, the air/OS
+#              U-Boot, ESP, BFS); building that U-Boot needs an
+#              aarch64-linux-gnu cross compiler (tools/cubie-a7s/u-boot)
 #
 # The build directory's UserBuildConfig sets these and then includes this file:
 #   AIROS_CI_PACKAGES       directory of packages for system/packages: the
@@ -37,10 +42,12 @@ HAIKU_IMAGE_HOST_NAME ?= airos ;
 DefineBuildProfile nightly-airos-x86_64 : anyboot-image : "airos-x86_64.iso" ;
 DefineBuildProfile airos-arm64 : anyboot-image : "airos-arm64.iso" ;
 DefineBuildProfile airos-rpi4 : image : "haiku-airos-rpi4.image" ;
+DefineBuildProfile airos-cubie : image : "haiku-airos-cubie.image" ;
 
 AIROS_X86_64 = ;
 AIROS_ROCK5 = ;
 AIROS_RPI4 = ;
+AIROS_CUBIE = ;
 switch $(HAIKU_BUILD_PROFILE) {
 	case nightly-airos-x86_64 : {
 		AIROS_X86_64 = 1 ;
@@ -61,6 +68,11 @@ switch $(HAIKU_BUILD_PROFILE) {
 		HAIKU_IMAGE_SIZE = $(AIROS_CI_IMAGE_SIZE:E=3584) ;
 		HAIKU_BFS_GROWABLE = 1 ;
 		HAIKU_RPI_IMAGE_NAME = airos-rpi4.img ;
+	}
+	case airos-cubie : {
+		AIROS_CUBIE = 1 ;
+		HAIKU_IMAGE_SIZE = $(AIROS_CI_IMAGE_SIZE:E=3584) ;
+		HAIKU_BFS_GROWABLE = 1 ;
 	}
 }
 
@@ -107,15 +119,15 @@ rule UserBuildConfigRulePreImage
 			: firmware ;
 	}
 
-	# Join remembered Wi-Fi networks at start (x86_64 and ROCK 5; the Pi has
-	# its own script that also sets the clock).
+	# Join remembered Wi-Fi networks at start (x86_64 and ROCK 5; the Pi and
+	# the Cubie have their own scripts that also set the clock).
 	if $(AIROS_X86_64) || $(AIROS_ROCK5) {
 		local bootscript = <airos-ci>UserBootscript ;
 		SEARCH on $(bootscript) = [ FDirName $(tree) boot ] ;
 		AddFilesToHaikuImage home config settings boot : $(bootscript) ;
 	}
 
-	if $(AIROS_ROCK5) || $(AIROS_RPI4) {
+	if $(AIROS_ROCK5) || $(AIROS_RPI4) || $(AIROS_CUBIE) {
 		# CI stages this architecture-neutral package with zlib, since the
 		# arm64 release package readers may not support the repository's zstd.
 		if ! [ Glob $(AIROS_CI_PACKAGES) : ca_root_certificates-*-any.hpkg ] {
@@ -172,5 +184,25 @@ rule UserBuildConfigRulePreImage
 			<airos-rpi4>rpi-time-sync ;
 		SEARCH on $(bootscript) = $(rpi) ;
 		AddFilesToHaikuImage home config settings boot : $(bootscript) ;
+	}
+
+	if $(AIROS_CUBIE) {
+		local rpi = [ FDirName $(HAIKU_TOP) data boot rpi ] ;
+		# Package entries the Cubie must not see either (the ROCK 5's MPP
+		# decoder), and an installed system's locale: straight to the desktop.
+		local packageSettings = <airos-cubie>packages ;
+		SEARCH on $(packageSettings) = $(rpi) ;
+		AddFilesToHaikuImage system settings : $(packageSettings) ;
+		local localeSettings = "<airos-cubie>Locale settings"
+			<airos-cubie>RTC_time_settings ;
+		SEARCH on $(localeSettings) = $(rpi) ;
+		AddFilesToHaikuImage home config settings : $(localeSettings) ;
+		# NTP (the board has no battery-backed clock) and Wi-Fi autojoin
+		local bootscript = <airos-cubie>UserBootscript ;
+		SEARCH on $(bootscript) = [ FDirName $(HAIKU_TOP) data boot cubie-a7s ] ;
+		local timeSync = <airos-cubie>rpi-time-sync ;
+		SEARCH on $(timeSync) = $(rpi) ;
+		AddFilesToHaikuImage home config settings boot : $(bootscript)
+			$(timeSync) ;
 	}
 }
