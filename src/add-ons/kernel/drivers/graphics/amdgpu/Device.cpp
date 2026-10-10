@@ -33,6 +33,7 @@ struct VmBinding {
 
 struct ClientVM {
 	GpuPageTable table;
+	GpuPageTable::Allocation commands;
 	VmBinding* bindings;
 	uint64 bytes;
 	uint32 mappings;
@@ -548,6 +549,7 @@ ReleaseVM(AmdgpuClient* client)
 	if (vm == NULL)
 		return;
 	vm->table.Uninitialize(sFault == B_OK);
+	ReleasePageTable(NULL, 4096, vm->commands, sFault == B_OK);
 	while (vm->bindings != NULL) {
 		VmBinding* binding = vm->bindings;
 		vm->bindings = binding->next;
@@ -570,9 +572,15 @@ CreateVM(AmdgpuClient* client)
 	if (vm == NULL)
 		return B_NO_MEMORY;
 	bool okay = vm->table.Initialize(NULL, AllocatePageTable, ReleasePageTable);
-	// These two kernel-owned pages are below the client's VA range and
-	// read-only to the GPU. Neither page contains a fence or other client data.
-	uint64 entry = (sGart.table[16] & ~0x40ULL) | 0x10;
+	// A general shader can read even the reserved GPU pages. Keep diagnostic
+	// commands (including destination and seed) private to this client, and
+	// clear fresh storage before publishing it. The shader page is public code.
+	if (okay)
+		okay = AllocatePageTable(NULL, 4096, vm->commands);
+	if (okay) {
+		for (uint32 i = 0; i < 4096 / 8; i++) vm->commands.cpu[i] = 0;
+	}
+	uint64 entry = vm->commands.gpu | 0x31;
 	if (okay)
 		okay = vm->table.Map(GfxEngine::kClientIbVA, &entry, 1) == GpuPageTable::OK;
 	entry = (sInfo.vram_gpu_base + GfxEngine::kScratchOffset + 0x40000) | 0x31;
@@ -580,6 +588,8 @@ CreateVM(AmdgpuClient* client)
 		okay = vm->table.Map(GfxEngine::kClientShaderVA, &entry, 1) == GpuPageTable::OK;
 	if (!okay) {
 		vm->table.Uninitialize(true);
+		if (vm->commands.cpu != NULL)
+			ReleasePageTable(NULL, 4096, vm->commands, true);
 		free(vm);
 		return B_NO_MEMORY;
 	}
@@ -695,7 +705,7 @@ VMControl(AmdgpuClient* client, uint32 op, void* data, size_t length)
 		result.address = request.address; result.value = request.value;
 		if (status == B_OK)
 			status = sGfx.ExecuteVM(vm->table.directory.gpu, request.address,
-				request.value, sGart, result);
+				request.value, (volatile uint32*)vm->commands.cpu, sGart, result);
 		if (sGfx.faulted && sFault == B_OK)
 			sFault = status;
 		result.status = status;

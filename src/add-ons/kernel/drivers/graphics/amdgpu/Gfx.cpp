@@ -995,9 +995,9 @@ GfxEngine::Test(volatile uint32* r, const amdgpu_info& info,
 
 status_t
 GfxEngine::ExecuteVM(uint64 directory, uint64 destination, uint32 value,
-	Gart& gart, amdgpu_vm_test& result)
+	volatile uint32* commands, Gart& gart, amdgpu_vm_test& result)
 {
-	volatile uint32* ib = gart.commandMemory + 65536 / 4;
+	volatile uint32* ib = commands;
 	uint32 count = 0;
 	auto command = [&](uint32 word) { ib[count++] = word; };
 	auto shader = [&](uint32 reg, uint32 word) {
