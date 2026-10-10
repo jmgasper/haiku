@@ -50,6 +50,7 @@ struct aic_reorder {
 	int					active;
 	uint16_t			head;		/* the next sequence number expected */
 	int					held;
+	int					behind;		/* frames in a row behind the window */
 	bigtime_t			since;		/* when the oldest held frame came */
 	struct mbuf_list	slots[AIC_REORDER_WINDOW];
 	uint8_t				filled[AIC_REORDER_WINDOW];
@@ -63,6 +64,7 @@ struct aic_softc {
 
 	int					sc_attached;
 	int					sc_5ghz;
+	int					sc_vht;			/* advertise VHT (driver setting) */
 	int					sc_started;		/* MM_START sent */
 	int					sc_vif;			/* -1: no interface */
 	int					sc_scanning;
@@ -120,6 +122,7 @@ struct aic_softc {
 
 	/* when the link's rate and signal were last asked for */
 	bigtime_t			sc_link_time;
+	uint32_t			sc_link_rate;
 };
 
 

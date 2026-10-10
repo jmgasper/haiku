@@ -114,6 +114,11 @@
 #define AIC_ME_HT_CAPA_INFO			0	/* u16 */
 #define AIC_ME_HT_AMPDU_PARAM		2
 #define AIC_ME_HT_MCS				3	/* 16 bytes: rx mask, highest, tx */
+#define AIC_ME_VHT_CAPA_INFO		32	/* u32 */
+#define AIC_ME_VHT_RX_MCS_MAP		36	/* u16 */
+#define AIC_ME_VHT_RX_HIGHEST		38
+#define AIC_ME_VHT_TX_MCS_MAP		40
+#define AIC_ME_VHT_TX_HIGHEST		42
 #define AIC_ME_TX_LIFETIME			100	/* u16 */
 #define AIC_ME_PHY_BW_MAX			102
 #define AIC_ME_HT_SUPPORTED			103

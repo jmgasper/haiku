@@ -411,8 +411,7 @@ aic_configure(struct aic_softc* sc)
 
 	// 1x1 HT: LDPC, 20/40 MHz, short guard intervals, one RX STBC stream,
 	// 7935-byte A-MSDUs; A-MPDUs up to 64 KiB with 16 us spacing; MCS 0-7
-	// and 32, 150 Mb/s at most. No VHT or HE yet. Power save off: the
-	// boards are fed from the mains, and asleep the chip answers late.
+	// and 32, 150 Mb/s at most.
 	memset(config, 0, sizeof(config));
 	put16(config + AIC_ME_HT_CAPA_INFO, 0x0001 | 0x0002 | 0x0020 | 0x0040
 		| 0x0100 | 0x0800);
@@ -424,6 +423,22 @@ aic_configure(struct aic_softc* sc)
 	put16(config + AIC_ME_TX_LIFETIME, 1000);
 	config[AIC_ME_PHY_BW_MAX] = 1;
 	config[AIC_ME_HT_SUPPORTED] = 1;
+	if (sc->sc_vht) {
+		// 1x1 VHT at 80 MHz (5 GHz): 1 MiB A-MPDUs, 7991-byte A-MSDUs,
+		// RX LDPC, short guard interval, one RX STBC stream; MCS 0-9 on
+		// one stream, 433 Mb/s at most
+		put32(config + AIC_ME_VHT_CAPA_INFO, (7 << 23) | 0x01 | 0x10
+			| 0x20 | 0x100);
+		put16(config + AIC_ME_VHT_RX_MCS_MAP, 0xfffe);
+		put16(config + AIC_ME_VHT_RX_HIGHEST, 433);
+		put16(config + AIC_ME_VHT_TX_MCS_MAP, 0xfffe);
+		put16(config + AIC_ME_VHT_TX_HIGHEST, 433);
+		config[AIC_ME_VHT_SUPPORTED] = 1;
+		config[AIC_ME_PHY_BW_MAX] = 2;
+	}
+	// Power save off: the boards are fed from the mains, and asleep the
+	// chip answers late.
+
 	config[AIC_ME_PS_ON] = 0;
 	config[AIC_ME_ANT_DIV_ON] = 1;
 	if (aic_cmd(sc, AIC_ME_CONFIG_REQ, AIC_TASK_ME, config, sizeof(config),
@@ -1469,15 +1484,28 @@ aic_reorder_input(struct aic_softc* sc, int tid, uint16_t sequence,
 	if (!r->active) {
 		r->active = 1;
 		r->head = sequence;
+		r->behind = 0;
 	}
 
 	delta = (sequence - r->head) & 0xfff;
 	if (delta >= 2048) {
-		// behind the window: a retransmission
-		mtx_leave(&sc->sc_rx_lock);
-		ml_purge(msdus);
-		return;
+		// Behind the window: a retransmission. A run of them means the
+		// sender's numbers started over (a new block ack session); the
+		// window follows them then.
+		if (++r->behind < AIC_REORDER_WINDOW / 2) {
+			mtx_leave(&sc->sc_rx_lock);
+			ml_purge(msdus);
+			return;
+		}
+		while (r->held > 0) {
+			while (!r->filled[r->head % AIC_REORDER_WINDOW])
+				r->head = (r->head + 1) & 0xfff;
+			aic_reorder_release(r, out);
+		}
+		r->head = sequence;
+		delta = 0;
 	}
+	r->behind = 0;
 	if (delta >= AIC_REORDER_WINDOW) {
 		// ahead of it: what the window leaves behind goes up as it is
 		uint16_t head = (sequence - AIC_REORDER_WINDOW + 1) & 0xfff;
@@ -1978,12 +2006,19 @@ aic_update_link(struct aic_softc* sc)
 			nss = mcs / 8 + 1;
 			mcs %= 8;
 			gi = gi != 0 ? 4 : 8;
+			// tell net80211 what the firmware negotiated
+			ni->ni_flags |= IEEE80211_NODE_HT;
+			if (ic->ic_curmode < IEEE80211_MODE_11N)
+				ieee80211_setmode(ic, IEEE80211_MODE_11N);
 			break;
 		case 4:
 			mode = IEEE80211_HAIKU_TX_MODE_VHT;
 			nss = (mcs >> 4) + 1;
 			mcs &= 0xf;
 			gi = gi != 0 ? 4 : 8;
+			ni->ni_flags |= IEEE80211_NODE_HT | IEEE80211_NODE_VHT;
+			if (ic->ic_curmode < IEEE80211_MODE_11AC)
+				ieee80211_setmode(ic, IEEE80211_MODE_11AC);
 			break;
 		default:
 			mode = IEEE80211_HAIKU_TX_MODE_HE;
@@ -1999,6 +2034,12 @@ aic_update_link(struct aic_softc* sc)
 	ni->ni_haiku_tx_width = width;
 	ni->ni_haiku_tx_kbps = ieee80211_haiku_mcs_kbps(mode, mcs, nss, width,
 		gi);
+	if (rate != sc->sc_link_rate) {
+		sc->sc_link_rate = rate;
+		DPRINTF("%s: sending at MCS %d, %d stream(s), %d MHz, %u kb/s; "
+			"signal %d dBm\n", DEVNAME(sc), mcs, nss, width,
+			ni->ni_haiku_tx_kbps, (int8_t)confirm[AIC_STA_INFO_RSSI]);
+	}
 }
 
 
@@ -2142,9 +2183,11 @@ aic_attach(device_t dev)
 	ml_init(&sc->sc_rxq[0]);
 	ml_init(&sc->sc_rxq[1]);
 
+	sc->sc_vht = 1;
 	settings = load_driver_settings("aic8800wifi");
 	if (settings != NULL) {
 		aic_debug = get_driver_boolean_parameter(settings, "debug", 0, 1);
+		sc->sc_vht = get_driver_boolean_parameter(settings, "vht", 1, 1);
 		unload_driver_settings(settings);
 	}
 
@@ -2248,7 +2291,6 @@ aic_detach(device_t dev)
 	struct aic_softc* sc = device_get_softc(dev);
 	struct ifnet* ifp = &sc->sc_ic.ic_if;
 	struct aic_event* event;
-	uint8_t parameters[AIC_STACK_START_SIZE];
 	status_t result;
 
 	if (!sc->sc_attached)
@@ -2264,12 +2306,13 @@ aic_detach(device_t dev)
 	release_sem(sc->sc_wake);
 	wait_for_thread(sc->sc_thread, &result);
 
-	if (!aic_usb_gone()) {
-		memset(parameters, 0, sizeof(parameters));
-		aic_cmd(sc, AIC_MM_SET_STACK_START_REQ, AIC_TASK_MM, parameters,
-			AIC_STACK_START_SIZE, AIC_MM_SET_STACK_START_CFM, NULL, 0);
-	}
 	aic_usb_stop();
+
+	// The next driver load starts from a freshly loaded firmware, as after
+	// a recovery: one that was set up and stopped before did not come back
+	// reliably (both receive pipes failed after a reload). Bluetooth
+	// restarts with the chip.
+	aic_usb_reboot_chip();
 
 	while ((event = sc->sc_events) != NULL) {
 		sc->sc_events = event->next;

@@ -723,9 +723,12 @@ rx_stop(rx_pipe* rx)
 	if (rx->thread >= 0) {
 		release_sem_etc(rx->done, 1, 0);
 		status_t result;
-		if (wait_for_thread_etc(rx->thread, B_RELATIVE_TIMEOUT, 3000000,
-				&result) != B_OK)
+		status_t status = wait_for_thread_etc(rx->thread, B_RELATIVE_TIMEOUT,
+			3000000, &result);
+		if (status != B_OK && status != B_BAD_THREAD_ID) {
+			// (a thread that ended already is gone)
 			TRACE_ALWAYS("%s: the thread does not end\n", rx->name);
+		}
 		rx->thread = -1;
 	}
 	if (rx->done >= 0)
