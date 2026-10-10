@@ -51,6 +51,18 @@ it).
                                     (some 380 KiB: the prepare array) on the
                                     heap, not the submitting thread's stack
                                     (256 KiB by default on Haiku)
+  winsys/powervr/pvr_drm_job_*.c    a request failing with EIO (the kernel
+                                    ended the context: a GPU reset, a faulty
+                                    context) or ENODEV is VK_ERROR_DEVICE_LOST,
+                                    not VK_ERROR_OUT_OF_DEVICE_MEMORY (render,
+                                    compute, transfer, null-job syncobjs)
+  pvr_arch_queue.c                  on VK_ERROR_DEVICE_LOST the queue (and so
+                                    the device) is marked lost, which the
+                                    runtime does not do for immediate-mode
+                                    submits, and the submission's signals are
+                                    signalled: zink waited forever on the GL
+                                    thread for a batch point the failed submit
+                                    would never reach
   winsys/powervr/pvr_drm_bo.c       CPU maps through PVR_HAIKU_NR_MAP_BO (a
                                     clone of the buffer's area; placed maps
                                     free the reservation and pass the address),
@@ -749,6 +761,71 @@ diff -ruN a/src/imagination/vulkan/pvr_arch_job_transfer.c b/src/imagination/vul
  }
  
  VkResult pvr_arch_transfer_job_submit(struct pvr_transfer_ctx *ctx,
+diff -ruN a/src/imagination/vulkan/pvr_arch_queue.c b/src/imagination/vulkan/pvr_arch_queue.c
+--- a/src/imagination/vulkan/pvr_arch_queue.c
++++ b/src/imagination/vulkan/pvr_arch_queue.c
+@@ -1022,8 +1022,8 @@
+    return result;
+ }
+ 
+-static VkResult pvr_driver_queue_submit(struct vk_queue *queue,
+-                                        struct vk_queue_submit *submit)
++static VkResult pvr_driver_queue_submit_jobs(struct vk_queue *queue,
++                                             struct vk_queue_submit *submit)
+ {
+    struct pvr_queue *driver_queue = container_of(queue, struct pvr_queue, vk);
+    struct pvr_device *device = driver_queue->device;
+@@ -1064,6 +1064,50 @@
+    return VK_SUCCESS;
+ }
+ 
++/* (air/OS) The kernel ended this queue's context (a GPU reset, a context
++ * marked faulty) or lost the device: a winsys request failed with
++ * VK_ERROR_DEVICE_LOST. The runtime does not mark a queue lost when an
++ * immediate-mode submission fails, so do it here: every later submit and
++ * wait then returns VK_ERROR_DEVICE_LOST at once instead of blocking. Then
++ * signal what this submission would have signalled. A thread already
++ * waiting for one of those points would otherwise wait forever for a point
++ * no job will reach: zink waits for its batch timeline on the GL thread
++ * while its flush thread submits. That wait then ends, and the runtime's
++ * device check after a wait reports the loss.
++ */
++static void pvr_queue_lost(struct pvr_queue *queue,
++                           struct vk_queue_submit *submit)
++{
++   vk_queue_set_lost(&queue->vk,
++                     "the kernel ended the queue's context (GPU reset)");
++
++   /* Nothing will ever signal the submission's semaphores and fence now, and
++    * a thread may already be blocked in the kernel waiting for them (zink
++    * waits for its batch timeline point with no timeout).  Signal them so it
++    * wakes up; the runtime's post-wait vk_device_check_status() then returns
++    * VK_ERROR_DEVICE_LOST to it, as it does to every later wait.
++    */
++   for (uint32_t i = 0; i < submit->signal_count; i++) {
++      const struct vk_sync_signal *signal = &submit->signals[i];
++      VkResult result = vk_sync_signal(&queue->device->vk,
++                                       signal->sync,
++                                       signal->signal_value);
++      if (result != VK_SUCCESS)
++         mesa_logw("could not signal a lost submission's sync (%d)", result);
++   }
++}
++
++static VkResult pvr_driver_queue_submit(struct vk_queue *queue,
++                                        struct vk_queue_submit *submit)
++{
++   VkResult result = pvr_driver_queue_submit_jobs(queue, submit);
++
++   if (result == VK_ERROR_DEVICE_LOST)
++      pvr_queue_lost(container_of(queue, struct pvr_queue, vk), submit);
++
++   return result;
++}
++
+ VkResult PVR_PER_ARCH(QueueBindSparse)(VkQueue _queue,
+                                        uint32_t bindInfoCount,
+                                        const VkBindSparseInfo *pBindInfo,
 diff -ruN a/src/imagination/vulkan/pvr_instance.c b/src/imagination/vulkan/pvr_instance.c
 --- a/src/imagination/vulkan/pvr_instance.c
 +++ b/src/imagination/vulkan/pvr_instance.c
@@ -1116,6 +1193,191 @@ diff -ruN a/src/imagination/vulkan/winsys/powervr/pvr_drm_bo.c b/src/imagination
  
     VG(VALGRIND_FREELIKE_BLOCK(bo->map, 0));
  
+diff -ruN a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_common.h b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_common.h
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_common.h
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_common.h
+@@ -24,9 +24,51 @@
+ #ifndef PVR_DRM_JOB_COMMON_H
+ #define PVR_DRM_JOB_COMMON_H
+ 
++#include <errno.h>
++#include <string.h>
++#include <xf86drm.h>
++
+ #include "drm-uapi/pvr_drm.h"
+ #include "pvr_winsys.h"
+ #include "util/macros.h"
++#include "vk_log.h"
++
++/* (air/OS) The VkResult for a failed winsys request whose errno is "err".
++ * EIO means the kernel ended the context (a GPU reset, a context marked
++ * faulty) and ENODEV that the device is gone: both are VK_ERROR_DEVICE_LOST,
++ * so the runtime and zink stop waiting for work that will never run. Every
++ * other failure stays VK_ERROR_OUT_OF_DEVICE_MEMORY, as with pvrsrv.
++ */
++static inline VkResult
++pvr_drm_job_error(int err, const char *what)
++{
++   if (err == EIO || err == ENODEV) {
++      return vk_errorf(NULL,
++                       VK_ERROR_DEVICE_LOST,
++                       "%s: the kernel ended the context (errno %d: %s)",
++                       what,
++                       err,
++                       strerror(err));
++   }
++
++   return vk_errorf(NULL,
++                    VK_ERROR_OUT_OF_DEVICE_MEMORY,
++                    "%s (errno %d: %s)",
++                    what,
++                    err,
++                    strerror(err));
++}
++
++static inline VkResult
++pvr_drm_submit_jobs(int fd,
++                    struct drm_pvr_ioctl_submit_jobs_args *args,
++                    const char *what)
++{
++   if (drmIoctl(fd, DRM_IOCTL_PVR_SUBMIT_JOBS, args) == 0)
++      return VK_SUCCESS;
++
++   return pvr_drm_job_error(errno, what);
++}
+ 
+ static enum drm_pvr_ctx_priority
+ pvr_drm_from_winsys_priority(enum pvr_winsys_ctx_priority priority)
+diff -ruN a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_compute.c
+@@ -214,10 +214,10 @@
+       };
+    }
+ 
+-   /* Returns VK_ERROR_OUT_OF_DEVICE_MEMORY to match pvrsrv. */
+-   return pvr_ioctlf(drm_ws->base.render_fd,
+-                     DRM_IOCTL_PVR_SUBMIT_JOBS,
+-                     &args,
+-                     VK_ERROR_OUT_OF_DEVICE_MEMORY,
+-                     "Failed to submit compute job");
++   /* VK_ERROR_OUT_OF_DEVICE_MEMORY to match pvrsrv, or
++    * VK_ERROR_DEVICE_LOST when the kernel ended the context.
++    */
++   return pvr_drm_submit_jobs(drm_ws->base.render_fd,
++                              &args,
++                              "Failed to submit compute job");
+ }
+diff -ruN a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_null.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_null.c
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_null.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_null.c
+@@ -29,6 +29,7 @@
+ 
+ #include "drm-uapi/pvr_drm.h"
+ #include "pvr_drm.h"
++#include "pvr_drm_job_common.h"
+ #include "pvr_drm_job_null.h"
+ #include "pvr_winsys.h"
+ #include "util/libsync.h"
+@@ -58,13 +59,8 @@
+                                vk_sync_as_drm_syncobj(src_sync)->syncobj,
+                                waits[0].wait_value,
+                                0);
+-      if (ret) {
+-         return vk_errorf(NULL,
+-                          VK_ERROR_OUT_OF_DEVICE_MEMORY,
+-                          "Failed to submit transfer syncobj. Errno: %d - %s.",
+-                          errno,
+-                          strerror(errno));
+-      }
++      if (ret)
++         return pvr_drm_job_error(errno, "Failed to submit transfer syncobj");
+ 
+       return VK_SUCCESS;
+    }
+@@ -72,13 +68,8 @@
+    ret = drmSyncobjCreate(drm_ws->base.render_fd,
+                           wait_count == 0 ? DRM_SYNCOBJ_CREATE_SIGNALED : 0,
+                           &tmp_syncobj);
+-   if (ret) {
+-      return vk_errorf(NULL,
+-                       VK_ERROR_OUT_OF_DEVICE_MEMORY,
+-                       "Failed to create temporary syncobj. Errno: %d - %s.",
+-                       errno,
+-                       strerror(errno));
+-   }
++   if (ret)
++      return pvr_drm_job_error(errno, "Failed to create temporary syncobj");
+ 
+    for (uint32_t i = 0; i < wait_count; i++) {
+       struct vk_sync *src_sync = waits[i].sync;
+@@ -93,12 +84,7 @@
+                                waits[i].wait_value,
+                                0);
+       if (ret) {
+-         result =
+-            vk_errorf(NULL,
+-                      VK_ERROR_OUT_OF_DEVICE_MEMORY,
+-                      "Failed to create temporary syncobj. Errno: %d - %s.",
+-                      errno,
+-                      strerror(errno));
++         result = pvr_drm_job_error(errno, "Failed to transfer to syncobj");
+          goto out_destroy_tmp_syncobj;
+       }
+    }
+@@ -110,11 +96,7 @@
+                             wait_count,
+                             0);
+    if (ret) {
+-      result = vk_errorf(NULL,
+-                         VK_ERROR_OUT_OF_DEVICE_MEMORY,
+-                         "Syncobj transfer failed. Errno: %d - %s.",
+-                         errno,
+-                         strerror(errno));
++      result = pvr_drm_job_error(errno, "Syncobj transfer failed");
+    } else {
+       result = VK_SUCCESS;
+    }
+diff -ruN a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_render.c
+@@ -621,10 +621,10 @@
+    if (submit_info->has_fragment_job)
+       jobs_args[2].sync_ops.count = num_frag_syncs;
+ 
+-   /* Returns VK_ERROR_OUT_OF_DEVICE_MEMORY to match pvrsrv. */
+-   return pvr_ioctlf(drm_ws->base.render_fd,
+-                     DRM_IOCTL_PVR_SUBMIT_JOBS,
+-                     &args,
+-                     VK_ERROR_OUT_OF_DEVICE_MEMORY,
+-                     "Failed to submit render job");
++   /* VK_ERROR_OUT_OF_DEVICE_MEMORY to match pvrsrv, or
++    * VK_ERROR_DEVICE_LOST when the kernel ended the context.
++    */
++   return pvr_drm_submit_jobs(drm_ws->base.render_fd,
++                              &args,
++                              "Failed to submit render job");
+ }
+diff -ruN a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c
+--- a/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c
++++ b/src/imagination/vulkan/winsys/powervr/pvr_drm_job_transfer.c
+@@ -171,10 +171,10 @@
+       };
+    }
+ 
+-   /* Returns VK_ERROR_OUT_OF_DEVICE_MEMORY to match pvrsrv. */
+-   return pvr_ioctlf(drm_ws->base.render_fd,
+-                     DRM_IOCTL_PVR_SUBMIT_JOBS,
+-                     &args,
+-                     VK_ERROR_OUT_OF_DEVICE_MEMORY,
+-                     "Failed to submit transfer job");
++   /* VK_ERROR_OUT_OF_DEVICE_MEMORY to match pvrsrv, or
++    * VK_ERROR_DEVICE_LOST when the kernel ended the context.
++    */
++   return pvr_drm_submit_jobs(drm_ws->base.render_fd,
++                              &args,
++                              "Failed to submit transfer job");
+ }
 diff -ruN a/src/util/meson.build b/src/util/meson.build
 --- a/src/util/meson.build
 +++ b/src/util/meson.build

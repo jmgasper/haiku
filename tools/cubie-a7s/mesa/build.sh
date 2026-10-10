@@ -43,7 +43,13 @@ BUILD_GL=$ROOT/build-gl
 # applied in this order; mesa-haiku-gl.patch only touches files the first
 # one does not
 PATCHES=(mesa-haiku-pvr.patch mesa-haiku-gl.patch)
-TESTS=(pvr_vkprobe pvr_vkfill pvr_vkfence pvr_vktriangle)
+TESTS=(pvr_vkprobe pvr_vkfill pvr_vkfence pvr_vktriangle pvr_vkhang
+	pvr_vkbench)
+# OpenGL ES programs (through libglvnd's libEGL/libGLESv2)
+GL_TESTS=(pvr_glprobe pvr_glbench)
+# the runtime loader's thread-local storage for dlopen()ed libraries: a
+# program and the library it loads, built from one file
+TLS_CHECK=(tls_generation_check libtls_generation_check.so)
 
 export PATH=$HOST_TOOLS/bin:$WORK/toolchains/mesa-python/bin:$WORK/toolchains/host/usr/bin:$PATH
 export LD_LIBRARY_PATH=$NATIVE_DEPS/usr/lib/x86_64-linux-gnu:$NATIVE_DEPS/usr/lib/llvm-18/lib
@@ -262,6 +268,11 @@ tests() {
 			-L"$lib" -lvulkan_powervr_mesa -Wl,--no-allow-shlib-undefined \
 			-Wl,-rpath-link="$BASE/sysroot/boot/system/lib"
 	done
+	"$CROSS-gcc" --sysroot="$BASE/sysroot" -std=gnu11 -O2 -g -Wall -Wextra \
+		-fPIC -shared -DTLS_GENERATION_LIBRARY \
+		-o "$ROOT/tests/${TLS_CHECK[1]}" "$TOOLS/tls_generation_check.c"
+	"$CROSS-gcc" --sysroot="$BASE/sysroot" -std=gnu11 -O2 -g -Wall -Wextra \
+		-o "$ROOT/tests/${TLS_CHECK[0]}" "$TOOLS/tls_generation_check.c"
 }
 
 # -- OpenGL: EGL with zink and softpipe -----------------------------------------
@@ -320,11 +331,14 @@ gl() {
 		-I"$SRC/include" -o "$gl/libvulkan.so.1" "$TOOLS/vulkan_shim.c" \
 		-L"$lib" -lvulkan_powervr_mesa -Wl,--no-allow-shlib-undefined \
 		-Wl,-rpath-link="$BASE/sysroot/boot/system/lib"
-	"$CROSS-gcc" --sysroot="$BASE/sysroot" -std=gnu11 -O2 -g -Wall -Wextra \
-		-I"$opengl" -o "$gl/pvr_glprobe" "$TOOLS/pvr_glprobe.c" \
-		-L"$BASE/sysroot/boot/system/develop/lib" -lEGL -lGLESv2 \
-		-Wl,--no-allow-shlib-undefined \
-		-Wl,-rpath-link="$BASE/sysroot/boot/system/lib"
+	local t
+	for t in "${GL_TESTS[@]}"; do
+		"$CROSS-gcc" --sysroot="$BASE/sysroot" -std=gnu11 -O2 -g -Wall \
+			-Wextra -Wno-unused-parameter -I"$opengl" -o "$gl/$t" \
+			"$TOOLS/$t.c" -L"$BASE/sysroot/boot/system/develop/lib" -lEGL \
+			-lGLESv2 -Wl,--no-allow-shlib-undefined \
+			-Wl,-rpath-link="$BASE/sysroot/boot/system/lib"
+	done
 	check_symbols "$BUILD_GL/src/egl/libEGL_mesa.so.0.0.0"
 }
 
@@ -363,7 +377,7 @@ results() {
 	cp "$lib/libvulkan_powervr_mesa.so" "$OUT/debug/"
 	"$CROSS-strip" -o "$OUT/libvulkan_powervr_mesa.so" \
 		"$lib/libvulkan_powervr_mesa.so"
-	for t in "${TESTS[@]}"; do
+	for t in "${TESTS[@]}" "${TLS_CHECK[@]}"; do
 		cp "$ROOT/tests/$t" "$OUT/debug/"
 		"$CROSS-strip" -o "$OUT/$t" "$ROOT/tests/$t"
 	done
@@ -377,8 +391,10 @@ results() {
 		"$BUILD_GL/src/egl/libEGL_mesa.so.0.0.0"
 	cp "$ROOT/gl/libvulkan.so.1" "$OUT/debug/"
 	"$CROSS-strip" -o "$OUT/libvulkan.so.1" "$ROOT/gl/libvulkan.so.1"
-	cp "$ROOT/gl/pvr_glprobe" "$OUT/debug/"
-	"$CROSS-strip" -o "$OUT/pvr_glprobe" "$ROOT/gl/pvr_glprobe"
+	for t in "${GL_TESTS[@]}"; do
+		cp "$ROOT/gl/$t" "$OUT/debug/"
+		"$CROSS-strip" -o "$OUT/$t" "$ROOT/gl/$t"
+	done
 	cat > "$OUT/10_mesa.json" <<'JSON'
 {
   "file_format_version": "1.0.0",
@@ -396,7 +412,8 @@ JSON
 		echo "sysroot $BASE"
 		echo "host tools $(cat "$HOST_TOOLS/.mesa-version") $HOST_TOOLS/bin"
 		(cd "$OUT" && sha256sum libvulkan_powervr_mesa.so "${TESTS[@]}" \
-			libEGL_mesa.so.0 libvulkan.so.1 pvr_glprobe 10_mesa.json)
+			"${TLS_CHECK[@]}" \
+			libEGL_mesa.so.0 libvulkan.so.1 "${GL_TESTS[@]}" 10_mesa.json)
 	} > "$OUT/MANIFEST"
 	log "results in $OUT"
 	ls -l "$OUT"
@@ -413,6 +430,68 @@ JSON
 # its syncobj ioctls succeed at once, so pvr_vkfill finds every word
 # unwritten and pvr_vkfence's waits that must time out do not.
 SHIM_BVNC=36.56.104.183
+
+# From a trace with "== frame N" or "== dispatch N" marks: what each frame
+# from 10 up to 60 (or the end of the loop) creates and destroys, per kind
+# of object, and the other requests per frame. A kind whose net count grows
+# in both halves of the window piles up.
+trace_balance() {
+	awk '
+	BEGIN {
+		pairs["PVR_CREATE_BO"] = "GEM_CLOSE"
+		pairs["PVR_VM_MAP"] = "PVR_VM_UNMAP"
+		pairs["CPU_MAP"] = "CPU_UNMAP"
+		pairs["SYNCOBJ_CREATE"] = "SYNCOBJ_DESTROY"
+		pairs["PVR_CREATE_FREE_LIST"] = "PVR_DESTROY_FREE_LIST"
+		pairs["PVR_CREATE_HWRT_DATASET"] = "PVR_DESTROY_HWRT_DATASET"
+		pairs["PVR_CREATE_CONTEXT"] = "PVR_DESTROY_CONTEXT"
+		pairs["PVR_CREATE_VM_CONTEXT"] = "PVR_DESTROY_VM_CONTEXT"
+		for (c in pairs)
+			destroys[pairs[c]] = c
+		first = 10; last = 60; half = (first + last) / 2
+	}
+	/^== (frame|dispatch) [0-9]+/ {
+		frame = $3 + 0
+		if (frame == first)
+			counting = 1
+		if (frame >= last)
+			counting = 0
+		next
+	}
+	/ (frames|dispatches) in / { counting = 0 }
+	!counting || !/^(ioctl|mmap|munmap) / || / = -[0-9]+/ { next }
+	{
+		name = $3
+		part = frame < half ? 1 : 2
+		count[name]++
+		if (name in pairs)
+			net[name, part]++
+		else if (name in destroys)
+			net[destroys[name], part]--
+		if (name == "PVR_SUBMIT_JOBS")
+			jobs += $4
+	}
+	END {
+		frames = last - first
+		printf "%-26s %9s %9s %14s\n", "object (create/destroy)",
+			"made/fr", "freed/fr", "net 1st/2nd"
+		for (c in pairs) {
+			made = count[c] + 0; freed = count[pairs[c]] + 0
+			if (made + freed == 0)
+				continue
+			flag = net[c, 1] > 0 && net[c, 2] > 0 ? "  PILES UP" : ""
+			printf "%-26s %9.2f %9.2f %6d / %-6d%s\n", c, made / frames,
+				freed / frames, net[c, 1], net[c, 2], flag
+		}
+		printf "other requests per frame:"
+		for (n in count) {
+			if (!(n in pairs) && !(n in destroys))
+				printf " %s %.2f", n, count[n] / frames
+		}
+		printf "; jobs %.2f\n", jobs / frames
+	}' "$1"
+}
+
 shim() {
 	local sb=$ROOT/build-shim reconfigure=()
 	[ ! -f "$sb/build.ninja" ] || reconfigure=(--reconfigure)
@@ -444,27 +523,73 @@ shim() {
 	cc -std=gnu11 -O2 -Wall -shared -fPIC -fvisibility=hidden \
 		-Wl,-soname,libvulkan.so.1 -I"$SRC/include" -o "$s/lib/libvulkan.so.1" \
 		"$TOOLS/vulkan_shim.c" -L"$lib" -lvulkan_powervr_mesa -Wl,-rpath,"$lib"
-	cc -std=gnu11 -O2 -g -Wall -I"$SRC/include" -o "$s/pvr_glprobe" \
-		"$TOOLS/pvr_glprobe.c" "$sb/src/egl/libEGL.so" \
-		"$sb/src/mesa/glapi/es2api/libGLESv2.so" \
-		-Wl,-rpath,"$sb/src/egl:$sb/src/mesa/glapi/es2api"
+	for t in "${GL_TESTS[@]}"; do
+		cc -std=gnu11 -O2 -g -Wall -I"$SRC/include" -o "$s/$t" "$TOOLS/$t.c" \
+			"$sb/src/egl/libEGL.so" "$sb/src/mesa/glapi/es2api/libGLESv2.so" \
+			-Wl,-rpath,"$sb/src/egl:$sb/src/mesa/glapi/es2api" -lm
+	done
+	cc -std=gnu11 -O2 -Wall -fPIC -shared -DTLS_GENERATION_LIBRARY \
+		-o "$s/${TLS_CHECK[1]}" "$TOOLS/tls_generation_check.c"
+	cc -std=gnu11 -O2 -Wall -o "$s/${TLS_CHECK[0]}" \
+		"$TOOLS/tls_generation_check.c" -ldl -lpthread
 	# Every thread gets Haiku's default stack, 256 KiB (glibc sizes thread
 	# stacks from RLIMIT_STACK; the Haiku-only 8 MiB for Mesa's own threads
 	# does not apply here): a frame too large for an application's thread
 	# crashes here as on the board.
 	local run name
-	for run in "${TESTS[@]}" "pvr_vktriangle --linear" \
-		"pvr_glprobe --expect zink"; do
-		name=${run// --/-}
-		name=${name// /-}
+	for run in tls_generation_check \
+		pvr_vkprobe pvr_vkfill pvr_vkfence pvr_vktriangle pvr_vkhang \
+		"pvr_vktriangle --linear" \
+		"pvr_vkbench --seconds 3 --interval 1" \
+		"pvr_vkbench --seconds 3 --interval 1 --timeline --rerecord" \
+		"pvr_glprobe --expect zink" \
+		"pvr_glprobe --expect zink --repeat 3" \
+		"pvr_glbench --seconds 3 --interval 1 --expect zink" \
+		"pvr_vkbench --dispatches 60 --timeline --rerecord --mark" \
+		"pvr_glbench --frames 60 --mark"; do
+		name=${run%% *}
+		case "$run" in
+		*--mark) name=balance-$name ;;
+		*--timeline*) name=$name-timeline-rerecord ;;
+		*--repeat*) name=$name-repeat ;;
+		*--linear) name=$name-linear ;;
+		*--expect*) name=$name-expect-zink ;;
+		esac
 		(ulimit -s 256
 		PVR_SHIM_DEVICE_BVNC=$SHIM_BVNC PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 \
 			EGL_PLATFORM=surfaceless MESA_LOADER_DRIVER_OVERRIDE=zink \
 			LD_LIBRARY_PATH="$s/lib:$LD_LIBRARY_PATH" \
 			LD_PRELOAD=$preload timeout 120 "$s/"$run > "$s/$name.log" 2>&1) \
 			|| true
-		printf '%-22s %5s ioctls, last line: %s\n' "$name" \
+		printf '%-30s %5s ioctls, last line: %s\n' "$name" \
 			"$(grep -c '^ioctl ' "$s/$name.log")" "$(tail -1 "$s/$name.log")"
+	done
+	# objects made per frame (dispatch) that are not destroyed again, in the
+	# steady state: frames 10 to 59
+	for name in balance-pvr_glbench balance-pvr_vkbench; do
+		trace_balance "$s/$name.log" > "$s/$name.txt"
+		log "$name: per frame, frames 10-59 ($s/$name.txt)"
+		cat "$s/$name.txt"
+	done
+	# A GPU reset as Mesa sees it: every SUBMIT_JOBS fails with EIO (the
+	# tracer injects it). The driver must report the device lost and each
+	# program end with an error instead of waiting forever (timeout's 124).
+	local rc
+	for run in "pvr_vkfill" "pvr_glprobe --expect zink"; do
+		name=lost-${run%% *}
+		if (ulimit -s 256
+			PVR_TRACE_FAIL_SUBMIT=1 PVR_SHIM_DEVICE_BVNC=$SHIM_BVNC \
+			PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 EGL_PLATFORM=surfaceless \
+			MESA_LOADER_DRIVER_OVERRIDE=zink \
+			LD_LIBRARY_PATH="$s/lib:$LD_LIBRARY_PATH" \
+			LD_PRELOAD=$preload timeout 60 "$s/"$run > "$s/$name.log" 2>&1)
+		then
+			rc=0
+		else
+			rc=$?
+		fi
+		printf '%-30s exit %3s%s, last line: %s\n' "$name" "$rc" \
+			"$([ "$rc" = 124 ] && echo ' (HUNG)')" "$(tail -1 "$s/$name.log")"
 	done
 	log "logs in $s"
 }
