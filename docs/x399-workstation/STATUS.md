@@ -12,7 +12,9 @@ in private airTime and Summit builds. HEVC Main/Main 10 has independent native
 pixel/format/lifecycle verification; both private applications also pass
 three-minute 1080p30 Main-10/AAC playback without drops. Summit also passes
 injected HEVC failure, paused-seek recovery and old-addon software fallback.
-General graphics, native display and the final complete release remain open.
+Root and unprivileged clients also pass complete readback of 7.75 GiB of
+VRAM beyond the CPU aperture. General graphics, native display and the final
+complete release remain open.
 [WX5100.md](WX5100.md) records identities, evidence, limitations and next work.
 
 `tools/check-workstation.sh` re-checks the machine against all of this in one
