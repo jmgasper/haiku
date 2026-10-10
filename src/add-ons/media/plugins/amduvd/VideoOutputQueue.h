@@ -34,6 +34,7 @@ public:
 		return !fFrames.empty() && (drain || fFrames.front().sequence < fSequence
 			|| fFrames.size() > fReorderLimit);
 	}
+	Frame& Front() { return fFrames.front(); }
 	const Frame& Front() const { return fFrames.front(); }
 	void Pop() {
 		fHaveOutput = true; fLastSequence = fFrames.front().sequence;

@@ -49,6 +49,7 @@ private:
 	HevcPacket fPacket;
 	HevcOutput fOutput;
 	std::vector<uint8> fUnit;
+	std::vector<uint8> fSparePixels;
 };
 
 status_t AmdHevcDecoder::DestroySession()
@@ -66,6 +67,7 @@ void AmdHevcDecoder::Close()
 	if (fFd >= 0) { close(fFd); fFd = -1; }
 	fSession = {};
 	fOutput.Reset(); fStream.Reset(); fUnit.clear();
+	std::vector<uint8>().swap(fSparePixels);
 }
 
 status_t AmdHevcDecoder::Fail(status_t status, const char* reason)
@@ -172,6 +174,9 @@ status_t AmdHevcDecoder::Feed(const uint8* data, size_t size, bigtime_t time)
 		|| fSession.output_bytes != fSession.pitch * fSession.output_height * 3 / 2)
 		return Fail(B_BAD_DATA, "kernel output geometry");
 	HevcFrame frame = {};
+	// Every successful ioctl overwrites the full extent. Reuse the last
+	// consumed picture without reallocating and clearing several MiB.
+	frame.pixels.swap(fSparePixels);
 	frame.pixels.resize(fSession.output_bytes);
 	amdgpu_hevc_decode d = {};
 	d.version = AMDGPU_HAIKU_ABI_VERSION; d.size = sizeof(d); d.handle = fSession.handle;
@@ -204,7 +209,7 @@ status_t AmdHevcDecoder::Decode(void* buffer, int64* count, media_header* header
 	try {
 		for (;;) {
 			if (fOutput.Ready(fEnded)) {
-				const HevcFrame& frame = fOutput.Front();
+				HevcFrame& frame = fOutput.Front();
 				bool skip = info != NULL && info->time_to_decode < 0
 					&& info->time_to_decode != INT64_MIN && frame.time < -info->time_to_decode;
 				if (!skip && !HevcOutput::Copy(frame, fFormat, (uint8*)buffer, HevcOutput::Bytes(fWidth, fHeight, fFormat)))
@@ -216,6 +221,7 @@ status_t AmdHevcDecoder::Decode(void* buffer, int64* count, media_header* header
 				header->u.raw_video.display_line_count = fHeight;
 				header->u.raw_video.bytes_per_row = fRowBytes;
 				header->u.raw_video.line_count = fHeight;
+				frame.pixels.swap(fSparePixels);
 				fOutput.Pop(); *count = 1; return B_OK;
 			}
 			if (fEnded) return B_LAST_BUFFER_ERROR;

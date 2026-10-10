@@ -158,6 +158,17 @@ static void Queue()
 	CHECK(q.Ready(false) && q.Front().p010 && q.Front().bitDepth == 10 && q.Front().time == 0); q.Pop();
 	CHECK(q.Ready(true) && q.Front().sequence == 2); q.Pop();
 	CHECK(!q.Ready(true));
+	// Taking storage back after consumption must retain the queue's order
+	// watermark, including duplicate rejection and a following epoch.
+	q.Reset(); f = {}; f.sequence = 7; f.poc = 2; f.time = 1234;
+	f.pixels.resize(1024, 0x5a); const uint8_t* allocation = f.pixels.data();
+	CHECK(q.Push(std::move(f), 0, false) && q.Ready(false));
+	std::vector<uint8_t> spare; q.Front().pixels.swap(spare); q.Pop();
+	CHECK(spare.data() == allocation && spare.size() == 1024 && spare[1023] == 0x5a);
+	f = {}; f.sequence = 7; f.poc = 2; CHECK(!q.Push(std::move(f), 0, false));
+	f = {}; f.sequence = 7; f.poc = 3; f.pixels.swap(spare);
+	CHECK(q.Push(std::move(f), 0, false) && q.Front().pixels.data() == allocation);
+	q.Reset(); CHECK(!q.Ready(true));
 	puts("PASS: mixed storage/depth and timestamps survive shared output ordering and epoch changes");
 }
 
