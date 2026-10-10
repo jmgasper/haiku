@@ -12,13 +12,15 @@
 
 /*	The Allwinner A733's display outputs (the Cubie A7S: DisplayPort over
 	USB-C), between the sunxi_display driver and its accelerant. The
-	protocol is rpi_display's: each output keeps its video mode, the driver
-	owns one frame buffer and has the display engine show a region of it on
-	each output, scaled to the output's mode. */
+	protocol is rpi_display's: the driver owns one frame buffer and shows a
+	region of it on each output. The display engine does not scale on the
+	A733 so far, so an output's video mode is a real one: the accelerant
+	lists the modes the display's EDID offers and the driver sets the one a
+	layout asks for. */
 
 #define SUNXI_DISPLAY_ACCELERANT		"sunxi_display.accelerant"
 #define SUNXI_DISPLAY_DEVICE			"graphics/sunxi_display/0"
-#define SUNXI_DISPLAY_VERSION			2
+#define SUNXI_DISPLAY_VERSION			3
 #define SUNXI_DISPLAY_MAX_OUTPUTS		2
 
 #define SUNXI_DISPLAY_OUTPUT_DP0		1
@@ -46,11 +48,29 @@ enum {
 	// nothing is attached: the output stands in for a display so that the
 	// desktop runs headless
 
+struct sunxi_display_timing {
+	uint32	pixel_clock;		// kHz
+	uint16	h_display;
+	uint16	h_sync_start;
+	uint16	h_sync_end;
+	uint16	h_total;
+	uint16	v_display;
+	uint16	v_sync_start;
+	uint16	v_sync_end;
+	uint16	v_total;
+	uint32	flags;				// B_POSITIVE_HSYNC, B_POSITIVE_VSYNC
+};
+
 struct sunxi_display_output {
 	uint32	id;					// SUNXI_DISPLAY_OUTPUT_DP0, ...
 	uint32	flags;
-	uint16	native_width;		// the output's video mode
+	uint16	native_width;		// the display's preferred mode
 	uint16	native_height;
+	sunxi_display_timing native_timing;
+	sunxi_display_timing timing;
+		// the mode the output shows; in a layout, the one it should show
+		// (h_display 0: the preferred one)
+	uint32	max_pixel_clock;	// kHz, what the link carries
 	// the region of the frame buffer the output shows
 	int32	x;
 	int32	y;

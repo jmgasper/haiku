@@ -14,6 +14,7 @@
 
 
 #include <errno.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -22,6 +23,7 @@
 #include <Accelerant.h>
 #include <OS.h>
 
+#include <create_display_modes.h>
 #include <edid.h>
 
 #include <sunxi_display.h>
@@ -43,10 +45,7 @@ struct accelerant_info {
 
 static accelerant_info* gInfo;
 
-// the resolutions offered below an output's own
-// whether the driver scales regions to an output's mode (see display_pipe.cpp)
-static const bool kDisplayEngineScales = false;
-
+// the resolutions a headless output offers up to its own
 static const uint16 kSizes[][2] = {
 	{3840, 2160}, {2560, 1440}, {1920, 1200}, {1920, 1080}, {1680, 1050},
 	{1600, 900}, {1440, 900}, {1366, 768}, {1280, 1024}, {1280, 800},
@@ -57,8 +56,8 @@ static const uint16 kSizes[][2] = {
 //	#pragma mark - helpers
 
 
-/*!	A 60 Hz timing for a picture of this size. The driver has the real
-	timings; these only have to read as a plausible mode.
+/*!	A 60 Hz timing for a picture of this size, for what has no real one:
+	the frame buffer as a whole, a headless output.
 */
 static display_timing
 make_timing(uint32 width, uint32 height)
@@ -90,6 +89,43 @@ make_mode(uint32 width, uint32 height)
 	mode.virtual_width = width;
 	mode.virtual_height = height;
 	return mode;
+}
+
+
+static display_timing
+from_shared(const sunxi_display_timing& shared)
+{
+	display_timing timing;
+	memset(&timing, 0, sizeof(timing));
+	timing.pixel_clock = shared.pixel_clock;
+	timing.h_display = shared.h_display;
+	timing.h_sync_start = shared.h_sync_start;
+	timing.h_sync_end = shared.h_sync_end;
+	timing.h_total = shared.h_total;
+	timing.v_display = shared.v_display;
+	timing.v_sync_start = shared.v_sync_start;
+	timing.v_sync_end = shared.v_sync_end;
+	timing.v_total = shared.v_total;
+	timing.flags = shared.flags & (B_POSITIVE_HSYNC | B_POSITIVE_VSYNC);
+	return timing;
+}
+
+
+static sunxi_display_timing
+to_shared(const display_timing& timing)
+{
+	sunxi_display_timing shared = {};
+	shared.pixel_clock = timing.pixel_clock;
+	shared.h_display = timing.h_display;
+	shared.h_sync_start = timing.h_sync_start;
+	shared.h_sync_end = timing.h_sync_end;
+	shared.h_total = timing.h_total;
+	shared.v_display = timing.v_display;
+	shared.v_sync_start = timing.v_sync_start;
+	shared.v_sync_end = timing.v_sync_end;
+	shared.v_total = timing.v_total;
+	shared.flags = timing.flags & (B_POSITIVE_HSYNC | B_POSITIVE_VSYNC);
+	return shared;
 }
 
 
@@ -258,8 +294,11 @@ sunxi_init_accelerant(int device)
 		uninit_common();
 		return B_DEVICE_NOT_FOUND;
 	}
-	layout.width = shared.outputs[first].native_width;
-	layout.height = shared.outputs[first].native_height;
+	// the mode the output shows now: the driver may have kept one a layout
+	// asked for earlier
+	const sunxi_display_timing& timing = shared.outputs[first].timing;
+	layout.width = timing.h_display;
+	layout.height = timing.v_display;
 	for (uint32 i = 0; i < shared.output_count; i++) {
 		if ((shared.outputs[i].flags & SUNXI_DISPLAY_OUTPUT_CONNECTED) == 0)
 			continue;
@@ -269,6 +308,8 @@ sunxi_init_accelerant(int device)
 		output.width = output.mode_width = layout.width;
 		output.height = output.mode_height = layout.height;
 		output.scale = output.render_scale = 100;
+		if (i == first)
+			output.timing = timing;
 	}
 
 	status = apply_layout(layout);
@@ -482,9 +523,8 @@ sunxi_get_display_outputs(display_output* outputs, uint32* _count)
 		if ((source.flags & SUNXI_DISPLAY_OUTPUT_CONNECTED) != 0)
 			output.flags |= B_DISPLAY_OUTPUT_CONNECTED;
 		output.scale = output.render_scale = 100;
-		output.native_timing = make_timing(source.native_width,
-			source.native_height);
-		output.timing = output.native_timing;
+		output.native_timing = from_shared(source.native_timing);
+		output.timing = from_shared(source.timing);
 		if ((source.flags & SUNXI_DISPLAY_OUTPUT_ENABLED) != 0) {
 			output.flags |= B_DISPLAY_OUTPUT_ENABLED;
 			if ((source.flags & SUNXI_DISPLAY_OUTPUT_MIRROR) != 0)
@@ -497,10 +537,6 @@ sunxi_get_display_outputs(display_output* outputs, uint32* _count)
 				output.scale = source.scale;
 				output.render_scale = source.render_scale;
 			}
-			if (source.mode_width != 0) {
-				output.timing = make_timing(source.mode_width,
-					source.mode_height);
-			}
 		}
 		if (source.edid_length > 0) {
 			output.edid_length = source.edid_length;
@@ -509,6 +545,117 @@ sunxi_get_display_outputs(display_output* outputs, uint32* _count)
 	}
 	*_count = count;
 	return B_OK;
+}
+
+
+static uint32 sMaxPixelClock;
+
+
+static bool
+is_mode_supported(display_mode* mode)
+{
+	const display_timing& timing = mode->timing;
+	return timing.h_display >= 320 && timing.h_display <= 4096
+		&& timing.v_display >= 200 && timing.v_display <= 4096
+		&& timing.pixel_clock >= 20000
+		&& (timing.flags & B_TIMING_INTERLACED) == 0
+		&& (sMaxPixelClock == 0 || timing.pixel_clock <= sMaxPixelClock);
+}
+
+
+/*!	A display's modes come from its EDID (preferred, detailed, standard and
+	established timings, those the link carries); a headless output offers
+	the common sizes up to its own. The preferred mode comes first.
+*/
+static uint32
+output_modes(const sunxi_display_output& output, display_mode* modes,
+	uint32 maxCount)
+{
+	display_mode native;
+	memset(&native, 0, sizeof(native));
+	native.timing = from_shared(output.native_timing);
+	native.space = B_RGB32;
+	native.virtual_width = native.timing.h_display;
+	native.virtual_height = native.timing.v_display;
+
+	uint32 count = 0;
+	if (count < maxCount)
+		modes[count++] = native;
+
+	if ((output.flags & SUNXI_DISPLAY_OUTPUT_VIRTUAL) == 0
+		&& output.edid_length >= 128) {
+		edid1_info edid;
+		edid_decode(&edid, (const edid1_raw*)output.edid);
+		static const color_space kSpaces[] = { B_RGB32 };
+		sMaxPixelClock = output.max_pixel_clock;
+		display_mode* list;
+		uint32 listCount;
+		area_id area = create_display_modes("sunxi display modes", &edid,
+			&native, 1, kSpaces, 1, is_mode_supported, &list, &listCount);
+		if (area >= 0) {
+			// the largest first
+			for (uint32 i = listCount; i-- > 0 && count < maxCount;) {
+				const display_timing& timing = list[i].timing;
+				if (timing.h_display != native.timing.h_display
+					|| timing.v_display != native.timing.v_display
+					|| timing.pixel_clock != native.timing.pixel_clock) {
+					modes[count++] = list[i];
+				}
+			}
+			delete_area(area);
+			return count;
+		}
+	}
+
+	for (size_t i = 0; i < sizeof(kSizes) / sizeof(kSizes[0]); i++) {
+		if (count == maxCount)
+			break;
+		if (kSizes[i][0] > output.native_width
+			|| kSizes[i][1] > output.native_height
+			|| (kSizes[i][0] == output.native_width
+				&& kSizes[i][1] == output.native_height)) {
+			continue;
+		}
+		modes[count++] = make_mode(kSizes[i][0], kSizes[i][1]);
+	}
+	return count;
+}
+
+
+static float
+refresh_rate(const display_timing& timing)
+{
+	if (timing.h_total == 0 || timing.v_total == 0)
+		return 0;
+	return timing.pixel_clock * 1000.0f / timing.h_total / timing.v_total;
+}
+
+
+/*!	The real timing for what app_server asks for: it names a mode by its
+	size and refresh rate only. The output's mode of that size with the
+	closest refresh rate.
+*/
+static status_t
+find_timing(const sunxi_display_output& output, const display_timing& request,
+	display_timing& _timing)
+{
+	display_mode modes[64];
+	uint32 count = output_modes(output, modes, 64);
+	float wanted = refresh_rate(request);
+	float bestDistance = -1;
+	for (uint32 i = 0; i < count; i++) {
+		const display_timing& timing = modes[i].timing;
+		if (timing.h_display != request.h_display
+			|| timing.v_display != request.v_display) {
+			continue;
+		}
+		float distance = wanted > 0 ? fabsf(refresh_rate(timing) - wanted) : 0;
+		if (bestDistance < 0 || distance < bestDistance) {
+			bestDistance = distance;
+			_timing = timing;
+		}
+	}
+	return bestDistance < 0 ? B_BAD_VALUE : B_OK;
 }
 
 
@@ -521,26 +668,7 @@ sunxi_get_display_output_modes(uint32 id, display_mode* modes, uint32* _count)
 		return status;
 	if (id < 1 || id > shared.output_count)
 		return B_ENTRY_NOT_FOUND;
-	const sunxi_display_output& output = shared.outputs[id - 1];
-
-	// the output's own size first, then what the display engine scales up to
-	// it (not yet: the driver cannot scale on the A733 so far)
-	uint32 count = 0;
-	if (count < *_count)
-		modes[count++] = make_mode(output.native_width, output.native_height);
-	for (size_t i = 0; kDisplayEngineScales
-			&& i < sizeof(kSizes) / sizeof(kSizes[0]); i++) {
-		if (count == *_count)
-			break;
-		if (kSizes[i][0] > output.native_width
-			|| kSizes[i][1] > output.native_height
-			|| (kSizes[i][0] == output.native_width
-				&& kSizes[i][1] == output.native_height)) {
-			continue;
-		}
-		modes[count++] = make_mode(kSizes[i][0], kSizes[i][1]);
-	}
-	*_count = count;
+	*_count = output_modes(shared.outputs[id - 1], modes, *_count);
 	return B_OK;
 }
 
@@ -586,18 +714,19 @@ sunxi_set_display_layout(const display_output_config* configs, uint32 count,
 			return B_BAD_VALUE;
 		}
 
-		uint32 width = source.native_width;
-		uint32 height = source.native_height;
+		// the mode: a real one the display offers (the driver checks it
+		// again), the preferred one when none is given
+		display_timing timing = from_shared(source.native_timing);
 		if (config.timing.h_display != 0) {
-			width = config.timing.h_display;
-			height = config.timing.v_display;
-			if (width > source.native_width || height > source.native_height
-				|| width < 320 || height < 200) {
-				return B_BAD_VALUE;
-			}
+			status = find_timing(source, config.timing, timing);
+			if (status != B_OK)
+				return status;
 		}
+		uint32 width = timing.h_display;
+		uint32 height = timing.v_display;
 
 		output.flags = SUNXI_DISPLAY_OUTPUT_ENABLED;
+		output.timing = to_shared(timing);
 		if (mirror)
 			output.flags |= SUNXI_DISPLAY_OUTPUT_MIRROR;
 		output.mode_width = width;
