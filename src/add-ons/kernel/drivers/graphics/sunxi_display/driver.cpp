@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <Accelerant.h>
 #include <bus/FDT.h>
 #include <device_manager.h>
 #include <Drivers.h>
@@ -80,10 +81,116 @@ struct display_info {
 	int32			connectFailures;
 	bigtime_t		nextConnect;
 	bigtime_t		hotPlugLostAt;
+	bigtime_t		retimedAt;		// the last mode change
+	int32			retrains;		// link retrains since then
+
+	// the mode the last layout asked for, and the display it was for: a
+	// display that comes back gets it again
+	sunxi_display_timing wantedTiming;
+	uint32			wantedEdidLength;
+	uint8			wantedEdid[256];
 };
 
 
 static device_manager_info* sDeviceManager;
+
+
+//	#pragma mark - timings
+
+
+static sunxi_display_timing
+to_shared(const sunxi::display_timing& timing)
+{
+	sunxi_display_timing shared = {};
+	shared.pixel_clock = timing.pixel_clock;
+	shared.h_display = timing.h_display;
+	shared.h_sync_start = timing.h_sync_start;
+	shared.h_sync_end = timing.h_sync_end;
+	shared.h_total = timing.h_total;
+	shared.v_display = timing.v_display;
+	shared.v_sync_start = timing.v_sync_start;
+	shared.v_sync_end = timing.v_sync_end;
+	shared.v_total = timing.v_total;
+	shared.flags = (timing.h_sync_positive ? B_POSITIVE_HSYNC : 0)
+		| (timing.v_sync_positive ? B_POSITIVE_VSYNC : 0);
+	return shared;
+}
+
+
+static sunxi::display_timing
+from_shared(const sunxi_display_timing& shared)
+{
+	sunxi::display_timing timing;
+	timing.pixel_clock = shared.pixel_clock;
+	timing.h_display = shared.h_display;
+	timing.h_sync_start = shared.h_sync_start;
+	timing.h_sync_end = shared.h_sync_end;
+	timing.h_total = shared.h_total;
+	timing.v_display = shared.v_display;
+	timing.v_sync_start = shared.v_sync_start;
+	timing.v_sync_end = shared.v_sync_end;
+	timing.v_total = shared.v_total;
+	timing.h_sync_positive = (shared.flags & B_POSITIVE_HSYNC) != 0;
+	timing.v_sync_positive = (shared.flags & B_POSITIVE_VSYNC) != 0;
+	return timing;
+}
+
+
+static bool
+same_timing(const sunxi_display_timing& a, const sunxi_display_timing& b)
+{
+	return memcmp(&a, &b, sizeof(a)) == 0;
+}
+
+
+/*!	A mode the driver can set: a sane size and a pixel clock the link
+	carries (the PLL is checked when the mode is set).
+*/
+static bool
+valid_timing(const sunxi_display_timing& timing, uint32 maxPixelClock)
+{
+	return timing.h_display >= 320 && timing.h_display <= 4096
+		&& timing.v_display >= 200 && timing.v_display <= 4096
+		&& timing.h_sync_start >= timing.h_display
+		&& timing.h_sync_end > timing.h_sync_start
+		&& timing.h_total >= timing.h_sync_end
+		&& timing.v_sync_start >= timing.v_display
+		&& timing.v_sync_end > timing.v_sync_start
+		&& timing.v_total >= timing.v_sync_end
+		&& timing.pixel_clock >= 20000
+		&& (maxPixelClock == 0 || timing.pixel_clock <= maxPixelClock);
+}
+
+
+/*!	What a headless output stands for: 1920x1080 at 60 Hz (CEA-861). */
+static sunxi_display_timing
+virtual_timing()
+{
+	sunxi_display_timing timing = {};
+	timing.pixel_clock = 148500;
+	timing.h_display = kVirtualWidth;
+	timing.h_sync_start = 2008;
+	timing.h_sync_end = 2052;
+	timing.h_total = 2200;
+	timing.v_display = kVirtualHeight;
+	timing.v_sync_start = 1084;
+	timing.v_sync_end = 1089;
+	timing.v_total = 1125;
+	timing.flags = B_POSITIVE_HSYNC | B_POSITIVE_VSYNC;
+	return timing;
+}
+
+
+static void
+set_virtual(sunxi_display_output& output)
+{
+	output.flags |= SUNXI_DISPLAY_OUTPUT_VIRTUAL;
+	output.native_width = kVirtualWidth;
+	output.native_height = kVirtualHeight;
+	output.native_timing = virtual_timing();
+	output.timing = output.native_timing;
+	output.max_pixel_clock = 0;
+}
 
 
 //	#pragma mark - outputs
@@ -97,10 +204,8 @@ init_outputs(display_info* info)
 
 	sunxi_display_output& output = shared.outputs[0];
 	output.id = SUNXI_DISPLAY_OUTPUT_DP0;
-	output.flags = SUNXI_DISPLAY_OUTPUT_CONNECTED
-		| SUNXI_DISPLAY_OUTPUT_VIRTUAL;
-	output.native_width = kVirtualWidth;
-	output.native_height = kVirtualHeight;
+	output.flags = SUNXI_DISPLAY_OUTPUT_CONNECTED;
+	set_virtual(output);
 	output.edid_length = 0;
 	INFO("DP-1: no display, standing in for a %ux%u one\n",
 		output.native_width, output.native_height);
@@ -120,9 +225,9 @@ notify_change(display_info* info)
 }
 
 
-/*!	Output 0's region of the frame buffer once a layout is set (the display
-	engine scales it to the output's mode), the top left corner at the
-	output's size before.
+/*!	Output 0's region of the frame buffer once a layout is set, the top left
+	corner at the output's mode size before. A region smaller than the mode
+	shows in its top left corner (the display engine does not scale yet).
 */
 static bool
 has_layout(display_info* info)
@@ -153,8 +258,8 @@ scanout_size(display_info* info, uint32& width, uint32& height)
 		width = output.width;
 		height = output.height;
 	} else {
-		width = output.native_width;
-		height = output.native_height;
+		width = output.timing.h_display;
+		height = output.timing.v_display;
 	}
 }
 
@@ -165,7 +270,7 @@ scanout_bytes_per_row(display_info* info)
 	const sunxi_display_shared_info& shared = *info->shared;
 	if (has_layout(info))
 		return shared.bytes_per_row;
-	return shared.outputs[0].native_width * 4;
+	return shared.outputs[0].timing.h_display * 4;
 }
 
 
@@ -190,21 +295,42 @@ connect_display(display_info* info)
 {
 	uint8 edid[256];
 	uint32 edidLength = 0;
-	sunxi::display_timing timing;
+	sunxi::display_timing native;
 	status_t status = info->pipe->Discover(info->typeC->Flipped(), edid,
-		&edidLength, timing);
+		&edidLength, native);
 
 	MutexLocker locker(info->lock);
+	sunxi_display_output& output = info->shared->outputs[0];
+	sunxi_display_timing timing = to_shared(native);
 	if (status == B_OK) {
+		// the same display as before gets the mode the layout asked for
+		uint32 maxPixelClock = info->pipe->MaxPixelClock();
+		if (info->wantedTiming.h_display != 0
+			&& info->wantedEdidLength == edidLength
+			&& memcmp(info->wantedEdid, edid, edidLength) == 0
+			&& valid_timing(info->wantedTiming, maxPixelClock)) {
+			timing = info->wantedTiming;
+		}
+		output.native_width = native.h_display;
+		output.native_height = native.v_display;
+		output.native_timing = to_shared(native);
+		output.max_pixel_clock = maxPixelClock;
+		output.timing = timing;
 		status = ensure_buffer(info,
 			(size_t)timing.h_display * 4 * timing.v_display);
 	}
 	if (status == B_OK) {
-		sunxi_display_output& output = info->shared->outputs[0];
-		output.native_width = timing.h_display;
-		output.native_height = timing.v_display;
-		status = info->pipe->Enable(timing, scanout_address(info),
+		status = info->pipe->Enable(from_shared(timing), scanout_address(info),
 			scanout_bytes_per_row(info));
+		if (status != B_OK && !same_timing(timing, output.native_timing)) {
+			ERROR("DP-1: the wanted %ux%u does not come up (%s), using %ux%u\n",
+				timing.h_display, timing.v_display, strerror(status),
+				native.h_display, native.v_display);
+			timing = output.native_timing;
+			output.timing = timing;
+			status = info->pipe->Enable(native, scanout_address(info),
+				scanout_bytes_per_row(info));
+		}
 		if (status == B_OK)
 			update_scanout(info);
 	}
@@ -214,19 +340,18 @@ connect_display(display_info* info)
 			+ (info->connectFailures < 5 ? 2000000 : 30000000);
 		ERROR("DP-1: no picture (%s), trying again in %" B_PRId64 " s\n",
 			strerror(status), (info->nextConnect - system_time()) / 1000000);
-		sunxi_display_output& output = info->shared->outputs[0];
-		output.native_width = kVirtualWidth;
-		output.native_height = kVirtualHeight;
+		set_virtual(output);
 		return;
 	}
 
 	info->connectFailures = 0;
-	sunxi_display_output& output = info->shared->outputs[0];
 	output.flags &= ~SUNXI_DISPLAY_OUTPUT_VIRTUAL;
 	output.edid_length = edidLength;
 	memcpy(output.edid, edid, edidLength);
-	INFO("DP-1: %ux%u, %" B_PRIu32 " lanes at %" B_PRIu32 " Mbit/s\n",
-		timing.h_display, timing.v_display, info->pipe->Lanes(),
+	INFO("DP-1: %ux%u (%" B_PRIu32 " kHz; preferred %ux%u), %" B_PRIu32
+		" lanes at %" B_PRIu32 " Mbit/s\n", timing.h_display,
+		timing.v_display, timing.pixel_clock, native.h_display,
+		native.v_display, info->pipe->Lanes(),
 		info->pipe->LinkRate() / 100);
 	notify_change(info);
 }
@@ -238,9 +363,7 @@ disconnect_display(display_info* info)
 	MutexLocker locker(info->lock);
 	info->pipe->Disable();
 	sunxi_display_output& output = info->shared->outputs[0];
-	output.flags |= SUNXI_DISPLAY_OUTPUT_VIRTUAL;
-	output.native_width = kVirtualWidth;
-	output.native_height = kVirtualHeight;
+	set_virtual(output);
 	output.edid_length = 0;
 	info->connectFailures = 0;
 	info->nextConnect = 0;
@@ -250,11 +373,38 @@ disconnect_display(display_info* info)
 }
 
 
+/*!	The display dropped hot plug and raised it again while it was shown:
+	adapters do so when their picture goes away, a mode change among other
+	things, and may have lost the link then. Trains it again (a few times
+	after each mode change, so that a sink that drops hot plug on every
+	training does not keep this going).
+*/
+static void
+recover_link(display_info* info)
+{
+	MutexLocker locker(info->lock);
+	if (!info->pipe->Enabled() || info->pipe->LinkOk() || info->retrains >= 3)
+		return;
+	info->retrains++;
+	const sunxi_display_timing& timing = info->shared->outputs[0].timing;
+	INFO("DP-1: link lost, training it again for %ux%u\n", timing.h_display,
+		timing.v_display);
+	info->pipe->Disable();
+	status_t status = info->pipe->Enable(from_shared(timing),
+		scanout_address(info), scanout_bytes_per_row(info));
+	if (status == B_OK)
+		update_scanout(info);
+	else
+		ERROR("DP-1: the link does not come back: %s\n", strerror(status));
+}
+
+
 /*!	Runs the USB-C port's state machine: often while something happens
 	there, otherwise when the port controller signals (PL3, active low) and
 	now and then. Connects and disconnects the display as hot plug says;
 	adapters drop HPD now and then while they have no picture, so a drop
-	only counts after a second.
+	only counts after a second, and after a mode change, which takes their
+	picture away for a while, only after several.
 */
 static status_t
 poll_outputs(void* cookie)
@@ -262,6 +412,7 @@ poll_outputs(void* cookie)
 	display_info* info = (display_info*)cookie;
 	int32 changes = info->typeC->Changes();
 	bigtime_t lastPoll = 0;
+	bool hotPlugBounced = false;
 	while (atomic_get(&info->stopping) == 0) {
 		snooze(20000);
 		bigtime_t now = system_time();
@@ -283,14 +434,25 @@ poll_outputs(void* cookie)
 			continue;
 		bool present = info->typeC->DisplayPortReady()
 			&& info->typeC->HotPlug();
-		if (present)
+		if (present) {
+			if (info->hotPlugLostAt != 0 && info->pipe->Enabled())
+				hotPlugBounced = true;
 			info->hotPlugLostAt = 0;
-		else if (info->hotPlugLostAt == 0)
+		} else if (info->hotPlugLostAt == 0)
 			info->hotPlugLostAt = now;
 
 		if (info->pipe->Enabled()) {
-			if (!present && now - info->hotPlugLostAt > 1000000)
+			bigtime_t grace = now - info->retimedAt < 10000000
+				? 8000000 : 1000000;
+			if (!present && now - info->hotPlugLostAt > grace) {
+				hotPlugBounced = false;
 				disconnect_display(info);
+			} else if (present && hotPlugBounced) {
+				hotPlugBounced = false;
+				// give the sink a moment to come up before asking it
+				snooze(100000);
+				recover_link(info);
+			}
 		} else if (present && now >= info->nextConnect)
 			connect_display(info);
 	}
@@ -370,6 +532,11 @@ set_layout(display_info* info, const sunxi_display_layout& layout)
 			|| request.y + request.height > (int32)layout.height) {
 			return B_BAD_VALUE;
 		}
+		if (request.timing.h_display != 0
+			&& !valid_timing(request.timing,
+				shared.outputs[i].max_pixel_clock)) {
+			return B_BAD_VALUE;
+		}
 		enabled++;
 	}
 	if (enabled == 0)
@@ -395,6 +562,16 @@ set_layout(display_info* info, const sunxi_display_layout& layout)
 
 		output.flags = kept | SUNXI_DISPLAY_OUTPUT_ENABLED
 			| (request.flags & SUNXI_DISPLAY_OUTPUT_MIRROR);
+		sunxi_display_timing timing = request.timing.h_display != 0
+			? request.timing : output.native_timing;
+		if (i == 0 && (output.flags & SUNXI_DISPLAY_OUTPUT_VIRTUAL) == 0) {
+			info->wantedTiming = timing;
+			info->wantedEdidLength = output.edid_length;
+			memcpy(info->wantedEdid, output.edid, output.edid_length);
+		}
+		// a headless output just takes the mode
+		if ((output.flags & SUNXI_DISPLAY_OUTPUT_VIRTUAL) != 0)
+			output.timing = timing;
 		output.x = request.x;
 		output.y = request.y;
 		output.width = request.width;
@@ -416,8 +593,38 @@ set_layout(display_info* info, const sunxi_display_layout& layout)
 	shared.height = layout.height;
 	shared.bytes_per_row = bytesPerRow;
 
-	if (info->pipe != NULL && info->pipe->Enabled())
-		update_scanout(info);
+	if (info->pipe != NULL && info->pipe->Enabled()) {
+		sunxi_display_output& output = shared.outputs[0];
+		sunxi_display_timing timing = info->wantedTiming;
+		if ((output.flags & SUNXI_DISPLAY_OUTPUT_ENABLED) != 0
+			&& (output.flags & SUNXI_DISPLAY_OUTPUT_VIRTUAL) == 0
+			&& timing.h_display != 0 && !same_timing(timing, output.timing)) {
+			// a new mode: the whole path again, with the new timing
+			INFO("DP-1: mode %ux%u, %" B_PRIu32 " kHz\n", timing.h_display,
+				timing.v_display, timing.pixel_clock);
+			info->pipe->Disable();
+			info->retimedAt = system_time();
+			info->retrains = 0;
+			status = info->pipe->Enable(from_shared(timing),
+				scanout_address(info), scanout_bytes_per_row(info));
+			if (status != B_OK) {
+				ERROR("DP-1: %ux%u does not come up (%s), back to %ux%u\n",
+					timing.h_display, timing.v_display, strerror(status),
+					output.native_timing.h_display,
+					output.native_timing.v_display);
+				timing = output.native_timing;
+				status = info->pipe->Enable(from_shared(timing),
+					scanout_address(info), scanout_bytes_per_row(info));
+			}
+			if (status == B_OK)
+				output.timing = timing;
+			else
+				ERROR("DP-1: no picture after the mode change: %s\n",
+					strerror(status));
+		}
+		if (info->pipe->Enabled())
+			update_scanout(info);
+	}
 
 	// the kernel's console and debugger follow
 	frame_buffer_update((addr_t)info->buffer, layout.width, layout.height, 32,

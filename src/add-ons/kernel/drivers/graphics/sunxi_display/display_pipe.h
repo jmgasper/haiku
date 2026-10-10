@@ -60,11 +60,18 @@ public:
 									uint32 bytesPerRow, uint32 width,
 									uint32 height);
 			void				Disable();
+			// whether the sink still has the link: clock recovery, channel
+			// equalization and symbol lock on every lane, lanes aligned
+			bool				LinkOk();
 			void				DumpState(const char* when);
 
 			// lab access to the registers of the mapped blocks
 			status_t			DebugRegister(phys_addr_t address,
 									uint32& value, bool write);
+
+			// the fastest pixel clock (kHz) the sink's link carries at the
+			// rates this driver trains (HBR; HBR2 is untried)
+			uint32				MaxPixelClock() const;
 
 			bool				Enabled() const { return fEnabled; }
 			uint32				LinkRate() const { return fLinkRate; }
