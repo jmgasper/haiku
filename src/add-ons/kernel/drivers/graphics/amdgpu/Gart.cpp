@@ -83,6 +83,13 @@ Gart::Initialize(volatile uint32* r, const amdgpu_info& info,
 	memset(dummy, 0, 4096);
 	for (uint64 i = 0; i < tableBytes / 8; i++)
 		table[i] = 0;
+	// This PCIe driver uses GART page tables, not the legacy AGP aperture.
+	// A zero top AND bottom inherited from firmware leaves the first 4 MiB
+	// in that aperture. Match gmc_v8_0_mc_program's disabled range, also
+	// observed on this WX5100 under Linux, before enabling either VM context.
+	r[0x80c] = 0; // MC_VM_AGP_BASE
+	r[0x80a] = 0; // MC_VM_AGP_TOP
+	r[0x80b] = 0x3ffff; // MC_VM_AGP_BOT > TOP
 	r[0x819] = (r[0x819] & ~0x7bu) | 0x5b;
 	// L2 enabled, PTE/PDE LRU updates, queue 7, context1 identity mode 1,
 	// fault-default address refers to system RAM. Preserve unrelated fields.
