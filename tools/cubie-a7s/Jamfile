@@ -1,6 +1,8 @@
 SubDir HAIKU_TOP tools cubie-a7s ;
 
 UsePrivateHeaders [ FDirName graphics sunxi_display ] ;
+UsePrivateHeaders [ FDirName graphics powervr ] ;
 
 # lab programs for the Radxa Cubie A7S port
 SimpleTest cubie_reg : reg.cpp ;
+SimpleTest pvrinfo : pvrinfo.cpp ;
