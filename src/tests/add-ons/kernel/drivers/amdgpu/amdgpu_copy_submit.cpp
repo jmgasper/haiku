@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <unistd.h>
 #include <vector>
 
@@ -109,6 +110,11 @@ int main(int argc, char** argv)
 		puts("PASS: no-device copied submission handling"); return 0;
 	}
 	Require(argc == 1 && geteuid() == 0, "copied raw commands remain root-only");
+	uint8* partial = (uint8*)mmap(NULL, 8192, PROT_READ | PROT_WRITE,
+		MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	Require(partial != MAP_FAILED, "allocate partial-copy source");
+	memset(partial, 0xac, 4096);
+	Require(mprotect(partial + 4096, 4096, PROT_NONE) == 0, "protect source's second page");
 	int monitor = Open(); auto render = Request<amdgpu_render_info>();
 	Require(ioctl(monitor, AMDGPU_RENDER_INFO, &render, sizeof(render)) == 0
 		&& (render.capabilities & AMDGPU_RENDER_COPY_SUBMIT), "copy submission capability");
@@ -163,6 +169,9 @@ int main(int argc, char** argv)
 			Require(ioctl(fd, AMDGPU_GFX_SUBMIT_COPY, &invalid, sizeof(invalid)) == -1
 				&& errno == B_BAD_ADDRESS, "bad/kernel/cross-boundary/wrapping CPU source rejected");
 		}
+		invalid.address = (addr_t)(partial + 4096 - 512);
+		Require(ioctl(fd, AMDGPU_GFX_SUBMIT_COPY, &invalid, sizeof(invalid)) == -1
+			&& errno == B_BAD_ADDRESS, "partly readable CPU source rejected and cleared");
 		Require(IRQ(monitor).completed_fences == prior.completed_fences, "bad copy submits no GPU work");
 		auto inspect = Program(0, 256, false);
 		memcpy((void*)(addr_t)source.address, inspect.data(), inspect.size() * 4);
@@ -185,6 +194,7 @@ int main(int argc, char** argv)
 	Require(ioctl(monitor, AMDGPU_GART_INFO, &ram, sizeof(ram)) == 0
 		&& !ram.allocated_bytes && !(ram.vm_fault_status & 0xff), "all RAM reclaimed");
 	close(monitor);
+	Require(munmap(partial, 8192) == 0, "release partial-copy source");
 	puts("PASS: 48 jobs, 16 private/reused VMs, 64KiB and short copied IBs, unaligned input, "
 		"post-entry source replacement, zeroed tails/failures, exact data/IRQs and reclamation");
 }
