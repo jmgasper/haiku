@@ -1,6 +1,6 @@
 /* Copyright 2026, air/OS. Distributed under the terms of the MIT License. */
-// Root-only destructive-to-this-driver-session diagnostic. Use a fresh boot
-// and restore/reboot after either outcome. Never accept polling as an IRQ.
+// Root-only destructive-to-this-driver-session diagnostic. Use a healthy,
+// otherwise idle GPU and cold-recover after a fault. Never accept polling as IRQ.
 #include <amdgpu_haiku.h>
 #include <OS.h>
 #include <errno.h>
@@ -68,20 +68,51 @@ static void Check(const amdgpu_buffer& b, bool work)
 		Require(p[i] == (work ? 0x98765432 ^ (i * 0x10204081u) : 0),
 			"victim and neighboring data unchanged by rejected GPU operation");
 }
+
+static void ShaderCommand(const amdgpu_buffer& command, uint64 code,
+	uint64 destination, uint32 seed)
+{
+	volatile uint32* words = (volatile uint32*)(addr_t)command.address;
+	uint32 cursor = 0;
+	auto emit = [&](uint32 value) { words[cursor++] = value; };
+	auto reg = [&](uint32 index, uint32 value) {
+		emit(0xc0017602); emit(index - 0x2c00); emit(value);
+	};
+	reg(0x2e04, 0); reg(0x2e05, 0); reg(0x2e06, 0);
+	reg(0x2e07, 64); reg(0x2e08, 1); reg(0x2e09, 1);
+	reg(0x2e0c, code >> 8); reg(0x2e0d, code >> 40);
+	reg(0x2e12, 1 | 1 << 6 | 0xc0 << 12); reg(0x2e13, 3 << 1 | 1 << 7);
+	reg(0x2e15, 0); reg(0x2e16, 0xffffffff); reg(0x2e17, 0xffffffff);
+	reg(0x2e18, 0); reg(0x2e19, 0xffffffff); reg(0x2e1a, 0xffffffff);
+	reg(0x2e40, destination); reg(0x2e41, destination >> 32); reg(0x2e42, seed);
+	emit(0xc0031502); emit(16); emit(1); emit(1); emit(5);
+	emit(0xc0004600); emit(7 | 4 << 8);
+	uint32 padding = 256 - cursor;
+	Require(padding >= 2, "shader command padding");
+	emit(0xc0001000 | (padding - 2) << 16);
+	while (cursor < 1024) emit(0);
+	__sync_synchronize();
+}
+
 int main(int argc, char** argv)
 {
 	setvbuf(stdout, NULL, _IOLBF, 0);
 	bool absent = argc == 2 && strcmp(argv[1], "--expect-no-device") == 0;
 	bool copy = argc == 2 && strcmp(argv[1], "--copy-write") == 0;
+	bool shaderWrite = argc == 2 && strcmp(argv[1], "--shader-write") == 0;
+	bool shaderExecute = argc == 2 && strcmp(argv[1], "--shader-execute") == 0;
+	bool shader = shaderWrite || shaderExecute;
+	bool copied = copy || shader;
 	bool video = argc == 2 && (strcmp(argv[1], "--vm-write-video") == 0
 		|| strcmp(argv[1], "--privileged-register-video") == 0);
-	bool vm = copy || (argc == 2 && (strcmp(argv[1], "--vm-write") == 0
+	bool vm = copied || (argc == 2 && (strcmp(argv[1], "--vm-write") == 0
 		|| strcmp(argv[1], "--vm-write-video") == 0));
 	bool privileged = argc == 2 && (strcmp(argv[1], "--privileged-register") == 0
 		|| strcmp(argv[1], "--privileged-register-video") == 0);
 	Require(absent || ((vm || privileged) && geteuid() == 0),
 		"usage: amdgpu_irq_fault --vm-write[-video] | --privileged-register[-video]"
-		" | --copy-write (root, cold boot) | --expect-no-device");
+		" | --copy-write | --shader-write | --shader-execute (root, healthy idle GPU)"
+		" | --expect-no-device");
 	int monitor = open("/dev/" AMDGPU_DEVICE_NAME, O_RDWR);
 	if (absent) {
 		Require(monitor < 0 && errno == ENOENT, "no AMD device in QEMU");
@@ -96,21 +127,57 @@ int main(int argc, char** argv)
 	auto command = Buffer(fd, commandVA, AMDGPU_VM_READ | AMDGPU_VM_EXECUTE);
 	auto victim = Buffer(fd, victimVA, AMDGPU_VM_READ);
 	auto work = Buffer(fd, workVA, AMDGPU_VM_READ | AMDGPU_VM_WRITE);
+	const uint64 shaderVA = 0x500000000ULL;
+	amdgpu_buffer code = {};
+	if (shader) {
+		code = Buffer(fd, shaderVA, AMDGPU_VM_READ | AMDGPU_VM_EXECUTE);
+		// Same gfx803 flat-store program as amdgpu_submit: seed XOR index * factor.
+		const uint32 instructions[] = {
+			0xd1c30000, 0x04018003, 0x24040082, 0x32040400, 0x7e060201,
+			0xd11c6a03, 0x01a90103, 0xbe8400ff, 0x10204081,
+			0xd2850004, 0x00000900, 0x2a080802, 0xdc710000, 0x00000402,
+			0xbf8c0f70, 0xbf810000
+		};
+		memcpy((void*)(addr_t)code.address, instructions, sizeof(instructions));
+		__sync_synchronize();
+	}
 	auto warm = Request<amdgpu_vm_test>(); warm.address = workVA; warm.value = 0x98765432;
 	Require(ioctl(fd, AMDGPU_VM_TEST, &warm, sizeof(warm)) == 0 && warm.status == B_OK,
 		"known shader completes before fault");
 	Check(work, true); Check(victim, false);
-	if (copy) {
+	if (copied) {
 		// Allocate/clear private copied-command storage without executing a
 		// job, so quarantine accounting below includes all of its pages.
 		auto invalid = Request<amdgpu_gfx_submit>(); invalid.dwords = 256;
 		Require(ioctl(fd, AMDGPU_GFX_SUBMIT_COPY, &invalid, sizeof(invalid)) == -1
 			&& errno == B_BAD_ADDRESS, "prepare private copied command storage");
 	}
+	if (shader) {
+		// Positive control: the exact shader and launch state must first write
+		// an entire zeroed writable page correctly. Then change only the target
+		// or instruction mapping permission for the deliberate fault.
+		memset((void*)(addr_t)work.address, 0, work.bytes);
+		ShaderCommand(command, shaderVA, workVA, 0x98765432);
+		auto good = Request<amdgpu_gfx_submit>();
+		good.address = command.address; good.dwords = 256;
+		Require(ioctl(fd, AMDGPU_GFX_SUBMIT_COPY, &good, sizeof(good)) == 0
+			&& good.status == B_OK, "external shader positive control");
+		Check(work, true); Check(victim, false);
+		puts("PASS: shader positive control writes all 1024 expected words");
+		if (shaderExecute) {
+			auto m = Request<amdgpu_vm_mapping>();
+			m.address = shaderVA; m.bytes = code.bytes;
+			Require(ioctl(fd, AMDGPU_VM_UNMAP, &m, sizeof(m)) == 0, "unmap executable code");
+			m.handle = code.handle; m.permissions = AMDGPU_VM_READ;
+			Require(ioctl(fd, AMDGPU_VM_MAP, &m, sizeof(m)) == 0, "map code without execute");
+		}
+	}
 	auto before = IRQ(monitor);
 	Require(before.enabled == 1 && before.msi == 1 && before.status == B_OK
-		&& before.completed_fences == 1 && before.waits == 1 && before.vm_faults == 0
-		&& before.privileged_faults == 0, "fresh boot has exactly one successful IRQ job");
+		&& before.completed_fences >= (shader ? 2u : 1u)
+		&& before.waits == before.completed_fences && before.vm_faults == 0
+		&& before.privileged_faults == 0 && before.unknown == 0 && before.overflows == 0,
+		"healthy GPU has completed every previous job without errors");
 	if (video) {
 		sVideoFD = open("/dev/" AMDGPU_DEVICE_NAME, O_RDWR);
 		Require(sVideoFD >= 0, "open concurrent video client");
@@ -141,6 +208,8 @@ int main(int argc, char** argv)
 	words[4] = vm ? 0x12345678 : (1 << 26) | (1 << 23) | (1 << 22);
 	words[5] = 0xc0f91000; // NOP: 251 DWORDs including its header
 	for (uint32 i = 6; i < 1024; i++) words[i] = 0;
+	if (shader)
+		ShaderCommand(command, shaderVA, shaderWrite ? victimVA : workVA, 0x13579bdf);
 	__sync_synchronize();
 	thread_id decoder = -1;
 	if (video) {
@@ -157,13 +226,15 @@ int main(int argc, char** argv)
 			snooze(50);
 		}
 	}
-	auto r = Request<amdgpu_gfx_submit>(); r.address = copy ? command.address : commandVA; r.dwords = 256;
-	Require(ioctl(fd, copy ? AMDGPU_GFX_SUBMIT_COPY : AMDGPU_GFX_SUBMIT,
+	auto r = Request<amdgpu_gfx_submit>(); r.address = copied ? command.address : commandVA; r.dwords = 256;
+	Require(ioctl(fd, copied ? AMDGPU_GFX_SUBMIT_COPY : AMDGPU_GFX_SUBMIT,
 		&r, sizeof(r)) == 0, "submit deliberate fault");
 	auto after = IRQ(monitor);
 	printf("fault %s job %#x elapsed %llu us completion %llu VM %#x/%#x ring %u/%u;"
 		" IRQ status %#x EOP %llu waits %llu VM %llu privileged %llu unknown %llu"
-		" overflow %llu last %#x/%#x/%#x/%#x\n", vm ? "VM write" : "privileged register",
+		" overflow %llu last %#x/%#x/%#x/%#x\n",
+		shaderExecute ? "shader execute" : shaderWrite ? "shader write"
+			: vm ? "VM write" : "privileged register",
 		(unsigned)r.status, (unsigned long long)r.elapsed_us, (unsigned long long)r.completion,
 		(unsigned)r.vm_fault_status[0], (unsigned)r.vm_fault_status[1], (unsigned)r.rptr,
 		(unsigned)r.wptr, (unsigned)after.status, (unsigned long long)after.eop_events,
@@ -173,7 +244,7 @@ int main(int argc, char** argv)
 		(unsigned)after.last[2], (unsigned)after.last[3]);
 	Require(r.status == (vm ? B_BAD_DATA : B_NOT_ALLOWED) && after.status == r.status,
 		"fault IRQ supplies job failure, not a polling timeout");
-	Require(after.waits == 2 && (vm ? after.vm_faults > 0 : after.privileged_faults > 0)
+	Require(after.waits == before.waits + 1 && (vm ? after.vm_faults > 0 : after.privileged_faults > 0)
 		&& after.overflows == 0 && after.unknown == 0, "expected hardware fault notification");
 	if (video) {
 		status_t result;
@@ -198,6 +269,7 @@ int main(int argc, char** argv)
 	amdgpu_buffer* buffers[] = {&command, &victim, &work};
 	for (auto* b : buffers)
 		Require(delete_area(b->area) == B_OK, "release revoked CPU clone");
+	if (shader) Require(delete_area(code.area) == B_OK, "release revoked shader CPU clone");
 	close(monitor);
 	puts("PASS: hardware fault IRQ, unchanged victim/neighbor, failed fence and post-close quarantine");
 	if (video) puts("PASS: concurrent video failure, untouched output and quarantined session storage");
