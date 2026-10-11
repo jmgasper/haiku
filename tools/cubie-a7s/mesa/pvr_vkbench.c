@@ -3,20 +3,26 @@
  * Distributed under the terms of the MIT License.
  */
 
-// A compute job on the PowerVR GPU through Mesa's Vulkan driver: a shader
-// writes gl_GlobalInvocationID.x * 3 + 1 into each word of a 1 MiB storage
-// buffer in HOST_VISIBLE | HOST_COHERENT memory. One dispatch, a fence wait,
-// then every word is checked. The buffer is filled with 0xdeadbeef first, so
-// words the GPU never wrote show up as such.
-//   PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 pvr_vkfill [runs] [timeout-ms]
-//       [--cached]
-// (defaults: 1 run, 5000 ms fence timeout)
-// --cached uses HOST_VISIBLE | HOST_CACHED memory, which is not coherent on
-// air/OS: the fill is flushed (vkFlushMappedMemoryRanges) before the
-// dispatch, and the buffer invalidated (vkInvalidateMappedMemoryRanges)
-// before it is checked.
+// pvr_vkfill's compute dispatch in a loop, straight on the Vulkan driver (no
+// zink, no GL, no readback, no app_server): submit, wait, repeat. Every
+// interval it prints one line: dispatches/s in that window, average ms per
+// dispatch spent in vkQueueSubmit() and in the wait, the process's and the
+// kernel's areas (as pvr_glbench), and a check of the buffer by one extra
+// dispatch. If GL frames slow down over time and this does not, the
+// slowdown is above the kernel and the Vulkan driver.
+//   PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 pvr_vkbench [--seconds N]
+//       [--interval S] [--dispatches N] [--timeline] [--rerecord] [--mark]
+// --seconds: run time (default 300; 0 = until --dispatches or Ctrl+C);
+// --interval: seconds per line (default 10); --dispatches: stop after N;
+// --timeline: zink's way to wait, a timeline semaphore signalled by each
+// submit (value n) and vkWaitSemaphores(), instead of a fence and
+// vkWaitForFences() + vkResetFences(); --rerecord: reset the command pool
+// and record the command buffer again for every dispatch, as zink does
+// every batch, instead of recording it once; --mark: print
+// "== dispatch N" before each one.
 
 
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +30,8 @@
 
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
+
+#include "pvr_bench_areas.h"
 
 
 extern PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
@@ -33,10 +41,13 @@ extern PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance instance,
 #define WORD_COUNT		(BUFFER_SIZE / 4)
 #define LOCAL_SIZE		64
 #define FILL_PATTERN	0xdeadbeefu
+#define WAIT_TIMEOUT	(5000 * 1000000ull)
 
 static VkInstance sInstance;
 static VkDevice sDevice;
 static PFN_vkGetDeviceProcAddr sGetDeviceProcAddr;
+static volatile sig_atomic_t sStop;
+static struct area_snapshot sOwnStart, sOwnNow, sKernelStart, sKernelNow;
 
 #define INSTANCE_FN(name) \
 	PFN_##name name = (PFN_##name)vk_icdGetInstanceProcAddr(sInstance, #name); \
@@ -54,54 +65,7 @@ static PFN_vkGetDeviceProcAddr sGetDeviceProcAddr;
 	} while (0)
 
 
-// The shader. There is no GLSL compiler in the build environment: this is
-// the SPIR-V 1.0 module of the assembly below, assembled with SPIRV-Tools'
-// spirv-as (--target-env spv1.0) and validated with spirv-val
-// (--target-env vulkan1.0), both from toolchains/mesa-native-deps.
-//
-//   GLSL equivalent:
-//     #version 450
-//     layout(local_size_x = 64) in;
-//     layout(std430, set = 0, binding = 0) buffer Out { uint data[]; };
-//     void main() { uint i = gl_GlobalInvocationID.x; data[i] = i * 3u + 1u; }
-//
-//                OpCapability Shader
-//                OpMemoryModel Logical GLSL450
-//                OpEntryPoint GLCompute %main "main" %gid
-//                OpExecutionMode %main LocalSize 64 1 1
-//                OpDecorate %gid BuiltIn GlobalInvocationId
-//                OpDecorate %rta ArrayStride 4
-//                OpMemberDecorate %Out 0 Offset 0
-//                OpDecorate %Out BufferBlock
-//                OpDecorate %buf DescriptorSet 0
-//                OpDecorate %buf Binding 0
-//        %void = OpTypeVoid
-//      %fnvoid = OpTypeFunction %void
-//        %uint = OpTypeInt 32 0
-//         %int = OpTypeInt 32 1
-//      %v3uint = OpTypeVector %uint 3
-//    %ptr_in_3 = OpTypePointer Input %v3uint
-//         %gid = OpVariable %ptr_in_3 Input
-//         %rta = OpTypeRuntimeArray %uint
-//         %Out = OpTypeStruct %rta
-//     %ptr_Out = OpTypePointer Uniform %Out
-//         %buf = OpVariable %ptr_Out Uniform
-//       %int_0 = OpConstant %int 0
-//      %uint_0 = OpConstant %uint 0
-//      %uint_1 = OpConstant %uint 1
-//      %uint_3 = OpConstant %uint 3
-//    %ptr_in_u = OpTypePointer Input %uint
-//     %ptr_u_u = OpTypePointer Uniform %uint
-//        %main = OpFunction %void None %fnvoid
-//       %entry = OpLabel
-//          %px = OpAccessChain %ptr_in_u %gid %uint_0
-//           %x = OpLoad %uint %px
-//           %m = OpIMul %uint %x %uint_3
-//           %v = OpIAdd %uint %m %uint_1
-//         %dst = OpAccessChain %ptr_u_u %buf %int_0 %x
-//                OpStore %dst %v
-//                OpReturn
-//                OpFunctionEnd
+// pvr_vkfill's shader (see there): data[i] = i * 3 + 1, 64 per workgroup
 static const uint32_t kFillShader[] = {
 	0x07230203, 0x00010000, 0x00070000, 0x00000019, 0x00000000, 0x00020011,
 	0x00000001, 0x0003000e, 0x00000000, 0x00000001, 0x0006000f, 0x00000005,
@@ -140,26 +104,71 @@ now_ms(void)
 }
 
 
+static void
+stop_handler(int number)
+{
+	sStop = 1;
+}
+
+
+struct window {
+	unsigned	dispatches;
+	double		submitMs;
+	double		waitMs;
+	double		start;
+};
+
+
+static void
+report(const struct window* window, double now, double runStart,
+	const char* check)
+{
+	double seconds = (now - window->start) / 1000.0;
+	unsigned dispatches = window->dispatches != 0 ? window->dispatches : 1;
+	area_snapshot_own(&sOwnNow);
+	area_snapshot_kernel(&sKernelNow);
+	printf("[%6.1f s] %6u dispatches %7.1f/s; ms/dispatch submit %.3f, "
+		"wait %.3f", (now - runStart) / 1000.0, window->dispatches,
+		window->dispatches / seconds, window->submitMs / dispatches,
+		window->waitMs / dispatches);
+	area_print(stdout, "areas", &sOwnNow);
+	area_print(stdout, "kernel", &sKernelNow);
+	printf("; check %s\n", check);
+}
+
+
 int
 main(int argc, char** argv)
 {
 	// line by line: whatever was printed survives a crash in the driver
 	setvbuf(stdout, NULL, _IOLBF, 0);
 
-	int runs = 1;
-	uint64_t timeoutMs = 5000;
-	int cached = 0;
-	int positional = 0;
+	double seconds = 300, interval = 10;
+	unsigned maxDispatches = 0;
+	int useTimeline = 0, rerecord = 0, mark = 0;
 	for (int i = 1; i < argc; i++) {
-		if (strcmp(argv[i], "--cached") == 0)
-			cached = 1;
-		else if (positional++ == 0)
-			runs = atoi(argv[i]);
-		else
-			timeoutMs = strtoull(argv[i], NULL, 0);
+		if (strcmp(argv[i], "--seconds") == 0 && i + 1 < argc)
+			seconds = atof(argv[++i]);
+		else if (strcmp(argv[i], "--interval") == 0 && i + 1 < argc)
+			interval = atof(argv[++i]);
+		else if (strcmp(argv[i], "--dispatches") == 0 && i + 1 < argc)
+			maxDispatches = strtoul(argv[++i], NULL, 0);
+		else if (strcmp(argv[i], "--timeline") == 0)
+			useTimeline = 1;
+		else if (strcmp(argv[i], "--rerecord") == 0)
+			rerecord = 1;
+		else if (strcmp(argv[i], "--mark") == 0)
+			mark = 1;
+		else {
+			printf("usage: %s [--seconds N] [--interval S] [--dispatches N] "
+				"[--timeline] [--rerecord] [--mark]\n", argv[0]);
+			return 2;
+		}
 	}
-	if (runs < 1)
-		runs = 1;
+	if (interval <= 0)
+		interval = 10;
+	signal(SIGINT, stop_handler);
+	signal(SIGTERM, stop_handler);
 
 	PFN_vkCreateInstance vkCreateInstance
 		= (PFN_vkCreateInstance)vk_icdGetInstanceProcAddr(NULL,
@@ -170,7 +179,7 @@ main(int argc, char** argv)
 	}
 	VkApplicationInfo appInfo = {
 		.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-		.pApplicationName = "pvr_vkfill",
+		.pApplicationName = "pvr_vkbench",
 		.apiVersion = VK_API_VERSION_1_2,
 	};
 	VkInstanceCreateInfo instanceInfo = {
@@ -181,6 +190,7 @@ main(int argc, char** argv)
 
 	INSTANCE_FN(vkEnumeratePhysicalDevices);
 	INSTANCE_FN(vkGetPhysicalDeviceProperties);
+	INSTANCE_FN(vkGetPhysicalDeviceFeatures2);
 	INSTANCE_FN(vkGetPhysicalDeviceMemoryProperties);
 	INSTANCE_FN(vkGetPhysicalDeviceQueueFamilyProperties);
 	INSTANCE_FN(vkCreateDevice);
@@ -200,7 +210,6 @@ main(int argc, char** argv)
 	vkGetPhysicalDeviceProperties(physicalDevice, &properties);
 	printf("device: %s\n", properties.deviceName);
 
-	// a queue family that can compute
 	uint32_t familyCount = 0;
 	vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &familyCount,
 		NULL);
@@ -221,6 +230,22 @@ main(int argc, char** argv)
 		return 1;
 	}
 
+	VkPhysicalDeviceVulkan12Features features12 = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+	};
+	VkPhysicalDeviceFeatures2 features = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+		.pNext = &features12,
+	};
+	vkGetPhysicalDeviceFeatures2(physicalDevice, &features);
+	if (useTimeline && !features12.timelineSemaphore) {
+		printf("FAIL: no timelineSemaphore feature\n");
+		return 1;
+	}
+	VkPhysicalDeviceVulkan12Features enable12 = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+		.timelineSemaphore = useTimeline ? VK_TRUE : VK_FALSE,
+	};
 	float priority = 1.0f;
 	VkDeviceQueueCreateInfo queueInfo = {
 		.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
@@ -230,6 +255,7 @@ main(int argc, char** argv)
 	};
 	VkDeviceCreateInfo deviceInfo = {
 		.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+		.pNext = &enable12,
 		.queueCreateInfoCount = 1,
 		.pQueueCreateInfos = &queueInfo,
 	};
@@ -242,8 +268,6 @@ main(int argc, char** argv)
 	DEVICE_FN(vkBindBufferMemory);
 	DEVICE_FN(vkMapMemory);
 	DEVICE_FN(vkUnmapMemory);
-	DEVICE_FN(vkFlushMappedMemoryRanges);
-	DEVICE_FN(vkInvalidateMappedMemoryRanges);
 	DEVICE_FN(vkCreateDescriptorSetLayout);
 	DEVICE_FN(vkCreatePipelineLayout);
 	DEVICE_FN(vkCreateDescriptorPool);
@@ -252,6 +276,7 @@ main(int argc, char** argv)
 	DEVICE_FN(vkCreateShaderModule);
 	DEVICE_FN(vkCreateComputePipelines);
 	DEVICE_FN(vkCreateCommandPool);
+	DEVICE_FN(vkResetCommandPool);
 	DEVICE_FN(vkAllocateCommandBuffers);
 	DEVICE_FN(vkBeginCommandBuffer);
 	DEVICE_FN(vkCmdBindPipeline);
@@ -261,6 +286,9 @@ main(int argc, char** argv)
 	DEVICE_FN(vkEndCommandBuffer);
 	DEVICE_FN(vkCreateFence);
 	DEVICE_FN(vkResetFences);
+	DEVICE_FN(vkCreateSemaphore);
+	DEVICE_FN(vkDestroySemaphore);
+	DEVICE_FN(vkWaitSemaphores);
 	DEVICE_FN(vkQueueSubmit);
 	DEVICE_FN(vkWaitForFences);
 	DEVICE_FN(vkDestroyFence);
@@ -288,12 +316,10 @@ main(int argc, char** argv)
 	CHECK(vkCreateBuffer(sDevice, &bufferInfo, NULL, &buffer));
 	VkMemoryRequirements requirements;
 	vkGetBufferMemoryRequirements(sDevice, buffer, &requirements);
-
 	VkPhysicalDeviceMemoryProperties memory;
 	vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memory);
 	const VkMemoryPropertyFlags wanted = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
-		| (cached ? VK_MEMORY_PROPERTY_HOST_CACHED_BIT
-			: VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		| VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 	uint32_t memoryType = UINT32_MAX;
 	for (uint32_t i = 0; i < memory.memoryTypeCount; i++) {
 		if ((requirements.memoryTypeBits & (1u << i)) != 0
@@ -303,12 +329,9 @@ main(int argc, char** argv)
 		}
 	}
 	if (memoryType == UINT32_MAX) {
-		printf("FAIL: no HOST_VISIBLE | %s memory type\n",
-			cached ? "HOST_CACHED" : "HOST_COHERENT");
+		printf("FAIL: no HOST_VISIBLE | HOST_COHERENT memory type\n");
 		return 1;
 	}
-	const int coherent = (memory.memoryTypes[memoryType].propertyFlags
-		& VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
 	VkMemoryAllocateInfo allocateInfo = {
 		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
 		.allocationSize = requirements.size,
@@ -320,16 +343,6 @@ main(int argc, char** argv)
 	uint32_t* words;
 	CHECK(vkMapMemory(sDevice, deviceMemory, 0, VK_WHOLE_SIZE, 0,
 		(void**)&words));
-	printf("buffer: %u bytes, memory type %u (flags 0x%x%s), mapped at %p\n",
-		BUFFER_SIZE, memoryType,
-		(unsigned)memory.memoryTypes[memoryType].propertyFlags,
-		coherent ? "" : ", flushed and invalidated", (void*)words);
-	VkMappedMemoryRange wholeRange = {
-		.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
-		.memory = deviceMemory,
-		.offset = 0,
-		.size = VK_WHOLE_SIZE,
-	};
 
 	// the pipeline
 	VkDescriptorSetLayoutBinding binding = {
@@ -354,7 +367,6 @@ main(int argc, char** argv)
 	VkPipelineLayout pipelineLayout;
 	CHECK(vkCreatePipelineLayout(sDevice, &pipelineLayoutInfo, NULL,
 		&pipelineLayout));
-
 	VkDescriptorPoolSize poolSize = {
 		.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 		.descriptorCount = 1,
@@ -389,7 +401,6 @@ main(int argc, char** argv)
 		.pBufferInfo = &descriptorBuffer,
 	};
 	vkUpdateDescriptorSets(sDevice, 1, &write, 0, NULL);
-
 	VkShaderModuleCreateInfo moduleInfo = {
 		.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
 		.codeSize = sizeof(kFillShader),
@@ -408,12 +419,9 @@ main(int argc, char** argv)
 		.layout = pipelineLayout,
 	};
 	VkPipeline pipeline;
-	double start = now_ms();
 	CHECK(vkCreateComputePipelines(sDevice, VK_NULL_HANDLE, 1, &pipelineInfo,
 		NULL, &pipeline));
-	printf("pipeline: compiled in %.2f ms\n", now_ms() - start);
 
-	// the command buffer: dispatch, then make the writes visible to the host
 	VkCommandPoolCreateInfo commandPoolInfo = {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
 		.queueFamilyIndex = family,
@@ -431,82 +439,162 @@ main(int argc, char** argv)
 		&commandBuffer));
 	VkCommandBufferBeginInfo beginInfo = {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+		.flags = rerecord ? VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT : 0,
 	};
-	CHECK(vkBeginCommandBuffer(commandBuffer, &beginInfo));
-	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-	vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-		pipelineLayout, 0, 1, &descriptorSet, 0, NULL);
-	vkCmdDispatch(commandBuffer, WORD_COUNT / LOCAL_SIZE, 1, 1);
 	VkMemoryBarrier barrier = {
 		.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
 		.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
 		.dstAccessMask = VK_ACCESS_HOST_READ_BIT,
 	};
-	vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-		VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, NULL, 0, NULL);
-	CHECK(vkEndCommandBuffer(commandBuffer));
 
 	VkFenceCreateInfo fenceInfo = {
 		.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
 	};
-	VkFence fence;
-	CHECK(vkCreateFence(sDevice, &fenceInfo, NULL, &fence));
+	VkFence fence = VK_NULL_HANDLE;
+	VkSemaphore timeline = VK_NULL_HANDLE;
+	if (useTimeline) {
+		VkSemaphoreTypeCreateInfo typeInfo = {
+			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+			.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+			.initialValue = 0,
+		};
+		VkSemaphoreCreateInfo semaphoreInfo = {
+			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+			.pNext = &typeInfo,
+		};
+		CHECK(vkCreateSemaphore(sDevice, &semaphoreInfo, NULL, &timeline));
+	} else
+		CHECK(vkCreateFence(sDevice, &fenceInfo, NULL, &fence));
+	printf("%u words per dispatch; waits on a %s; command buffer %s\n",
+		(unsigned)WORD_COUNT, useTimeline ? "timeline semaphore" : "fence",
+		rerecord ? "recorded for every dispatch" : "recorded once");
 
-	int failedRuns = 0;
-	for (int run = 0; run < runs; run++) {
-		for (uint32_t i = 0; i < WORD_COUNT; i++)
-			words[i] = FILL_PATTERN;
-		if (!coherent)
-			CHECK(vkFlushMappedMemoryRanges(sDevice, 1, &wholeRange));
+	uint64_t value = 0;
+	unsigned total = 0, failedChecks = 0;
+	int ok = 1;
+	double runStart = now_ms();
+	struct window window = { 0, 0, 0, runStart };
+	int recorded = 0;
+	area_snapshot_own(&sOwnStart);
+	area_snapshot_kernel(&sKernelStart);
+	for (unsigned dispatch = 0;; dispatch++) {
+		double start = now_ms();
+		int last = sStop || (maxDispatches != 0 && dispatch >= maxDispatches)
+			|| (seconds > 0 && start - runStart >= seconds * 1000);
+		// the window ends: one more dispatch, checked and not timed
+		int check = last || start - window.start >= interval * 1000;
+		if (last && window.dispatches == 0 && dispatch != 0)
+			break;
+		if (mark)
+			printf("== dispatch %u%s\n", dispatch, check ? " (check)" : "");
+		if (check) {
+			for (uint32_t i = 0; i < WORD_COUNT; i++)
+				words[i] = FILL_PATTERN;
+		}
 
+		if (rerecord || !recorded) {
+			if (rerecord)
+				CHECK(vkResetCommandPool(sDevice, commandPool, 0));
+			CHECK(vkBeginCommandBuffer(commandBuffer, &beginInfo));
+			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+				pipeline);
+			vkCmdBindDescriptorSets(commandBuffer,
+				VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1,
+				&descriptorSet, 0, NULL);
+			vkCmdDispatch(commandBuffer, WORD_COUNT / LOCAL_SIZE, 1, 1);
+			vkCmdPipelineBarrier(commandBuffer,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+				VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, NULL, 0,
+				NULL);
+			CHECK(vkEndCommandBuffer(commandBuffer));
+			recorded = 1;
+		}
+
+		value++;
+		VkTimelineSemaphoreSubmitInfo timelineSubmit = {
+			.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+			.signalSemaphoreValueCount = 1,
+			.pSignalSemaphoreValues = &value,
+		};
 		VkSubmitInfo submitInfo = {
 			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+			.pNext = useTimeline ? &timelineSubmit : NULL,
 			.commandBufferCount = 1,
 			.pCommandBuffers = &commandBuffer,
+			.signalSemaphoreCount = useTimeline ? 1 : 0,
+			.pSignalSemaphores = &timeline,
 		};
-		CHECK(vkResetFences(sDevice, 1, &fence));
-		start = now_ms();
-		CHECK(vkQueueSubmit(queue, 1, &submitInfo, fence));
-		double submitted = now_ms();
-		result = vkWaitForFences(sDevice, 1, &fence, VK_TRUE,
-			timeoutMs * 1000000ull);
-		double done = now_ms();
-		printf("run %d: submit %.3f ms, fence %s after %.3f ms "
-			"(%u workgroups of %u)\n", run, submitted - start,
-			result == VK_SUCCESS ? "signalled"
-				: result == VK_TIMEOUT ? "TIMED OUT" : "FAILED",
-			done - submitted, WORD_COUNT / LOCAL_SIZE, LOCAL_SIZE);
+		double submitStart = now_ms();
+		result = vkQueueSubmit(queue, 1, &submitInfo, fence);
 		if (result != VK_SUCCESS) {
-			printf("FAIL: vkWaitForFences: %d\n", (int)result);
-			failedRuns++;
+			printf("FAIL: vkQueueSubmit: %d (dispatch %u)\n", (int)result,
+				dispatch);
+			ok = 0;
 			break;
 		}
-
-		uint32_t mismatches = 0;
-		uint32_t untouched = 0;
-		start = now_ms();
-		if (!coherent)
-			CHECK(vkInvalidateMappedMemoryRanges(sDevice, 1, &wholeRange));
-		for (uint32_t i = 0; i < WORD_COUNT; i++) {
-			uint32_t expected = i * 3 + 1;
-			if (words[i] == expected)
-				continue;
-			if (words[i] == FILL_PATTERN)
-				untouched++;
-			if (mismatches < 16) {
-				printf("  word %6u (offset 0x%06x): 0x%08x, expected 0x%08x\n",
-					i, i * 4, words[i], expected);
-			}
-			mismatches++;
+		double submitted = now_ms();
+		if (useTimeline) {
+			VkSemaphoreWaitInfo waitInfo = {
+				.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+				.semaphoreCount = 1,
+				.pSemaphores = &timeline,
+				.pValues = &value,
+			};
+			result = vkWaitSemaphores(sDevice, &waitInfo, WAIT_TIMEOUT);
+		} else {
+			result = vkWaitForFences(sDevice, 1, &fence, VK_TRUE,
+				WAIT_TIMEOUT);
+			if (result == VK_SUCCESS)
+				result = vkResetFences(sDevice, 1, &fence);
 		}
-		printf("run %d: %u of %u words wrong (%u never written), "
-			"checked in %.3f ms\n", run, mismatches, (unsigned)WORD_COUNT,
-			untouched, now_ms() - start);
-		if (mismatches != 0)
-			failedRuns++;
-	}
+		double done = now_ms();
+		if (result != VK_SUCCESS) {
+			printf("FAIL: %s: %d (dispatch %u)\n", useTimeline
+				? "vkWaitSemaphores" : "vkWaitForFences", (int)result,
+				dispatch);
+			ok = 0;
+			break;
+		}
+		total++;
 
-	vkDestroyFence(sDevice, fence, NULL);
+		if (!check) {
+			window.dispatches++;
+			window.submitMs += submitted - submitStart;
+			window.waitMs += done - submitted;
+			continue;
+		}
+		uint32_t wrong = 0;
+		for (uint32_t i = 0; i < WORD_COUNT; i++) {
+			if (words[i] != i * 3 + 1)
+				wrong++;
+		}
+		char checkText[64];
+		if (wrong == 0)
+			snprintf(checkText, sizeof(checkText), "ok");
+		else {
+			snprintf(checkText, sizeof(checkText), "%u of %u words wrong",
+				wrong, (unsigned)WORD_COUNT);
+			failedChecks++;
+		}
+		report(&window, done, runStart, checkText);
+		window = (struct window){ 0, 0, 0, now_ms() };
+		if (last)
+			break;
+	}
+	double end = now_ms();
+	printf("%u dispatches in %.1f s, %.1f/s\n", total,
+		(end - runStart) / 1000.0, total / ((end - runStart) / 1000.0));
+	area_snapshot_own(&sOwnNow);
+	area_snapshot_kernel(&sKernelNow);
+	area_print_changes(stdout, "process areas since the start", &sOwnStart,
+		&sOwnNow);
+	area_print_changes(stdout, "kernel powervr areas since the start",
+		&sKernelStart, &sKernelNow);
+
+	if (timeline != VK_NULL_HANDLE)
+		vkDestroySemaphore(sDevice, timeline, NULL);
+	if (fence != VK_NULL_HANDLE)
+		vkDestroyFence(sDevice, fence, NULL);
 	vkDestroyCommandPool(sDevice, commandPool, NULL);
 	vkDestroyPipeline(sDevice, pipeline, NULL);
 	vkDestroyShaderModule(sDevice, module, NULL);
@@ -519,6 +607,8 @@ main(int argc, char** argv)
 	vkDestroyDevice(sDevice, NULL);
 	vkDestroyInstance(sInstance, NULL);
 
-	printf("%s\n", failedRuns == 0 ? "PASS" : "FAIL");
-	return failedRuns == 0 ? 0 : 1;
+	if (failedChecks != 0)
+		ok = 0;
+	printf("%s\n", ok ? "PASS" : "FAIL");
+	return ok ? 0 : 1;
 }
