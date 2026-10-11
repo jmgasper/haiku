@@ -23,10 +23,15 @@ RadeonSI now passes compositor and EGL-window pixels, resizing and shared
 contexts; Summit's short native GPU rendering trial also passes. The windows
 still use CPU bitmap presentation. Concurrent UVD/GFX scheduling and cached
 guard readback pass decode/graphics/DMA, in-flight close, concurrent fault
-quarantine and cold recovery tests. The combined 900-frame Summit HEVC trial
-now reports 80 drops, compared with 560 before this work; it still fails
-playback acceptance. Driver `7c6f5e4a…` is installed and preserved as a checked
-checkpoint; system Mesa defaults remain unchanged. Unprivileged general
+quarantine and cold recovery tests. Separate graphics execution ownership
+also passes 16 in-flight graphics close/reuse cycles. The combined 900-frame
+Summit HEVC Main10/AAC GPU trial now passes with zero drops, compared with
+560 before this work. Sustained H.264/AAC and HEVC Main10/AAC GPU playback
+each passes 5,400 frames over three minutes with zero drops. Final DMA and
+graphics checks pass at 40,789 completions with no GPU errors. Driver
+`89b64dd6…` is installed with a checked same-hash backup; the previous
+`7c6f5e4a…` checkpoint remains preserved. System Mesa defaults remain
+unchanged. Unprivileged general
 graphics submission, system Mesa defaults and native display remain unfinished. AMD UVD H.264 plays three minutes of 1080p30/AAC with zero drops
 in private airTime and Summit builds. HEVC Main/Main 10 has independent native
 pixel/format/lifecycle verification; both private applications also pass

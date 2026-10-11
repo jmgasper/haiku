@@ -10,6 +10,7 @@ SimpleTest amdgpu_device_buffers : amdgpu_device_buffers.cpp : [ TargetLibstdc++
 SimpleTest amdgpu_startup : amdgpu_startup.cpp ;
 SimpleTest amdgpu_gfx : amdgpu_gfx.cpp ;
 SimpleTest amdgpu_vm : amdgpu_vm.cpp : [ TargetLibstdc++ ] ;
+SimpleTest amdgpu_gfx_lifetime : amdgpu_gfx_lifetime.cpp ;
 SimpleTest amdgpu_irq : amdgpu_irq.cpp ;
 SimpleTest amdgpu_render : amdgpu_render.cpp ;
 SimpleTest amdgpu_uvd : amdgpu_uvd.cpp ;
