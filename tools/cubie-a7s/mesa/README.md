@@ -284,6 +284,12 @@ Under the shim, `pvr_glbench` allocates its staging slab from type 1 and makes o
 
 Zink keeps its shader cache in the usual Mesa cache directory, limited to 128 MB (`MESA_SHADER_CACHE_DISABLE=true` turns it off). Its key includes the library file's timestamp.
 
+**`MESA_SHADER_CACHE_DISABLE=true` and `eglTerminate()`.** With the variable set, every GL program hit an assert in libroot when it shut down EGL (`pthread_mutex.cpp:96 __pthread_mutex_lock(): mutex->owner == -1`). The process then waited in the debugger.
+- The disabled cache still exists, but its write queue was never created.
+- Zink's screen destroy waits for that queue (`disk_cache_wait_for_idle()`), and `util_queue_finish()` locked its zeroed mutex.
+- A zeroed mutex is valid on Linux. On Haiku the owner field must start at -1, so the lock asserts.
+- `mesa-haiku-gl.patch` makes `disk_cache_wait_for_idle()` skip a cache without a queue, as `disk_cache_put()` and `disk_cache_destroy()` already do. On the host this was confirmed with a build of the shim tree that uses pthread mutexes, plus a preloaded checker that reports locks of mutexes that were never initialized: the report came before the fix and is gone after it.
+
 **Why `libvulkan.so.1` is a shim.** There is no Vulkan loader on arm64 Haiku. Zink `dlopen()`s `libvulkan.so.1` and takes `vkGetInstanceProcAddr` and `vkGetDeviceProcAddr` from it. `vulkan_shim.c` provides those two, plus the global commands, by forwarding to the driver's `vk_icdGetInstanceProcAddr`. It links the driver by name. This keeps zink unpatched and gives any program the usual way in. It is not a loader: no layers, one driver, no window system surfaces. A ported Khronos loader would replace it.
 
 `pvr_glprobe [--expect TEXT] [--ppm FILE] [--repeat N]` checks GL on the board in one command:
