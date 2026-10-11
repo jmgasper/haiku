@@ -12,6 +12,10 @@ status_t amdgpu_sdma_test(volatile uint32* regs, const amdgpu_info& info,
 bool amdgpu_vram_range_is_safe(volatile uint32* regs, const amdgpu_info& info,
 	const amdgpu::AtomVramReservation& reservation, uint64 offset, uint64 size);
 
+struct SdmaCopy {
+	uint64 source, destination, bytes;
+};
+
 struct SdmaEngine {
 	volatile uint32* regs;
 	volatile uint32* memory;
@@ -24,6 +28,10 @@ struct SdmaEngine {
 		const amdgpu::AtomVramReservation& reservation);
 	status_t Execute(uint32 operation, uint64 source, uint64 destination,
 		uint64 bytes, uint32 value);
+	status_t CopyRegions(const SdmaCopy* regions, uint32 count);
 	void Uninitialize();
+
+private:
+	status_t Submit(uint32 words);
 };
 #endif

@@ -10,6 +10,21 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#include "UvdFixture.h"
+
+static int sVideoFD = -1;
+static amdgpu_video_decode sDecode;
+static uint8* sVideoOutput;
+static int sDecodeResult, sDecodeError;
+static int32 sDecodeDone;
+
+static int32 Decode(void*)
+{
+	sDecodeResult = ioctl(sVideoFD, AMDGPU_VIDEO_DECODE, &sDecode, sizeof(sDecode));
+	sDecodeError = errno;
+	atomic_set(&sDecodeDone, 1);
+	return B_OK;
+}
 
 static void Require(bool okay, const char* message)
 {
@@ -57,10 +72,15 @@ int main(int argc, char** argv)
 {
 	setvbuf(stdout, NULL, _IOLBF, 0);
 	bool absent = argc == 2 && strcmp(argv[1], "--expect-no-device") == 0;
-	bool vm = argc == 2 && strcmp(argv[1], "--vm-write") == 0;
-	bool privileged = argc == 2 && strcmp(argv[1], "--privileged-register") == 0;
+	bool video = argc == 2 && (strcmp(argv[1], "--vm-write-video") == 0
+		|| strcmp(argv[1], "--privileged-register-video") == 0);
+	bool vm = argc == 2 && (strcmp(argv[1], "--vm-write") == 0
+		|| strcmp(argv[1], "--vm-write-video") == 0);
+	bool privileged = argc == 2 && (strcmp(argv[1], "--privileged-register") == 0
+		|| strcmp(argv[1], "--privileged-register-video") == 0);
 	Require(absent || ((vm || privileged) && geteuid() == 0),
-		"usage: amdgpu_irq_fault --vm-write | --privileged-register (root, cold boot) | --expect-no-device");
+		"usage: amdgpu_irq_fault --vm-write[-video] | --privileged-register[-video]"
+		" (root, cold boot) | --expect-no-device");
 	int monitor = open("/dev/" AMDGPU_DEVICE_NAME, O_RDWR);
 	if (absent) {
 		Require(monitor < 0 && errno == ENOENT, "no AMD device in QEMU");
@@ -83,6 +103,23 @@ int main(int argc, char** argv)
 	Require(before.enabled == 1 && before.msi == 1 && before.status == B_OK
 		&& before.completed_fences == 1 && before.waits == 1 && before.vm_faults == 0
 		&& before.privileged_faults == 0, "fresh boot has exactly one successful IRQ job");
+	if (video) {
+		sVideoFD = open("/dev/" AMDGPU_DEVICE_NAME, O_RDWR);
+		Require(sVideoFD >= 0, "open concurrent video client");
+		auto c = Request<amdgpu_video_create>(); c.config = {864, 480, 100, 30, 2, 0};
+		Require(ioctl(sVideoFD, AMDGPU_VIDEO_CREATE, &c, sizeof(c)) == 0, "create concurrent session");
+		sVideoOutput = (uint8*)malloc(c.output_bytes);
+		Require(sVideoOutput != NULL, "allocate output sentinel");
+		memset(sVideoOutput, 0x5a, c.output_bytes);
+		sDecode = Request<amdgpu_video_decode>(); sDecode.handle = c.handle;
+		sDecode.bitstream = (addr_t)uvd_bitstream; sDecode.bitstream_bytes = sizeof(uvd_bitstream);
+		sDecode.output = (addr_t)sVideoOutput; sDecode.output_capacity = c.output_bytes;
+		auto& p = sDecode.picture;
+		p.flags = AMDGPU_H264_IDR; p.sps_flags = 5; p.pps_flags = 0x88;
+		p.log2_frame_num_minus4 = 1; p.log2_poc_lsb_minus4 = 3; p.initial_qp_minus26 = 2;
+		memset(p.scaling4x4, 16, sizeof(p.scaling4x4));
+		memset(p.scaling8x8, 16, sizeof(p.scaling8x8));
+	}
 	uint64 vram = Memory(monitor).allocated_bytes, ram = Gart(monitor).allocated_bytes;
 	volatile uint32* words = (volatile uint32*)(addr_t)command.address;
 	// WRITE_DATA to a read-only owned page, or to CP_INT_CNTL_RING0 using
@@ -96,6 +133,21 @@ int main(int argc, char** argv)
 	words[5] = 0xc0f91000; // NOP: 251 DWORDs including its header
 	for (uint32 i = 6; i < 1024; i++) words[i] = 0;
 	__sync_synchronize();
+	thread_id decoder = -1;
+	if (video) {
+		decoder = spawn_thread(Decode, "fault concurrent decode", B_NORMAL_PRIORITY, NULL);
+		Require(decoder >= 0 && resume_thread(decoder) == B_OK, "start concurrent decode");
+		bigtime_t deadline = system_time() + 5000000;
+		for (;;) {
+			auto invalid = Request<amdgpu_video_destroy>();
+			Require(ioctl(sVideoFD, AMDGPU_VIDEO_DESTROY, &invalid, sizeof(invalid)) == -1,
+				"invalid destroy cannot change session");
+			if (errno == B_BUSY) break;
+			Require(errno == B_BAD_VALUE && atomic_get(&sDecodeDone) == 0 && system_time() < deadline,
+				"observe active video ioctl before injecting fault");
+			snooze(50);
+		}
+	}
 	auto r = Request<amdgpu_gfx_submit>(); r.address = commandVA; r.dwords = 256;
 	Require(ioctl(fd, AMDGPU_GFX_SUBMIT, &r, sizeof(r)) == 0, "submit deliberate fault");
 	auto after = IRQ(monitor);
@@ -113,6 +165,17 @@ int main(int argc, char** argv)
 		"fault IRQ supplies job failure, not a polling timeout");
 	Require(after.waits == 2 && (vm ? after.vm_faults > 0 : after.privileged_faults > 0)
 		&& after.overflows == 0 && after.unknown == 0, "expected hardware fault notification");
+	if (video) {
+		status_t result;
+		Require(wait_for_thread(decoder, &result) == B_OK && result == B_OK, "concurrent decode retires");
+		printf("concurrent decode result %d error %#x\n", sDecodeResult, (unsigned)sDecodeError);
+		Require(sDecodeResult == -1 && (sDecodeError == B_BAD_DATA || sDecodeError == B_DEV_NOT_READY),
+			"decode sees concurrent fault (a completed decode means overlap was not observed)");
+		for (uint32 i = 0; i < sDecode.output_capacity; i++)
+			Require(sVideoOutput[i] == 0x5a, "faulted decode never publishes output");
+		Require(close(sVideoFD) == 0, "close faulted video session");
+		free(sVideoOutput);
+	}
 	Check(work, true); Check(victim, false);
 	Require(ioctl(fd, AMDGPU_VM_TEST, &warm, sizeof(warm)) == -1 && errno == B_DEV_NOT_READY,
 		"subsequent shader rejected by quarantined device");
@@ -127,5 +190,6 @@ int main(int argc, char** argv)
 		Require(delete_area(b->area) == B_OK, "release revoked CPU clone");
 	close(monitor);
 	puts("PASS: hardware fault IRQ, unchanged victim/neighbor, failed fence and post-close quarantine");
+	if (video) puts("PASS: concurrent video failure, untouched output and quarantined session storage");
 	return 0;
 }

@@ -42,6 +42,7 @@ UvdEngine::Session(UvdSession& s, uint32 type, const void* picture,
 			return B_BAD_VALUE;
 	}
 	const auto& l = s.layout;
+	const uint64 guardReadback = 4096 + ((l.outputBytes + 4095ULL) & ~4095ULL);
 	bigtime_t timing[6]; timing[0] = system_time();
 	if (type == 1) {
 		status_t status = dma.Execute(AMDGPU_DMA_FILL, 0, s.gpu + l.target,
@@ -50,6 +51,9 @@ UvdEngine::Session(UvdSession& s, uint32 type, const void* picture,
 		// A different CPU fill each frame also makes a short/stale DMA copy
 		// visible to the independent pixel comparison. Guard pages stay fixed.
 		memset((uint8*)s.readback + 4096, (s.frames & 1) ? 0x5a : 0xa5, l.outputBytes);
+		// Poison every mirror before copying. A stale or incomplete guard
+		// readback must fail rather than reuse a previous frame's good data.
+		memset((uint8*)s.readback + guardReadback, 0x6b, UvdSession::kGuardReadbackBytes);
 	}
 	timing[1] = system_time();
 	uint8 message[amdgpu::kUvdMessageBytes];
@@ -98,23 +102,33 @@ UvdEngine::Session(UvdSession& s, uint32 type, const void* picture,
 	status_t status = Submit(count, result);
 	timing[3] = system_time();
 	if (status == B_OK && type == 1) {
-		status = dma.Execute(AMDGPU_DMA_COPY, s.gpu + l.target,
-			s.readbackGpu + 4096, l.outputBytes, 0);
+		// One retired DMA batch publishes the output and all four private
+		// guard pages into cached RAM. Avoid thousands of PCI BAR reads per
+		// frame while preserving the complete guard comparison below.
+		SdmaCopy copies[5] = {{s.gpu + l.target, s.readbackGpu + 4096, l.outputBytes}};
+		for (uint32 guard = 0; guard < 4; guard++)
+			copies[guard + 1] = {s.gpu + l.guards[guard],
+				s.readbackGpu + guardReadback + guard * 4096, 4096};
+		status = dma.CopyRegions(copies, 5);
 		if (status == B_OK) {
 			const uint8* ram = (const uint8*)s.readback;
 			for (uint32 i = 0; i < 4096; i++)
 				result.guard_mismatches += ram[i] != 0x7d;
-			for (uint64 i = 4096 + l.outputBytes; i < s.readbackBytes; i++)
+			for (uint64 i = 4096 + l.outputBytes; i < guardReadback; i++)
+				result.guard_mismatches += ram[i] != 0x7d;
+			for (uint64 i = guardReadback + UvdSession::kGuardReadbackBytes; i < s.readbackBytes; i++)
 				result.guard_mismatches += ram[i] != 0x7d;
 		}
 	}
 	timing[4] = system_time();
 	if (status == B_OK) {
+		const uint32* mirror = type == 1
+			? (const uint32*)((const uint8*)s.readback + guardReadback) : NULL;
 		for (uint32 guard = 0; guard < 4; guard++) {
 			uint32 mismatches = 0, first = 0, firstValue = 0;
 			uint32 offset = l.guards[guard];
 			for (uint32 i = 0; i < 1024; i++) {
-				uint32 value = s.cpu[offset / 4 + i];
+				uint32 value = type == 1 ? mirror[guard * 1024 + i] : s.cpu[offset / 4 + i];
 				if (value == 0xabcddcba) continue;
 				if (mismatches++ == 0) { first = i; firstValue = value; }
 			}
