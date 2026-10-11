@@ -74,7 +74,7 @@ static const uint32 kMaxIbBytes = 65536, kIbAddressAlignment = 256, kIbSizeAlign
 static bool sUvdClocksQualified;
 static SdmaEngine sEngine = {};
 static amdgpu_info sInfo;
-static bool sActive, sStopping, sVideoExecuting;
+static bool sActive, sStopping, sVideoExecuting, sGraphicsExecuting;
 static status_t sFault;
 static sem_id sJobs = -1;
 static thread_id sWorker = -1;
@@ -86,6 +86,7 @@ static uint32 sNextVideoHandle = 1;
 static uint32 sVideoSessions, sVMCount;
 static void ReleaseVM(AmdgpuClient* client);
 static void ReleaseVideo(AmdgpuClient* client);
+static void WaitGraphicsIdle();
 
 // Called with sMutex held, including cleanup and the DMA worker. An async
 // fault must quarantine allocations even if the client closes immediately.
@@ -93,10 +94,14 @@ static void
 ObserveInterruptFault()
 {
 	status_t status = sGfx.interrupts.Error();
-	if (status != B_OK && sFault == B_OK) {
-		sFault = status;
-		sGfx.faulted = true;
-		sGfx.Halt();
+	if (status != B_OK) {
+		if (sFault == B_OK) sFault = status;
+		// The execution owner also observes the atomic IRQ error. Do not
+		// mutate its engine state or halt it from a concurrent cleanup call.
+		if (!sGraphicsExecuting && !sGfx.faulted) {
+			sGfx.faulted = true;
+			sGfx.Halt();
+		}
 	}
 }
 
@@ -105,6 +110,9 @@ PutBuffer(Buffer* bo)
 {
 	if (bo == NULL || --bo->references != 0)
 		return;
+	// GART invalidation shares VM_INVALIDATE_REQUEST with GFX VM binding.
+	// No reference remains, so this BO cannot be freed by another waiter.
+	if (bo->system) WaitGraphicsIdle();
 	ObserveInterruptFault();
 	// RAM must remain wired on failure: deleting its area would return pages
 	// to the OS while a late GPU write may still be possible. VRAM mappings
@@ -145,9 +153,9 @@ Executor(void*)
 {
 	while (acquire_sem(sJobs) == B_OK) {
 		mutex_lock(&sMutex);
-		// Decode owns SDMA for its private clear and readback as well as UVD.
-		// Even failed queued work retires only after that reservation ends.
-		while (sVideoExecuting)
+		// Decode owns SDMA for its private clear/readback. Ordinary DMA must
+		// also stay ordered against graphics accessing client-owned buffers.
+		while (sVideoExecuting || sGraphicsExecuting)
 			sCompleted.Wait(&sMutex);
 		ObserveInterruptFault();
 		Job* job = sFirst;
@@ -287,6 +295,7 @@ Start(volatile uint32* regs, const amdgpu_info& info,
 	sFault = B_OK;
 	sStopping = false;
 	sVideoExecuting = false;
+	sGraphicsExecuting = false;
 	sCompleted.Init(&sCompleted, "amdgpu fence");
 	sWorker = spawn_kernel_thread(Executor, "amdgpu DMA", B_NORMAL_PRIORITY, NULL);
 	if (sWorker < 0) {
@@ -331,16 +340,28 @@ ReadRequest(T& request, void* data, size_t length)
 }
 
 static status_t
-WaitDmaIdle(bool includeVideo = true)
+WaitDmaIdle(bool includeVideo = true, bool includeGraphics = true)
 {
 	bigtime_t deadline = system_time() + 5000000;
-	while ((sPending != 0 || (includeVideo && sVideoExecuting))
-		&& sFault == B_OK && !sStopping) {
+	auto busy = [&]() {
+		return sPending != 0 || (includeVideo && sVideoExecuting)
+			|| (includeGraphics && sGraphicsExecuting);
+	};
+	while (busy() && sFault == B_OK && !sStopping) {
 		status_t status = sCompleted.Wait(&sMutex, B_ABSOLUTE_TIMEOUT, deadline);
-		if (status != B_OK && (sPending != 0 || (includeVideo && sVideoExecuting)))
+		if (status != B_OK && busy())
 			return status;
 	}
 	return sFault == B_OK && !sStopping ? B_OK : B_DEV_NOT_READY;
+}
+
+static void
+WaitGraphicsIdle()
+{
+	// Teardown must wait for the owner even on fault. It detaches VMID2
+	// before signaling success, or quarantines backing storage on failure.
+	while (sGraphicsExecuting)
+		sCompleted.Wait(&sMutex);
 }
 
 static void
@@ -375,6 +396,8 @@ ReleaseVideo(AmdgpuClient* client)
 	}
 	delete_area(s->area);
 	if (s->readbackBytes != 0) {
+		WaitGraphicsIdle();
+		ObserveInterruptFault();
 		if (s->readbackBound && sFault == B_OK) {
 			status_t status = sGart.Unbind(s->readbackOffset, s->readbackBytes);
 			if (status != B_OK) sFault = status;
@@ -523,10 +546,10 @@ DecodeVideo(AmdgpuClient* client, void* data, size_t length)
 	status = input == NULL ? B_NO_MEMORY
 		: user_memcpy(input, (void*)(addr_t)request.bitstream, request.bitstream_bytes);
 	amdgpu_uvd_test result = {};
-	if (status == B_OK) status = WaitDmaIdle();
+	if (status == B_OK) status = WaitDmaIdle(true, false);
 	if (status == B_OK) {
 		// No queued DMA remains. Keep UVD and SDMA exclusively reserved while
-		// initialized graphics clients run under sMutex. The ioctl's file
+		// initialized graphics runs with its own reservation. The ioctl's file
 		// reference pins this client; videoBusy freezes its session, and all
 		// input/output storage here belongs to this kernel-private session.
 		sVideoExecuting = true;
@@ -663,6 +686,12 @@ CreateVM(AmdgpuClient* client)
 static status_t
 StartGraphics()
 {
+	// Callers normally drained graphics already. Keep engine-state reads
+	// serialized even if a future caller reaches this helper directly.
+	if (sGraphicsExecuting) {
+		status_t status = WaitDmaIdle(false);
+		if (status != B_OK) return status;
+	}
 	if (!sGfx.ready) {
 		// Initial firmware/ring setup uses SDMA and shared registers. Only
 		// already initialized graphics may overlap private video execution.
@@ -687,6 +716,25 @@ StartGraphics()
 		sEngine, sGart, result, &images[4].mec);
 	if (sGfx.faulted)
 		sFault = status;
+	return status;
+}
+
+template<typename Execute>
+static status_t
+ExecuteGraphics(Execute execute)
+{
+	// The caller drained ordinary DMA and other graphics jobs. Its ioctl
+	// file reference pins the client; graphicsBusy freezes the VM bindings
+	// and their BO references until retirement and VMID2 detachment.
+	sGraphicsExecuting = true;
+	mutex_unlock(&sMutex);
+	status_t status = execute();
+	mutex_lock(&sMutex);
+	sGraphicsExecuting = false;
+	ObserveInterruptFault();
+	if (sGfx.faulted && sFault == B_OK) sFault = status;
+	if (status == B_OK && sFault != B_OK) status = B_DEV_NOT_READY;
+	sCompleted.NotifyAll();
 	return status;
 }
 
@@ -738,11 +786,13 @@ VMControl(AmdgpuClient* client, uint32 op, void* data, size_t length)
 		if (status == B_OK) status = StartGraphics();
 		amdgpu_vm_test result = {};
 		bigtime_t started = system_time();
-		if (status == B_OK)
-			status = sGfx.ExecuteIB(vm->table.directory.gpu, request.address,
-				request.dwords, sGart, result);
+		if (status == B_OK) {
+			status = ExecuteGraphics([&]() {
+				return sGfx.ExecuteIB(vm->table.directory.gpu, request.address,
+					request.dwords, sGart, result);
+			});
+		}
 		request.elapsed_us = system_time() - started;
-		if (sGfx.faulted && sFault == B_OK) sFault = status;
 		request.status = status; request.completion = result.completion;
 		memcpy(request.vm_fault_status, result.vm_fault_status, sizeof(request.vm_fault_status));
 		request.rptr = result.rptr; request.wptr = result.wptr;
@@ -772,11 +822,12 @@ VMControl(AmdgpuClient* client, uint32 op, void* data, size_t length)
 		result.version = AMDGPU_HAIKU_ABI_VERSION;
 		result.size = sizeof(result);
 		result.address = request.address; result.value = request.value;
-		if (status == B_OK)
-			status = sGfx.ExecuteVM(vm->table.directory.gpu, request.address,
-				request.value, (volatile uint32*)vm->commands.cpu, sGart, result);
-		if (sGfx.faulted && sFault == B_OK)
-			sFault = status;
+		if (status == B_OK) {
+			status = ExecuteGraphics([&]() {
+				return sGfx.ExecuteVM(vm->table.directory.gpu, request.address,
+					request.value, (volatile uint32*)vm->commands.cpu, sGart, result);
+			});
+		}
 		result.status = status;
 		return user_memcpy(data, &result, sizeof(result));
 	}
@@ -1032,6 +1083,10 @@ Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 			status = WaitDmaIdle();
 			if (status != B_OK)
 				return status;
+		} else if (op == AMDGPU_CREATE_SYSTEM_BUFFER) {
+			// Bind/Flush must not race GFX's VMID2 invalidate request.
+			status = WaitDmaIdle(false);
+			if (status != B_OK) return status;
 		}
 		if (client->bufferCount >= kMaxBuffers || sNextHandle == 0)
 			return B_NO_MEMORY;
@@ -1217,9 +1272,10 @@ amdgpu_device_gfx_test(const amdgpu::FirmwareView firmware[4],
 	mutex_lock(&sMutex);
 	ObserveInterruptFault();
 	status_t status = !sActive || sStopping || sFault != B_OK ? B_DEV_NOT_READY
-		: sPending != 0 || sVideoExecuting ? B_BUSY : sGfx.Test(sEngine.regs, sInfo, sReservation,
+		: sPending != 0 || sVideoExecuting || sGraphicsExecuting ? B_BUSY
+		: sGfx.Test(sEngine.regs, sInfo, sReservation,
 			firmware, sEngine, sGart, result, mec);
-	if (sGfx.faulted && sFault == B_OK)
+	if (!sGraphicsExecuting && sGfx.faulted && sFault == B_OK)
 		sFault = status;
 	mutex_unlock(&sMutex);
 	return status;
@@ -1232,7 +1288,8 @@ amdgpu_device_uvd_test(const amdgpu::FirmwareView& firmware,
 	mutex_lock(&sMutex);
 	ObserveInterruptFault();
 	status_t status = !sActive || sStopping || sFault != B_OK ? B_DEV_NOT_READY
-		: sPending != 0 || sVideoExecuting ? B_BUSY : sUvd.Test(sEngine.regs, sInfo, sReservation, sUvdClocksQualified,
+		: sPending != 0 || sVideoExecuting || sGraphicsExecuting ? B_BUSY
+		: sUvd.Test(sEngine.regs, sInfo, sReservation, sUvdClocksQualified,
 			firmware, result, output);
 	if (!sVideoExecuting && sUvd.faulted && sFault == B_OK)
 		sFault = status;
@@ -1249,7 +1306,8 @@ amdgpu_device_stop()
 	ObserveInterruptFault();
 	sStopping = true;
 	sCompleted.NotifyAll();
-	WaitVideoIdle();
+	while (sVideoExecuting || sGraphicsExecuting)
+		sCompleted.Wait(&sMutex);
 	mutex_unlock(&sMutex);
 	release_sem(sJobs);
 	status_t result;
