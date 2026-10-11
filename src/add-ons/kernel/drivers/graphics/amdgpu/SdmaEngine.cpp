@@ -90,34 +90,69 @@ SdmaEngine::Execute(uint32 operation, uint64 source, uint64 destination,
 	if ((operation != AMDGPU_DMA_COPY && operation != AMDGPU_DMA_FILL)
 		|| bytes == 0 || bytes > (64ULL << 20) || ((source | destination | bytes) & 3) != 0)
 		return B_BAD_VALUE;
+	if (operation == AMDGPU_DMA_COPY) {
+		SdmaCopy copy = {source, destination, bytes};
+		return CopyRegions(&copy, 1);
+	}
+	uint32 n = 0;
+	while (bytes != 0) {
+		uint32 count = bytes < 0x3fffe0 ? bytes : 0x3fffe0;
+		memory[n++] = 11 | (2u << 30);
+		memory[n++] = (uint32)destination;
+		memory[n++] = destination >> 32;
+		memory[n++] = value;
+		memory[n++] = count;
+		destination += count;
+		bytes -= count;
+	}
+	return Submit(n);
+}
+
+status_t
+SdmaEngine::CopyRegions(const SdmaCopy* regions, uint32 count)
+{
+	if (area < 0 || faulted)
+		return B_DEV_NOT_READY;
+	// Five 64 MiB regions require at most 595 command words. Fence and
+	// alignment padding still fit below the private fence at word 1024.
+	if (regions == NULL || count == 0 || count > 5)
+		return B_BAD_VALUE;
+	for (uint32 i = 0; i < count; i++) {
+		const SdmaCopy& c = regions[i];
+		if (c.bytes == 0 || c.bytes > (64ULL << 20)
+			|| ((c.source | c.destination | c.bytes) & 3) != 0
+			|| c.bytes > UINT64_MAX - c.source || c.bytes > UINT64_MAX - c.destination)
+			return B_BAD_VALUE;
+	}
+	uint32 n = 0;
+	for (uint32 i = 0; i < count; i++) {
+		SdmaCopy c = regions[i];
+		while (c.bytes != 0) {
+			uint32 bytes = c.bytes < 0x3fffe0 ? c.bytes : 0x3fffe0;
+			memory[n++] = 1;
+			memory[n++] = bytes;
+			memory[n++] = 0;
+			memory[n++] = (uint32)c.source;
+			memory[n++] = c.source >> 32;
+			memory[n++] = (uint32)c.destination;
+			memory[n++] = c.destination >> 32;
+			c.source += bytes;
+			c.destination += bytes;
+			c.bytes -= bytes;
+		}
+	}
+	return Submit(n);
+}
+
+status_t
+SdmaEngine::Submit(uint32 n)
+{
 	volatile uint32* r = regs;
 	// These ring/control registers have fixed SDMA0 addresses. Unlike the
 	// virtual-address registers set at initialization, they do not need
 	// SRBM_GFX_CNTL selection (see Linux sdma_v3_0_gfx_resume/stop).
 	// Changing that shared selector here races GFX's per-VM SH_MEM setup
 	// when private video readback overlaps an initialized graphics client.
-	uint32 n = 0;
-	while (bytes != 0) {
-		uint32 count = bytes < 0x3fffe0 ? bytes : 0x3fffe0;
-		if (operation == AMDGPU_DMA_COPY) {
-			memory[n++] = 1;
-			memory[n++] = count;
-			memory[n++] = 0;
-			memory[n++] = (uint32)source;
-			memory[n++] = source >> 32;
-			memory[n++] = (uint32)destination;
-			memory[n++] = destination >> 32;
-		} else {
-			memory[n++] = 11 | (2u << 30);
-			memory[n++] = (uint32)destination;
-			memory[n++] = destination >> 32;
-			memory[n++] = value;
-			memory[n++] = count;
-		}
-		source += count;
-		destination += count;
-		bytes -= count;
-	}
 	if (++sequence == 0)
 		sequence++;
 	memory[0x1000 / 4] = 0;

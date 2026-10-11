@@ -458,7 +458,8 @@ CreateVideo(AmdgpuClient* client, void* data, size_t length)
 	status = WaitDmaIdle();
 	amdgpu_uvd_test result = {};
 	if (status == B_OK) {
-		uint64 bytes = ((layout.outputBytes + 4095ULL) & ~4095ULL) + 8192;
+		uint64 bytes = ((layout.outputBytes + 4095ULL) & ~4095ULL)
+			+ UvdSession::kGuardReadbackBytes + 8192;
 		if (!sGartAllocator.Allocate(bytes, 4096, Gart::kSize, s->readbackOffset))
 			status = B_NO_MEMORY;
 		else {
