@@ -185,6 +185,7 @@ struct drm_sched_job {
 	unsigned long				last_dependency;
 	struct dma_fence_cb			cb;				/* on the parent fence */
 	u64							drm_client_id;
+	bigtime_t					run_time;		/* handed to run_job() */
 };
 
 struct drm_sched_backend_ops {
@@ -230,6 +231,10 @@ struct drm_gpu_scheduler {
 
 /* When set, the timeout of schedulers created from then on, in ms. */
 extern unsigned int lx_sched_timeout_override_ms;
+
+/* Called when a job that went to run_job() is done, with the time since. */
+extern void (*lx_sched_job_time_hook)(struct drm_gpu_scheduler* sched,
+	bigtime_t elapsed);
 
 /* Called on the timeout work queue for a job that stopped making progress. */
 extern void (*lx_sched_timeout_hook)(struct drm_gpu_scheduler* sched,

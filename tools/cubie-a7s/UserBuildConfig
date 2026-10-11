@@ -286,7 +286,9 @@ rule UserBuildConfigRulePreImage
 			}
 			local test ;
 			for test in pvr_vkprobe pvr_vkfill pvr_vkfence pvr_vktriangle
-					pvr_vkhang pvr_vkbench pvr_glprobe pvr_glbench
+					pvr_vkhang pvr_vkbench pvr_present pvr_copybench pvr_glprobe
+					pvr_glbench
+					pvr_glreset pvr_glpresent pvr_glcomposite
 					tls_generation_check libtls_generation_check.so {
 				if [ Glob $(mesaOut) : $(test) ] {
 					local testFile = <cubie-mesa>$(test) ;

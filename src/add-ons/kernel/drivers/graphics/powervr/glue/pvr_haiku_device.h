@@ -83,12 +83,21 @@ int		pvr_haiku_kccb_execute(struct pvr_device* pvr_dev,
 void	pvr_haiku_fw_boot_failed(struct pvr_device* pvr_dev);
 void	pvr_haiku_force_reset(struct pvr_device* pvr_dev, const char* why);
 
+/* pvr_haiku_drm.c: per ioctl calls and time, into the syslog */
+void	pvr_haiku_ioctl_stats_dump(void);
+
+/* pvr_haiku_gem.c */
+struct pvr_gem_object*	pvr_haiku_gem_object_import(
+							struct pvr_device* pvr_dev, const void* address,
+							size_t size, u64 flags);
+
 /* pvr_haiku_drv.c: pvr_drv.c's driver description (ioctls, open) */
 const struct drm_driver*	pvr_haiku_drm_driver(void);
 
 /* pvr_haiku_power.c */
 int		pvr_haiku_power_off(struct pvr_device* pvr_dev);
 void	pvr_haiku_power_init(struct pvr_device* pvr_dev);
+void	pvr_haiku_job_times_dump(void);
 
 
 #endif	/* POWERVR_HAIKU_DEVICE_H */

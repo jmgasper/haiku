@@ -279,6 +279,50 @@ pvr_haiku_job_timeout(void)
 }
 
 
+/*	Per job type: jobs done and the time from run_job() (into the firmware's
+	queue) to done, which is the upper bound of what the GPU spent on them.
+	For pvrinfo --dump. */
+static struct {
+	int64	count;
+	int64	time;
+	int64	max_time;
+} sJobTimes[4];
+
+
+static void
+count_job_time(struct drm_gpu_scheduler* sched, bigtime_t elapsed)
+{
+	struct pvr_queue* queue = container_of(sched, struct pvr_queue,
+		scheduler);
+	u32 type = queue->type;
+	if (type >= ARRAY_SIZE(sJobTimes))
+		return;
+	atomic_add64(&sJobTimes[type].count, 1);
+	atomic_add64(&sJobTimes[type].time, elapsed);
+	if (elapsed > atomic_get64(&sJobTimes[type].max_time))
+		atomic_set64(&sJobTimes[type].max_time, elapsed);
+}
+
+
+void
+pvr_haiku_job_times_dump(void)
+{
+	static const char* const kNames[] = {
+		"geometry", "fragment", "compute", "transfer"
+	};
+	for (u32 i = 0; i < ARRAY_SIZE(sJobTimes); i++) {
+		int64 count = atomic_get64(&sJobTimes[i].count);
+		if (count == 0)
+			continue;
+		int64 time = atomic_get64(&sJobTimes[i].time);
+		dprintf("powervr: dump: jobs %s: %" B_PRId64 " done, %" B_PRId64
+			" us, %" B_PRId64 " us each, longest %" B_PRId64 " us\n",
+			kNames[i], count, time, time / count,
+			atomic_get64(&sJobTimes[i].max_time));
+	}
+}
+
+
 void
 pvr_haiku_power_init(struct pvr_device* pvr_dev)
 {
@@ -286,6 +330,7 @@ pvr_haiku_power_init(struct pvr_device* pvr_dev)
 	atomic_set(&device->resetting, 0);
 	INIT_WORK(&device->lost_work, lost_work);
 	lx_sched_timeout_hook = scheduler_timeout;
+	lx_sched_job_time_hook = count_job_time;
 }
 
 

@@ -635,6 +635,8 @@ sched_job_kill(struct drm_sched_job* job, int error)
 /* #pragma mark - running jobs */
 
 
+void (*lx_sched_job_time_hook)(struct drm_gpu_scheduler* sched,
+	bigtime_t elapsed);
 void (*lx_sched_timeout_hook)(struct drm_gpu_scheduler* sched,
 	struct drm_sched_job* job);
 unsigned int lx_sched_timeout_override_ms;
@@ -721,6 +723,8 @@ sched_job_done(struct drm_sched_job* job, int result)
 	struct drm_sched_fence* s_fence = job->s_fence;
 
 	atomic_sub(job->credits, &sched->credit_count);
+	if (job->run_time != 0 && lx_sched_job_time_hook != NULL)
+		lx_sched_job_time_hook(sched, system_time() - job->run_time);
 	if (result != 0 && s_fence->finished.error == 0)
 		dma_fence_set_error(&s_fence->finished, result);
 	dma_fence_get(&s_fence->finished);
@@ -858,9 +862,12 @@ sched_run_job(struct drm_gpu_scheduler* sched, struct drm_sched_entity* entity,
 	// drm_sched_fence_scheduled(): the hardware fence is in place before
 	// "scheduled" signals, since a job of another queue waiting for that
 	// then waits for the hardware fence in the firmware
+	job->run_time = system_time();
 	struct dma_fence* fence = sched->ops->run_job(job);
 	if (!IS_ERR_OR_NULL(fence))
 		s_fence->parent = dma_fence_get(fence);
+	else
+		job->run_time = 0;
 	dma_fence_signal(&s_fence->scheduled);
 
 	if (IS_ERR_OR_NULL(fence)) {

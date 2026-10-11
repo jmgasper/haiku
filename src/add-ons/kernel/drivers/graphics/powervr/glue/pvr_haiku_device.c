@@ -309,6 +309,8 @@ pvr_haiku_device_delete(struct pvr_device* pvr_dev)
 	lx_drm_dev_release(&pvr_dev->base);
 	rw_lock_destroy(&pvr_dev->reset_sem.lock);
 	kfree(device);
+	// page-table pages waiting for reuse; none of them is in use
+	lx_free_pages_flush();
 }
 
 
@@ -1289,9 +1291,9 @@ xa_count(struct xarray* xa)
 static void
 dump_objects(struct pvr_device* pvr_dev)
 {
-	uint32 buffers, pages, vmaps;
+	uint32 buffers, pages, vmaps, imports;
 	uint64 bufferBytes;
-	lx_memory_stats(&buffers, &bufferBytes, &pages, &vmaps);
+	lx_memory_stats(&buffers, &bufferBytes, &pages, &vmaps, &imports);
 
 	u32 fwObjects = 0;
 	struct list_head* position;
@@ -1326,12 +1328,19 @@ dump_objects(struct pvr_device* pvr_dev)
 	}
 	mutex_unlock(&pvr_dev->queues.lock);
 
-	TRACE("dump: objects: %u buffers (%llu KiB), %u pages, %u vmaps, %u"
-		" firmware objects, %u contexts, %u jobs, %u free lists; %u queues"
-		" with %u jobs on the GPU and %u queued\n", buffers,
-		(unsigned long long)(bufferBytes / 1024), pages, vmaps, fwObjects,
+	TRACE("dump: objects: %u buffers (%llu KiB), %u imports, %u pages, %u"
+		" vmaps, %u firmware objects, %u contexts, %u jobs, %u free lists;"
+		" %u queues with %u jobs on the GPU and %u queued\n", buffers,
+		(unsigned long long)(bufferBytes / 1024), imports, pages, vmaps,
+		fwObjects,
 		xa_count(&pvr_dev->ctx_ids), xa_count(&pvr_dev->job_ids),
 		xa_count(&pvr_dev->free_list_ids), queues, pending, queued);
+	uint64 made, madeBytes;
+	lx_memory_totals(&made, &madeBytes);
+	TRACE("dump: since boot: %llu buffers made (%llu KiB)\n",
+		(unsigned long long)made, (unsigned long long)(madeBytes / 1024));
+	pvr_haiku_ioctl_stats_dump();
+	pvr_haiku_job_times_dump();
 }
 
 
