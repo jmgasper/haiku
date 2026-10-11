@@ -72,15 +72,16 @@ int main(int argc, char** argv)
 {
 	setvbuf(stdout, NULL, _IOLBF, 0);
 	bool absent = argc == 2 && strcmp(argv[1], "--expect-no-device") == 0;
+	bool copy = argc == 2 && strcmp(argv[1], "--copy-write") == 0;
 	bool video = argc == 2 && (strcmp(argv[1], "--vm-write-video") == 0
 		|| strcmp(argv[1], "--privileged-register-video") == 0);
-	bool vm = argc == 2 && (strcmp(argv[1], "--vm-write") == 0
-		|| strcmp(argv[1], "--vm-write-video") == 0);
+	bool vm = copy || (argc == 2 && (strcmp(argv[1], "--vm-write") == 0
+		|| strcmp(argv[1], "--vm-write-video") == 0));
 	bool privileged = argc == 2 && (strcmp(argv[1], "--privileged-register") == 0
 		|| strcmp(argv[1], "--privileged-register-video") == 0);
 	Require(absent || ((vm || privileged) && geteuid() == 0),
 		"usage: amdgpu_irq_fault --vm-write[-video] | --privileged-register[-video]"
-		" (root, cold boot) | --expect-no-device");
+		" | --copy-write (root, cold boot) | --expect-no-device");
 	int monitor = open("/dev/" AMDGPU_DEVICE_NAME, O_RDWR);
 	if (absent) {
 		Require(monitor < 0 && errno == ENOENT, "no AMD device in QEMU");
@@ -99,6 +100,13 @@ int main(int argc, char** argv)
 	Require(ioctl(fd, AMDGPU_VM_TEST, &warm, sizeof(warm)) == 0 && warm.status == B_OK,
 		"known shader completes before fault");
 	Check(work, true); Check(victim, false);
+	if (copy) {
+		// Allocate/clear private copied-command storage without executing a
+		// job, so quarantine accounting below includes all of its pages.
+		auto invalid = Request<amdgpu_gfx_submit>(); invalid.dwords = 256;
+		Require(ioctl(fd, AMDGPU_GFX_SUBMIT_COPY, &invalid, sizeof(invalid)) == -1
+			&& errno == B_BAD_ADDRESS, "prepare private copied command storage");
+	}
 	auto before = IRQ(monitor);
 	Require(before.enabled == 1 && before.msi == 1 && before.status == B_OK
 		&& before.completed_fences == 1 && before.waits == 1 && before.vm_faults == 0
@@ -127,8 +135,9 @@ int main(int argc, char** argv)
 	// leaves interrupt configuration unchanged and this test fails explicitly.
 	words[0] = 0xc0033700;
 	words[1] = (vm ? 5 << 8 : 0) | 1 << 20;
-	words[2] = vm ? (uint32)victimVA : 0x306a;
-	words[3] = vm ? victimVA >> 32 : 0;
+	uint64 target = copy ? AMDGPU_COPY_IB_ADDRESS + 0x8000 : victimVA;
+	words[2] = vm ? (uint32)target : 0x306a;
+	words[3] = vm ? target >> 32 : 0;
 	words[4] = vm ? 0x12345678 : (1 << 26) | (1 << 23) | (1 << 22);
 	words[5] = 0xc0f91000; // NOP: 251 DWORDs including its header
 	for (uint32 i = 6; i < 1024; i++) words[i] = 0;
@@ -148,8 +157,9 @@ int main(int argc, char** argv)
 			snooze(50);
 		}
 	}
-	auto r = Request<amdgpu_gfx_submit>(); r.address = commandVA; r.dwords = 256;
-	Require(ioctl(fd, AMDGPU_GFX_SUBMIT, &r, sizeof(r)) == 0, "submit deliberate fault");
+	auto r = Request<amdgpu_gfx_submit>(); r.address = copy ? command.address : commandVA; r.dwords = 256;
+	Require(ioctl(fd, copy ? AMDGPU_GFX_SUBMIT_COPY : AMDGPU_GFX_SUBMIT,
+		&r, sizeof(r)) == 0, "submit deliberate fault");
 	auto after = IRQ(monitor);
 	printf("fault %s job %#x elapsed %llu us completion %llu VM %#x/%#x ring %u/%u;"
 		" IRQ status %#x EOP %llu waits %llu VM %llu privileged %llu unknown %llu"

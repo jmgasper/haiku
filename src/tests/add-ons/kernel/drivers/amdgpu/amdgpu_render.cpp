@@ -80,9 +80,10 @@ int main(int argc, char** argv)
 	Require(r.grbm_index_before == r.grbm_index_after && r.reference_khz == 100000
 		&& r.default_engine_khz == 300000 && r.default_memory_khz == 300000,
 		"restored selector and ROM clock defaults");
-	Require(r.capabilities == (AMDGPU_RENDER_ROOT_SUBMIT | AMDGPU_RENDER_SYNC_SUBMIT)
+	Require(r.capabilities == (AMDGPU_RENDER_ROOT_SUBMIT | AMDGPU_RENDER_SYNC_SUBMIT
+			| AMDGPU_RENDER_COPY_SUBMIT)
 		&& r.total_vram == (8ULL << 30) && r.visible_vram == (256ULL << 20)
-		&& r.total_gart == (1ULL << 30) && r.address_start == 65536 && r.address_end == (1ULL << 36)
+		&& r.total_gart == (1ULL << 30) && r.address_start == 131072 && r.address_end == (1ULL << 36)
 		&& r.max_buffer_bytes == (64ULL << 20) && r.max_mapping_bytes == r.max_buffer_bytes
 		&& r.max_mapped_bytes == (16ULL << 30) && r.max_mappings == 1024
 		&& r.max_vm_clients == 32 && r.max_buffers == 256 && r.page_size == 4096
