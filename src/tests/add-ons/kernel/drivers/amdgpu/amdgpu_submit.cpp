@@ -237,10 +237,11 @@ int main(int argc, char** argv)
 		Require(monitor < 0 && errno == ENOENT, "no AMD device in QEMU");
 		puts("PASS: no-device user submission handling"); return 0;
 	}
-	bool draw = argc == 2 && strcmp(argv[1], "--draw") == 0;
+	bool draw = argc == 2 && (strcmp(argv[1], "--draw") == 0 || strcmp(argv[1], "--copy-draw") == 0);
+	bool copy = argc == 2 && (strcmp(argv[1], "--copy") == 0 || strcmp(argv[1], "--copy-draw") == 0);
 	bool privateCommands = argc == 2 && strcmp(argv[1], "--private-commands") == 0;
-	Require((argc == 1 || draw || privateCommands) && geteuid() == 0 && monitor >= 0,
-		"usage: amdgpu_submit [--draw|--private-commands] (root)");
+	Require((argc == 1 || draw || copy || privateCommands) && geteuid() == 0 && monitor >= 0,
+		"usage: amdgpu_submit [--draw|--private-commands|--copy|--copy-draw] (root)");
 	uint64 vram = Allocated(monitor, false), ram = Allocated(monitor, true);
 	Client clients[4];
 	for (uint32 i = 0; i < 4; i++) {
@@ -310,7 +311,9 @@ int main(int argc, char** argv)
 			if (draw) dwords = DrawProgram(c, (round + i) & 1);
 			else Program(c, seed, factor, dwords);
 			r = SubmitRequest(); r.dwords = dwords;
-			Require(ioctl(c.fd, AMDGPU_GFX_SUBMIT, &r, sizeof(r)) == 0, "submit userspace PM4");
+			if (copy) r.address = c.ib.address ? c.ib.address : c.staging.address;
+			Require(ioctl(c.fd, copy ? AMDGPU_GFX_SUBMIT_COPY : AMDGPU_GFX_SUBMIT,
+				&r, sizeof(r)) == 0, "submit userspace PM4");
 			printf("client %u round %u status %#x fence %llu faults %#x/%#x ring %u/%u us %llu\n",
 				(unsigned)i, (unsigned)round, (unsigned)r.status, (unsigned long long)r.completion,
 				(unsigned)r.vm_fault_status[0], (unsigned)r.vm_fault_status[1], (unsigned)r.rptr,
@@ -322,6 +325,7 @@ int main(int argc, char** argv)
 		}
 	}
 	if (!privateCommands) {
+		if (copy) puts("Copied command path used for every compute/raster job");
 		puts(draw ? "PASS: 16 user raster submissions, four VMs, VRAM/RAM/device-only shaders and targets, exact triangle pixels and complete guards"
 			: "PASS: 32 user PM4/shader submissions, shader replacement, 64-KiB IB tails, high VAs, cross-4-GiB stores, four VMs and complete data/guards");
 	}

@@ -19,6 +19,7 @@
 #include "Smu.h"
 #include "Device.h"
 #include "FirmwareLoader.h"
+#include "UserMemory.h"
 
 // Polaris 10 register indices, from AMD's MIT-licensed register headers:
 // Linux drivers/gpu/drm/amd/include/asic_reg/{bif/bif_5_0_d.h,
@@ -259,11 +260,12 @@ device_control(void* cookie, uint32 op, void* buffer, size_t length)
 	if ((op >= AMDGPU_CREATE_BUFFER && op <= AMDGPU_GART_INFO)
 		|| (op >= AMDGPU_VIDEO_CREATE && op <= AMDGPU_HEVC_DECODE)
 		|| op == AMDGPU_CREATE_DEVICE_BUFFER
+		|| op == AMDGPU_GFX_SUBMIT_COPY
 		|| (op >= AMDGPU_VM_INFO && op <= AMDGPU_RENDER_INFO))
 	{
 		// Raw PM4/shader privilege isolation and fault recovery remain under
 		// qualification. Bounded VM_TEST continues to accept ordinary clients.
-		if (op == AMDGPU_GFX_SUBMIT && geteuid() != 0)
+		if ((op == AMDGPU_GFX_SUBMIT || op == AMDGPU_GFX_SUBMIT_COPY) && geteuid() != 0)
 			return B_NOT_ALLOWED;
 		return amdgpu_client_control((AmdgpuClient*)cookie, op, buffer, length,
 			start_installed_device);
@@ -325,7 +327,7 @@ device_control(void* cookie, uint32 op, void* buffer, size_t length)
 		void* image = malloc(request.firmware_size);
 		void* output = malloc(AMDGPU_UVD_TEST_OUTPUT_BYTES);
 		status_t status = image == NULL || output == NULL ? B_NO_MEMORY
-			: user_memcpy(image, (void*)(addr_t)request.firmware, request.firmware_size);
+			: AmdgpuCopyFromUser(image, request.firmware, request.firmware_size);
 		amdgpu::FirmwareView firmware;
 		if (status == B_OK && (!amdgpu::ParseUvdFirmware(image, request.firmware_size, firmware)
 			|| firmware.version != 0x01008210))
@@ -335,7 +337,7 @@ device_control(void* cookie, uint32 op, void* buffer, size_t length)
 			status = amdgpu_device_uvd_test(firmware, result, output);
 			mutex_unlock(&sLock);
 			if (result.checked_bytes == AMDGPU_UVD_TEST_OUTPUT_BYTES) {
-				status_t copied = user_memcpy((void*)(addr_t)request.output, output,
+				status_t copied = AmdgpuCopyToUser(request.output, output,
 					AMDGPU_UVD_TEST_OUTPUT_BYTES);
 				if (status == B_OK)
 					status = copied;
@@ -380,7 +382,7 @@ device_control(void* cookie, uint32 op, void* buffer, size_t length)
 				status = B_NO_MEMORY;
 				break;
 			}
-			status = user_memcpy(images[i], (void*)(addr_t)request.firmware[i], size);
+			status = AmdgpuCopyFromUser(images[i], request.firmware[i], size);
 			if (status == B_OK && !amdgpu::ParseGfxFirmware(images[i], size, i == 3, firmware[i]))
 				status = B_BAD_DATA;
 		}
@@ -391,8 +393,7 @@ device_control(void* cookie, uint32 op, void* buffer, size_t length)
 			else {
 				images[4] = malloc(size);
 				status = images[4] == NULL ? B_NO_MEMORY
-					: user_memcpy(images[4],
-						(void*)(addr_t)extendedRequest.mec_firmware, size);
+					: AmdgpuCopyFromUser(images[4], extendedRequest.mec_firmware, size);
 				if (status == B_OK && !amdgpu::ParseMecFirmware(images[4], size, mec))
 					status = B_BAD_DATA;
 			}
@@ -431,7 +432,7 @@ device_control(void* cookie, uint32 op, void* buffer, size_t length)
 			free(rom);
 			return B_NO_MEMORY;
 		}
-		status_t status = user_memcpy(firmware, (void*)(addr_t)request.firmware, request.firmware_size);
+		status_t status = AmdgpuCopyFromUser(firmware, request.firmware, request.firmware_size);
 		amdgpu::FirmwareView view;
 		if (status == B_OK && !amdgpu::ParseSdmaFirmware(firmware, request.firmware_size, view))
 			status = B_BAD_DATA;
@@ -477,7 +478,7 @@ device_control(void* cookie, uint32 op, void* buffer, size_t length)
 		void* firmware = malloc(request.firmware_size);
 		if (firmware == NULL)
 			return B_NO_MEMORY;
-		status_t status = user_memcpy(firmware, (void*)(addr_t)request.firmware,
+		status_t status = AmdgpuCopyFromUser(firmware, request.firmware,
 			request.firmware_size);
 		amdgpu::FirmwareView view;
 		if (status == B_OK
@@ -519,7 +520,7 @@ device_control(void* cookie, uint32 op, void* buffer, size_t length)
 			free(rom);
 			return B_NO_MEMORY;
 		}
-		status_t status = user_memcpy(firmware, (void*)(addr_t)request.firmware,
+		status_t status = AmdgpuCopyFromUser(firmware, request.firmware,
 			request.firmware_size);
 		amdgpu::FirmwareView view;
 		if (status == B_OK
@@ -574,7 +575,7 @@ device_control(void* cookie, uint32 op, void* buffer, size_t length)
 		}
 		mutex_unlock(&sLock);
 		if (status == B_OK)
-			status = user_memcpy((void*)(addr_t)request.data, rom, AMDGPU_ROM_SIZE);
+			status = AmdgpuCopyToUser(request.data, rom, AMDGPU_ROM_SIZE);
 		free(rom);
 		return status;
 	}

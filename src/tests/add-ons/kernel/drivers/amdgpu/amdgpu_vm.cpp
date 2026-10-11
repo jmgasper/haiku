@@ -35,7 +35,7 @@ static amdgpu_vm_info VM(int fd)
 {
 	auto request = Request<amdgpu_vm_info>();
 	Require(ioctl(fd, AMDGPU_VM_INFO, &request, sizeof(request)) == 0, "create/query GPU VM");
-	Require(request.address_start == 65536 && request.address_end == (1ULL << 36)
+	Require(request.address_start == 131072 && request.address_end == (1ULL << 36)
 		&& request.page_size == 4096, "GPU VA bounds");
 	return request;
 }
@@ -186,7 +186,7 @@ main(int argc, char** argv)
 	auto bad = Mapping(vb.handle, address + 32768, 4096);
 	Require(ioctl(a, AMDGPU_VM_MAP, &bad, sizeof(bad)) == -1 && errno == B_BAD_VALUE,
 		"foreign BO handle rejected");
-	for (unsigned test = 0; test < 8; test++) {
+	for (unsigned test = 0; test < 9; test++) {
 		bad = Mapping(va.handle, address + 32768, 4096);
 		switch (test) {
 			case 0: bad.address = 0x1000; break;
@@ -197,6 +197,7 @@ main(int argc, char** argv)
 			case 5: bad.permissions = AMDGPU_VM_EXECUTE; break;
 			case 6: bad.bytes = UINT64_MAX; break;
 			case 7: bad.reserved = 1; break;
+			case 8: bad.address = AMDGPU_COPY_IB_ADDRESS; break;
 		}
 		Require(ioctl(a, AMDGPU_VM_MAP, &bad, sizeof(bad)) == -1 && errno == B_BAD_VALUE,
 			"invalid VM mapping rejected atomically");

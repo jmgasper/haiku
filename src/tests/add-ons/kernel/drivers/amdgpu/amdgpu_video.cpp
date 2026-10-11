@@ -84,8 +84,22 @@ int main(int argc, char** argv)
 	bad.bitstream = (addr_t)invalid; bad.bitstream_bytes = sizeof(invalid);
 	Require(ioctl(a, AMDGPU_VIDEO_DECODE, &bad, sizeof(bad)) == -1 && errno == B_BAD_VALUE,
 		"parameter sets cannot enter firmware bitstream");
+	uint32 lastSequence = 0;
 	for (unsigned i = 0; i < 8; i++) {
 		auto d = (i & 1) ? db : da;
+		if (i != 0) {
+			for (uint64 address : {0xfffffffffffff000ULL, 0x7fffffffffffULL,
+					0xfffffffffffffe00ULL}) {
+				for (uint32 which = 0; which < 2; which++) {
+					auto invalidPointer = da;
+					if (which == 0) invalidPointer.bitstream = address;
+					else invalidPointer.output = address;
+					Require(ioctl(a, AMDGPU_VIDEO_DECODE, &invalidPointer,
+						sizeof(invalidPointer)) == -1 && errno == B_BAD_ADDRESS,
+						"kernel/cross-boundary/wrapping video pointer rejected");
+				}
+			}
+		}
 		Require(ioctl((i & 1) ? b : a, AMDGPU_VIDEO_DECODE, &d, sizeof(d)) == 0, "decode");
 		printf("frame %u fence %u/%u ring %u/%u guards %u VM %#x feedback", i,
 			d.sequence, d.fence, d.rptr, d.wptr, d.guard_mismatches, d.vm_fault_status);
@@ -93,6 +107,9 @@ int main(int argc, char** argv)
 		puts("");
 		Require(d.sequence != 0 && d.fence == d.sequence && d.rptr == d.wptr
 			&& d.guard_mismatches == 0 && (d.vm_fault_status & 0xff) == 0, "GPU completion");
+		Require(i == 0 || d.sequence == lastSequence + 1,
+			"rejected pointers never submit firmware work");
+		lastSequence = d.sequence;
 		Require(fwrite(output.data(), 1, output.size(), files[i]) == output.size(), "save output");
 		Require(fclose(files[i]) == 0, "close output");
 	}
@@ -128,5 +145,6 @@ int main(int argc, char** argv)
 	puts("PASS: 32 simultaneous private sessions, excess session rejected, ring wrap and close cleanup");
 	close(a);
 	puts("PASS: automatic UVD, private sessions, validation, alternating decode, destroy/close/reuse");
+	puts("PASS: 42 embedded pointer rejections before decode, consecutive firmware sequences");
 	puts("Saved linear NV12 output requires full independent reference comparison.");
 }

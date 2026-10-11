@@ -7,6 +7,7 @@
 #include "Uvd.h"
 #include "FirmwareLoader.h"
 #include "VramAllocator.h"
+#include "UserMemory.h"
 #include <KernelExport.h>
 #include <condition_variable.h>
 #include <lock.h>
@@ -34,6 +35,7 @@ struct VmBinding {
 struct ClientVM {
 	GpuPageTable table;
 	GpuPageTable::Allocation commands;
+	GpuPageTable::Allocation copiedCommands;
 	VmBinding* bindings;
 	uint64 bytes;
 	uint32 mappings;
@@ -71,6 +73,7 @@ static const uint64 kMaxBufferBytes = 64ULL << 20;
 static const uint64 kMaxMappedBytes = 16ULL << 30;
 static const uint32 kMaxMappings = 1024, kMaxVMClients = 32, kMaxBuffers = 256;
 static const uint32 kMaxIbBytes = 65536, kIbAddressAlignment = 256, kIbSizeAlignment = 1024;
+static const uint64 kClientAddressStart = AMDGPU_COPY_IB_ADDRESS + kMaxIbBytes;
 static bool sUvdClocksQualified;
 static SdmaEngine sEngine = {};
 static amdgpu_info sInfo;
@@ -542,9 +545,12 @@ DecodeVideo(AmdgpuClient* client, void* data, size_t length)
 		|| !VideoPictureValid(*s, request.picture, request.bitstream_bytes))
 		return B_BAD_VALUE;
 	if (sFault != B_OK) return B_DEV_NOT_READY;
+	if (!AmdgpuUserRange(request.bitstream, request.bitstream_bytes)
+		|| !AmdgpuUserRange(request.output, s->layout.outputBytes))
+		return B_BAD_ADDRESS;
 	void* input = malloc(request.bitstream_bytes);
 	status = input == NULL ? B_NO_MEMORY
-		: user_memcpy(input, (void*)(addr_t)request.bitstream, request.bitstream_bytes);
+		: AmdgpuCopyFromUser(input, request.bitstream, request.bitstream_bytes);
 	amdgpu_uvd_test result = {};
 	if (status == B_OK) status = WaitDmaIdle(true, false);
 	if (status == B_OK) {
@@ -565,7 +571,7 @@ DecodeVideo(AmdgpuClient* client, void* data, size_t length)
 		sCompleted.NotifyAll();
 	}
 	if (status == B_OK)
-		status = user_memcpy((void*)(addr_t)request.output, (uint8*)s->readback + 4096,
+		status = AmdgpuCopyToUser(request.output, (uint8*)s->readback + 4096,
 			s->layout.outputBytes);
 	request.sequence = result.sequence; request.fence = result.fence;
 	request.rptr = result.rptr; request.wptr = result.wptr;
@@ -635,6 +641,8 @@ ReleaseVM(AmdgpuClient* client)
 		return;
 	vm->table.Uninitialize(sFault == B_OK);
 	ReleasePageTable(NULL, 4096, vm->commands, sFault == B_OK);
+	if (vm->copiedCommands.cpu != NULL)
+		ReleasePageTable(NULL, kMaxIbBytes, vm->copiedCommands, sFault == B_OK);
 	while (vm->bindings != NULL) {
 		VmBinding* binding = vm->bindings;
 		vm->bindings = binding->next;
@@ -681,6 +689,34 @@ CreateVM(AmdgpuClient* client)
 	client->vm = vm;
 	sVMCount++;
 	return B_OK;
+}
+
+static status_t
+CopyCommands(ClientVM* vm, uint64 address, uint32 bytes)
+{
+	// graphicsBusy excludes another operation on this VM. No user handle or
+	// CPU clone exposes this allocation, and its GPU PTEs never allow writes.
+	if (vm->copiedCommands.cpu == NULL) {
+		GpuPageTable::Allocation allocation = {};
+		if (!AllocatePageTable(NULL, kMaxIbBytes, allocation)) return B_NO_MEMORY;
+		memset((void*)allocation.cpu, 0, kMaxIbBytes);
+		uint64 entries[kMaxIbBytes / 4096];
+		for (uint32 i = 0; i < kMaxIbBytes / 4096; i++)
+			entries[i] = (allocation.gpu + i * 4096) | 0x31;
+		if (vm->table.Map(AMDGPU_COPY_IB_ADDRESS, entries, kMaxIbBytes / 4096)
+				!= GpuPageTable::OK) {
+			ReleasePageTable(NULL, kMaxIbBytes, allocation, true);
+			return B_NO_MEMORY;
+		}
+		vm->copiedCommands = allocation;
+	}
+	uint8* copied = (uint8*)vm->copiedCommands.cpu;
+	status_t status = AmdgpuCopyFromUser(copied, address, bytes);
+	uint32 cleared = status == B_OK ? bytes : 0;
+	memset(copied + cleared, 0, kMaxIbBytes - cleared);
+	__sync_synchronize();
+	(void)vm->copiedCommands.cpu[kMaxIbBytes / 8 - 1];
+	return status;
 }
 
 static status_t
@@ -750,7 +786,7 @@ VMControl(AmdgpuClient* client, uint32 op, void* data, size_t length)
 		if (request.reserved[0] != 0 || request.reserved[1] != 0) return B_BAD_VALUE;
 		status = CreateVM(client);
 		if (status != B_OK) return status;
-		request.address_start = 65536;
+		request.address_start = kClientAddressStart;
 		request.address_end = GpuPageTable::kSize;
 		request.page_size = 4096;
 		request.mapped_bytes = client->vm->bytes;
@@ -760,26 +796,32 @@ VMControl(AmdgpuClient* client, uint32 op, void* data, size_t length)
 	ClientVM* vm = client->vm;
 	if (vm == NULL)
 		return B_DEV_NOT_READY;
-	if (op == AMDGPU_GFX_SUBMIT) {
+	if (op == AMDGPU_GFX_SUBMIT || op == AMDGPU_GFX_SUBMIT_COPY) {
+		const bool copy = op == AMDGPU_GFX_SUBMIT_COPY;
 		amdgpu_gfx_submit request;
 		status_t status = ReadRequest(request, data, length);
 		if (status != B_OK) return status;
 		if (request.flags != 0 || request.reserved != 0
-			|| (request.address & (kIbAddressAlignment - 1)) != 0
+			|| (!copy && (request.address & (kIbAddressAlignment - 1)) != 0)
 			|| (request.dwords & (kIbSizeAlignment / 4 - 1)) != 0
 			|| request.dwords == 0 || request.dwords > kMaxIbBytes / 4)
 			return B_BAD_VALUE;
-		VmBinding* binding = vm->bindings;
-		while (binding != NULL) {
-			if (request.address >= binding->address
-				&& request.address - binding->address <= binding->bytes
-				&& (uint64)request.dwords * 4 <= binding->bytes - (request.address - binding->address))
-				break;
-			binding = binding->next;
+		if (copy) {
+			status = CopyCommands(vm, request.address, request.dwords * 4);
+			if (status != B_OK) return status;
+		} else {
+			VmBinding* binding = vm->bindings;
+			while (binding != NULL) {
+				if (request.address >= binding->address
+					&& request.address - binding->address <= binding->bytes
+					&& (uint64)request.dwords * 4 <= binding->bytes - (request.address - binding->address))
+					break;
+				binding = binding->next;
+			}
+			const uint32 permissions = AMDGPU_VM_READ | AMDGPU_VM_EXECUTE;
+			if (binding == NULL || (binding->permissions & permissions) != permissions)
+				return B_NOT_ALLOWED;
 		}
-		const uint32 permissions = AMDGPU_VM_READ | AMDGPU_VM_EXECUTE;
-		if (binding == NULL || (binding->permissions & permissions) != permissions)
-			return B_NOT_ALLOWED;
 		// All VM mappings remain immutable while WaitDmaIdle releases sMutex.
 		// Binding references also retain BOs whose public handles are freed.
 		status = WaitDmaIdle(false);
@@ -788,7 +830,8 @@ VMControl(AmdgpuClient* client, uint32 op, void* data, size_t length)
 		bigtime_t started = system_time();
 		if (status == B_OK) {
 			status = ExecuteGraphics([&]() {
-				return sGfx.ExecuteIB(vm->table.directory.gpu, request.address,
+				return sGfx.ExecuteIB(vm->table.directory.gpu,
+					copy ? AMDGPU_COPY_IB_ADDRESS : request.address,
 					request.dwords, sGart, result);
 			});
 		}
@@ -834,7 +877,7 @@ VMControl(AmdgpuClient* client, uint32 op, void* data, size_t length)
 	amdgpu_vm_mapping request;
 	status_t status = ReadRequest(request, data, length);
 	if (status != B_OK) return status;
-	if (request.reserved != 0 || request.address < 65536
+	if (request.reserved != 0 || request.address < kClientAddressStart
 		|| request.bytes == 0 || request.bytes > kMaxBufferBytes
 		|| ((request.address | request.bytes | request.buffer_offset) & 4095) != 0
 		|| request.address >= GpuPageTable::kSize
@@ -923,11 +966,12 @@ Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 		if (status == B_OK) status = StartGraphics();
 		if (status == B_OK) status = sGfx.RenderInfo(sRenderInfo, info);
 		if (status != B_OK) return status;
-		info.capabilities = AMDGPU_RENDER_ROOT_SUBMIT | AMDGPU_RENDER_SYNC_SUBMIT;
+		info.capabilities = AMDGPU_RENDER_ROOT_SUBMIT | AMDGPU_RENDER_SYNC_SUBMIT
+			| AMDGPU_RENDER_COPY_SUBMIT;
 		info.total_vram = sInfo.vram_size;
 		info.visible_vram = sInfo.bar_size[0];
 		info.total_gart = Gart::kSize;
-		info.address_start = 65536;
+		info.address_start = kClientAddressStart;
 		info.address_end = GpuPageTable::kSize;
 		info.max_buffer_bytes = info.max_mapping_bytes = kMaxBufferBytes;
 		info.max_mapped_bytes = kMaxMappedBytes;
@@ -940,7 +984,8 @@ Control(AmdgpuClient* client, uint32 op, void* data, size_t length)
 		info.ib_size_alignment = kIbSizeAlignment;
 		return user_memcpy(data, &info, sizeof(info));
 	}
-	if (op >= AMDGPU_VM_INFO && op <= AMDGPU_GFX_SUBMIT) {
+	if ((op >= AMDGPU_VM_INFO && op <= AMDGPU_GFX_SUBMIT)
+		|| op == AMDGPU_GFX_SUBMIT_COPY) {
 		if (client->graphicsBusy) return B_BUSY;
 		client->graphicsBusy = true;
 		status_t status = VMControl(client, op, data, length);
