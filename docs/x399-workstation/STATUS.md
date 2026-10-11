@@ -27,10 +27,16 @@ quarantine and cold recovery tests. Separate graphics execution ownership
 also passes 16 in-flight graphics close/reuse cycles. The combined 900-frame
 Summit HEVC Main10/AAC GPU trial now passes with zero drops, compared with
 560 before this work. Sustained H.264/AAC and HEVC Main10/AAC GPU playback
-each passes 5,400 frames over three minutes with zero drops. Final DMA and
-graphics checks pass at 40,789 completions with no GPU errors. Driver
-`89b64dd6…` is installed with a checked same-hash backup; the previous
-`7c6f5e4a…` checkpoint remains preserved. System Mesa defaults remain
+each passes 5,400 frames over three minutes with zero drops. Mesa now submits
+private kernel copies of outer command buffers. Source replacement, failed
+CPU copies, zeroed tails, GPU write protection, terminal quarantine and cold
+recovery pass. Embedded firmware/media pointers now require complete userspace
+ranges; invalid video ranges fail before advancing decode state. The copied
+path passes the same two 5,400-frame GPU playback trials with zero drops.
+Final DMA and graphics checks pass at 43,657 completions with no GPU errors.
+Driver `7d1cf6e5…` and private Mesa `96975aeb…` are installed with checked
+backups; the previous `89b64dd6…`/Mesa `18d872ff…` checkpoint remains preserved.
+System Mesa defaults remain
 unchanged. Unprivileged general
 graphics submission, system Mesa defaults and native display remain unfinished. AMD UVD H.264 plays three minutes of 1080p30/AAC with zero drops
 in private airTime and Summit builds. HEVC Main/Main 10 has independent native
