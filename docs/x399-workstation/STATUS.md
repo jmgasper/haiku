@@ -34,6 +34,9 @@ recovery pass. Embedded firmware/media pointers now require complete userspace
 ranges; invalid video ranges fail before advancing decode state. The copied
 path passes the same two 5,400-frame GPU playback trials with zero drops.
 Final DMA and graphics checks pass at 43,657 completions with no GPU errors.
+Separate shader write/execute permission faults pass with unchanged data and
+quarantine; cold recovery plus complete command capture leaves the current
+boot healthy at 916 completions. Captured commands are not yet a validator.
 Driver `7d1cf6e5…` and private Mesa `96975aeb…` are installed with checked
 backups; the previous `89b64dd6…`/Mesa `18d872ff…` checkpoint remains preserved.
 System Mesa defaults remain
