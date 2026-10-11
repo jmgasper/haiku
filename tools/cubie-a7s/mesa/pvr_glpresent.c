@@ -20,19 +20,19 @@
 // object that is not bound (-11), an RGBA image (-2), and with --front-bpr,
 // a frame buffer that cannot be had (-3, the host) or is used.
 //   pvr_glpresent [--frames N] [--front-bpr N] [--front-refused]
-//       [--scene DRAWS] [--library NAME] [--shim] [--lost]
+//       [--scene DRAWS] [--new-texture] [--library NAME] [--shim] [--lost]
 // --front-bpr: also copy into the screen's frame buffer, whose rows have
 // that many bytes (pvr_present prints it), where it must work, or with
-// --front-refused be refused (-3, no frame buffer to be had); --library:
-// --scene: draw like a WebGL page before each present, DRAWS textured
-// quads each with a glBufferSubData() of its vertices and a glUniform4f()
-// of its colour, into a corner of the image the rectangles leave out (for
-// counting what a frame allocates); --library:
-// where the entry points are (default
-// libEGL_mesa.so.0 on air/OS); --shim: the GPU runs nothing (build.sh
-// shim), so the rectangles must hold what the untouched staging buffer
-// held, zeros; --lost: the device is lost on the way (injected), so only
-// the callbacks and the end of the run count.
+// --front-refused be refused (-3, no frame buffer to be had); --scene: draw
+// like a WebGL page before each present, DRAWS textured quads each with a
+// glBufferSubData() of its vertices and a glUniform4f() of its colour, into
+// a corner of the image the rectangles leave out (for counting what a frame
+// allocates); --new-texture: the scene samples a new 512x512 texture each
+// frame, the old one deleted, as WebKit makes one per frame; --library:
+// where the entry points are (default libEGL_mesa.so.0 on air/OS); --shim:
+// the GPU runs nothing (build.sh shim), so the rectangles must hold what the
+// untouched staging buffer held, zeros; --lost: the device is lost on the
+// way (injected), so only the callbacks and the end of the run count.
 
 
 #include <dlfcn.h>
@@ -193,6 +193,27 @@ make_scene(void)
 }
 
 
+// a new 512x512 texture for the scene, the old one deleted
+static void
+new_scene_texture(void)
+{
+	static GLuint texture;
+	static uint8_t* texels;
+	if (texels == NULL) {
+		texels = malloc(512 * 512 * 4);
+		memset(texels, 0xff, 512 * 512 * 4);
+	}
+	if (texture != 0)
+		glDeleteTextures(1, &texture);
+	glGenTextures(1, &texture);
+	glBindTexture(GL_TEXTURE_2D, texture);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 512, 512, 0, GL_RGBA,
+		GL_UNSIGNED_BYTE, texels);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+}
+
+
 static void
 draw_scene(unsigned draws, GLint colorLocation, unsigned frame)
 {
@@ -219,6 +240,7 @@ main(int argc, char** argv)
 	unsigned frames = 30, frontBpr = 0;
 	int shim = 0, lost = 0, frontRefused = 0;
 	unsigned sceneDraws = 0;
+	int newTexture = 0;
 #ifdef __HAIKU__
 	const char* library = "libEGL_mesa.so.0";
 #else
@@ -237,12 +259,14 @@ main(int argc, char** argv)
 			frontRefused = 1;
 		else if (strcmp(argv[i], "--scene") == 0 && i + 1 < argc)
 			sceneDraws = strtoul(argv[++i], NULL, 0);
+		else if (strcmp(argv[i], "--new-texture") == 0)
+			newTexture = 1;
 		else if (strcmp(argv[i], "--lost") == 0)
 			lost = 1;
 		else {
 			printf("usage: %s [--frames N] [--front-bpr N] [--front-refused] "
-				"[--scene DRAWS] [--library NAME] [--shim] [--lost]\n",
-				argv[0]);
+				"[--scene DRAWS] [--new-texture] [--library NAME] [--shim] "
+				"[--lost]\n", argv[0]);
 			return 2;
 		}
 	}
@@ -370,6 +394,8 @@ main(int argc, char** argv)
 	for (unsigned frame = 0; frame < frames; frame++) {
 		glClearColor(64 / 255.0f, 128 / 255.0f, 191 / 255.0f, 1);
 		glClear(GL_COLOR_BUFFER_BIT);
+		if (sceneDraws != 0 && newTexture)
+			new_scene_texture();
 		if (sceneDraws != 0)
 			draw_scene(sceneDraws, colorLocation, frame);
 		result = present(bgra, &request);

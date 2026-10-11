@@ -28,9 +28,9 @@ Everything lives under `/mnt/HaikuWork/cubie/mesa` (`CUBIE_MESA_ROOT`):
 
 `out/` holds (stripped; `debug/` has the unstripped copies):
 - `libvulkan_powervr_mesa.so` and `powervr_mesa_icd.aarch64.json` (for a loader later);
-- `pvr_vkprobe`, `pvr_vkfill`, `pvr_vkfence`, `pvr_vktriangle`, `pvr_vkhang`, `pvr_vkbench`, `pvr_present`;
+- `pvr_vkprobe`, `pvr_vkfill`, `pvr_vkfence`, `pvr_vktriangle`, `pvr_vkhang`, `pvr_vkbench`, `pvr_present`, `pvr_copybench`;
 - `tls_generation_check` and `libtls_generation_check.so` (keep them in the same directory);
-- `libEGL_mesa.so.0`, `10_mesa.json` (its libglvnd vendor file), `libvulkan.so.1`, `pvr_glprobe`, `pvr_glbench`, `pvr_glreset` and `pvr_glpresent`;
+- `libEGL_mesa.so.0`, `10_mesa.json` (its libglvnd vendor file), `libvulkan.so.1`, `pvr_glprobe`, `pvr_glbench`, `pvr_glreset`, `pvr_glpresent` and `pvr_glcomposite`;
 - `MANIFEST`, with the input hashes.
 
 On the image, the libraries go to `/boot/system/non-packaged/lib`, `10_mesa.json` to `.../non-packaged/add-ons/opengl/egl_vendor.d`, and the programs to `.../non-packaged/bin`.
@@ -58,7 +58,20 @@ On the image, the libraries go to `/boot/system/non-packaged/lib`, `10_mesa.json
     - A freed CPU-mapped buffer object is now kept with both of its mappings, and handed out again for the same heap, page count, alignment and flags.
     - It is cleared first unless the caller passes `PVR_BO_ALLOC_FLAG_NO_ZERO`. The sub-allocators pass it, because they clear what they hand out when asked to.
     - The cache holds at most 64 MB (`PVR_BO_CACHE_MB`; 0 turns it off), and the least recently freed objects go first.
+- Freed device memory is reused (`pvr_device.c`). Zink makes and frees images, with their memory, every frame while its own caches cannot take them back yet (the GPU still owns them), and uploads such as Aquarium's free whole allocations. Each was a `CREATE_BO`, `VM_MAP`, a `MAP_BO` when mapped, `VM_UNMAP` and `GEM_CLOSE`.
+    - `vkFreeMemory()` of ordinary GPU memory keeps the buffer object with its GPU and CPU mappings. Exported memory, the frame buffer import and memory mapped at a placed address are freed as before.
+    - `vkAllocateMemory()` of the same memory type and page-rounded size takes it back without clearing it. Vulkan does not promise zeroed memory, and zink's own `pb_cache` reuses memory the same way.
+    - The cache holds at most 128 MB (`PVR_MEMORY_CACHE_MB`; 0 turns it off), takes no allocation over a quarter of that, and lets the least recently freed go first.
+    - `vkUnmapMemory()` leaves the CPU mapping in place until the memory is freed, so the next `vkMapMemory()` costs nothing, unless the range is to stay reserved (`VK_MEMORY_UNMAP_RESERVE_BIT_EXT`).
+    - An allocate/free loop under the shim (3 allocations of 140 KiB to 1.7 MB, 100 times, mapped) made 30 buffer objects with the cache and 327 without it.
+    - Images never ask for a dedicated allocation: the driver reports `prefersDedicatedAllocation` and `requiresDedicatedAllocation` only for external memory handle types.
 - Buffers and images share one GPU mapping of their memory, made at the first bind (`pvr_memory_shared_vma()`). Zink binds a new buffer into its slabs for nearly every buffer it hands out, and each bind was a `VM_MAP` and each destroy a `VM_UNMAP`.
+- Uniform loads are merged (`pco_nir.c`). Zink loads every 32-bit component of a GL uniform separately, because its UBOs are `uint` arrays, and it enables `robustBufferAccess`. The robustness lowering turned each offset into a `bcsel`, after which nothing could merge the loads. So every component became its own `ld`, followed by a `wdf` that waits for it: one serialized memory round trip per component, per pixel.
+    - WebKit's TextureMapper fragment shader made 17 of these. A 1121x538 compositing pass took 96 ms on the board, where a pass with depth took 3 ms.
+    - The loads are now vectorized before the robustness lowering, in rounds of 1+1, 2+2 and 4+4, up to 8 components. TextureMapper's shader now makes 3 loads: 8 + 8 + 1.
+    - A merged load is bounds-checked as a whole. A load that runs past the end of the buffer is read one component at a time instead, so the components that are in bounds stay exact, as `robustBufferAccess` requires. That branch is uniform and normally skipped.
+    - `PCO_LOAD_VECTOR_MAX` sets the widest merge: 4 or 16 trade loads for temps (for TextureMapper's shader, 4 gives 5 loads and 20 temps, 8 gives 3 loads and 25 temps, 16 gives 2 loads and 39 temps), and 1 gives the old code. Shaders cached on disk keep the width they were compiled with, so set `MESA_SHADER_CACHE_DISABLE=true` when comparing.
+- `PVR_LOG_RENDERS=1` (stderr) or `=FILE` (appended) prints one line per render job (`pvr_arch_job_render.c`). Each line gives the data set's size and tiling, the attachments, load ops and background object, the PBE surface (layout, stride, clip), and the ISP_CTL, pixel control and ZLS control words. Use it to match slow 3D jobs in a firmware trace with the renders that made them.
 - Small fixes cover `drm.h`, `pvr_drm.h`, `vk_image` and `pvr_physical_device.c`.
 
 There are no buffer or sync file descriptors yet. Those paths fail with `EOPNOTSUPP`. They forward to the kernel once `pvr_haiku.h` defines `PVR_HAIKU_NR_PRIME_*` or `PVR_HAIKU_NR_SYNCOBJ_{HANDLE_TO_FD,FD_TO_HANDLE}`.
@@ -135,6 +148,70 @@ How to read the two:
 - If the `kernel` count keeps growing, the end-of-run list names what grows.
 
 `--frames N` / `--dispatches N` with `--mark` makes a short, marked run for a trace. `build.sh shim` uses it below.
+
+### Transfer timing: `pvr_copybench`
+
+`pvr_copybench [--runs N] [--no-scanout]` times the transfer path on its own. Each case is one command buffer holding one command (or 256 fills). It runs once to warm up and then N times (default 5), each from `vkQueueSubmit()` to the fence. Each line gives the fastest and the mean time and the rate. The cases:
+- `vkCmdCopyImageToBuffer` of a 1121x538 and a 512x512 B8G8R8A8 optimal image. The buffer row length is the width, the width rounded up to 16 and to 64 pixels, and 1920. The copies go into each host-visible type (0: coherent, write-combined for the CPU; 1: cached) and into the frame buffer, at its own row length.
+- `vkCmdCopyBuffer` of 2.4 MB, type 1 to type 0, and into the frame buffer.
+- `vkCmdFillBuffer` of 4 MB, and of the whole frame buffer.
+- 256 fills of a 1 KiB row each, into the frame buffer and into type 0 (`pvr_present`'s square). This line also gives the time per fill, which is the cost of one transfer job.
+- `vkCmdClearColorImage` of the 1121x538 image.
+
+`--no-scanout` skips the frame buffer cases. Writing into the frame buffer shows on the screen until app_server draws there again.
+
+How the driver splits a transfer (`pvr_arch_job_transfer.c`):
+- Every region of a `vkCmdCopy*`, every fill and every clear is one transfer command, and each is submitted as its own `TRANSFER_FRAG` job, in its own `SUBMIT_JOBS`. Only the first waits and only the last signals; the firmware keeps the order within the context. So a present with N rectangles is N jobs, and 256 fills are 256 submits.
+- A fill of the 4 MB buffer is two jobs. A copy is one job, with any workaround passes in the same submit (up to 16 prepares).
+- An odd destination row length is not a separate pass: the double-stride workaround draws one surface of twice the stride and half the height, in two interleaved sets of rectangles.
+
+Under the shim, every copy case is one `SUBMIT_JOBS` with one job, at any row length. The times are meaningless there, because the shim runs nothing.
+
+### Compositing passes: `pvr_glcomposite`
+
+`pvr_glcomposite [--size WxH] [--texture WxH] [--frames N] [--passes N] [--only NAME] [--rgba] [--expect TEXT] [--shim]` times one full-screen pass at a time.
+- The target is a framebuffer object shaped like Summit's: a `GL_BGRA8_EXT` renderbuffer, 1121x538 by default. `--rgba` makes it `GL_RGBA8` instead.
+- Each frame is timed from its first GL call to the end of `glFinish()`. Each case runs once to warm up, then N times (default 20). Its line gives the best frame, the mean, the nanoseconds per pixel drawn, and the difference from the `clear` case.
+- After its frames, every case except `rtt` reads back pixel (2, 2) and checks its colour, within 2. That also checks that the shaders read their uniforms correctly. `--shim` skips the check, because the shim runs nothing.
+
+The cases:
+
+| Case | What the pass does |
+|---|---|
+| `clear` | The clear alone: the baseline of submit, wait and wake-up |
+| `load` | A constant-colour quad with no clear first, so the render loads the old contents |
+| `solid` | A constant-colour quad, no uniforms |
+| `uniform` | The colour is a `vec4` uniform |
+| `mat4` | The colour is a `mat4` uniform times a `vec4` uniform, as TextureMapper applies `u_textureColorSpaceMatrix` |
+| `texture` | A 512x512 RGBA texture, uploaded with `glTexImage2D`, stretched over the target |
+| `texture-bgra` | The same texture uploaded as `GL_BGRA_EXT`, as WebKit's tiles are |
+| `blend` | `texture` with premultiplied blending (`ONE`, `ONE_MINUS_SRC_ALPHA`) |
+| `rendered` | Each frame, a WebGL-like render into a 512x512 texture (clear, depth, one quad), then the `texture` pass sampling it |
+| `rtt` | That render into the texture alone |
+| `webkit` | TextureMapper's own shaders (TextureRGB + Opacity, its vertex shader and matrices, the texture flipped) with premultiplied blending, sampling the rendered texture |
+| `webkit-aa` | `webkit` with TextureMapper's antialiasing applier |
+| `depth` | `texture` with a D24S8 renderbuffer attached and the depth test on |
+| `summit` | `webkit` into Summit's real framebuffer: D24S8 attached, depth and stencil tests off |
+
+Zink leaves the unused D24S8 out of the `summit` render, so like the board's slow pass it renders without depth (`ISP_CTL` 0x80035000). `depth` renders with depth (0x80135000).
+
+To compare the merged uniform loads with the old ones on the board:
+
+```
+MESA_SHADER_CACHE_DISABLE=true PCO_LOAD_VECTOR_MAX=1 pvr_glcomposite
+MESA_SHADER_CACHE_DISABLE=true pvr_glcomposite
+```
+
+Under the shim, `PCO_DEBUG_PRINT=fs,stats` prints each fragment shader with its stats. These were the counts for the cases with uniforms:
+
+| Fragment shader | Loads before | Loads now (8) | Temps before → now |
+|---|---|---|---|
+| `uniform` | 4 | 1 | 13 → 13 |
+| `mat4` | 20 | 3 | 14 → 25 |
+| `webkit` | 17 | 3 | 19 → 25 |
+| `webkit-aa` | 23 | 6 | 19 → 29 |
+
+"Now" counts the loads on the path a shader takes when its loads are in bounds; the skipped fallback holds the rest. None of the shaders spill.
 
 ## OpenGL
 
@@ -220,7 +297,8 @@ What a present does:
   3. `PVR_HAIKU_NR_IMPORT_HOST` of the clone, with `DRM_PVR_BO_BYPASS_DEVICE_CACHE`, so that no GPU cache line half over a rectangle's edge is written back over app_server's pixels.
   The buffer object owns the clone and deletes it after `GEM_CLOSE`. A mode change replaces the frame buffer. Zink notices by the row length, as before, and by the display driver's generation, which it reads once a second.
 - **Back (app_server's copy of the screen).** This copy is not imported. app_server's processor writes it all the time, and a cache line over a rectangle's edge could be lost from either side.
-  - In the same batch, the GPU copies the rectangles, packed, into a staging buffer of zink's own in host-cached memory. There is one staging buffer per present in flight, at most 4, each sized by its rectangles.
+  - In the same batch, the GPU copies the rectangles into a staging buffer of zink's own in host-cached memory. There is one staging buffer per present in flight, at most 4, each sized by its rectangles.
+  - Each rectangle's rows are padded to a multiple of 16 pixels. The PowerVR PBE's line stride comes in units of 2 pixels, so a copy with an odd row length (a 1121-pixel-wide rectangle, say) takes the transfer path's double-stride workaround: a destination of twice the stride and half the height, drawn as two sets of rectangles that each sample every second row.
   - After the batch's timeline wait, a helper thread invalidates the staging buffer, copies the rows into the window system's copy, and calls `completed()`.
   - A back copy that cannot be made fails the present (-4): app_server composites the cursor from its copy.
   - On a lost device nothing is copied, but `completed()` still comes.
@@ -240,6 +318,7 @@ What a present does:
 - It checks that every present's callback came, that the rectangles hold the colour, and that every other byte is untouched.
 - It also checks the refusals: an RGBA target (-2), and a framebuffer object that is not bound (-11).
 - `--scene DRAWS` draws a WebGL-like frame before each present. Each of the DRAWS textured quads gets a `glBufferSubData()` and a `glUniform4f()` of its own. The quads go into a column the rectangles leave out, so they let you count what such a frame allocates.
+- `--new-texture` makes the scene sample a new 512x512 texture each frame and delete the old one, as WebKit makes one per frame.
 - `--front-bpr N` also copies to the frame buffer; use the bytes per row that `pvr_present` prints. The present must succeed, unless `--front-refused` is also given, which expects -3: no frame buffer to be had.
 
 ## Host smoke test (`build.sh shim`)
@@ -265,6 +344,8 @@ The shim executes nothing. So in the expected results:
 - `pvr_glpresent --shim --front-bpr 4096 --front-refused` passes. The frame buffer is refused (-3), and the other refusals come back as expected.
 - `pvr_glpresent-scanout` presents to the stand-in frame buffer as well, and gets 31 completions for its 31 presents. 30 presents bring 30 callbacks, and exactly the clipped rectangles (20736 bytes) are copied: zeros, from a staging buffer the shim never ran a copy into.
 - `pvr_vkbench` (fence; then `--timeline --rerecord`) and `pvr_glbench` each run for 3 s with 1 s lines and fail their pixel or word checks. On the host their rates measure the driver and zink CPU paths only, because the shim executes nothing.
+- `pvr_copybench-scanout` (`SCANOUT=1920x1080 pvr_copybench --runs 2`) runs every case, frame buffer included, and passes. Its times measure nothing.
+- `pvr_glcomposite --frames 2 --shim --expect zink` runs every case and passes, without its pixel checks.
 
 The tracer also logs CPU maps of buffer objects: `mmap` of the DRM device and `munmap` of such a map, as `CPU_MAP` and `CPU_UNMAP` lines. On air/OS these are `MAP_BO` and `delete_area()`. Three marked runs, `pvr_glbench --frames 60 --mark`, `pvr_glbench --frames 60 --resize 5 --mark` and `pvr_vkbench --dispatches 60 --timeline --rerecord --mark`, are cut by `trace_balance` into frames 10 to 59. For each kind of object, it reports how many are made and freed per frame, and the net count for each half of that window. A kind whose net count grows in both halves is marked `PILES UP`. The result is in `shim/balance-*.txt`. Nothing piles up. With the data set cache, a steady GL frame makes no free list and no HWRT data set: two of each are made in the first frames (zink keeps two batches in flight) and reused after that. In the resize run, each new size makes one data set the first time, and none after that. With the buffer object cache and the shared memory mappings, a steady GL frame makes no buffer object, GPU VM map or CPU map at all. Before the caches it made 7 buffer objects, 9 VM maps, 1 free list and 1 HWRT data set. What is left per frame is 13 syncobjs, created and destroyed, over 3 `SUBMIT_JOBS` with 5 jobs.
 
@@ -272,6 +353,7 @@ Counting a present (`pvr_glpresent`, 90 against 30 frames):
 - Without the caches, a present alone made 2 buffer objects, 2 VM maps and 2 CPU maps.
 - With `--scene 8` it made 6.4 buffer objects, 13.4 VM maps (7 of them zink's buffer binds) and 6.4 CPU maps per frame. Most came from `pvr_cmd_buffer_upload_general` → `pvr_bo_suballoc` (128 KiB blocks for descriptors and uniforms), the rest from `pvr_csb_buffer_extend` and the SPM constants.
 - With the caches, both cases make 0.
+- `--scene 8 --new-texture` made 90 buffer objects in a 30-frame run and 92 in a 90-frame run, with the device memory cache and without it. Under the shim the GPU is idle at once, so zink's own caches take every image back. On the board, where zink frees and remakes images while the GPU still holds the old ones, the device memory cache takes those instead.
 
 On the board, each of these is still kernel work every frame: areas and MMU flushes, but no firmware objects now.
 

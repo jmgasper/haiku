@@ -64,9 +64,12 @@ shared V3D bitmaps, plus the zink pieces of the air/OS x86_64 fork
         once a second) tells a new frame buffer from the old one;
       - the back, app_server's copy of the screen, is not imported (its
         processor writes it all the time; a cache line over a rectangle's
-        edge could be lost either way): the GPU copies the rectangles,
-        packed, into a staging buffer of zink's own in host-cached memory
-        (one per present in flight, at most 4, sized by the rectangles),
+        edge could be lost either way): the GPU copies the rectangles
+        into a staging buffer of zink's own in host-cached memory (one per
+        present in flight, at most 4, sized by the rectangles), each row
+        padded to 16 pixels (PowerVR's PBE strides come in pairs of pixels:
+        an odd row length sends the copy into its double-stride workaround,
+        twice the stride, half the height, two sets of rectangles),
         and the helper thread, after the batch's timeline wait,
         invalidates it and copies the rows into the window system's copy
         before calling completed(); on a lost device it copies nothing;
@@ -1324,7 +1327,7 @@ diff -ruN a/src/gallium/drivers/zink/zink_descriptors.c b/src/gallium/drivers/zi
 diff -ruN a/src/gallium/drivers/zink/zink_haiku_present.c b/src/gallium/drivers/zink/zink_haiku_present.c
 --- a/src/gallium/drivers/zink/zink_haiku_present.c
 +++ b/src/gallium/drivers/zink/zink_haiku_present.c
-@@ -0,0 +1,716 @@
+@@ -0,0 +1,725 @@
 +/*
 + * Presenting a finished frame straight into the screen on Haiku; see
 + * zink_haiku_present.h.
@@ -1385,12 +1388,20 @@ diff -ruN a/src/gallium/drivers/zink/zink_haiku_present.c b/src/gallium/drivers/
 + * so frames_in_flight is at most this. */
 +#define BACK_SLOTS 4
 +
-+/* A rectangle of the window system's copy, packed in a staging buffer. */
++/* A rectangle of the window system's copy, packed in a staging buffer: rows
++ * of row_pitch bytes from offset. */
 +struct back_rect {
 +   int32_t left, top;
 +   uint32_t width, height;
++   uint32_t row_pitch;
 +   uint64_t offset;
 +};
++
++/* Staging rows are padded to this many pixels: the PowerVR transfer path
++ * writes a buffer whose row length is odd in two passes (its PBE line stride
++ * is counted in pairs of pixels), and 16 pixels keep rows on 64-byte cache
++ * lines for the processor's copy on. */
++#define BACK_ROW_ALIGN 16
 +
 +struct back_slot {
 +   VkDeviceMemory memory;
@@ -1505,7 +1516,7 @@ diff -ruN a/src/gallium/drivers/zink/zink_haiku_present.c b/src/gallium/drivers/
 +         + (size_t)r->left * 4;
 +      for (uint32_t y = 0; y < r->height; y++) {
 +         memcpy(to, from, row);
-+         from += row;
++         from += r->row_pitch;
 +         to += slot->bytes_per_row;
 +      }
 +   }
@@ -1831,18 +1842,19 @@ diff -ruN a/src/gallium/drivers/zink/zink_haiku_present.c b/src/gallium/drivers/
 +                     p->back_height, &left, &top, &right, &bottom))
 +         continue;
 +      const uint32_t width = right - left, height = bottom - top;
++      const uint32_t row_length = align(width, BACK_ROW_ALIGN);
 +      regions[count] = image_region(p, res, left, top, right, bottom, offset,
-+                                    width);
++                                    row_length);
 +      slot->rects[count] = (struct back_rect) {
 +         .left = left,
 +         .top = top,
 +         .width = width,
 +         .height = height,
++         .row_pitch = row_length * 4,
 +         .offset = offset,
 +      };
 +      count++;
-+      /* rows start on cache lines: the copies on stay aligned */
-+      offset += align64((uint64_t)width * height * 4, 64);
++      offset += (uint64_t)row_length * 4 * height;
 +   }
 +   *bytes = offset;
 +   return count;

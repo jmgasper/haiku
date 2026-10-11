@@ -137,6 +137,29 @@ it).
                                     VM_UNMAP; a PBE surface's address comes
                                     from the image's address, not from a
                                     mapping of its own
+  pvr_device.[ch], pvr_arch_device.c a device cache of freed device memory:
+                                    zink makes and frees images and their
+                                    memory every frame when its own caches
+                                    cannot reuse them yet (the GPU still
+                                    owns them), and Aquarium-style uploads
+                                    free whole allocations; each a CREATE_BO,
+                                    VM_MAP, MAP_BO (when mapped), VM_UNMAP
+                                    and GEM_CLOSE. vkFreeMemory() of
+                                    ordinary GPU memory (not exported, not
+                                    the frame buffer, not mapped at a placed
+                                    address) keeps the buffer object with its
+                                    GPU and CPU mappings; vkAllocateMemory()
+                                    of the same type and page-rounded size
+                                    takes it back, not cleared (Vulkan does
+                                    not promise zeroed memory; zink's
+                                    pb_cache reuses the same way). At most
+                                    128 MB (PVR_MEMORY_CACHE_MB, 0 = off),
+                                    no allocation over a quarter of that,
+                                    least recently freed first out.
+                                    vkUnmapMemory() leaves the CPU mapping
+                                    in place until the memory is freed (the
+                                    next vkMapMemory() is free too), unless
+                                    the range is to stay reserved
   pvr_rt_dataset.[ch], pvr_device.h, a device cache of idle render target data
   pvr_arch_device.c,                sets (HWRT data set + local free list) for
   pvr_arch_cmd_buffer.c             dynamic rendering. Every
@@ -156,6 +179,32 @@ it).
                                     out); one left mid-render (need_frag) is
                                     destroyed. Render pass framebuffers keep
                                     their own data sets, as before
+  pco/pco_nir.c                     buffer loads are vectorized before the
+                                    robustness lowering. Zink loads every
+                                    32-bit component of a GL uniform on its
+                                    own (its UBOs are uint arrays) and enables
+                                    robustBufferAccess; the lowering made each
+                                    offset a bcsel, after which nothing
+                                    merged, so every component was an ld and
+                                    a wdf of its own, a serialized memory
+                                    round trip per component and pixel: 17 in
+                                    WebKit's TextureMapper fragment shader
+                                    (96 ms for a 1121x538 compositing pass on
+                                    the board), now 3. Rounds of 1+1, 2+2, 4+4
+                                    make loads of up to 8 components
+                                    (PCO_LOAD_VECTOR_MAX: 4 or 16 trade loads
+                                    for temps, 1 is the old code); a load is
+                                    then bounds-checked as a whole, and one
+                                    that runs over the end of the buffer is
+                                    read a component at a time instead, so
+                                    the components in bounds stay exact
+  pvr_arch_job_render.c             PVR_LOG_RENDERS=1 (stderr) or =FILE: a
+                                    line per render job with the data set's
+                                    size and tiling, the attachments, load
+                                    ops, background object, PBE surface and
+                                    the ISP/ZLS/pixel control words, to match
+                                    slow 3D jobs in a firmware trace with the
+                                    renders that made them
 
 Not changed: the heap size (util/os_misc.c: sysconf(_SC_PHYS_PAGES), which
 Haiku's libroot answers from get_system_info()); the conformance gate
@@ -817,6 +866,199 @@ diff -ruN a/include/xf86drm.h b/include/xf86drm.h
 +#endif /* HAIKU_PVR_XF86DRM_H */
 +
 +#endif /* __HAIKU__ */
+diff -ruN a/src/imagination/pco/pco_nir.c b/src/imagination/pco/pco_nir.c
+--- a/src/imagination/pco/pco_nir.c
++++ b/src/imagination/pco/pco_nir.c
+@@ -460,6 +460,36 @@
+    return true;
+ }
+ 
++/* (air/OS) As should_vectorize_mem_cb(), in powers of two: merged greedily,
++ * a run of scalar loads otherwise ends up in loads of 5 (4 + 1, then 5 + 1
++ * is no valid size), where rounds of 1 + 1, 2 + 2, 4 + 4 and 8 + 8 make
++ * loads of up to 16 (an ld's longest burst).
++ */
++static bool should_vectorize_mem_pow2_cb(unsigned align_mul,
++                                         unsigned align_offset,
++                                         unsigned bit_size,
++                                         unsigned num_components,
++                                         int64_t hole_size,
++                                         nir_intrinsic_instr *low,
++                                         nir_intrinsic_instr *high,
++                                         void *data)
++{
++   const unsigned max_components = *(const unsigned *)data;
++
++   if (!util_is_power_of_two_nonzero(num_components) ||
++       num_components > max_components)
++      return false;
++
++   return should_vectorize_mem_cb(align_mul,
++                                  align_offset,
++                                  bit_size,
++                                  num_components,
++                                  hole_size,
++                                  low,
++                                  high,
++                                  data);
++}
++
+ static void pco_nir_opt(pco_ctx *ctx, nir_shader *nir, pco_data *data, bool algebraic)
+ {
+    bool progress;
+@@ -833,6 +863,97 @@
+    return false;
+ }
+ 
++/* (air/OS) The robustness lowering of buffer loads, for loads that may have
++ * been vectorized first (see pco_lower_nir()). nir_lower_robust_access()
++ * reads a whole load from offset 0 when any of it is out of bounds, which
++ * for a merged load would also change the components that were in bounds.
++ * Here a load that fits, the usual case (a uniform branch), stays one load;
++ * one that does not is read a component at a time, each in-bounds
++ * component from its own offset and each out-of-bounds one from offset 0.
++ */
++static bool lower_robust_buffer_load(nir_builder *b,
++                                     nir_intrinsic_instr *intr,
++                                     UNUSED void *data)
++{
++   const bool ubo = intr->intrinsic == nir_intrinsic_load_ubo;
++
++   if (!ubo && intr->intrinsic != nir_intrinsic_load_ssbo)
++      return false;
++
++   const unsigned comps = intr->def.num_components;
++   const unsigned bit_size = intr->def.bit_size;
++   const unsigned comp_size = bit_size / 8;
++   nir_def *index = intr->src[0].ssa;
++   nir_def *offset = intr->src[1].ssa;
++
++   b->cursor = nir_before_instr(&intr->instr);
++
++   nir_def *size = ubo ? nir_get_ubo_size(b, 32, index)
++                       : nir_get_ssbo_size(b, 32, index);
++   nir_def *last = nir_iadd_imm(b, offset, comps * comp_size - 1);
++   nir_def *fits = nir_ult(b, last, size);
++
++   if (comps == 1) {
++      nir_src_rewrite(&intr->src[1],
++                      nir_bcsel(b, fits, offset, nir_imm_int(b, 0)));
++      return true;
++   }
++
++   nir_push_if(b, fits);
++   nir_instr *whole = nir_instr_clone(b->shader, &intr->instr);
++   nir_builder_instr_insert(b, whole);
++   nir_push_else(b, NULL);
++   nir_def *parts[NIR_MAX_VEC_COMPONENTS];
++   for (unsigned i = 0; i < comps; i++) {
++      nir_def *part_offset = nir_iadd_imm(b, offset, i * comp_size);
++      nir_def *valid =
++         nir_ult(b, nir_iadd_imm(b, part_offset, comp_size - 1), size);
++      part_offset = nir_bcsel(b, valid, part_offset, nir_imm_int(b, 0));
++
++      if (ubo) {
++         parts[i] = nir_load_ubo(b,
++                                 1,
++                                 bit_size,
++                                 index,
++                                 part_offset,
++                                 .access = nir_intrinsic_access(intr),
++                                 .align_mul = comp_size,
++                                 .align_offset = 0,
++                                 .range_base = 0,
++                                 .range = ~0);
++      } else {
++         parts[i] = nir_load_ssbo(b,
++                                  1,
++                                  bit_size,
++                                  index,
++                                  part_offset,
++                                  .access = nir_intrinsic_access(intr),
++                                  .align_mul = comp_size,
++                                  .align_offset = 0);
++      }
++   }
++   nir_def *split = nir_vec(b, parts, comps);
++   nir_pop_if(b, NULL);
++
++   nir_def_replace(&intr->def,
++                   nir_if_phi(b, &nir_instr_as_intrinsic(whole)->def, split));
++   return true;
++}
++
++/* (air/OS) robustness_filter() without the buffer loads, which
++ * lower_robust_buffer_load() takes.
++ */
++static bool robustness_filter_no_loads(const nir_intrinsic_instr *intr,
++                                       const void *data)
++{
++   if (intr->intrinsic == nir_intrinsic_load_ubo ||
++       intr->intrinsic == nir_intrinsic_load_ssbo) {
++      return false;
++   }
++
++   return robustness_filter(intr, data);
++}
++
+ /**
+  * \brief Returns if shared memory should be spilled according to the threshold.
+  *
+@@ -928,8 +1049,52 @@
+             NULL,
+             NULL);
+ 
+-   if (data->common.robust_buffer_access)
+-      NIR_PASS(_, nir, nir_lower_robust_access, robustness_filter, NULL);
++   if (data->common.robust_buffer_access) {
++      /* (air/OS) Vectorize buffer loads before the robustness lowering, which
++       * makes every offset a bcsel that nothing merges afterwards. Zink
++       * loads each 32-bit component of a GL uniform on its own (its UBOs
++       * are uint arrays), so each component used to be an ld of its own,
++       * each followed by a wdf: a serialized memory round trip per
++       * component, per pixel (17 in WebKit's TextureMapper shader, whose
++       * full-screen pass took 96 ms on the BXM-4-64). Merged, up to 8
++       * components are one ld and one bounds check (lower_robust_buffer_load()
++       * keeps the in-bounds components of a load over the end exact).
++       * PCO_LOAD_VECTOR_MAX caps the width: 4 or 16 trade loads for temps,
++       * 1 is the old code. Shaders cached on disk keep the width they were
++       * compiled with.
++       */
++      static const unsigned max_components_default = 8;
++      unsigned max_components =
++         debug_get_num_option("PCO_LOAD_VECTOR_MAX", max_components_default);
++      nir_load_store_vectorize_options vectorize_opts = {
++         .modes = nir_var_mem_ubo | nir_var_mem_ssbo | nir_var_mem_global,
++         .callback = should_vectorize_mem_pow2_cb,
++         .robust_modes = nir_var_mem_ubo | nir_var_mem_ssbo,
++         .cb_data = &max_components,
++      };
++      bool merged = max_components > 1;
++
++      NIR_PASS(_, nir, nir_opt_copy_prop);
++      NIR_PASS(_, nir, nir_opt_constant_folding);
++      NIR_PASS(_, nir, nir_opt_cse);
++      /* Each round doubles what the last one merged: 1+1, 2+2, ... 8+8. */
++      for (unsigned i = 0; i < 4 && merged; i++) {
++         merged = false;
++         NIR_PASS(merged, nir, nir_opt_load_store_vectorize, &vectorize_opts);
++      }
++
++      NIR_PASS(_,
++               nir,
++               nir_shader_intrinsics_pass,
++               lower_robust_buffer_load,
++               nir_metadata_none,
++               NULL);
++      NIR_PASS(_,
++               nir,
++               nir_lower_robust_access,
++               robustness_filter_no_loads,
++               NULL);
++   }
+ 
+    if (nir->info.stage == MESA_SHADER_COMPUTE &&
+        (PCO_DEBUG(GLOBAL_SHMEM) ||
 diff -ruN a/src/imagination/vulkan/pvr_arch_cmd_buffer.c b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 --- a/src/imagination/vulkan/pvr_arch_cmd_buffer.c
 +++ b/src/imagination/vulkan/pvr_arch_cmd_buffer.c
@@ -944,17 +1186,18 @@ diff -ruN a/src/imagination/vulkan/pvr_arch_device.c b/src/imagination/vulkan/pv
  #include "pvr_tex_state.h"
  
  #define PVR_GLOBAL_FREE_LIST_INITIAL_SIZE (2U * 1024U * 1024U)
-@@ -752,6 +753,9 @@
+@@ -752,6 +753,10 @@
     if (result != VK_SUCCESS)
        goto err_vk_device_finish;
  
 +   pvr_bo_cache_init(device);
 +   simple_mtx_init(&device->buffer_vma_mtx, mtx_plain);
++   pvr_memory_cache_init(device);
 +
     pvr_bo_suballocator_init(&device->suballoc_general,
                              device->heaps.general_heap,
                              device,
-@@ -851,6 +855,7 @@
+@@ -851,6 +856,7 @@
  
     simple_mtx_init(&device->rs_mtx, mtx_plain);
     list_inithead(&device->render_states);
@@ -962,16 +1205,17 @@ diff -ruN a/src/imagination/vulkan/pvr_arch_device.c b/src/imagination/vulkan/pv
  
     *pDevice = pvr_device_to_handle(device);
  
-@@ -903,6 +908,8 @@
+@@ -903,6 +909,9 @@
     pvr_bo_suballocator_fini(&device->suballoc_pds);
     pvr_bo_suballocator_fini(&device->suballoc_general);
  
 +   /* after the last buffer objects are freed into it */
++   pvr_memory_cache_finish(device);
 +   pvr_bo_cache_finish(device);
     pvr_bo_store_destroy(device);
  
  err_vk_device_finish:
-@@ -936,6 +943,12 @@
+@@ -936,6 +945,12 @@
     }
     simple_mtx_unlock(&device->rs_mtx);
     simple_mtx_destroy(&device->rs_mtx);
@@ -984,15 +1228,235 @@ diff -ruN a/src/imagination/vulkan/pvr_arch_device.c b/src/imagination/vulkan/pv
  
     pvr_arch_border_color_table_finish(device);
     pvr_robustness_buffer_finish(device);
-@@ -960,6 +973,8 @@
+@@ -960,6 +975,9 @@
     pvr_bo_suballocator_fini(&device->suballoc_transfer);
     pvr_bo_suballocator_fini(&device->suballoc_pds);
     pvr_bo_suballocator_fini(&device->suballoc_general);
 +   /* after the last buffer objects are freed into it */
++   pvr_memory_cache_finish(device);
 +   pvr_bo_cache_finish(device);
     pvr_bo_store_destroy(device);
     pvr_winsys_destroy(device->ws);
     p_atomic_dec(&device->instance->active_device_count);
+diff -ruN a/src/imagination/vulkan/pvr_arch_job_render.c b/src/imagination/vulkan/pvr_arch_job_render.c
+--- a/src/imagination/vulkan/pvr_arch_job_render.c
++++ b/src/imagination/vulkan/pvr_arch_job_render.c
+@@ -24,6 +24,10 @@
+ #include <assert.h>
+ #include <stdbool.h>
+ #include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
+ #include <vulkan/vulkan.h>
+ 
+ #include "hwdef/rogue_hw_defs.h"
+@@ -51,6 +55,8 @@
+ #include "util/compiler.h"
+ #include "util/format/format_utils.h"
+ #include "util/macros.h"
++#include "c11/threads.h"
++#include "util/os_time.h"
+ #include "util/u_math.h"
+ #include "vk_alloc.h"
+ #include "vk_log.h"
+@@ -899,6 +905,153 @@
+    return PVR_DW_TO_BYTES(offset);
+ }
+ 
++/* (air/OS) PVR_LOG_RENDERS=1 (stderr) or =FILE (appended): one line per
++ * render job, with what decides how much the ISP walks and writes: the data
++ * set's size and tiling, the attachments, load ops, the background object and
++ * the ISP/ZLS/pixel control words. For matching slow 3D jobs in a firmware
++ * trace with the renders that made them.
++ */
++static FILE *pvr_render_log;
++static once_flag pvr_render_log_once = ONCE_FLAG_INIT;
++
++static void pvr_render_log_open(void)
++{
++   const char *dest = getenv("PVR_LOG_RENDERS");
++
++   if (!dest || !*dest || !strcmp(dest, "0"))
++      return;
++
++   if (!strcmp(dest, "1") || !strcmp(dest, "stderr")) {
++      pvr_render_log = stderr;
++      return;
++   }
++
++   pvr_render_log = fopen(dest, "a");
++   if (pvr_render_log)
++      setvbuf(pvr_render_log, NULL, _IOLBF, 0);
++}
++
++static const char *pvr_load_op_name(VkAttachmentLoadOp op)
++{
++   switch (op) {
++   case VK_ATTACHMENT_LOAD_OP_LOAD:
++      return "load";
++   case VK_ATTACHMENT_LOAD_OP_CLEAR:
++      return "clear";
++   case VK_ATTACHMENT_LOAD_OP_DONT_CARE:
++      return "dontcare";
++   default:
++      return "none";
++   }
++}
++
++static void pvr_log_render(const struct pvr_render_job *job,
++                           const struct pvr_rt_dataset *rt_dataset,
++                           const struct pvr_rt_mtile_info *tiling,
++                           uint32_t isp_ctl_word,
++                           uint32_t pixel_ctl,
++                           uint64_t zlsctl_word)
++{
++   const struct pvr_sub_cmd_gfx *sub_cmd =
++      container_of(job, const struct pvr_sub_cmd_gfx, job);
++   const struct pvr_renderpass_hwsetup_render *hw_render = sub_cmd->hw_render;
++   char inits[96] = "";
++   char pbes[256] = "";
++   size_t used = 0;
++
++   if (hw_render) {
++      for (uint32_t i = 0; i < hw_render->color_init_count && used < 80; i++) {
++         used += snprintf(inits + used,
++                          sizeof(inits) - used,
++                          "%s%u:%s",
++                          i ? "," : "",
++                          hw_render->color_init[i].index,
++                          pvr_load_op_name(hw_render->color_init[i].op));
++      }
++   }
++
++   used = 0;
++   for (uint32_t i = 0;
++        hw_render && i < hw_render->eot_surface_count && i < 2;
++        i++) {
++      const uint64_t w0 = job->pbe_reg_words[i][0];
++      const uint64_t w1 = job->pbe_reg_words[i][1];
++      const uint64_t w2 = job->pbe_reg_words[i][2];
++
++      used += snprintf(pbes + used,
++                       sizeof(pbes) - used,
++                       " pbe%u layout=%u stride=%u clip=%u,%u-%u,%u"
++                       " size=%u,%u ysize=%u",
++                       i,
++                       (unsigned)((w0 >> 32) & 0x3),
++                       (unsigned)((w0 >> 34) & 0xffff) * 2,
++                       (unsigned)((w0 >> 6) & 0x3fff),
++                       (unsigned)((w1 >> 46) & 0x3fff),
++                       (unsigned)((w1 >> 32) & 0x3fff),
++                       (unsigned)(w1 & 0x3fff),
++                       (unsigned)((w1 >> 60) & 0xf),
++                       (unsigned)((w1 >> 28) & 0xf),
++                       (unsigned)((w2 >> 32) & 0x3fff));
++   }
++
++   fprintf(pvr_render_log,
++           "pvr-render pid=%d t=%.3f rt=%ux%u s%u l%u rstate=%ux%u"
++           " tiles=%ux%u(%ux%u px) max=%u,%u mtiles=%ux%u per=%ux%u"
++           " frag=%d pr=%d empty_cmd=%d"
++           " depth=%d stencil=%d zls=%u ds=%ux%u stride=%u"
++           " ld=%d%d st=%d%d z_only=%d inits=[%s] eot=%u%s"
++           " bg_tag=%d empty_tiles=%d barrier=%d%d side=%d"
++           " nomerge=%d spm=%d tif=%u pow=%u"
++           " isp_ctl=0x%08x pixel_ctl=0x%08x zlsctl=0x%016llx\n",
++           (int)getpid(),
++           os_time_get_nano() / 1e6,
++           rt_dataset->width,
++           rt_dataset->height,
++           rt_dataset->samples,
++           rt_dataset->layers,
++           sub_cmd->rstate ? sub_cmd->rstate->width : 0,
++           sub_cmd->rstate ? sub_cmd->rstate->height : 0,
++           tiling->num_tiles_x,
++           tiling->num_tiles_y,
++           tiling->tile_size_x,
++           tiling->tile_size_y,
++           tiling->x_tile_max,
++           tiling->y_tile_max,
++           tiling->mtiles_x,
++           tiling->mtiles_y,
++           tiling->tiles_per_mtile_x,
++           tiling->tiles_per_mtile_y,
++           job->run_frag,
++           hw_render ? hw_render->requires_frag_pr : -1,
++           sub_cmd->empty_cmd,
++           job->has_depth_attachment,
++           job->has_stencil_attachment,
++           (unsigned)job->ds.zls_format,
++           job->ds.physical_extent.width,
++           job->ds.physical_extent.height,
++           job->ds.stride,
++           job->ds.load.d,
++           job->ds.load.s,
++           job->ds.store.d,
++           job->ds.store.s,
++           job->z_only_render,
++           inits,
++           hw_render ? hw_render->eot_surface_count : 0,
++           pbes,
++           job->enable_bg_tag,
++           job->process_empty_tiles,
++           sub_cmd->barrier_load,
++           sub_cmd->barrier_store,
++           sub_cmd->frag_has_side_effects,
++           job->disable_pixel_merging,
++           job->requires_spm_scratch_buffer,
++           job->max_tiles_in_flight,
++           job->pixel_output_width,
++           isp_ctl_word,
++           pixel_ctl,
++           (unsigned long long)zlsctl_word);
++}
++
+ static void pvr_frag_state_stream_init(struct pvr_render_ctx *ctx,
+                                        struct pvr_render_job *job,
+                                        struct pvr_winsys_fragment_state *state)
+@@ -920,6 +1073,8 @@
+    uint32_t view_index;
+    uint32_t pixel_ctl;
+    uint32_t isp_ctl;
++   uint32_t isp_ctl_word;
++   uint64_t zlsctl_word;
+ 
+    /* Leave space for stream header. */
+    stream_ptr += pvr_cmd_length(KMD_STREAM_HDR);
+@@ -1004,6 +1159,7 @@
+       value.forcezstore = value.zstoreen || value.sstoreen;
+       value.zonlyrender = job->z_only_render;
+    }
++   memcpy(&zlsctl_word, stream_ptr, sizeof(zlsctl_word));
+    stream_ptr += pvr_cmd_length(CR_ISP_ZLSCTL);
+ 
+    pvr_csb_pack ((uint64_t *)stream_ptr, CR_ISP_ZLOAD_BASE, value) {
+@@ -1182,6 +1338,7 @@
+     * of the value.
+     */
+    *stream_ptr |= isp_ctl;
++   isp_ctl_word = *stream_ptr;
+    stream_ptr += pvr_cmd_length(CR_ISP_CTL);
+ 
+    pvr_csb_pack (stream_ptr, CR_EVENT_PIXEL_PDS_INFO, value) {
+@@ -1281,6 +1438,16 @@
+    pvr_csb_pack ((uint64_t *)stream_len_ptr, KMD_STREAM_HDR, value) {
+       value.length = state->fw_stream_len;
+    }
++
++   call_once(&pvr_render_log_once, pvr_render_log_open);
++   if (pvr_render_log) {
++      pvr_log_render(job,
++                     rt_dataset,
++                     &tiling_info,
++                     isp_ctl_word,
++                     pixel_ctl,
++                     zlsctl_word);
++   }
+ }
+ 
+ #undef DWORDS_PER_U64
 diff -ruN a/src/imagination/vulkan/pvr_arch_job_transfer.c b/src/imagination/vulkan/pvr_arch_job_transfer.c
 --- a/src/imagination/vulkan/pvr_arch_job_transfer.c
 +++ b/src/imagination/vulkan/pvr_arch_job_transfer.c
@@ -1472,7 +1936,7 @@ diff -ruN a/src/imagination/vulkan/pvr_device.c b/src/imagination/vulkan/pvr_dev
  #include "util/u_math.h"
  #include "vk_device_memory.h"
  #include "vk_extensions.h"
-@@ -234,18 +236,90 @@
+@@ -234,18 +236,244 @@
                                  mem_type->heapIndex);
  }
  
@@ -1536,6 +2000,159 @@ diff -ruN a/src/imagination/vulkan/pvr_device.c b/src/imagination/vulkan/pvr_dev
 +   return VK_SUCCESS;
 +}
 +
++/* The device's cache of freed device memory (air/OS).
++ *
++ * zink frees and allocates device memory every frame of a WebGL page: an
++ * image or two (a new texture per frame) and its stream uploads when its own
++ * cache cannot take them back while the GPU still reads them. Each was a
++ * CREATE_BO, VM_MAP and MAP_BO, and a VM_UNMAP and GEM_CLOSE to free it. A
++ * freed memory object's buffer object is kept here, with its GPU mapping
++ * (pvr_memory_shared_vma()) and its CPU map, and handed to the next
++ * allocation of the same memory type and size (in pages). Its contents are
++ * left as they were, as zink's own cache leaves them: Vulkan memory starts
++ * undefined. Memory that is imported, exported, for display or mapped at a
++ * placed address is not kept. At most PVR_MEMORY_CACHE_MAX_BYTES
++ * (PVR_MEMORY_CACHE_MB, 0 = off), the least recently freed first out.
++ */
++#define PVR_MEMORY_CACHE_MAX_BYTES (128ull * 1024 * 1024)
++
++struct pvr_memory_cache_entry {
++   struct list_head link;
++   uint32_t memory_type;
++   struct pvr_winsys_bo *bo;
++   struct pvr_winsys_vma *vma;
++};
++
++void pvr_memory_cache_init(struct pvr_device *device)
++{
++   simple_mtx_init(&device->memory_cache.mtx, mtx_plain);
++   list_inithead(&device->memory_cache.lru);
++   device->memory_cache.bytes = 0;
++   device->memory_cache.max_bytes =
++      debug_get_num_option("PVR_MEMORY_CACHE_MB",
++                           PVR_MEMORY_CACHE_MAX_BYTES >> 20)
++      << 20;
++   device->memory_cache.enabled = device->memory_cache.max_bytes != 0;
++}
++
++static void pvr_memory_cache_destroy_entry(struct pvr_device *device,
++                                           struct pvr_memory_cache_entry *entry)
++{
++   if (entry->bo->map)
++      device->ws->ops->buffer_unmap(entry->bo, false);
++   if (entry->vma)
++      pvr_unbind_memory(device, entry->vma);
++   device->ws->ops->buffer_destroy(entry->bo);
++   vk_free(&device->vk.alloc, entry);
++}
++
++void pvr_memory_cache_finish(struct pvr_device *device)
++{
++   struct list_head evicted;
++
++   list_inithead(&evicted);
++   simple_mtx_lock(&device->memory_cache.mtx);
++   device->memory_cache.enabled = false;
++   list_splicetail(&device->memory_cache.lru, &evicted);
++   list_inithead(&device->memory_cache.lru);
++   device->memory_cache.bytes = 0;
++   simple_mtx_unlock(&device->memory_cache.mtx);
++
++   list_for_each_entry_safe (struct pvr_memory_cache_entry,
++                             entry,
++                             &evicted,
++                             link) {
++      list_del(&entry->link);
++      pvr_memory_cache_destroy_entry(device, entry);
++   }
++}
++
++/* A kept buffer object of that type and size, with its GPU mapping. */
++static struct pvr_winsys_bo *
++pvr_memory_cache_take(struct pvr_device *device,
++                      uint32_t memory_type,
++                      uint64_t size,
++                      struct pvr_winsys_vma **const vma_out)
++{
++   struct pvr_memory_cache_entry *found = NULL;
++
++   simple_mtx_lock(&device->memory_cache.mtx);
++   list_for_each_entry (struct pvr_memory_cache_entry,
++                        entry,
++                        &device->memory_cache.lru,
++                        link) {
++      if (entry->memory_type == memory_type && entry->bo->size == size) {
++         list_del(&entry->link);
++         device->memory_cache.bytes -= size;
++         found = entry;
++         break;
++      }
++   }
++   simple_mtx_unlock(&device->memory_cache.mtx);
++
++   if (!found)
++      return NULL;
++
++   struct pvr_winsys_bo *bo = found->bo;
++   *vma_out = found->vma;
++   vk_free(&device->vk.alloc, found);
++   return bo;
++}
++
++/* Keeps a freed memory object's buffer object; false if it is not kept. */
++static bool pvr_memory_cache_put(struct pvr_device *device,
++                                 struct pvr_device_memory *mem)
++{
++   struct pvr_memory_cache_entry *entry;
++   struct list_head evicted;
++
++   if (!mem->cacheable || !device->memory_cache.enabled ||
++       mem->bo->size > device->memory_cache.max_bytes / 4) {
++      return false;
++   }
++
++   entry = vk_alloc(&device->vk.alloc,
++                    sizeof(*entry),
++                    8,
++                    VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
++   if (!entry)
++      return false;
++   entry->memory_type = mem->vk.memory_type_index;
++   entry->bo = mem->bo;
++   entry->vma = mem->buffer_vma;
++
++   list_inithead(&evicted);
++   simple_mtx_lock(&device->memory_cache.mtx);
++   if (!device->memory_cache.enabled) {
++      simple_mtx_unlock(&device->memory_cache.mtx);
++      vk_free(&device->vk.alloc, entry);
++      return false;
++   }
++   list_add(&entry->link, &device->memory_cache.lru);
++   device->memory_cache.bytes += entry->bo->size;
++   while (device->memory_cache.bytes > device->memory_cache.max_bytes) {
++      struct pvr_memory_cache_entry *oldest =
++         list_last_entry(&device->memory_cache.lru,
++                         struct pvr_memory_cache_entry,
++                         link);
++      list_del(&oldest->link);
++      device->memory_cache.bytes -= oldest->bo->size;
++      list_addtail(&oldest->link, &evicted);
++   }
++   simple_mtx_unlock(&device->memory_cache.mtx);
++
++   /* outside the lock: these make requests to the kernel */
++   list_for_each_entry_safe (struct pvr_memory_cache_entry,
++                             oldest,
++                             &evicted,
++                             link) {
++      list_del(&oldest->link);
++      pvr_memory_cache_destroy_entry(device, oldest);
++   }
++
++   return true;
++}
++
  VkResult pvr_AllocateMemory(VkDevice _device,
                              const VkMemoryAllocateInfo *pAllocateInfo,
                              const VkAllocationCallbacks *pAllocator,
@@ -1543,6 +2160,7 @@ diff -ruN a/src/imagination/vulkan/pvr_device.c b/src/imagination/vulkan/pvr_dev
  {
     const VkImportMemoryFdInfoKHR *fd_info = NULL;
 +   VkImportScanoutMemoryHAIKU *scanout_info = NULL;
++   bool exported = false;
     VK_FROM_HANDLE(pvr_device, device, _device);
     enum pvr_winsys_bo_type type = PVR_WINSYS_BO_TYPE_GPU;
     struct pvr_device_memory *mem;
@@ -1563,7 +2181,16 @@ diff -ruN a/src/imagination/vulkan/pvr_device.c b/src/imagination/vulkan/pvr_dev
     assert(pAllocateInfo->allocationSize > 0);
  
     const VkMemoryType *mem_type =
-@@ -285,6 +359,8 @@
+@@ -276,6 +504,8 @@
+          fd_info = (void *)ext;
+          break;
+       case VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO:
++         if (((const VkExportMemoryAllocateInfo *)ext)->handleTypes)
++            exported = true;
+          break;
+       case VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO:
+          /* We don't have particular optimizations associated with memory
+@@ -285,6 +515,8 @@
        case VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO:
           /* We're not yet using any of the flags provided. */
           break;
@@ -1572,35 +2199,124 @@ diff -ruN a/src/imagination/vulkan/pvr_device.c b/src/imagination/vulkan/pvr_dev
        default:
           vk_debug_ignored_stype(ext->sType);
           break;
-@@ -345,11 +421,16 @@
+@@ -345,14 +577,33 @@
         * types as an array that's indexed by pAllocateInfo->memoryTypeIndex so
         * that they can be looked up.
         */
+-      result = device->ws->ops->buffer_create(device->ws,
+-                                              pAllocateInfo->allocationSize,
+-                                              alignment,
+-                                              type,
+-                                              PVR_WINSYS_BO_FLAG_CPU_ACCESS,
+-                                              &mem->bo);
+-      if (result != VK_SUCCESS)
+-         goto err_vk_device_memory_destroy;
 +      uint32_t ws_flags = PVR_WINSYS_BO_FLAG_CPU_ACCESS;
 +
 +      if (mem_type->propertyFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)
 +         ws_flags |= PVR_WINSYS_BO_FLAG_CPU_CACHED;
 +
-       result = device->ws->ops->buffer_create(device->ws,
-                                               pAllocateInfo->allocationSize,
-                                               alignment,
-                                               type,
--                                              PVR_WINSYS_BO_FLAG_CPU_ACCESS,
-+                                              ws_flags,
-                                               &mem->bo);
-       if (result != VK_SUCCESS)
-          goto err_vk_device_memory_destroy;
-@@ -429,6 +510,9 @@
-    if (mem->bo->map)
-       device->ws->ops->buffer_unmap(mem->bo, false);
- 
-+   if (mem->buffer_vma)
-+      pvr_unbind_memory(device, mem->buffer_vma);
++      /* the device's memory cache first (ordinary memory only) */
++      mem->cacheable = type == PVR_WINSYS_BO_TYPE_GPU && !exported;
++      if (mem->cacheable) {
++         const uint64_t bo_size =
++            ALIGN_POT(ALIGN_POT(pAllocateInfo->allocationSize, alignment),
++                      device->ws->page_size);
++         mem->bo = pvr_memory_cache_take(device,
++                                         pAllocateInfo->memoryTypeIndex,
++                                         bo_size,
++                                         &mem->buffer_vma);
++      }
 +
-    device->ws->ops->buffer_destroy(mem->bo);
++      if (!mem->bo) {
++         result = device->ws->ops->buffer_create(device->ws,
++                                                 pAllocateInfo->allocationSize,
++                                                 alignment,
++                                                 type,
++                                                 ws_flags,
++                                                 &mem->bo);
++         if (result != VK_SUCCESS)
++            goto err_vk_device_memory_destroy;
++      }
+    }
+ 
+    *pMem = pvr_device_memory_to_handle(mem);
+@@ -425,11 +676,18 @@
+    /* From the Vulkan spec (§11.2.13. Freeing Device Memory):
+     *   If a memory object is mapped at the time it is freed, it is implicitly
+     *   unmapped.
++    * Kept memory keeps its CPU map, which is the driver's, not the
++    * application's, from now on.
+     */
+-   if (mem->bo->map)
+-      device->ws->ops->buffer_unmap(mem->bo, false);
++   if (!pvr_memory_cache_put(device, mem)) {
++      if (mem->bo->map)
++         device->ws->ops->buffer_unmap(mem->bo, false);
+ 
+-   device->ws->ops->buffer_destroy(mem->bo);
++      if (mem->buffer_vma)
++         pvr_unbind_memory(device, mem->buffer_vma);
++
++      device->ws->ops->buffer_destroy(mem->bo);
++   }
  
     vk_device_memory_destroy(&device->vk, pAllocator, &mem->vk);
-@@ -510,10 +594,50 @@
+ }
+@@ -475,7 +733,7 @@
+     *
+     *    "memory must not be currently host mapped"
+     */
+-   if (mem->bo->map != NULL) {
++   if (mem->host_mapped) {
+       return vk_errorf(device,
+                        VK_ERROR_MEMORY_MAP_FAILED,
+                        "Memory object already mapped.");
+@@ -485,10 +743,23 @@
+       vk_debug_ignored_stype(ext->sType);
+    }
+ 
++   /* The buffer object may still be mapped (an earlier map, or the memory
++    * cache): that map serves, unless the map is to be placed elsewhere.
++    */
++   if (mem->bo->map && addr && mem->bo->map != addr)
++      device->ws->ops->buffer_unmap(mem->bo, false);
++
+    /* Map it all at once */
+-   result = device->ws->ops->buffer_map(mem->bo, addr);
+-   if (result != VK_SUCCESS)
+-      return result;
++   if (!mem->bo->map) {
++      result = device->ws->ops->buffer_map(mem->bo, addr);
++      if (result != VK_SUCCESS)
++         return result;
++   }
++
++   /* placed maps are the application's: not kept */
++   if (addr)
++      mem->cacheable = false;
++   mem->host_mapped = true;
+ 
+    *ppData = (uint8_t *)mem->bo->map + offset;
+ 
+@@ -501,19 +772,65 @@
+    VK_FROM_HANDLE(pvr_device, device, _device);
+    VK_FROM_HANDLE(pvr_device_memory, mem, pMemoryUnmapInfo->memory);
+ 
+-   if (mem && mem->bo->map) {
++   if (mem && mem->host_mapped) {
+       bool reserve =
+          !!(pMemoryUnmapInfo->flags & VK_MEMORY_UNMAP_RESERVE_BIT_EXT);
+-      return device->ws->ops->buffer_unmap(mem->bo, reserve);
++
++      mem->host_mapped = false;
++      /* the map stays for the next one, unless the range is to be kept
++       * reserved for the application (a placed map)
++       */
++      if (reserve)
++         return device->ws->ops->buffer_unmap(mem->bo, reserve);
+    }
+ 
     return VK_SUCCESS;
  }
  
@@ -1651,7 +2367,7 @@ diff -ruN a/src/imagination/vulkan/pvr_device.c b/src/imagination/vulkan/pvr_dev
     return VK_SUCCESS;
  }
  
-@@ -522,6 +646,13 @@
+@@ -522,6 +839,13 @@
                                   uint32_t memoryRangeCount,
                                   const VkMappedMemoryRange *pMemoryRanges)
  {
@@ -1665,7 +2381,7 @@ diff -ruN a/src/imagination/vulkan/pvr_device.c b/src/imagination/vulkan/pvr_dev
     return VK_SUCCESS;
  }
  
-@@ -597,32 +728,62 @@
+@@ -597,32 +921,62 @@
     device->ws->ops->heap_free(vma);
  }
  
@@ -1754,7 +2470,7 @@ diff -ruN a/src/imagination/vulkan/pvr_device.h b/src/imagination/vulkan/pvr_dev
  
  #include "pvr_bo.h"
  #include "pvr_common.h"
-@@ -138,6 +139,22 @@
+@@ -138,6 +139,33 @@
  
     struct pvr_bo_store *bo_store;
  
@@ -1774,10 +2490,21 @@ diff -ruN a/src/imagination/vulkan/pvr_device.h b/src/imagination/vulkan/pvr_dev
 +   /* guards pvr_device_memory::buffer_vma (pvr_memory_shared_vma()) */
 +   simple_mtx_t buffer_vma_mtx;
 +
++   /* Freed device memory, kept with its GPU and CPU mappings for the next
++    * allocation of the same type and size (pvr_device.c).
++    */
++   struct {
++      simple_mtx_t mtx;
++      bool enabled;
++      struct list_head lru; /* most recently freed first */
++      uint64_t bytes;
++      uint64_t max_bytes;
++   } memory_cache;
++
     struct pvr_bo *robustness_buffer;
  
     struct vk_sync *presignaled_sync;
-@@ -146,13 +163,32 @@
+@@ -146,13 +174,42 @@
  
     simple_mtx_t rs_mtx;
     struct list_head render_states;
@@ -1801,11 +2528,21 @@ diff -ruN a/src/imagination/vulkan/pvr_device.h b/src/imagination/vulkan/pvr_dev
 +    * (pvr_memory_shared_vma()).
 +    */
 +   struct pvr_winsys_vma *buffer_vma;
++
++   /* air/OS: the application has it mapped (the buffer object may stay
++    * mapped after vkUnmapMemory, for the next map or the memory cache)
++    */
++   bool host_mapped;
++   /* goes to the device's memory cache when freed (pvr_device.c) */
++   bool cacheable;
  };
  
 +VkResult pvr_memory_shared_vma(struct pvr_device *device,
 +                               struct pvr_device_memory *mem,
 +                               struct pvr_winsys_vma **const vma_out);
++
++void pvr_memory_cache_init(struct pvr_device *device);
++void pvr_memory_cache_finish(struct pvr_device *device);
 +
  VK_DEFINE_NONDISP_HANDLE_CASTS(pvr_device_memory,
                                 vk.base,

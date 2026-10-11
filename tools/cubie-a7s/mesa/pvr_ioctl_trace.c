@@ -257,9 +257,15 @@ print_in(FILE* out, unsigned nr, void* arg)
 		}
 		case 0x4b: {
 			struct drm_pvr_ioctl_create_hwrt_dataset_args* a = arg;
-			fprintf(out, " %ux%u samples=%u layers=%u free_lists=%u,%u",
+			fprintf(out, " %ux%u samples=%u layers=%u free_lists=%u,%u"
+				" merge=%u,%u/%u,%u/%u,%u rgn_header_size=%u tpc=%u/%u",
 				a->width, a->height, a->samples, a->layers,
-				a->free_list_handles[0], a->free_list_handles[1]);
+				a->free_list_handles[0], a->free_list_handles[1],
+				a->isp_merge_lower_x, a->isp_merge_lower_y,
+				a->isp_merge_upper_x, a->isp_merge_upper_y,
+				a->isp_merge_scale_x, a->isp_merge_scale_y,
+				a->region_header_size, a->geom_data_args.tpc_size,
+				a->geom_data_args.tpc_stride);
 			break;
 		}
 		case 0x4d: {
